@@ -31,7 +31,21 @@ use crate::id::ShapeId;
 use crate::math_functions::{
     aabb_transform, invert_transform, max_int, min_int, to_relative_transform, POS_ZERO,
 };
-use crate::parallel_for::parallel_for;
+use crate::parallel_for::block_ranges;
+use crate::worker_pool::{BlockCounter, SharedMut};
+
+/// Shares read-only world data with the pair workers. `World` is not `Sync` only because of
+/// the recording's `RefCell`, which the pair tasks never touch (they read the trees, the
+/// pair set, shapes, bodies and joints); the custom filter, which gets `&World`, keeps the
+/// pair finding on one thread.
+struct AssertSync<T>(T);
+// SAFETY: see the type docs.
+unsafe impl<T> Sync for AssertSync<T> {}
+impl<T: Copy> AssertSync<T> {
+    fn get(&self) -> T {
+        self.0
+    }
+}
 use crate::shape::{shape_flags, ShapeGeometry};
 use crate::table::{key_hash, shape_pair_key};
 use crate::types::BodyType;
@@ -620,9 +634,13 @@ pub fn update_broad_phase_pairs(world: &mut World) {
         task_context.pair_keys.clear();
     }
 
-    // The serial tasks all run as worker 0. The worker's key array and the moved sibling
-    // scratch are detached while the world is borrowed for the traversal.
-    let mut worker_keys = std::mem::take(&mut world.task_contexts[0].pair_keys);
+    // The workers' key arrays and the moved sibling scratch are detached while the world is
+    // borrowed for the traversal.
+    let mut worker_keys: Vec<Vec<u64>> = world
+        .task_contexts
+        .iter_mut()
+        .map(|task_context| std::mem::take(&mut task_context.pair_keys))
+        .collect();
     let mut moved_siblings = std::mem::take(&mut world.broad_phase.moved_siblings);
 
     // Generate pairs by querying the dynamic body tree against itself and against the
@@ -663,40 +681,56 @@ pub fn update_broad_phase_pairs(world: &mut World) {
             static_seed_count,
             check_compounds: world_ref.compound_shape_count > 0,
         };
-        // The serial parallel-for runs every block on worker 0, whose keys are detached
-        // above.
-        let worker_count = world_ref.worker_count;
-        parallel_for(
-            worker_count,
-            cross_move_count as i32,
-            1,
-            |start, end, worker_index| {
-                debug_assert!(worker_index == 0);
-                cross_pairs_task(
-                    &cross_context,
-                    start as usize,
-                    end as usize,
-                    &mut worker_keys,
-                );
-            },
-        );
 
-        // Collide the dynamic body tree against itself.
-        parallel_for(
-            worker_count,
-            dynamic_move_count as i32,
-            64,
-            |start, end, worker_index| {
-                debug_assert!(worker_index == 0);
-                self_pairs_task(
-                    world_ref,
-                    &moved_siblings,
-                    start as usize,
-                    end as usize,
-                    &mut worker_keys,
-                );
-            },
-        );
+        // Primordial Engine fork (D2): the block partition is the one C uses for a single
+        // worker, whatever `worker_count` is, so the custom filter (if any) sees the same
+        // batches for every worker count. With worker threads and no custom filter the
+        // blocks run on all workers, each appending to its own key array; the keys are
+        // sorted below, so the contacts do not depend on the worker count. A custom filter
+        // receives `&World`, which is not `Sync`, so then the blocks stay on worker 0.
+        let cross_blocks = block_ranges(1, cross_move_count as i32, 1);
+        let self_blocks = block_ranges(1, dynamic_move_count as i32, 64);
+        let pool = if world_ref.custom_filter_fcn.is_none() {
+            world_ref.worker_pool.clone()
+        } else {
+            None
+        };
+        match pool {
+            Some(pool) if cross_blocks.len() + self_blocks.len() > 1 => {
+                let block_count = cross_blocks.len() + self_blocks.len();
+                let blocks = BlockCounter::new(block_count, 1);
+                let keys = SharedMut::new(&mut worker_keys);
+                let shared = AssertSync((&cross_context, world_ref, &moved_siblings[..]));
+                let (cross_blocks, self_blocks) = (&cross_blocks, &self_blocks);
+                pool.run(&|worker_index| {
+                    let (cross_context, world, moved_siblings) = shared.get();
+                    // SAFETY: each worker index belongs to one thread.
+                    let keys = unsafe { keys.get_mut(worker_index) };
+                    while let Some(range) = blocks.claim() {
+                        for block in range {
+                            if block < cross_blocks.len() {
+                                let (start, end) = cross_blocks[block];
+                                cross_pairs_task(cross_context, start as usize, end as usize, keys);
+                            } else {
+                                let (start, end) = self_blocks[block - cross_blocks.len()];
+                                self_pairs_task(world, moved_siblings, start as usize, end as usize, keys);
+                            }
+                        }
+                    }
+                });
+            }
+            _ => {
+                let keys = &mut worker_keys[0];
+                for &(start, end) in &cross_blocks {
+                    cross_pairs_task(&cross_context, start as usize, end as usize, keys);
+                }
+
+                // Collide the dynamic body tree against itself.
+                for &(start, end) in &self_blocks {
+                    self_pairs_task(world_ref, &moved_siblings, start as usize, end as usize, keys);
+                }
+            }
+        }
     }
 
     world.broad_phase.trees[BodyType::Static as usize].clear_moved();
@@ -704,7 +738,9 @@ pub fn update_broad_phase_pairs(world: &mut World) {
     // Update stale trees.
     enqueue_tree_update(world);
 
-    world.task_contexts[0].pair_keys = worker_keys;
+    for (task_context, keys) in world.task_contexts.iter_mut().zip(worker_keys) {
+        task_context.pair_keys = keys;
+    }
 
     // Pairs arrive in deterministic order but scrambled relative to body and shape order.
     // Sorting them here improves solver performance and makes contact order independent
