@@ -747,8 +747,9 @@ pub fn world_get_bounds(world: &World) -> Aabb {
     world_bounds
 }
 
-/// Set the stored worker count. Clamped to `[1, MAX_WORKERS]`. The serial port
-/// does not spawn threads but still resizes task contexts like C.
+/// Set the worker count. Clamped to `[1, MAX_WORKERS]`. Resizes the task contexts like C.
+/// Primordial Engine fork (D2): with more than one worker the world owns `count - 1` worker
+/// threads (none on wasm32). Results are identical for every count.
 /// (b3World_SetWorkerCount)
 pub fn world_set_worker_count(world: &mut World, count: i32) {
     debug_assert!(!world.locked);
@@ -765,6 +766,9 @@ pub fn world_set_worker_count(world: &mut World, count: i32) {
     // resize and zero the per-worker scratch arrays.
     world.task_contexts = vec![TaskContext::default(); world.worker_count as usize];
     world.sensor_task_contexts = vec![SensorTaskContext::default(); world.worker_count as usize];
+    // Primordial Engine fork: own the worker threads (None for 1 worker or no thread support).
+    world.worker_pool = crate::worker_pool::WorkerPool::new(world.worker_count as usize)
+        .map(std::sync::Arc::new);
 }
 
 /// Get the stored worker count. (b3World_GetWorkerCount)

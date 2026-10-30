@@ -115,6 +115,8 @@ pub mod mesh;
 pub mod mover;
 pub mod name_cache;
 mod parallel_for;
+mod stage_timer;
+mod worker_pool;
 pub mod rapidhash;
 pub mod recording;
 // Primordial Engine fork: scale-dependent contact-recycling radius. See FORK.md.
@@ -275,6 +277,8 @@ mod large_world_tests;
 
 #[cfg(test)]
 mod determinism_tests;
+#[cfg(test)]
+mod parallel_tests;
 
 #[cfg(test)]
 mod restitution_tests;
