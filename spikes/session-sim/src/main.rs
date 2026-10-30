@@ -82,7 +82,7 @@ fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str) -> bool {
     }
     let r = first.unwrap();
     let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
-    let reference = replay(w, r.scene, r.sim.cfg, &members, &final_log(&r.sim), frames);
+    let reference = replay_sim_with(w, r.scene, r.sim.cfg, &members, &r.sim.peers_of, &final_log(&r.sim), frames).hashes;
     let rd = digest(&reference, frames);
     let all_equal = digests.iter().all(|(_, d)| *d == rd);
     if !all_equal {
@@ -427,13 +427,79 @@ fn r14(variant: &str, reverse: bool) {
     let mut sim = Sim::new(net, peers, 9_000_000);
     sim.reverse_order = reverse;
     let mut lag_samples: Vec<(u64, u64)> = Vec::new();
+    // "forge" (reviews NEW-3..NEW-5): proofless relays by members who cannot have proofs.
+    let mut forged: Vec<(WorldId, MemberId, EntryId, &'static str)> = Vec::new();
+    let send_all = |sim: &mut Sim, w: WorldId, from: MemberId, e: &Entry| {
+        let members: Vec<MemberId> = sim.replica(from, w).sim.members.iter().copied().collect();
+        for to in members {
+            if to != from {
+                sim.net.send(w, from, to, &Msg::Entry(e.clone()));
+            }
+        }
+    };
     while sim.net.now_us <= sim.end_us {
         sim.step_ms();
+        if variant == "forge" {
+            let t = sim.net.now_us;
+            let pidx = |sim: &Sim, id: MemberId| sim.peers.iter().position(|p| p.id == id).unwrap();
+            let esc = sim.replica(2, 1).sim.t.escrow.iter().next().map(|(t, e)| (*t, *e));
+            if t == 2_500_000 {
+                // NEW-4: member 3 (only in B) mints object 40 into B with no departure behind it.
+                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 1, src_frame: 100 };
+                let fake = 0xDEAD_BEEF;
+                let fact = fact_departed(1, fake, &record, 2);
+                let i = pidx(&sim, 3);
+                let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
+                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, cert: vec![(3, member_sig(1, 3, fact))] },
+                    None,
+                );
+                forged.push((2, 3, e.id(), "member 3 mints object 40 into B (no departure; signs as itself)"));
+                send_all(&mut sim, 2, 3, &e);
+            }
+            if t == 2_900_000 {
+                if let Some((transfer, x)) = esc {
+                    // NEW-5: member 3 squats the real transfer id before the carrier relays.
+                    let i = pidx(&sim, 3);
+                    let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
+                        Payload::Arrive { transfer, record: x.record.unwrap(), depart: x.depart, cert: vec![] },
+                        None,
+                    );
+                    forged.push((2, 3, e.id(), "member 3 squats the real transfer id with a proofless Arrive"));
+                    send_all(&mut sim, 2, 3, &e);
+                }
+            }
+            if t == 3_000_000 {
+                if let Some((transfer, _)) = esc {
+                    // NEW-3 (loss): member 2 (only in A) commits the escrow with a proofless verdict.
+                    let i = pidx(&sim, 2);
+                    let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: true, cert: vec![] }, None);
+                    forged.push((1, 2, e.id(), "member 2 commits the escrow with a proofless Verdict"));
+                    send_all(&mut sim, 1, 2, &e);
+                }
+            }
+            if t == 3_050_000 {
+                if let Some((transfer, _)) = esc {
+                    // NEW-3 (duplication): before the real verdict lands, the carrier claims B
+                    // rejected the object, presenting B's genuine signatures over the acceptance.
+                    let fact = fact_verdict(2, transfer, true);
+                    let cert: Vec<(MemberId, u64)> = [1u32, 3].iter().map(|&m| (m, member_sig(2, m, fact))).collect();
+                    let i = pidx(&sim, 1);
+                    let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: false, cert }, None);
+                    forged.push((1, 1, e.id(), "the carrier claims a rejection with B's signatures over the acceptance"));
+                    send_all(&mut sim, 1, 1, &e);
+                }
+            }
+        }
         if sim.net.now_us % 100_000 == 0 && sim.net.now_us > 1_000_000 {
             let r = sim.replica(2, 1);
             lag_samples.push((sim.net.now_us / 1000, r.sim.now.saturating_sub(r.sim.conf)));
         }
         sim.net.now_us += 1000;
+    }
+    for (w, by, id, what) in &forged {
+        let witness = if *w == 1 { 2 } else { 3 };
+        let o = sim.replica(witness, *w).sim.outcomes.get(id).copied();
+        println!("RESULT   forged by m{by} in world {w}: {what} -> {:?}", o.map(|x| x.1));
     }
     for j in &sim.peers[0].jobs {
         for l in &j.log {

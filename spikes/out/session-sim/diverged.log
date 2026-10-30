@@ -1,7 +1,7 @@
 RESULT diverged acceptance, uncontended checks: 26/26 equal at that instant and 26/26 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
 RESULT diverged acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 36/36 equal to the author's copy at that instant, 35/36 equal to the author's final history
-  m1 world 1: rollbacks 9 max depth 4 resim frames 46 (32.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 762 frame 773
-  m2 world 1: rollbacks 9 max depth 39 resim frames 77 (43.3 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 762 frame 774
-  m3 world 1: rollbacks 12 max depth 4 resim frames 51 (31.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 762 frame 773
+  m1 world 1: rollbacks 9 max depth 4 resim frames 46 (27.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 762 frame 773
+  m2 world 1: rollbacks 9 max depth 39 resim frames 77 (37.9 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 762 frame 774
+  m3 world 1: rollbacks 12 max depth 4 resim frames 51 (29.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 762 frame 773
   bytes: entries 40 msgs 4000 B (avg 100 B), acks 2489 msgs 217912 B, dropped 4
 RESULT diverged world 1: frames 0..700 digests m1=eb64716d53886595 m2=eb64716d53886595 m3=eb64716d53886595 | offline replay eb64716d53886595 | ALL EQUAL
