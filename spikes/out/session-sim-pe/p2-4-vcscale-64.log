@@ -1,1 +1,1 @@
-RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 360 | no panic | wall 33.9 s
+RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 360 | no panic | wall 36.1 s
