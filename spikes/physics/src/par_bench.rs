@@ -71,8 +71,8 @@ pub fn run(frames: u64, sizes: &[usize], threads: &[i32]) -> bool {
         if cfg!(debug_assertions) { "debug" } else { "release" }
     );
     println!(
-        "{:>5} {:>3} | {:>7} {:>7} | {:>6} {:>6} {:>6} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} | {:>7} | hash",
-        "N", "thr", "wall", "step", "pairs", "coll", "solve", "prep", "integ", "warm", "push", "relax", "rest", "store", "final", "refit", "other", "rb6/f"
+        "{:>5} {:>3} | {:>7} {:>7} | {:>6} {:>6} {:>6} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} | {:>7} | hash (rb+6 = restore + 6 frames, ms per rollback)",
+        "N", "thr", "wall", "step", "pairs", "coll", "solve", "prep", "integ", "warm", "push", "relax", "rest", "store", "final", "refit", "other", "rb+6"
     );
     for &count in sizes {
         let (side, layers) = pile_for(count);

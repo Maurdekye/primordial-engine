@@ -15,10 +15,10 @@ fail=0
 for t in $threads; do
   for m in vdw off; do
     fl="--threads=$t"; [ $m = off ] && fl="$fl --upstream"
-    $exe $fl goldens > $tmp/g.log 2>&1
-    $exe $fl trace 600 $tmp/t.txt > $tmp/t.log 2>&1
-    $exe $fl images $tmp/i.txt > $tmp/i.log 2>&1
-    $exe $fl rollback > $tmp/r.log 2>&1
+    "$exe" $fl goldens > $tmp/g.log 2>&1
+    "$exe" $fl trace 600 $tmp/t.txt > $tmp/t.log 2>&1
+    "$exe" $fl images $tmp/i.txt > $tmp/i.log 2>&1
+    "$exe" $fl rollback > $tmp/r.log 2>&1
     g=$(grep -c "^\[PASS\]" $tmp/g.log); gf=$(grep -c "^\[FAIL\]" $tmp/g.log)
     r=$(grep -c "^\[PASS\]" $tmp/r.log); rf=$(grep -c "^\[FAIL\]" $tmp/r.log)
     tr=$(cmp -s $tmp/t.txt $d/trace-$m-win-$label.txt && echo same || echo DIFF)
