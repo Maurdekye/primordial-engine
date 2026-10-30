@@ -1,5 +1,4 @@
-   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.79s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
      Running unittests src\lib.rs (target\debug\deps\pe_core-d311829ef4486bcc.exe)
 
 running 17 tests
@@ -22,15 +21,16 @@ test ids::tests::object_id_order_matches_u64 ... ok
 test rng::tests::seek_and_streams ... ok
 test rng::tests::splitmix_matches_reference ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
 
      Running unittests src\lib.rs (target\debug\deps\pe_sim-f6212610250ef889.exe)
 
-running 2 tests
+running 3 tests
 test registry::tests::layout_rules ... ok
 test registry::tests::value_checks ... ok
+test snapshot::tests::forest_check ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests\determinism.rs (target\debug\deps\determinism-e04195181ac22d0b.exe)
 
@@ -43,7 +43,7 @@ test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
 
      Running tests\store.rs (target\debug\deps\store-466851eba5fe027a.exe)
 
@@ -54,7 +54,7 @@ test hierarchy_order_cycles_and_destroy ... ok
 test objects_and_counters ... ok
 test world_transforms_compose ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
    Doc-tests pe_core
 
