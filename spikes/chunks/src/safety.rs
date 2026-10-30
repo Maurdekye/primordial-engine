@@ -1,4 +1,4 @@
-//! Reviews N1, M1, P1, P2: is the neighbour bound *safe* when footprints change in steps, when both
+//! Reviews N1, M1, P1, P2, Q1, Q2: is the neighbour bound *safe* when footprints change in steps, when both
 //! regions grow toward each other, when regions are created concurrently, when growth may skip the growth
 //! clock, and across scale bands?
 //!
@@ -23,12 +23,18 @@
 //!   possible footprint (its envelope grown by `v_max (age + 60 s)`). Once that possible footprint reaches
 //!   this region the gap is 0 before and after, so a step straight at the neighbour is instant (review P2).
 //!   No bound between bands (review P1).
-//! * `revised` (reviews P1, P2): as e10c905, but growth is instant (`J` = 0) only if every added point is at
-//!   least `D_merge` from the other region's possible footprint over the horizon `T_h` = 60 s (envelope
+//! * `da3cd74` (reviews P1, P2): as e10c905, but growth is instant (`J` = 0) only if every added point is
+//!   at least `D_merge` from the other region's possible footprint over the horizon `T_h` = 60 s (envelope
 //!   grown by the other region's `v_max (age + T_h)`); otherwise `J` is the full extension. Every region
 //!   simulates `f` only while `f <= known_conf_q + T_h` (the horizon gate). A small-band region bounds
-//!   itself on every larger-band region at that band's `v_max`, margin 0, with the same gate, and the larger
-//!   region's `J` counts the small region's possible footprint with margin 0.
+//!   itself on every larger-band region at that band's `v_max`, margin 0, and each side's `J` counts the
+//!   other with margin 0. A created region starts only once it holds the other's confirmed prefix through
+//!   its first frame - 1 (the start condition). Known regions come from the region's own log (relays).
+//! * `revised` (reviews Q1, Q2): as da3cd74, but instant growth is capped: at most `G_inst` (4 chunks at
+//!   human scale, scaled with the band) per growth and one instant growth per `T_h`; the rest is clocked.
+//!   Every possible footprint and the creation buffer also add `G_inst x ceil(window / T_h)`. The known set
+//!   at stamp `s` includes the world-log directory confirmed through `s - S_create`.
+//! * `revised-no-start`: `revised` without the start condition (a control).
 //!
 //! Parameters: region confirmation lag 9 frames, 3 frames to learn a neighbour's confirmed frame,
 //! world-log lag 66 frames, Lambda 30 frames, eviction 132 frames; `D_merge` (3 km), `v_max` (100 m/s)
@@ -45,12 +51,15 @@ const CHUNK: f64 = 1024.0;
 const HEAD: i64 = 300;
 /// The horizon of instant growth and of the horizon gate: 60 s.
 const T_H: i64 = 3600;
+/// The cap on one instant growth at human scale (review Q1): 4 chunks. It scales with the band, as `v_max`.
+const G_INST: f64 = 4.0 * CHUNK;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Rules {
     Old,
     V05,
     E10,
+    Da3,
     Revised,
     /// Revised without the start condition for created regions.
     NoStart,
@@ -87,6 +96,11 @@ struct Case {
     world_stall: Option<(i64, i64)>,
     /// q is a larger band's region that R must read once their footprints overlap.
     cross_band: bool,
+    /// Frame at which q's creation is relayed into R's log (da3cd74's known set); None = as soon as the
+    /// world log confirms it.
+    relay_q: Option<i64>,
+    /// q is created at the closest gap its rule set allows: the revised rules add R's instant growth.
+    closest: bool,
 }
 
 struct Out {
@@ -123,59 +137,79 @@ fn run(c: &Case, rules: Rules) -> Out {
         }
         tt - LAG_R
     };
-    let revised = matches!(rules, Rules::Revised | Rules::NoStart);
-    // Growth effects under each rule set's J. `me` judges `other` from what its own log holds at the stamp:
-    // `other` must be in the directory by then, and its envelope counts growth stamped by its known
-    // confirmed frame. `dir` is +1 when `other` lies at larger coordinates than `me`.
+    let revised = matches!(rules, Rules::Da3 | Rules::Revised | Rules::NoStart);
+    let capped = matches!(rules, Rules::Revised | Rules::NoStart);
+    let start = matches!(rules, Rules::Da3 | Rules::Revised);
+    let ceil_div = |a: i64, b: i64| (a + b - 1) / b;
+    // Growth effects under each rule set's J. `me` judges `other` from what its own log holds at the stamp.
+    // `other`'s envelope counts growth stamped by its known confirmed frame. `dir` is +1 when `other` lies
+    // at larger coordinates than `me`. `other_is_q` selects the relay rule (da3cd74's known set).
     let mut instant = 0usize;
-    let mut effects = |me: &Side, other: &Side, dir: f64, v_me: f64, v_other: f64| -> Growth {
+    let mut effects = |me: &Side, other: &Side, dir: f64, v_me: f64, v_other: f64, other_is_q: bool| -> Growth {
+        let (g_me, g_other) = (G_INST * v_me / 100.0, G_INST * v_other / 100.0);
         let mut clock = i64::MIN;
+        let mut last_instant = i64::MIN / 2;
         let mut edge = me.edge0;
         let mut out = Vec::new();
         for &(stamp, j) in &me.growth {
             let new_edge = edge + dir * j;
-            let knows_other = other.created.is_none_or(|co| world_conf(stamp) >= co);
-            let jj = match rules {
-                Rules::Old => 0.0,
-                Rules::V05 => j,
+            let relayed = !other_is_q || c.relay_q.is_none_or(|r| stamp >= r);
+            let knows_other = match other.created {
+                None => true,
+                // Review Q2: the world-log directory confirmed through s - S_create, or a relay.
+                Some(co) if capped => co <= stamp - c.s_create || (relayed && world_conf(stamp) >= co),
+                Some(co) => relayed && world_conf(stamp) >= co,
+            };
+            // (instant metres, clocked metres, J of the clocked part)
+            let (inst, clocked, jj) = match rules {
+                Rules::Old => (j, 0.0, 0.0),
+                Rules::V05 => (0.0, j, j),
                 // e10c905 measured J against known regions of the same band only.
-                Rules::E10 if c.cross_band => 0.0,
-                _ if !knows_other => 0.0,
+                Rules::E10 if c.cross_band => (j, 0.0, 0.0),
+                Rules::E10 | Rules::Da3 if !knows_other => (j, 0.0, 0.0),
                 _ => {
-                    let k = conf_of(other, stamp);
-                    let env = other.edge0 - dir * other.growth.iter().filter(|g| g.0 <= k).map(|g| g.1).sum::<f64>();
-                    let age = (stamp - k).max(0) as f64 / 60.0;
-                    let possible = env - dir * v_other * (age + T_H as f64 / 60.0);
-                    let gap_before = dir * (possible - edge);
-                    let gap_after = dir * (possible - new_edge);
+                    let part = if capped { j.min(g_me) } else { j };
+                    let spaced = !capped || stamp - last_instant >= T_H;
+                    let possible = || {
+                        // What the log holds: the last scheduled pull's NeighbourRef (on-demand pulls only
+                        // add knowledge, so this is the conservative view).
+                        let k = conf_of(other, c.refresh.map_or(stamp, |r| stamp / r * r));
+                        let env = other.edge0 - dir * other.growth.iter().filter(|g| g.0 <= k).map(|g| g.1).sum::<f64>();
+                        let age = (stamp - k).max(0);
+                        let mut reach = v_other * (age + T_H) as f64 / 60.0;
+                        if capped {
+                            reach += g_other * ceil_div(age + T_H, T_H) as f64;
+                        }
+                        env - dir * reach
+                    };
                     if rules == Rules::E10 {
-                        // e10c905: the reduction of the (non-negative) gap to the possible footprint.
-                        gap_before.max(0.0) - gap_after.max(0.0)
-                    } else if gap_after >= d {
-                        0.0
+                        // e10c905: J is the reduction of the (non-negative) gap to the possible footprint.
+                        let pf = possible();
+                        let red = (dir * (pf - edge)).max(0.0) - (dir * (pf - new_edge)).max(0.0);
+                        if red <= 0.0 { (j, 0.0, 0.0) } else { (0.0, j, red) }
                     } else {
-                        j
+                        let ok = !knows_other || dir * (possible() - (edge + dir * part)) >= d;
+                        if ok && spaced { (part, j - part, j - part) } else { (0.0, j, j) }
                     }
                 }
             };
-            let e = if rules == Rules::Old {
-                stamp + LAMBDA
-            } else if jj <= 0.0 {
+            if inst > 0.0 {
                 instant += 1;
-                stamp + LAMBDA
-            } else {
+                last_instant = stamp;
+                out.push((stamp, stamp + LAMBDA, inst));
+            }
+            if clocked > 0.0 {
                 let e = (stamp + LAMBDA).max(clock) + (60.0 * jj / v_me).ceil() as i64;
                 clock = e;
-                e
-            };
-            out.push((stamp, e, j));
+                out.push((stamp, e, clocked));
+            }
             edge = new_edge;
         }
         out
     };
-    let gr = effects(&c.r, &c.q, 1.0, c.v_r, v);
-    let gq = effects(&c.q, &c.r, -1.0, v, c.v_r);
-    let delay = if matches!(rules, Rules::E10 | Rules::Revised | Rules::NoStart) { c.s_create } else { LAMBDA };
+    let gr = effects(&c.r, &c.q, 1.0, c.v_r, v, true);
+    let gq = effects(&c.q, &c.r, -1.0, v, c.v_r, false);
+    let delay = if matches!(rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart) { c.s_create } else { LAMBDA };
     // Creation validity of q against R as the world-log directory shows R at q's stamp.
     let mut q_is_join = false;
     if let Some(sq) = c.q.created {
@@ -183,7 +217,7 @@ fn run(c: &Case, rules: Rules) -> Out {
             let r_in_directory = match c.r.created {
                 None => true,
                 Some(sr) => {
-                    if matches!(rules, Rules::E10 | Rules::Revised | Rules::NoStart) {
+                    if matches!(rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart) {
                         sr < sq // earlier in world-log order, pending or not
                     } else {
                         world_conf(sq) >= sr // only once confirmed in the directory
@@ -195,7 +229,12 @@ fn run(c: &Case, rules: Rules) -> Out {
                 let k = (world_conf(sq).max(0) / HEAD) * HEAD - LAG_R;
                 let r_env = c.r.edge0 + gr.iter().filter(|g| g.0 <= k).map(|g| g.2).sum::<f64>();
                 let age = (sq - k).max(0) as f64 / 60.0;
-                if c.q.edge0 - r_env < d + v * c.s_create as f64 / 60.0 + v * age {
+                let mut buffer = d + v * c.s_create as f64 / 60.0 + v * age;
+                if capped {
+                    // Review Q1: R's instant growth since the RegionHead, at most one per T_h.
+                    buffer += G_INST * c.v_r / 100.0 * ceil_div(sq - k + c.s_create, T_H) as f64;
+                }
+                if c.q.edge0 - r_env < buffer {
                     q_is_join = true;
                 }
             }
@@ -242,21 +281,24 @@ fn run(c: &Case, rules: Rules) -> Out {
             if rules != Rules::Old {
                 bound = bound.min(world_conf(t) + c.s_create);
             }
+            // The neighbour bound alone, unclamped by the present: it decides on-demand pulls.
+            let mut nb = i64::MAX;
             if bounds && knows_y(t) && !q_is_join {
                 // Own footprint with all own stamped growth; Y's envelope from what X holds of Y.
                 let own = x.edge0 + dir * gx.iter().filter(|g| g.0 <= t).map(|g| g.2).sum::<f64>();
                 let counted = |g: &&(i64, i64, f64)| if rules == Rules::Old { g.1 <= k } else { g.0 <= k };
                 let env_y = y.edge0 - dir * gy.iter().filter(counted).map(|g| g.2).sum::<f64>();
                 let gap = (env_y - own) * dir;
-                bound = bound.min(k + ((gap - d) / v_y * 60.0).floor().max(0.0) as i64);
+                nb = k + ((gap - d) / v_y * 60.0).floor().max(0.0) as i64;
                 if revised {
-                    bound = bound.min(k + T_H); // the horizon gate
+                    nb = nb.min(k + T_H); // the horizon gate
                 }
+                bound = bound.min(nb);
             }
             // Start condition: a created region simulates its first frame f0 only once it holds the other
             // region's confirmed prefix through f0 - 1, which covers growth stamped before that region's log
             // recorded the creation.
-            if rules == Rules::Revised && !q_is_join {
+            if start && !q_is_join {
                 // (Only toward a region that existed or was ordered before this one.)
                 if let Some(cx) = x.created.filter(|&cx| y.created.is_none_or(|cy| cy < cx)) {
                     let f0 = cx + delay;
@@ -265,7 +307,7 @@ fn run(c: &Case, rules: Rules) -> Out {
                     }
                 }
             }
-            bound_prev = bound;
+            bound_prev = nb;
             if learned {
                 bound = t;
             }
@@ -294,7 +336,7 @@ fn walk(start: i64, every: i64, n: i64, step: f64) -> Vec<(i64, f64)> {
 }
 
 pub fn run_all() {
-    println!("== safety (reviews N1, M1, P1, P2): late merges and late reader starts ==");
+    println!("== safety (reviews N1, M1, P1, P2, Q1, Q2): late merges and late reader starts ==");
     let base = |name: &str| Case {
         name: name.to_string(),
         v: 100.0,
@@ -307,6 +349,8 @@ pub fn run_all() {
         on_demand: true,
         world_stall: None,
         cross_band: false,
+        relay_q: None,
+        closest: false,
     };
     let mut cases = Vec::new();
     // One-sided steps, as in the N1 review, and review P2: q steps straight at R while one side stalls.
@@ -396,6 +440,7 @@ pub fn run_all() {
         let gap = r_env + c.d_merge + v * s_create as f64 / 60.0 + v * (600 - k) as f64 / 60.0 + 1.0;
         c.q = Side { created: Some(600), edge0: gap, growth: walk(601, every, 40, CHUNK), stall: None, no_evict: false };
         c.world_stall = stall;
+        c.closest = true;
         cases.push(c);
     }
     // Review M1: two newcomers create regions at the same spawn point, 10 frames apart.
@@ -405,9 +450,41 @@ pub fn run_all() {
     cases.push(c);
     // A region grows instantly toward a spot where a region is being created, before its own log records
     // the creation, then stalls without eviction (two members, D7).
-    let mut c = base("two-member region grows +3 km instantly toward a region being created 4.6 km away, then stalls 30 s");
+    let mut c = base("two-member region grows instantly toward a region being created at the closest allowed gap, then stalls 30 s");
     c.r = Side { created: None, edge0: 0.0, growth: vec![(620, 3.0 * CHUNK)], stall: Some((615, 1800)), no_evict: true };
     c.q = Side { created: Some(600), edge0: 4600.0, growth: vec![], stall: None, no_evict: false };
+    c.closest = true;
+    cases.push(c);
+    // Review Q1: two regions grow instantly toward each other within one pull interval (scale-ups), each
+    // judged against a view of the other that lacks the other's growth; with and without a stall in R.
+    for stall in [false, true] {
+        let mut c = base(&format!(
+            "both scale up at once, +9 chunks each toward the other (gap 20.5 km){}",
+            if stall { ", R stalls" } else { "" }
+        ));
+        c.r.growth = vec![(1000, 9.0 * CHUNK)];
+        c.q = fixed(20_500.0);
+        c.q.growth = vec![(1005, 9.0 * CHUNK)];
+        c.refresh = Some(3600);
+        if stall {
+            c.r.stall = Some((1005, 600));
+        }
+        cases.push(c);
+    }
+    let mut c = base("chained: q grows +4 chunks three times 5 frames apart while R scales up +9 chunks (gap 24 km), R stalls");
+    c.r.growth = vec![(1000, 9.0 * CHUNK)];
+    c.q = fixed(24_000.0);
+    c.q.growth = walk(1000, 5, 3, 4.0 * CHUNK);
+    c.refresh = Some(3600);
+    c.r.stall = Some((1005, 600));
+    cases.push(c);
+    // Review Q2: q is created; R's log has not relayed it by q's first frame; R (two members, never evicted)
+    // then scales up +8 chunks toward q and stalls.
+    let mut c = base("R scales up +8 chunks toward a new region after it exists but before R's log relays it, then stalls 30 s");
+    c.r = Side { created: None, edge0: 0.0, growth: vec![(1300, 8.0 * CHUNK)], stall: Some((1295, 1800)), no_evict: true };
+    c.q = Side { created: Some(600), edge0: 10_000.0, growth: vec![], stall: None, no_evict: false };
+    c.relay_q = Some(2500);
+    c.refresh = Some(3600);
     cases.push(c);
     // Review P1: a x128 giant's region L (band unit 128 m: v_max 12.8 km/s, 131 km chunks) and a human
     // region R; R must read L from the first frame their footprints overlap (margin 0).
@@ -433,6 +510,13 @@ pub fn run_all() {
     c.q.growth = vec![(400, 128.0 * CHUNK)];
     c.q.stall = Some((380, 600));
     cases.push(c);
+    let mut c = giant("giant scales up +9 of its chunks to land 8 km from a human region that scales up +9 chunks at once, L stalled");
+    c.r.growth = vec![(1000, 9.0 * CHUNK)];
+    c.q = fixed(8000.0 + 9.0 * 128.0 * CHUNK);
+    c.q.growth = vec![(1000, 9.0 * 128.0 * CHUNK)];
+    c.q.stall = Some((995, 600));
+    c.refresh = Some(3600);
+    cases.push(c);
     let mut c = giant("two-member giant region walks toward a human region from 1,000 km, L stalled 30 s (never evicted)");
     c.q = fixed(1_000_000.0);
     c.q.growth = walk(200, 615, 12, 128.0 * CHUNK);
@@ -444,10 +528,11 @@ pub fn run_all() {
         ("2a228c6", Rules::Old),
         ("05d3cc0", Rules::V05),
         ("e10c905", Rules::E10),
+        ("da3cd74", Rules::Da3),
         ("revised-no-start", Rules::NoStart),
         ("revised", Rules::Revised),
     ];
-    let (mut late_count, mut counted) = ([0usize; 5], [0usize; 5]);
+    let (mut late_count, mut counted) = ([0usize; 6], [0usize; 6]);
     for c in &cases {
         for (i, (rule, rules)) in rule_sets.iter().enumerate() {
             // Separate bands that read each other exist only from e10c905 on.
@@ -458,7 +543,14 @@ pub fn run_all() {
             counted[i] += 1;
             // A created region can only grow once it exists: stamp + S_create from e10c905 on.
             let mut cc = c.clone();
-            if matches!(*rules, Rules::E10 | Rules::Revised | Rules::NoStart) {
+            if cc.closest && matches!(*rules, Rules::Revised | Rules::NoStart) {
+                // The revised creation buffer adds R's instant growth: one G_inst within a window under T_h.
+                cc.q.edge0 += G_INST * cc.v_r / 100.0;
+                if cc.r.growth.len() == 1 {
+                    cc.r.growth[0].1 = G_INST * cc.v_r / 100.0; // R grows by the full cap
+                }
+            }
+            if matches!(*rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart) {
                 for s in [&mut cc.r, &mut cc.q] {
                     if let Some(cs) = s.created {
                         for g in s.growth.iter_mut() {
@@ -483,7 +575,7 @@ pub fn run_all() {
         }
     }
     println!(
-        "RESULT safety-summary cases={} late_2a228c6={}/{} late_05d3cc0={}/{} late_e10c905={}/{} late_revised_no_start={}/{} late_revised={}/{}",
+        "RESULT safety-summary cases={} late_2a228c6={}/{} late_05d3cc0={}/{} late_e10c905={}/{} late_da3cd74={}/{} late_revised_no_start={}/{} late_revised={}/{}",
         cases.len(),
         late_count[0],
         counted[0],
@@ -494,6 +586,8 @@ pub fn run_all() {
         late_count[3],
         counted[3],
         late_count[4],
-        counted[4]
+        counted[4],
+        late_count[5],
+        counted[5]
     );
 }
