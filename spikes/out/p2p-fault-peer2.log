@@ -1,0 +1,16 @@
+[peer 2 t= 0.000s f=   0] bound 127.0.0.1:40002 -> peer 127.0.0.1:40001 (delay 30 ms, jitter 10 ms, loss 0%, drop_seq Some(3))
+[peer 2 t= 0.098s f=   0] pinned peer 1 key 416f322c4e9d2275
+[peer 2 t= 0.426s f=   0] session start received; clock offset estimate 694 us
+[peer 2 t= 1.943s f=  63] remote input peer 1 seq 0 for frame 60 arrived 3 frames late -> rollback
+[peer 2 t= 2.943s f= 123] remote input peer 1 seq 1 for frame 120 arrived 3 frames late -> rollback
+[peer 2 t= 3.047s f= 129] remote input peer 1 seq 2 for frame 126 arrived 3 frames late -> rollback
+[peer 2 t= 4.241s f= 200] FAULT INJECTION: input seq 3 (frame 200) is never transmitted
+[peer 2 t= 5.179s f= 257] SYNC MISMATCH at frame 210: mine 634fe846ef684115 theirs 99f0ab237336e083 -> requesting hash range
+[peer 2 t= 5.276s f= 262] earliest divergent frame 200: interaction logs differ -> exchanging inputs
+[peer 2 t= 5.283s f= 263] remote input peer 1 seq 3 for frame 260 arrived 3 frames late -> rollback
+[peer 2 t= 7.619s f= 402] remote input peer 1 seq 4 for frame 400 arrived 2 frames late -> rollback
+[peer 2 t=14.051s f= 690] DONE frames 0..600: digest 933b3a6e42ab5b94; rollbacks 5 (max depth 3, resimulated 14), sync checks ok 29 mismatched 1, reconciles 1, nondeterminism 0, bad signatures 0, datagrams sent 98 dropped 0
+[peer 2 t=14.051s f= 690] verdict frame 120: peer 1 seq 1 object 50 -> Accepted
+[peer 2 t=14.051s f= 690] verdict frame 120: peer 2 seq 1 object 50 -> RejectedClaimed { by_peer: 1, until_frame: 150 }
+[peer 2 t=14.051s f= 690] verdict frame 125: peer 2 seq 2 object 50 -> RejectedClaimed { by_peer: 1, until_frame: 150 }
+[peer 2 t=14.051s f= 690] verdict frame 126: peer 1 seq 2 object 50 -> Accepted
