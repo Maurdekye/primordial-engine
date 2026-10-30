@@ -1,6 +1,8 @@
 # Primordial Engine: Phase-1 Spike Report
 
-Date: 2026-10-30. Author: engine-architect. Companion: [design.md](design.md).
+Date: 2026-10-30, revised the same day after the design review. Author: engine-architect. Companions:
+[design.md](design.md), [review-response.md](review-response.md),
+[iteration-benchmark.md](iteration-benchmark.md) (by @iter-bench).
 
 Tags: **[V]** verified by running it here; **[S]** verified by reading source or docs; **[I]** inferred.
 Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committed under `spikes/out/`.
@@ -9,9 +11,14 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 
 | Spike | Question | Result |
 |---|---|---|
-| a | Is Box3D usable from Rust, and deterministic across runs and builds? | **Yes [V].** box3d-rust 0.5.0 (pure Rust, no FFI needed) matches all four Box3D C-reference goldens. A 600-frame, 256-body trace with interactions is bit-identical across 7 builds, including Windows-MSVC vs Linux-musl and `target-cpu=native`. ARM and macOS were not tested |
+| a | Is Box3D usable from Rust, and deterministic across runs and builds? | **Yes [V].** box3d-rust 0.5.0 (pure Rust, no FFI needed) matches all four Box3D C-reference goldens. A 600-frame, 256-body trace with interactions is bit-identical across 7 builds, including Windows-MSVC vs Linux-musl and `target-cpu=native`. **Cross-machine:** an Intel i7-13620H laptop (no AVX-512) reproduced the goldens, all four traces, rollback T1-T5 and the d4 digest bit-identically (run by @design-reviewer; review M5). ARM and macOS were not tested |
 | b | Fixed-step rollback: snapshot, step, restore, re-sim with matching hashes? | **Yes [V].** In-place and fresh-world restores replay bit-identically. Late interactions (up to 60 frames) roll back and converge exactly to the reference |
-| c | P2P transport between two processes with no server? | **Yes [V].** UDP + Ed25519-signed, frame-stamped interactions; both peers' 600-frame histories equal the offline reference under latency, jitter, 10% loss, and a deliberately lost interaction that sync checks detected and repaired |
+| c | P2P transport between two processes with no server? | **Yes [V].** The phase-1 protocol (5.3) is superseded by **c-v2** (5b): the session protocol of design 6-10, with state + canonical frame, ack-based confirmation and gap fetch, over the same signed UDP. Both peers' 600-frame histories were identical and equal to an offline replay of the final log in all three runs (latency, 10% loss, a never-transmitted entry). Every acceptance check passed |
+| session | Do the review's fixes (C1, C2, H4, H5, M3) and the user's state+frame and tie-break rulings hold? | **Yes [V]** (5c). In-process, on a virtual clock: no fork in the C1 scenario; equivocation proved and the member evicted; 52/52 checks under 10% loss; uncontended acceptance 22/22, 23/23, 27/27; ties 41/50/59 of 150; backdating voided or bounded |
+| ball pit | A hand sweeping through 500 balls, without per-ball state streaming? | **Yes [V]** (5d). About 15 kB/s for everything in both directions, against 1 MB/s one way for naive state streaming. The receiver re-simulates 2.8 ms per frame. The end state is bit-identical |
+| r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject and throttle variants; each world equals its offline replay; identical when worlds and peers are processed in reverse order |
+| iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
+| m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
 | d | Hot-swap Rust→WASM game logic mid-sim, deterministic across peers? | **Yes [V],** with wasmi in eager-compilation mode. The default lazy mode makes fuel nondeterministic [V]. Box3D itself compiled to WASM matches native [V] |
 | mcp | Cheap MCP stub that reads world state? | **Yes [V]** (protocol subset, hand-written, not tested with a third-party client) |
 | audit | Can the stack be 100% Rust? | **Mostly [V].** Graphics, VR (loaded loader), ECS, MCP, WASM (wasmi), assets, discovery and a UDP+Noise transport audit clean. iroh, libp2p+QUIC, quinn's TLS, wasmtime default and blake3 default compile C/asm |
@@ -156,7 +163,7 @@ bash scripts/run-p2p.sh fault "--delay-ms 30 --jitter-ms 10" "--delay-ms 30 --ji
 `run-p2p.sh` compares each peer's 600-frame state-hash history with the offline reference from spike (a)
 and with the other peer.
 
-### 5.3 Results [V]
+### 5.3 Results [V] (phase-1 protocol, superseded by 5b)
 
 | ID | Conditions (one-way, each direction) | Both peers == reference? | Rollbacks (max depth) | Sync checks | Clock offset estimate (true: 0) | Datagrams sent / dropped |
 |---|---|---|---|---|---|---|
@@ -175,6 +182,105 @@ Final digests on all six peer runs: `933b3a6e42ab5b94`. Logs: `spikes/out/p2p-*.
 
 **Not covered:** real internet paths, NAT traversal, more than 2 peers, encryption (signing only), join,
 leave, partitions, bandwidth under VR pose load.
+
+### 5b. Spike (c-v2): the session protocol over UDP [V]
+
+* **What changed.** `spikes/p2p` was rewritten on `pe_sim_core::session` (design 6-10):
+  * entries carry the canonical frame and the touched body's resulting state;
+  * acks carry horizons and holdings, and the confirmed frame is computed from acks only;
+  * gaps found in acks are fetched; check hashes ride in acks;
+  * an entry is accepted only from its authenticated author (review L4);
+  * clocks are monotonic (review L6).
+* **Acceptance check (user, 09:31Z):** after a receiver re-simulates a remote touch to its present frame,
+  it logs its copy of the object. `scripts/run-p2p.sh` compares that copy with the author's final history
+  of the same object at the same frame.
+
+```bash
+cargo build --release -p pe-spike-p2p
+bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"
+bash scripts/run-p2p.sh loss10 "--delay-ms 40 --jitter-ms 60 --loss-pct 10" "--delay-ms 40 --jitter-ms 60 --loss-pct 10"
+bash scripts/run-p2p.sh fault "--delay-ms 30 --jitter-ms 10" "--delay-ms 30 --jitter-ms 10 --drop-stamp 200"
+```
+
+| Run | Peer 1 == peer 2 (600 frames) | Each peer == offline replay of its own log | Acceptance (receiver 1 / receiver 2) | Rollbacks (max depth) | Checks | Datagrams sent / dropped |
+|---|---|---|---|---|---|---|
+| latency60 | yes | yes, `cd613a64b7088dbe` | 7/7 / 6/6 | 6 (4) each | 24 ok, 0 bad | 434 / 0 each |
+| loss10 | yes | yes, `cd613a64b7088dbe` | 7/7 / 7/7 | 6 (4) / 6 (6) | 24 ok, 0 bad | 396 / 54, 396 / 47 |
+| fault: peer 2 never transmits its frame-200 entry | yes | yes, `cd613a64b7088dbe` | 6/6 / 3/3 | 4 (2) / 4 (7) | 17 ok, 0 bad | 317 / 0, 423 / 0 |
+
+* **Fault-run repair path:** peer 2's next ack declared the entry. Peer 1 saw the gap at frame 202, fetched
+  it, received it 5-7 frames late and rolled back. The old range search is gone.
+* All three runs produced the same history, because no entry was re-stamped.
+* An earlier fault attempt hit an OS-level stall of peer 1's process (no frames advanced for 3.6 s). The
+  late entry was then re-stamped deterministically, by the arrival bound, and both peers still converged.
+  That log was overwritten by the rerun shown above.
+* Logs: `spikes/out/p2p-v2/`.
+
+### 5c. Session simulator: the review fixes [V]
+
+* `spikes/session-sim` runs N members and M worlds in one process. It has a virtual clock, and virtual
+  links with delay, jitter, loss and scripted faults.
+* Every message is encoded to bytes, so byte counts are real.
+* The output is deterministic: the same command prints the same RESULT lines.
+* `scripts/run_session_sim.sh` builds it and runs every scenario. Logs are in `spikes/out/session-sim/`,
+  with a summary in `summary.txt`: 28 of 28 replica sets equal, 0 mismatches.
+
+| Scenario | Setup | Result |
+|---|---|---|
+| c1 | The reviewer's C1: member 3's frame-50 entry reaches the others at frames 169 and 171 | "Before" (phase-1 rule) reproduces the fork. "After": all three 700-frame histories identical and equal to an offline replay; 50/50 checks. The entry was re-stamped to frame 153 by the arrival bound. The others paused 6-9 frames at the speculation limit |
+| c2 | Member 9 sends different seq-1 entries to members 1 and 2 | "Before" reproduces the permanent divergence. "After": equivocation proved at both, both versions voided, member 9 evicted by majority about 10 frames later; honest histories identical and equal to replay |
+| state-frame | 3 members, 60 ms ± 20 ms, the scripted schedule | Uncontended acceptance 22/22 (at that instant and against the final history); 52/52 checks; max rollback depth 4 |
+| diverged | Member 2 misses member 3's frame-300 entry for about 0.4 s; member 1 touches the same object at 305 | 23/23 uncontended acceptance; the carried-state overwrite fired once; gap repair; histories identical |
+| loss | 10% loss, 40 ms ± 30 ms | 27/27 uncontended acceptance; 52/52 checks per pair; histories identical |
+| ties | 3 members, 150 same-frame conflicts on one object | Wins 41 / 50 / 59 (χ² = 3.24, p ≈ 0.2); histories identical |
+| claims | Member 1 nudges every 29 frames, member 2 every frame (the reviewer's M3) | Member 2 accepted 360/600 (0/600 under the phase-1 rule), member 1 9/21 |
+| backdate | Member 3 stamps entries 20 frames in the past | Part 1, honest horizons: all 3 voided as horizon violations. Part 2, horizons lagged 30 frames: re-stamped +7 frames by the arrival bound; confirmation lags 30 frames for everyone |
+
+*Contended* acceptance checks are those where another member touched the same object in the previous
+10 frames: the scripted same-frame conflict on object 50, 10 per run. They can differ while the competing
+entry is in flight, and they converge when it lands.
+
+### 5d. The ball pit (the user's "main question") [V]
+
+* **Setup:** 500 balls (radius 6 cm, with rolling resistance so the pit settles) in a 2.4 m walled pit; a
+  kinematic hand (radius 9 cm) sweeping a sine path for 3 s; two members, 60 ms ± 10 ms, 2% loss unless
+  stated.
+* **Option (a), the hand as a perturbation source:** one 44-byte entry per frame with the quantized
+  target.
+* **Naive state streaming** is measured on the author: every ball whose state changed in a frame, at 56
+  bytes each.
+
+| Run | Our traffic, both directions | Naive, one direction | Receiver rollbacks/s, re-sim per frame | End state |
+|---|---|---|---|---|
+| 60 Hz, 1 hand | 14.7 kB/s | 1.00 MB/s (0.47 MB/s quantized) | 59/s, 2.76 ms (step 0.35 ms) | identical |
+| 60 Hz, 0% loss | 12.4 kB/s | 1.00 MB/s | 59/s, 2.69 ms | identical |
+| 60 Hz, input delay 4 frames | 14.7 kB/s | 0.97 MB/s | 2.7/s, 0.27 ms | identical |
+| 90 Hz | 22.4 kB/s | 1.44 MB/s | 88/s, 3.95 ms | identical |
+| 60 Hz, two hands (one per member) | 21.6 kB/s | 1.23 MB/s | 59/s, 3.01 ms | identical |
+
+* The pit was settled before the sweep (0 balls changing per frame); about 297 balls moved per frame during
+  it.
+* "Our traffic" counts each message as one datagram with 52 bytes of overhead.
+* Every run's history equals an offline replay.
+
+### 5e. Two worlds in one process, one object handed between them (R14) [V]
+
+* **Setup:**
+  * world A: 60 Hz, a 108-body pile; world B: 50 Hz, a 75-body pile;
+  * member 1 is in both and carries object 40; member 2 is only in A, member 3 only in B;
+  * links 50 ms ± 15 ms, 1% loss;
+  * the settled handoff of design 22.6.
+
+| Variant | What it exercises | Outcome | Live copies at the end (A + B), pending escrow |
+|---|---|---|---|
+| ok | Plain handoff | Committed. Departure authored at 2,766 ms; confirmed in A, arrival authored in B at 2,915 ms; arrival confirmed in B at 3,041 ms; verdict confirmed in A at 3,180 ms | 0 + 1, 0 |
+| abort | Member 2's earlier grab reaches member 1 150 ms late; A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 + 0, 0 |
+| reject | Member 3 closes B's portal, and member 1 hears of it 150 ms late; B rolls back 10 frames past fB | Arrival rejected; the verdict returns the object to A | 1 + 0, 0 |
+| throttle | Member 1's replica of A advances only once per 250 ms from t = 3 s | As ok; both worlds' digests equal the ok run's; member 2's confirmation lag in A unchanged (3.9 frames) | 0 + 1, 0 |
+| ok, abort, reject in reverse order | Worlds created B first, peers processed in reverse | Digests identical to the forward runs | as forward |
+
+In every variant, every replica of each world equals the others and an offline replay of that world's
+final log.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
@@ -228,6 +334,36 @@ Ten JSON-RPC requests were piped through `pe-spike-mcp-stub` (`spikes/mcp-stub/s
 * `resources/read primordial://world/state` returned 256 objects. An unknown method returned JSON-RPC
   `-32601`.
 * **Not covered:** a real MCP client (e.g. Claude Code) connecting; rmcp itself (only audited).
+
+### 6.5 Reproducible module identity (review M8) [V]
+
+```bash
+python -I scripts/wasm_canonical_hash.py <wasm built at path 1> <wasm built at path 2>
+```
+
+* The whole source tree was copied to a second directory and the guests rebuilt there.
+* `physics_in_wasm.wasm`: raw SHA-256 `589e97a7008badfd` (repo path) vs `051eee…` (other path). The only
+  difference is mangled names in the `name` custom section.
+* The canonical hash (custom sections removed) is `66633b435cac94ab` for both builds.
+* The small guests are identical either way.
+* Output: `spikes/out/wasm-canonical-hash.txt`.
+
+### 6.6 Iteration benchmark and logic runtimes (by @iter-bench) [V]
+
+Full method, tables and options: [iteration-benchmark.md](iteration-benchmark.md). Raw logs:
+`spikes/out/iter-bench/`. Headlines, all on this desktop:
+* **Edit to first frame:** a one-function edit in a 6.4k-LOC ECS-style guest takes 0.45 s with the
+  `rel-fast` profile (0.55 s dev, 1.3 s fat LTO); 1.2 s at 45k LOC.
+* **Logic at 10k entities, relative to native (0.9 ms):**
+  * wasmi 7.0x;
+  * wasmtime Cranelift with fuel and NaN canonicalization 1.7x;
+  * Winch with fuel and NaN canonicalization 3.0x.
+* **Physics compiled to wasm:** 21x, 4.7x and 6.3x respectively.
+* **Determinism:** the digest was identical in all 12 configs; eager fuel was identical per runtime and
+  differs between runtimes.
+* **Native code:** minimal wasmtime compiles no C on Windows; its build.rs compiles `helpers.c` on Linux
+  and macOS [I].
+* rustc's Cranelift backend cannot target wasm32.
 
 ## 7. Native-code audit (100%-Rust ruling)
 
@@ -297,12 +433,17 @@ Full tables: `spikes/out/audit-stack.md`, `spikes/out/audit-spikes.md`.
     `--include-partial-messages`, `--mcp-config`, `--strict-mcp-config`, `--tools`, `--allowedTools`,
     `--disallowedTools`, `--permission-mode`, `--max-budget-usd`, `--add-dir`, `--append-system-prompt`,
     `--resume`.
-  * **Codex CLI 0.160.0:** `exec --json`, `--output-schema`, `-s/--sandbox`, `-a/--ask-for-approval`,
-    `-C/--cd`, `--ephemeral`, `-c key=value`, `mcp add`, and `app-server` (marked experimental, with
-    `generate-json-schema`).
+  * **Codex CLI 0.160.0:** `exec --json`, `--output-schema`, `-s/--sandbox`, `-C/--cd`, `--ephemeral`,
+    `-c key=value`, `mcp add`, and `app-server` (marked experimental, with `generate-json-schema`).
+    **Correction:** `-a/--ask-for-approval` exists only on the interactive top-level command, not on `exec`,
+    and offers only `on-request` and `never` (review R13-H1).
   * **Gemini CLI:** `--acp`, `-o stream-json`, `--allowed-mcp-server-names`.
-  * Claude Code and Gemini are installed as npm (Node.js) packages; `codex.exe` is a native PE32+ x86-64
-    executable.
+  * **Correction:** Claude Code 2.1.292 is a native `claude.exe` shipped inside its npm package. Gemini CLI
+    is a Node.js app. `codex.exe` is a native PE32+ x86-64 executable.
+  * The restriction flags that design 21 now relies on (`--bare`, `--restricted`, `--tools ""`,
+    `--setting-sources`, `--permission-prompts`, `--disable-slash-commands`, `--no-session-persistence`;
+    Codex `--ignore-user-config`, `--ignore-rules`, `--disable`, `--strict-config`) were read from `--help`
+    on this machine [S]. None has been run in a containment test yet (design 21.9).
 * **e4mc** (`vgskye/e4mc-quiclime`, branch `kity`, Rust):
   * hosts connect outbound over QUIC (quinn + rustls, ALPN `quiclime`);
   * domains are `<word>-<word>.<QUICLIME_BASE_DOMAIN>` from a 7,776-word list (`routing.rs`);
@@ -321,7 +462,17 @@ Full tables: `spikes/out/audit-stack.md`, `spikes/out/audit-spikes.md`.
 ## 9. Verified vs inferred ledger
 
 Verified here [V]:
-* box3d-rust golden match vs C on x86_64 Windows and Linux.
+* box3d-rust golden match vs C on x86_64 Windows and Linux; cross-machine on an Intel laptop (run by
+  @design-reviewer).
+* The session protocol (5b-5e): ack-based confirmation with no local "too late" (C1); equivocation proof
+  and majority eviction (C2); state + canonical frame with the acceptance criterion; gap-fetch repair;
+  checks only at confirmed frames, carried in acks (H4); the arrival bound and horizon violations (H5);
+  non-renewing claims with a cooldown (M3); the per-frame tie permutation; rollback through keyframes.
+* The ball-pit bandwidth, rollback and CPU figures, with bit-identical end states.
+* Two worlds in one process at different tick rates; the settled cross-world handoff with rollback on both
+  sides; throttling without effect on results or on others' confirmation.
+* Iteration-loop latency for realistic guests and runtime throughput (iteration-benchmark.md).
+* Canonical wasm hash identical across checkout paths.
 * Bit-identical traces across 7 builds.
 * Snapshot/restore and rollback correctness, with costs.
 * Box3D in WASM equals native.
@@ -365,16 +516,18 @@ Inferred [I] (design proposals, not yet tested):
 * OpenXR + wgpu Vulkan interop and multiview.
 * Hand-engagement model.
 * Resonite package and MeshX parsing beyond the documented bone-binding detail.
-* Realistic logic-crate compile times (1-5 s).
-* Cross-machine reproducible wasm builds.
+* Cross-machine reproducible wasm builds (one machine, two paths: verified).
+* View changes with cutoffs, and joins by admission entry (only eviction after equivocation was run).
+* The session protocol over real internet paths and with more than 3 members.
+* Portal rendering, VR straddling, presence and avatars across worlds.
 * All of R13's mechanics: panel hosting, guest-mode sandbox effectiveness, connection handshake, hub client
   protocol.
 * Session codes with PAKE; volunteer relays.
 
 ## 10. Remaining risks and what phase 2 must verify
 
-1. **ARM/macOS determinism:** add an aarch64 Linux and a macOS runner to a CI determinism matrix; run the
-   goldens and the trace digest.
+1. **ARM/macOS determinism:** x86-64 is verified on two CPUs (Zen 5, Intel Raptor Lake). Add an aarch64
+   Linux and a macOS runner to a CI determinism matrix; run the goldens and the trace digest.
 2. **Physics budget:** the serial port at 1-2k bodies plus deep rollbacks exceeds a 60/90 Hz frame. Verify
    re-sim amortization and region partitioning before committing to session scales (design D2).
 3. **Snapshot memory:** about 2.4 MB/frame at 1024 bodies plus about 1.1 MB per logic module. Prototype
@@ -390,6 +543,11 @@ Inferred [I] (design proposals, not yet tested):
    against an rmcp engine server; prove the guest-mode restrictions actually block shell and file tools.
 10. **Mail hub:** with the user's go-ahead (design D32), read Orgtree's hub source and prototype a client
     against a private test hub.
+11. **Session protocol at scale:** view changes with cutoffs, joins, 4-8 members over real internet paths,
+    and partition heal; the simulator becomes a phase-2 test tool.
+12. **Harness containment gates** (design 21.9) before any panel can be unlocked.
+13. **Portals and multiple worlds:** rendering, VR straddling, and the memory and CPU budget of several
+    attended worlds (design 22.3).
 
 ## 11. Reproduce everything
 
@@ -399,7 +557,10 @@ cargo build --workspace && cargo build --workspace --release
 (cd spikes/wasm-guests && cargo build --release --target wasm32-unknown-unknown)
 ./target/release/pe-spike-physics goldens && ./target/release/pe-spike-physics rollback && ./target/release/pe-spike-physics bench
 ./target/release/pe-spike-physics trace 600 spikes/out/trace-win-release-1.txt
-bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"
+bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"   # also loss10, fault (5b)
+bash scripts/run_session_sim.sh                     # every session, ball-pit and R14 scenario (5c-5e)
+python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm
+# iteration benchmark: see docs/iteration-benchmark.md section 8
 ./target/release/pe-spike-wasm-hotswap
 ./target/release/pe-spike-mcp-stub < spikes/mcp-stub/session.jsonl
 python -I scripts/audit_native.py spikes/stack-audit/* --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-gnu

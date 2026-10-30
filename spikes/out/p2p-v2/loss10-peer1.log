@@ -1,0 +1,10 @@
+[peer 1 t=  0.000s f=   0] bound 127.0.0.1:40001 -> 127.0.0.1:40002 (delay 40 ms, jitter 60 ms, loss 10%, drop_stamp None)
+[peer 1 t=  2.668s f=  92] gap detected from acks -> fetching Fetch { author: 2, from: 1, to: 1 }
+[peer 1 t=  2.699s f=  94] remote entry for frame 90 arrived 4 frames late -> rollback
+[peer 1 t=  2.811s f= 101] remote entry for frame 90 arrived 11 frames late -> rollback
+[peer 1 t=  3.179s f= 123] remote entry for frame 120 arrived 3 frames late -> rollback
+[peer 1 t=  3.267s f= 128] remote entry for frame 125 arrived 3 frames late -> rollback
+[peer 1 t=  4.509s f= 203] remote entry for frame 200 arrived 3 frames late -> rollback
+[peer 1 t=  6.651s f= 331] remote entry for frame 330 arrived 1 frames late -> rollback
+[peer 1 t=  9.015s f= 473] remote entry for frame 470 arrived 3 frames late -> rollback
+[peer 1 t= 13.976s f= 720] DONE frames 0..600: digest cd613a64b7088dbe; offline replay of my final log cd613a64b7088dbe (EQUAL); rollbacks 6 (max depth 4, resimulated 24), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 396 dropped 54, bad signatures 0, forged entries 0

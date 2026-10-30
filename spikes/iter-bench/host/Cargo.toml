@@ -1,0 +1,22 @@
+# iter-bench host harness: runs the generated logic guest in wasmi, wasmtime (Cranelift, Winch) and natively.
+# Own workspace so the repo root workspace is untouched.
+[package]
+name = "iter-host"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+pe_api = { path = "../guests/pe_api" }
+logic_game = { path = "../guests/logic_game" }
+wasmi = { version = "=2.0.0", default-features = false, features = ["std", "validate", "deterministic"] }
+# No default features: no cache (zstd-sys), no debug-builtins (helpers.c), no async (fiber's windows.c),
+# no profiling (ittapi-sys). parallel-compilation (rayon) is kept to measure it both ways.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["std", "runtime", "cranelift", "winch", "parallel-compilation"] }
+
+[profile.release]
+debug = false
+codegen-units = 16

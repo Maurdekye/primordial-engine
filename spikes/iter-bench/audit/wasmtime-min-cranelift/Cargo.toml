@@ -1,0 +1,11 @@
+# Native-code audit probe: smallest wasmtime that JIT-compiles with Cranelift.
+[package]
+name = "audit-wasmtime-min-cranelift"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmtime = { version = "=50.0.1", default-features = false, features = ["std", "runtime", "cranelift"] }

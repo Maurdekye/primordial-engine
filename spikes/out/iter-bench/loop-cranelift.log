@@ -1,0 +1,6 @@
+spawn of a no-op exe from Python: median 5.47 ms
+native dev llvm stable             build   0.634s [0.566-0.706]  noop 0.060s  467456 B
+native dev llvm nightly            build   0.593s [0.552-0.629]  noop 0.056s  464384 B
+native dev cranelift nightly       build   0.503s [0.486-0.529]  noop 0.047s  626176 B
+wasm32 dev cranelift nightly       BUILD FAILED: error: could not compile `sys_ai` (lib) due to 1 previous error
+raw: E:\Libraries\Desktop\Primordial Engine\spikes\out\iter-bench\loop-cranelift.jsonl

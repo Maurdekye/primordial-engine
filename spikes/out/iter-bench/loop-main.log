@@ -1,0 +1,20 @@
+spawn of a no-op exe from Python: median 5.35 ms
+split dev                          build   0.491s [0.421-0.550]  noop 0.061s  swap    61.49ms (compile 6.1, tick1 11.9)  loop 0.554s  3034693 B
+split dev-nodbg                    build   0.439s [0.404-0.518]  noop 0.059s  swap    50.29ms (compile 4.8, tick1 9.7)  loop 0.491s  400686 B
+split dev-o1                       build   0.700s [0.468-0.833]  noop 0.057s  swap     8.47ms (compile 4.6, tick1 1.4)  loop 0.709s  3612956 B
+split rel-fast                     build   0.446s [0.426-0.494]  noop 0.070s  swap     6.22ms (compile 3.6, tick1 1.4)  loop 0.453s  224774 B
+split release                      build   1.287s [1.220-1.333]  noop 0.065s  swap     6.68ms (compile 4.3, tick1 1.1)  loop 1.294s  263917 B
+mono dev                           build   0.439s [0.421-0.636]  noop 0.055s  swap    59.32ms (compile 5.5, tick1 11.6)  loop 0.499s  3010166 B
+mono dev-o1                        build   0.602s [0.482-1.079]  noop 0.058s  swap     9.43ms (compile 5.7, tick1 1.2)  loop 0.612s  3938538 B
+mono rel-fast                      build   0.441s [0.410-0.588]  noop 0.054s  swap     7.00ms (compile 4.5, tick1 1.2)  loop 0.450s  268408 B
+mono release                       build   1.903s [1.855-2.834]  noop 0.057s  swap     6.93ms (compile 4.4, tick1 1.1)  loop 1.910s  269388 B
+module dev (build only)            build   0.408s [0.367-0.464]  noop 0.068s  2242710 B
+module rel-fast (build only)       build   0.430s [0.406-0.493]  noop 0.056s  66780 B
+module release (build only)        build   0.719s [0.682-0.791]  noop 0.057s  65618 B
+split dev core-edit                build   0.697s [0.668-1.098]  noop 0.060s  swap    58.59ms (compile 5.8, tick1 11.5)  loop 0.755s  3034693 B
+mono dev core-edit                 build   0.397s [0.379-0.437]  noop 0.056s  swap    58.39ms (compile 5.7, tick1 11.4)  loop 0.456s  3010166 B
+split rel-fast core-edit           build   0.567s [0.523-0.624]  noop 0.058s  swap     6.15ms (compile 3.6, tick1 1.3)  loop 0.573s  224774 B
+split release core-edit            build   1.586s [1.506-1.658]  noop 0.060s  swap     6.75ms (compile 4.4, tick1 1.1)  loop 1.593s  263917 B
+split rel-fast cranelift-rt        build   0.452s [0.427-0.530]  noop 0.062s  swap    28.76ms (compile 27.8, tick1 0.4)  loop 0.480s  224774 B
+split release cranelift-rt         build   1.282s [1.259-1.469]  noop 0.056s  swap    32.51ms (compile 31.7, tick1 0.4)  loop 1.315s  263917 B
+raw: E:\Libraries\Desktop\Primordial Engine\spikes\out\iter-bench\loop-main.jsonl
