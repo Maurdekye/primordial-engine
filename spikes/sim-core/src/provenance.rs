@@ -166,6 +166,21 @@ impl Export {
             Export::Departed { src, depart, .. } => transfer_id(*src, *depart),
         }
     }
+    /// Hash of every field, certificate included (for the state hash).
+    pub fn digest(&self) -> u64 {
+        let mut v = match self {
+            Export::Committed(h) => vec![1, chain_hash(std::slice::from_ref(h))],
+            Export::Departed { src, epoch, depart, record, dest, deadline, chain, cert } => {
+                let mut v = vec![2, *src as u64, *epoch as u64, *depart, record.global, record.kind as u64, record.state.hash()];
+                v.extend([record.src_world as u64, record.src_frame, record.via, *dest as u64, *deadline, *chain]);
+                v.extend(cert.iter().flat_map(|(m, s)| [*m as u64, *s]));
+                v
+            }
+        };
+        v.push(self.transfer());
+        fnv_u64s(v)
+    }
+
     /// The certificate is a quorum of the exporting world's epoch, over this export of `global`.
     pub fn verify(&self, book: &dyn EpochCerts, global: u64) -> bool {
         match self {
@@ -192,13 +207,19 @@ pub enum Seen {
 }
 
 impl Seen {
+    /// Everything this record holds goes into the state hash, so a sync check catches any
+    /// difference in it between replicas: the chain itself (not only its cached hash) and the
+    /// export that brought the object in, with its certificate.
     pub fn hash_into(&self, global: u64, v: &mut Vec<u64>) {
         match self {
-            Seen::Here { via, from, from_via, chash, settled, .. } => {
-                v.extend([global, 12, *via, *from as u64, *from_via, *chash, *settled as u64])
+            Seen::Here { via, from, from_via, chain, chash, settled, entry } => {
+                debug_assert_eq!(*chash, chain_hash(chain), "cached chain hash out of date");
+                v.extend([global, 12, *via, *from as u64, *from_via, chain_hash(chain), *settled as u64]);
+                v.push(entry.as_ref().map_or(0, |e| e.digest()));
             }
-            Seen::Left { transfer, dest, via, frame, from, from_via, .. } => {
-                v.extend([global, 13, *transfer, *dest as u64, *via, *frame, *from as u64, *from_via])
+            Seen::Left { transfer, dest, via, frame, from, from_via, entry } => {
+                v.extend([global, 13, *transfer, *dest as u64, *via, *frame, *from as u64, *from_via]);
+                v.push(entry.as_ref().map_or(0, |e| e.digest()));
             }
         }
     }
