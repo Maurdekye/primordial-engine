@@ -18,3 +18,5 @@ opt-level = "s"
 lto = true
 panic = "abort"
 codegen-units = 1
+# No name section (design 13.2, P2-7): it would carry crate hashes that depend on the host OS.
+strip = "symbols"
