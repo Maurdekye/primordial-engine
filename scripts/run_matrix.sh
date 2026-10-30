@@ -30,7 +30,7 @@
 #                   (Tailscale direct; the remote-<laptop> skill has the RustDesk fallback)
 #   PE_LAPTOP_DIR   working folder on <laptop>, default C:/Users/<user>/pe-matrix; its cargo home and
 #                   build targets stay there between runs (delete the folder to clean up)
-#   PE_RUSTC        toolchain for the WSL and <laptop> runs, default 1.99.0 (rust-toolchain.toml: stable)
+#   PE_RUSTC        toolchain for the WSL and <laptop> runs, default the channel pinned in rust-toolchain.toml
 # Outputs: spikes/out/matrix/<column>/ (run.log, env.txt, o/digests.txt; the rest of o/, the full
 # outputs, is not committed) and spikes/out/matrix/matrix.txt, the comparison.
 set -u
@@ -41,7 +41,7 @@ DISTRO=${PE_WSL_DISTRO:-Ubuntu-24.04}
 WDIR=${PE_WSL_DIR:-pe-matrix}
 NSSH=${PE_LAPTOP_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=15 -p <port> -i $HOME/.ssh/<key> <user>@<laptop address>}
 NDIR=${PE_LAPTOP_DIR:-C:/Users/<user>/pe-matrix}
-TC=${PE_RUSTC:-1.99.0}
+TC=${PE_RUSTC:-$(grep -oP '^channel = "\K[^"]+' rust-toolchain.toml)}
 GB='"C:\Program Files\Git\bin\bash.exe"'   # <laptop>'s ssh shell is cmd.exe; Git Bash runs the job
 M=spikes/out/matrix
 REV=$(git rev-parse HEAD)
@@ -106,6 +106,7 @@ for c in $COLS; do
         # Static musl binaries, linked by Rust's bundled lld: built here, so WSL needs no C toolchain.
         T=x86_64-unknown-linux-musl
         L="target.$T.linker=\"rust-lld\""
+        rustup target add --toolchain "$TC" $T > /dev/null 2>&1
         heavy cargo build --release -q --target $T --config "$L" -p pe-spike-physics -p pe-spike-session-sim \
           -p pe-spike-p2p -p pe-spike-wasm-hotswap -p pe-spike-mcp-stub || exit 1
         heavy cargo build -q --target $T --config "$L" -p pe-spike-physics || exit 1

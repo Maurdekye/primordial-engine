@@ -1,0 +1,18 @@
+Determinism matrix (design 23.4 P2-6): digest one machine's outputs, or compare machines.
+
+Every output of the determinism set is either a pure data file (traces, snapshot images, wasm
+modules) or a log that mixes deterministic results with wall-clock timings. A digest is the
+SHA-256 of the file after `normalize`, which masks timings and nothing else:
+  * a number followed by a time unit (ms, us, µs, ns, s), e.g. "0.351 ms", "544.2 us/frame";
+  * a speed ratio such as "22x";
+  * the values after "depth:ms" (re-simulation cost by depth);
+  * table cells whose column header names a time ("CPU ms ...", "worst tick ms ...");
+  * cargo's progress lines, and runs of spaces (timing widths shift column padding).
+Data files (traces, snapshot images, wasm modules and their hash lists, MCP transcripts) are hashed
+raw: see `is_raw`.
+
+usage:
+  python -I scripts/matrix_digest.py digest OUTDIR            writes OUTDIR/digests.txt
+  python -I scripts/matrix_digest.py compare NAME=OUTDIR ...  table; exit 1 on any difference
+  python -I scripts/matrix_digest.py show FILE                print FILE as normalized
+
