@@ -211,48 +211,64 @@ faster than `v_max`.
 * **Footprint.** The level-0 chunks within `ceil(reach_cap / 1024) + 1` of the anchor chunk, at the member's
   scale band, so a radius of at least 3 chunks at human scale. A region's footprint is the union over its
   members.
-* **Speed bound and the growth clock** (reviews N1, M3, P2). A footprint may approach another region by
-  at most `v_max` (default 100 m/s at human scale, 25.6) over time.
+* **Speed bound and the growth clock** (reviews N1, M3, P2, Q1, Q2). A footprint may approach another
+  region by at most `v_max` (default 100 m/s at human scale, 25.6) over time, plus a capped instant step.
   * Every change that grows a region's footprint takes effect at
-    `max(stamp + Lambda, previous growth's effect frame) + ceil(60 J / v_max)`.
-  * **Possible footprint.** For each **known region** `q` (in this region's own log: its `NeighbourRef`s
-    and relayed directory entries, pending creations included, of every band), take `q`'s envelope as that
-    log holds it at the entry's stamp, grown by `q`'s `v_max` x (the envelope's age + `T_h`). `T_h` is the
-    horizon, 60 s.
-  * **`J`** (revised after reviews M3 and P2) is 0 or a full extension:
-    * `J` = 0 if **every added point** is at least `D_merge` from every known region's possible footprint
-      (margin 0 for a region of another band, 25.6). The growth then takes effect at `stamp + Lambda`. That
-      covers a joiner, warp or respawn at an edge facing open country, and a scale-up with no region nearby.
-    * Otherwise `J` is the extension of the union over the added points that fail that test, as at
-      05d3cc0. A step straight at a close neighbour is therefore always clocked, even when its possible
-      footprint already reaches this region (the e10c905 rule made that step instant: review P2).
-    * Every member computes the same `J`, because it depends only on the region's own log at the stamp.
-  * **`G_band`** is the largest footprint one member of a band can add in one growth: a member scaled to
-    the band's top, about 200 km at human scale [I]. An instant growth can land up to that far beyond the
-    region's envelope.
+    `max(stamp + Lambda, previous growth's effect frame) + ceil(60 J / v_max)`, where `J` is its clocked
+    part (below).
+  * **`G_inst`**, the instant-growth cap, is 4 chunks (4 km) at human scale and scales with the band's unit,
+    as `v_max` does. A region makes at most one instant growth per `T_h`.
+  * **Known regions at stamp `s`** (review Q2): those in the region's own log (its `NeighbourRef`s and
+    relays) **plus every region in the world-log directory confirmed through `s - S_create`**. Every
+    member holds that directory before simulating `s` (the directory gate), so the set is deterministic,
+    and it contains every region that exists at `s`.
+  * **Possible footprint** of a known region `q`: its envelope as the log holds it at the stamp, grown by
+    `v_max(q)` x (the envelope's age + `T_h`) **plus `G_inst(q)` x `ceil((age + T_h) / T_h)`**, the instant
+    growth `q` may make in that window (review Q1). `T_h`, the horizon, is 60 s.
+  * **`J`** (revised after reviews M3, P2 and Q1):
+    * **Instant part.** The first `G_inst` of a growth takes effect at `stamp + Lambda` if every point it
+      adds is at least `D_merge` from every known region's possible footprint (margin 0 for a region of
+      another band, 25.6), and the region made no instant growth in the last `T_h`. That covers a joiner,
+      warp or respawn at an edge facing open country, and the first 4 km of a scale-up.
+    * **Clocked part.** Everything else is clocked, with `J` its extension of the union: a growth that fails
+      the test, the part of any growth beyond `G_inst`, and a second instant growth within `T_h`. So a step
+      straight at a close neighbour is always clocked (review P2), and a region's outward speed is at most
+      `v_max + G_inst / T_h` in every direction, toward known and unknown regions alike.
+    * Every member computes the same split, because it depends only on the region's log and the confirmed
+      directory at the stamp.
   * **The horizon gate.** A region simulates `f` only while `f <= known_conf_q + T_h` for every known
-    region `q` whose envelope lies within `D_merge + v_max(q) x T_h + G_band(q)` of its footprint (margin
-    0 instead of `D_merge` for another band's region). It is the 60 s pull made binding: members pull
-    `q`'s prefix before the gate closes, so in practice it binds only when `q` has been stalled for 60 s.
-    Cost: one prefix pull a minute from each region within about 200 km, about 1 kB each [I], so about
-    4 kB/s per region with 256 regions in range [C].
-  * Why `J` = 0 is then safe [I, modelled below]:
-    * an added point at least `D_merge` from `q`'s possible footprint can come within `D_merge` of `q`'s
-      real footprint only at a frame at least `T_h` after the stamp, because `q` approaches at most
-      `v_max(q)` from its envelope (its own growth is clocked toward this region);
-    * by the horizon gate, `q` cannot simulate that frame before it holds this region's prefix through
-      the stamp.
-    * A region created after this region's log was last updated is not in that log. The **start
-      condition** below covers it.
+    region `q` whose possible footprint lies within `D_merge + v_max x T_h + 2 G_inst` of its footprint
+    (both at this region's band; margin 0 instead of `D_merge` across bands): about 17 km at human scale.
+    It is the 60 s pull made binding, so in practice it binds only when `q` has been stalled for 60 s.
+    * For regions further away, the neighbour bound counts `q`'s instant growth instead: `q`'s reach after
+      its known confirmed frame is `v_max(q) (f - known_conf_q)` plus `G_inst(q)` per started `T_h`. At
+      that distance this costs slack but never gates.
+    * Cost: one prefix pull a minute from each region within about 17 km, about 1 kB each [I].
+  * Why the instant part is then safe [I, modelled below]:
+    * it lands at least `D_merge` from `q`'s possible footprint, which bounds where `q` can be, instant
+      growth included, until `T_h` after the stamp;
+    * by the horizon gate, `q` cannot simulate past that without holding this region's prefix through the
+      stamp; regions beyond the gate radius bound themselves with the instant growth counted;
+    * two regions growing at once each count the other's possible instant growth, so their instant parts
+      cannot meet unseen (review Q1). A region created too recently to be known is covered by the
+      creation buffer below.
   * The growth clock is per region and runs in log order, so growths queue rather than add up. A merged
     region continues with the later of the two clocks.
-  * **What it still costs players.** Growth toward a neighbour waits `J / v_max`:
+  * **What it costs players** [C from the constants; the experience is I]. The footprint is the area whose
+    objects are simulated, not the player. A scale-up, join or step itself happens at once: the avatar,
+    its colliders, held objects and everything inside the old footprint (at least 3 km around every
+    member) change and simulate at the same frame. Only objects beyond the old footprint that the player
+    is now entitled to stay **dormant (frozen in place, still drawn)** until the footprint reaches them:
     * a chunk crossing toward a neighbour takes about 10 s, which the footprint's one-chunk margin covers if
       the member declares the next chunk at least `v_max` x `Lambda` (50 m) before the boundary;
-    * a x8 scale-up next to another region ramps over up to 143 s;
-    * a joiner admitted at an edge facing a neighbour waits up to about 30 s.
+    * a x5.5 scale-up (+9 chunks): the first 4 km at once, the remaining 5 km over about 51 s in open
+      country; all of it over about 92 s within roughly 20 km of another region;
+    * a x8 scale-up (+14 chunks): about 102 s in open country, 143 s near another region;
+    * a joiner at an edge (+3 km): at once in open country, up to about 31 s near another region.
 
-    Meanwhile, the newcomer's surroundings outside the old footprint stay dormant (frozen in place).
+    Players notice this only when something beyond about 3 km of them should move during the ramp: an
+    object they throw that far, or animated logic there, which catches up through `on_wake` (25.4). A
+    x5.5 player's own reach is about 10 m. Options: D56.
   * Shrinking is immediate: it only widens gaps.
 * **Envelope.** A region `q`'s envelope, as another region `R` sees it, is computed from every anchor
   *stamped* up to the confirmed frame `R` holds for `q`, including growth not yet in effect.
@@ -260,7 +276,8 @@ faster than `v_max`.
     `v_max (f - known_conf_q)`.
 * **Neighbour bound.** `R` may simulate frame `f` only while, for every other region `q` of its band,
   `known_conf_q + (envelope gap - D_merge) / v_max >= f`. Regions of larger bands bound `R` too, with
-  margin 0 and their own `v_max` (25.6).
+  margin 0 and their own `v_max` (25.6). Beyond the horizon-gate radius, `q`'s reach also counts its
+  instant growth (above).
   * `R`'s members pull `q`'s confirmed prefix, with its proof (25.5.8), from `q`'s members. They pull every
     60 s, and on demand whenever the bound comes within 2 s of `R`'s present. They record it in `R`'s log as
     `NeighbourRef{q, frame, head, envelope}`.
@@ -270,8 +287,10 @@ faster than `v_max`.
   review M1).
   * `RegionCreated{region, footprint}` takes effect at **`stamp + S_create`** (`S_create` defaults to 10 s).
   * Its validity is checked **in world-log order**, against the directory including earlier
-    `RegionCreated` entries that are still pending. It must be at least `D_merge + v_max * S_create` from
-    every one of those envelopes, each grown by `v_max` x its entry's age.
+    `RegionCreated` entries that are still pending. It must be at least
+    `D_merge + v_max * S_create + G_inst x ceil((age + S_create) / T_h)` from every one of those envelopes,
+    each also grown by `v_max` x its entry's age. The `G_inst` term (review Q1) covers instant growth by a
+    region that does not know the new one yet.
   * A creation nearer than that becomes a **join** of the nearest region instead, as a per-region view
     change (25.5.3). Two newcomers spawning at the same spot therefore form one region, not two.
   * Every region simulates `f` only while it holds the world log's region directory confirmed through
@@ -280,13 +299,16 @@ faster than `v_max`.
   * **Start condition** (added with the P2 fix). A created region `q` that takes effect at `f0` simulates
     `f0` only once it holds, for every region `R` of its band or a larger one that could reach it, `R`'s
     confirmed prefix through `f0 - 1`.
-    * Why: `R`'s growth stamped before `R`'s log recorded `q` was judged without `q`, so it may be instant
-      and land next to `q`. Such growth is stamped before `f0` (the directory gate), so `q` sees it before
-      its first frame. A merge it causes happens at `f0`, which is a join in effect, never late.
-    * "Could reach it": `R`'s directory envelope lies within `D_merge + v_max (S_create + age) + G_band`
-      of `q`'s footprint. One prefix pull per such region.
-    * Cost: normally about 12 frames (0.2 s) after `f0`. If such an `R` is stalled, `q` waits for its
-      eviction (about 3 s, 25.5.3). Without the start condition the model has one late case, below.
+    * Why: `R`'s growth stamped before `R` knew of `q` was judged without `q`. Such growth is stamped
+      before `f0`, so `q` sees it before its first frame. A merge it causes happens at `f0`, which is a
+      join in effect, never late.
+    * With the `G_inst` cap and the creation buffer above, the model has no case that needs it (below).
+      It stays as defence in depth: it costs about 12 frames (0.2 s) after `f0` and does not depend on the
+      buffer arithmetic or on how fresh the `RegionHead` was. If such an `R` is stalled, `q` waits for its
+      eviction (about 3 s, 25.5.3).
+    * "Could reach it": `R`'s directory envelope lies within
+      `D_merge + v_max (S_create + age) + G_inst x ceil((age + S_create) / T_h)` of `q`'s footprint. One
+      prefix pull per such region.
   * **Spawn regions.** Each spawn point and each portal or warp destination has a region created at the
     world's genesis (in the directory from the start, possibly with no members). Arriving there is a join,
     not a creation, so it never waits `S_create`.
@@ -319,33 +341,59 @@ first held every fact that fixes them. That needs a rollback, possibly below its
 forbids. Both regions may grow, and both are checked. In the cross-band cases (25.6) the event is the frame
 from which a human region must read a giant's region, and only the reader is checked.
 
-| Case | 2a228c6 | 05d3cc0 | e10c905 | Revised |
-|---|---|---|---|---|
-| Chunk step toward R, no stall (4 km gap) | safe | safe | safe | safe |
-| Chunk step toward R during a stall in q (4 km gap) | **late** (merge 360) | safe (merge 975) | **late** (merge 360: the step was instant, review P2) | safe (merge 975) |
-| Chunk step toward R during a stall in R, R fixed or walking toward q (4 km gap) | safe | safe | safe | safe |
-| Chunk step while R walks toward q, a stall in q or in R (8 km gap) | safe | safe | safe | safe |
-| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late** (merge 1,030) | safe (merge 9,632) | **late** (merge 3,418) | safe (R pauses 11 frames at the horizon gate) |
-| Scale x8, pull every 60 s or on demand | safe | safe | safe | safe |
-| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe | **late** | safe (R pauses 2,411 frames) |
-| Joiner, pull every 60 s or on demand | safe | safe | safe | safe |
-| Walker at `v_max` toward R over 12 chunks, q stalls on the way (12 km gap) | safe | safe | safe | safe (2 steps instant) |
-| Chunk step every 5 s from 20 km toward R, q stalls early or late | safe | safe | safe | safe (10 of 19 steps instant) |
-| Region created 4.5 km from R, then walks toward it; also with the world log stalled 5 s or 12 s | **late** | joins R | joins R | joins R (R loses 185 frames at 12 s) |
-| Region created 3.5 km from R | **late** | joins R | joins R | joins R |
-| Both walk toward each other, q created at the closest allowed gap: `v_max` 100 or 200 m/s, `S_create` 10 or 20 s, with and without an 8 s world-log stall (5 cases) | **late** | safe, except **late** at 200 m/s with the stall (merge 954) | safe | safe |
-| Two regions created at the same spawn point 10 frames apart | **late** | **late** (both regions) | the second joins the first | the second joins the first |
-| R (two members, never evicted) grows 3 km at once toward a region being created 4.6 km away, before its log records the creation, then stalls 30 s | **late** | safe | **late** | safe, by the start condition (**late** without it) |
-| Giant region walks toward a human region from 1,000 km at its `v_max`, L stalls on the way | n/a | n/a | safe | safe |
-| Giant scales up x8 (+14 of its 131 km chunks) 1,500 km away, L stalled | n/a | n/a | **late** (read from 430) | safe (read from 9,032) |
-| Giant steps one 131 km chunk onto a human region 100 km away, L stalled | n/a | n/a | **late** | safe |
-| Two-member giant region walks toward a human region, L stalled 30 s and never evicted | n/a | n/a | **late** | safe (R pauses 196 frames) |
+| Case | 2a228c6 | 05d3cc0 | e10c905 | da3cd74 | **Revised** |
+|---|---|---|---|---|---|
+| Chunk step, no stall (gap 4 km) | safe (360) | safe (975) | safe (360) | safe (975) | safe (975) |
+| Chunk step toward R, q stall (gap 4 km) | **late** (360) | safe (975) | **late** (360) | safe (975) | safe (975) |
+| Chunk step toward R, R stall (gap 4 km) | safe (360) | safe (975) | safe (360) | safe (975) | safe (975) |
+| Chunk step toward R, R stall, R walks toward q (gap 4 km) | safe (30) | safe (645) | safe (30) | safe (645) | safe (645) |
+| Chunk step toward R, q stall, R walks toward q (gap 8 km) | safe (1,875) | safe (2,490) | safe (1,875) | safe (2,490) | safe (2,490) |
+| Chunk step toward R, R stall, R walks toward q (gap 8 km) | safe (1,875) | safe (2,490) | safe (1,875) | safe (2,490) | safe (2,490) |
+| Scale x8 (+14 km), pull every 60 s only (gap 10 km) | **late** (1,030) | safe (9,632) | **late** (2,418) | safe (9,632) | safe (9,632; R pauses 11 frames) |
+| Scale x8 (+14 km), pull every 60 s or on demand (gap 10 km) | **late** (1,030) | safe (9,632) | **late** (2,418) | safe (9,632) | safe (9,632) |
+| Joiner at q's near edge (+3 km), pull every 60 s only (gap 5 km) | **late** (1,030) | safe (2,874) | **late** (1,030) | safe (2,874) | safe (2,874; R pauses 2,411 frames) |
+| Joiner at q's near edge (+3 km), pull every 60 s or on demand (gap 5 km) | **late** (1,030) | safe (2,874) | **late** (1,030) | safe (2,874) | safe (2,874) |
+| Walker at v_max toward R, 12 chunk steps, q stall mid-way (gap 12 km) | safe (5,250) | safe (5,865) | safe (5,250) | safe (5,865) | safe (5,865) |
+| Chunk step every 5 s from 20 km toward R, q stall at frame 1500 | safe (5,030) | safe (10,685) | safe (7,610) | safe (7,535) | safe (10,370) |
+| Chunk step every 5 s from 20 km toward R, q stall at frame 4000 | safe (5,030) | safe (10,685) | safe (7,610) | safe (7,535) | safe (10,370) |
+| Region created 4.5 km from R, then walks toward it | **late** (1,945) | joins | joins | joins | joins |
+| Region created 3.5 km from R, then walks toward it | **late** (1,330) | joins | joins | joins | joins |
+| Region created 4.5 km from R and walks toward it, world log stalled 5 s | **late** (1,945) | joins | joins | joins | joins |
+| Region created 4.5 km from R and walks toward it, world log stalled 12 s | **late** (1,945) | joins | joins | joins | joins |
+| Both walk toward each other, q created at the closest allowed gap, v_max 100 m/s, S_create 10 s | **late** (645) | safe (1,260) | safe (1,231) | safe (1,846) | safe (3,076) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 100 m/s, S_create 10 s, world log stalled 8 s | **late** (645) | safe (1,260) | safe (1,231) | safe (1,846) | safe (3,076) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 200 m/s, S_create 10 s | **late** (646) | safe (954) | safe (1,200) | safe (1,262) | safe (2,494) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 200 m/s, S_create 10 s, world log stalled 8 s | **late** (646) | **late** (954) | safe (1,200) | safe (1,200) | safe (2,494) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 100 m/s, S_create 20 s, world log stalled 8 s | **late** (1,246) | safe (1,861) | safe (1,831) | safe (2,446) | safe (3,676) |
+| Two regions created at the same spawn point, 10 frames apart | **late** (640) | **late** (640) | joins | joins | joins |
+| Two-member region grows instantly toward a region being created at the closest allowed gap, then stalls 30 s | **late** (650) | safe (2,494) | **late** (1,200) | safe (1,200) | safe |
+| Both scale up at once, +9 chunks each toward the other (gap 20.5 km) | **late** (1,035) | safe (6,565) | safe (6,565) | **late** (1,035) | safe (6,565) |
+| Both scale up at once, +9 chunks each toward the other (gap 20.5 km), R stalls | **late** (1,035) | safe (6,565) | safe (6,565) | **late** (1,035) | safe (6,565) |
+| Chained: q grows +4 chunks three times 5 frames apart while R scales up +9 chunks (gap 24 km), R stalls | **late** (1,040) | safe (8,404) | safe (8,404) | **late** (1,040) | safe (5,951) |
+| R scales up +8 chunks toward a new region after it exists but before R's log relays it, then stalls 30 s | **late** (1,330) | safe (6,246) | **late** (1,330) | **late** (1,330) | safe (6,246) |
+| Giant region walks toward a human region from 1,000 km at its v_max, L stalls on the way | n/a | n/a | safe (4,535) | safe (5,150) | safe (5,150) |
+| Giant scales up x8 (+14 of its 131 km chunks) 1,500 km from a human region, L stalled | n/a | n/a | **late** (430) | safe (9,032) | safe (6,574) |
+| Giant steps once onto a human region 100 km away, L stalled | n/a | n/a | **late** (430) | safe (1,045) | safe (1,045) |
+| Giant scales up +9 of its chunks to land 8 km from a human region that scales up +9 chunks at once, L stalled | n/a | n/a | **late** (1,030) | **late** (1,030) | safe (6,560) |
+| Two-member giant region walks toward a human region from 1,000 km, L stalled 30 s (never evicted) | n/a | n/a | **late** (4,535) | safe (5,150) | safe (5,150; R pauses 196 frames) |
 
-* **28 cases of steps toward a neighbour, two-sided growth, creation and cross-band reads. Late: 14 of 24
-  under 2a228c6, 2 of 24 under 05d3cc0, 7 of 28 under e10c905, 0 of 28 under the revised rules** (1 of 28
-  without the start condition). The cross-band rows do not apply before e10c905.
-* The 05d3cc0 cases reproduce @chunks-reviewer's `safety2_model.py`. The e10c905 failures are reviews P1
-  and P2.
+Cells give the merge or read frame in brackets. "joins" means the creation became a join, so no second
+region exists.
+
+* **33 cases of steps toward a neighbour, two-sided and concurrent growth, creation and cross-band reads,
+  on a line. Late: 20 of 28 under 2a228c6, 2 of 28 under 05d3cc0,
+  11 of 33 under e10c905, 5 of 33 under da3cd74, 0 of 33
+  under the revised rules** (0 of 33 without the start condition). The cross-band rows
+  do not apply before e10c905.
+* The da3cd74 failures are reviews Q1 (two concurrent or chained instant growths, also across bands) and
+  Q2 (a region not yet relayed into the grower's log).
+* **Model fix in this round:** the on-demand pull used to trigger every frame, because it compared a bound
+  already clamped to the present. With that fixed, more 2a228c6 and e10c905 rows are late than before (for
+  example "scale x8 ... or on demand"). The 05d3cc0 and revised conclusions did not change.
+* The revised rules place created regions at their own closest allowed gap, which includes `G_inst`, and
+  the matching creation case grows R by the full cap.
+* The 05d3cc0 failures reproduce @chunks-reviewer's `safety2_model.py`, and the da3cd74 Q1 rows their
+  `concurrent_instant_model.py`.
 * This is a model of the rules on a line, not of the protocol or of 2D/3D footprints.
 * The price:
   * growth toward a neighbour lags by up to `J / v_max`;
@@ -540,7 +588,7 @@ it. The gaps in this table are between *footprints*; the anchors are about 6 km 
     * **Cross-band bound.** `R` simulates `f` only while, for every larger-band region `L` in the
       directory, `known_conf_L + (envelope gap - 0) / v_max(L) >= f`, with `L`'s envelope as in 25.5.2. The
       horizon gate and the start condition apply across bands too, and each side's `J` counts the other
-      with margin 0. So `R` always holds every `L` anchor that fixes `f_r` before it simulates `f_r`.
+      with margin 0. `G_inst` scales with the band's unit (about 524 km for the x128 band). So `R` always holds every `L` anchor that fixes `f_r` before it simulates `f_r`.
     * Cost: at a giant's `v_max` (12.8 km/s for x128) the bound gives 3.9 s of slack per 50 km of gap, so
       a human region within about 100 km of a giant's region pulls its prefix every few seconds [C]. A
       stalled giant region pauses the human regions it is about to cover (196 frames in the model's 30 s
@@ -696,13 +744,16 @@ Numbered after the architect's D52; to be renumbered at merge.
     * region creation via the world log, taking effect after `S_create` (10 s), ordered, with spawn regions.
 
     Modelled [C]: a stalled member slows only nearby regions, and there were 0 late merges or late reads
-    in 28 cases of steps toward a neighbour, two-sided growth, creation and cross-band reads (25.5.2), on
-    a line. Build it in phase 3 together with region-scoped rollback
+    in 33 cases of steps toward a neighbour, two-sided and concurrent growth, creation and cross-band reads
+    (25.5.2), on a line. Build it in phase 3 together with region-scoped rollback
     (6.6), after the round-2 and round-3 protocol work is reviewed. Phase 2 stays one region per world.
   * **What players notice** (the speed bound and creation are what keep it safe):
     * travel faster than `v_max` needs a declared travel footprint or a portal-style transfer;
-    * near another region, a joiner's or scaled-up player's wider surroundings wake over 10 s to about
-      2 min;
+    * a scale-up, join or step is instant for the player and everything within the old footprint (3 km or
+      more); objects further out that the player is newly entitled to stay frozen while the footprint
+      catches up: the first 4 km at once in open country, the rest at `v_max`, so about 51 s for a x5.5
+      scale-up in open country and up to about 2.4 min for a x8 scale-up near another region (options in
+      D56);
     * arriving in empty space away from spawn regions, physics around you starts after 10 s.
   * **Options for the 10 s creation wait:**
     * **(a) recommended:** `S_create` = 10 s plus spawn regions at every spawn point and portal or warp
@@ -717,6 +768,25 @@ Numbered after the architect's D52; to be renumbered at merge.
 * **D56. Scale (25.6).**
   * Recommend: per-region length units with scale-invariant gravity by default; real gravity as a per-world
     opt-in, time-scaled at `1/sqrt(s)` CPU cost for small players.
+  * **How fast a region's footprint follows a scale-up** (review Q1). Players scale arbitrarily, and the
+    scale change itself is never rate-limited in any option below. The question is how fast the
+    *simulated area* around a scaled-up player grows (25.5.2). Options:
+    * **(a) recommended: capped instant growth.** The first `G_inst` (4 km at human scale) of footprint
+      growth is instant when no region is within roughly 20 km; the rest follows at `v_max` (100 m/s).
+      * Scale-ups up to about x3 are fully instant in open country. A x5.5 scale-up wakes its new outer
+        ring over about 51 s in open country, about 92 s near another region. A joiner at an edge facing
+        open country is instant [C].
+      * Noticed only if something beyond about 3 km of the player should move in that time [I].
+    * **(b) no instant growth** (as at 05d3cc0). Every growth follows at `v_max`.
+      * Simplest rule, fewest cases to get right. A x5.5 scale-up always takes about 92 s, and a joiner at
+        an edge up to about 31 s, for objects beyond the old footprint.
+    * **(c) a larger cap**, such as 16 km.
+      * Scale-ups up to about x9 are fully instant in open country. But every region then reserves 16 km
+        or more for its neighbours' possible instant growth, so instant growth needs about 50 km of empty
+        space, and new regions must be about 12 km further from existing ones, so more creations become
+        joins [C].
+    * Not offered: rate-limiting the scale change itself. Players would feel it directly, and it buys
+      nothing over (b).
   * **Mixed scales in one place** (players more than 2^6 apart in scale), options:
     * **(a) recommended, hierarchical bands with same-frame readers.**
       * A giant's interactions with small things are exact to the frame, and a giant never merges the human
