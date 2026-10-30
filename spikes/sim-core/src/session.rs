@@ -108,12 +108,19 @@ pub enum Payload {
     /// Kinematic hand target for this frame, in millimetres (quantized so every peer sees the
     /// same bits). `active = false` parks the hand.
     Hand { obj: u32, target_mm: [i32; 3], active: bool },
-    /// R14, source world: carry `obj` out through the portal into escrow.
-    Depart { transfer: u64, obj: u32, deadline: u64 },
-    /// R14, destination world: the object arrives (relayed after the source confirmed Depart).
-    Arrive { transfer: u64, record: ObjRecord },
-    /// R14, source world: the destination's confirmed verdict (relayed after it confirmed).
-    Verdict { transfer: u64, accepted: bool },
+    /// R14, source world: carry `obj` out through the portal into escrow, bound for world `dest`.
+    /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
+    Depart { obj: u32, dest: u32, deadline: u64 },
+    /// R14, destination world: the object arrives. `cert` is a strict majority of the source
+    /// world's members' signatures over "departure `depart` of this record to this world is
+    /// confirmed" (review NEW-4); without it the entry does nothing.
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, cert: Vec<(MemberId, u64)> },
+    /// R14, source world: the destination's confirmed verdict, with a strict majority of the
+    /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
+    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
+    /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
+    /// a chain entry so it is equivocation-proof and fetchable.
+    Attest { fact: u64, sig: u64 },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
@@ -173,6 +180,7 @@ impl Wr {
     fn u64(&mut self, v: u64) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
+    fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
     fn entry(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
@@ -185,14 +193,18 @@ impl Wr {
             Payload::Hand { obj, target_mm, active } => {
                 self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8);
             }
-            Payload::Depart { transfer, obj, deadline } => {
-                self.u8(3); self.u64(*transfer); self.u32(*obj); self.u64(*deadline);
+            Payload::Depart { obj, dest, deadline } => {
+                self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
             }
-            Payload::Arrive { transfer, record } => {
+            Payload::Arrive { transfer, record, depart, cert } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
                 self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame);
+                self.u64(*depart); self.cert(cert);
             }
-            Payload::Verdict { transfer, accepted } => { self.u8(5); self.u64(*transfer); self.u8(*accepted as u8) }
+            Payload::Verdict { transfer, accepted, cert } => {
+                self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
+            }
+            Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
             Payload::Ack { horizon, heads, check } => {
                 self.u8(7); self.u64(*horizon); self.u32(heads.len() as u32);
@@ -228,6 +240,12 @@ impl Rd<'_> {
     fn u64(&mut self) -> Option<u64> { Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?)) }
     fn i32(&mut self) -> Option<i32> { Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     fn f32(&mut self) -> Option<f32> { Some(f32::from_bits(self.u32()?)) }
+    fn cert(&mut self) -> Option<Vec<(MemberId, u64)>> {
+        let n = self.u32()? as usize;
+        let mut c = Vec::with_capacity(n.min(64));
+        for _ in 0..n { c.push((self.u32()?, self.u64()?)) }
+        Some(c)
+    }
     fn state(&mut self) -> Option<BodyState> {
         let mut s = [0u32; 13];
         for b in &mut s { *b = self.u32()? }
@@ -241,15 +259,16 @@ impl Rd<'_> {
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
             2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0 },
-            3 => Payload::Depart { transfer: self.u64()?, obj: self.u32()?, deadline: self.u64()? },
+            3 => Payload::Depart { obj: self.u32()?, dest: self.u32()?, deadline: self.u64()? },
             4 => {
                 let transfer = self.u64()?;
                 let record = ObjRecord {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
                 };
-                Payload::Arrive { transfer, record }
+                Payload::Arrive { transfer, record, depart: self.u64()?, cert: self.cert()? }
             }
-            5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0 },
+            5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
+            9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
             7 => {
                 let horizon = self.u64()?;
@@ -292,6 +311,36 @@ pub fn decode_msg(b: &[u8]) -> Option<Msg> {
 /// the id are hashed (review L7).
 pub fn tie_rank(seed: u64, frame: u64, member: MemberId) -> u64 {
     splitmix64(seed ^ frame.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (member as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F))
+}
+
+// ---- R14 proofs (reviews NEW-3..NEW-6) -------------------------------------------------------------
+
+/// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
+pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
+    splitmix64(((src_world as u64) << 40) ^ depart)
+}
+
+/// "World `src` confirmed departure `depart` of `record`, bound for world `dest`."
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32) -> u64 {
+    fnv_u64s([1, src as u64, depart, record.global, record.state.hash(), dest as u64])
+}
+
+/// "World `dst` confirmed transfer `transfer` as accepted / rejected."
+pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool) -> u64 {
+    fnv_u64s([2, dst as u64, transfer, accepted as u64])
+}
+
+/// Spike model of member `member` of world `world` signing `fact`. Production: an Ed25519
+/// signature by the member's key, checked against the other world's member keys (D46).
+pub fn member_sig(world: u32, member: MemberId, fact: u64) -> u64 {
+    splitmix64(fact ^ splitmix64((((world as u64) << 32) | member as u64) ^ 0x5157_4E41_5455_5245))
+}
+
+/// True if `cert` holds valid signatures over `fact` from a strict majority of `members`.
+pub fn cert_ok(members: &[MemberId], world: u32, fact: u64, cert: &[(MemberId, u64)]) -> bool {
+    let signers: BTreeSet<MemberId> =
+        cert.iter().filter(|(m, sig)| members.contains(m) && *sig == member_sig(world, *m, fact)).map(|(m, _)| *m).collect();
+    !members.is_empty() && signers.len() * 2 > members.len()
 }
 
 // ---- scenes --------------------------------------------------------------------------------------
@@ -431,6 +480,8 @@ pub struct Escrow {
     pub record: Option<ObjRecord>,
     pub status: EscrowStatus,
     pub depart_frame: u64,
+    pub depart: EntryId,
+    pub dest: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -562,6 +613,8 @@ pub enum Outcome {
     RejectedGone,
     RejectedPortalClosed,
     RejectedDuplicate,
+    /// R14: a relay without a valid certificate from the other world (reviews NEW-3, NEW-4).
+    RejectedNoProof,
 }
 
 pub struct WorldSim {
@@ -579,6 +632,9 @@ pub struct WorldSim {
     ring: BTreeMap<u64, Keyframe>,
     /// Scratch world for canonical check hashes (review NEW-7).
     scratch: Option<World>,
+    /// R14: the members of every other world this one trades objects with (D46 trust config).
+    pub peers_of: BTreeMap<u32, Vec<MemberId>>,
+    attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
@@ -675,6 +731,8 @@ impl WorldSim {
             slot_count: 0,
             ring: BTreeMap::new(),
             scratch: None,
+            peers_of: BTreeMap::new(),
+            attested: BTreeSet::new(),
             known: members.iter().copied().collect(),
             entries: BTreeMap::new(),
             by_author: BTreeMap::new(),
@@ -862,7 +920,7 @@ impl WorldSim {
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
     fn set_eff(&mut self, id: EntryId) {
         let e = &self.entries[&id];
-        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. });
+        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. });
         let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
@@ -999,7 +1057,7 @@ impl WorldSim {
             self.watched.insert(obj);
         }
         // Below the confirmed frame only a horizon violation can be new (design 10.8): never apply.
-        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. }) {
+        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. }) {
             self.violations.insert(id);
         }
         let disputed = self.proofs.get(&e.member).is_some_and(|&(k, _, _)| e.seq >= k)
@@ -1302,6 +1360,64 @@ impl WorldSim {
         }
     }
 
+    // ---- R14 attestations ------------------------------------------------------------------------
+
+    /// Sign, as chain entries, the cross-world facts this replica has confirmed: a pending
+    /// departure (for the destination) and an arrival's outcome (for the source). A relay needs a
+    /// strict majority of them (reviews NEW-3, NEW-4).
+    pub fn attest_due(&mut self) -> Vec<Entry> {
+        if self.dirty_from.is_some() || !self.members.contains(&self.me) {
+            return vec![];
+        }
+        let mut facts = Vec::new();
+        for esc in self.t.escrow.values() {
+            if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
+                if esc.depart_frame < self.conf {
+                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest));
+                }
+            }
+        }
+        for (t, a) in &self.t.arrivals {
+            let (frame, accepted) = match a {
+                Arrival::Accepted { frame, .. } => (*frame, true),
+                Arrival::Rejected { frame } => (*frame, false),
+            };
+            if frame < self.conf {
+                facts.push(fact_verdict(self.world_id, *t, accepted));
+            }
+        }
+        let mut out = Vec::new();
+        for fact in facts {
+            if self.attested.insert(fact) {
+                let e = Entry {
+                    member: self.me,
+                    seq: self.my_seq + 1,
+                    prev: self.my_last,
+                    stamp: self.frame.max(self.now),
+                    payload: Payload::Attest { fact, sig: member_sig(self.world_id, self.me, fact) },
+                    carried: None,
+                };
+                out.push(self.publish(e));
+            }
+        }
+        out
+    }
+
+    /// A certificate for `fact` from this world's members, once a strict majority has signed it.
+    pub fn cert(&self, fact: u64) -> Option<Vec<(MemberId, u64)>> {
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let mut c: BTreeMap<MemberId, u64> = BTreeMap::new();
+        for (id, e) in &self.entries {
+            if let Payload::Attest { fact: f, sig } = e.payload {
+                if f == fact && !self.is_void(*id) && members.contains(&e.member) {
+                    c.insert(e.member, sig);
+                }
+            }
+        }
+        let c: Vec<(MemberId, u64)> = c.into_iter().collect();
+        cert_ok(&members, self.world_id, fact, &c).then_some(c)
+    }
+
     // ---- simulation ------------------------------------------------------------------------------
 
     /// Sorted (entry id, entry) for frame `f`: soonest-wins order with the per-frame tie rank.
@@ -1373,11 +1489,12 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Depart { transfer, obj, .. } => {
+            Payload::Depart { obj, dest, .. } => {
+                let transfer = &transfer_id(self.world_id, id);
                 if self.t.escrow.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
                 }
-                let gone = Escrow { obj: *obj, record: None, status: EscrowStatus::DepartRejected, depart_frame: f };
+                let gone = Escrow { obj: *obj, record: None, status: EscrowStatus::DepartRejected, depart_frame: f, depart: id, dest: *dest };
                 let Some(o) = self.live(*obj) else {
                     self.t.escrow.insert(*transfer, gone);
                     return Outcome::RejectedGone;
@@ -1392,10 +1509,18 @@ impl WorldSim {
                 destroy_body(&mut self.world, o.body);
                 self.t.objs[*obj as usize] = None;
                 self.t.claims.remove(obj);
-                self.t.escrow.insert(*transfer, Escrow { obj: *obj, record: Some(record), status: EscrowStatus::Pending, depart_frame: f });
+                self.t.escrow.insert(
+                    *transfer,
+                    Escrow { obj: *obj, record: Some(record), status: EscrowStatus::Pending, depart_frame: f, depart: id, dest: *dest },
+                );
                 Outcome::Accepted
             }
-            Payload::Arrive { transfer, record } => {
+            Payload::Arrive { transfer, record, depart, cert } => {
+                let src = record.src_world;
+                let members = self.peers_of.get(&src).cloned().unwrap_or_default();
+                if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact_departed(src, *depart, record, self.world_id), cert) {
+                    return Outcome::RejectedNoProof;
+                }
                 if self.t.arrivals.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
                 }
@@ -1408,10 +1533,14 @@ impl WorldSim {
                 self.watched.insert(obj);
                 Outcome::Accepted
             }
-            Payload::Verdict { transfer, accepted } => {
+            Payload::Verdict { transfer, accepted, cert } => {
                 let Some(esc) = self.t.escrow.get(transfer).copied() else { return Outcome::RejectedGone };
                 if esc.status != EscrowStatus::Pending {
                     return Outcome::RejectedDuplicate;
+                }
+                let members = self.peers_of.get(&esc.dest).cloned().unwrap_or_default();
+                if !cert_ok(&members, esc.dest, fact_verdict(esc.dest, *transfer, *accepted), cert) {
+                    return Outcome::RejectedNoProof;
                 }
                 if *accepted {
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Committed, record: None, ..esc });
@@ -1428,7 +1557,7 @@ impl WorldSim {
                 Outcome::Accepted
             }
             // Protocol entries never reach the sim (set_eff schedules only perturbations).
-            Payload::Ack { .. } | Payload::Vote { .. } => Outcome::Accepted,
+            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. } => Outcome::Accepted,
         }
     }
 
@@ -1658,7 +1787,21 @@ pub fn replay(world_id: u32, scene: SceneKind, cfg: SimConfig, members: &[Member
 }
 
 pub fn replay_sim(world_id: u32, scene: SceneKind, cfg: SimConfig, members: &[MemberId], log: &[(Entry, u64)], frames: u64) -> WorldSim {
+    replay_sim_with(world_id, scene, cfg, members, &BTreeMap::new(), log, frames)
+}
+
+/// As [`replay_sim`], for a world that trades objects with others (R14 certificates).
+pub fn replay_sim_with(
+    world_id: u32,
+    scene: SceneKind,
+    cfg: SimConfig,
+    members: &[MemberId],
+    peers_of: &BTreeMap<u32, Vec<MemberId>>,
+    log: &[(Entry, u64)],
+    frames: u64,
+) -> WorldSim {
     let mut s = WorldSim::new(world_id, u32::MAX, members, scene, cfg);
+    s.peers_of = peers_of.clone();
     for (e, eff) in log {
         let id = e.id();
         s.by_author.insert((e.member, e.seq), id);
