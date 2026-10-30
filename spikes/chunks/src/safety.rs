@@ -35,6 +35,22 @@
 //!   Every possible footprint and the creation buffer also add `G_inst x ceil(window / T_h)`. The known set
 //!   at stamp `s` includes the world-log directory confirmed through `s - S_create`.
 //! * `revised-no-start`: `revised` without the start condition (a control).
+//! * `provisional` (neighbourhood-loading note): as `revised`, but a created region takes effect at its
+//!   stamp `s0`, not `s0 + S_create`: it simulates from `s0`, and its start condition uses `f0 = s0`. Its
+//!   validity is still decided in world-log order, and its growth stays deferred to `s0 + S_create`. Its
+//!   frames confirm only once the world log has confirmed the creation (`validity_known_after`); until then
+//!   they are speculation, which pauses at the 2 s limit.
+//!   A smaller band's reader treats a provisional region's footprint as in effect only from
+//!   `s0 + S_create` (review S1), so it reads it from `max(first overlap, s0 + S_create)`. Creation
+//!   validity is checked within a band only (margin 0 across bands, 25.6).
+//! * `provisional-no-freeze`: `provisional` with a created region's growth taking effect from its own
+//!   stamps, not deferred to `s0 + S_create` (a control).
+//! * `provisional-reader-at-s0`: `provisional` with readers reading a created larger-band region from its
+//!   first overlap, even before `s0 + S_create` (a control, review S1).
+//!
+//! Every case runs twice: with relays (a region counts a created region once the world log confirms it,
+//! the `safety` lines) and with only the guaranteed known set, the world-log directory through
+//! `s - S_create` (the `safety-guaranteed` lines, review of e5596ff).
 //!
 //! Parameters: region confirmation lag 9 frames, 3 frames to learn a neighbour's confirmed frame,
 //! world-log lag 66 frames, Lambda 30 frames, eviction 132 frames; `D_merge` (3 km), `v_max` (100 m/s)
@@ -63,6 +79,12 @@ enum Rules {
     Revised,
     /// Revised without the start condition for created regions.
     NoStart,
+    /// Revised, with created regions taking effect at their stamp (provisional arrival).
+    Provisional,
+    /// Provisional without deferring a created region's growth to s0 + S_create.
+    ProvNoFreeze,
+    /// Provisional with readers reading a created larger-band region from its first overlap.
+    ProvReaderAtS0,
 }
 
 #[derive(Clone)]
@@ -110,11 +132,13 @@ struct Out {
     f_m: Option<i64>,
     lost_r: i64,
     instant: usize,
+    /// Provisional arrival: frames from q's stamp until the world log confirms its creation.
+    valid_after: Option<i64>,
 }
 
 type Growth = Vec<(i64, i64, f64)>; // (stamp, effect, metres)
 
-fn run(c: &Case, rules: Rules) -> Out {
+fn run(c: &Case, rules: Rules, relays: bool) -> Out {
     let world_conf = |t: i64| -> i64 {
         let mut tt = t;
         if let Some((s, len)) = c.world_stall {
@@ -137,9 +161,9 @@ fn run(c: &Case, rules: Rules) -> Out {
         }
         tt - LAG_R
     };
-    let revised = matches!(rules, Rules::Da3 | Rules::Revised | Rules::NoStart);
-    let capped = matches!(rules, Rules::Revised | Rules::NoStart);
-    let start = matches!(rules, Rules::Da3 | Rules::Revised);
+    let revised = matches!(rules, Rules::Da3 | Rules::Revised | Rules::NoStart | Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0);
+    let capped = matches!(rules, Rules::Revised | Rules::NoStart | Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0);
+    let start = matches!(rules, Rules::Da3 | Rules::Revised | Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0);
     let ceil_div = |a: i64, b: i64| (a + b - 1) / b;
     // Growth effects under each rule set's J. `me` judges `other` from what its own log holds at the stamp.
     // `other`'s envelope counts growth stamped by its known confirmed frame. `dir` is +1 when `other` lies
@@ -157,7 +181,7 @@ fn run(c: &Case, rules: Rules) -> Out {
             let knows_other = match other.created {
                 None => true,
                 // Review Q2: the world-log directory confirmed through s - S_create, or a relay.
-                Some(co) if capped => co <= stamp - c.s_create || (relayed && world_conf(stamp) >= co),
+                Some(co) if capped => co <= stamp - c.s_create || (relays && relayed && world_conf(stamp) >= co),
                 Some(co) => relayed && world_conf(stamp) >= co,
             };
             // (instant metres, clocked metres, J of the clocked part)
@@ -209,15 +233,20 @@ fn run(c: &Case, rules: Rules) -> Out {
     };
     let gr = effects(&c.r, &c.q, 1.0, c.v_r, v, true);
     let gq = effects(&c.q, &c.r, -1.0, v, c.v_r, false);
-    let delay = if matches!(rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart) { c.s_create } else { LAMBDA };
+    let delay = match rules {
+        Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0 => 0,
+        Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart => c.s_create,
+        _ => LAMBDA,
+    };
     // Creation validity of q against R as the world-log directory shows R at q's stamp.
     let mut q_is_join = false;
     if let Some(sq) = c.q.created {
-        if rules != Rules::Old {
+        // Creation validity is checked within a band only (25.6: margin 0 across bands).
+        if rules != Rules::Old && !c.cross_band {
             let r_in_directory = match c.r.created {
                 None => true,
                 Some(sr) => {
-                    if matches!(rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart) {
+                    if matches!(rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart | Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0) {
                         sr < sq // earlier in world-log order, pending or not
                     } else {
                         world_conf(sq) >= sr // only once confirmed in the directory
@@ -241,9 +270,12 @@ fn run(c: &Case, rules: Rules) -> Out {
         }
     }
     let live = |s: &Side, f: i64| s.created.is_none_or(|cs| f >= cs + delay);
+    // Review S1: a reader treats a provisional larger-band region as in effect from s0 + S_create.
+    let reader_delay = if c.cross_band && matches!(rules, Rules::Provisional | Rules::ProvNoFreeze) { c.s_create } else { delay };
+    let live_q = |f: i64| c.q.created.is_none_or(|cs| f >= cs + reader_delay);
     let edge_r = |f: i64| c.r.edge0 + gr.iter().filter(|g| g.1 <= f).map(|g| g.2).sum::<f64>();
     let edge_q = |f: i64| c.q.edge0 - gq.iter().filter(|g| g.1 <= f).map(|g| g.2).sum::<f64>();
-    let f_m = if q_is_join { None } else { (0..T).find(|&f| live(&c.r, f) && live(&c.q, f) && edge_q(f) - edge_r(f) < d) };
+    let f_m = if q_is_join { None } else { (0..T).find(|&f| live(&c.r, f) && live_q(f) && edge_q(f) - edge_r(f) < d) };
     // Before the revision, nothing bounds a small-band region on a larger band's region (review P1).
     let bounds = !(c.cross_band && !revised);
 
@@ -324,7 +356,11 @@ fn run(c: &Case, rules: Rules) -> Out {
     };
     let (late_r, lost_r) = side(&c.r, &c.q, &gr, &gq, 1.0, v);
     let late_q = if q_is_join || c.cross_band { false } else { side(&c.q, &c.r, &gq, &gr, -1.0, c.v_r).0 };
-    Out { late_r, late_q, q_is_join, f_m, lost_r, instant }
+    let valid_after = match (rules, c.q.created) {
+        (Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0, Some(sq)) => (sq..T).find(|&t| world_conf(t) >= sq).map(|t| t - sq),
+        _ => None,
+    };
+    Out { late_r, late_q, q_is_join, f_m, lost_r, instant, valid_after }
 }
 
 fn fixed(edge: f64) -> Side {
@@ -486,6 +522,72 @@ pub fn run_all() {
     c.relay_q = Some(2500);
     c.refresh = Some(3600);
     cases.push(c);
+    // Provisional arrival (neighbourhood-loading note): q arrives at the closest valid gap while R walks
+    // toward it; inside its first S_create q steps a chunk twice and scales up +9 chunks (deferred to
+    // s0 + S_create); with and without a world-log stall.
+    for stall in [None, Some((560, 480))] {
+        let mut c = base(&format!(
+            "arrival at the closest valid gap walks and scales up inside its first S_create, R walks toward it{}",
+            if stall.is_some() { ", world log stalled 8 s" } else { "" }
+        ));
+        let every = (60.0 * CHUNK / c.v).ceil() as i64;
+        c.r = Side { created: None, edge0: 0.0, growth: walk(0, every, 40, CHUNK), stall: None, no_evict: false };
+        let wc = stall.filter(|st: &(i64, i64)| st.0 <= 600 && 600 < st.0 + st.1).map(|st| st.0).unwrap_or(600) - LAG_W;
+        let k = (wc / HEAD) * HEAD - LAG_R;
+        let r_env: f64 = c.r.growth.iter().filter(|g| g.0 <= k).map(|g| g.1).sum();
+        let gap = r_env + c.d_merge + c.v * c.s_create as f64 / 60.0 + c.v * (600 - k) as f64 / 60.0 + 1.0;
+        let mut g = vec![(660, CHUNK), (720, CHUNK), (900, 9.0 * CHUNK)];
+        g.extend(walk(1300, every, 30, CHUNK));
+        c.q = Side { created: Some(600), edge0: gap, growth: g, stall: None, no_evict: false };
+        c.world_stall = stall;
+        c.closest = true;
+        cases.push(c);
+    }
+    // Two arrivals 10 frames apart with the world log stalled 8 s: 5 km apart (the second must become a
+    // join), and at the closest valid gap, both then walking toward each other.
+    let mut c = base("two arrivals 5 km apart, 10 frames apart, world log stalled 8 s");
+    c.r = Side { created: Some(600), edge0: 0.0, growth: vec![], stall: None, no_evict: false };
+    c.q = Side { created: Some(610), edge0: 5000.0, growth: vec![], stall: None, no_evict: false };
+    c.world_stall = Some((560, 480));
+    cases.push(c);
+    let mut c = base("two arrivals at the closest valid gap, 10 frames apart, world log stalled 8 s, both walk toward each other");
+    let every = (60.0 * CHUNK / c.v).ceil() as i64;
+    let k = ((560 - LAG_W) / HEAD) * HEAD - LAG_R;
+    let gap = c.d_merge + c.v * c.s_create as f64 / 60.0 + c.v * (610 - k) as f64 / 60.0 + 1.0;
+    c.r = Side { created: Some(600), edge0: 0.0, growth: walk(601, every, 40, CHUNK), stall: None, no_evict: false };
+    c.q = Side { created: Some(610), edge0: gap, growth: walk(611, every, 40, CHUNK), stall: None, no_evict: false };
+    c.world_stall = Some((560, 480));
+    c.closest = true;
+    cases.push(c);
+    // The same, but both scale up by the full G_inst toward each other right after arriving, before
+    // either knows the other: only the growth freeze keeps the second instant growth out.
+    let mut c = base("two arrivals at the closest valid gap, 10 frames apart, world log stalled 8 s, both scale up 4 km at once toward each other");
+    let k = ((560 - LAG_W) / HEAD) * HEAD - LAG_R;
+    let gap = c.d_merge + c.v * c.s_create as f64 / 60.0 + c.v * (610 - k) as f64 / 60.0 + 1.0;
+    c.r = Side { created: Some(600), edge0: 0.0, growth: vec![(620, G_INST)], stall: None, no_evict: false };
+    c.q = Side { created: Some(610), edge0: gap, growth: vec![(630, G_INST)], stall: None, no_evict: false };
+    c.world_stall = Some((560, 480));
+    c.closest = true;
+    cases.push(c);
+    // Review of e5596ff: R makes a full G_inst instant growth toward an arrival at the closest valid gap
+    // (stamped after the arrival, before s0 + S_create puts it in R's guaranteed known set), then walks.
+    for (rs, stall) in [(605i64, None), (700, None), (1100, Some((560i64, 480i64))), (1190, None)] {
+        let mut c = base(&format!(
+            "R grows 4 km at once toward an arrival at the closest valid gap at frame {rs}, then walks toward it{}",
+            if stall.is_some() { ", world log stalled 8 s" } else { "" }
+        ));
+        let every = (60.0 * CHUNK / c.v).ceil() as i64;
+        let mut g = vec![(rs, G_INST)];
+        g.extend(walk(rs + 60, every, 40, CHUNK));
+        c.r = Side { created: None, edge0: 0.0, growth: g, stall: None, no_evict: false };
+        let wc = stall.filter(|st: &(i64, i64)| st.0 <= 600 && 600 < st.0 + st.1).map(|st| st.0).unwrap_or(600) - LAG_W;
+        let k = (wc / HEAD) * HEAD - LAG_R;
+        let gap = c.d_merge + c.v * c.s_create as f64 / 60.0 + c.v * (600 - k) as f64 / 60.0 + 1.0;
+        c.q = Side { created: Some(600), edge0: gap, growth: walk(1300, every, 30, CHUNK), stall: None, no_evict: false };
+        c.world_stall = stall;
+        c.closest = true;
+        cases.push(c);
+    }
     // Review P1: a x128 giant's region L (band unit 128 m: v_max 12.8 km/s, 131 km chunks) and a human
     // region R; R must read L from the first frame their footprints overlap (margin 0).
     let giant = |name: &str| {
@@ -523,6 +625,14 @@ pub fn run_all() {
     c.q.stall = Some((3000, 1800));
     c.q.no_evict = true;
     cases.push(c);
+    // Review S1: a giant arrives in empty giant-band space, its footprint (radius about 400 km) already over a
+    // human region R (no creation buffer across bands), or 50 km away and then walking at its v_max.
+    for (e0, name) in [(-1000.0, "overlapping a human region"), (50_000.0, "50 km from a human region, then walks toward it at its v_max")] {
+        let mut c = giant(&format!("giant arrives {name}"));
+        let g = if e0 > 0.0 { walk(601, 615, 12, 128.0 * CHUNK) } else { vec![] };
+        c.q = Side { created: Some(600), edge0: e0, growth: g, stall: None, no_evict: false };
+        cases.push(c);
+    }
 
     let rule_sets = [
         ("2a228c6", Rules::Old),
@@ -531,63 +641,60 @@ pub fn run_all() {
         ("da3cd74", Rules::Da3),
         ("revised-no-start", Rules::NoStart),
         ("revised", Rules::Revised),
+        ("provisional-no-freeze", Rules::ProvNoFreeze),
+        ("provisional-reader-at-s0", Rules::ProvReaderAtS0),
+        ("provisional", Rules::Provisional),
     ];
-    let (mut late_count, mut counted) = ([0usize; 6], [0usize; 6]);
-    for c in &cases {
-        for (i, (rule, rules)) in rule_sets.iter().enumerate() {
-            // Separate bands that read each other exist only from e10c905 on.
-            if c.cross_band && matches!(*rules, Rules::Old | Rules::V05) {
-                println!("RESULT safety case=\"{}\" rule={rule} n/a", c.name);
-                continue;
-            }
-            counted[i] += 1;
-            // A created region can only grow once it exists: stamp + S_create from e10c905 on.
-            let mut cc = c.clone();
-            if cc.closest && matches!(*rules, Rules::Revised | Rules::NoStart) {
-                // The revised creation buffer adds R's instant growth: one G_inst within a window under T_h.
-                cc.q.edge0 += G_INST * cc.v_r / 100.0;
-                if cc.r.growth.len() == 1 {
-                    cc.r.growth[0].1 = G_INST * cc.v_r / 100.0; // R grows by the full cap
+    for (relays, tag) in [(true, "safety"), (false, "safety-guaranteed")] {
+        let (mut late_count, mut counted) = ([0usize; 9], [0usize; 9]);
+        for c in &cases {
+            for (i, (rule, rules)) in rule_sets.iter().enumerate() {
+                // Separate bands that read each other exist only from e10c905 on.
+                if c.cross_band && matches!(*rules, Rules::Old | Rules::V05) {
+                    println!("RESULT {tag} case=\"{}\" rule={rule} n/a", c.name);
+                    continue;
                 }
-            }
-            if matches!(*rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart) {
-                for s in [&mut cc.r, &mut cc.q] {
-                    if let Some(cs) = s.created {
-                        for g in s.growth.iter_mut() {
-                            g.0 = g.0.max(cs + cc.s_create + 1);
+                counted[i] += 1;
+                let mut cc = c.clone();
+                if cc.closest && matches!(*rules, Rules::Revised | Rules::NoStart | Rules::Provisional | Rules::ProvNoFreeze | Rules::ProvReaderAtS0) {
+                    // The revised creation buffer adds R's instant growth: one G_inst within a window under T_h.
+                    cc.q.edge0 += G_INST * cc.v_r / 100.0;
+                    if cc.r.growth.len() == 1 {
+                        cc.r.growth[0].1 = G_INST * cc.v_r / 100.0; // R grows by the full cap
+                    }
+                }
+                // A created region can only grow once it exists (from e10c905 on), or, if provisional, once
+                // every other region holds it in the directory: stamp + S_create either way.
+                if matches!(*rules, Rules::E10 | Rules::Da3 | Rules::Revised | Rules::NoStart | Rules::Provisional | Rules::ProvReaderAtS0) {
+                    for s in [&mut cc.r, &mut cc.q] {
+                        if let Some(cs) = s.created {
+                            for g in s.growth.iter_mut() {
+                                g.0 = g.0.max(cs + cc.s_create + 1);
+                            }
                         }
                     }
                 }
+                let o = run(&cc, *rules, relays);
+                let late = o.late_r || o.late_q;
+                late_count[i] += late as usize;
+                println!(
+                    "RESULT {tag} case=\"{}\" rule={rule} late={late} late_R={} late_q={} q_becomes_join={} merge_or_read_frame={} instant_growths={} R_frames_lost_before_learning={} validity_known_after={}",
+                    c.name,
+                    o.late_r,
+                    o.late_q,
+                    o.q_is_join,
+                    o.f_m.map(|f| f.to_string()).unwrap_or("-".into()),
+                    o.instant,
+                    o.lost_r,
+                    o.valid_after.map(|f| f.to_string()).unwrap_or("-".into())
+                );
             }
-            let o = run(&cc, *rules);
-            let late = o.late_r || o.late_q;
-            late_count[i] += late as usize;
-            println!(
-                "RESULT safety case=\"{}\" rule={rule} late={late} late_R={} late_q={} q_becomes_join={} merge_or_read_frame={} instant_growths={} R_frames_lost_before_learning={}",
-                c.name,
-                o.late_r,
-                o.late_q,
-                o.q_is_join,
-                o.f_m.map(|f| f.to_string()).unwrap_or("-".into()),
-                o.instant,
-                o.lost_r
-            );
         }
+        let parts: Vec<String> = rule_sets
+            .iter()
+            .enumerate()
+            .map(|(i, (rule, _))| format!("late_{}={}/{}", rule.replace('-', "_"), late_count[i], counted[i]))
+            .collect();
+        println!("RESULT {tag}-summary cases={} {}", cases.len(), parts.join(" "));
     }
-    println!(
-        "RESULT safety-summary cases={} late_2a228c6={}/{} late_05d3cc0={}/{} late_e10c905={}/{} late_da3cd74={}/{} late_revised_no_start={}/{} late_revised={}/{}",
-        cases.len(),
-        late_count[0],
-        counted[0],
-        late_count[1],
-        counted[1],
-        late_count[2],
-        counted[2],
-        late_count[3],
-        counted[3],
-        late_count[4],
-        counted[4],
-        late_count[5],
-        counted[5]
-    );
 }
