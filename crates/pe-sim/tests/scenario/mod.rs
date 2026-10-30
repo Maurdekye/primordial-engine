@@ -124,12 +124,12 @@ fn reshuffle(store: &mut SimStore, ctx: &TickCtx) {
     {
         let idx = ctx.rng(5).below(3) as usize;
         // Cycles are refused identically everywhere; that refusal is part of the scenario.
-        let _ = store.set_parent(c, Some(p), Some(idx));
+        let _ = store.set_parent_keep_world(c, Some(p), Some(idx));
     }
     if ctx.frame.0 % 29 == 11
         && let Some(c) = pick(store, ctx, 6)
     {
-        store.set_parent(c, None, None).unwrap();
+        store.set_parent_keep_world(c, None, None).unwrap();
     }
     if ctx.frame.0 % 11 == 7
         && let Some(d) = pick(store, ctx, 7)
@@ -149,6 +149,7 @@ pub fn schedule() -> Schedule {
         .with("integrate", integrate)
         .with("heat", heat)
         .with("reshuffle", reshuffle)
+        .with("maintain_transforms", pe_sim::transform::maintain_transforms)
 }
 
 pub const SEED: u64 = 0x5EED_0FC0_FFEE;

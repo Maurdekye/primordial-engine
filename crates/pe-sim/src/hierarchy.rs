@@ -126,13 +126,7 @@ impl SimStore {
         self.set_node(id, Node { parent: ObjectId::NONE, prev_sibling: ObjectId::NONE, next_sibling: ObjectId::NONE, ..n });
     }
 
-    /// Moves `child` under `parent` at position `index` among its children (`None` or past the end:
-    /// last), or makes it a root (`parent = None`). Refuses a move that would create a cycle.
-    ///
-    /// World transforms stay where they are (review P21-6): the child's `Transform`, or if it has none the
-    /// transformed objects below it, are rewritten for their new frame. A move whose rewritten transforms
-    /// would break the limits of [`crate::transform`] is refused, and nothing changes.
-    pub fn set_parent(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
+    fn check_move(&self, child: ObjectId, parent: Option<ObjectId>) -> Result<(), Error> {
         if !self.exists(child) {
             return Err(Error::UnknownObject(child));
         }
@@ -144,19 +138,57 @@ impl SimStore {
                 return Err(Error::Cycle { child, parent: p });
             }
         }
-        // Only a change of frame moves world transforms; the same frame composes to the same result.
+        Ok(())
+    }
+
+    /// The objects whose frame a move of `child` changes: `child` if it has a `Transform`, else the
+    /// transformed objects below it.
+    fn moved_by(&self, child: ObjectId) -> Vec<ObjectId> {
+        if self.has::<crate::Transform>(child) { vec![child] } else { self.frame_children(child) }
+    }
+
+    /// Moves `child` under `parent` at position `index` among its children (`None` or past the end:
+    /// last), or makes it a root (`parent = None`). Refuses a move that would create a cycle.
+    ///
+    /// A data edit (review P21R-3): local transforms stay as they are, so world transforms follow the new
+    /// frame. Refused if a moved object without a frame has a non-zero `chunk` and would gain one. For an
+    /// edit that keeps world transforms, use [`SimStore::set_parent_keep_world`].
+    pub fn set_parent(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
+        self.check_move(child, parent)?;
         let new_frame = parent.and_then(|p| self.frame_or_self(p));
-        let rewritten = if new_frame == self.frame_of(child) {
+        if new_frame.is_some() && self.frame_of(child).is_none() {
+            for o in self.moved_by(child) {
+                if self.get::<crate::Transform>(o).unwrap().chunk != [0; 3] {
+                    return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: o, field: "chunk".into() });
+                }
+            }
+        }
+        self.relink(child, parent, index);
+        Ok(())
+    }
+
+    /// [`SimStore::set_parent`], keeping world transforms (review P21-6): the moved transforms are rewritten
+    /// for their new frame, with the root chunk recomputed exactly. A move whose rewritten transforms would
+    /// break the limits of [`crate::transform`] is refused, and nothing changes. Linear in the objects moved.
+    pub fn set_parent_keep_world(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
+        self.check_move(child, parent)?;
+        // Only a change of frame moves world transforms; the same frame composes to the same result.
+        let (old_frame, new_frame) = (self.frame_of(child), parent.and_then(|p| self.frame_or_self(p)));
+        let rewritten = if new_frame == old_frame {
             Vec::new()
         } else {
-            let moved = if self.has::<crate::Transform>(child) { vec![child] } else { self.frame_children(child) };
-            self.relocalize(&moved, new_frame)?
+            self.relocalize(&self.moved_by(child), old_frame, new_frame)?
         };
-        self.unlink(child);
+        self.relink(child, parent, index);
         for (o, t) in rewritten {
             self.put_row(ComponentId::TRANSFORM, o, bytemuck::bytes_of(&t));
         }
-        let Some(p) = parent else { return Ok(()) };
+        Ok(())
+    }
+
+    fn relink(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) {
+        self.unlink(child);
+        let Some(p) = parent else { return };
         // The sibling to insert before, if any.
         let before = index.and_then(|i| self.children(p).nth(i));
         let mut cn = self.node(child);
@@ -194,7 +226,6 @@ impl SimStore {
         }
         self.set_node(p, pn);
         self.set_node(child, cn);
-        Ok(())
     }
 
     /// `id` and all its descendants, depth-first, children in order.
