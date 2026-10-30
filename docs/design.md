@@ -1284,11 +1284,35 @@ is fixed once the author's chain is contiguous up to it.
   So at most one side of a partition can change membership or confirm (review H3).
 * **Eviction of an equivocator** is decided from chain data alone (9.3): votes, frozen heads, the cut, and
   the frame from which the member no longer counts [V session-sim c2, ackfork, lateequiv, evict].
-* **General view changes** (a silent member, a join, demotion to spectator, 10.9) [I]:
-  * A proposal names the frame it takes effect at, which is after every signer's confirmed frame.
-  * For each removed member it names the cut: the prefix every remaining member holds.
-  * Each member signs at most one proposal per epoch round.
-  * Confirmed frames never change, because the cut contains every entry that could be stable.
+* **Removing a silent member** (review R3-2) [V session-sim crashstall, r14 crash]:
+  * **Suspicion.** A member none of whose entries has reached a replica for 180 frames (3 s, 1.5 times
+    the speculation limit), directly or fetched, is presumed crashed. The exception is when another
+    member's acks show more of its chain: then the replica is only behind, and fetches.
+  * **Vote.** The replica freezes that chain and votes to remove the member. Removal then follows the
+    eviction rules (9.3): every remaining member votes, the votes become stable among them, and the cut
+    keeps everything that could have been stable. So no confirmed frame changes.
+  * **Withdrawal.** A silence vote can be withdrawn if the member is heard from again, but only while the
+    voter does not yet see a standing vote from every other remaining member. No member can have decided
+    by then: a decision needs the voter's acks to reference every vote, and those acks come after the
+    withdrawal in its chain.
+  * **Two-member worlds** never remove anyone. Removal needs a strict majority without the removed
+    member, so both members pause instead (D7).
+  * **Measured** (crashstall): member 3 of 3 went silent at t = 3 s. Members 1 and 2 removed it once it
+    had been silent for 180 frames, with the cut at seq 86, from frame 173. They paused 72 frames at the
+    speculation limit first. At t = 15 s confirmation was 4-6 frames behind the present, and both members equalled the
+    offline replay. Before the fix, confirmation stayed at frame 169 and the members paused 604 frames.
+  * **What a crash costs:** a pause of about 1.2 s for everyone, set by the 3 s threshold. A shorter
+    threshold would turn congestion into removals: in c1, a congested member is silent for 1.95 s.
+* **Still [I]:** joins; demotion to spectator (10.9); several members failing at once; colluders.
+  * Each removal needs the votes of all other remaining members. So two silent members at once, or a
+    colluder that withholds or forks its vote, stall removal. The honest members keep their confirmed
+    history and pause.
+  * A proposer-based view change (PBFT's, or Raft's joint consensus) would let an honest majority remove
+    several members at once. It would also give the other world's certificates a new epoch to follow
+    (22.7).
+  * Against colluders no protocol does better than n >= 3f + 1: Byzantine agreement under partial
+    synchrony needs it, so two colluders of four can always stall a session [S Dwork, Lynch and
+    Stockmeyer 1988].
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -3083,6 +3107,15 @@ confirmed facts, and only with proof.**
    * No separate "not received" step is needed. Anyone holding A's certificate may relay the `Arrive` at
      any time, and past the deadline that relay is refused. An object therefore waits only while nobody
      can reach B at all (22.7).
+   * **Deadlines are bounded** (round 3, low). B refuses a deadline more than 3,600 of its frames ahead
+     (`RejectedDeadline`), and the certified refusal returns the object.
+   * **Forgetting transfers.** B forgets a rejected transfer once its deadline has passed and 3,600 frames
+     after it arrived. Any replay is then late, so it is rejected again, consistently. By then the
+     refusal is confirmed and attested, because a sim never runs more than the speculation limit past
+     its confirmed frame. A forgets a resolved escrow 3,600 frames after the departure. B keeps accepted transfer ids (8 bytes each). The reviewer proposed pruning all
+     transfers past their deadline, but then a late replay of an accepted transfer's `Arrive` would be
+     certified "rejected", and could refund an object that did arrive. Production drops them once A
+     certifies the transfer resolved [I].
    * Without a certificate, A never refunds on a timer alone. B may have accepted, and refunding would
      duplicate the object.
 
@@ -3128,7 +3161,7 @@ persists until a verdict arrives.
 | B rolls back past fB before confirming it; the arrival stays valid | The object is recreated identically in the re-simulation |
 | B rolls back past fB and the arrival becomes invalid (an earlier portal close, the budget, or an ACL change) | B's confirmed verdict is "rejected". The verdict is relayed and the object returns in A [V r14 reject: B rolled back 10 frames past fB; the arrival was rejected; the verdict returned the object to A] |
 | Either world rolls back past a confirmed frame | Cannot happen. Confirmed frames never roll back; a partition's minority side only loses frames it never confirmed (10.8) |
-| The carrier crashes mid-transfer | The escrow keeps the record. The certificates are self-certifying, so any member of both worlds can relay them [I: the spike's carrier is still the only relayer]. A crashed member that blocks either world's confirmation is removed by a view change (10.8). If nobody is in both worlds, the object waits in escrow: two worlds with no common member have no channel at all, and refunding without B's certified "not received" could duplicate it (two generals) |
+| The carrier crashes mid-transfer | The escrow keeps the record. The certificates are self-certifying, so every other member of both worlds relays them. Each world removes the silent carrier (10.8) and its confirmation resumes [V r14 crash: worlds of three members, one of them, member 4, in both. The carrier went silent 84 ms after its departure. Both worlds removed it once it had been silent for 180 frames; member 4 then relayed, and the object arrived in B at 6.6 s. It was conserved, and every replica equalled the replay]. Limits: a two-member world cannot remove its other member and pauses instead (D7). If nobody else is in both worlds, the object waits in escrow: two worlds with no common member have no channel at all, and refunding without B's certified refusal could duplicate it (two generals) |
 
 * **Sync checks:** the escrow and arrival tables are part of each world's hashed state (9). Members of
   both worlds also compare A's record hash with B's arrival record.
@@ -3141,8 +3174,11 @@ persists until a verdict arrives.
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
-  * **Conservation assumes that every world on a route list has an honest majority.** A world that one
-    member controls is that member's word, so it never belongs on another world's route list.
+  * **Conservation assumes that every world on a route list has an honest majority** (D46). A world that
+    one member controls is that member's word, so it never belongs on another world's route list.
+    * A route-listed world whose majority is dishonest can sign a fresh departure of any global id: one
+      born elsewhere, live elsewhere, or spent. Any world where that id is not live would accept it, so
+      that is a cross-world duplicate or a resurrection [I, review of f060e30].
   * With route lists, a single member, including the carrier, can no longer mint, lose or duplicate an
     object [V r14 forge]. A dishonest majority of a routed world still can: trust is per route.
   * **Global ids are not bound to their birth world.** The reviewer proposed that a global id's world
@@ -3213,9 +3249,10 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 | throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
 | forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid` | 1 live copy (B), 0 pending; objects 50 and 51 still in A | all equal |
 | late | A 2-frame deadline, shorter than the certificate round | Arrival `RejectedLate`; the certified refusal returns the object to A | 1 live copy (A), 0 pending | all equal |
+| crash | Three members per world; member 4 is in both. The carrier goes silent 84 ms after its departure (reviews NEW-6, R3-7) | Both worlds remove the carrier after 180 frames of silence; member 4 relays the transfer; accepted in B | 1 live copy (B), 0 pending | all equal (live members) |
 | ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | all equal. ok and reject have digests identical to forward. abort's A digest differs (review round 3): the escrow key derives from the Depart's entry id, whose chain contents depend on processing order |
 
-These runs have live carriers. With a crashed carrier and nobody else in both worlds, the object waits in escrow (22.7), so 3d0f98a's "nothing in limbo" held only for the scripted runs (review NEW-6).
+With a crashed carrier and nobody else in both worlds, the object waits in escrow (22.7), and a two-member world pauses (D7). "crash" shows the case with another member in both worlds and three members per world (review NEW-6).
 
 ### 22.11 What this adds elsewhere
 
@@ -3706,6 +3743,13 @@ entry says so.
   * Each world names, in its genesis config, the worlds it trades with (its route list), and accepts
     certificates only from them. Without route lists, a member who controls a world alone could duplicate
     or mint objects [V r14 forge; review R3-4, R3-5].
+  * **Trust assumption:** every route-listed world has an honest majority. A world whose majority is
+    dishonest can sign a departure of any global id, which another world accepts wherever that id is
+    not live: a cross-world duplicate, or a resurrected object.
+  * **Option for untrusted partners** [I]: bind each global id to its birth world, and require a
+    provenance chain. Each `Arrive` certificate then references the certified transfer, or the birth
+    record, that brought the object into its source world. A destination checks the chain back to the
+    birth world, which costs one extra reference per hop.
   * Cost: one attestation entry per member per transfer step, and each world must know the other's member
     keys.
   * Alternatives:

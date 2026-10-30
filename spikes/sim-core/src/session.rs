@@ -129,9 +129,13 @@ pub enum Payload {
     /// before `horizon`; per other author, the newest seq it holds contiguously and that entry's
     /// id; its newest confirmed check frame and full-state hash (review H4).
     Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)> },
-    /// Vote to evict `target`, which signed two versions of its entry `seq`. `frozen` is the head
-    /// of target's chain this voter holds and will ever reference (review NEW-2).
+    /// Vote to evict `target`, which signed two versions of its entry `seq`, or (`seq` = 0) which
+    /// has gone silent (review R3-2). `frozen` is the head of target's chain this voter holds and
+    /// will ever reference (review NEW-2).
     Vote { target: MemberId, seq: u32, frozen: (u32, EntryId) },
+    /// Withdraw this member's silence vote against `target`, which was heard from again before
+    /// the removal could be decided (review R3-2). Votes on proofs are never withdrawn.
+    Unvote { target: MemberId },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -218,6 +222,7 @@ impl Wr {
             Payload::Vote { target, seq, frozen } => {
                 self.u8(8); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1)
             }
+            Payload::Unvote { target } => { self.u8(10); self.u32(*target) }
         }
         match &e.carried {
             Some((obj, s)) => { self.u8(1); self.u32(*obj); self.state(s) }
@@ -284,6 +289,7 @@ impl Rd<'_> {
                 Payload::Ack { horizon, heads, check }
             }
             8 => Payload::Vote { target: self.u32()?, seq: self.u32()?, frozen: (self.u32()?, self.u64()?) },
+            10 => Payload::Unvote { target: self.u32()? },
             _ => return None,
         };
         let carried = match self.u8()? {
@@ -329,6 +335,9 @@ pub fn tie_rank(seed: u64, frame: u64, member: MemberId) -> u64 {
 /// Largest linear speed (m/s) and spin (rad/s) an arriving object may carry (review NEW-21).
 pub const MAX_ARRIVAL_SPEED: f32 = 200.0;
 pub const MAX_ARRIVAL_SPIN: f32 = 2000.0;
+/// Furthest deadline, in frames after its arrival, that a destination accepts (round 3, low):
+/// it bounds how long a transfer stays open and its id must be kept. World config in production.
+pub const MAX_DEADLINE_FRAMES: u64 = 3600;
 
 /// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
 pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
@@ -517,7 +526,8 @@ pub struct Escrow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrival {
     Accepted { obj: u32, frame: u64 },
-    Rejected { frame: u64 },
+    /// `until` is the transfer's deadline: past it, any replay is late, so the entry can go.
+    Rejected { frame: u64, until: u64 },
 }
 
 /// Everything that rolls back together. The Box3D world image covers bodies, contacts, islands
@@ -568,6 +578,10 @@ pub struct Stats {
     pub nonfinite: u64,
     /// Eviction votes found to contradict their voter's own published references (review R3-1).
     pub lying_votes: u64,
+    /// Members this replica presumed crashed and voted to remove (review R3-2).
+    pub suspicions: u64,
+    /// Silence votes this replica withdrew because the member was heard from again (review R3-2).
+    pub withdrawn_votes: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -622,6 +636,9 @@ pub struct SimConfig {
     /// Remote-hand dead reckoning: an active hand with no entry for a frame keeps its last
     /// commanded velocity for up to this many frames, then holds. 0 = hold at once.
     pub hand_predict: u64,
+    /// A member none of whose entries has arrived for this many frames is presumed crashed and
+    /// voted out (review R3-2). 1.5x the speculation limit, so a congested member is not.
+    pub suspect_after: u64,
 }
 
 impl Default for SimConfig {
@@ -634,6 +651,7 @@ impl Default for SimConfig {
             seed: 0x5052_494D_4F52_4449,
             check_every: 30,
             hand_predict: 0,
+            suspect_after: 180,
         }
     }
 }
@@ -657,6 +675,8 @@ pub enum Outcome {
     RejectedLate,
     /// R14: an object with this global id is already live here (review R3-5).
     RejectedLiveId,
+    /// R14: the deadline is more than `MAX_DEADLINE_FRAMES` away (round 3, low).
+    RejectedDeadline,
 }
 
 /// One member's eviction vote, as read from its chain (review R3-1).
@@ -667,6 +687,10 @@ struct VoteRec {
     /// The vote's own seq in the voter's chain: it must be stable among the remaining members
     /// before any member acts on it.
     at: u32,
+    /// A vote on silence (review R3-2), which its voter may withdraw, rather than on a proof.
+    silence: bool,
+    /// The frame the vote was stamped at.
+    stamp: u64,
 }
 
 pub struct WorldSim {
@@ -716,6 +740,8 @@ pub struct WorldSim {
     stable_hi: BTreeMap<MemberId, u32>,
     /// (target, voter) pairs whose vote was found to be a lie (review R3-1).
     lies: BTreeSet<(MemberId, MemberId)>,
+    /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
+    heard: BTreeMap<MemberId, u64>,
     /// Equivocators: first disputed seq and the two versions.
     proofs: BTreeMap<MemberId, (u32, EntryId, EntryId)>,
     /// Heads this member froze when it learned of a proof.
@@ -810,6 +836,7 @@ impl WorldSim {
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             lies: BTreeSet::new(),
+            heard: BTreeMap::new(),
             proofs: BTreeMap::new(),
             frozen: BTreeMap::new(),
             votes: BTreeMap::new(),
@@ -939,7 +966,7 @@ impl WorldSim {
         for (t, a) in &self.t.arrivals {
             match a {
                 Arrival::Accepted { obj, frame } => v.extend([*t, 1, *obj as u64, *frame]),
-                Arrival::Rejected { frame } => v.extend([*t, 2, *frame]),
+                Arrival::Rejected { frame, until } => v.extend([*t, 2, *frame, *until]),
             }
         }
         v.push(self.t.portal_open as u64);
@@ -987,7 +1014,7 @@ impl WorldSim {
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
     fn set_eff(&mut self, id: EntryId) {
         let e = &self.entries[&id];
-        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. });
+        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. });
         let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
@@ -1117,6 +1144,9 @@ impl WorldSim {
             return out;
         }
         self.by_author.insert((e.member, e.seq), id);
+        if e.member != self.me {
+            self.heard.insert(e.member, self.now);
+        }
         if let Some((obj, _)) = e.carried {
             self.watched.insert(obj);
         }
@@ -1124,7 +1154,7 @@ impl WorldSim {
             self.watched.insert(obj);
         }
         // Below the confirmed frame only a horizon violation can be new (design 10.8): never apply.
-        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. }) {
+        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. }) {
             self.violations.insert(id);
         }
         let disputed = self.proofs.get(&e.member).is_some_and(|&(k, _, _)| e.seq >= k)
@@ -1176,7 +1206,7 @@ impl WorldSim {
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, .. } => e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp,
-            Payload::Vote { .. } => true,
+            Payload::Vote { .. } | Payload::Unvote { .. } => true,
             _ => max_h.is_none_or(|h| e.stamp > h),
         };
         if !valid {
@@ -1220,10 +1250,18 @@ impl WorldSim {
                     self.maybe_evict(t);
                 }
             }
-            Payload::Vote { target, frozen, .. } => {
-                // Only a member's first vote against a target counts (review R3-1).
-                self.votes.entry(target).or_default().entry(m).or_insert(VoteRec { frozen, at: e.seq });
+            Payload::Vote { target, seq, frozen } => {
+                // Only a member's first standing vote against a target counts (review R3-1).
+                let rec = VoteRec { frozen, at: e.seq, silence: seq == 0, stamp: e.stamp };
+                self.votes.entry(target).or_default().entry(m).or_insert(rec);
                 self.maybe_evict(target);
+            }
+            Payload::Unvote { target } => {
+                if let Some(v) = self.votes.get_mut(&target) {
+                    if v.get(&m).is_some_and(|r| r.silence) {
+                        v.remove(&m);
+                    }
+                }
             }
             _ => {}
         }
@@ -1290,22 +1328,100 @@ impl WorldSim {
         self.proofs.insert(m, (k0, a, b));
         let mut out = Vec::new();
         if first && m != self.me && self.members.contains(&m) {
-            // Freeze what this member will ever reference of m's chain, and say so in a vote.
-            let f = self.contiguous.get(&m).copied().unwrap_or(0);
-            self.frozen.insert(m, f);
-            let fid = if f == 0 { 0 } else { self.by_author[&(m, f)] };
-            let (f, fid) = if self.lie_in_votes { (0, 0) } else { (f, fid) };
-            let v = Entry {
+            out.push(self.freeze_and_vote(m, k0));
+        }
+        self.reconcile(m);
+        out
+    }
+
+    /// Freeze what this member will ever reference of m's chain, and say so in a vote. `k0` is the
+    /// disputed seq of an equivocation, or 0 for a member presumed crashed.
+    fn freeze_and_vote(&mut self, m: MemberId, k0: u32) -> Entry {
+        let f = self.contiguous.get(&m).copied().unwrap_or(0);
+        self.frozen.insert(m, f);
+        let fid = if f == 0 { 0 } else { self.by_author[&(m, f)] };
+        let (f, fid) = if self.lie_in_votes { (0, 0) } else { (f, fid) };
+        let v = Entry {
+            member: self.me,
+            seq: self.my_seq + 1,
+            prev: self.my_last,
+            stamp: self.frame.max(self.now),
+            payload: Payload::Vote { target: m, seq: k0, frozen: (f, fid) },
+            carried: None,
+        };
+        self.publish(v)
+    }
+
+    /// Review R3-2 (the general view change, for a silent member): a member none of whose
+    /// entries has reached this replica, directly or fetched, for `suspect_after` frames is
+    /// presumed crashed, unless another member's acks show more of its chain than this replica
+    /// holds (then this replica is behind, and fetches). Its chain is frozen and a vote to remove
+    /// it is published. Removal then follows the eviction rules (9.3): every remaining member
+    /// votes, the votes become stable among them, and the cut keeps everything that could have
+    /// been stable, so no confirmed frame changes. Returns the votes to broadcast.
+    pub fn suspects_due(&mut self) -> Vec<Entry> {
+        // Removal needs a strict majority without the removed member, so a two-member world never
+        // suspects: both members pause instead (D7).
+        if !self.members.contains(&self.me) || (self.members.len() - 1) * 2 <= self.members.len() {
+            return vec![];
+        }
+        let mut out = Vec::new();
+        // Withdraw a silence vote against a member heard from again, while this replica does not
+        // yet see a standing vote from every other remaining member. Then no member can have
+        // decided the removal: a decision needs this member's acks to reference every vote, and
+        // those acks come after this withdrawal in its chain.
+        let mine: Vec<(MemberId, u64)> =
+            self.votes.iter().filter_map(|(t, v)| v.get(&self.me).filter(|r| r.silence).map(|r| (*t, r.stamp))).collect();
+        for (j, voted) in mine {
+            if self.evicted.contains_key(&j) || !self.members.contains(&j) || self.heard.get(&j).is_none_or(|&h| h <= voted) {
+                continue;
+            }
+            let complete = self.members.iter().filter(|&&k| k != j).all(|k| self.votes[&j].contains_key(k));
+            if complete {
+                continue;
+            }
+            self.stats.withdrawn_votes += 1;
+            self.ev(format!("member {j} heard from again: withdraw the vote to remove it"));
+            let e = Entry {
                 member: self.me,
                 seq: self.my_seq + 1,
                 prev: self.my_last,
                 stamp: self.frame.max(self.now),
-                payload: Payload::Vote { target: m, seq: k0, frozen: (f, fid) },
+                payload: Payload::Unvote { target: j },
                 carried: None,
             };
-            out.push(self.publish(v));
+            out.push(self.publish(e));
+            self.frozen.remove(&j);
+            let mut more = Vec::new();
+            self.extend_chain(j, &mut more);
         }
-        self.reconcile(m);
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        for j in members {
+            if j == self.me || self.frozen.contains_key(&j) || self.evicted.contains_key(&j) {
+                continue;
+            }
+            let heard = self.heard.get(&j).copied().unwrap_or(0);
+            if self.now < heard + self.cfg.suspect_after {
+                continue;
+            }
+            let mine = self.contiguous.get(&j).copied().unwrap_or(0);
+            let ahead: Vec<(MemberId, u32)> = self
+                .refs
+                .iter()
+                .filter(|((k, a), _)| *a == j && *k != self.me && *k != j)
+                .filter_map(|((k, _), r)| r.keys().next_back().filter(|&&s| s > mine).map(|&s| (*k, s)))
+                .collect();
+            if !ahead.is_empty() {
+                for (k, s) in ahead {
+                    self.want_from(k, j, mine + 1, s);
+                }
+                continue;
+            }
+            self.stats.suspicions += 1;
+            self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
+            out.push(self.freeze_and_vote(j, 0));
+            self.maybe_evict(j);
+        }
         out
     }
 
@@ -1515,7 +1631,7 @@ impl WorldSim {
         for (t, a) in &self.t.arrivals {
             let (frame, accepted) = match a {
                 Arrival::Accepted { frame, .. } => (*frame, true),
-                Arrival::Rejected { frame } => (*frame, false),
+                Arrival::Rejected { frame, .. } => (*frame, false),
             };
             if frame < self.conf {
                 facts.push(fact_verdict(self.world_id, *t, accepted));
@@ -1682,7 +1798,7 @@ impl WorldSim {
                     && w.x * w.x + w.y * w.y + w.z * w.z <= MAX_ARRIVAL_SPIN * MAX_ARRIVAL_SPIN;
                 if !sane {
                     if !self.t.arrivals.contains_key(transfer) {
-                        self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                        self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                     }
                     return Outcome::RejectedInvalid;
                 }
@@ -1693,16 +1809,22 @@ impl WorldSim {
                 // returns the object to the source. Nobody can hold it in limbo by never relaying:
                 // anyone may relay late, and late means refused.
                 if f > *deadline {
-                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                     return Outcome::RejectedLate;
                 }
+                // A deadline far ahead would keep the transfer open, and its id in this table, for
+                // as long as it likes (round 3, low).
+                if *deadline > f.saturating_add(MAX_DEADLINE_FRAMES) {
+                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                    return Outcome::RejectedDeadline;
+                }
                 if !self.t.portal_open {
-                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                     return Outcome::RejectedPortalClosed;
                 }
                 // Review R3-5: never a second live copy of one global id in a world.
                 if self.t.objs.iter().flatten().any(|o| o.global == record.global) {
-                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                     return Outcome::RejectedLiveId;
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
@@ -1734,7 +1856,7 @@ impl WorldSim {
                 Outcome::Accepted
             }
             // Protocol entries never reach the sim (set_eff schedules only perturbations).
-            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. } => Outcome::Accepted,
+            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } => Outcome::Accepted,
         }
     }
 
@@ -1760,6 +1882,16 @@ impl WorldSim {
             self.ring.insert(f, k);
             self.stats.max_ring_bytes = self.stats.max_ring_bytes.max(self.ring_bytes());
         }
+        // Round 3 (low): forget transfers that can no longer change. A rejected arrival goes once
+        // its deadline has passed (any replay is then late, so rejected again, consistently) and
+        // MAX_DEADLINE_FRAMES after it arrived (by then it is confirmed and attested: the sim never
+        // runs more than the speculation limit past the confirmed frame). A resolved escrow goes
+        // MAX_DEADLINE_FRAMES after its departure: a replayed verdict then finds nothing and does
+        // nothing. Accepted arrivals stay: forgetting one would let a late replay of its Arrive be
+        // certified "rejected" and refund an object that did arrive.
+        self.t.arrivals
+            .retain(|_, a| !matches!(a, Arrival::Rejected { frame, until } if *until < f && frame.saturating_add(MAX_DEADLINE_FRAMES) < f));
+        self.t.escrow.retain(|_, e| e.status == EscrowStatus::Pending || e.depart_frame.saturating_add(MAX_DEADLINE_FRAMES) >= f);
         let mut hands_set = BTreeSet::new();
         let mut carry = Vec::new();
         for (id, e) in self.frame_entries(f) {
