@@ -3828,6 +3828,7 @@ Rules for every package:
   WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
+* **Status (2026-10-31)** [V]: `scripts/run_matrix.sh`, with columns win, glibc, musl and laptop (docs/p2-6-p2-7-matrix.md). **PASS: 72 outputs equal on 4 machines** (spikes/out/matrix/matrix.txt). A difference names its first differing output and line.
 
 **P2-7. Byte-identical guest builds across OSes (D11 groundwork for `pe-build`).**
 * What: build the same guest commits on Windows and Linux hosts with the pinned toolchain and the 13.2
@@ -3837,6 +3838,10 @@ Rules for every package:
   build-essential in WSL Ubuntu-24.04. Owner: @design-reviewer.
 * Done: the spike guests plus one larger test crate are byte-identical (raw hash) on both hosts and from
   two checkout paths; every difference found is fixed or written down as a 13.2 rule; a build-time table.
+* **Status (2026-10-31)** [V]: done.
+  * **Byte-identical:** the 4 spike guests plus logic_mono and logic_wasm are raw-hash identical on Windows (two CPUs) and on Linux, and at two paths each.
+  * **Found and fixed** (13.2): the host separator in workspace-relative panic paths, host-dependent crate hashes in the name section (now stripped), and toolchain drift (now pinned).
+  * **Build times:** the table is in 13.2. It recommends a reproducible `rel-fast`-like profile for committed modules.
 
 **P2-8. MCP server from day one (`pe-mcp`).**
 * What: the test and driver interface: an rmcp server with the 17.x tool catalogue for phase 2 (step,

@@ -61,7 +61,28 @@ Each column runs `scripts/run_determinism.sh` with the parts physics, wasm, mcp,
 
 ## Result
 
-MATRIX_PLACEHOLDER
+`spikes/out/matrix/matrix.txt`, 2026-10-30/31 [V]:
+
+**MATRIX: PASS, 72 outputs equal on 4 machines (win, glibc, musl, laptop).**
+
+* **Commits:** win, glibc and musl ran at 2fa62ae; laptop at 35ea997, which differs only in the digest tool and docs.
+* **Every column:** `SUMMARY: determinism set PASSED`, with these checks:
+  * engine and C goldens, release and debug;
+  * the 600-frame trace `80839f4a54133e13` (with `--upstream`, `7903109aab28ed9b`), release equal to debug;
+  * snapshot images;
+  * rollback T1-T5;
+  * wasm d1-d4;
+  * each of the 6 modules byte-identical at two checkout paths, with no local path inside;
+  * MCP 10/10;
+  * the session-sim suite (every scenario ALL EQUAL, conserved, 0 false checks);
+  * R18 caps;
+  * R15 hook counts.
+* **Across machines:** the six modules have the same raw SHA-256 on all four columns:
+  * logic_v1 `ae109ced…`, logic_v2 `39191011…`, logic_runaway `4bbde67e…`;
+  * physics_in_wasm `ee57b239…`;
+  * logic_mono `8a87f7de…`, logic_wasm `1196c2f6…`.
+
+  Each column built its own modules: twice on Windows (two CPUs) and twice on Linux, each at its own checkout path.
 
 ## P2-7: what differed between Windows and Linux, and the fixes
 
