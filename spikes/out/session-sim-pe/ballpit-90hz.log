@@ -1,0 +1,12 @@
+RESULT ballpit 90 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 329 frames
+RESULT   perturbation source (hand target per frame + acks): hand entries 450 (5533 B/s payload, 11926 B/s wire est.), acks 396 (13416 B/s wire est.), all messages 26408 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 303 balls changed per frame; exact state 1525373 B/s, quantized ~26 B/ball 708979 B/s (one direction, payload only)
+RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+  sweep-window traffic ack: 396 messages, 28512 B payload (13416 B/s wire est.)
+  sweep-window traffic entry/hand: 450 messages, 20250 B payload (11926 B/s wire est.)
+  sweep-window traffic fetch: 60 messages, 780 B payload (1066 B/s wire est.)
+RESULT   member 2 during the sweep: 88.3 rollbacks/s, 614.8 re-simulated frames/s, re-sim 4.64 ms per rendered sim frame (1527 ms over the window); step avg 0.388 ms; max depth 21
+RESULT   end state at frame 799 (all 500 balls, both hands, all tables): m1 4dce646df37ff962 m2 4dce646df37ff962 -> IDENTICAL
+  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 26 bad 0 nonfinite 0 conf 782 frame 801
+  m2 world 1: rollbacks 330 max depth 21 resim frames 2294 (1582.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 26 bad 0 nonfinite 0 conf 786 frame 800
+RESULT ballpit 90Hz world 1: frames 0..765 digests m1=ea2f5d8b438dd372 m2=ea2f5d8b438dd372 | offline replay ea2f5d8b438dd372 | ALL EQUAL

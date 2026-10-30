@@ -1,6 +1,9 @@
 //! In-process session simulator: N peers, M worlds, a virtual clock and virtual links with delay,
 //! jitter, loss and scripted faults. Every message is encoded to bytes, so byte counts are real.
 //! The same peer logic drives the UDP spike (spikes/p2p) with a real clock and sockets.
+// P2-3: with the `pe` feature, every `pe_sim_core` path resolves to crates/pe-session.
+#[cfg(feature = "pe")]
+extern crate pe_session as pe_sim_core;
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};

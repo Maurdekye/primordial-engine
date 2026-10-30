@@ -9,6 +9,9 @@
 //!   snap [--balls N] [--stall]        snapshot-policy sweep (the memory/CPU knob, design 6.7)
 //!   ackfork | lateequiv | evict | outage   round-2 review repros (design 10.8)
 //!   observer [--delay MS] [--hz H]    what an observer sees of a remote hand (design 6.9)
+// P2-3: with the `pe` feature, every `pe_sim_core` path resolves to crates/pe-session.
+#[cfg(feature = "pe")]
+extern crate pe_session as pe_sim_core;
 
 use std::collections::BTreeMap;
 
