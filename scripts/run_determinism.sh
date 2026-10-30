@@ -66,7 +66,9 @@ if has wasm; then
   PE_HEAVY=${PE_HEAVY:-} bash scripts/build_wasm_guests.sh || exit 1
   R=target/wasm32-unknown-unknown/release      # logic guests, in spikes/wasm-guests
   P=target/wasm32-unknown-unknown/wasm-guest   # physics_in_wasm, in the root workspace
-  sha256sum spikes/wasm-guests/$R/logic_*.wasm $P/physics_in_wasm.wasm > $PO/guest-wasm-sha256.txt
+  I=spikes/iter-bench/guests/$R                # P2-7's larger crates
+  mods() { echo spikes/wasm-guests/$R/logic_{v1,v2,runaway}.wasm $P/physics_in_wasm.wasm $I/logic_{mono,wasm}.wasm; }
+  sha256sum $(mods) > $PO/guest-wasm-sha256.txt
   cat $PO/guest-wasm-sha256.txt
   $BIN/pe-spike-wasm-hotswap > $PO/wasm-hotswap-eager.log 2>&1
   grep -q "RESULT: PASS" $PO/wasm-hotswap-eager.log && r=ok || r=bad
@@ -80,18 +82,15 @@ if has wasm; then
   git ls-files -z -co --exclude-standard | tar --null -T - -cf - | tar -x -C "$E"
   PE_HEAVY=${PE_HEAVY:-} bash scripts/build_wasm_guests.sh "$E" || exit 1
   EW=$(cygpath -m "$E" 2>/dev/null || echo "$E")
-  ${PE_PYTHON:-python} -I scripts/wasm_canonical_hash.py spikes/wasm-guests/$R/logic_*.wasm $P/physics_in_wasm.wasm \
-    "$EW"/spikes/wasm-guests/$R/logic_*.wasm "$EW"/$P/physics_in_wasm.wasm \
+  ${PE_PYTHON:-python} -I scripts/wasm_canonical_hash.py $(mods) $(for m in $(mods); do echo "$EW/$m"; done) \
     | sed "s#$EW#<copy at another path>#" > $PO/wasm-canonical-hash.txt
   cat $PO/wasm-canonical-hash.txt
-  n=$(grep -oE "canonical sha256 [0-9a-f]+" $PO/wasm-canonical-hash.txt | sort -u | wc -l)
-  [ "$n" = 4 ] && r=ok || r=bad
-  check $r "canonical hash of each of the 4 modules equal at both paths"
-  n=$(grep -oE "raw sha256 [0-9a-f]+" $PO/wasm-canonical-hash.txt | sort -u | wc -l)
-  [ "$n" = 4 ] && r=ok || r=bad
-  check $r "raw hash of each of the 4 modules equal at both paths"
-  grep -aqE '[A-Za-z]:\\|/home/|/Users/' $P/physics_in_wasm.wasm "$E"/$P/physics_in_wasm.wasm && r=bad || r=ok
-  check $r "no local path inside either physics_in_wasm.wasm"
+  r=ok
+  for m in $(mods); do cmp -s "$m" "$E/$m" || { r=bad; echo "differs at the second path: $m"; }; done
+  check $r "each of the $(mods | wc -w) modules byte-identical (raw hash) at both paths"
+  (cd "$E" && grep -alE '[A-Za-z]:\\|/home/|/Users/' $(mods)) && r=bad || r=ok
+  grep -alE '[A-Za-z]:\\|/home/|/Users/' $(mods) && r=bad
+  check $r "no local path inside any module, at either path"
   rm -rf "$E"
 fi
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the wasm guests with local paths remapped (design 13.2, review M8):
 # * the logic guests in their own workspace (spikes/wasm-guests -> its target/.../release);
-# * physics_in_wasm in the root workspace (-> target/wasm32-unknown-unknown/wasm-guest).
+# * physics_in_wasm in the root workspace (-> target/wasm32-unknown-unknown/wasm-guest);
+# * P2-7's larger test crates, logic_mono and logic_wasm, in theirs (spikes/iter-bench/guests).
 # Two things would otherwise make a module depend on where it was built:
 # * panic locations embed source paths, so the checkout root and the cargo home are remapped;
 # * cargo hashes a path dependency's crate identity by its absolute path unless the dependency lies
@@ -21,3 +22,7 @@ run_cargo() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" cargo "$@"; else 
 run_cargo build -q -p physics_in_wasm --target wasm32-unknown-unknown --profile wasm-guest
 cd spikes/wasm-guests
 run_cargo build --release -q --target wasm32-unknown-unknown
+# P2-7's larger test crates (design 23.4): the generated 6.4k-line game-logic guest, as one crate
+# (logic_mono) and split into nine crates linked by path inside their workspace (logic_wasm).
+cd ../iter-bench/guests
+run_cargo build --release -q --target wasm32-unknown-unknown -p logic_mono -p logic_wasm
