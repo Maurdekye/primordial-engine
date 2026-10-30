@@ -5,13 +5,13 @@ Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-r
 
 ## How to read this document
 
-* **R1..R12** refer to the user's requirements (listed in section 1). Rulings are cited by date.
+* **R1..R13** refer to the user's requirements (listed in section 1). Rulings are cited by date.
 * Every factual claim carries a tag:
   * **[V]** verified by a spike run on this machine; the spike-report test ID follows (e.g. [V a1]).
   * **[S]** verified by reading the source code or official docs of the dependency, not by running it.
   * **[I]** inferred or proposed design. Not yet tested.
-* Choices that go beyond what the user specified are collected in **section 22, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D24**.
+* Choices that go beyond what the user specified are collected in **section 23, "Decisions needing
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D35**.
 
 ## Contents
 
@@ -35,8 +35,9 @@ Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-r
 18. VR (R10)
 19. Resonite avatar import (R12, as narrowed)
 20. Non-Rust boundaries (100%-Rust ruling)
-21. Crate layout, phased build plan, risks
-22. Decisions needing the user
+21. In-game agent panels (R13)
+22. Crate layout, phased build plan, risks
+23. Decisions needing the user
 
 ---
 
@@ -56,6 +57,7 @@ Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-r
 | R10 | Full VR support | 18 |
 | R11 | Object hierarchy + ECS; assets; their interaction with determinism, rollback, P2P, SCM, MCP | 16 |
 | R12 | Resonite avatar import; v1 = mesh + skeleton/skinning + textures only | 19 |
+| R13 | Own agent harnesses (Claude Code, Codex, …) in in-game panels; panel-to-panel connections; mail-hub panel; panels unlockable for friends/session | 21 |
 
 Rulings that shape the design:
 
@@ -68,6 +70,10 @@ Rulings that shape the design:
 * **AI-forward**: AI agents via MCP are the main authors of logic and shader edits (08:29Z).
 * **Resonite** is the product model in broad strokes; the spec wins where they differ (08:32Z).
 * **Merge seat** lasts 10 s so a waiting merger can never starve anyone else (08:51Z).
+* **R13 additions** (09:12-09:15Z): panels talk peer to peer within a session and through a mail hub
+  (hubchat-style panel); owners can unlock panels (locked / friends / anyone in session) and revoke;
+  panel-to-panel needs an explicit connection under a per-panel policy (allow all / ask agent / ask user
+  / deny all).
 
 ---
 
@@ -185,7 +191,7 @@ deterministic tie-break that every peer computes identically. [V c1-c3]
 | Third-party port of alpha software (Box3D v0.1.0, "alpha") [S] | API churn, latent bugs | Wrap behind `pe-physics` so the engine never calls box3d-rust directly; golden tests |
 | C-mirror API (not idiomatic Rust) [S] | Ergonomics only | Thin wrapper in `pe-physics` |
 
-No gap blocks the requirements. The serial-only port is the main performance risk (21.3).
+No gap blocks the requirements. The serial-only port is the main performance risk (22.3).
 
 ### 4.5 Large worlds
 
@@ -452,6 +458,60 @@ if our bulk transport proves weak.
 
 ---
 
+### 10.7 e4mc lessons (user question)
+
+**How e4mc works.** Sources: the e4mc README, and the relay's Rust source (`vgskye/e4mc-quiclime`, branch
+`kity`), read 2026-10-30.
+
+* The Minecraft host (the mod) opens an **outbound QUIC connection** to an e4mc relay, "QUIClime"
+  (Rust, quinn + rustls, ALPN `quiclime`) [S].
+* The host requests a domain. The relay assigns **`<word>-<word>.<base domain>`** from a 7,776-word list.
+  The base domain is relay configuration (`QUICLIME_BASE_DOMAIN`) [S].
+* **Vanilla clients** connect over TCP to that hostname. The relay reads the hostname from the Minecraft
+  handshake packet and forwards the connection into the matching host's QUIC tunnel. No port forwarding is
+  needed, and joining clients need no mod [S].
+* **Dialtone:** a host can register an iroh ticket with the relay, which serves it at
+  `/.well-known/dialtone_ticket/{domain}`, so e4mc-aware clients can switch to a direct iroh connection
+  [S relay code; I for the client-side flow].
+* The public relays are run by e4mc's author, so reachability depends on them. The relay is open source
+  and configured by environment variables, so anyone could host one under their own domain [S config;
+  I whether others do].
+
+**Lessons for Primordial [I]:**
+1. **Memorable addresses.** Two random words are easy to say and share. We adopt human-readable **session
+   codes** (e.g. `crimson-lantern-orbit` plus a check word) without DNS:
+   * the code hashes to a Mainline DHT key (BEP 44 record) that holds the session's member addresses,
+     signed by the session key;
+   * the code also seeds a PAKE (SPAKE2; the pure-Rust `spake2` crate, not yet audited), so a guessed or
+     overheard code alone cannot impersonate the session.
+2. **Outbound-only reachability.** A host behind NAT stays reachable by holding an outbound connection to
+   a relay. Our equivalent: members with open ports, plus **volunteer relays** that anyone can run (the
+   normal peer binary in relay mode).
+   * They forward only end-to-end-encrypted packets, addressed by peer public key.
+   * Each peer picks the relays it trusts.
+   * Relays affect availability only. They have no authority, and cannot read or forge traffic.
+3. **Relay first, then direct.** Dialtone and iroh both start relayed and then upgrade to a direct path. Our
+   join flow does the same (10.5).
+4. **Not copied:** routing by DNS hostname needs a domain operator, which is a central point. Vanilla-client
+   compatibility doesn't apply, because every client runs our engine.
+
+**iroh against our constraints:**
+
+| Criterion | iroh 1.4 |
+|---|---|
+| Dial by public key | Yes: `EndpointId` is the Ed25519 public key [S docs.rs] |
+| Hole punching with relay fallback | Yes: connects via a relay, then upgrades to direct [S docs.rs] |
+| Relays | n0-operated by default; relays forward traffic they cannot decrypt [S docs.rs]; self-hosted relay server [I] |
+| Discovery | DNS-based address lookup publishing to a DNS service (n0's by default) [S docs.rs]; pkarr / Mainline DHT and mDNS options [I] |
+| R1 / R9 | No authority over sessions. The default relays and DNS are n0 infrastructure, so soft central points unless self-hosted |
+| 100% Rust | **No:** `tls-ring` (default) or `tls-aws-lc-rs`, both compiling C/asm, plus blake3's C build [V audit `net-iroh`; S feature table]. Using it needs a fork with a pure-Rust rustls provider, or a user exception |
+
+**Verdict.** iroh's model is the one 10.5 proposes: key addressing, relay-assisted hole punching,
+self-hostable relays. The recommendation stands (D8): build that model on UDP + Noise in 100% Rust, add
+session codes and volunteer relays (D35), and reconsider iroh only if the user allows `ring`.
+
+---
+
 ## 11. Peer discovery (R9)
 
 Requirement 1 says no central authority. Below, a "soft central point" means infrastructure we would have
@@ -474,6 +534,8 @@ to run or depend on for discovery, even if it has no authority over sessions.
 4. Mainline DHT records ("user K is at addresses…", "session S members…") to re-find friends and
    sessions with no infrastructure of ours.
 5. No servers of our own. An optional, community-run relay or bootstrap list stays a user decision.
+6. Human-readable session codes (e4mc-style words, 10.7) resolve through the same DHT records, with a
+   PAKE so the code alone cannot impersonate the session.
 
 NAT ties in through 10.5: discovery yields candidate addresses, and members broker hole punching.
 
@@ -784,6 +846,7 @@ tools also exists as an MCP tool, with structured input and output.
 | Shaders | `shader.validate` (naga spans), `shader.commit`, `shader.preview_in_fork` (render-only) |
 | Assets | `asset.import`, `asset.get`, `asset.list`, `prefab.save` |
 | Admin (owner scope) | `acl.grant`, `acl.revoke`, `agent.delegate` |
+| Panels and hubs (R13) | `panel.connect`, `panel.send`, `panel.inbox`, `panel.close`, `panel.requests.*` ("ask agent" decisions), `hub.contacts`, `hub.send`, `hub.inbox` (21.6, 21.7) |
 
 ### 17.3 Deterministic forks: the AI test bench [I, building blocks V b1/b4/d1]
 
@@ -952,6 +1015,8 @@ section 7. **The spike workspace itself is 100% Rust (42 packages)** [V audit].
 | OpenXR loader (C++) + vendor runtime | Only way to reach headsets | `openxr` with `loaded`: loader `dlopen`ed [V audit] |
 | Linux desktop: libwayland/libX11 (dlopen), ALSA (audio) | Linux windowing and audio | winit/cpal |
 | The Rust compiler toolchain (rustc uses LLVM, C++) | Compiling game logic to wasm | Build tool, not linked into the engine; peers that only run committed wasm do not need it (13.2) |
+| Agent harness CLIs (Claude Code and Gemini CLI are Node.js apps; Codex CLI is a native vendor executable) and their cloud model APIs | R13 panels | Separate local processes spoken to over stdio or a PTY; the engine-side PTY (ConPTY via `portable-pty`), terminal emulator and chat UI are Rust [V audit `agent-panels`] |
+| OS speech recognition (only if chosen, D33) | Voice input | `windows` crate bindings |
 
 ### 20.2 Gray areas the user should rule on
 
@@ -975,9 +1040,233 @@ Decision: **D1**.
 
 ---
 
-## 21. Crate layout, phased build plan, risks
+## 21. In-game agent panels (R13)
 
-### 21.1 Proposed workspace [I]
+Players work with their **own** agent harnesses (Claude Code, Codex, Gemini CLI, …) through in-game
+panels. The harness is a local process on the player's machine. The engine-side panel, terminal and chat
+UI are Rust. The harness itself is a separate, non-Rust or third-party process (20.1).
+
+### 21.1 Hosting a harness: two integration paths
+
+**Structured mode (recommended default).** The engine spawns the harness in its machine-readable
+headless or protocol mode. It renders the events as a chat UI: messages, streaming text, tool-call cards,
+diffs, approvals. Flags were checked against each installed CLI's `--help` on this machine [S]:
+
+| Harness (installed version) | Structured path | Restriction and spend controls available |
+|---|---|---|
+| Claude Code 2.1.292 (Node.js app, installed via npm) | `claude -p --input-format stream-json --output-format stream-json --include-partial-messages`, plus `--mcp-config <json>` and `--resume <session-id>` for a persistent conversation | `--tools`, `--allowedTools`, `--disallowedTools`, `--strict-mcp-config`, `--permission-mode`, `--max-budget-usd`, `--add-dir`, `--append-system-prompt` |
+| Codex CLI 0.160.0 (native x64 executable) | `codex exec --json` (JSONL events, `--output-schema`); `codex app-server` (experimental JSON-RPC; `generate-json-schema` emits its protocol schema); MCP servers via `-c mcp_servers.<name>…` overrides or `codex mcp add` | `-s/--sandbox`, `-a/--ask-for-approval`, `-C/--cd`, `--ephemeral` |
+| Gemini CLI (Node.js app, via npm) | `--acp` (Agent Client Protocol) or `-o stream-json` | `--allowed-mcp-server-names` |
+| Any ACP-capable agent | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent |
+
+* **PTY mode (universal fallback):** run the harness's interactive TUI under a pseudo-terminal and render a
+  terminal emulator into the panel.
+* **Engine side** (all audited 100% Rust [V audit `agent-panels`]):
+  * `portable-pty` (ConPTY on Windows, openpty on Unix);
+  * a VT emulator (`alacritty_terminal` or `vt100`);
+  * `cosmic-text` for shaping and layout, with glyphs rasterized into a wgpu texture atlas.
+* PTY mode cannot be safely shared (21.5), because the TUI exposes the harness's full controls.
+* Decision: **D25**.
+
+### 21.2 Rendering and input [I]
+
+* **A panel is a presentation-only object** (16.3): a world-space quad, flat or curved, attached to the
+  world, the player's wrist, or the desktop overlay. Its texture is redrawn when content changes. A
+  panel never enters the sim, rollback or hashes.
+* **Desktop:** keyboard focus with click-to-focus, plus OS IME for text composition. The panel can also be
+  shown as a screen-space overlay.
+* **VR:** laser-pointer or poke interaction, an in-engine Rust virtual keyboard, and panel grab and resize
+  gestures.
+* **Voice (D33):**
+  * (a) OS speech recognition (Windows `Windows.Media.SpeechRecognition` via the `windows` crate, an OS
+    boundary);
+  * (b) local Whisper-class models on a pure-Rust ML runtime (heavy; GPU optional);
+  * (c) push-to-talk audio handed to a harness that accepts audio, if any.
+
+### 21.3 Wiring the harness to the engine's MCP server (R8)
+
+1. Each panel gets its **own agent key** and a delegation certificate from its owner (12.3), scoped by the
+   owner (e.g. interact + edit-objects + commit-logic).
+2. The engine launches the harness with an MCP config pointing at the **local peer's** MCP server. That is
+   either a stdio command (`pe-app mcp --panel <id>`) or a localhost Streamable-HTTP URL with a per-panel
+   bearer token [I].
+   * Claude Code: `--mcp-config` plus `--strict-mcp-config`, so only the engine server loads [S flags].
+   * Codex: `-c mcp_servers.primordial.command=…` [S flag; exact key path I].
+3. Everything the agent does to the game goes through MCP tools (17.2), so it is signed with the panel's
+   agent key and passes the same ACL checks, frame stamping, soonest-wins ordering, rollback, SCM
+   ordering, rejections and merge seats as any human edit (17.4).
+4. The harness's working directory is a panel workspace holding a checkout of the world repository. The
+   agent can use its own file tools on game source, then `logic.check`, `logic.test_in_fork` and
+   `scm.commit` through MCP.
+
+### 21.4 Locality, credentials and visibility
+
+* **Harnesses run only on their owner's machine,** under the owner's OS account and the owner's own
+  harness login or API key. The engine never reads, stores or transmits harness credentials. Nothing ever
+  runs a harness on behalf of another peer, and nothing ships a harness across peers. [I, by design]
+* **Panel contents are private by default.** Other peers see the panel object, its owner, and an
+  "agent working" indicator, plus the signed game edits the agent makes, which are attributable to the
+  agent key and the owner (12.3).
+* The owner may **share a panel's view** with chosen peers. The rendered transcript, never the harness
+  process, streams over the session transport as non-sim messages, encrypted to the recipients.
+* Defaults and options: **D26**.
+
+### 21.5 Unlocking a panel for others (shared AI chat)
+
+**Access levels** (per panel, owner-controlled):
+
+| Level | Who may send input |
+|---|---|
+| Locked (default) | Owner only |
+| Friends | Peers whose keys are on the owner's friend list (below) |
+| Anyone in session | Any current session member |
+
+**Mechanics [I]:**
+* A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
+  over the session P2P transport. These go on the control channel, not the sim.
+* The owner's peer verifies the sender's key against the access level, then forwards the text to the
+  harness as a user turn **wrapped with provenance**, e.g. `[guest: <name>, key <fingerprint>]`.
+* **Revocation is local and immediate.** The owner's peer stops accepting that guest's input, drops queued
+  prompts, and can end the guest-mode harness session. Revoking never depends on other peers.
+
+**Friends without a central server [I]:**
+* A friend is an Ed25519 public key the owner explicitly trusts. It is added by an in-session "add friend"
+  handshake, through an invite ticket, or by comparing a key fingerprint or QR code.
+* Friend lists are stored locally with petnames and synced across the owner's own devices as signed
+  records. Mutual friendship means each key is on the other's list.
+* Optionally, a friend key can be cross-linked to a mail-hub person identity (21.7). That is a
+  convenience, not an authority.
+
+**Risks of letting others drive your harness:**
+* **Prompt injection:** a guest instructs the agent to read or exfiltrate files, run commands, leak
+  secrets, or make harmful edits.
+* **Filesystem and tool access** on the owner's machine through the harness's built-in shell and file
+  tools.
+* **Spend** on the owner's account or subscription, plus usage that the AI provider attributes to the
+  owner under its terms.
+* **Game damage** done under the owner's authority.
+
+**Default guest-mode sandbox while unlocked (D27) [I]:**
+* Guests are served by a **separate guest-mode harness session**, never the owner's private conversation.
+* Built-in shell, file-write, web and network tools are removed. For Claude Code: `--tools`/`--disallowedTools`
+  plus `--strict-mcp-config`. For Codex: `--sandbox read-only` and an approval policy that never
+  auto-runs [S flags exist; exact configuration I].
+* The only tool server is the engine MCP server, with **guest-scoped** tools.
+* The working directory is a throwaway workspace with no owner files.
+* The process runs under OS containment: a Windows job object or AppContainer, or Landlock / bubblewrap on
+  Linux.
+* **Spend caps:** the engine counts turns per guest per hour and per panel. Claude Code also enforces
+  `--max-budget-usd` [S]. Codex has no such flag in its help output, so the engine enforces turn caps.
+* Guest-initiated SCM commits require the owner's one-click approval by default.
+* PTY-mode panels cannot be unlocked.
+* The system prompt (`--append-system-prompt`) marks guest turns as untrusted. Safety rests on the hard
+  tool restrictions above, not on that prompt.
+
+**Who may make the resulting game edits (authority, section 12) [I]:**
+* Actions from a guest-driven panel are signed by the panel's agent key and carry the guest's signed
+  request hash.
+* **Effective rights = owner's roles ∩ guest's roles ∩ guest-mode scope.** A guest can never borrow a
+  friend's agent to do what the guest's own role forbids. The owner's authority is never amplified.
+* Commits record `author = agent key`, `on_behalf_of = owner`, `requested_by = guest`, and every peer
+  verifies all three against the ACL log.
+* Decision: **D28**.
+
+### 21.6 Panel-to-panel connections (agent-to-agent, in-session)
+
+* There is **no implicit broadcast.** Panels communicate only over an **explicitly established
+  connection**. Everything below rides the session's P2P transport (control channel), never the sim, and
+  is not rolled back.
+* **Eligibility ("adjacent"):** recommended to mean **session membership**: any panel in the same session
+  may *request* a connection. Spatial proximity is a discovery and UX filter ("nearby panels", point to
+  connect in VR), not a security boundary, because positions are controlled by the requester. Options:
+  **D31**.
+* Panels publish a small presence record (panel ID, owner, display name, whether it accepts requests).
+
+**Handshake [I]:**
+1. **Request.** A → B: `ConnectRequest {from_panel, to_panel, purpose (≤280 chars), requested_capabilities
+   (text | structured JSON | asset references), nonce, expiry, A's ephemeral X25519 key}`, signed by A's
+   panel key.
+2. **Gatekeeping on B's peer:** verify the signature, session membership, eligibility and a per-requester
+   rate limit. Then apply B's **connection policy**:
+   * **allow all:** accept.
+   * **deny all:** reject with `{code: "policy_deny"}` (no prompt, no agent involvement).
+   * **ask user:** show the owning player an in-world prompt with requester, owner and purpose. Accept,
+     reject, or let it time out after 60 s (`user_declined` / `timeout`).
+   * **ask agent:** hand the decision to B's own AI (below), with a timeout (`agent_timeout`).
+3. **Accept.** B → A: `ConnectAccept {connection_id, B's ephemeral X25519 key, limits (message rate, max
+   size, idle TTL), granted capabilities}`, signed. A replies `ConnectConfirm`. Both derive per-connection
+   keys (X25519 ECDH plus nonces). Messages stay end-to-end encrypted even when relayed through other
+   peers (10.5).
+
+**"Ask agent" presented to the harness [I]:**
+* The engine MCP server exposes a resource `primordial://panel/connection-requests`, which notifies on new
+  requests, plus tools `panel.requests.list`, `panel.requests.accept(id, capabilities)` and
+  `panel.requests.reject(id, reason)`.
+* For harnesses without MCP notification support, the structured adapter injects a short, clearly marked
+  engine event into the session: "connection request from …; decide with panel.requests.accept/reject".
+* The request's purpose text is untrusted input and is quoted with provenance.
+
+**Lifecycle and teardown [I]:**
+* **States:** `requested → established → closed`.
+* **Messages** are sequenced, acknowledged, and delivered in order. Each is delivered to the receiving
+  harness as untrusted input with provenance. Agents use `panel.connect(to, purpose)`, `panel.send(conn,
+  payload)`, `panel.inbox` and `panel.close(conn, reason)`.
+* **Teardown triggers:** either side closes; idle TTL (default 30 min) expires; either owner revokes; the
+  policy changes to *deny all* (existing connections are dropped); the panel closes; a peer leaves; the
+  session ends. A `Close {reason}` is sent when possible. Silence past the TTL closes it anyway.
+* **Connections are ephemeral** to a session. Reconnecting after a drop re-runs the handshake, optionally
+  resuming within 5 min with a resumption token.
+
+### 21.7 Mail-hub integration and the hubchat-style panel
+
+**What is known about Orgtree's hub** [S Orgtree's public docs; nothing was connected or registered]:
+* A hub is an HTTP service. The main port 7370 serves an operator page with no login. An optional
+  **relay-only door** (port 7371) carries authenticated client traffic. Clients probe 7370, 7378, 7371 and
+  HTTPS.
+* The hub provides no TLS itself; use a private network (e.g. Tailscale) or a TLS proxy.
+* Identities: **person** identities (Hubchat users) and **organization** identities. An org identity has a
+  permanent public address minted with an ownership secret that proves ownership; the hub stores
+  fingerprints. Devices link to carry a person identity.
+* Clients **register, poll and transfer files** over HTTP, with at-least-once custody.
+* Hubchat finds people and orgs through a directory. It supports question messages with preset options
+  and file attachments.
+
+**Not verified [I]:**
+* the wire format, endpoints and authentication headers;
+* directory semantics;
+* whether third-party clients are supported or permitted.
+
+Phase-3/4 task: read Orgtree's public source (`engine/rs/orgtree-engine/src/mailhub.rs`) and get the
+user's go-ahead (**D32**).
+
+**Design [I]:**
+* A Rust **hub client** crate (`pe-hub`) keeps the player's hub person identity (address and secret) in an
+  encrypted local store.
+* The **hubchat-style panel** gives the player conversations, the directory, compose with question
+  options, attachments from the asset store, and presence. It covers Orgtree orgs or any other hub
+  identity.
+* **Agents in panels** reach hubs only through engine MCP tools (`hub.contacts`, `hub.send`, `hub.inbox`).
+  They never see the identity secret.
+* Sending to a new recipient needs the owner's approval the first time.
+* **All inbound hub mail is untrusted input**, as Orgtree treats outside mail: data, never instructions.
+  It reaches an agent only with provenance.
+* **Panel-to-panel over a hub:** two panels in different sessions, or players not in the same session, can
+  exchange messages through hub identities, with the same connection policy (21.6) applied to first
+  contact.
+
+### 21.8 What this adds elsewhere
+
+* MCP catalog (17.2): `panel.*`, `panel.requests.*` and `hub.*` tools.
+* Non-Rust boundaries (20.1): harness CLIs and their cloud model services, plus OS speech recognition if
+  chosen.
+* Crates (22.1): `pe-panels`, `pe-harness`, `pe-hub`.
+* Plan (22.2): desktop panels in phase 4, VR panels and voice in phase 5.
+
+---
+
+## 22. Crate layout, phased build plan, risks
+
+### 22.1 Proposed workspace [I]
 
 ```
 crates/
@@ -994,23 +1283,26 @@ crates/
   pe-render      wgpu renderer, WGSL hot reload (naga), interpolation + error smoothing
   pe-xr          OpenXR session, Vulkan interop, poses, hand engagement
   pe-mcp         rmcp server, tool catalog, agent auth, forks
+  pe-panels      in-world panels: chat UI, terminal emulator (PTY mode), VR keyboard, text (cosmic-text)
+  pe-harness     harness adapters: Claude stream-json, Codex exec/app-server, ACP, PTY; guest-mode sandbox
+  pe-hub         mail-hub client (Orgtree-style hubs), hubchat-style panel backend
   pe-resonite    package / data-tree / MeshX importers, avatar mapping
   pe-app         executable: threads, windowing (winit), config, CLI
 tools/           determinism trace runner, audit_native.py, session simulator (N peers, netem)
 spikes/          phase-1 spikes (kept as regression tests)
 ```
 
-### 21.2 Phased plan (proposal; ordering is D22)
+### 22.2 Phased plan (proposal; ordering is D22)
 
 | Phase | Content | Milestone and exit criteria |
 |---|---|---|
 | 2. Deterministic core | pe-core, pe-sim (store + hierarchy), pe-physics, pe-rollback from the spikes; CI determinism matrix incl. ARM; in-process N-peer session simulator with network conditions; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on LAN, physics sandbox with interactions, sync checks, repair; AI agent drives a peer over MCP |
 | 3. Real networking + look | UDP+Noise transport, bulk channel, invites, NAT traversal, state-transfer join; wgpu renderer + interpolation; glTF assets + P2P asset transfer | M2: friends play over the internet with no server; late join works |
-| 4. Live editing | pe-logic + SDK (WASM, hot-swap, migration, component IDL), pe-scm (ordering, rejection, merge seats, ACL), WGSL hot reload, MCP logic/shader tools + forks | M3: an AI agent edits logic and shaders in a live session; conflicts reject and rebase per R7 |
-| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop), hands engagement, 3-point IK, Resonite avatar import v1 | M4: two PC VR users with imported Resonite avatars interact with physics objects |
+| 4. Live editing + agent panels | pe-logic + SDK (WASM, hot-swap, migration, component IDL), pe-scm (ordering, rejection, merge seats, ACL), WGSL hot reload, MCP logic/shader tools + forks; desktop agent panels (structured adapters + PTY), unlockable panels with guest-mode sandbox, panel-to-panel connections, hub panel | M3: a player's own Claude Code / Codex, in an in-game panel, edits logic and shaders in a live session; conflicts reject and rebase per R7 |
+| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop), hands engagement, 3-point IK, Resonite avatar import v1, VR panels + virtual keyboard + voice input | M4: two PC VR users with imported Resonite avatars interact with physics objects |
 | 6. Scale + discovery | Mainline DHT discovery, region partitioning (parallel worlds), snapshot deltas, larger sessions | M5: discovery without invites; 1000s of bodies |
 
-### 21.3 Top risks
+### 22.3 Top risks
 
 1. **Physics CPU budget (serial port).** Rollback re-sim multiplies step cost [V b2, b6]. Mitigations: 6.5
    amortization, 6.6 region partitioning, body budgets (D2).
@@ -1026,10 +1318,14 @@ spikes/          phase-1 spikes (kept as regression tests)
    versions, run golden tests, wrap the API.
 7. **Resonite import legality and format churn** (D19); format details unverified locally (19.1).
 8. **OpenXR + wgpu interop** is not yet exercised (18.2). Phase-5 spike, or earlier if VR is prioritized.
+9. **Agent harness surface (R13).** Harness CLI flags and protocols change often (Codex's app-server is
+   marked experimental) [S]. Unlocked panels expose the owner's machine and account to other players
+   (21.5). Mitigations: adapters behind one trait, PTY fallback, guest-mode sandbox, spend caps.
+10. **Mail-hub protocol unknowns** (21.7): wire format unverified; permission to integrate (D32).
 
 ---
 
-## 22. Decisions needing the user
+## 23. Decisions needing the user
 
 Each entry gives a recommendation and its alternatives. Section references point to the reasoning.
 
@@ -1138,7 +1434,7 @@ Each entry gives a recommendation and its alternatives. Section references point
     Public sessions with strangers come later.
   * Alternative: design for adversarial public sessions from day one (more protocol work and stricter input
     validation up front).
-* **D22. Phase order and first milestone (21.2).**
+* **D22. Phase order and first milestone (22.2).**
   * Recommend: phases 2→6 as listed, with the MCP server built from phase 2.
   * Alternatives: pull VR (phase 5) earlier if VR is the headline; pull live editing (phase 4) before real
     networking (phase 3) if the AI-authoring loop matters most.
@@ -1148,3 +1444,67 @@ Each entry gives a recommendation and its alternatives. Section references point
 * **D24. Coordinator interpretation to confirm.** "Dynamically loaded system components are acceptable" is
   the coordinator's reading of the 100%-Rust rule, not yet confirmed by the user. D1 asks for that
   confirmation explicitly.
+
+* **D25. Harness integration path (21.1).**
+  * Recommend: structured adapters as the default (Claude Code `stream-json`, Codex `exec --json` /
+    `app-server`, ACP for Gemini and others), rendered as a chat UI, with a PTY terminal as universal
+    fallback.
+  * Alternatives: PTY-only (simplest, works with any CLI, but no structured events and unsafe to share);
+    SDK-based hosts (Claude Agent SDK is TypeScript/Python, so it would need a non-Rust sidecar process).
+* **D26. Panel visibility to other peers (21.4).**
+  * Recommend: private by default. Others see the panel, its owner, an "agent working" indicator and the
+    signed edits it produces. The owner may share the rendered transcript with chosen peers.
+  * Alternatives: visible to the whole session by default (more social, leaks prompts and code); never
+    shareable.
+* **D27. Unlocked-panel defaults and guest-mode sandbox (21.5). These are risky defaults.**
+  * Recommend:
+    * panels start **Locked**;
+    * Friends or Anyone is an explicit per-panel opt-in;
+    * guests get a separate guest-mode harness session with no shell, file-write, web or network tools;
+    * the engine MCP server is the only tool server, with a throwaway workspace and OS containment;
+    * spend caps per guest and per panel (Claude Code `--max-budget-usd`, engine turn caps for others);
+    * owner approval for commits from guest prompts;
+    * PTY panels cannot be unlocked.
+  * Alternatives: let guests share the owner's normal harness session and tools (convenient, exposes the
+    owner's files and account); no unlocking at all.
+* **D28. Authority of guest-driven edits (21.5, 12).**
+  * Recommend: effective rights = owner ∩ guest ∩ guest-mode scope; commits record agent, owner and
+    requesting guest.
+  * Alternative: the panel acts with the owner's full authority (a friend could do anything the owner
+    can).
+* **D29. Friend identity without a server (21.5).**
+  * Recommend: local friend lists of Ed25519 keys, added in-session, by invite ticket or by fingerprint/QR,
+    synced across the owner's devices as signed records; optional link to a mail-hub person identity.
+  * Alternative: friends defined only through a mail hub's directory (convenient, but depends on a hub).
+* **D30. Panel connection policy default and timeouts (21.6).**
+  * Recommend: new panels default to **ask user** (60 s timeout); **ask agent** is an explicit opt-in;
+    switching to *deny all* drops existing connections; idle TTL 30 min.
+  * Alternatives: default *deny all* (safest, more friction); default *allow all* (frictionless, invites
+    spam and prompt injection).
+* **D31. Meaning of "adjacent" for panel connections (21.6).**
+  * Recommend: session membership defines who may request. Spatial proximity is a discovery filter only,
+    because positions are attacker-controlled.
+  * Alternatives: require spatial proximity as well (e.g. within 5 m) for requests, or only for *allow
+    all* to apply; or proximity alone.
+* **D32. Mail-hub integration (21.7).**
+  * Questions for the user:
+    * May the engine implement a client for Orgtree's hub protocol (license, permission, and the
+      protocol's stability are unverified)?
+    * Should the player's hub identity be a separate hub person identity (recommended) or derived from the
+      engine key?
+    * Should hub use be limited to private networks or a TLS proxy, since the hub has no TLS of its own?
+  * Recommend: agents never see the hub secret and use it only through engine MCP tools, with owner
+    approval for first contact with each recipient.
+* **D33. Voice input (21.2).**
+  * Recommend: OS speech recognition on Windows for the MVP (an OS boundary).
+  * Alternatives: local Whisper-class models on a pure-Rust ML runtime (100% Rust, heavy); no voice in the
+    MVP.
+* **D34. Spend and provider-terms responsibility (21.4, 21.5).**
+  * Recommend: harness credentials stay in the harness's own configuration and are never read or relayed
+    by the engine. The owner is shown per-guest usage and caps before unlocking a panel.
+  * Alternative: none that keeps credentials local; pooled or relayed credentials are excluded by R13.
+* **D35. e4mc-style addressing and relays (10.7).**
+  * Recommend: human-readable session codes resolved via Mainline DHT plus PAKE; volunteer relays that
+    anyone can run, forwarding only end-to-end-encrypted traffic, chosen per peer.
+  * Alternatives: our own relay and DNS domain like e4mc (simplest, but a central point); iroh with
+    self-hosted relays (needs a `ring` exception, D8).
