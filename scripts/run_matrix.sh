@@ -30,6 +30,7 @@
 #                   (Tailscale direct; the remote-<laptop> skill has the RustDesk fallback)
 #   PE_LAPTOP_DIR   working folder on <laptop>, default C:/Users/<user>/pe-matrix; its cargo home and
 #                   build targets stay there between runs (delete the folder to clean up)
+#   PE_COMPARE_ONLY  run nothing: check and compare the outputs already in spikes/out/matrix
 #   PE_RUSTC        toolchain for the WSL and <laptop> runs, default the channel pinned in rust-toolchain.toml
 # Outputs: spikes/out/matrix/<column>/ (run.log, env.txt, o/digests.txt; the rest of o/, the full
 # outputs, is not committed) and spikes/out/matrix/matrix.txt, the comparison.
@@ -50,10 +51,16 @@ wsl_run() { MSYS_NO_PATHCONV=1 wsl.exe -d "$DISTRO" -- "$@"; }
 # A Windows path as WSL sees it (long names: WSL cannot open 8.3 short names).
 towsl() { local w; w=$(cygpath -m -l "$1"); printf '/mnt/%s%s\n' "$(echo "${w:0:1}" | tr A-Z a-z)" "${w:2}"; }
 mkdir -p $M
-git diff --quiet HEAD -- . ':!spikes/out' || echo "note: uncommitted changes; the glibc, musl and laptop columns run HEAD $REV"
+# PE_COMPARE_ONLY=1: run nothing; check and compare the outputs already in spikes/out/matrix.
+RUNCOLS=$COLS; [ -n "${PE_COMPARE_ONLY:-}" ] && RUNCOLS=""
+# Every column must run the same commit (review of 3b07aa5): refuse uncommitted changes outside spikes/out.
+if [ -n "$RUNCOLS" ] && { ! git diff --quiet HEAD -- . ':!spikes/out' || [ -n "$(git ls-files --others --exclude-standard -- . ':!spikes/out')" ]; }; then
+  echo "run_matrix: uncommitted changes outside spikes/out; commit them first (the other columns run HEAD $REV)"
+  exit 2
+fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-git bundle create -q "$TMP/pe.bundle" HEAD || exit 1
+[ -n "$RUNCOLS" ] && { git bundle create -q "$TMP/pe.bundle" HEAD || exit 1; }
 
 # The job a WSL or <laptop> column runs in bash, from its working folder, as `bash job.sh build` (fetch
 # the bundle into the checkout src/, check out REV, build) and then `bash job.sh run` (run the
@@ -88,7 +95,7 @@ collect() {  # $1 column, $2 local directory holding run.log, env.txt and o/
   echo "$1: $(grep -h "^SUMMARY" $M/$1/run.log) $(tail -1 $M/$1/run.log)"
 }
 
-for c in $COLS; do
+for c in $RUNCOLS; do
   echo "== $c"
   case $c in
     win)
@@ -142,7 +149,25 @@ export PE_BIN=\$(cd ../musl-bin/release && pwd) PE_DEBUG_BIN=\$(cd ../musl-bin/d
   esac
 done
 
+# Fail on a column that is missing or whose own run failed, not only on a difference between columns
+# (review of 3b07aa5, M2 and M3): equal failures on every machine must not pass.
 specs=""
-for c in $COLS; do [ -f $M/$c/o/digests.txt ] && specs="$specs $c=$M/$c/o"; done
-python -I scripts/matrix_digest.py compare $specs | tee $M/matrix.txt
-exit ${PIPESTATUS[0]}
+bad=""
+for c in $COLS; do
+  if [ ! -f $M/$c/o/digests.txt ]; then bad="$bad $c:missing"; continue; fi
+  specs="$specs $c=$M/$c/o"
+  for l in run build; do
+    f=$M/$c/$l.log
+    if [ ! -f $f ]; then
+      [ $l = build ] && [ $c = win ] && continue   # the win column builds inside its run
+      bad="$bad $c:no-$l.log"
+      continue
+    fi
+    [ "$(tail -1 $f)" = "EXIT 0" ] || bad="$bad $c:$l-exit"
+  done
+  grep -q "^SUMMARY: determinism set PASSED" $M/$c/run.log 2>/dev/null || bad="$bad $c:not-passed"
+done
+if [ -n "$specs" ]; then python -I scripts/matrix_digest.py compare $specs > $M/matrix.txt; st=$?; else st=1; fi
+if [ -n "$bad" ]; then echo "MATRIX: FAIL, columns failed or missing:$bad" >> $M/matrix.txt; st=1; fi
+cat $M/matrix.txt
+exit $st
