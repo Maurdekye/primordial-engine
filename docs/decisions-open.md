@@ -1,6 +1,6 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of main, 30 October 2026, after your decisions of 18:42-19:58Z. This summarises design.md section 24
+As of main, 30 October 2026, after your decisions of 18:42-20:07Z. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
@@ -52,6 +52,7 @@ None. Your 19:58Z rulings settled D74-D78, the five questions your earlier rulin
 | D76 90 to 60 Hz | The world owner switches, warned by the engine | 19:58Z |
 | D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
+| D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
 | Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
 | Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
 
