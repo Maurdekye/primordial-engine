@@ -1,0 +1,4 @@
+# Phase-1 spikes were run with rustc 1.99.0 (stable, 2026-09-28).
+[toolchain]
+channel = "stable"
+targets = ["wasm32-unknown-unknown"]
