@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 mod history;
+mod r18;
 mod review2;
 
 use pe_session_sim::*;
@@ -704,6 +705,7 @@ fn main() {
             get("--hands").map_or(1, |v| v.parse().unwrap()),
             get("--loss").map_or(2, |v| v.parse().unwrap()),
         ),
+        Some("capped") => r18::capped(get("--kbps").map_or(64, |v| v.parse().unwrap())),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),
         Some("evict") => review2::evict(),

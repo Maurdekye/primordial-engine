@@ -277,6 +277,8 @@ fn main() {
                             p.send(&Ctl::Session(e));
                         }
                     }
+                    // The UDP spike sends one message per datagram; it never batches.
+                    Msg::Batch(_) => {}
                 },
             }
         }
