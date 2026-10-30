@@ -382,7 +382,7 @@ native and wasm digests match. Only the digests and other trajectory-dependent n
 | `pe-spike-physics trace 600` digest | `7903109aab28ed9b` | `80839f4a54133e13` (776324c's `--vdw` trace with Min was `a9041fec18d56c02`) |
 | `wasm-hotswap` D4 (`spikes/out/wasm-hotswap-{eager,lazy}.log`) | `7903109aab28ed9b` | `80839f4a54133e13`; the check in `spikes/wasm-hotswap/src/main.rs` is updated |
 | `physics_in_wasm.wasm` raw SHA-256 (`spikes/out/guest-wasm-sha256.txt`) | `589e97a7008badfd…` | `1184af4c59cce8ed…` at b8f130c, then `f15b4349e8417d46…` after the release-validator change (same digest). The guest workspace now has the same `[patch]`. The logic guests are byte-identical |
-| p2p over UDP, latency60 / loss10 / fault (`spikes/out/p2p-v2/`) | `cd613a64b7088dbe` | `66d3f4a12f8bdef2`; peer 1 == peer 2 and the offline replay is EQUAL in all three |
+| p2p over UDP, latency60 / loss10 / fault (`spikes/out/p2p-v2/`) | `cd613a64b7088dbe` (loss10 stable over 3 of 3 runs, per @design-reviewer) | latency60 `66d3f4a12f8bdef2`, reproduced in 4 of 4 runs here. **loss10 and fault vary from run to run:** loss10 gave `66d3f4a1…` 3 times and `93ee0a17…` once here, and @design-reviewer got 3 more values. Fault gave `66d3f4a1…` in 4 of 4 runs here, but @design-reviewer got `eb59c80c…`. In every run, peer 1 == peer 2 and the offline replay is EQUAL (`repeat-runs-engine-default.txt`). See the note below |
 | session-sim state-frame / loss | `eb64716d53886595` | `255efbf3d9457fdd` |
 | session-sim diverged | `eb64716d53886595` | `60ddd49e7dbc3ed7` (see below) |
 | session-sim c1 after / c2 after | `2375c7697cc99d72` / `866944464816eb58` | `363d9187ffb4eceb` / `70fcaec32e3c69d2` |
@@ -396,8 +396,18 @@ native and wasm digests match. Only the digests and other trajectory-dependent n
 | session-sim ballpit, average balls changed per frame (60 Hz / ahead4 / 2 hands / 90 Hz) | 297 / 289 / 365 / 286 | 292 / 284 / 375 / 306 |
 | MCP stub (`spikes/out/mcp-session.out.jsonl`) | state hashes and object values | new values; the same 10 responses and the same error/ok outcomes |
 
+**p2p under loss: the outcome depends on network timing [V], and the cause is in the protocol
+[I].** Over real UDP, a lossy run's final world is not a function of the scripted inputs alone,
+although the peers always agree and the offline replay is always EQUAL. @design-reviewer traced
+one loss10 divergence to frame 470, member 2's scripted touch. Under the state+frame ruling, an
+entry carries its author's speculative post-frame state. Whether member 1's earlier entries had
+arrived in time depends on loss and timing, so the carried state does too ("carried state wins").
+With upstream physics that touch happened not to be sensitive; with the engine default it is.
+This is not a recycling defect. It belongs in the session protocol's documentation.
+
 **Kept as toggle-off records, not re-run.** The top-level `spikes/out/trace-*.txt`,
-`physics-*.log` and `trace-linux-musl-release.txt` files are the phase-1 upstream records.
+`physics-*.log` and `trace-linux-musl-release.txt` files are the phase-1 upstream records
+(`docs/spike-report.md`'s commands for them now need `--upstream`).
 `pe-spike-physics --upstream` still reproduces them (trace `7903109aab28ed9b`). Two sets could
 not be re-run here, because Python is not installed on this machine:
 `spikes/out/iter-bench/physics-runtimes.jsonl` and `spikes/out/wasm-canonical-hash.txt` (the
