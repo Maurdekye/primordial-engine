@@ -1,0 +1,90 @@
+== naive_0ms_unl  [naive state streaming (no rate control, no resend) | 0 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end: observer table vs engager state at frame 612: 0 objects not bit-identical, worst position error 0.0 mm -> IDENTICAL
+   naive datagrams: 4163 offered, 0 dropped by full bandwidth queue, 59 lost
+== naive_50ms_unl  [naive state streaming (no rate control, no resend) | 50 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end: observer table vs engager state at frame 612: 0 objects not bit-identical, worst position error 0.0 mm -> IDENTICAL
+   naive datagrams: 4163 offered, 0 dropped by full bandwidth queue, 59 lost
+== naive_150ms_unl  [naive state streaming (no rate control, no resend) | 150 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end: observer table vs engager state at frame 612: 0 objects not bit-identical, worst position error 0.0 mm -> IDENTICAL
+   naive datagrams: 4163 offered, 0 dropped by full bandwidth queue, 59 lost
+== naive_300ms_unl  [naive state streaming (no rate control, no resend) | 300 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end: observer table vs engager state at frame 612: 0 objects not bit-identical, worst position error 0.0 mm -> IDENTICAL
+   naive datagrams: 4163 offered, 0 dropped by full bandwidth queue, 59 lost
+== naive_50ms_256k  [naive state streaming (no rate control, no resend) | 50 ms one-way (+0-10 jitter), 1% loss, 256 kbit/s cap]
+   end: observer table vs engager state at frame 612: 484 objects not bit-identical, worst position error 1648.8 mm -> DIFFERENT
+   naive datagrams: 4163 offered, 3959 dropped by full bandwidth queue, 3 lost
+== naive_50ms_64k  [naive state streaming (no rate control, no resend) | 50 ms one-way (+0-10 jitter), 1% loss, 64 kbit/s cap]
+   end: observer table vs engager state at frame 612: 491 objects not bit-identical, worst position error 1869.9 mm -> DIFFERENT
+   naive datagrams: 4163 offered, 4063 dropped by full bandwidth queue, 1 lost
+== pose-d0_0ms_unl  [pose-source, input delay 0 | 0 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager 119227b7aaa265fb observer 119227b7aaa265fb -> IDENTICAL
+   frames 0..611 digests engager f20fea26b3603c3c observer f20fea26b3603c3c offline replay f20fea26b3603c3c -> ALL EQUAL
+   engager: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 609 frame 612
+   observer: rollbacks 2 max depth 1 resim frames 4 (1.3 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 609 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 10
+== pose-d0_50ms_unl  [pose-source, input delay 0 | 50 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager 119227b7aaa265fb observer 119227b7aaa265fb -> IDENTICAL
+   frames 0..611 digests engager f20fea26b3603c3c observer f20fea26b3603c3c offline replay f20fea26b3603c3c -> ALL EQUAL
+   engager: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 612
+   observer: rollbacks 222 max depth 11 resim frames 972 (632.4 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 10
+== pose-d0_150ms_unl  [pose-source, input delay 0 | 150 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager a0332f9c44b55c14 observer a0332f9c44b55c14 -> IDENTICAL
+   frames 0..611 digests engager aca336f0758323de observer aca336f0758323de offline replay aca336f0758323de -> ALL EQUAL
+   engager: rollbacks 2 max depth 41 resim frames 84 (54.7 ms CPU) paused frames 0 checks ok 18 bad 2 re-stamps 2 conf 601 frame 612
+   observer: rollbacks 222 max depth 15 resim frames 2298 (1463.3 ms CPU) paused frames 0 checks ok 20 bad 0 re-stamps 0 conf 601 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 11
+== pose-d0_300ms_unl  [pose-source, input delay 0 | 300 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager 3b0ed92e2b1b0cc8 observer 3b0ed92e2b1b0cc8 -> IDENTICAL
+   frames 0..611 digests engager 5ae86a4fdbb403d2 observer 5ae86a4fdbb403d2 offline replay 5ae86a4fdbb403d2 -> ALL EQUAL
+   engager: rollbacks 107 max depth 76 resim frames 4341 (2967.1 ms CPU) paused frames 0 checks ok 20 bad 0 re-stamps 222 conf 593 frame 612
+   observer: rollbacks 221 max depth 15 resim frames 3650 (2233.8 ms CPU) paused frames 0 checks ok 18 bad 0 re-stamps 0 conf 593 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 16
+== pose-d0_50ms_256k  [pose-source, input delay 0 | 50 ms one-way (+0-10 jitter), 1% loss, 256 kbit/s cap]
+   end state at frame 610 (all objects and tables): engager 119227b7aaa265fb observer 119227b7aaa265fb -> IDENTICAL
+   frames 0..611 digests engager f20fea26b3603c3c observer f20fea26b3603c3c offline replay f20fea26b3603c3c -> ALL EQUAL
+   engager: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 612
+   observer: rollbacks 222 max depth 11 resim frames 972 (577.8 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 10
+== pose-d0_50ms_64k  [pose-source, input delay 0 | 50 ms one-way (+0-10 jitter), 1% loss, 64 kbit/s cap]
+   end state at frame 610 (all objects and tables): engager 5deabc7e3f43ce18 observer 5deabc7e3f43ce18 -> IDENTICAL
+   frames 0..611 digests engager 9a4b78d7a9859ee6 observer 9a4b78d7a9859ee6 offline replay 9a4b78d7a9859ee6 -> ALL EQUAL
+   engager: rollbacks 36 max depth 119 resim frames 1824 (2104.7 ms CPU) paused frames 89 checks ok 14 bad 1 re-stamps 151 conf 579 frame 612
+   observer: rollbacks 220 max depth 15 resim frames 2856 (2215.9 ms CPU) paused frames 36 checks ok 14 bad 0 re-stamps 0 conf 607 frame 611
+   datagrams dropped by full bandwidth queue 783, lost 10
+== pose-d4_0ms_unl  [pose-source, input delay 4 (+67 ms engager latency) | 0 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager 119227b7aaa265fb observer 119227b7aaa265fb -> IDENTICAL
+   frames 0..611 digests engager 9131d32f45ae964c observer 9131d32f45ae964c offline replay 9131d32f45ae964c -> ALL EQUAL
+   engager: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 609 frame 612
+   observer: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 609 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 10
+== pose-d4_50ms_unl  [pose-source, input delay 4 (+67 ms engager latency) | 50 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager 119227b7aaa265fb observer 119227b7aaa265fb -> IDENTICAL
+   frames 0..611 digests engager 9131d32f45ae964c observer 9131d32f45ae964c offline replay 9131d32f45ae964c -> ALL EQUAL
+   engager: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 612
+   observer: rollbacks 3 max depth 7 resim frames 20 (15.6 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 10
+== pose-d4_150ms_unl  [pose-source, input delay 4 (+67 ms engager latency) | 150 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager a0332f9c44b55c14 observer a0332f9c44b55c14 -> IDENTICAL
+   frames 0..611 digests engager 19d8b021721c9e12 observer 19d8b021721c9e12 offline replay 19d8b021721c9e12 -> ALL EQUAL
+   engager: rollbacks 2 max depth 37 resim frames 76 (46.3 ms CPU) paused frames 0 checks ok 18 bad 2 re-stamps 2 conf 601 frame 612
+   observer: rollbacks 222 max depth 15 resim frames 1418 (1005.3 ms CPU) paused frames 0 checks ok 20 bad 0 re-stamps 0 conf 601 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 11
+== pose-d4_300ms_unl  [pose-source, input delay 4 (+67 ms engager latency) | 300 ms one-way (+0-10 jitter), 1% loss, unlimited]
+   end state at frame 610 (all objects and tables): engager f99bab08dcb8c466 observer f99bab08dcb8c466 -> IDENTICAL
+   frames 0..611 digests engager 94ef6479e155d180 observer 94ef6479e155d180 offline replay 94ef6479e155d180 -> ALL EQUAL
+   engager: rollbacks 4 max depth 72 resim frames 287 (276.0 ms CPU) paused frames 0 checks ok 20 bad 0 re-stamps 4 conf 593 frame 612
+   observer: rollbacks 221 max depth 15 resim frames 3386 (3250.8 ms CPU) paused frames 0 checks ok 18 bad 0 re-stamps 0 conf 593 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 16
+== pose-d4_50ms_256k  [pose-source, input delay 4 (+67 ms engager latency) | 50 ms one-way (+0-10 jitter), 1% loss, 256 kbit/s cap]
+   end state at frame 610 (all objects and tables): engager 119227b7aaa265fb observer 119227b7aaa265fb -> IDENTICAL
+   frames 0..611 digests engager 9131d32f45ae964c observer 9131d32f45ae964c offline replay 9131d32f45ae964c -> ALL EQUAL
+   engager: rollbacks 0 max depth 0 resim frames 0 (0.0 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 612
+   observer: rollbacks 3 max depth 7 resim frames 20 (12.5 ms CPU) paused frames 0 checks ok 21 bad 0 re-stamps 0 conf 607 frame 611
+   datagrams dropped by full bandwidth queue 0, lost 10
+== pose-d4_50ms_64k  [pose-source, input delay 4 (+67 ms engager latency) | 50 ms one-way (+0-10 jitter), 1% loss, 64 kbit/s cap]
+   end state at frame 610 (all objects and tables): engager 9697c0c81ea0489e observer 9697c0c81ea0489e -> IDENTICAL
+   frames 0..611 digests engager 296bd652a0370332 observer 296bd652a0370332 offline replay 296bd652a0370332 -> ALL EQUAL
+   engager: rollbacks 38 max depth 115 resim frames 2056 (1750.3 ms CPU) paused frames 173 checks ok 11 bad 3 re-stamps 132 conf 579 frame 612
+   observer: rollbacks 166 max depth 15 resim frames 2481 (1972.2 ms CPU) paused frames 110 checks ok 14 bad 0 re-stamps 0 conf 607 frame 611
+   datagrams dropped by full bandwidth queue 770, lost 11

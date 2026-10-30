@@ -735,35 +735,7 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
     let cfg = SimConfig { dt, window: 2 * hz, ..cfg60() };
     let scene = SceneKind::BallPit { balls: 500, hands: 2 };
     let f = |s: f64| (s * hz as f64).round() as u64; // seconds -> frames
-    // Hand path: descend over 0.33 s, sweep for 3 s in a sine across the pit, rise, park.
-    let sweep = |member: MemberId| -> Vec<(u64, Action)> {
-        let obj = 500 + (member - 1);
-        let (s0, s1, s2, s3) = (f(2.0), f(2.33), f(5.33), f(5.66));
-        let mut v = Vec::new();
-        for fr in s0..=s3 {
-            let t = fr as f64 / hz as f64;
-            let dir = if member == 1 { 1.0 } else { -1.0 };
-            let (x, z) = if fr < s1 {
-                (-0.9 * dir, -0.6)
-            } else if fr <= s2 {
-                let u = (fr - s1) as f64 / (s2 - s1) as f64;
-                ((-0.9 + 1.8 * u) * dir, 0.6 * (std::f64::consts::TAU * 1.5 * u).sin() - 0.0 * t)
-            } else {
-                (0.9 * dir, 0.6 * (std::f64::consts::TAU * 1.5).sin())
-            };
-            let y = if fr < s1 {
-                1.2 - 1.0 * (fr - s0) as f64 / (s1 - s0) as f64
-            } else if fr <= s2 {
-                0.2
-            } else {
-                0.2 + 1.0 * (fr - s2) as f64 / (s3 - s2) as f64
-            };
-            let mm = [(x * 1000.0).round() as i32, (y * 1000.0).round() as i32, (z * 1000.0).round() as i32];
-            v.push((fr, Action::Hand { obj, target_mm: mm, active: true, ahead }));
-        }
-        v.push((s3 + 1, Action::Hand { obj, target_mm: [0, 1500, 0], active: false, ahead }));
-        v
-    };
+    let sweep = |member: MemberId| ballpit_sweep(hz, member, ahead);
     let ids = [1, 2];
     let peers: Vec<Peer> = ids
         .iter()
