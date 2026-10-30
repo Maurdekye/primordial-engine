@@ -1,0 +1,61 @@
+description = """
+R14 forge (reviews NEW-3..NEW-5, NEW-21, R3-4..R3-8): nine forged or proofless cross-world \
+entries, from members that control one-member worlds D (4, member 2) and E (5, member 3) or \
+hold genuine certificates; every one is refused and object 40 stays conserved."""
+include = ["../common/r14.toml"]
+
+# One-member worlds that a single member controls. Their owners route them to A and B; A and B
+# do not route to them.
+[world.4]
+members = [2]
+scene = { pile = { side = 3, layers = 1 } }
+epoch_ms = 120
+seed = 0xD
+routes = [1]
+
+[world.5]
+members = [3]
+scene = { pile = { side = 3, layers = 1 } }
+epoch_ms = 120
+seed = 0xE
+routes = [2]
+
+[[byzantine]]
+kind = "r14_forgeries"
+attacks = [
+    { at_ms = 2000, attack = "depart_to_own_world" },
+    { at_ms = 2000, attack = "depart_to_unknown_world" },
+    { at_ms = 2200, attack = "mint_from_own_world" },
+    { at_ms = 2500, attack = "mint_without_departure" },
+    { at_ms = 2700, attack = "nan_record" },
+    { at_ms = 2900, attack = "squat_transfer" },
+    { at_ms = 3000, attack = "proofless_verdict" },
+    { at_ms = 3020, attack = "relabel_record" },
+    { at_ms = 3050, attack = "false_rejection" },
+]
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "forge"
+[[report]]
+kind = "r14_forge_conservation"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 forge A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 forge B"

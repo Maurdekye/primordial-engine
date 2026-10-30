@@ -1,0 +1,25 @@
+description = """
+Fault kinds (P2-9): a permanent partition {1, 2} | {3} from 2 s. The majority side votes \
+member 3 out as silent (review R3-2) and goes on; members 1 and 2 must agree with each other and \
+with the offline replay, with no false checks."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 12000
+
+[net]
+seed = 31
+link = { delay_ms = 30, jitter_ms = 10, loss_pct = 1 }
+
+[[fault]]
+partition = [[1, 2], [3]]
+after_ms = 2000
+drop = true
+
+[[report]]
+kind = "membership"
+honest = [1, 2]
+label = "fault-partition-evict"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2]
+label = "fault-partition-evict (members 1 and 2)"
