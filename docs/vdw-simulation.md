@@ -381,7 +381,7 @@ native and wasm digests match. Only the digests and other trajectory-dependent n
 | Engine goldens, ragdolls / wave / query / mesh (`spikes/out/vdw/goldens-vdw-*`) | C goldens 291 `0xFF4C605B` / 272 `0x266F83B0` / 242 `0xF3AD9BA6` / 226 `0xD2FF069D` | 358 `0xB1EB47AE` / 307 `0x0809EA96` / 242 `0x9EA3A8B9` (query hits 59, `0xE3271F3D` unchanged) / 220 `0xCE3B7A62` |
 | `pe-spike-physics trace 600` digest | `7903109aab28ed9b` | `80839f4a54133e13` (776324c's `--vdw` trace with Min was `a9041fec18d56c02`) |
 | `wasm-hotswap` D4 (`spikes/out/wasm-hotswap-{eager,lazy}.log`) | `7903109aab28ed9b` | `80839f4a54133e13`; the check in `spikes/wasm-hotswap/src/main.rs` is updated |
-| `physics_in_wasm.wasm` raw SHA-256 (`spikes/out/guest-wasm-sha256.txt`) | `589e97a7008badfd…` | `1184af4c59cce8ed…`. The guest workspace now has the same `[patch]`. The logic guests are byte-identical |
+| `physics_in_wasm.wasm` raw SHA-256 (`spikes/out/guest-wasm-sha256.txt`) | `589e97a7008badfd…` | `1184af4c59cce8ed…` at b8f130c, then `f15b4349e8417d46…` after the release-validator change (same digest). The guest workspace now has the same `[patch]`. The logic guests are byte-identical |
 | p2p over UDP, latency60 / loss10 / fault (`spikes/out/p2p-v2/`) | `cd613a64b7088dbe` | `66d3f4a12f8bdef2`; peer 1 == peer 2 and the offline replay is EQUAL in all three |
 | session-sim state-frame / loss | `eb64716d53886595` | `255efbf3d9457fdd` |
 | session-sim diverged | `eb64716d53886595` | `60ddd49e7dbc3ed7` (see below) |
