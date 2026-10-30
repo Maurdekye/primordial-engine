@@ -1,0 +1,6 @@
+RESULT r18 capped: 500-ball pit, member 1 sweeps, 50+-5 ms one-way, cap 32 kbit/s each way (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on
+RESULT   transport | wire kbit/s m1->m2 / m2->m1 | max queue ms m1->m2 / m2->m1 | cap drops | stalled frames m1 / m2 | max conf lag m1 / m2 | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   per message      | 398.8 /  33.4 |  500 /    0 | 5210 | 293 / 319 | 403 / 406 | 0 (own entries moved: 0) | 34.4/s, 115 | never | m1 b2007a4cf4503cd4 m2 eb55573496932b5d replay b2007a4cf4503cd4 DIFFER
+RESULT   batched          | 197.6 /  33.1 |  500 /    0 |  142 | 270 / 289 | 390 / 393 | 0 (own entries moved: 0) | 38.8/s,  33 | never | m1 382f010670e1eb3c m2 efd29a96bd94574d replay 382f010670e1eb3c DIFFER
+RESULT   batched+adaptive |  40.5 /  29.8 |   94 /    0 |    0 |   0 /   0 |  16 /  16 | 0 (own entries moved: 0) | 32.5/s,   7 | 0 ms | m1 84b49e10b0253d8b m2 84b49e10b0253d8b replay 84b49e10b0253d8b EQUAL
+RESULT     controller on member 1: time at level 0/1/2/3 (hand stride 1/2/3/4, acks every 2/3/4/6 frames): 7376 / 800 / 800 / 926 ms

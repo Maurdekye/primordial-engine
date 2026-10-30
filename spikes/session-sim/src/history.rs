@@ -50,7 +50,7 @@ impl Default for PitRun {
 
 /// Member 1's hand: descend over 0.33 s, sweep for 3 s in a sine across the pit, rise, park
 /// (the 3d0f98a ball-pit path).
-fn sweep(hz: u64, obj: u32) -> BTreeMap<u64, Vec<Action>> {
+pub(crate) fn sweep(hz: u64, obj: u32) -> BTreeMap<u64, Vec<Action>> {
     let f = |s: f64| (s * hz as f64).round() as u64;
     let (s0, s1, s2, s3) = (f(2.0), f(2.33), f(5.33), f(5.66));
     let mut m: BTreeMap<u64, Vec<Action>> = BTreeMap::new();

@@ -17,6 +17,55 @@ pub struct Link {
     pub loss_pct: u32,
 }
 
+/// Wire overhead per datagram (IP/UDP/AEAD/session), as in the ball-pit wire estimate.
+pub const DATAGRAM_OVERHEAD: u64 = 52;
+
+/// Bandwidth cap for one directed link (ported unchanged from @ballpit-viz, 2996d39): a token
+/// bucket feeding a FIFO queue. Tokens refill at `rate_bps` bits/s up to `burst_bytes`; a datagram
+/// leaves the queue when the bucket holds its wire size. A datagram that would wait longer than
+/// `max_queue_us` is dropped (tail drop), as a router with a full buffer would.
+#[derive(Clone, Copy, Debug)]
+pub struct Cap {
+    pub rate_bps: u64,
+    pub burst_bytes: u64,
+    pub max_queue_us: u64,
+}
+
+/// Token-bucket state of one directed link.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Shaper {
+    tokens: f64,
+    t_ref_us: u64,
+    started: bool,
+}
+
+impl Shaper {
+    /// Departure time from the bottleneck for a datagram of `wire` bytes offered at `now_us`, or
+    /// None if the queue is full. FIFO: never departs before the previous datagram.
+    pub fn offer(&mut self, cap: &Cap, now_us: u64, wire: u64) -> Option<u64> {
+        let rate = cap.rate_bps as f64 / 8.0 / 1e6;
+        if !self.started {
+            self.started = true;
+            self.tokens = cap.burst_bytes as f64;
+            self.t_ref_us = now_us;
+        }
+        let t0 = now_us.max(self.t_ref_us);
+        let have = (self.tokens + (t0 - self.t_ref_us) as f64 * rate).min(cap.burst_bytes as f64);
+        let (depart, left) = if have >= wire as f64 { (t0, have - wire as f64) } else { (t0 + ((wire as f64 - have) / rate).ceil() as u64, 0.0) };
+        if depart - now_us > cap.max_queue_us {
+            return None;
+        }
+        self.tokens = left;
+        self.t_ref_us = depart;
+        Some(depart)
+    }
+
+    /// How long a datagram offered now would wait (queue backlog), in microseconds.
+    pub fn backlog_us(&self, now_us: u64) -> u64 {
+        self.t_ref_us.saturating_sub(now_us)
+    }
+}
+
 /// What a scripted fault does to one message.
 pub enum Fate {
     Deliver,
@@ -40,6 +89,17 @@ pub struct Net {
     /// Count only from this virtual time (to measure a window).
     pub count_from_us: u64,
     pub count_to_us: u64,
+    /// Bandwidth caps per directed link (none = unlimited). See [`Cap`].
+    pub caps: BTreeMap<(MemberId, MemberId), Cap>,
+    pub default_cap: Option<Cap>,
+    pub shapers: BTreeMap<(MemberId, MemberId), Shaper>,
+    /// Datagrams dropped by a full bandwidth queue (also counted in `dropped`).
+    pub cap_dropped: u64,
+    /// Wire bytes (payload + overhead) offered per sender, in the counting window.
+    pub wire_from: BTreeMap<MemberId, u64>,
+    /// R18 (viz-4): merge everything one member sends one peer in one tick into one datagram.
+    pub batching: bool,
+    outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
 }
 
 pub fn kind(m: &Msg) -> &'static str {
@@ -49,9 +109,11 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } => "vote",
+            Payload::Attest { .. } => "attest",
             _ => "entry/transfer",
         },
         Msg::Fetch { .. } => "fetch",
+        Msg::Batch(_) => "batch",
     }
 }
 
@@ -69,6 +131,13 @@ impl Net {
             dropped: 0,
             count_from_us: 0,
             count_to_us: u64::MAX,
+            caps: BTreeMap::new(),
+            default_cap: None,
+            shapers: BTreeMap::new(),
+            cap_dropped: 0,
+            wire_from: BTreeMap::new(),
+            batching: false,
+            outbox: BTreeMap::new(),
         }
     }
 
@@ -96,14 +165,55 @@ impl Net {
                 Fate::Delay(d) => extra = d,
             }
         }
+        if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
+            *self.wire_from.entry(from).or_default() += bytes.len() as u64 + DATAGRAM_OVERHEAD;
+        }
+        // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
+        let depart = match self.shape(from, to, bytes.len() as u64) {
+            Some(d) => d,
+            None => {
+                self.dropped += 1;
+                self.cap_dropped += 1;
+                return;
+            }
+        };
         if link.loss_pct > 0 && (self.rand() % 100) < link.loss_pct as u64 {
             self.dropped += 1;
             return;
         }
         let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
-        let at = self.now_us + link.delay_us + jitter + extra;
+        let at = depart + link.delay_us + jitter + extra;
         self.seq += 1;
         self.queue.push(Reverse((at, self.seq, to, world, from, bytes)));
+    }
+
+    /// Departure time through the link's bandwidth cap for a payload of `payload` bytes (now, if
+    /// the link is uncapped), or None if its queue is full.
+    pub fn shape(&mut self, from: MemberId, to: MemberId, payload: u64) -> Option<u64> {
+        let Some(cap) = self.caps.get(&(from, to)).copied().or(self.default_cap) else { return Some(self.now_us) };
+        self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + DATAGRAM_OVERHEAD)
+    }
+
+    /// Current queue backlog of a capped link, in microseconds (0 if uncapped).
+    pub fn backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
+        self.shapers.get(&(from, to)).map_or(0, |s| s.backlog_us(self.now_us))
+    }
+
+    /// Send now, or queue for this tick's batch to that peer.
+    pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
+        if self.batching {
+            self.outbox.entry((world, from, to)).or_default().push(m.clone());
+        } else {
+            self.send(world, from, to, m);
+        }
+    }
+
+    /// End of tick: one datagram per (world, sender, receiver).
+    pub fn flush(&mut self) {
+        for ((w, from, to), mut v) in std::mem::take(&mut self.outbox) {
+            let m = if v.len() == 1 { v.pop().unwrap() } else { Msg::Batch(v) };
+            self.send(w, from, to, &m);
+        }
     }
 
     /// Messages due now: (to, world, from, msg).
@@ -173,6 +283,14 @@ pub struct Replica {
     next_ack_us: u64,
     pub ack_every_us: u64,
     last_frame_seen: u64,
+    /// R18: adapt the hand-entry rate and ack interval to this member's uplink queue.
+    pub adapt: bool,
+    pub level: usize,
+    level_t: u64,
+    calm_since: u64,
+    hand_last: BTreeMap<u32, u64>,
+    /// Time spent at each congestion level (ms), and the highest level reached.
+    pub level_ms: [u64; 4],
     /// Remote state-carrying entries awaiting the acceptance check: (entry, author, obj).
     pub pending_accept: Vec<(EntryId, MemberId, u32)>,
 }
@@ -230,6 +348,12 @@ impl Peer {
                 next_ack_us: 0,
                 ack_every_us: 2 * dt_us,
                 last_frame_seen: u64::MAX,
+                adapt: false,
+                level: 0,
+                level_t: 0,
+                calm_since: 0,
+                hand_last: BTreeMap::new(),
+                level_ms: [0; 4],
                 pending_accept: Vec::new(),
             },
         );
@@ -239,10 +363,21 @@ impl Peer {
 fn broadcast(net: &mut Net, w: WorldId, from: MemberId, members: &[MemberId], m: &Msg) {
     for &to in members {
         if to != from {
-            net.send(w, from, to, m);
+            net.post(w, from, to, m);
         }
     }
 }
+
+fn flatten(m: Msg, out: &mut Vec<Msg>) {
+    match m {
+        Msg::Batch(v) => v.into_iter().for_each(|x| flatten(x, out)),
+        x => out.push(x),
+    }
+}
+
+/// R18: hand-entry stride and ack interval (frames) at each congestion level.
+pub const HAND_STRIDE: [u64; 4] = [1, 2, 3, 4];
+pub const ACK_FRAMES: [u64; 4] = [2, 3, 4, 6];
 
 impl Sim {
     pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
@@ -275,8 +410,14 @@ impl Sim {
 
     pub fn step_ms(&mut self) {
         let now = self.net.now_us;
-        // 1. deliveries
+        // 1. deliveries (a batch is its messages, in order)
+        let mut due = Vec::new();
         for (to, w, from, m) in self.net.due() {
+            let mut v = Vec::new();
+            flatten(m, &mut v);
+            due.extend(v.into_iter().map(|x| (to, w, from, x)));
+        }
+        for (to, w, from, m) in due {
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
@@ -298,15 +439,16 @@ impl Sim {
                     }
                     for (dest, f) in r.sim.take_fetches(now / 1000) {
                         if dest != to {
-                            self.net.send(w, to, dest, &f);
+                            self.net.post(w, to, dest, &f);
                         }
                     }
                 }
                 Msg::Fetch { author, from: a, to: b } => {
                     for e in r.sim.on_fetch(author, a, b) {
-                        self.net.send(w, to, from, &e);
+                        self.net.post(w, to, from, &e);
                     }
                 }
+                Msg::Batch(_) => {}
             }
         }
         // 2. peers tick
@@ -316,6 +458,7 @@ impl Sim {
         }
         // 3. acceptance checks whose receiver is caught up and whose author has the frame
         self.resolve_acceptance();
+        self.net.flush();
     }
 
     fn tick_peer(&mut self, pi: usize, now: u64) {
@@ -332,25 +475,66 @@ impl Sim {
             let clock_frame = (clock - r.epoch_us) / r.dt_us;
             r.sim.now = clock_frame;
             let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+            if r.adapt {
+                // R18 congestion control. Signal: this member's own uplink queue delay (the spike
+                // reads the bottleneck directly; production estimates it from the one-way delay
+                // gradient of acks, as WebRTC's GCC does). Up fast, down slowly.
+                let b = members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
+                if b > 40_000 && now >= r.level_t + 100_000 && r.level < 3 {
+                    r.level += 1;
+                    r.level_t = now;
+                }
+                if b < 10_000 {
+                    if r.calm_since == 0 {
+                        r.calm_since = now;
+                    }
+                } else {
+                    r.calm_since = 0;
+                }
+                if r.level > 0 && r.calm_since > 0 && now >= r.calm_since + 300_000 && now >= r.level_t + 300_000 {
+                    r.level -= 1;
+                    r.level_t = now;
+                    r.calm_since = now;
+                }
+                r.ack_every_us = ACK_FRAMES[r.level] * r.dt_us;
+                r.level_ms[r.level] += 1;
+            }
             // Simulate once per new clock frame (coalesces all late arrivals of a frame into one
             // rollback: option (c)); background worlds advance in periodic bursts.
             let throttled = r.throttle_us.is_some_and(|p| now >= r.throttle_from_us && now < r.last_burst_us + p);
+            let mut new_frame = false;
             if !throttled && (clock_frame != r.last_frame_seen || !r.sim.caught_up()) {
+                new_frame = clock_frame != r.last_frame_seen;
                 r.last_frame_seen = clock_frame;
                 if r.throttle_us.is_some() && now >= r.throttle_from_us {
                     r.last_burst_us = now;
                 }
                 r.sim.advance(clock_frame);
-                // Planned actions for this frame (authored at the start of the frame).
-                if r.sim.caught_up() && r.sim.frame == clock_frame {
-                    if let Some(actions) = r.plan.remove(&clock_frame) {
+                // Planned actions for this frame (authored at the start of the frame). Hand poses
+                // stream even while the sim is behind (stamped at the present, R18); anything else
+                // needs a caught-up sim and is dropped otherwise (as in 3d0f98a).
+                let ready = r.sim.caught_up() && r.sim.frame == clock_frame;
+                {
+                    let actions = r.plan.remove(&clock_frame).unwrap_or_default();
+                    {
                         for a in actions {
+                            if !ready && !matches!(a, Action::Hand { .. }) {
+                                continue;
+                            }
+                            if let Action::Hand { obj, active: true, .. } = a {
+                                let k = if r.adapt { HAND_STRIDE[r.level] } else { 1 };
+                                if r.hand_last.get(&obj).is_some_and(|&l| clock_frame < l + k) {
+                                    continue;
+                                }
+                                r.hand_last.insert(obj, clock_frame);
+                            }
+                            let span = if r.adapt { HAND_STRIDE[r.level] as u8 } else { 1 };
                             let e = match a {
                                 Action::Touch { obj, impulse, grab } => {
                                     r.sim.author(Payload::Touch { obj, impulse, grab }, Some(obj))
                                 }
                                 Action::Hand { obj, target_mm, active, ahead } => {
-                                    r.sim.author_ahead(Payload::Hand { obj, target_mm, active }, ahead)
+                                    r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span }, ahead)
                                 }
                                 Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
                                 Action::Backdated { obj, impulse, back } => {
@@ -381,7 +565,14 @@ impl Sim {
                 }
             }
             let r = self.peers[pi].worlds.get_mut(&w).unwrap();
-            if now >= r.next_ack_us {
+            // With batching, acks ride in the same datagram as the frame's entries (R18, viz-4).
+            let ack_due = if self.net.batching {
+                let every = (r.ack_every_us / r.dt_us).max(1);
+                new_frame && clock_frame % every == 0
+            } else {
+                now >= r.next_ack_us
+            };
+            if ack_due {
                 r.next_ack_us = now + r.ack_every_us;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
@@ -391,7 +582,7 @@ impl Sim {
             }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
                 if dest != pid {
-                    self.net.send(w, pid, dest, &f);
+                    self.net.post(w, pid, dest, &f);
                 }
             }
         }
