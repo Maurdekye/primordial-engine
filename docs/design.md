@@ -34,7 +34,7 @@ against this list. Where the order changed an answer, the text says so. Examples
     running it.
   * **[I]** inferred or proposed design. Not yet tested.
 * Choices that go beyond what the user specified are collected in **section 24, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D78**, with
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D80**, with
   letter suffixes where one topic was split (e.g. D14a). Most are now settled by the user (24 says which and
   when); the few still open are marked so.
 * Review findings (C1, H4, M3, R13-C1, …) are cited where they changed the design;
@@ -139,6 +139,8 @@ Rulings that shape the design:
 * **The open decisions** (18:42-19:21Z): the user ruled D2, D4, D11, D18a/D20, D21, D23 and D62, D27a and
   D34, D32, D49, D60 and D72, and took the recommendation for every other (19:11Z). Section 24 records
   each. The rulings raised five new questions, D74-D78, which the user settled as recommended at 19:58Z.
+  P2-5 raised D79 (settled 20:07Z); the phase-2 view change raises **D80, open:** how many members must
+  agree to change the member list.
 
 ---
 
@@ -1081,9 +1083,11 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
       is virtual synchrony's flush, decided from chain data alone.
     * **Stability never shrinks:** once every member has referenced an entry, a later conflicting
       reference cannot withdraw it (R3-1).
-  * **What colluders can still do** [V badvote]: stall. Two colluders of four leave no honest majority,
-    so nothing can be decided without one of them. The honest members keep their confirmed history and
-    pause at the speculation limit. With an honest majority, the general view change (10.8) removes them.
+  * **What colluders could still do in round 3** [V badvote at 11185cc]: stall. Two colluders of four left
+    no honest majority, so nothing could be decided without one of them.
+  * **Since P2-4 the view change decides every removal** (10.8): a quorum's votes set the cut (with t = 0,
+    the rule above), members proven faulty count in no quorum, and a forked vote is itself a proof. So
+    `badvote` and `liar` now remove both colluders and the session goes on [V session-sim, 5k].
   * Measured on the reviewer's repros, ported to session-sim [V]:
     * `ackfork`: member 9 showed member 2 a different chain. Both honest members found the conflict,
       evicted 9 with a cut before its touch, and agreed. Before, they forked.
@@ -1329,8 +1333,9 @@ session codes and volunteer relays (D35), and reconsider iroh only if the user a
   covers it. Here the rows are signed chain entries, so a member that shows two rows has equivocated.
 * Eviction follows virtual synchrony's view change (Birman): survivors agree on a cut of the evicted
   member's messages.
-* A general view change (a silent member, a join) needs agreement under partial synchrony. That is a
-  PBFT-style view change or Raft's joint consensus [I].
+* A general view change (several members at once, a join) needs agreement under partial synchrony: one
+  Byzantine-tolerant decision per epoch, here Tendermint's (Buchman, Kwon and Milosevic 2018) over chain
+  entries (P2-4, below).
 
 **Chains.**
 * Every member's entries form a hash chain: each entry names its predecessor's id, and an entry's id is the
@@ -1363,40 +1368,154 @@ is fixed once the author's chain is contiguous up to it.
 
 **Gap detection and fetch:** from acks' heads, and from holes in chains (9.3).
 
-**Membership epochs.**
-* The member list changes only through a view change, which needs a strict majority of the current epoch.
-  So at most one side of a partition can change membership or confirm (review H3).
-* **Eviction of an equivocator** is decided from chain data alone (9.3): votes, frozen heads, the cut, and
-  the frame from which the member no longer counts [V session-sim c2, ackfork, lateequiv, evict].
-* **Removing a silent member** (review R3-2) [V session-sim crashstall, r14 crash]:
-  * **Suspicion.** A member none of whose entries has reached a replica for 180 frames (3 s, 1.5 times
-    the speculation limit), directly or fetched, is presumed crashed. The exception is when another
-    member's acks show more of its chain: then the replica is only behind, and fetches.
-  * **Vote.** The replica freezes that chain and votes to remove the member. Removal then follows the
-    eviction rules (9.3): every remaining member votes, the votes become stable among them, and the cut
-    keeps everything that could have been stable. So no confirmed frame changes.
-  * **Withdrawal.** A silence vote can be withdrawn if the member is heard from again, but only while the
-    voter does not yet see a standing vote from every other remaining member. No member can have decided
-    by then: a decision needs the voter's acks to reference every vote, and those acks come after the
-    withdrawal in its chain.
-  * **Two-member worlds** never remove anyone. Removal needs a strict majority without the removed
-    member, so both members pause instead (D7).
-  * **Measured** (crashstall): member 3 of 3 went silent at t = 3 s. Members 1 and 2 removed it once it
-    had been silent for 180 frames, with the cut at seq 86, from frame 173. They paused 72 frames at the
-    speculation limit first. At t = 15 s confirmation was 4-6 frames behind the present, and both members equalled the
-    offline replay. Before the fix, confirmation stayed at frame 169 and the members paused 604 frames.
-  * **What a crash costs:** a pause of about 1.2 s for everyone, set by the 3 s threshold. A shorter
-    threshold would turn congestion into removals: in c1, a congested member is silent for 1.95 s.
-* **Still [I]:** joins; demotion to spectator (10.9); several members failing at once; colluders.
-  * Each removal needs the votes of all other remaining members. So two silent members at once, or a
-    colluder that withholds or forks its vote, stall removal. The honest members keep their confirmed
-    history and pause.
-  * A proposer-based view change (PBFT's, or Raft's joint consensus) would let an honest majority remove
-    several members at once. It would also give the other world's certificates a new epoch to follow
-    (22.7).
-  * Against colluders no protocol does better than n >= 3f + 1: Byzantine agreement under partial
-    synchrony needs it, so two colluders of four can always stall a session [S Dwork, Lynch and
-    Stockmeyer 1988].
+**Membership epochs and the view change (P2-4).**
+* The member list changes only through a **view change**: one decision per epoch, taken by the epoch's
+  members and recorded in an **epoch certificate**. Removals (a crash, a member too slow to keep up, a
+  proven cheater), joins and resets all go through it. At most one side of a partition can decide one
+  (review H3), within the fault bound below.
+* **Votes start it** [V session-sim crashstall, twosilent]. A member votes to remove another when:
+  * it holds a proof against it (below);
+  * none of its entries has reached this member for 180 frames (3 s, 1.5 times the speculation limit),
+    directly or fetched, while no other member's acks show more of its chain (R3-2). A shorter threshold
+    would turn congestion into removals: in `c1` a congested member is silent for 1.95 s;
+  * or its horizon has trailed the present by more than half the speculation limit for as long (R3-9:
+    demotion; it can follow as a spectator).
+
+  A vote names the voter's **frozen head** of that chain: the most of it the voter references for the rest
+  of the epoch, so its later references to that chain never count toward stability (R3-1). The voter keeps
+  processing the chain, though: a member wrongly suspected must still be heard in the reset that keeps it
+  (found by `bridge`: freezing the processing too stalled the session after a partition healed). A vote
+  stands until its epoch ends.
+* **Proofs.** Two signed entries of one member that contradict each other prove it faulty. Honest members
+  never produce one, and anyone holding the two entries can check it:
+  * two versions of one seq;
+  * an entry whose `prev` names a version of its predecessor other than the one the holder has. The
+    other version need not ever be seen. This is how a member that forks its own vote is caught
+    [V badvote, colluders];
+  * a vote whose frozen head drops an entry that its author's own earlier ack referenced (a lying vote)
+    [V liar].
+* **Agreement** is Tendermint's algorithm for a single decision (Buchman, Kwon and Milosevic 2018,
+  algorithm 1). Its messages are chain entries, so each is signed, ordered in its author's chain and
+  repaired by fetch like any entry, and a member that sends two members different ones has equivocated.
+  * The epoch's view change runs in **rounds**. Each round has a **proposer**, from a seeded rotation over
+    the epoch's members, so no member chooses to propose.
+  * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
+    of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
+    **decides** it.
+  * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
+    together leave in one change [V twosilent].
+  * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
+    it at once, and a member that sees more than t members in a later round moves there.
+  * The locks make two decisions in one epoch impossible, whatever the network does, as long as at most t
+    of the members not excluded by proof are faulty. The timeouts bring a decision once messages arrive
+    in time (partial synchrony).
+* **Quorums (D80).** Let m be the epoch's members minus those the change excludes by proof; the change
+  lists them, with their proofs. A quorum is q = ceil((m + t + 1) / 2) of them, where t is the number of
+  faulty members not yet proven that the rule tolerates:
+  * D80 (b), recommended: t = floor((m - 1) / 3), the Byzantine quorum: just over two thirds;
+  * D80 (a): t = 0, a strict majority.
+
+  Any two quorums then share an honest member, so an epoch cannot be decided two ways. Excluding a member
+  proven faulty lowers m and q, and never helps the faulty: t(m - 1) >= t(m) - 1.
+* **The change** names, for each member it removes:
+  * the votes it relies on: at least q, none from an excluded member, none a lie;
+  * the **cut**: the deepest point of that member's chain that at least (votes - t) of those votes' frozen
+    heads extend.
+
+  Why the cut keeps every confirmed frame: an entry stable at any honest member was referenced by every
+  member before it voted (R3-1), so every honest voter's frozen head extends it, and at most t of the
+  votes are faulty. The votes number more than 2t, so two branches of a forked chain cannot both reach
+  (votes - t), and the cut is unique. With t = 0 it is the longest common prefix of the frozen heads,
+  round 3's rule (9.3).
+* **Every change names a boundary frame** B, signed with it: the first frame of the new epoch. Added members
+  count from B; facts about frames from B on are the new epoch's to certify (P2-5's epoch-at-frame
+  rule). Boundaries never go backwards. For a removal B is the proposer's present; for a join it lies
+  ahead (below).
+* **Exclusions are checked before anything is decided.** A change's exclusions set its quorum, so a faulty
+  minority that listed honest members as "proven" could otherwise decide alone. Members prevote, lock on
+  and decide a change only once every exclusion it lists checks out, and a change may list only proofs
+  that their two entries show alone (two versions of one seq, a successor naming another version, or an
+  ack referencing a seq beyond a later vote's frozen head), so another world can check them too.
+* **A change may remove no one: a reset.** A proposer proposes one when a vote of the epoch stands against
+  a member it hears from (wrongly suspected, or back). It replaces round 3's withdrawal of a silence vote,
+  which is unsafe once a quorum rather than every member decides: after a withdrawal, the voter's later
+  references can make entries stable that the withdrawn vote's frozen head drops, and a change naming
+  that vote would cut them.
+* **Applying a decision.**
+  * Epoch e + 1 starts. Removed members leave the list. Entries after each cut are void, and a removed
+    member stops counting from the frame after the last horizon inside its cut.
+  * A member that did not vote may not yet hold a removed member's whole prefix up to the cut. Until it
+    does, it confirms only frames that the acks it holds of that prefix cover: an entry stamped at or
+    before a declared horizon must come before that ack in its chain (8.2).
+  * Every vote and freeze of epoch e ends. Members still silent are voted against again at once.
+* **Joins** use the same decision: a change that adds members, with a boundary B ahead of the present
+  (the proposer's present plus 60 frames) [V join].
+  * The joiner asks to join, and members accept a change that adds it only if they hold its request.
+    Strangers may join (D21); in production an invite or the world's ACL decides who may ask (12).
+  * A member precommits a join only while its own horizon is still below B, and its precommit names B.
+    From that precommit on, every reader counts that member's acks only below B until it reaches the next
+    epoch: a chain-local rule, so the member's own acks stay valid.
+  * Acks carry their author's epoch. An ack from an epoch newer than the reader's never counts toward the
+    reader's confirmation, so a member that decides late cannot confirm a frame from B on without the
+    joiner either. Together: no member confirms a frame from B on before it knows of the join.
+  * Nothing the joiner signs acts before it is admitted. Once admitted, its entries stamped before B are
+    void (a chain-local rule), and it counts toward confirmation from B on. It gets the state at a
+    confirmed frame and the log after it (9.5); in the spike it follows the log from the start.
+  * A removal needs no cap like a join's: no member can confirm a frame past a removed member's last
+    horizon inside the cut before the decision, because every entry stable anywhere lies inside the cut.
+* **Withheld references are suspected too** [V refwithhold]. Stability needs every member's references, so
+  a member that keeps acking but stops referencing some chain stalls everyone's confirmation as surely
+  as a silent one. A member whose acks have referenced no more of some chain for 180 frames, while every
+  other member (the checking replica included) holds and references more of it, is voted out the same
+  way. A member that only acks slowly still advances, and is not.
+* **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
+  signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
+  signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
+  list can check it, so another world can follow a world's membership from its genesis, one certificate
+  at a time. P2-5's hops carry the source's certificates up to the epoch that signed them, so a world
+  checks a hop from a world not on its route list too (P25-5).
+* **What each rule tolerates**, counting members not excluded by proof:
+
+| Members | (b) quorum | (b) removable at once | (b) faulty members that cannot split it | (a) quorum | (a) removable at once | (a) faulty members that cannot split it |
+|---|---|---|---|---|---|---|
+| 3 | 2 | 1 | 0 | 2 | 1 | 0 |
+| 4 | 3 | 1 | 1 | 3 | 1 | 1 |
+| 5 | 4 | 1 | 2 | 3 | 2 | 0 |
+| 6 | 4 | 2 | 1 | 4 | 2 | 1 |
+| 7 | 5 | 2 | 2 | 4 | 3 | 0 |
+| 8 | 6 | 2 | 3 | 5 | 3 | 1 |
+| 256 | 171 | 85 | 85 | 129 | 127 | 1 |
+
+  "Removable at once" is m - q. "Cannot split it" is 2q - m - 1: the most faulty members two quorums can
+  share while still sharing an honest one. A two-member session removes no silent member (D7), but a member
+  proven faulty is removed by the other alone (m = 1, q = 1).
+* **Limits.**
+  * Beyond the bound, a partition between honest members that a faulty member reaches on both sides lets
+    each side decide its own epoch: the session forks [V bridge, under D80 (a)].
+  * A faulty member can keep forcing resets by voting against a healthy member again in each epoch. Each
+    costs one decision and stalls that member's chain while it lasts, not safety. Counting a vote that a
+    reset overrules against its author, so a repeat offender is voted out, is the rule to add [I].
+  * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
+    certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
+* **Measured** [V session-sim, branch `viewchange`, D80 (b) unless named; logs in `spikes/out/session-sim/`]:
+
+| Scenario | What happens | Result |
+|---|---|---|
+| `crashstall` | member 3 of 3 silent from 3 s | removed {CRASH_T}; same cut as round 3 (seq 86, from frame 173); paused 72 frames; all equal |
+| `twosilent` | members 5 and 6 of 6 silent from 3 s | {TWOSILENT} |
+| `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.05 s. (b): no decision, the three left pause safely (confirmed frame 169) |
+| `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed 80 ms after its second signature, without 8; the confirmed touch stands; no pause |
+| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed (3.65 s, 4.12 s); no pause |
+| `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
+| `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
+| `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; the next removes the proposer (proven) and 5 together |
+| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | {BRIDGE} |
+| `join` | member 4 asks to join at 2 s, touches an object at frame 420 | {JOIN} |
+| `vcscale` | {VCSCALE} | {VCSCALE_R} |
+
+  Every scenario's honest members equal each other and the offline replay of the final log, with no false
+  check failure; no confirmed frame was rolled back (that is asserted). The rest of the suite is
+  unchanged: {SUITE}.
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -3384,6 +3503,20 @@ confirmed facts, and only with proof.**
     (`RejectedNoProof`);
   * a correctly certified record with a NaN position, standing for a bug or a compromised majority in A
     (`RejectedInvalid`).
+* **Measured dishonest-majority attacks** (P2-5) [V session-sim `r14 forge`]. W is on A's and B's route
+  lists, and members 2 and 3, its whole membership, sign as W. Every one of these was refused, and
+  objects 52 to 55 stayed one live copy each in the honest worlds A and B:
+  * W mints A:53, which is live in A, into B as if born in W (`RejectedNoProvenance`);
+  * W mints an id it was never born with (`RejectedNoProvenance`);
+  * W forges an earlier hop A to W, signed by the one member of A it controls (`RejectedNoProvenance`);
+  * W splices A's genuine hop of another object onto A:54 (`RejectedNoProvenance`);
+  * refund and keep: W certifies to A a refusal of A:55, so A refunds it, while W's replicas accepted it.
+    W then exports it to B, presenting A's departure certificate as the hop (`RejectedNoProvenance`);
+  * resurrection: A:52 went A to W to B and back to A. W exports it again into B (`RejectedFork`: the
+    chain skips B's own last exit, and B now holds a fork proof against W), and into A (`RejectedLiveId`).
+  * Control, the same run with the provenance checks off [V `r14 forge --no-provenance`]: the two mints,
+    the forged hop, refund and keep, and the resurrection into B were all accepted. That left a second
+    copy of A:52, A:53, A:54 and A:55 in B, plus a minted W:500.
 * **Why settled rather than optimistic:** only confirmed, certified facts cross, so neither world ever acts
   on the other's speculation, and no correction is ever needed. The optimistic alternative is D45.
 
@@ -3415,17 +3548,56 @@ persists until a verdict arrives.
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
-  * **Conservation assumes that every world on a route list has an honest majority** (D46). A world that
-    one member controls is that member's word, so it never belongs on another world's route list.
-    * A route-listed world whose majority is dishonest can sign a fresh departure of any global id: one
-      born elsewhere, live elsewhere, or spent. Any world where that id is not live would accept it, so
-      that is a cross-world duplicate or a resurrection [I, review of f060e30].
   * With route lists, a single member, including the carrier, can no longer mint, lose or duplicate an
-    object [V r14 forge]. A dishonest majority of a routed world still can: trust is per route.
-  * **Global ids are not bound to their birth world.** The reviewer proposed that a global id's world
-    prefix must equal the source world, but objects travel on (A to B to C), and B's records then carry
-    A's ids. Instead, a record is vouched for by its source's majority, and B refuses a global id that is
-    already live in B.
+    object [V r14 forge]. Without provenance, a dishonest majority of a routed world still could. It
+    could sign a fresh departure of any global id (born elsewhere, live elsewhere, or spent), and any
+    world where that id is not live would accept it [I, review of f060e30; V `r14 forge --no-provenance`].
+  * **Per-object provenance chains** (D46's option for untrusted partners, MVP under D21; package P2-5,
+    `spikes/sim-core/src/provenance.rs`) [V r14 forge, r14 chain]:
+    * **Birth binding.** A global id is (birth world, index), and its birth record is the birth world's
+      genesis object list. Production adds runtime births as a `Born` fact certified by the birth
+      world's majority [I].
+    * **Hops.** When A commits a transfer (on B's certified acceptance), A's members attest "A committed
+      transfer t of object g to B; g had entered A by transfer v (0: born in A)". That certificate is the
+      hop. A departure certificate alone is not enough: a dishonest B could certify a refusal to A, which
+      refunds the object, and still claim to hold it.
+    * **Chains.** Each `Arrive` carries the hops from the object's birth into its source world, and the
+      source's departure certificate covers the chain's hash, so a relayer can neither strip nor swap it.
+      The destination checks every hop against the epoch certificates of the world that signed it,
+      whether or not that world is on its own route list (P2-4 supplies them; the spike uses a static
+      stub). A to B to C to A works [V r14 chain: three hops, conserved, all equal in both orders].
+    * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
+      entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
+      hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
+      verdict was confirmed in A, 0.65 s after the departure [V r14 ok, chain]. A world can export only an object whose way in
+      it can prove.
+    * **Last exits.** Each world keeps, per global id, whether the object is here (live or in escrow) or
+      which transfer last took it away (never pruned: about 48 bytes per object that ever left, in the spike's layout). An arrival
+      of an object that is here is `RejectedLiveId`. An arrival whose chain skips this world's last exit
+      is `RejectedFork`, and two exports by one world of the same incoming hop are kept as a fork proof
+      against that world's majority.
+    * **Why not a world prefix.** The reviewer of round 3 proposed that a global id's prefix must equal
+      the source world. Objects travel on (A to B to C), so the chain binds the id to its birth world
+      instead.
+    * **What remains: double spends by a holder** [V `r14 doublespend`]. A dishonest-majority world can
+      export an object it legitimately received a second time, into a world that has not seen the object
+      since. A:52 went A to W to B; W then exported it into A, citing its genuine hop in, and A accepted it.
+      That left two copies, in A and B. When the copies meet (here, B's return of A:52 into A), the
+      receiving world holds a transferable fork proof: two exports by W's majority of one incoming hop.
+      **Detect only (user, D79, 20:07Z):** the fork proof is the defence, and the cheating world can then
+      be cut off (removed from route lists). A per-object registry that orders every hop, for example at
+      the birth world, was considered and rejected under D79, not even as an opt-in: it costs one extra
+      relay round per hop, and objects freeze when their birth world is unreachable [I]. So a dishonest
+      majority can lose, keep or double-spend only objects that passed through it, and cannot touch any
+      other object.
+    * **Chain size.** Each hop is a certificate of the source's epoch majority. With Ed25519 that is about
+      64 bytes per signer, about 0.65 KB per hop for a 16-member world, so a chain grows linearly with
+      hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
+      its own last exit (it checked the earlier ones on the way in) [I].
+    * **Long-range forgery.** Members of an old epoch who have since left can still sign facts for that
+      epoch. Binding a fact's frame to the epoch active at that frame (P2-4's `from_frame`) stops a later
+      epoch backdating, but not an old majority that colludes. This is the long-range attack of
+      proof-of-stake systems [I].
   * **Member lists change** (review R3-8b). In the spike they are fixed at startup, so an evicted member
     would still count toward the other world's majority. Production keys certificates to a membership
     epoch, and each membership change is certified by the previous epoch's majority, so another world can
@@ -3488,7 +3660,8 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 | abort | Member 2's earlier grab reaches member 1 150 ms late: A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 live copy (A) | all equal |
 | reject | Member 3 closes B's portal at a frame member 1 hears of 150 ms late: B rolls back 10 frames past fB | Arrival rejected; verdict returns the object to A | 1 live copy (A) | all equal |
 | throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
-| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid` | 1 live copy (B), 0 pending; objects 50 and 51 still in A | all equal |
+| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed. P2-5 adds a routed world W whose whole membership is dishonest: two mints, a forged hop, a spliced hop, refund and keep, and two resurrections (22.6) | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid`; P2-5: `RejectedNoProvenance`, `RejectedFork`, `RejectedLiveId` | 1 live copy (B), 0 pending; objects 50 and 51 still in A; A:52 to A:55 one copy each in A and B | all equal (A, B and W) |
+| chain (P2-5) | Three worlds, A (60 Hz), B (50 Hz) and C (60 Hz), routed to each other. Member 1 carries object 40 A to B to C to A; each next departure carries the hop in | Every departure and arrival accepted; the arrival back in A checks a two-hop chain that contains A's own last exit | 1 live copy (A), 0 pending | all equal, all three worlds and both orders (digests differ between orders, for abort's reason) |
 | late | A 2-frame deadline, shorter than the certificate round | Arrival `RejectedLate`; the certified refusal returns the object to A | 1 live copy (A), 0 pending | all equal |
 | crash | Three members per world; member 4 is in both. The carrier goes silent 84 ms after its departure (reviews NEW-6, R3-7) | Both worlds remove the carrier after 180 frames of silence; member 4 relays the transfer; accepted in B | 1 live copy (B), 0 pending | all equal (live members) |
 | ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | all equal. ok and reject have digests identical to forward. abort's A digest differs (review round 3): the escrow key derives from the Depart's entry id, whose chain contents depend on processing order |
@@ -3581,9 +3754,9 @@ What moved, and why:
    stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
 3. **The session protocol is new code, and strangers may join from day one** (D21). Confirmation,
    eviction and fetch repair were proved in an in-process simulator and over loopback UDP, not on the
-   internet. Removing one silent, slow or equivocating member is built [V crashstall, capped slow member,
-   ackfork, liar]; the proposer-based view change is not, and until it is, two members failing at once or
-   two colluders stall a session safely. It is now the first phase-2 package.
+   internet. The view change (10.8) is built in the spike: several members failing at once, withheld or
+   forked votes, colluders, an equivocating proposer and joins all recover in the simulator [V 5k]. What
+   is left is its quorum (D80), its port into `pe-session` (P2-3), and runs over real networks.
 4. **No central authority means cheating is bounded, not prevented** (8.2, 8.5). With strangers in MVP
    sessions, the remaining backdating window (about 4 frames, about 9 with packed hand targets under
    congestion, D73) and the room to pick favourable tie ranks are exposed from day one.
@@ -3655,7 +3828,7 @@ Rules for every package:
 
 **P2-4. The proposer-based view change, @engine-architect**
 (@item:primordial-engine/phase-2-proposer-based-view-change-multiple-fail).
-* What: membership changes decided by a proposer and a strict majority for session and world logs:
+* What: membership changes decided by a proposer and a quorum (D80) for session and world logs:
   several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator,
   and per-epoch certificates that other worlds follow (R3-8b). Built in the spike first, then merged
   into P2-3.
@@ -4206,10 +4379,16 @@ entry says so.
   * **Trust assumption:** every route-listed world has an honest majority. A world whose majority is
     dishonest can sign a departure of any global id, which another world accepts wherever that id is
     not live: a cross-world duplicate, or a resurrected object.
-  * **Option for untrusted partners** [I]: bind each global id to its birth world, and require a
+  * **Option for untrusted partners**: bind each global id to its birth world, and require a
     provenance chain. Each `Arrive` certificate then references the certified transfer, or the birth
     record, that brought the object into its source world. A destination checks the chain back to the
-    birth world, which costs one extra reference per hop.
+    birth world, which costs one extra reference per hop. **Built in the spike (P2-5, 22.7)** [V r14 forge,
+    r14 chain]: mints, forged or spliced hops, refund and keep, and resurrections are refused. What remains
+    is a double spend by a world of an object it legitimately held [V r14 doublespend]. **Settled (user,
+    D79, 20:07Z): detect only.** It is caught by transferable fork proofs when the copies meet, and the
+    cheating world can then be cut off. A per-object registry at the birth world was considered and
+    rejected, not even as an opt-in (one more relay round per hop, and objects freeze when their birth
+    world is unreachable) [I].
   * Cost: one attestation entry per member per transfer step, and each world must know the other's member
     keys.
   * Alternatives:
@@ -4311,6 +4490,9 @@ entry says so.
   * A silent or colluding voter can block the cut. That costs liveness, not safety, and the general view
     change takes over (10.8). Two colluders of four can stall a session, because no honest majority is
     left.
+  * **Phase 2 (P2-4):** the view change now decides every removal. A quorum's votes set the cut: the
+    deepest point that all but t of them extend, which is this rule when t = 0. A silent or colluding
+    voter no longer blocks it, and members proven faulty count in no quorum. The quorum itself is D80.
   * Alternative: evict on a bare strict majority, with the cut chosen by a leader: faster, but it needs
     the general view-change protocol now.
 * **D56. R18 defaults (10.9).** The controller thresholds:
@@ -4498,6 +4680,36 @@ entry says so.
       work out of the box, but every player then depends on that hub for the bridge.
     * **(c) A list of community hubs** to choose from at first use.
   * Recommendation: (a), with (c) as a convenience once community hubs exist.
+* **D79. A double spend by a world that legitimately held the object (22.7, D46; raised by P2-5).**
+  * **Settled (user, 20:07Z): detect only.** A world that sends one object to two others is caught by
+    transferable fork proofs when the copies meet, and it can then be cut off. A per-object registry at
+    the birth world was considered and rejected, not even as an opt-in: it costs one more relay round per
+    hop, and objects freeze while their birth world is unreachable.
+  * The reviewer's follow-up P25-2 (each hop carrying the destination's verdict certificate) is not
+    taken: @provenance-eng measured that it would turn refund-and-keep from refused into detect-only.
+    The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
+    vanished source world can stop an object it handed over from leaving its new world again. That is
+    griefing, not duplication.
+
+* **D80. How many members a view change needs (10.8; raised by P2-4, since strangers may join, D21).**
+  * The problem: removing members needs a decision that a cheating member cannot split in two across a
+    network partition, and that still happens when several members drop at once. No rule gives both at
+    every session size; the two goals trade against each other (Dwork, Lynch and Stockmeyer 1988).
+  * Options, counting the members not proven faulty:
+    * **(a) A strict majority.** Up to just under half can drop at once and still be removed: two of five,
+      three of seven or eight. But one cheating member that reaches both sides of a partition between
+      honest members can get each side to remove the other, and the session forks into two sessions with
+      different histories [V bridge]. Even session sizes resist one such member; odd sizes none.
+    * **(b) A Byzantine quorum, just over two thirds:** 3 of 4, 4 of 5, 6 of 8, 171 of 256. No fork while
+      fewer than a third of the members not proven faulty cheat, partition or not [V bridge]. But fewer
+      members can drop at once: one of five, two of six to eight; when more drop together, the rest pause
+      safely until enough come back [V twosilent5].
+    * **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds of friends.
+  * Members proven faulty (by two contradicting signed entries) never count, under any option, so
+    proven cheaters cannot stall a removal [V badvote, colluders].
+  * Recommendation: **(b)**. A fork breaks "everything in sync" and conservation across worlds, and a
+    member that is also a volunteer relay (D35) can create the partition at will. The cost falls only on
+    sessions of 5, 7 or 8 that lose two or three members at the same moment.
 
 ---
 
@@ -4849,11 +5061,9 @@ faster than `v_max`.
     ack round. In the spike's crash runs the session paused 72 frames (1.2 s) and eviction landed at about
     3.1-3.3 s [V, the architect's runs]. The threshold should stay at 3 s or more: a congested member was
     silent for 1.95 s without having crashed.
-  * **Not covered yet** [I]: two members silent at once (each removal needs the other's vote), and a
-    member that withholds or forks its vote. Both stall without breaking safety. In the world log of a
-    256-player session, two drops at once (one household, one ISP) are plausible, and then every region
-    stalls after about 8.9 s. The proposer-based view change that covers them is now built in phase 2,
-    an MVP prerequisite since strangers may join from day one (D21; 10.8, 23.2).
+  * **Covered since P2-4** [V 5k]: two members silent at once, and a member that withholds or forks its
+    vote. The view change (10.8) removes them together; the world-log timing at 256 members is in 10.8's
+    measured table. Under D80 (b) a world log of 256 removes up to 85 members at once.
 * **`D_merge`** (default 3 km at human scale) is the smallest allowed gap between two regions' footprints.
   It is not "two footprint radii": a footprint radius is at least 3 chunks.
 

@@ -1,14 +1,16 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of main, 30 October 2026, after your decisions of 18:42-19:58Z. This summarises design.md section 24
+As of main, 30 October 2026, after your decisions of 18:42-20:07Z. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
 from measured parts; **inferred** = design reasoning, not run.
 
-## A. Still open
+## A. Still open: one question from the phase-2 view change
 
-None. Your 19:58Z rulings settled D74-D78, the five questions your earlier rulings raised.
+| ID | Question | Options and their main cost | Recommendation | Evidence |
+|---|---|---|---|---|
+| D80 | How many members must agree to remove members (crashed, too slow, or caught cheating) or let someone join? | **(a) A strict majority:** up to just under half can drop at once and still be removed (two of five). But one cheater that can reach both sides of a network split between honest players can get each side to remove the other, and the session forks into two different histories. **(b) Just over two thirds:** no fork while fewer than a third cheat, split or not. But fewer can drop at once (one of five, two of eight); when more drop together, the rest pause until enough come back. **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds | (b) | Measured in the simulator (bridge, twosilent5); 10.8, 24 |
 
 ## B. Your rulings
 
@@ -52,6 +54,7 @@ None. Your 19:58Z rulings settled D74-D78, the five questions your earlier rulin
 | D76 90 to 60 Hz | The world owner switches, warned by the engine | 19:58Z |
 | D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
+| D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
 | Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
 | Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
 
@@ -89,9 +92,12 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 * Deterministic Box3D in Rust, with our van der Waals fork on by default: reference goldens, a 600-frame
   trace equal across release, debug and other build settings, snapshot and rollback. Byte-identical on
   this PC, on <laptop> (Intel) and as a Linux build, the wasm modules included.
-* The session protocol: signed entries, confirmation, cheater proofs and eviction, removal of one crashed
-  member, demotion, transfers between two worlds, congestion control. 30 scenarios in the session
-  simulator all match their offline replays; a two-process UDP version also matches.
+* The session protocol: signed entries, confirmation, cheater proofs, transfers between two worlds,
+  congestion control, and (phase 2) the view change: several members removed at once, withheld or
+  forked votes, colluders, a cheating proposer, a member that withholds references, and joins. Every
+  scenario in the session simulator matches its offline replay; a two-process UDP version also matches.
+* Per-object provenance for transfers between worlds (P2-5), checked against each world's epoch
+  certificates.
 * The ball pit (500 balls and a hand), the snapshot study behind the slider, and the ball-pit video
   matrix renderer.
 * Live game logic in WebAssembly (wasmi): hot swap at a fixed frame, rollback across it, and runaway code
@@ -106,8 +112,8 @@ The times are yours; @coordinator-opus relayed most of these rulings.
   Orgtree bridge, multi-world rendering and portals (R14), physics layers beyond hooks (R15).
 * Regions with provisional arrival and following (R16): modelled, not built.
 * Every-peer builds (D11), logic-state snapshots (D57), compact acks, and relaying for larger sessions.
-* **First in phase 2 (MVP prerequisites since D21):** the proposer-based view change and per-object
-  provenance chains.
+* **Built in the spike, not yet in the engine:** the view change and provenance chains, both MVP
+  prerequisites since D21; they move into `pe-session` next (P2-3).
 
 ## Top 5 risks
 
@@ -117,8 +123,9 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 2. **CPU at 90 Hz and at scale:** the ball pit already needs about 2.8 ms of re-simulation per 60 Hz frame;
    90 Hz costs 1.5x that. Parallel physics is the chosen answer, and its feasibility is still being
    studied.
-3. **Strangers from day one:** until the phase-2 view change is built, two colluders or two members
-   failing at once stall a session (safely); cheating stays bounded, not prevented.
+3. **Strangers from day one:** the view change now removes several failed members, colluders and
+   cheaters in the simulator, but how many must agree (D80) decides whether a cheater who can split the
+   network can fork a session. Cheating stays bounded, not prevented.
 4. **Every peer compiles:** byte-identical builds across machines and operating systems are unproven,
    joining a world means building its code, and every peer compiles other people's code (in a sandbox).
 5. **Unlocked panels:** guests act with your rights and your AI account, which you accepted; prompt
