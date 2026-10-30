@@ -1,9 +1,4 @@
-[peer 2 t=  0.000s f=   0] bound 127.0.0.1:40002 -> 127.0.0.1:40001 (delay 60 ms, jitter 20 ms, loss 0%, drop_stamp None)
-[peer 2 t=  0.615s f=   0] session start received; clock offset estimate 169 us
-[peer 2 t=  2.106s f=  63] remote entry for frame 60 arrived 3 frames late -> rollback
-[peer 2 t=  3.116s f= 124] remote entry for frame 120 arrived 4 frames late -> rollback
-[peer 2 t=  3.218s f= 130] remote entry for frame 126 arrived 4 frames late -> rollback
-[peer 2 t=  5.452s f= 264] remote entry for frame 260 arrived 4 frames late -> rollback
-[peer 2 t=  6.205s f= 309] remote entry for frame 305 arrived 4 frames late -> rollback
-[peer 2 t=  7.773s f= 403] remote entry for frame 400 arrived 3 frames late -> rollback
-[peer 2 t= 13.878s f= 720] DONE frames 0..600: digest cd613a64b7088dbe; offline replay of my final log cd613a64b7088dbe (EQUAL); rollbacks 6 (max depth 4, resimulated 25), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 434 dropped 0, bad signatures 0, forged entries 0
+
+thread 'main' (27992) panicked at spikes\p2p\src\main.rs:181:42:
+bind: Os { code: 10048, kind: AddrInUse, message: "Only one usage of each socket address (protocol/network address/port) is normally permitted." }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
