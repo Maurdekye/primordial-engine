@@ -1635,29 +1635,73 @@ from its source.
 * **Byte-identical builds on every machine and OS are now a hard requirement,** not a background check.
   What makes a build reproducible:
   * the toolchain is pinned exactly (rustc version, the wasm32 target's std, and codegen flags such as
-    `codegen-units = 1` and the opt level), and invoked by absolute path (15.6);
+    `codegen-units = 1` and the opt level), and invoked by absolute path (15.6). The repository pins it
+    in `rust-toolchain.toml` (`channel = "1.99.0"`). `stable` drifted: by 2026-10-30 WSL resolved it
+    to 1.99.1 while Windows had 1.99.0 (P2-7);
   * panic locations embed source paths, so builds remap the workspace root and the cargo home
     (`--remap-path-prefix`);
+  * **host separators (P2-7)** [V]: cargo hands rustc a workspace member's sources as paths *relative to
+    the workspace*, which a root remap does not touch, and rustc joins module paths with the host's
+    separator. So a panic location reads `logic_mono\src\api\math.rs` from Windows and
+    `logic_mono/src/api/math.rs` from Linux, and the modules differed. On Windows the build adds one
+    remap per source directory (`dir\sub\` to `dir/sub/`, deepest last, since rustc applies the last
+    match; `sepmap` in scripts/build_wasm_guests.sh);
   * cargo hashes a path dependency's crate identity by its absolute path unless the dependency lies
     inside the workspace being built, and the linker's function order follows those hashes. So every
     dependency lives inside the world repository's workspace (vendored, review L8);
+  * **the name section carries host-dependent crate hashes (P2-7)** [V]: for a workspace member nested
+    below the root (`spikes/sim-core`, `crates/box3d-fork`), cargo's crate hash differs between
+    Windows and Linux, and the mangled function names in the `name` custom section carry it. With the
+    separator remaps, physics_in_wasm differed in that section and nowhere else (canonical hash equal).
+    Committed modules are built with `strip = "symbols"`, so they have no name section. Members one
+    level deep (the iter-bench crates) were equal anyway. Traps then report function indices, not
+    names; a peer may keep a separate, unstripped local build for debugging;
   * no build scripts or proc macros in logic crates, except the engine SDK's own (below).
-  * **Shown on one machine** [V]: at integration the box3d fork as a path dependency broke the phase-1
-    result, and the two rules above restored it. The four spike modules built at two checkout paths are
-    byte-identical, raw hash included (`scripts/run_determinism.sh wasm`,
-    spikes/out/wasm-canonical-hash.txt).
-  * **Not yet shown** [I]: identity across machines and across host OSes (Windows and Linux building the
-    same wasm32 target). rustc aims for deterministic output from identical inputs and flags, but
-    host-dependent inputs (environment, locale, file order) must be kept out by the build service. Phase 2
-    tests it: the same commits built on Windows and Linux, and on two CPUs, must give identical modules.
+  * **Shown across machines and OSes (P2-6, P2-7)** [V]: the four spike modules plus P2-7's larger
+    crates (logic_mono, the 6.4k-line benchmark as one crate, and logic_wasm, the same code as nine
+    path-linked crates) are raw-hash identical:
+    * when built on this PC's Windows, natively in WSL Ubuntu 24.04 (Linux x86_64), and on the Intel
+      laptop (Windows);
+    * at two checkout paths on each;
+    * in the `scripts/run_matrix.sh` matrix (spikes/out/matrix/matrix.txt).
+
+    Before the two fixes above, three of the six differed between Windows and Linux.
+
+    The cheaper `rel-fast` profile (opt 3, no LTO, 16 codegen units, incremental) is reproducible too:
+    * byte-identical across the two OSes for logic_mono and logic_wasm;
+    * at two paths;
+    * after an incremental edit and its revert, equal to a clean build.
+
+    Parallel codegen and incremental state do not leak into the output [V].
+  * **Not yet shown** [I]: ARM64 and macOS hosts (deferred by the user, 19:58Z); other host
+    environments (locale, file-system order) beyond the three machines.
 * **Toolchain distribution.** Every peer needs the pinned toolchain: rustc and the wasm32 std, about 1 GB
   [I]. Where it comes from: **D75**. Without it a peer can watch a world but cannot activate new modules.
 * **What it costs** [V parts, I composition]:
   * the author's own loop is unchanged: 0.45 s from edit to first frame (13.7);
   * a commit activates for everyone only after every peer has built it, so the activation lead must cover
-    the slowest peer's build plus the source transfer. Small modules rebuild in 0.19-0.29 s [V d5] and
-    the 6.4k-line benchmark in about 0.45 s [V], so a lead of 1-2 s covers typical edits [I]. The lead
-    adapts to the slowest member's reported build times;
+    the slowest peer's build plus the source transfer. The lead adapts to the slowest member's
+    reported build times. **What depends on the profile peers build with** (P2-7 build-time table,
+    Intel laptop, unthrottled; spikes/out/p2-7/build-times-laptop.txt) [V]:
+
+    | Module | Cold build (fresh target: joining) | One-line edit, release (LTO, 1 CGU) | One-line edit, `rel-fast` |
+    |---|---|---|---|
+    | logic_v2 (spike guest) | 0.3 s | 0.18-0.26 s | n/a |
+    | logic_mono (6.4k lines) | 2.4 s | **2.24-2.27 s** | **0.44-0.53 s** |
+    | logic_wasm (the same, 9 crates), leaf edit | 2.0 s | 1.51-1.55 s | n/a |
+    | logic_wasm, core edit (every crate) | 2.0 s | 1.87-1.94 s | n/a |
+    | physics_in_wasm (Box3D, 0.5 MB) | **19.4 s** | n/a | n/a |
+
+    * **The release profile does not fit the lead.** The 0.5 s lead (2.1) fits only small modules
+      built with release (LTO, 1 CGU); a 6.4k-line module needs about 2.3 s on the laptop.
+    * **`rel-fast` fits.** It is reproducible (above) and rebuilds the 6.4k-line module in about 0.5 s,
+      so committed modules should be built with a pinned `rel-fast`-like profile, the one the author's
+      own loop already uses (13.7). Release (LTO) is then an optional size optimization that every
+      peer would have to agree on [I].
+    * **Joining with a physics-sized module** costs about 20 s of building per module.
+
+    This PC's numbers were not taken: the user was in VR, so builds ran at idle priority with capped
+    jobs.
   * **joining** a world means building every module it runs before activating them: seconds to minutes,
     by code size [I]. Each peer caches builds by source hash, so returning to a world rebuilds only what
     changed.

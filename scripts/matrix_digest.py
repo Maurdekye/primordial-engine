@@ -2,14 +2,14 @@
 
 Every output of the determinism set is either a pure data file (traces, snapshot images, wasm
 modules) or a log that mixes deterministic results with wall-clock timings. A digest is the
-SHA-256 of the file after `normalize`, which masks timings and nothing else:
+SHA-256 of the file after `normalize`, which masks timings and where the machine wrote its outputs:
   * a number followed by a time unit (ms, us, µs, ns, s), e.g. "0.351 ms", "544.2 us/frame";
   * a speed ratio such as "22x";
   * the values after "depth:ms" (re-simulation cost by depth);
   * table cells whose column header names a time ("CPU ms ...", "worst tick ms ...");
-  * cargo's progress lines, and runs of spaces (timing widths shift column padding).
-Data files (traces, snapshot images, wasm modules and their hash lists, MCP transcripts) are hashed
-raw: see `is_raw`.
+  * cargo's progress lines, and runs of spaces (timing widths shift column padding);
+  * the output directory echoed in logs (".../o/"), and sha256sum's Windows '*' marker.
+Data files (traces, snapshot images, wasm modules, MCP transcripts) are hashed raw: see `is_raw`.
 
 usage:
   python -I scripts/matrix_digest.py digest OUTDIR            writes OUTDIR/digests.txt
@@ -22,7 +22,11 @@ import os
 import re
 import sys
 
-RAW = re.compile(r"(^|/)(trace|images)-[^/]*\.txt$|\.wasm$|\.jsonl$|(^|/)(guest-wasm-sha256|wasm-canonical-hash)\.txt$")
+RAW = re.compile(r"(^|/)(trace|images)-[^/]*\.txt$|\.wasm$|\.jsonl$")
+# Where each machine writes its outputs (run_matrix.sh's PE_OUT always ends in /o), as echoed in logs.
+OUTDIR = re.compile(r"\S*/o/")
+# sha256sum marks binary mode with '*' on Windows and prints two spaces on Linux.
+SHALINE = re.compile(r"^([0-9a-f]{64}) [ *]")
 
 
 def is_raw(rel):
@@ -52,6 +56,7 @@ def normalize_lines(text):
             elif header and header[0] == len(cells):
                 cells = ["T" if m else c for c, m in zip(cells, header[1])]
                 line = "|".join(cells)
+        line = SHALINE.sub(r"\1 ", OUTDIR.sub("<out>/", line))
         line = TIME.sub("T", line)
         line = RATIO.sub("Tx", line)
         out.append(" ".join(line.split()))
