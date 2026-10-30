@@ -18,7 +18,7 @@
 //! SPDX-License-Identifier: MIT
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::worker_pool::wait_until;
 
@@ -58,6 +58,8 @@ pub(crate) struct StageSync {
     block_size: AtomicUsize,
     /// Items finished in the current stage.
     done: AtomicUsize,
+    /// A block panicked; worker 0 re-raises it when the stage ends.
+    panicked: AtomicBool,
 }
 
 impl StageSync {
@@ -69,6 +71,7 @@ impl StageSync {
             item_count: AtomicUsize::new(0),
             block_size: AtomicUsize::new(1),
             done: AtomicUsize::new(0),
+            panicked: AtomicBool::new(false),
         }
     }
 
@@ -97,7 +100,14 @@ impl StageSync {
                 .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
-                run(start..end, worker);
+                // A panicking block still counts as done, so the stage ends and worker 0 can
+                // re-raise the panic instead of waiting forever for its items.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(start..end, worker)
+                }));
+                if result.is_err() {
+                    self.panicked.store(true, Ordering::Relaxed);
+                }
                 self.done.fetch_add(end - start, Ordering::Release);
             }
         }
@@ -186,6 +196,9 @@ impl Stages for ParallelStages<'_> {
 
         sync.work(seq, item_count, block_size, 0, block);
         wait_until(|| sync.done.load(Ordering::Acquire) == item_count);
+        if sync.panicked.swap(false, Ordering::Relaxed) {
+            panic!("box3d solver stage block panicked");
+        }
     }
 }
 
@@ -193,6 +206,48 @@ impl Stages for ParallelStages<'_> {
 mod tests {
     use super::*;
     use crate::worker_pool::WorkerPool;
+
+    /// Run 2,000 stages where blocks panic on worker 0 or on helpers. Returns whether the run
+    /// re-raised the panic, or None if it hung. (Review of 73eaedc, P1, by @chunks-reviewer.)
+    fn panic_case(panic_on_helper: bool) -> Option<bool> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let pool = WorkerPool::new(4).expect("threads");
+            let sync = StageSync::new();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pool.run(&|worker| {
+                    if worker == 0 {
+                        struct Finish<'a>(&'a StageSync);
+                        impl Drop for Finish<'_> {
+                            fn drop(&mut self) {
+                                self.0.finish();
+                            }
+                        }
+                        let _finish = Finish(&sync);
+                        let stages = ParallelStages::new(&sync);
+                        for _ in 0..2000 {
+                            stages.run(4096, 1, &|_items, w| {
+                                if (w != 0) == panic_on_helper {
+                                    panic!("test: block panics on worker {w}");
+                                }
+                                std::hint::spin_loop();
+                            });
+                        }
+                    } else {
+                        sync.worker_loop(worker);
+                    }
+                });
+            }));
+            let _ = tx.send(r.is_err());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(60)).ok()
+    }
+
+    #[test]
+    fn panic_in_a_stage_block_is_re_raised() {
+        assert_eq!(panic_case(false), Some(true), "worker-0 block panic");
+        assert_eq!(panic_case(true), Some(true), "helper block panic");
+    }
 
     /// Tens of thousands of back-to-back stages, alternating small and large: every item of
     /// every stage runs exactly once, under that stage. Small-then-large is the pattern where a
