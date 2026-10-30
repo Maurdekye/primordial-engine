@@ -113,9 +113,10 @@ pub enum Payload {
     /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
     Depart { obj: u32, dest: u32, deadline: u64 },
     /// R14, destination world: the object arrives. `cert` is a strict majority of the source
-    /// world's members' signatures over "departure `depart` of this record to this world is
-    /// confirmed" (review NEW-4); without it the entry does nothing.
-    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, cert: Vec<(MemberId, u64)> },
+    /// world's members' signatures over "departure `depart` of this record to this world, by
+    /// this deadline, is confirmed" (reviews NEW-4, R3-8); without it the entry does nothing.
+    /// `deadline` is a frame of the destination world: a later arrival is refused (R3-6).
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)> },
     /// R14, source world: the destination's confirmed verdict, with a strict majority of the
     /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
     Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
@@ -199,10 +200,10 @@ impl Wr {
             Payload::Depart { obj, dest, deadline } => {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
             }
-            Payload::Arrive { transfer, record, depart, cert } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
                 self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame);
-                self.u64(*depart); self.cert(cert);
+                self.u64(*depart); self.u64(*deadline); self.cert(cert);
             }
             Payload::Verdict { transfer, accepted, cert } => {
                 self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
@@ -269,7 +270,7 @@ impl Rd<'_> {
                 let record = ObjRecord {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
                 };
-                Payload::Arrive { transfer, record, depart: self.u64()?, cert: self.cert()? }
+                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()? }
             }
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
@@ -334,9 +335,21 @@ pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
     splitmix64(((src_world as u64) << 40) ^ depart)
 }
 
-/// "World `src` confirmed departure `depart` of `record`, bound for world `dest`."
-pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32) -> u64 {
-    fnv_u64s([1, src as u64, depart, record.global, record.state.hash(), dest as u64])
+/// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
+/// (a frame of `dest`)." Covers every field of the record (review R3-8).
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64) -> u64 {
+    fnv_u64s([
+        1,
+        src as u64,
+        depart,
+        record.global,
+        record.kind as u64,
+        record.state.hash(),
+        record.src_world as u64,
+        record.src_frame,
+        dest as u64,
+        deadline,
+    ])
 }
 
 /// "World `dst` confirmed transfer `transfer` as accepted / rejected."
@@ -496,6 +509,9 @@ pub struct Escrow {
     pub depart_frame: u64,
     pub depart: EntryId,
     pub dest: u32,
+    /// A frame of `dest`: an arrival stamped later is refused there, and that certified refusal
+    /// returns the object (review R3-6).
+    pub deadline: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -550,6 +566,8 @@ pub struct Stats {
     pub checks_bad: u64,
     /// Check frames at which some body held a non-finite position, rotation or velocity (review L2).
     pub nonfinite: u64,
+    /// Eviction votes found to contradict their voter's own published references (review R3-1).
+    pub lying_votes: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -633,6 +651,22 @@ pub enum Outcome {
     RejectedNoProof,
     /// R14: a certified record that is not a valid body state (review NEW-21).
     RejectedInvalid,
+    /// R14: the other world is not on this world's agreed route list (reviews R3-4 to R3-6).
+    RejectedNoRoute,
+    /// R14: the arrival is stamped after the source's deadline (review R3-6).
+    RejectedLate,
+    /// R14: an object with this global id is already live here (review R3-5).
+    RejectedLiveId,
+}
+
+/// One member's eviction vote, as read from its chain (review R3-1).
+#[derive(Clone, Copy, Debug)]
+struct VoteRec {
+    /// The voter's frozen head of the target's chain.
+    frozen: (u32, EntryId),
+    /// The vote's own seq in the voter's chain: it must be stable among the remaining members
+    /// before any member acts on it.
+    at: u32,
 }
 
 pub struct WorldSim {
@@ -650,7 +684,9 @@ pub struct WorldSim {
     ring: BTreeMap<u64, Keyframe>,
     /// Scratch world for canonical check hashes (review NEW-7).
     scratch: Option<World>,
-    /// R14: the members of every other world this one trades objects with (D46 trust config).
+    /// R14: the worlds this one trades objects with, and their members: its agreed route list
+    /// (D46 trust config, part of the world's genesis; reviews R3-4 to R3-6). Any other world can
+    /// neither receive its objects nor vouch for one.
     pub peers_of: BTreeMap<u32, Vec<MemberId>>,
     attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
@@ -670,14 +706,22 @@ pub struct WorldSim {
     chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
     /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
     ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
-    /// (referrer, author) -> seq -> id: what each member's acks said it holds of each chain.
+    /// (referrer, author) -> seq -> id: what each member's acks said it holds of each chain, up to
+    /// the referrer's vote against that author (review R3-1). Never pruned in the spike; production
+    /// keeps only the newest reference per pair, because consecutive references must extend each
+    /// other [I].
     refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, EntryId>>,
+    /// Per author: the highest seq ever found stable. Stability is permanent (chains only grow), so
+    /// a later conflicting reference can never shrink it (review R3-1).
+    stable_hi: BTreeMap<MemberId, u32>,
+    /// (target, voter) pairs whose vote was found to be a lie (review R3-1).
+    lies: BTreeSet<(MemberId, MemberId)>,
     /// Equivocators: first disputed seq and the two versions.
     proofs: BTreeMap<MemberId, (u32, EntryId, EntryId)>,
     /// Heads this member froze when it learned of a proof.
     frozen: BTreeMap<MemberId, u32>,
-    /// target -> voter -> the voter's frozen head of target's chain.
-    votes: BTreeMap<MemberId, BTreeMap<MemberId, (u32, EntryId)>>,
+    /// target -> voter -> the voter's first vote against target (later ones are ignored).
+    votes: BTreeMap<MemberId, BTreeMap<MemberId, VoteRec>>,
     /// Evicted members: (cut seq, first frame they no longer count for).
     evicted: BTreeMap<MemberId, (u32, u64)>,
     wants: Vec<(MemberId, MemberId, u32, u32)>,
@@ -687,6 +731,8 @@ pub struct WorldSim {
     my_seq: u32,
     /// Test fixture (review H5): publish horizons this many frames behind the present.
     pub horizon_lag: u64,
+    /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
+    pub lie_in_votes: bool,
     my_last: EntryId,
     fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64)>,
     // ---- results
@@ -762,6 +808,8 @@ impl WorldSim {
             chain_state: BTreeMap::new(),
             ack_hist: BTreeMap::new(),
             refs: BTreeMap::new(),
+            stable_hi: BTreeMap::new(),
+            lies: BTreeSet::new(),
             proofs: BTreeMap::new(),
             frozen: BTreeMap::new(),
             votes: BTreeMap::new(),
@@ -771,6 +819,7 @@ impl WorldSim {
             now: 0,
             my_seq: 0,
             horizon_lag: 0,
+            lie_in_votes: false,
             my_last: 0,
             fetch_asked: BTreeMap::new(),
             hashes: BTreeMap::new(),
@@ -1142,30 +1191,38 @@ impl WorldSim {
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
-                if m != self.me {
-                    for &(q, s, hid) in &heads {
+                for &(q, s, hid) in &heads {
+                    if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);
                         if q != self.me && s > mine {
                             self.want_from(m, q, mine + 1, s);
                         } else if self.by_author.get(&(q, s)).is_some_and(|&x| x != hid) {
                             self.want_from(m, q, s, s);
                         }
-                        let r = self.refs.entry((m, q)).or_default();
-                        r.insert(s, hid);
-                        if r.len() > 256 {
-                            let k = *r.keys().next().unwrap();
-                            r.remove(&k);
-                        }
                     }
+                    // Review R3-1: once m has voted against q, its vote's frozen head is its last
+                    // word on q's chain; later references never count toward stability.
+                    if self.votes.get(&q).is_some_and(|v| v.contains_key(&m)) {
+                        continue;
+                    }
+                    self.refs.entry((m, q)).or_default().insert(s, hid);
+                }
+                if m != self.me {
                     if let Some((f, hh)) = check {
                         self.remote_checks.entry(f).or_default().insert(m, hh);
                     }
                 }
                 self.recompute_conf();
                 self.evaluate_checks();
+                // An ack can make the votes of a pending eviction stable (review R3-1).
+                let pending: Vec<MemberId> = self.votes.keys().copied().filter(|t| !self.evicted.contains_key(t)).collect();
+                for t in pending {
+                    self.maybe_evict(t);
+                }
             }
             Payload::Vote { target, frozen, .. } => {
-                self.votes.entry(target).or_default().insert(m, frozen);
+                // Only a member's first vote against a target counts (review R3-1).
+                self.votes.entry(target).or_default().entry(m).or_insert(VoteRec { frozen, at: e.seq });
                 self.maybe_evict(target);
             }
             _ => {}
@@ -1175,12 +1232,21 @@ impl WorldSim {
 
     /// The highest seq of `m`'s chain that every member is known to hold with identical ids:
     /// each other member's newest reference at or below my own head, checked against my copy.
+    /// Monotone: what was once stable stays stable (review R3-1).
     fn stable_seq(&mut self, m: MemberId) -> u32 {
+        let s = self.stable_among(m, None);
+        let hi = self.stable_hi.entry(m).or_insert(0);
+        *hi = (*hi).max(s);
+        *hi
+    }
+
+    /// As [`Self::stable_seq`], over every member except `skip`, without the memo.
+    fn stable_among(&mut self, m: MemberId, skip: Option<MemberId>) -> u32 {
         let mine = self.contiguous.get(&m).copied().unwrap_or(0);
         let mut s = mine;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
-            if j == self.me || j == m {
+            if j == self.me || j == m || Some(j) == skip {
                 continue;
             }
             let Some((rs, rid)) = self.refs.get(&(j, m)).and_then(|r| r.range(..=mine).next_back()).map(|(a, b)| (*a, *b)) else {
@@ -1228,6 +1294,7 @@ impl WorldSim {
             let f = self.contiguous.get(&m).copied().unwrap_or(0);
             self.frozen.insert(m, f);
             let fid = if f == 0 { 0 } else { self.by_author[&(m, f)] };
+            let (f, fid) = if self.lie_in_votes { (0, 0) } else { (f, fid) };
             let v = Entry {
                 member: self.me,
                 seq: self.my_seq + 1,
@@ -1275,10 +1342,16 @@ impl WorldSim {
         Some(id)
     }
 
-    /// Evict `m` once every remaining member has voted (a strict majority of the epoch). The cut is
-    /// the longest common prefix of the voters' frozen heads, so it contains every entry of m that
-    /// could have been stable anywhere; m stops counting from the frame after its last valid
-    /// horizon (virtual synchrony's flush, here decided from chain data alone).
+    /// Evict `m` once every remaining member has voted (a strict majority of the epoch) and every
+    /// vote is stable among the remaining members. The cut is the longest common prefix of the
+    /// frozen heads of the valid votes, so it contains every entry of m that could have been
+    /// stable anywhere; m stops counting from the frame after its last valid horizon (virtual
+    /// synchrony's flush, here decided from chain data alone).
+    ///
+    /// Review R3-1: a frozen head is self-reported, so it is checked against the references its
+    /// voter published before voting; a vote that drops one is a provable lie and is void. And
+    /// votes are used only once every remaining member holds them identically, so a voter that
+    /// forks its own vote can stall the eviction but never give two honest members two cuts.
     fn maybe_evict(&mut self, m: MemberId) {
         if self.evicted.contains_key(&m) || !self.members.contains(&m) {
             return;
@@ -1288,13 +1361,31 @@ impl WorldSim {
         if remaining.len() * 2 <= self.members.len() || !remaining.iter().all(|j| votes.contains_key(j)) {
             return;
         }
-        let mut cut = remaining.iter().map(|j| votes[j].0).min().unwrap_or(0);
+        for &j in &remaining {
+            if self.stable_among(j, Some(m)) < votes[&j].at {
+                return;
+            }
+        }
+        let mut valid = Vec::new();
+        for &j in &remaining {
+            match self.vote_valid(m, j, votes[&j].frozen) {
+                None => return,
+                Some(true) => valid.push(j),
+                Some(false) => {
+                    if self.lies.insert((m, j)) {
+                        self.stats.lying_votes += 1;
+                        self.ev(format!("LYING VOTE: member {j}'s vote against {m} drops entries its own acks referenced: void"));
+                    }
+                }
+            }
+        }
+        let mut cut = valid.iter().map(|j| votes[j].frozen.0).min().unwrap_or(0);
         while cut > 0 {
-            let ids: Vec<Option<EntryId>> = remaining.iter().map(|j| self.walk_back(m, votes[j], cut)).collect();
+            let ids: Vec<Option<EntryId>> = valid.iter().map(|j| self.walk_back(m, votes[j].frozen, cut)).collect();
             if ids.iter().any(|x| x.is_none()) {
-                for (j, x) in remaining.iter().zip(&ids) {
+                for (j, x) in valid.iter().zip(&ids) {
                     if x.is_none() {
-                        self.want_from(*j, m, cut, votes[j].0);
+                        self.want_from(*j, m, cut, votes[j].frozen.0);
                     }
                 }
                 return;
@@ -1311,6 +1402,32 @@ impl WorldSim {
         self.ev(format!("member {m} evicted (epoch {}): its chain is cut at seq {cut}; it no longer counts from frame {v}", self.epoch));
         self.reconcile(m);
         self.recompute_conf();
+    }
+
+    /// Review R3-1: Some(true) if `voter`'s frozen head of `target`'s chain extends every reference
+    /// to that chain the voter published before its vote, Some(false) if it provably does not
+    /// (a lie), None while a chain entry needed to tell is missing (it is fetched from the voter).
+    fn vote_valid(&mut self, target: MemberId, voter: MemberId, frozen: (u32, EntryId)) -> Option<bool> {
+        let refs: Vec<(u32, EntryId)> =
+            self.refs.get(&(voter, target)).map(|r| r.iter().rev().map(|(s, id)| (*s, *id)).collect()).unwrap_or_default();
+        let (mut s, mut id) = frozen;
+        for (rs, rid) in refs {
+            if rs > frozen.0 {
+                return Some(false);
+            }
+            while s > rs {
+                let Some(e) = self.entries.get(&id) else {
+                    self.want_from(voter, target, s, s);
+                    return None;
+                };
+                id = e.prev;
+                s -= 1;
+            }
+            if id != rid {
+                return Some(false);
+            }
+        }
+        Some(true)
     }
 
     fn want_from(&mut self, holder: MemberId, author: MemberId, from: u32, to: u32) {
@@ -1391,7 +1508,7 @@ impl WorldSim {
         for esc in self.t.escrow.values() {
             if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
                 if esc.depart_frame < self.conf {
-                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest));
+                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline));
                 }
             }
         }
@@ -1508,12 +1625,26 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Depart { obj, dest, .. } => {
+            Payload::Depart { obj, dest, deadline } => {
                 let transfer = &transfer_id(self.world_id, id);
                 if self.t.escrow.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
                 }
-                let gone = Escrow { obj: *obj, record: None, status: EscrowStatus::DepartRejected, depart_frame: f, depart: id, dest: *dest };
+                let gone = Escrow {
+                    obj: *obj,
+                    record: None,
+                    status: EscrowStatus::DepartRejected,
+                    depart_frame: f,
+                    depart: id,
+                    dest: *dest,
+                    deadline: *deadline,
+                };
+                // Reviews R3-4, R3-6: objects leave only for worlds on the agreed route list, so no
+                // member can send one to a world it controls alone, or to a world nobody knows.
+                if !self.peers_of.contains_key(dest) {
+                    self.t.escrow.insert(*transfer, gone);
+                    return Outcome::RejectedNoRoute;
+                }
                 let Some(o) = self.live(*obj) else {
                     self.t.escrow.insert(*transfer, gone);
                     return Outcome::RejectedGone;
@@ -1528,16 +1659,15 @@ impl WorldSim {
                 destroy_body(&mut self.world, o.body);
                 self.t.objs[*obj as usize] = None;
                 self.t.claims.remove(obj);
-                self.t.escrow.insert(
-                    *transfer,
-                    Escrow { obj: *obj, record: Some(record), status: EscrowStatus::Pending, depart_frame: f, depart: id, dest: *dest },
-                );
+                self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
                 Outcome::Accepted
             }
-            Payload::Arrive { transfer, record, depart, cert } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert } => {
                 let src = record.src_world;
-                let members = self.peers_of.get(&src).cloned().unwrap_or_default();
-                if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact_departed(src, *depart, record, self.world_id), cert) {
+                // Reviews R3-4, R3-5: only a world on the agreed route list can vouch for an object.
+                let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
+                let fact = fact_departed(src, *depart, record, self.world_id, *deadline);
+                if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
@@ -1559,9 +1689,21 @@ impl WorldSim {
                 if self.t.arrivals.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
                 }
+                // Review R3-6: past the deadline the arrival is refused, and that certified refusal
+                // returns the object to the source. Nobody can hold it in limbo by never relaying:
+                // anyone may relay late, and late means refused.
+                if f > *deadline {
+                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                    return Outcome::RejectedLate;
+                }
                 if !self.t.portal_open {
                     self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
                     return Outcome::RejectedPortalClosed;
+                }
+                // Review R3-5: never a second live copy of one global id in a world.
+                if self.t.objs.iter().flatten().any(|o| o.global == record.global) {
+                    self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                    return Outcome::RejectedLiveId;
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });

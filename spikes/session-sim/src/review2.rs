@@ -18,15 +18,15 @@ use std::rc::Rc;
 use pe_session_sim::*;
 use pe_sim_core::session::*;
 
-fn link(d: u64, j: u64, l: u32) -> Link {
+pub(crate) fn link(d: u64, j: u64, l: u32) -> Link {
     Link { delay_us: d * 1000, jitter_us: j * 1000, loss_pct: l }
 }
 
-fn touch(obj: u32, y: f32) -> Action {
+pub(crate) fn touch(obj: u32, y: f32) -> Action {
     Action::Touch { obj, impulse: [0.0, y, 0.0], grab: false }
 }
 
-fn plan(v: &[(u64, Action)]) -> BTreeMap<u64, Vec<Action>> {
+pub(crate) fn plan(v: &[(u64, Action)]) -> BTreeMap<u64, Vec<Action>> {
     let mut m: BTreeMap<u64, Vec<Action>> = BTreeMap::new();
     for (f, a) in v {
         m.entry(*f).or_default().push(a.clone());
@@ -34,7 +34,7 @@ fn plan(v: &[(u64, Action)]) -> BTreeMap<u64, Vec<Action>> {
     m
 }
 
-fn peers(ids: &[MemberId], plans: impl Fn(MemberId) -> BTreeMap<u64, Vec<Action>>) -> Vec<Peer> {
+pub(crate) fn peers(ids: &[MemberId], plans: impl Fn(MemberId) -> BTreeMap<u64, Vec<Action>>) -> Vec<Peer> {
     ids.iter()
         .map(|&id| {
             let mut p = Peer::new(id, 0);
@@ -45,7 +45,7 @@ fn peers(ids: &[MemberId], plans: impl Fn(MemberId) -> BTreeMap<u64, Vec<Action>
 }
 
 /// Step the sim, turning a panic into a reported failure.
-fn run_to_end(sim: &mut Sim, mut each_ms: impl FnMut(&mut Sim)) -> Option<u64> {
+pub(crate) fn run_to_end(sim: &mut Sim, mut each_ms: impl FnMut(&mut Sim)) -> Option<u64> {
     while sim.net.now_us <= sim.end_us {
         each_ms(sim);
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.step_ms())).is_err() {
@@ -59,7 +59,7 @@ fn run_to_end(sim: &mut Sim, mut each_ms: impl FnMut(&mut Sim)) -> Option<u64> {
 /// Honest members agree with each other and with an offline replay of the final log, over the
 /// frames every honest member has simulated; no confirmed frame was rolled back (the run would
 /// have panicked); no false check failures.
-fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Option<u64>) -> bool {
+pub(crate) fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Option<u64>) -> bool {
     if let Some(t) = panic_at {
         println!("RESULT {label}: PANIC at t={t} ms -> FAIL");
         return false;
@@ -89,7 +89,7 @@ fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Option<u64>) -
     equal && bad == 0
 }
 
-fn touch_state(sim: &Sim, m: MemberId, author: MemberId) -> String {
+pub(crate) fn touch_state(sim: &Sim, m: MemberId, author: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
     let void = r.void_ids();
     r.all_entries()
