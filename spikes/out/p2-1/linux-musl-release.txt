@@ -1,4 +1,4 @@
-commit c3e75c71c0c5c457a3966d68852ca4033431365c
+commit a71c2a332b1431d19a261585285f8139f2418458
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
@@ -27,7 +27,7 @@ test rng::tests::seek_and_streams ... ok
 test rng::tests::splitmix_matches_reference ... ok
 test rng::tests::wide_range_spreads ... ok
 
-test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
 
@@ -50,7 +50,7 @@ test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
 
@@ -66,5 +66,5 @@ test plain_edits_do_not_depend_on_order ... ok
 test transform_limits ... ok
 test world_transforms_compose ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
