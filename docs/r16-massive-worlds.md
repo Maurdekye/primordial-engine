@@ -253,7 +253,9 @@ faster than `v_max`.
       cannot meet unseen (review Q1). A region created too recently to be known is covered by the
       creation buffer below.
   * The growth clock is per region and runs in log order, so growths queue rather than add up. A merged
-    region continues with the later of the two clocks.
+    region continues with the later of the two clocks and the more recent of the two instant-growth stamps;
+    split children inherit the parent's clock and instant-growth stamp. So neither resets the one-per-`T_h`
+    budget.
   * **What it costs players** [C from the constants; the experience is I]. The footprint is the area whose
     objects are simulated, not the player. A scale-up, join or step itself happens at once: the avatar,
     its colliders, held objects and everything inside the old footprint (at least 3 km around every
@@ -395,6 +397,8 @@ region exists.
 * The 05d3cc0 failures reproduce @chunks-reviewer's `safety2_model.py`, and the da3cd74 Q1 rows their
   `concurrent_instant_model.py`.
 * This is a model of the rules on a line, not of the protocol or of 2D/3D footprints.
+* The phase-3 build carries these cases as protocol tests: the model checks the rules, not the protocol
+  or 2D/3D footprints [I].
 * The price:
   * growth toward a neighbour lags by up to `J / v_max`;
   * a region created away from spawn regions waits `S_create`, plus its start condition;
