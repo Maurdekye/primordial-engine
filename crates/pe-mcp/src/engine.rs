@@ -123,7 +123,13 @@ impl Engine {
         self.peer()?;
         let book = self.books.entry(who.name.clone()).or_default();
         let backend = self.backend.as_ref().unwrap();
-        let pending = book.tickets.values().filter(|(e, _)| backend.status(*e).is_none_or(|s| !s.is_final)).count();
+        // A ticket reported final stays final (confirmed frames are never undone), so only the
+        // others need a fresh look.
+        let pending = book
+            .tickets
+            .values()
+            .filter(|(e, last)| !last.as_ref().is_some_and(|l| l.is_final) && backend.status(*e).is_none_or(|s| !s.is_final))
+            .count();
         if pending >= MAX_PENDING {
             return Err(ToolError::new(ErrorCode::RateLimited, format!("{pending} of your interactions are unresolved (limit {MAX_PENDING}); step until they are final"))
                 .with_details(serde_json::json!({ "pending": pending, "limit": MAX_PENDING })));
@@ -215,6 +221,9 @@ impl Engine {
         let book = self.books.entry(who.name.clone()).or_default();
         let mut changed = Vec::new();
         for (&t, (entry, last)) in book.tickets.iter_mut() {
+            if last.as_ref().is_some_and(|l| l.is_final) {
+                continue;
+            }
             if let Some(st) = peer.status(*entry) {
                 let s = status_of(t, *entry, st);
                 if last.as_ref() != Some(&s) {

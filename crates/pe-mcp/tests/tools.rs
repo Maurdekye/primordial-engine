@@ -43,6 +43,8 @@ async fn tools_list_follows_scopes() {
         assert!(t.description.as_deref().is_some_and(|d| d.len() > 20), "{}", t.name);
         assert!(t.output_schema.is_some(), "{} has no output schema", t.name);
         assert_eq!(t.input_schema.get("type"), Some(&json!("object")), "{}", t.name);
+        let text = serde_json::to_string(&(&t.input_schema, &t.output_schema)).unwrap();
+        assert!(!text.contains("\"format\":\"uint") && !text.contains("\"format\":\"int"), "{}: non-standard format", t.name);
     }
 }
 
@@ -475,7 +477,9 @@ async fn schema_file_is_current() {
     let mut tools = c.list_all_tools().await.unwrap();
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     let text = serde_json::to_string_pretty(&tools).unwrap() + "\n";
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/tools.json");
+    // PE_MCP_DIR overrides the compile-time crate path, for test binaries run under WSL.
+    let dir = std::env::var("PE_MCP_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+    let path = std::path::Path::new(&dir).join("schema/tools.json");
     if std::env::var_os("UPDATE_SCHEMA").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &text).unwrap();
