@@ -16,6 +16,8 @@ root=$(winpath "$(pwd)")
 home=$(winpath "${CARGO_HOME:-$HOME/.cargo}")
 # CARGO_ENCODED_RUSTFLAGS separates flags with 0x1f, so paths may contain spaces.
 export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$root=/pe"$'\x1f'"--remap-path-prefix=$home=/cargo"
-cargo build -q -p physics_in_wasm --target wasm32-unknown-unknown --profile wasm-guest
+# PE_HEAVY=<script>: run cargo through the org's heavy-job lock (as scripts/run_determinism.sh does).
+run_cargo() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" cargo "$@"; else cargo "$@"; fi; }
+run_cargo build -q -p physics_in_wasm --target wasm32-unknown-unknown --profile wasm-guest
 cd spikes/wasm-guests
-cargo build --release -q --target wasm32-unknown-unknown
+run_cargo build --release -q --target wasm32-unknown-unknown
