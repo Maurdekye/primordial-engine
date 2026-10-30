@@ -6,7 +6,7 @@
 
 use super::{
     add_v2w, gather_bodies, inv_rotate_vector_w, mul_add_mvw, mul_mv2w, mul_mvw, mul_sub_mvw,
-    scatter_bodies, Vec2W, WideContactConstraints, VEC3W_ZERO,
+    scatter_bodies, StatesView, Vec2W, WideContactConstraints, WideView, VEC3W_ZERO,
 };
 use crate::body::BodyState;
 use crate::simd_scalar::{
@@ -17,17 +17,34 @@ use crate::simd_scalar::{
 use crate::solver::StepContext;
 
 /// (b3WarmStartContactsW, b3WarmStartContacts_Convex, b3WarmStartContacts_MeshWide)
-pub fn warm_start_contacts_w(set: &WideContactConstraints, states: &mut [BodyState]) {
+pub fn warm_start_contacts_w(set: &mut WideContactConstraints, states: &mut [BodyState]) {
+    let count = set.len();
+    // SAFETY: exclusive borrows of the set and the states.
+    unsafe { warm_start_contacts_w_range(WideView::new(set), 0..count, StatesView::new(states)) }
+}
+
+/// [`warm_start_contacts_w`] for constraints `constraint_range` of a color. (D2 block)
+///
+/// # Safety
+/// The views are live, and no other thread touches these constraints or their dynamic bodies
+/// during the call (see [`super::view`]).
+pub(crate) unsafe fn warm_start_contacts_w_range(
+    set: WideView,
+    constraint_range: core::ops::Range<usize>,
+    states: StatesView,
+) {
     let zero = zero_w();
 
-    for (i, c) in set.constraints.iter().enumerate() {
+    for i in constraint_range {
+        // SAFETY: the function contract.
+        let c = unsafe { set.constraint(i) };
         let any_rolling = !all_zero_w(c.rolling_resistance);
 
         let mut linear_impulse = VEC3W_ZERO;
         let mut angular_impulse_a = VEC3W_ZERO;
         let mut angular_impulse_b = VEC3W_ZERO;
 
-        let manifolds = &set.manifolds[set.manifold_range(i)];
+        let manifolds = unsafe { &*set.manifolds_mut(i) };
         debug_assert!(manifolds.len() == c.manifold_count as usize);
         for cm in manifolds {
             let mut total_normal_impulse = zero;
@@ -73,8 +90,8 @@ pub fn warm_start_contacts_w(set: &WideContactConstraints, states: &mut [BodySta
             angular_impulse_b = add_vw(angular_impulse_b, angular_b);
         }
 
-        let mut b_a = gather_bodies(states, &c.index_a);
-        let mut b_b = gather_bodies(states, &c.index_b);
+        let mut b_a = gather_bodies(&states, &c.index_a);
+        let mut b_b = gather_bodies(&states, &c.index_b);
 
         b_a.w = mul_sub_mvw(b_a.w, c.inv_i_a, angular_impulse_a);
         b_a.v = mul_sub_svw(b_a.v, c.inv_mass_a, linear_impulse);
@@ -93,6 +110,29 @@ pub fn push_contacts_w(
     states: &mut [BodyState],
     context: &StepContext,
 ) {
+    let count = set.len();
+    // SAFETY: exclusive borrows of the set and the states.
+    unsafe {
+        push_contacts_w_range(
+            WideView::new(set),
+            0..count,
+            StatesView::new(states),
+            context,
+        )
+    }
+}
+
+/// [`push_contacts_w`] for constraints `constraint_range` of a color. (D2 block)
+///
+/// # Safety
+/// The views are live, and no other thread touches these constraints or their dynamic bodies
+/// during the call (see [`super::view`]).
+pub(crate) unsafe fn push_contacts_w_range(
+    set: WideView,
+    constraint_range: core::ops::Range<usize>,
+    states: StatesView,
+    context: &StepContext,
+) {
     let inv_h = splat_w(context.inv_h);
     let contact_speed = splat_w(-context.contact_speed);
     let one_w = splat_w(1.0);
@@ -109,15 +149,11 @@ pub fn push_contacts_w(
     let static_mass_scale = splat_w(context.static_softness.mass_scale);
     let static_impulse_scale = splat_w(context.static_softness.impulse_scale);
 
-    let WideContactConstraints {
-        constraints,
-        manifolds,
-        manifold_starts,
-    } = set;
-
-    for (i, c) in constraints.iter().enumerate() {
-        let mut b_a = gather_bodies(states, &c.index_a);
-        let mut b_b = gather_bodies(states, &c.index_b);
+    for i in constraint_range {
+        // SAFETY: the function contract.
+        let c = unsafe { set.constraint(i) };
+        let mut b_a = gather_bodies(&states, &c.index_a);
+        let mut b_b = gather_bodies(&states, &c.index_b);
 
         let soft_mask = soft_mask_w(&c.index_a, &c.index_b);
         let bias_rate = blend_w(dynamic_bias_rate, static_bias_rate, soft_mask);
@@ -127,8 +163,7 @@ pub fn push_contacts_w(
         let dp = sub_vw(b_b.dp, b_a.dp);
         let inv_mass = add_w(c.inv_mass_a, c.inv_mass_b);
 
-        let range = manifold_starts[i] as usize..manifold_starts[i + 1] as usize;
-        for cm in &mut manifolds[range] {
+        for cm in unsafe { set.manifolds_mut(i) } {
             // Convert to normals to local space to reduce transform math.
             let normal_separation = dot_w(cm.normal, dp);
             let normal_a = inv_rotate_vector_w(b_a.dq, cm.normal);
@@ -207,27 +242,45 @@ pub fn solve_contacts_w(
     states: &mut [BodyState],
     context: &StepContext,
 ) {
+    let count = set.len();
+    // SAFETY: exclusive borrows of the set and the states.
+    unsafe {
+        solve_contacts_w_range(
+            WideView::new(set),
+            0..count,
+            StatesView::new(states),
+            context,
+        )
+    }
+}
+
+/// [`solve_contacts_w`] for constraints `constraint_range` of a color. (D2 block)
+///
+/// # Safety
+/// The views are live, and no other thread touches these constraints or their dynamic bodies
+/// during the call (see [`super::view`]).
+pub(crate) unsafe fn solve_contacts_w_range(
+    set: WideView,
+    constraint_range: core::ops::Range<usize>,
+    states: StatesView,
+    context: &StepContext,
+) {
     let inv_h = splat_w(context.inv_h);
     let one_w = splat_w(1.0);
     let zero = zero_w();
     let epsilon_w = splat_w(f32::EPSILON);
 
-    let WideContactConstraints {
-        constraints,
-        manifolds,
-        manifold_starts,
-    } = set;
-
-    for (i, c) in constraints.iter().enumerate() {
-        let mut b_a = gather_bodies(states, &c.index_a);
-        let mut b_b = gather_bodies(states, &c.index_b);
+    for i in constraint_range {
+        // SAFETY: the function contract.
+        let c = unsafe { set.constraint(i) };
+        let mut b_a = gather_bodies(&states, &c.index_a);
+        let mut b_b = gather_bodies(&states, &c.index_b);
 
         let any_rolling = !all_zero_w(c.rolling_resistance);
         let dp = sub_vw(b_b.dp, b_a.dp);
         let inv_mass = add_w(c.inv_mass_a, c.inv_mass_b);
 
-        let range = manifold_starts[i] as usize..manifold_starts[i + 1] as usize;
-        for cm in &mut manifolds[range] {
+        for cm in unsafe { set.manifolds_mut(i) } {
             let normal_separation = dot_w(cm.normal, dp);
             let normal_a = inv_rotate_vector_w(b_a.dq, cm.normal);
             let normal_b = inv_rotate_vector_w(b_b.dq, cm.normal);

@@ -1132,6 +1132,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe-core"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "twox-hash",
+]
+
+[[package]]
 name = "pe-mcp"
 version = "0.1.0"
 dependencies = [
@@ -1157,6 +1165,14 @@ dependencies = [
  "pe-spike-session-sim",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "pe-sim"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pe-core",
 ]
 
 [[package]]
@@ -1863,6 +1879,12 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "typenum"

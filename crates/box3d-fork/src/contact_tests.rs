@@ -225,7 +225,7 @@ fn link_and_graph_dyn_static_contact() {
 
 #[test]
 fn update_contact_spheres_touching_and_separated() {
-    use crate::contact::update_contact;
+    use crate::contact::update_contact_in_world as update_contact;
     use crate::math_functions::{WorldTransform, POS_ZERO, QUAT_IDENTITY};
 
     let mut world = World::new(&default_world_def());
