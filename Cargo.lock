@@ -740,6 +740,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe-physics"
+version = "0.1.0"
+dependencies = [
+ "box3d-rust",
+ "pe-core",
+ "pe-sim",
+]
+
+[[package]]
 name = "pe-sim"
 version = "0.1.0"
 dependencies = [
