@@ -16,9 +16,10 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | c | P2P transport between two processes with no server? | **Yes [V].** The phase-1 protocol (5.3) is superseded by **c-v2** (5b): the session protocol of design 6-10, with state + canonical frame, ack-based confirmation and gap fetch, over the same signed UDP. Both peers' 600-frame histories were identical and equal to an offline replay of the final log in all three runs (latency, 10% loss, a never-transmitted entry). Every acceptance check passed |
 | session | Do the review's fixes (C1, C2, H4, H5, M3) and the user's state+frame and tie-break rulings hold? | **Yes [V]** (5c). In-process, on a virtual clock: no fork in the C1 scenario; equivocation proved and the member evicted; 52/52 checks under 10% loss; uncontended acceptance 22/22, 23/23, 27/27; ties 41/50/59 of 150; backdating voided or bounded |
 | ball pit | A hand sweeping through 500 balls, without per-ball state streaming? | **Yes [V]** (5d). About 15 kB/s for everything in both directions, against 1 MB/s one way for naive state streaming. The receiver re-simulates 2.8 ms per frame. The end state is bit-identical |
-| r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject and throttle variants; each world equals its offline replay; identical when worlds and peers are processed in reverse order |
-| history | Can a peer keep only the perturbation history? Which snapshots, at what memory and CPU? | **Almost [V]** (5f). One base image at or before the confirmed frame is unavoidable; the rest is a cache that never changes results (62 runs, 13 policies, one end hash per scene). Window(4) matches the best CPU with 8.3 MB instead of 47.5 MB under a 116-frame confirmation stall. Partial restores through the API are not bit-exact. Remote-hand dead reckoning cuts the observer's error about 4-18x |
+| r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject, throttle, forge, late and crash variants; each world equals its offline replay, also when worlds and peers are processed in reverse order (abort's digest then differs from forward, because its escrow key derives from chain contents) |
+| history | Can a peer keep only the perturbation history? Which snapshots, at what memory and CPU? | **Almost [V]** (5f). One base image at or before the confirmed frame is unavoidable; the rest is a cache that never changes results (62 runs, 13 policies, one end hash per scene). Window(4) matches the best modelled CPU at 60 ms with 8.3 MB instead of 47.9 MB under a 116-frame confirmation stall (round 3); at 100 ms it needs its adaptive depth. Partial restores through the API are not bit-exact. Remote-hand dead reckoning cuts the observer's error about 4-18x |
 | round 2 | Do the round-2 Criticals and Highs hold fixed, and do capped links recover? | **Yes [V]** (5g). The reviewer's four repros pass (no fork, no panic); proofless R14 relays do nothing; batching plus the congestion controller keep 32-64 kbit/s caps real-time. Finality lag rose from 4.2 to 8.5 frames |
+| round 3 | Do colluders, crashes, untrusted worlds and links below 20 kbit/s break the protocol? | **No fork in any case; stalls only where no honest majority exists [V]** (5i). Two colluders stall safely instead of crashing everyone; a crashed member is removed after 3 s; a crashed carrier's transfer completes through another member; worlds trade only along route lists; 16 kbit/s stays real time, 12 kbit/s recovers, a slow third member is demoted. Two members need about 12 kbit/s each way |
 | r15 | What does it cost to run physics hooks or a whole physics engine as a wasm guest? | **Measured [V, noisy]** (5h). A per-contact hook call costs 64 ns in wasmi and 16 ns in Cranelift; batched, 12 and 4.7 ns. On an active 1,024-body pile, guest hooks cost 6-9% of the step one call at a time, about 1% batched. A whole engine in wasm costs 21x native under wasmi |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
@@ -289,21 +290,28 @@ final log.
 
 Design 6.7-6.11. Logs: `spikes/out/perturbation-history/`.
 
-* **Re-simulation from one base image** (`pe-spike-physics history`; restore plus N steps, median of 5):
-  * 256 bodies: 0.8 / 2.0 / 6.4 / 26.4 / 50.8 ms at depths 1 / 4 / 15 / 60 / 120;
-  * 1,024 bodies: 3.3 / 7.9 / 25.8 / 98.9 / 189.7 ms.
-* **Partial restore through the API is not bit-exact:**
+* **Re-simulation from one base image** (`pe-spike-physics history`; restore plus N steps, median of 5;
+  the committed log, from 442286f on a quieter machine):
+  * 256 bodies: 0.8 / 2.1 / 6.7 / 27.6 / 50.3 ms at depths 1 / 4 / 15 / 60 / 120;
+  * 1,024 bodies: 3.2 / 7.6 / 24.2 / 94.7 / 183.3 ms.
+* **Partial restore through the API is not bit-exact** (which shows the API's limit, not that per-island
+  snapshots with contacts and warm starts cannot work; review PH-4):
   * every body's pose and velocity written back diverges at the first frame (2/256 equal after 30 frames,
     244 mm);
   * an isolated stack restored while 63 others sleep matched 0/4 (8.7 mm); the others 252/252.
-* **Image deltas (64-byte blocks)** save at most 6% on ball-pit rings, and nothing on an active pile.
+* **Image deltas (64-byte blocks)** save at most 7% on ball-pit rings, and nothing on an active pile.
+  General-purpose compression does better: LZ4 to 44-47%, deflate to 34-38% [V reviewer, PH-3].
 * **Snapshot policies on the protocol** (`pe-spike-session-sim snap [--balls 1024] [--stall]`; ball pit,
   60 ± 10 ms, 2% loss):
   * every policy and the moving knob end in the same hash per scene: `47bb8c7274b143d3` at 500 balls,
     `bfe86c8ce148add8` at 1,024;
-  * maximum image memory under a 116-frame stall: Every(4) 47.5 MB, Log(4) 16.1 MB, Window(4) 8.3 MB,
-    base only 3.3 MB, at 284 re-simulated frames/s for the first three;
-  * base only: 2,138 re-simulated frames/s (16.4 ms per frame measured).
+  * maximum image memory under a 116-frame stall (round 3, current protocol): Every(4) 47.9 MB, Log(4)
+    17.8 MB, Window(4) 8.3 MB, base only 3.3 MB, at 278 re-simulated frames/s for the first three;
+  * steady (26-frame lag): Every(4) 10.5 MB, Window(4) 8.3 MB; base only re-simulates 726 frames/s,
+    +79% modelled CPU (review PH-1; the first figure was +17%);
+  * base only under the stall: 2,724 re-simulated frames/s (16.8 ms per frame modelled);
+  * CPU figures are a model [C], from the work counts; the round-3 timings ran at low priority and are
+    noise (review PH-7).
 * **Observer** (`pe-spike-session-sim observer --delay 30|60|100`): remote-hand error, mean / p95, hold →
   dead reckoning:
   * 30 ms: 23.5 / 32.6 → 1.3 / 2.0 mm;
@@ -382,6 +390,48 @@ call counts are exact.
   * batched (needs the fork): about 1% under wasmi.
 * Box3D itself in wasm: 21x native under wasmi and 4.7-5x under Cranelift with NaN canonicalization
   (iteration-benchmark 4.5).
+
+### 5i. Round 3: colluders, crashes, R14 trust, and links below 20 kbit/s [V]
+
+Design 9.3, 10.8, 10.9, 22.6, 22.7. Logs: `spikes/out/session-sim/` (`review3-*`, `r14-*`) and
+`spikes/out/r18/`. Runs used low priority; outcomes and counts are deterministic.
+
+* **Suite:** 30 scenarios. Every replica equals its offline replay, and every transferred object is
+  conserved, with no panic and 0 false checks. The script now also fails on a lost or duplicated object.
+* **Colluders** (`badvote`, `liar`; members 1, 2, 8, 9, where 9 equivocates on a touch confirmed at
+  frame 50):
+  * 8 forks its vote and shows the honest members a forged frozen head of (0, 0): before, every honest
+    member panicked. Now the forged vote never becomes stable, and the eviction waits. The honest members
+    stay equal to the replay at confirmed frame 203: a safe stall, as two colluders of four leave no
+    honest majority;
+  * 8 votes only with the forged head: the lie is detected and void, 9 is evicted with a cut that keeps
+    the confirmed touch (seq 104, from frame 208), and the session goes on.
+* **A crashed member** (`crashstall`, member 3 of 3 silent from t = 3 s): removed after 180 frames of
+  silence (cut at seq 86, from frame 173), after 72 paused frames. At t = 15 s confirmation is 4-6 frames
+  behind the present, and both survivors equal the replay. Before: stuck at frame 169, 604 paused frames.
+* **R14 trust** (`r14 forge`, now 9 forged entries): a departure to a world one member controls, a
+  departure to an unknown world and a mint from a world one member controls are `RejectedNoRoute`; a
+  certified record with its shape kind changed is `RejectedNoProof`; a NaN record is `RejectedInvalid`.
+  Objects 50 and 51 stay in A, and object 40 is conserved.
+* **Deadline** (`r14 late`, a 2-frame deadline): the arrival is `RejectedLate`, and the certified refusal
+  returns the object to A.
+* **Crashed carrier** (`r14 crash`; worlds of three members, member 4 in both; the carrier goes silent
+  84 ms after departing): both worlds remove it, member 4 relays, and the object arrives in B at 6.6 s,
+  conserved.
+* **Links below 20 kbit/s** (`scripts/run_r18.sh`, batched + adaptive transport):
+
+  | Cell | Stalled frames | Max queue | Back to real time after the gesture | End state |
+  |---|---|---|---|---|
+  | 16 kbit/s | 0 / 0 | 364 ms | at once | equal |
+  | 12 kbit/s | 1,201 / 1,214 | 484 ms | 19.3 s | equal |
+  | 8 kbit/s, two members | 1,586 / 1,588 | 498 ms | never in 30 s | not converged (below the floor) |
+  | 64, then 16 kbit/s from t = 3 s | 0 / 0 | 343 ms | 60 ms | equal |
+  | 4 members, 64 kbit/s shared per uplink | 0 (all four) | 215 ms | at once | all four equal |
+  | 3 members, member 3 on 8 kbit/s | 135 / 135, before member 3 is demoted | 498 ms on member 3's links | at once | members 1 and 2 equal |
+
+  Before round 3, every cell below about 20 kbit/s, and the shared uplink, collapsed for good.
+* **UDP spike** rerun with the round-3 repair changes: latency60, loss10 and fault all equal, 24 ok and
+  0 bad checks per peer.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
@@ -641,8 +691,10 @@ Inferred [I] (design proposals, not yet tested):
    against an rmcp engine server; prove the guest-mode restrictions actually block shell and file tools.
 10. **Mail hub:** with the user's go-ahead (design D32), read Orgtree's hub source and prototype a client
     against a private test hub.
-11. **Session protocol at scale:** view changes with cutoffs, joins, 4-8 members over real internet paths,
-    and partition heal; the simulator becomes a phase-2 test tool.
+11. **Session protocol at scale:** removing one silent, slow or equivocating member is built (5i). Still to
+    build and verify: the proposer-based view change (several members at once, joins, per-epoch
+    certificates), a named phase-3 prerequisite (design 23.2); 4-8 members over real internet paths; and
+    partition heal. The simulator becomes a phase-2 test tool.
 12. **Harness containment gates** (design 21.9) before any panel can be unlocked.
 13. **Portals and multiple worlds:** rendering, VR straddling, and the memory and CPU budget of several
     attended worlds (design 22.3).
@@ -656,9 +708,9 @@ cargo build --workspace && cargo build --workspace --release
 ./target/release/pe-spike-physics goldens && ./target/release/pe-spike-physics rollback && ./target/release/pe-spike-physics bench
 ./target/release/pe-spike-physics trace 600 spikes/out/trace-win-release-1.txt
 bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"   # also loss10, fault (5b)
-bash scripts/run_session_sim.sh                     # every session, ball-pit and R14 scenario (5c-5e)
+bash scripts/run_session_sim.sh                     # every session, ball-pit, R14 and review scenario (5c-5e, 5g, 5i)
 bash scripts/run_perturbation_history.sh            # re-sim vs depth, partial restore, snapshot knob, observer (5f)
-bash scripts/run_r18.sh                             # ball pit through 256/64/48/32 kbit/s caps (5g)
+bash scripts/run_r18.sh                             # ball pit through 256 to 8 kbit/s caps, a step, shared uplinks, a slow member (5g, 5i)
 bash scripts/run_r15.sh                             # physics-hook call cost and frequency (5h); low priority
 python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm
 # iteration benchmark: see docs/iteration-benchmark.md section 8

@@ -174,8 +174,8 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Physics step per world | ≤ 1 ms at the MVP body budget, about 500 awake bodies (D2) | 0.36 ms at 256 bodies, 1.5-1.9 ms at 1,024 [V b6]; 0.35 ms for the 500-ball pit [V session-sim] |
 | Typical rollback depth | one-way latency + ack interval: 4-8 frames | max 4 at 60 ms ± 20 ms, 9-14 with loss [V session-sim, p2p-v2]; deeper for a late receiver, which now pays for its own lateness (8.2): 38 frames after a 600 ms delay [V session-sim outage] |
 | Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls, 60 Hz, 2 members, ≤ 60 ms one-way | 289-298 re-simulated frames/s ≈ 2.6-2.8 ms per frame at 60 Hz [V ballpit, work counts × 0.35 ms per step]. **Over budget** at 90 Hz (597 frames/s, about 3.7 ms per 11.1 ms frame) and at 100 ms one-way (6-8 ms of total sim CPU per frame) [V ballpit-90hz, observer-100] (review NEW-15); budgeted per latency band, with p99 ticks (6.8). 0.27 ms with the opt-in 4-frame input delay (default 0, D41) |
-| Confirmation (finality) | ≤ 200 ms on 30-60 ms links | 8.5 frames (142 ms) at 50 ms ± 15 ms [V session-sim r14, round 2; 4.2 frames in 3d0f98a, before stable-data confirmation] |
-| Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3 |
+| Confirmation (finality) | ≤ 200 ms on 30-60 ms links (it was 150 ms until round 2; ed347ac raised it for stable-data confirmation, D54, without saying so: review R3-12) | 8.5 frames (142 ms) at 50 ms ± 15 ms [V session-sim r14]. **Over budget under jitter and loss** [V reviewer, average / p95 / max]: 169 / 200 / 200 ms at 60 ± 20 ms; 199 / 333 / 400 ms with 2% loss added; with 2% loss and 3, 4 or 8 members, averages of 234, 275 and 344 ms |
+| Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3. Grows with the confirmation lag: 11 MB at 60 ± 10 ms with 2% loss, 17-19 MB at 32 kbit/s with 5% loss [V reviewer, R3-12] |
 | Game logic per tick, per world | ≤ 1 ms | 6.4 ms in wasmi, 1.6 ms in wasmtime/Cranelift, 0.9 ms native at 10k entities [V iteration-benchmark 4.1] |
 | **Logic edit, local build and swap** (one-function edit) | ≤ 0.5 s at up to ~10k LOC; ≤ 1.5 s at 45k LOC | 0.42-0.45 s at 6.4k LOC, 1.2-1.3 s at 45k (`rel-fast`, wasmi, idle machine) [V iteration-benchmark; reviewer rerun]. 0.58 s with 8 busy processes, 0.83-1.01 s with 14 (D12-4) |
 | **Logic edit to every peer in a live session** | ≤ 1.2 s | ≈ 1.1 s: build and swap 0.45 + confirmation 0.14 + activation lead 0.5 [V components; I total] (D12-4) |
@@ -183,7 +183,7 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Shader edit to visible | ≤ 100 ms locally (naga validation is milliseconds [I]) + the same commit path | 14 |
 | Hot swap at a frame | ≤ 10 ms on the sim thread | 6 ms in wasmi; Cranelift 27-35 ms, so it compiles off-thread during the activation lead (13.3) [V iteration-benchmark, reviewer] |
 | Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6 |
-| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s), 18.8 kB/s per message [V r18 capped, ballpit]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
+| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s) at 50 ± 5 ms without loss, 18.8 kB/s per message [V r18 capped, ballpit]. Like for like with 3d0f98a's 14.7 kB/s (60 ± 10 ms, 2% loss), batched is 13.6 kB/s, 7% less; ack bytes alone grew 53% [V reviewer, R3-13]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
 | Head motion to photon (VR) | < 20 ms | 18.5 |
 
 ---
@@ -355,11 +355,13 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 * Keyframes are taken every K = 4 frames, and only between the **confirmed frame** (6.4) and the present.
   Rolling back restores the newest keyframe at or before the target frame and re-simulates the gap.
 * Re-simulation saves keyframes only at multiples of K, not every frame (review M1).
-* With confirmation about 8.5 frames behind the present (6.4), a world holds about 3-4 keyframes: about
-  2-2.5 MB at 256 bodies and 7-10 MB at 1,024 [I, from the image sizes]. The old proposal held a fixed 2 s
+* With confirmation 8.5 frames behind the present (6.4), a world holds about 3-4 keyframes: about
+  2-2.5 MB at 256 bodies and 7-10 MB at 1,024 [I, from the image sizes]. Under jitter and loss the lag
+  is longer and so is the ring: at 60 ± 10 ms with 2% loss, a 26-frame lag, Every(4) held up to
+  7 images, 10.5 MB for the 500-ball pit [V snap, round 3; review PH-1]. The old proposal held a fixed 2 s
   ring (about 72 MB at 1,024 bodies).
 * The speculation limit (6.4) caps the worst case at 120/K + 1 = 31 keyframes.
-* Byte-delta compression of images was measured and does not help (6.8). Sync-state-only guest snapshots
+* Fixed-offset byte deltas of images do not help, but general-purpose compression does (6.8). Sync-state-only guest snapshots
   (7.4) remain planned.
 
 ### 6.4 Confirmed frame and the speculation limit (reviews C1, NEW-1, NEW-2)
@@ -459,15 +461,19 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 
 | Depth (frames) | 1 | 4 | 8 | 15 | 30 | 60 | 120 |
 |---|---|---|---|---|---|---|---|
-| 256 bodies | 0.8 ms | 2.0 | 3.6 | 6.4 | 12.4 | 26.4 | 50.8 |
-| 1,024 bodies | 3.3 ms | 7.9 | 14.2 | 25.8 | 51.0 | 98.9 | 189.7 |
+| 256 bodies | 0.8 ms | 2.1 | 3.7 | 6.7 | 12.7 | 27.6 | 50.3 |
+| 1,024 bodies | 3.2 ms | 7.6 | 13.5 | 24.2 | 47.6 | 94.7 | 183.3 |
+
+These timings come from the committed log, run at 442286f on a quieter machine. A round-3 rerun at low
+priority took 1.5-2x as long, and was not kept (review PH-7).
 
 A tick at 60 Hz has 16.7 ms. **Base-only** fits only while confirmation keeps up, because every
 rollback then re-simulates the whole confirmation lag, not just the rollback depth.
 
 **Rollbacks stay shallow even when confirmation stalls** [V snap]:
 * How deep a rollback goes is set by how late entries arrive: one-way latency, the ack interval, and a
-  fetch round trip after a loss. The deepest measured was 14 frames, at 60 ± 10 ms with 2% loss.
+  fetch round trip after a loss. The deepest measured was 13 frames, at 60 ± 10 ms with 2% loss
+  [V snap, round 3]. At 100 ms one-way it was 24 frames [V reviewer, PH-2].
 * In the stall runs a third member's acks were dropped for 1.6 s. Confirmation fell 116 frames behind,
   but the deepest rollback was still 13 frames.
 * The images that do the work are therefore the few just behind the present. The base is insurance for
@@ -486,45 +492,57 @@ rollback then re-simulates the whole confirmation lag, not just the rollback dep
   base.
 
 **Setup.** One hand sweeps the ball pit while member 2 watches, over 60 ± 10 ms links with 2% loss at
-60 Hz, measured across the 3.66 s sweep. In the **stall** case a third member's acks are dropped for 1.6 s,
-so confirmation lags by up to 116 frames.
+60 Hz, measured across the 3.66 s sweep. Confirmation lags up to 26 frames. In the **stall** case a third
+member's acks are dropped for 1.6 s, so confirmation lags by up to 116 frames. Round 3 reran everything
+on the current protocol, whose confirmation is one ack round slower (D54); the first figures predated it
+(review PH-1).
 
-**How CPU is reported.** CPU per frame is modelled: the deterministic work counts (re-simulated frames,
-saves and restores per second) times the per-operation costs measured in isolation. For the 500-ball pit
-those costs are: step 0.353 ms, save 0.52 ms, restore 0.37 ms. Measured timings (best of 2-3 runs, with
-other agents building on the same machine) rank the policies the same way, plus about 1 ms of protocol
-overhead.
+**How CPU is reported: a model [C], not a measurement** (review PH-7). CPU per frame is the deterministic
+work counts (re-simulated frames, saves, and one restore per rollback, 59 a second) times per-operation
+costs for the 500-ball pit: step 0.353 ms, save 0.52 ms, restore 0.37 ms. Those costs were measured in
+isolation on an idle machine before round 3, and are not in a committed log [I]. The round-3 rerun ran at
+low priority on a shared machine, so its timings are noise; a clean timing run waits for an idle machine.
+Under this model a policy that does the same work as another costs the same, by construction.
 
-| Policy | Max MB held, 500 balls (steady / stall) | Max MB held, 1,024 balls (stall) | Re-sim frames/s (steady / stall) | Saves/s (steady / stall) | Modelled CPU ms per frame (steady / stall) |
+| Policy | Max MB held, 500 balls (steady / stall) | Max MB held, 1,024 balls (steady / stall) | Re-sim frames/s (steady / stall) | Saves/s (steady / stall) | Modelled CPU ms per frame [C] (steady / stall) |
 |---|---|---|---|---|---|
-| Every(1) | 25.6 / 183.7 | 412.4 | 209 / 196 | 210 / 198 | 3.77 / 3.58 |
-| Every(2) | 13.6 / 93.4 | 209.7 | 239 / 225 | 104 / 99 | 3.03 / 2.90 |
-| Every(4) (3d0f98a) | 8.2 / 47.5 | 106.6 | 298 / 284 | 51 / 50 | 2.91 / 2.82 |
-| Every(8) | 5.0 / 25.3 | 56.8 | 416 / 401 | 26 / 25 | 3.39 / 3.29 |
-| Every(16) | 3.3 / 12.6 | 28.3 | 661 / 646 | 14 / 12 | 4.72 / 4.62 |
-| Log(4) | 8.2 / 16.1 | 36.1 | 298 / 284 | 51 / 50 | 2.91 / 2.82 |
-| Log(8) | 5.0 / 12.8 | not run | 416 / 401 | 26 / 25 | 3.39 / 3.29 |
-| **Window(4)** | **8.2 / 8.3** | **18.6** | 298 / 284 | 51 / 50 | **2.91 / 2.82** |
-| Window(8) | 5.0 / 8.1 | 18.1 | 416 / 401 | 26 / 25 | 3.39 / 3.29 |
-| Base(1) | 3.3 / 3.3 | 7.4 | 416 / 2,138 | 27 / 11 | 3.40 / 13.39 |
+| Every(1) | 39.0 / 185.4 | 87.8 / 415.9 | 203 / 189 | 204 / 190 | 3.68 / 3.48 |
+| Every(2) | 19.5 / 94.2 | 43.9 / 211.5 | 233 / 219 | 103 / 94 | 2.98 / 2.82 |
+| Every(4) (3d0f98a) | 10.5 / 47.9 | 23.6 / 107.4 | 292 / 278 | 53 / 47 | 2.89 / 2.76 |
+| Every(8) | 6.2 / 25.4 | 14.1 / 57.1 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
+| Every(16) | 3.3 / 14.3 | 7.4 / 32.0 | 655 / 641 | 13 / 13 | 4.68 / 4.60 |
+| Log(4) | 9.4 / 17.8 | 21.1 / 39.8 | 292 / 278 | 53 / 47 | 2.89 / 2.76 |
+| Log(8) | 6.2 / 14.5 | 14.1 / 32.4 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
+| **Window(4)** | **8.3 / 8.3** | **18.5 / 18.6** | 292 / 278 | 53 / 47 | **2.89 / 2.76** |
+| Window(8) | 6.2 / 8.2 | 14.1 / 18.2 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
+| Base(1) | 3.3 / 3.3 | 7.4 / 7.4 | 726 / 2,724 | 21 / 11 | 5.17 / 16.84 |
 
-Measured CPU per frame for comparison (best runs): at 500 balls, Every(4) 3.84-4.04, Log(4) 3.84-3.97,
-Window(4) 3.84-4.00, and Base(1) 4.43 steady and 16.4 under the stall. At 1,024 balls under the stall:
-Every(4) 9.9-10.8, Window(4) 10.8, Base(1) 47.7-48.9.
+[V snap, round 3: counts and image bytes; every run of a scene ended in the same end hash.]
 
 What the table shows:
-* **Dense images do not buy CPU.** A save costs about 1.5 steps here, so saving every frame costs more
-  than the re-simulation it saves. CPU is lowest at k = 2-4.
-* **Thinning is free.** Log(k) and Window(k) do exactly the same work as Every(k), because they drop only
-  images that no rollback used. Under the stall, Window(4) held 8.3 MB instead of 47.5 MB, and 18.6 MB
-  instead of 106.6 MB at 1,024 balls.
-* **Base-only is the memory floor, and cheap while confirmation keeps up** (+17% CPU). Under a stall,
-  every rollback re-simulates the whole lag: 2,138 frames/s, 13.4 ms per frame modelled, 16.4 ms measured,
-  and 48 ms at 1,024 balls. It needs a guard (below).
-* **Byte deltas do not help.** Storing ring images as 64-byte block deltas against the base, or against
-  the previous image, saved at most 6% on the ball-pit rings and usually nothing. On an active pile every
-  block changes, because contact arrays shift whenever a contact begins or ends. The best case, a
-  slow-moving 256-body pile, still needed 38-43% [V snap, physics history].
+* **Dense images do not buy CPU** [C]. A save costs about 1.5 steps here, so saving every frame costs more
+  than the re-simulation it saves. Modelled CPU is lowest at k = 2-4.
+* **Thinning is free at 60 ms.** Log(k) and Window(k) did exactly the same work as Every(k), because they
+  dropped only images that no rollback used [V counts]. Under the stall, Window(4) held 8.3 MB instead of
+  47.9 MB, and 18.6 MB instead of 107.4 MB at 1,024 balls.
+  * **At 100 ms one-way it is not** (review PH-2). The deepest rollback, 24 frames, exceeds Window(4)'s
+    16, so under a stall Window(4) re-simulated 568 frames/s against 425 for Every(4) (+21% modelled CPU),
+    and peaked at 11.5 MB (7 images) [V reviewer]. The adaptive window depth (below) is what keeps the
+    default right at higher latency [I].
+* **Base-only is the memory floor, but not cheap any more** (review PH-1). Every rollback re-simulates
+  the whole confirmation lag, and round 2's stable-data confirmation made the lag longer: 726 frames/s at
+  26 frames of lag, +79% modelled CPU against Window(4), where the first figures said +17%. Under a stall,
+  2,724 frames/s and 16.8 ms per frame modelled. It needs a guard (below).
+* **Fixed-offset byte deltas do not help; compression does** (review PH-3).
+  * Storing ring images as 64-byte block deltas against the base, or against the previous image, saved at
+    most 7% on the ball-pit rings and usually nothing. A contact array that grows or shrinks shifts every
+    later block. The best case, a slow-moving 256-body pile, still needed 37-43% [V snap, physics
+    history].
+  * General-purpose compression is a different matter [V reviewer, a throwaway test]: plain LZ4 cut an
+    image to 44-47%, deflate to 34-38%, and XOR against the base plus LZ4 to 8-12% on a same-size pile. It
+    costs about 0.5-0.7 ms to compress and 0.2 ms to decompress per 0.5 MB.
+  * So the knob can also **compress cold images**: those older than the window, which a rollback rarely
+    needs [I]. A pure-Rust LZ4 (`lz4_flex`) keeps the 100%-Rust rule [I].
 * **The worst case does not depend on the policy.** A rollback all the way back to the confirmed frame
   re-simulates the whole lag whatever is cached: up to 51 ms at 256 bodies and 190 ms at 1,024 when
   W = 120. It can only be reduced by a smaller W, a smaller active world or region-scoped
@@ -533,12 +551,12 @@ What the table shows:
 **The knob (proposal, D50).** "Snapshot memory" is one setting per peer, local and changeable at run time,
 with four positions:
 
-| Position | Policy | Max image memory (500 balls steady; stall 500 / 1,024 balls) | CPU against the best | Rollback depths covered without the base |
+| Position | Policy | Max image memory (500 balls steady; stall 500 / 1,024 balls) | Modelled CPU against the best [C] | Rollback depths covered without the base |
 |---|---|---|---|---|
-| Speed | Log(4) | 8.2; 16.1 / 36.1 MB | best | any depth, at ≤1.5x |
-| **Balanced (default)** | Window(4), adaptive depth [I] | 8.2; 8.3 / 18.6 MB | best | ≤ 16 frames (every measured rollback was ≤ 14) |
-| Lean | Window(8) | 5.0; 8.1 / 18.1 MB | +17% | ≤ 32 frames |
-| Minimum | Base(1) + stall guard [I] | 3.3; 3.3 / 7.4 MB | +17% steady; guarded under a stall | none |
+| Speed | Log(4) | 9.4; 17.8 / 39.8 MB | best | any depth, at ≤1.5x |
+| **Balanced (default)** | Window(4), adaptive depth [I] | 8.3; 8.3 / 18.6 MB | best at 60 ms | ≤ 16 frames without the adaptive depth (13 at most at 60 ms, 24 at 100 ms) |
+| Lean | Window(8) | 6.2; 8.2 / 18.2 MB | +16% | ≤ 32 frames |
+| Minimum | Base(1) + stall guard [I] | 3.3; 3.3 / 7.4 MB | +79% steady; guarded under a stall | none |
 
 * **It never changes a result,** because images only cache states the log already determines.
   * Verified [V snap knob-moving]: the knob cycled every 7 frames through Every(1) → Base(4) → Log(4) →
@@ -587,6 +605,9 @@ sleeping or isolated islands to re-derive themselves.
   These are the sections `serialize_world` writes [V]. Several are global (one tree, one colour graph,
   one contact array) and their order decides iteration order, so even an island-scoped restore needs them
   bit-exact.
+* **What these tests show** (review PH-4): only that the public API cannot do it. They wrote back poses and
+  velocities, which is all the API allows. They do not test the idea itself, islands saved together with
+  their contacts and warm starts; that needs the fork below.
 * **What it would take [I].**
   * A fork of box3d-rust that snapshots per solver set (sleeping islands already live in solver sets of
     their own) and shares unchanged sleeping-island bytes between images, copy-on-write. Image memory would
@@ -625,6 +646,11 @@ against the final confirmed history over the sweep.
 * **Dead reckoning cuts the observer's error by about 4-18x** for smooth hand motion, because the
   speculative sim pushes balls roughly where the real hand is pushing them. Its limit is any change of
   motion: a stop, a turn or a grab is seen one latency late, and the balls involved are corrected.
+* **At a change of motion it overshoots briefly** (review PH-6) [V observer, round 3]. In the 0.25 s after
+  the descent ends and after the sweep ends, its mean error is still lower than holding's: 23 against
+  59 mm at 30 ms, 79 against 177 mm at 60 ms, and 171 against 323 mm at 100 ms. But its p95 and maximum
+  are about equal or a little higher: 60 against 50 mm p95 at 30 ms, and a 797 against 758 mm maximum at
+  100 ms. Those maxima come from the scripted path's own jumps, of up to 0.6 m.
 * **Smoothing trades accuracy for continuity.**
   * At 60 ms latency, τ = 50 ms raises the p99 ball error against the truth from 4.3 to 9.2 mm, and
     τ = 100 ms to 14.0 mm. Corrections are shown late on purpose, but nothing jumps.
@@ -632,11 +658,14 @@ against the final confirmed history over the sweep.
   * Proposal [I]: smooth corrections below about 5 cm over 50 ms, glide larger ones over 100 ms, and snap
     above about 0.5 m.
 * **The hand rule is a world rule, not a local option.**
-  * At 100 ms with 2% loss, measured on 442286f before round 2 removed re-stamping, some lost hand
-    entries were fetched more than 15 frames late and re-stamped, which left a few confirmed frames without
-    an entry. Under round 2 the same happens by design whenever the author thins its hand stream (10.9).
-  * The rule then shaped confirmed history: hold and dead reckoning produced different end states, each
-    identical across members [V observer-100].
+  * It shapes confirmed history wherever a confirmed frame has no entry from an active hand. Under round 2
+    that happens by design when the author thins its hand stream (10.9): between two thinned entries,
+    holding stops the hand, and dead reckoning carries it on to the target.
+  * In the observer runs the author sends an entry every frame, and nothing is re-stamped any more, so no
+    confirmed frame lacks one. Hold and dead reckoning now end in the same state there [V observer, round
+    3; review PH-5], and the rule changes only what is shown before entries arrive.
+  * At 442286f, before round 2, re-stamped late entries left gaps, and the two rules ended in different
+    states [V observer-100 at 442286f].
   * Decision **D52**.
 * **Input delay stays an opt-in setting with a default of 0 (D41).** It spares the receiver rollbacks, but
   delays the engager's own interactions by the same amount, against the requirement that every reaction
@@ -842,7 +871,18 @@ release build [V session-sim ballpit].
 * **An entry is about 100-170 bytes before transport overhead** [V session-sim encoding]:
   * a touch with carried state is 100 bytes;
   * a hand target without state is 44 bytes.
-* **Acks** are about 54 (2 members) to 79 (3 members) bytes each, every two frames, per member.
+* **Acks** grow with the member count (review R3-11): 56 + 16(N-1) bytes with a check hash, that is 72, 88,
+  104, 168, 296 and 1,064 bytes for N = 2, 3, 4, 8, 16 and 64 [V reviewer]. Every member sends one to
+  every other member every two frames.
+  * Idle upload per member is therefore 3.7, 8.4, 14, 46 and 157 kB/s, and 2.1 MB/s, for those member
+    counts [V reviewer]. That is over the 1-5 kB/s budget (2.1) from 3 members. Production ids and
+    signatures (32 bytes) would add about 2-2.5x [I].
+  * **Compact acks** [I]: carry only each head's seq (a varint), plus one 8-byte digest over all
+    (member, seq, id) heads. A receiver that holds those entries checks the digest; a mismatch (an
+    equivocation) asks for the full heads. That is about 8 + 2N bytes plus horizon and check hash, about
+    4-5x less at N = 16.
+  * Region logs (R16, 25) keep N per log small. A log of many members also needs acks to a few peers at a
+    time, relayed (gossip), at the cost of slower stability [I].
 * In production all of these share datagrams: the per-tick batch is option (b) applied to entries, not
   to state.
 
@@ -885,9 +925,9 @@ them identically, so they can never fork anyone.
 2. **A horizon may not lag its own ack.** An ack whose horizon is more than `horizon_slack` frames
    (default 2) behind the ack's own stamp is void.
    * So a member cannot hold a backdating window open by publishing stale horizons.
-   * Trying only stops confirmation: every member voids all such acks, and confirmation stalls until a
-     view change removes that member [V session-sim backdate part 2: all 318 acks void for every member,
-     with no window opened].
+   * Trying only stops confirmation: every member voids all such acks, and the others demote that member
+     after 3 s (10.9 item 7) [V session-sim backdate part 2: its acks void for every member, no window
+     opened, member 3 removed, and members 1 and 2 equal to the replay].
 
 **What a cheater can still do:**
 * backdate within one ack interval plus the slack, about 4 frames (67 ms) at the defaults;
@@ -921,6 +961,9 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * **A plain impulse claims once and never renews.** Only a held grab renews its claim, for as long as it is
   held. Repeated nudges therefore cannot lock an object [V session-sim claims: in the reviewer's lock-out scenario, member 2 (trying every frame) was accepted 0 of 600 times before the fix and 360 of 600 after; member 1 (every 29 frames) still got 9 of 21].
 * **World logic (member 0) never claims** and is never refused by claims.
+* **Claims conflict with the user's 14:31Z rule** (review R3-3): the loser of a claim race sees its own
+  touch undone one latency later. Whether to keep claims, limit them to grabs, or drop refusals for all
+  physical interaction is **D72**.
 * Agents are rate-limited at intake (17.4).
 * A cap on how long a grab may be held is **D38**.
 
@@ -1350,6 +1393,9 @@ and the engager's hand replayed after the gesture had ended.
        datagram (review R3-9 added the two coarsest levels and the alignment).
      * A thinned hand entry carries a `span`: its target is reached over that many frames, and dead
        reckoning (6.10) covers the gaps.
+     * The author applies the same thinned entries, so under congestion its own physics hand trails its
+       controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
+       the author exact: **D73**.
      * Every peer, the author included, applies the same entries, so the author's own physics stays exact
        and is never corrected.
    * Adaptation happens when entries are authored, never by dropping queued entries: chain entries cannot
@@ -1836,7 +1882,13 @@ code, so a builder cannot make another player's harness run them (21.3).
     at any depth;
   * the engine runs `cargo` and `rustc` by absolute, pinned path, with `RUSTUP_TOOLCHAIN` pinned,
     `CARGO_HOME` set to an engine-owned directory, and `--config` overrides that empty
-    `build.rustc-wrapper`, `target.*.linker` and `target.*.runner`;
+    `build.rustc-wrapper`, `build.rustflags`, `target.*.linker`, `target.*.runner` and
+    `target.*.rustflags`, the `[env]` table and every `credential-provider` (round 3: the first list missed
+    the last four);
+  * cargo also reads `.cargo/config.toml` from **every ancestor** of the build directory, and `--config`
+    cannot remove what such a file adds to a table. So workspaces are materialized under an engine-owned
+    root outside the owner's home directory, and a build fails closed if any ancestor holds a
+    `.cargo/config` or `.cargo/config.toml` [I];
   * compilation runs under the restricted identity (21.4);
   * the world's toolchain pin is world-format metadata the engine reads, never a file that cargo or rustup
     auto-load (this corrects 13.2's reference to a `rust-toolchain.toml` in the world repo).
@@ -1846,6 +1898,8 @@ code, so a builder cannot make another player's harness run them (21.3).
   * The reserved list above is kept as a second check.
   * Every command the engine spawns uses an absolute path. On Windows the engine sets
     `NoDefaultCurrentDirectoryInExePath=1`, so a `git.exe` or `pe-app.cmd` in a workspace is never picked up.
+  * Commands a harness spawns itself do their own PATH search (round 3). A restricted session's PATH
+    therefore holds only engine-owned directories, and never its working directory [I].
 * **Name collisions** (review NEW-25): a tree whose sibling names collide after normalization (`A.rs` and
   `a.rs`; `x` and `x.`) is invalid, so how it materializes cannot depend on write order.
 * **Not covered:** build-time code. `build.rs`, proc-macro crates and `[build-dependencies]` run native
@@ -2337,7 +2391,7 @@ and renders a terminal emulator into the panel.
    other principals:
    * one per guest (21.5);
    * one per inbound connection or hub correspondent (21.6, 21.7);
-   * one decider for "ask agent" (21.6).
+   * a fresh decider session per request for "ask agent" (21.6, 21.10).
 2. **Keys and certificates.**
    * The private session holds the **panel key**. The owner's user key signs its delegation certificate
      when the owner creates the panel. That is a human action (12.3).
@@ -2713,9 +2767,8 @@ defence that 21.5 rejects.
   untrusted text (21.5).
 * **Into the private session only per message.** The owner can forward a single message into the private
   session. It enters as an MCP tool result, marked untrusted and attributed.
-  * A per-connection auto-forward also exists. It is off by default and sits behind a warning.
-  * Auto-forward is available only while the private session uses the restricted profile (D25a), that
-    is, without shell or web tools.
+  * There is no auto-forward (review NEW-9, 21.10). Each forward is one message, and it goes only into a
+    restricted-profile turn (D25a), without shell or web tools.
 * **Capability ceiling.** Each panel has an owner-set ceiling on what any connection may be granted.
   * Default: **text only**.
   * Above it, in order: structured JSON; asset references; world actions (rights = owner ∩ remote owner ∩
@@ -2764,6 +2817,9 @@ defence that 21.5 rejects.
 * The decision is made by a **decider session**. It is restricted like a guest session, and its only tools
   are `panel.requests.list`, `panel.requests.accept(id, capabilities)` and
   `panel.requests.reject(id, reason)`.
+* **Each decider is scoped to one request** (review R3-15). It holds a token naming that request; `list`
+  shows only it, and `accept` or `reject` of any other id is refused. At most two decider sessions run
+  per panel at once; further requests queue, and a request still queued at its timeout is denied [I].
 * It can grant at most the owner's ceiling (default: text only). The MCP server enforces this.
 * The requester's purpose text reaches only the decider, inside a JSON field marked untrusted. The private
   session sees counts and IDs only.
@@ -2901,7 +2957,10 @@ These rules supersede any conflicting text in 21.3-21.9.
     not hold.
 * **The workspace is re-scanned before every launch** (NEW-10).
   * The 15.6 matcher (allowlist plus reserved names) runs over the whole workspace, not just its ancestors.
-  * The engine answers the harness's permission prompts itself and refuses any write to a reserved path.
+  * The engine answers the harness's permission prompts itself and refuses any write outside the 15.6
+    allowlist, not only to a reserved path: a `git.cmd` is refused too (round 3).
+  * Permission prompts do not see a shell command's writes. Restricted sessions therefore have no shell
+    tool, and the workspace is re-scanned after every turn as well as before every launch [I].
   * An agent therefore cannot plant `.gemini/settings.json`, `.codex/config.toml`, `AGENTS.md` or
     `CLAUDE.md` for its next launch.
 * **The fail-closed launch check names exact plugins** (NEW-11).
@@ -2912,7 +2971,12 @@ These rules supersede any conflicting text in 21.3-21.9.
   * Gate 9a plants canary `CLAUDE.md` and `AGENTS.md` files and fails if either is loaded.
 * **Ancestor check** (NEW-18): it names the exact files each harness loads from ancestor directories, and
   exempts each harness's own configuration home. A blanket "no `.claude` in any ancestor" check would
-  refuse every launch on a machine that has the harness installed.
+  refuse every launch on a machine that has the harness installed. The list, per pinned version, is
+  confirmed by gate 9a's canaries [I]:
+  * Claude Code: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` (settings, commands, agents, skills, hooks)
+    and `.mcp.json`;
+  * Codex: `AGENTS.md`, `AGENTS.override.md` and `.codex/`;
+  * Gemini CLI: `GEMINI.md` and `.gemini/`.
 * **One decider per request** (NEW-14). An "ask agent" decision for a panel runs in a fresh session per
   requester, seeing only that requester's purpose text, so one requester cannot steer the decision for
   others.
@@ -2922,9 +2986,15 @@ These rules supersede any conflicting text in 21.3-21.9.
   * Containment on Linux uses a separate uid or a mount namespace plus Landlock. A user namespace alone
     still shows `/home/owner`.
   * macOS containment (an App Sandbox profile) is an unmet gate before macOS ships (D20).
-* **Codex gate 9b** (NEW-20) allowlists features. These default-on features are turned off: `view_image`,
-  `code_mode_host`, `in_app_browser`, browser use, `skill_mcp_dependency_install`, `remote_plugin`,
-  `tool_suggest` and web search. The gate checks the tool list actually observed at init.
+* **Codex gate 9b** (NEW-20) allowlists features: every default-on feature is turned off except those the
+  restricted adapter needs, which is none of the following.
+  * `codex features list` (0.160.0) shows 44 default-on features [V reviewer]. Among those turned off:
+    `view_image`, `code_mode_host`, `in_app_browser`, browser use, `skill_mcp_dependency_install`,
+    `remote_plugin`, `tool_suggest`, web search, `computer_use`, `apps`, `hooks`, `plugins`,
+    `plugin_sharing`, `multi_agent`, `image_generation`, `skill_search` and `shell_tool` /
+    `unified_exec` (round 3 added the last nine).
+  * The gate checks the tool list actually observed at init, so a feature added by a harness update fails
+    the launch until it is reviewed.
 * **Revocation** (NEW-24).
   * On Windows, a guest process is put in a job object at creation (`CREATE_SUSPENDED` plus assignment, or
     `PROC_THREAD_ATTRIBUTE_JOB_LIST`), with `KILL_ON_JOB_CLOSE` and no breakaway.
@@ -3199,8 +3269,10 @@ persists until a verdict arrives.
   (8). Two departures of one object towards two worlds: the first in canonical order wins and the second is
   rejected. In B, the arrival is ordered like any entry.
 * **Trust (D46):** a relayed fact counts only with a certificate: signatures by a strict majority of the
-  other world's members over exactly that fact. In the spike these are keyed hashes that stand in for
-  Ed25519 signatures [V session-sim r14 forge].
+  other world's members over exactly that fact [V session-sim r14 forge]. In the spike these
+  "signatures" are keyless hashes that anyone could compute: they model who must sign, not
+  unforgeability, and the forge tests forge only signatures an attacker could hold. Production signs with
+  each member's Ed25519 key (10.3) (round 3, low).
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
@@ -3331,7 +3403,7 @@ spikes/          phase-1 spikes (kept as regression tests)
 | Phase | Content | Milestone and exit criteria |
 |---|---|---|
 | 2. Deterministic core | pe-core, pe-sim, pe-physics, pe-session (from the spikes); CI determinism matrix incl. ARM; the in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on LAN, physics sandbox with state+frame interactions, confirmation, gap repair and equivocation handling; an AI agent drives a peer over MCP |
-| 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal, state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6, D2); **pe-worlds**: two worlds per client, the settled handoff, portal rendering | M2: friends play over the internet with no server; late join works; a ball pit of 500 balls stays within budget (2.1); an object carried through a portal between two sessions |
+| 3. Real networking, look, scale, two worlds | **Prerequisite: the proposer-based view change** (10.8): several members removed at once, joins, demotion to spectator, and per-epoch certificates that other worlds follow (R3-8b). It is needed before R16 sessions of many players (25: two drops at once would stall the world log, and then every region). About the size of round 3's R3-1 and R3-2 together [I]. Then: UDP+Noise, bulk channel, invites and session codes, NAT traversal, state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6, D2); **pe-worlds**: two worlds per client, the settled handoff, portal rendering | M2: friends play over the internet with no server; late join works; a ball pit of 500 balls stays within budget (2.1); an object carried through a portal between two sessions |
 | 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena), pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL), WGSL hot reload, MCP logic and shader tools + forks; owner-only desktop agent panels (structured adapters + PTY), the approval layer, inbox sessions | M3: a player's own Claude Code / Codex, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget; conflicts reject and rebase per R7. Unlocking ships per harness after its gates (21.9) |
 | 5. VR + avatars | pe-xr (OpenXR + Vulkan interop), swept hand engagement, 3-point IK, Resonite avatar import v1, VR panels + virtual keyboard + voice input, per-eye portal straddling | M4: two PC VR users with imported Resonite avatars interact with physics objects and walk through a portal |
 | 6. Scale + discovery | Mainline DHT discovery, volunteer relays, snapshot deltas, larger sessions (relay or gossip), background-world parking | M5: discovery without invites; thousands of bodies across regions; several attended worlds per client |
@@ -3345,10 +3417,13 @@ spikes/          phase-1 spikes (kept as regression tests)
 2. **Unverified ARM and macOS determinism.** x86-64 is verified on two CPUs: the Ryzen 7 9700X desktop and an
    Intel i7-13620H laptop with no AVX-512 (review M5, run by @design-reviewer). Mitigation: a CI matrix with
    ARM in phase 2.
-3. **The session protocol is new code.** Confirmation, view changes and fetch repair were proved in an
-   in-process simulator and over loopback UDP, not on the internet. Proposal-based view changes with
-   cutoffs, and joins, are designed but not yet built (10.8). Mitigation: the simulator becomes a phase-2
-   test tool, and every bug found in phase 1 became a scenario.
+3. **The session protocol is new code.** Confirmation, eviction and fetch repair were proved in an
+   in-process simulator and over loopback UDP, not on the internet. Removing one silent, slow or
+   equivocating member is built [V crashstall, capped slow member, ackfork, liar]. The proposer-based view
+   change (several members at once, joins, per-epoch certificates) is not, and it is a named prerequisite
+   for phase 3 and for sessions of many players (23.2). Until then, two members failing at once, or two
+   colluders, stall a session safely. Mitigation: the simulator becomes a phase-2 test tool, and every bug
+   found in phase 1 became a scenario.
 4. **No central authority means cheating is bounded, not prevented** (8.2, 8.5). MVP sessions are trusted
    (D21).
 5. **Transport work.** The 100%-Rust rule excludes the turnkey stacks (iroh, libp2p, quinn's TLS), so we
@@ -3619,12 +3694,15 @@ entry says so.
   * Recommend: new panels default to **ask user** (60 s timeout); **ask agent** is an explicit opt-in;
     switching to *deny all* drops existing connections; idle TTL 30 min.
   * **Stated risk:** people click "accept". Under this design, accepting admits text into a contained inbox
-    session, never into the owner's private session (D30a). That makes a careless accept cheap.
+    session, never into the owner's private session (D30a). A careless accept therefore costs what that
+    session can do: read-only queries the connection was granted, and a summary card to the owner. It is
+    not free: the text still reaches a model.
   * Alternatives: default *deny all* (safest, more friction); default *allow all* (frictionless, invites
     spam).
 * **D30a. Where inbound panel and hub messages go (21.6, 21.7; review R13-C2).**
   * Recommend: one contained inbox session per connection or correspondent. Messages reach the private
-    session only when the owner forwards them one at a time; auto-forward is off by default.
+    session only when the owner forwards them one at a time, into a restricted-profile turn; there is no
+    auto-forward (review NEW-9).
   * Alternative: deliver into the private session with provenance labels. That is the phase-1 design, and
     it lets any connected agent prompt-inject a full-tool session.
 * **D30b. Capability ceiling for connections (21.6).**
@@ -3815,9 +3893,14 @@ entry says so.
     * **Balanced (the default): Window(4)** with an adaptive window depth;
     * Lean: Window(8);
     * Minimum: base only, with a stall guard.
-  * At the default, CPU equals the best measured policy and memory stays at about the base plus 4 images,
-    however far confirmation lags: 8.3 MB at 500 balls and 18.6 MB at 1,024 under a 116-frame stall,
-    against 47.5 and 106.6 MB for 3d0f98a's Every(4) [V snap].
+  * At the default and 60 ms one-way, the modelled CPU is the best policy's [C], by construction: Window(4)
+    does Every(4)'s work and drops only images that no rollback used. Memory stays at the base plus 4-5
+    images however far confirmation lags: 8.3 MB at 500 balls and 18.6 MB at 1,024 under a 116-frame
+    stall, against 47.9 and 107.4 MB for 3d0f98a's Every(4) [V snap, round 3].
+  * At 100 ms one-way the default needs its adaptive depth: rollbacks reach 24 frames, past the 16-frame
+    window, and Window(4) then costs +21% modelled CPU under a stall and peaks at 11.5 MB [V reviewer,
+    PH-2]. The adaptive depth is [I].
+  * Cold images (older than the window) may also be compressed: LZ4 halves them [V reviewer, PH-3].
   * The knob never changes a result [V snap knob-moving].
   * Alternatives:
     * keep Every(4): the same CPU, up to 5.7x the memory under a stall;
@@ -3879,11 +3962,25 @@ entry says so.
   real-time with queues under about 100 ms, and 16 kbit/s with queues under 400 ms (review R3-9) [V].
   * Alternative: loss-based control (as in TCP Reno). It reacts only after the router queue is already
     full, the 500 ms bufferbloat this replaces.
-* **D57. Logic-state snapshots (7.4; review NEW-17).**
-  * Recommend: snapshot all of guest linear memory, with dirty-page diffs, and hash all of it at check
-    frames. State hidden outside the declared arena then fails fast and identically on every peer.
-  * Alternative: the declared arena only, plus zeroing all other memory after every tick. This is cheaper,
-    but static and thread-local state silently breaks rollback if zeroing is ever skipped.
+* **D57. Logic-state snapshots (7.4; reviews L3, NEW-17).**
+  * The problem: 7.4 snapshots the component columns and one declared arena. But any `static`,
+    `OnceLock`, `thread_local!` or heap allocation that outlives a tick lives outside the arena, and so
+    does allocator metadata unless the arena is the allocator. Such state survives a rollback, so a peer
+    that rolled back and one that did not diverge. Check frames hash only the arena, so nobody notices.
+  * Options:
+    * **(a) All of linear memory, with dirty-page diffs, hashed whole at check frames. Recommended.**
+      Hidden state is then simply included, so it cannot diverge. A full image is about 1.1 MB per module
+      at the default 1 MiB stack [V d1]. Diffs keep only the pages a tick wrote, and a typical tick writes
+      few [I]. Hashing 1.1 MB at a check frame (every 30 frames) costs about 0.1 ms [I].
+    * **(b) The declared arena only, and zero all other writable memory after every tick.** Hidden state is
+      then always zero at the start of a tick, so code that relies on it breaks visibly and identically on
+      every peer. Snapshots are smaller (arena plus columns). The costs: zeroing about 1 MB per module per
+      tick [I], and the SDK must lay memory out as read-only data, arena, then scratch, with the arena as
+      the global allocator. A runtime that ever skips the zeroing reintroduces the silent failure.
+    * **(c) Keep the arena-only rule with commit-time checks.** Cheapest, but unenforceable: a violation
+      is silent (NEW-17).
+  * Recommendation: (a), because it is correct by construction, and dirty pages keep its cost close to
+    (b)'s.
 * **D68. Which physics layers ship, and when (27.2; R15).**
   * Recommend:
     * phase 3: layer-1 hooks and materials and mixing, on box3d-rust's existing callbacks;
@@ -3902,8 +3999,8 @@ entry says so.
   * Alternative: one call per contact. A simpler guest API, but 6-9% of the step under wasmi.
 * **D70. Budget for a replacement engine (27.5).**
   * Recommend: a world running a guest engine declares an active-body cap, enforced by the engine: about
-    64 under wasmi and about 256 under Cranelift [I]. The world shows a warning, and new bodies are refused
-    once the cap is reached.
+    48 under wasmi and about 200 under Cranelift at 60 ms one-way [I; review R15-4]. The world shows a
+    warning, and new bodies are refused once the cap is reached.
   * Alternatives:
     * no cap: the world's own peers pay, and slow peers stall confirmation;
     * a CPU budget per tick, with deterministic fuel per frame instead of a body count: precise, but fuel
@@ -3915,6 +4012,54 @@ entry says so.
   * Alternatives:
     * one `physics` right: simpler, but anyone allowed a one-way platform may also replace the engine;
     * physics changes only between sessions: safer, but not live-editable as R15 asks.
+* **D72. Two players on one object, and "an author never sees its own interaction corrected" (8.4, 6.11;
+  review R3-3).**
+  * The problem: claims (8.4) and the per-frame tie rank decide which of two touches on one object wins.
+    The loser's touch is refused on re-simulation, so a player who touched an object and saw it move can
+    see that touch undone one latency later. That breaks the 14:31Z rule. R14 relies on it too: a carry
+    through a portal loses to another member's earlier grab (22.7, the abort row).
+  * Options:
+    * **(a) Claims for grabs only.** A plain push is never refused: two pushes both apply, physically. A
+      grab race, two grabs within one latency, still undoes the loser's grab. That is the one stated
+      exception.
+    * **(b) No refusal of any physical interaction. Recommended.** Touches and grabs both apply. A grab is a
+      soft constraint, so two holders pull against each other (tug of war), and physics resolves it.
+      Exclusive holding becomes a rule a world's logic can opt into for chosen objects (a single sword),
+      with the exception stated for those objects. Departing through a portal stays exclusive by nature,
+      because an object can be in only one world: a carry can still be undone when another member held
+      the object first. That is the only engine-level exception.
+    * **(c) Keep claims as they are,** and state the exception in 8.2 and 6.11, next to demotion: the loser
+      of a claim race sees its own touch undone after one latency.
+  * Recommendation: (b). It meets the rule for every physical interaction, and it fits the core goal
+    ("every reaction physically realtime and reactive for every player"). Costs: tug of war by default,
+    grab springs to tune, and exclusive tools need world logic.
+  * Either way, two players acting on one object in the same frame each see their own action at once and
+    the combined result one latency later (6.11). That is physics, not a refusal.
+* **D73. Thinned hand entries and the author's own hand (10.9; review R3-10).**
+  * The problem: under congestion the controller thins the hand stream to one entry every k frames, with a
+    `span`. Every peer, the author included, applies the same entries, so the author's physics hand trails
+    its own controller [V reviewer]:
+    * 65 mm mean and 98 mm p95 at 32 kbit/s;
+    * 150 mm p95 at 24 kbit/s;
+    * up to 686 mm at three times the sweep speed.
+
+    That is input delay that depends on the network, which D41 and 6.11 rule out. In VR the hand drawn
+    would separate from the hand pushing the balls [I].
+  * Options:
+    * **(a) Pack k per-frame targets into one entry, sent every k frames. Recommended.** Each target applies
+      at its own frame, so the author's hand is exact. Receivers get the targets up to k - 1 frames late,
+      and pay with deeper rollbacks. Costs:
+      * about 12 bytes per extra target, about 50 B per entry at k = 8, next to 52 B of datagram overhead;
+      * the author's horizon must stay below the pack's first frame until the pack is sent, so
+        confirmation lags by up to k frames, but only under congestion;
+      * a pack may be stamped up to k - 1 frames before its author's present, a chain-local rule that
+        replaces the horizon slack for packs.
+    * **(b) Keep thinning as it is:** the author's hand lags by up to k frames, only under congestion.
+      Simplest.
+    * **(c) Never thin the author's own hand below a stride of 2, and demote earlier instead:** the lag
+      stays at most one frame, but the bandwidth floor rises (10.9).
+  * Recommendation: (a). It keeps the author exact at every bandwidth the session survives, and moves the
+    cost to receivers, which already pay for lateness (8.2).
 
 ---
 
@@ -3950,7 +4095,7 @@ before this section.
 
 | Layer | What a world can change | box3d-rust today [S 0.5.0] | Needs a fork for |
 |---|---|---|---|
-| **1. Interaction hooks** | Custom forces and fields; contact pair filters; per-contact enable/disable (one-way platforms, ghosts); friction and restitution mixing | Per-step forces through the body API; `world_set_custom_filter_callback` (needs the shape flag at creation); `world_set_pre_solve_callback` (enable or disable a contact, given its point and normal); `world_set_friction_callback` and `world_set_restitution_callback` (mix two values, given user material ids). All are plain `fn` pointers plus a `u64` context, so a guest is reached through a per-world registry | Per-**substep** forces and fields (stiff springs, magnetism, buoyancy); **contact modification**: changing a contact's normal, friction, restitution or target speed. Today only `tangent_velocity` exists, per material |
+| **1. Interaction hooks** | Custom forces and fields; contact pair filters; per-contact enable/disable (one-way platforms, ghosts); friction and restitution mixing | Per-step forces through the body API; `world_set_custom_filter_callback` (needs the shape flag at creation); `world_set_pre_solve_callback` (enable or disable a contact, given its point and normal); `world_set_friction_callback` and `world_set_restitution_callback` (mix two values, given user material ids). All are plain `fn` pointers. Filter and pre-solve also get a `u64` context; the mixers get only the two material ids (review R15-2) | Per-**substep** forces and fields (stiff springs, magnetism, buoyancy); **contact modification**: changing a contact's normal, friction, restitution or target speed. Today only `tangent_velocity` exists, per material |
 | **2. Overrides** | Materials; custom joints; custom shapes; a per-body integrator (orbits, drag models, character controllers) | Surface materials with user ids, 8 joint types (distance, motor, parallel, prismatic, revolute, spherical, weld, wheel), and convex hulls, meshes, height fields and compounds. Composition covers much of this: joints from motors and forces, shapes from hulls | Guest-defined joints (a constraint row the solver iterates); guest-defined shapes (a support function or SDF the narrowphase calls); an integrator hook per body class |
 | **3. Subsystem replacement** | Broadphase, narrowphase, solver | none | Traits for each subsystem in the fork |
 | **4. Whole-engine replacement** | Swap Box3D for a guest physics module | — | Nothing in Box3D: a stable world/step/snapshot interface on the engine side (27.4) |
@@ -4008,10 +4153,19 @@ before this section.
 * **Snapshots across *A*.** The snapshot ring may then hold images in both formats, each tagged with its
   engine. The base stays at or before the confirmed frame (6.7). A rollback to before *A* restores an
   old-engine image and redoes the switch. D50's knob applies unchanged.
-* **Failure.** A layer-4 engine that traps or runs out of fuel during a step fails identically everywhere.
-  The world falls back to the previous engine from the next frame, through `export_objects`. If export
-  itself fails, it falls back to the last confirmed state of the previous engine. Every peer does the
-  same [I].
+* **Failure** (review R15-3). A layer-4 engine that traps or runs out of fuel during the step of frame
+  *t* does so identically everywhere: the trap is a function of the log and the engine version. The
+  fallback must be one too, so it never reads a peer's confirmed frame, which differs between peers:
+  1. Restore the guest's image from the start of frame *t* (the state after *t* - 1, identical on every
+     peer) and call `export_objects` on it. The previous engine is initialized from that export and steps
+     frame *t*. The guest is marked failed from *t*, as rollback state, like a logic module's fuel flag
+     (13.6).
+  2. If that export traps too, fall back to the previous engine's image at the activation frame *A*, and
+     re-simulate from *A* with the previous engine. Every peer holds that image, because it is the
+     switch point; it stays pinned in the snapshot ring while a guest engine is active.
+  3. A re-simulation that crosses *t* repeats the same fallback.
+  * A runtime change (wasmi to Cranelift, D12) moves where fuel runs out. It is therefore a world-format
+    version bump, never mixed within a session (13.3) [I].
 * **Undo.** Reverting the commit is a new commit with its own activation frame. Confirmed history is never
   rewritten (10.8).
 
@@ -4063,8 +4217,13 @@ rule requires. Counts are exact.
   6.6 ms per frame, before any rollback, against the 8 ms per-tick budget (2.1).
 * With re-simulation at 60 ms one-way latency (about 5 re-simulated frames per frame, 6.10), only very
   small guest worlds fit.
-* Hence the body budget for layer 4 (D70): about 64 active bodies under wasmi, and about 256 under
-  Cranelift [I, from the table plus 6.8's re-simulation load].
+* Hence the body budget for layer 4 (D70), at 60 ms one-way (about 6 steps per tick with re-simulation)
+  and an 8 ms tick budget [I] (review R15-4 corrected the first figures, 64 and 256, which came to 9-10 ms):
+  * about 48 active bodies under wasmi (1.65 ms per step at 64 bodies, so about 1.24 ms at 48, times 6);
+  * about 200 under Cranelift (about 1.17 ms per step at 200 bodies, times 6).
+  * These scale the 256-body measurement down linearly. Box3D's cost grows faster than linearly with
+    contacts, so the scale-down is conservative. The final caps should come from a guest-engine run at the
+    cap, with re-simulation.
 * The coordinator's d4 figure (7 ms per frame interpreted, about 22x) is the same measurement as the wasmi
   row. Cranelift is 4.4-8.8x faster than wasmi.
 
@@ -4074,9 +4233,22 @@ rule requires. Counts are exact.
   * pair filter, pre-solve (enable or disable a contact) and friction/restitution mixing callbacks;
   * user material ids, passed to the mixers;
   * 8 joint types, motors and forces through the body API.
-* **Plumbing caveat:** these are bare `fn` pointers with a `u64` context, not closures. The engine
-  registers one trampoline per hook kind, which finds the world's guest through that context. Box3D is
-  single-threaded per world, so the trampoline needs no locking.
+* **Plumbing caveat:** these are bare `fn` pointers, not closures. The engine registers one trampoline per
+  hook kind.
+  * Filter and pre-solve find the world's guest through their `u64` context.
+  * The friction and restitution mixers have no context: their two `u64` arguments are the material ids
+    (review R15-2). Their trampoline reads a thread-local "current world", set around each
+    `world.step`. Box3D steps one world on one thread at a time, so this is sound, and needs no locking.
+    The fork may add a context argument instead.
+* **Hooks run at narrowphase time, not every step** (review R15-1). Box3D calls the mixers and pre-solve
+  only when the narrowphase updates a contact. A recycled contact keeps last frame's friction,
+  restitution and enabled flag [S box3d-rust `contact/update.rs`, recycle path in `collide.rs`].
+  * With vdW contact recycling, the engine default (radius up to 0.5 m), a verdict can stay stale over up
+    to 0.5 m of relative motion: a one-way platform's "disable", or a friction field that changes in time.
+  * So a hook that must see every step marks its contacts non-recyclable. The fork owns recycling, so
+    this is a fork feature (D68). The hook API states the semantics.
+  * The call counts in 27.5 come from the phase-1 pile, which uses upstream contact handling, not vdW
+    recycling. With recycling, hooks fire less often [I]; re-measure once vdW is merged.
 * **Missing; needs the fork:**
   * contact modification (normal, friction, restitution, target velocity per contact);
   * per-substep force and field hooks;

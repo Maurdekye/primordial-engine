@@ -199,3 +199,118 @@ top of R15 (d948898).
 | NEW-22 | **Fixed in design** | 22.8 and D48: foreign modules are pinned by canonical hash; carried bytes are untrusted input, size-capped by the engine before logic sees them and validated by B's module; a record that does not parse stays inert | [I] |
 | NEW-13 | **Still deferred** | It needs R16's measured per-region costs, which merge with `chunks/r16` | — |
 | NEW-23 | **Fixed** (remaining stale numbers) | 15.2 cited 70-80 ms confirmation, and 6.3 and 22.3 cited a 4-5-frame lag; both now use the round-2 figure of 8.5 frames (about 140 ms). The confirmation term in the priorities list, 2.1, 15.2 and 15.4 is now 0.14 s. The suite runs 25 scenarios, not 26 | [V session-sim r14] |
+
+---
+
+# Round 3: `round2-fixes` (ed347ac), R15 (d948898) and the follow-ups (3b02a68)
+
+Review: @design-reviewer, `review-round3.md` (29 new findings: 3 Critical, 5 High, 13 Medium, 8 Low; of
+round 2, NEW-6 open and 17 partial). The response is on branch `round3-fixes`, in four commits:
+* f060e30: the Criticals (accepted by the reviewer, `review-round3-f060e30.md`);
+* cecda4b: crash removal, a crashed carrier, and the residuals of the f060e30 review;
+* 9b0be49: recovery below 20 kbit/s, and demotion;
+* the final commit: R15-3, the Mediums and Lows, and three decisions written as options for the user.
+
+**Summary:**
+* **All 3 Criticals and all 5 Highs are fixed**, with spike evidence except R15-3, a design fix.
+* **The suite now has 30 scenarios.** Every replica equals its offline replay, every transferred object is
+  conserved, with no panic and 0 false checks. The script now also fails on a lost or duplicated object;
+  it would have missed one during this work.
+* **Three findings are user decisions, written as options with a recommendation:** D72 (R3-3), D73 (R3-10)
+  and D57 (L3, NEW-17).
+* **What colluders and multiple failures can still do: stall, never fork.** The proposer-based view change
+  that would remove several members at once is a named prerequisite for phase 3 (23.2), as the coordinator
+  decided.
+
+## Part 1: the confirmation model
+
+| ID | Sev. | Status | How | Evidence |
+|---|---|---|---|---|
+| R3-1 | Critical | **Fixed** (accepted) | A vote counts only if its frozen head extends every reference its voter published before the vote; otherwise it is a provable lie, and void. References after a voter's own vote no longer count. Votes are used only once they are stable among the remaining members, so a voter that forks its vote can stall but not split anyone. Stability never shrinks (9.3, D55) | [V badvote: no panic, honest members equal and equal to the replay, a safe stall; liar: lie detected, 9 evicted with a cut that keeps the confirmed touch] |
+| R3-2 | High | **Fixed** (one member at a time) | A member silent for 180 frames is voted out with R3-1's eviction rules; a silence vote is withdrawn if the member comes back before removal is decided; two-member worlds pause (D7) (10.8). Several at once: the proposer-based view change, a phase-3 prerequisite (23.2) | [V crashstall: 72 paused frames, then normal lag, equal; r14 crash] |
+| R3-3 | Medium | **Decision D72** | Options: claims for grabs only; no refusal of any physical interaction (recommended); or keep claims and state the exception | [I] |
+| NEW-2, C2 | — | **Closed** | By R3-1 | [V badvote, liar] |
+
+## Part 2: R14
+
+| ID | Sev. | Status | How | Evidence |
+|---|---|---|---|---|
+| R3-4 | Critical | **Fixed** (accepted) | Each world trades only with the worlds on its route list, part of its genesis config. A departure elsewhere is `RejectedNoRoute` and the object stays (22.6, 22.7, D46) | [V r14 forge] |
+| R3-5 | Critical | **Fixed** (accepted, given D46's assumption) | Arrivals only from routed worlds; an already-live global id is refused. D46 now states the honest-majority assumption, and offers birth-world binding plus a provenance chain for untrusted partners [I]. Binding a global id's prefix to the source world was not adopted, because objects travel on (A to B to C) | [V r14 forge] |
+| R3-6 | High | **Fixed** | Unknown destinations refused. A late arrival is refused, and the certified refusal refunds the object; deadlines are capped at 3,600 destination frames | [V r14 forge, r14 late] |
+| R3-7 / NEW-6 | High | **Fixed** for worlds of three or more | Every member of both worlds relays a pending transfer; each world removes a crashed carrier. Two-member worlds pause (D7); with nobody else in both worlds the object waits (two generals) | [V r14 crash: conserved, all equal] |
+| R3-8 | Medium | **Fixed** | The signed fact covers every field of the record, and the deadline | [V r14 forge: a changed shape kind is `RejectedNoProof`] |
+| R3-8b | Medium | **Fixed in design** | Certificates keyed to a membership epoch, each change certified by the previous epoch; part of the phase-3 view change | [I] |
+| R14 lows | Low | **Fixed** | 22.10 no longer claims reverse-order digests equal forward for abort; the keyless `member_sig` is labelled a model | [V] |
+| f060e30 residual 1 | Medium | **Fixed in design** | D46 states the honest-majority assumption | — |
+| f060e30 residual 2 | Low | **Fixed, differently** | Deadlines are capped. Rejected arrivals are forgotten after their deadline and 3,600 frames; resolved escrows after 3,600 frames. **Accepted transfer ids are kept**: pruning them, as proposed, would let a late replay of an accepted transfer be certified "rejected" and refund an object that did arrive | [V r14 late; I for the attack] |
+
+## Part 3: R18 and the cost of the fixes
+
+| ID | Sev. | Status | How | Evidence |
+|---|---|---|---|---|
+| R3-9 | High | **Fixed** | Repairs yield to the queue: retry backoff from 60 ms to 2 s, replies of at most 16 entries, no answer into a congested uplink, datagrams split at 1,200 bytes. The controller gains two coarser levels, on shared ticks. Demotion is built: a member whose horizon trails the present by more than W/2 for 3 s is voted out. The two-member floor is about 12 kbit/s each way (10.9) | [V r18: 16 kbit/s, a 64-to-16 step and 4 members on a shared 64 kbit/s uplink stay real time with 0 stalls; 12 kbit/s recovers in 19 s; a slow third member is demoted; 8 kbit/s with two members stays collapsed, below the floor] |
+| R3-10 | Medium-High | **Decision D73** | Options: pack k targets per entry (recommended); keep thinning; or never thin the author below stride 2 | [I] |
+| R3-11 | Medium | **Fixed in design** | 7.6 states the ack sizes and idle upload per member count, over budget from 3 members; compact acks (seqs plus one digest) and small region logs are the fix [I] | [V reviewer] |
+| R3-12 | Medium | **Fixed** (stated) | 2.1 now says the 150 ms target became 200 ms in ed347ac, and that lag exceeds it under jitter and loss (p95 333 ms with 2% loss); the snapshot-memory row states the growth | [V reviewer] |
+| R3-13 | Low-Medium | **Fixed** | 2.1 compares like for like: 13.6 against 14.7 kB/s, 7% less; ack bytes grew 53% | [V reviewer] |
+| R3-14 | Low | **Fixed** | 25 scenarios corrected in 3b02a68 (30 now); 10.9 states that two hands and the direct queue signal are not covered | — |
+
+## Part 4a: the perturbation-history study
+
+| ID | Status | How | Evidence |
+|---|---|---|---|
+| PH-1 | **Fixed** | Rerun on the current protocol: at 26 frames of lag, Every(4) holds 10.5 MB and base-only costs +79% modelled CPU, not +17%. 6.3, 6.8, D50 and spike report 5f updated | [V snap, round 3] |
+| PH-2 | **Fixed in design** | At 100 ms one-way the Balanced default needs its adaptive depth: rollbacks reach 24 frames, past the window (6.8, D50) | [V reviewer] |
+| PH-3 | **Fixed in design** | Narrowed to fixed-offset deltas; general compression halves images, so the knob may compress cold images [I] | [V reviewer] |
+| PH-4 | **Fixed** | 6.9 and 5f say the tests show the API's limit, not that per-island snapshots cannot work | — |
+| PH-5 | **Fixed** | Explained: with no re-stamping, an unthinned stream leaves no confirmed frame without an entry, so hold and dead reckoning end in the same state; with thinning the rule still shapes history (6.10) | [V observer: identical end hashes] |
+| PH-6 | **Fixed** | Measured: after a change of motion, dead reckoning's mean error stays lower, but its p95 and maximum match or slightly exceed holding's (6.10) | [V observer, round 3] |
+| PH-7 | **Fixed** | The CPU columns are labelled a model [C], with the per-operation costs and their provenance stated; the re-simulation table matches its committed log | — |
+| PH-8 | **Fixed** | Logs regenerated by the script; the stale `*-window.log` files removed | [V] |
+
+## Part 4b: R13 items
+
+| ID | Status | How |
+|---|---|---|
+| NEW-8 | **Fixed in design** | `--config` also empties `build.rustflags`, `target.*.rustflags`, `[env]` and every `credential-provider`; workspaces live under an engine-owned root outside the home directory, and a build fails closed on any ancestor `.cargo/config` (15.6) [I] |
+| NEW-9 | **Fixed** | The stale "off by default" auto-forward text is gone from 21.6 and D30a; D30 says what a careless accept costs |
+| NEW-10 | **Fixed in design** | The engine refuses writes outside the allowlist, not only to reserved paths; restricted sessions have no shell tool, and the workspace is re-scanned after every turn (21.10) [I] |
+| NEW-14 | **Fixed** | The stale "one decider" line now says one per request |
+| NEW-18 | **Fixed in design** | The ancestor files are listed per harness, confirmed by gate 9a's canaries [I] |
+| NEW-19 | **Fixed in design** | A restricted session's PATH holds only engine-owned directories [I] |
+| NEW-20 | **Fixed in design** | Gate 9b turns off every default-on feature except the adapter's needs; the nine the reviewer found are named |
+| R3-15 | **Fixed in design** | Each decider is scoped to one request by a token; at most two run per panel; queued requests time out to deny [I] |
+
+## Part 5: R15
+
+| ID | Sev. | Status | How |
+|---|---|---|---|
+| R15-1 | Medium | **Fixed in design** | 27.6: hooks run at narrowphase time; a recycled contact keeps its verdict; a hook that must see every step marks its contacts non-recyclable, a fork feature. Call counts to be re-measured once vdW is merged |
+| R15-2 | Low | **Fixed in design** | The mixers have no context: their trampoline reads a thread-local current world, set around each step |
+| R15-3 | High | **Fixed in design** | The layer-4 fallback restores the guest's image from the start of the failing frame and exports from it, else falls back to the previous engine's image at the activation frame. It never reads a confirmed frame; a runtime change is a world-format version bump (27.4) |
+| R15-4 | Medium | **Fixed** | D70's caps recomputed to fit 8 ms with re-simulation: about 48 bodies under wasmi and 200 under Cranelift, conservative because they scale down linearly [I] |
+
+## Decisions written as options (for the user)
+
+* **D72** (R3-3): claims and "an author never sees its own interaction corrected". Recommended: no refusal
+  of any physical interaction; grabs become soft constraints; exclusivity is a world-logic opt-in.
+* **D73** (R3-10): thinned hand entries and the author's own hand. Recommended: pack k per-frame targets
+  into one entry.
+* **D57** (L3, NEW-17): logic-state snapshots. Recommended: all of linear memory, dirty-page diffs, hashed
+  whole at check frames.
+
+## Found while fixing (round 3)
+
+* **The suite did not check conservation.** An `r14 late` regression lost an object while the suite
+  reported success. It now fails on "NOT CONSERVED".
+* **Pruning a rejected arrival at its deadline lost the refusal** before B attested it. Rejected arrivals
+  are now kept 3,600 frames as well.
+* **A silence vote needs a safe withdrawal,** or one member's false suspicion stalls everyone. Withdrawal is
+  allowed only while the voter has not seen a complete set of standing votes.
+* **Freezing a liar's chain would block the eviction it lied in.** So a lying vote is void, but the liar is
+  not frozen; removing it waits for the phase-3 view change.
+* **Demotion changed backdate part 2:** a member lagging its horizon on purpose is now removed, where before
+  it stalled confirmation for good.
+* **A congested member must not be mistaken for a crashed one:** c1's congested member is silent for
+  1.95 s, so suspicion waits 3 s.
