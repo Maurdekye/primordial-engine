@@ -5,15 +5,22 @@ open a window; every such ack breaks the horizon-slack rule and is void for ever
 window opens, and member 3 blocks confirmation until the others demote it (review R3-9)."""
 include = ["../common/pile.toml", "../common/scripted.toml"]
 end_ms = 11000
-# The scripted schedule has member 1 touch object 140 at frame 400, but this 8x2 pile has only
-# 128 objects: the protocol rejects that touch as gone, on every replica alike. The spike's
-# backdate ran it so, and the committed log includes it.
-allow_missing_objects = true
 
 [world.1]
 scene = { pile = { side = 8, layers = 2 } }
 
 [world.1.plan]
+# Member 1's scripted touches (common/scripted.toml). The one at frame 400 touches object 140, but
+# this 8x2 pile has only 128 objects: the protocol rejects it as gone, on every replica alike. The
+# spike's backdate ran it so, and the committed log includes it.
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, touch = { obj = 50, impulse = [0.0, 8.0, 2.0] } },
+    { at = 126, touch = { obj = 50, impulse = [0.0, 3.0, 0.0] } },
+    { at = 260, touch = { obj = 120, impulse = [-6.0, 4.0, 1.0] } },
+    { at = 400, touch = { obj = 140, impulse = [2.0, 7.0, -3.0] }, missing_ok = true },
+    { at = 305, touch = { obj = 77, impulse = [0.0, 4.0, 0.0] } },
+]
 3 = [
     { at = 200, backdated = { obj = 50, impulse = [0.0, 6.0, 0.0], back = 20 } },
     { at = 320, backdated = { obj = 50, impulse = [0.0, 6.0, 0.0], back = 20 } },
