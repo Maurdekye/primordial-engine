@@ -29,6 +29,12 @@ MODULES = [
     ("logic_wasm (6.4k lines, 9 crates), leaf edit", "spikes/iter-bench/guests", f"build -q --release {W} -p logic_wasm",
      "spikes/iter-bench/guests/sys_movement/src/lib.rs",
      "let friction = 0.980; // ITER-EDIT", "let friction = 0.981; // ITER-EDIT"),
+    ("logic_mono, profile rel-fast (opt 3, no LTO, 16 CGUs, incremental)", "spikes/iter-bench/guests",
+     f"build -q --profile rel-fast {W} -p logic_mono", "spikes/iter-bench/guests/logic_mono/src/sys_movement.rs",
+     "let friction = 0.980; // ITER-EDIT", "let friction = 0.981; // ITER-EDIT"),
+    ("logic_mono, profile rel-s (opt s, LTO, 1 CGU)", "spikes/iter-bench/guests",
+     f"build -q --profile rel-s {W} -p logic_mono", "spikes/iter-bench/guests/logic_mono/src/sys_movement.rs",
+     "let friction = 0.980; // ITER-EDIT", "let friction = 0.981; // ITER-EDIT"),
     ("logic_wasm, core edit (every crate rebuilds)", "spikes/iter-bench/guests", f"build -q --release {W} -p logic_wasm",
      "spikes/iter-bench/guests/pe_api/src/math.rs",
      "let k = 3.0; // ITER-EDIT-CORE", "let k = 3.001; // ITER-EDIT-CORE"),
@@ -75,8 +81,8 @@ def main():
     print("RESULT |---|---|---|---|")
     tmp = tempfile.mkdtemp(prefix="pe-guest-times-")
     try:
-        for name, ws, args, path, a, b in MODULES:
-            env = env_for(os.path.join(tmp, ws.replace("/", "_").replace(".", "root")))
+        for i, (name, ws, args, path, a, b) in enumerate(MODULES):
+            env = env_for(os.path.join(tmp, f"t{i}"))  # every row starts cold
             cold = build(ws, args, env)
             noop = build(ws, args, env)
             ts = []
