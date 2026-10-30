@@ -141,7 +141,7 @@ def compare(specs):
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "digest":
         digest(sys.argv[2])
-    elif len(sys.argv) >= 4 and sys.argv[1] == "compare":
+    elif len(sys.argv) >= 3 and sys.argv[1] == "compare":
         sys.exit(compare(sys.argv[2:]))
     elif len(sys.argv) == 3 and sys.argv[1] == "show":
         print("\n".join(normalize_lines(open(sys.argv[2], encoding="utf-8", errors="replace").read())))

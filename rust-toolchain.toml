@@ -1,4 +1,8 @@
-# Phase-1 spikes were run with rustc 1.99.0 (stable, 2026-09-28).
+# The pinned toolchain (design 13.2, P2-7): every build, on every machine and OS, uses exactly this
+# rustc, so peers' wasm modules can be byte-identical. "stable" drifted: by 2026-10-30 WSL resolved it
+# to 1.99.1 while Windows had 1.99.0. Phase-1 spikes and every recorded digest used 1.99.0.
 [toolchain]
-channel = "stable"
+channel = "1.99.0"
 targets = ["wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]
+profile = "minimal"
