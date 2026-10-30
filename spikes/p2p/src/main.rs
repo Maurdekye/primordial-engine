@@ -256,9 +256,12 @@ fn main() {
                         let f = sim.frame;
                         let stamp = e.stamp;
                         let late = stamp < f;
-                        let votes = sim.insert(e, sim.now);
-                        for v in votes {
-                            p.send(&Ctl::Session(v));
+                        for v in sim.insert(e) {
+                            p.send(&Ctl::Session(Msg::Entry(v)));
+                        }
+                        for (_, fm) in sim.take_fetches(now_us() / 1000) {
+                            log(format!("gap or conflict detected -> fetching {fm:?}"), sim.frame);
+                            p.send(&Ctl::Session(fm));
                         }
                         if late {
                             log(format!("remote entry for frame {stamp} arrived {} frames late -> rollback", f - stamp), f);
@@ -267,23 +270,12 @@ fn main() {
                             pending_accept.push((id, obj));
                         }
                     }
-                    Msg::Ack(a) => {
-                        let reqs = sim.on_ack(a);
-                        for (_, fm) in sim.take_fetches(reqs, now_us() / 1000) {
-                            log(format!("gap detected from acks -> fetching {fm:?}"), sim.frame);
-                            p.send(&Ctl::Session(fm));
-                        }
-                    }
                     Msg::Fetch { author, from, to } => {
                         let reply = sim.on_fetch(author, from, to);
                         log(format!("fetch request for member {author} seq {from}..={to}: replying with {} entries", reply.len()), sim.frame);
                         for e in reply {
                             p.send(&Ctl::Session(e));
                         }
-                    }
-                    Msg::Hash { frame, hash } => sim.on_hash(other, frame, hash),
-                    Msg::Vote { target, seq } => {
-                        sim.on_vote(other, target, seq);
                     }
                 },
             }
@@ -342,9 +334,8 @@ fn main() {
                 }
                 if t >= next_ack {
                     next_ack = t + 2 * DT_US;
-                    let a = sim.make_ack();
-                    let _ = sim.on_ack(a.clone());
-                    p.send(&Ctl::Session(Msg::Ack(a)));
+                    let a = sim.author_ack();
+                    p.send(&Ctl::Session(Msg::Entry(a)));
                 }
                 if sim.conf >= end + 60 && done_at.is_none() {
                     done_at = Some(now_us());

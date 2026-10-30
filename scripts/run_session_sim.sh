@@ -24,3 +24,14 @@ run ballpit-60hz-noloss ballpit --loss 0
 run ballpit-60hz-ahead4 ballpit --ahead 4
 run ballpit-90hz ballpit --hz 90
 run ballpit-60hz-2hands ballpit --hands 2
+# Round-2 review repros (design 10.8): an adversarial member and a one-way outage.
+for v in ackfork lateequiv evict outage; do run review2-$v $v; done
+# Fail on any fork, replay mismatch, panic or false check (reviews NEW-2, NEW-7).
+bad=$(grep -lE "MISMATCH|DIFFER|FAIL|PANIC|panicked" $O/*.log)
+falsechecks=$(grep -hoE "checks ok [0-9]+ bad [1-9][0-9]*" $O/*.log | head -5)
+if [ -n "$bad$falsechecks" ]; then
+  echo "SUMMARY: FAILED: $bad $falsechecks"
+  exit 1
+fi
+echo "SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks"
+
