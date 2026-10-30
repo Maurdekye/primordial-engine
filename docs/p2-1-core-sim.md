@@ -58,24 +58,38 @@ Depends on `pe-core` and `bytemuck`.
 * **The hierarchy** (16.2) is the built-in `Node` component: parent, first and last child, and previous and next
   sibling. It is an intrusive linked list with fixed 40-byte rows, so it snapshots and hashes like any column.
   * Only the hierarchy API writes it.
-  * Operations: `set_parent(child, parent, index)` refuses cycles; `destroy` removes the whole subtree.
+  * Operations: `set_parent(child, parent, index)` and `set_parent_keep_world` refuse cycles; `destroy`
+    removes the whole subtree.
   * Traversal: roots in id order, then depth-first with children in list order.
 * **`Transform`** (80 bytes): `f64` position, `f32` quaternion rotation and `f32` scale (25.2).
   * An object's *frame* is its nearest ancestor with a `Transform`. An object without one is placed by its
-    `i64` chunk plus an `f64` offset from that chunk's corner, and inserting it rebases the offset into the
-    chunk exactly; an object with a frame is placed relative to it, with `chunk` zero.
-  * **Limits**, checked on insert, by `check_values` and on loading bytes:
-    * `|pos| <= 2^50` m, and a root's `|chunk| <= 2^61`;
+    `i64` chunk plus an `f64` offset from that chunk's corner; an object with a frame is placed relative to
+    it, with `chunk` zero.
+  * **Limits**, checked on the stored form on insert, by `check_values` and on loading bytes:
+    * `|pos| <= 2^50` m, and a root's `|chunk| <= 2^61`, so a root's own position never saturates;
     * every scale component non-zero, with magnitude in [2^-40, 2^40];
     * the rotation's squared norm within 2% of 1;
     * `_pad` zero.
+
+    Deep chains of maximal scales and offsets can still saturate a derived *world* position at the chunk
+    limit (deterministically).
   * **Precision:** a root has the chunk system's precision everywhere (25.2). A child's position is an `f64`
-    offset from its frame, so its precision is that offset's ulp: about 5e-13 m at 3 km, 1 mm at 5e12 m.
-    Children far from their frame are allowed (up to 2^50 m) but coarse; keep them within a region.
-  * **Hierarchy edits keep world transforms.** `set_parent`, and inserting or removing an ancestor's
-    `Transform`, rewrite the affected local transforms for their new frame, with the root chunk recomputed
-    exactly. An edit whose rewrite would break the limits is refused and changes nothing. `rebase_roots`
-    (also a system) moves roots edited through `get_mut` back inside their chunks.
+    offset from its frame, so its precision is that offset's ulp: about 1e-13 m at 1 km, 1e-10 m at
+    1,000 km, 1 um out to about 4e9 m. Keep children within about 10^6 km of their frame; far content belongs
+    in its own root. `rotate` normalizes the `f32` quaternion in `f64`, so keep-world round trips do not
+    drift: 150 moves between rotated, scaled frames 5 km apart stay within 1e-8 m [V].
+  * **Plain edits are data edits.** `insert`/`insert_raw` and `remove` of a `Transform`, and `set_parent`,
+    store exactly what they are given and rewrite nothing else, so a loader gets the same state whatever
+    order it inserts in [V]. An edit that would leave an object with a frame and a non-zero `chunk` is
+    refused.
+  * **Keep-world edits are explicit:** `set_parent_keep_world`, `insert_transform_keep_world` and
+    `remove_transform_keep_world` rewrite the affected local transforms for their new frame, with the root
+    chunk recomputed exactly.
+    * Each computes the old and new frame once, so its cost is linear in the objects it moves.
+    * An edit whose rewrite would break the limits is refused and changes nothing.
+  * **`maintain_transforms`** (a method and a system) rebases root positions into their chunk where the
+    rebased form is within the limits, and repairs out-of-limit values written through `get_mut` (clamped,
+    renormalized, zeroed), so the state stays loadable by joiners. It is linear in the objects.
   * `world_transform(id)` and `world_transforms()` compose in a fixed IEEE order and give the same bits [V].
     Composition normalizes rotations and clamps scales, and positions saturate, so propagation never panics
     or makes NaN, even from transforms written through `get_mut`. World transforms are derived data, never
@@ -109,11 +123,11 @@ Depends on `pe-core` and `bytemuck`.
 
 | Check | Result |
 |---|---|
-| Unit and integration tests | 31: `pe-core` 17, `pe-sim` unit 3, store 5, determinism 6 [V] |
+| Unit and integration tests | 39: `pe-core` 19, `pe-sim` unit 4, store 10, determinism 6 [V] |
 | Snapshot and restore round trip | Bit-exact, both in place and through `to_bytes`/`from_bytes` into a fresh store: identical hashes, bytes and world-transform bits [V] |
 | Rollback re-simulation | A 600-frame scripted world at 90 Hz: objects spawn, move, spin, reparent, lose components and die, driven only by RNG streams, with `dmath` in the systems, a runtime-described component and a three-creator id space. It was restored at frames 100, 250 and 599 and re-simulated to 600, in place and from bytes. Every frame's hash equals the original run's [V] |
-| Golden digests, cross-platform | Equal on Windows x64 debug, Windows x64 release and Linux x64 (static musl, release, WSL2 kernel 6.6) [V]. `dmath` = 0xf1cf7f9547a5d079; scenario trace = 0x8effd667bd4fa407; world transforms = 0x18c584b928ecf125. Logs: `spikes/out/p2-1/`; rerun: `scripts/run_p2_1_tests.sh --linux` |
-| wasm32 | `pe-core` and `pe-sim` compile for `wasm32-unknown-unknown` [V]. The goldens have not been run there |
+| Golden digests, cross-platform | Equal on Windows x64 debug, Windows x64 release and Linux x64 (static musl, release, WSL2 kernel 6.6) [V]. `dmath` = 0xf17f26f98ad6b88c; scenario trace = 0x820d14b183fb6434; world transforms = 0xa15e17ef2b97bc12. Logs: `spikes/out/p2-1/`, each headed by its commit; rerun: `scripts/run_p2_1_tests.sh --all`, which fails unless every log has the same commit, test count and digests |
+| wasm32 | `pe-core` and `pe-sim` compile for `wasm32-unknown-unknown` (`wasm32-build.txt`) [V]. The goldens have not been run there |
 | Corrupt input | Truncated, extended, unsorted, wrong-magic and wrong-schema bytes, and a broken hierarchy (cycles, loops, orphans, missing links) are refused. A failed restore leaves the store unchanged [V] |
 
 **Snapshot cost** (`cargo run -p pe-sim --release --example store_bench`): two runs at low priority while the
@@ -143,12 +157,25 @@ a Transform and a 16 B velocity; half also have a 16 B runtime component; a thir
 | P21-3: component descriptions overflowed `u32` | Checked arithmetic, a 64 KiB row cap, `u32::try_from` |
 | P21-4: `sin`/`cos`/`tan` went non-finite for huge inputs | Exact reduction for every finite `f32`. The accuracy test and the golden sweep now include large inputs up to `f32::MAX` |
 | P21-5: incomplete ARM FPCR check; raw NaN bits hashed | Whole-register comparison with the default; `checked_state_hash()` |
-| P21-6: reparenting kept local transforms, so objects teleported | Keep-world reparenting, and keep-world when an ancestor gains or loses a `Transform` |
-| P21-7: root positions never rebased | Rebased on insert; `rebase_roots` for `get_mut` edits |
+| P21-6: reparenting kept local transforms, so objects teleported | Keep-world edits: `set_parent_keep_world`, `insert_transform_keep_world`, `remove_transform_keep_world` (made explicit after P21R-3) |
+| P21-7: root positions never rebased | `maintain_transforms` rebases roots (no longer on insert, after P21R-1) |
 | P21-8: overflow behaviour differed between debug and release | `Frame` arithmetic is checked explicitly, so it panics in both builds; the clock saturates; RNG and hash counters wrap; frames above 2^62 are refused on load |
 | P21-9: `u64 as usize` lengths in `from_bytes` | `usize::try_from` |
 | P21-10: the script's cross-check exited before comparing | Compares only test logs, fails on any failed test or digest difference, and starts each log with the commit, the working-tree state and `rustc -vV` |
 | P21-11: `range_f32` could return `hi`; `pow(1, inf)`; reserved ids; a trivial test | Fixed: `range_f32` stays below `hi`; `pow(1, y) = 1`; `register` refuses ids below 1024; the failed-restore test uses a populated store |
+
+## Re-review of 24b994d, and what changed
+
+| Finding | Fix |
+|---|---|
+| P21R-1 High: a validated root insert was rebased past the chunk limit, leaving a state its own check and every joiner refused | No rebase on insert: the stored form is the validated form. `maintain_transforms` rebases only when the rebased form is within the limits. The reviewer's repro (chunk 2^61, pos 1024) is a test |
+| P21R-2: O(n x depth) frame lookups in `check_values`, `rebase_roots`, `relocalize` and insert | One depth-first pass for the frame flags; each keep-world edit computes its two frames once |
+| P21R-3: keep-world on insert made stored locals depend on insert order | Plain edits are data edits; keep-world is explicit. A test builds the same state in three orders |
+| P21R-4: `rotate` treated the `f32` quaternion as unit (about 4e-7 x distance of drift per round trip) | Normalized in `f64`. A test makes 150 keep-world moves between rotated frames 5 km apart: under 1e-8 m |
+| P21R-5: `get_mut` writes could make the state unloadable | `maintain_transforms` repairs out-of-limit values; the scenario runs it as a system |
+| P21R-6: stale doc | Updated |
+| P21R-7: script gaps | Every log must have the same commit and test count; fewer than 4 passing test binaries fails; `--all` writes the wasm32 log with a header |
+| P21R-8: `range_f32` with an overflowing width | Computed in `f64` |
 
 ## Findings
 

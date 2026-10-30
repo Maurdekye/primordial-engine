@@ -4,6 +4,7 @@
 #   scripts/run_p2_1_tests.sh --linux        also Linux: the static musl build, run inside WSL
 #   scripts/run_p2_1_tests.sh --linux-only   Linux only (keeps the recorded Windows logs)
 #   scripts/run_p2_1_tests.sh --wasm         also checks that both crates build for wasm32
+#   scripts/run_p2_1_tests.sh --all          Windows, Linux and wasm32
 # Machine-load rule: every cargo job goes through the org-wide lock (heavy.sh: one at a time, idle
 # priority, 2 jobs). Never runs `wsl --shutdown`.
 # Each log starts with the commit, the working-tree state and the compiler. The golden digests (RESULT
@@ -20,6 +21,8 @@ header() {
   rustc -vV | grep -E "^(rustc|host|LLVM)"
 }
 mode="${1:-}"
+linux=no; wasm=no
+case "$mode" in --linux|--linux-only) linux=yes ;; --wasm) wasm=yes ;; --all) linux=yes; wasm=yes ;; esac
 
 if [ "$mode" != "--linux-only" ]; then
   for prof in debug release; do
@@ -30,12 +33,12 @@ if [ "$mode" != "--linux-only" ]; then
   done
 fi
 
-if [ "$mode" = "--wasm" ]; then
+if [ "$wasm" = yes ]; then
   { header; low cargo build -p pe-core -p pe-sim --release --offline --target wasm32-unknown-unknown; } > "$out/wasm32-build.txt" 2>&1
   tail -2 "$out/wasm32-build.txt"
 fi
 
-if [ "$mode" = "--linux" ] || [ "$mode" = "--linux-only" ]; then
+if [ "$linux" = yes ]; then
   target=x86_64-unknown-linux-musl
   low cargo test -p pe-core -p pe-sim --release --offline --target $target \
     --config "target.$target.linker=\"rust-lld\"" --no-run --message-format=json > "$out/.linux-build.json"
@@ -60,19 +63,30 @@ for l in open(sys.argv[1], encoding='utf-8'):
   grep -oE "RESULT.*|^test result.*|^Linux.*" "$out/linux-musl-release.txt" || true
 fi
 
-# Every recorded test log must report every test passing and the same golden digests.
+# Every recorded test log must be from the same commit, report every test binary passing with the same
+# number of tests, and give the same golden digests (review P21R-7).
 status=0
-ref=""
+ref=""; ref_commit=""; ref_passed=""
 for f in "$out"/windows-*.txt "$out"/linux-*.txt; do
   [ -e "$f" ] || continue
-  if grep -qE "FAILED|panicked|^error" "$f" || ! grep -q "^test result: ok" "$f"; then
-    echo "TESTS FAILED in $f"; status=1
+  commit=$(head -1 "$f")
+  passed=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '{s += $4} END {print s + 0}')
+  binaries=$(grep -c "^test result: ok" "$f" || true)
+  if grep -qE "FAILED|panicked|^error" "$f" || [ "$binaries" -lt 4 ]; then
+    echo "TESTS FAILED in $f ($binaries passing test binaries)"; status=1
   fi
   d=$(grep -oE "RESULT (dmath golden|golden).*" "$f" | sort || true)
   if [ -z "$d" ]; then echo "NO DIGESTS in $f"; status=1; continue; fi
-  if [ -z "$ref" ]; then ref=$d; echo "reference digests ($f):"; echo "$d"
-  elif [ "$d" != "$ref" ]; then echo "DIGESTS DIFFER in $f:"; echo "$d"; status=1
-  else echo "same digests: $f ($(head -1 "$f"))"; fi
+  if [ -z "$ref" ]; then
+    ref=$d; ref_commit=$commit; ref_passed=$passed
+    echo "reference ($f): $commit, $passed tests passed"; echo "$d"
+  else
+    if [ "$commit" != "$ref_commit" ]; then echo "DIFFERENT COMMIT in $f: $commit"; status=1; fi
+    if [ "$passed" != "$ref_passed" ]; then echo "DIFFERENT TEST COUNT in $f: $passed"; status=1; fi
+    if [ "$d" != "$ref" ]; then echo "DIGESTS DIFFER in $f:"; echo "$d"; status=1
+    else echo "same digests: $f ($commit, $passed tests passed)"; fi
+  fi
 done
+if [ "$wasm" = yes ] && ! grep -q "^    Finished" "$out/wasm32-build.txt"; then echo "WASM BUILD FAILED"; status=1; fi
 echo "run_p2_1_tests: done, status $status"
 exit $status
