@@ -24,9 +24,13 @@ impl ComponentId {
     pub const NODE: ComponentId = ComponentId(1);
     /// [`Transform`](crate::Transform).
     pub const TRANSFORM: ComponentId = ComponentId(2);
-    /// The first id available to logic modules and tests.
+    /// The first id available to logic modules and tests. Lower ids are the engine's
+    /// ([`Registry::register_engine`]).
     pub const FIRST_USER: u32 = 1024;
 }
+
+/// The largest row a component may have: 64 KiB.
+pub const MAX_ROW: u32 = 64 * 1024;
 
 /// The kind of one field element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -81,12 +85,14 @@ pub struct FieldDesc {
 }
 
 impl FieldDesc {
+    /// An offset beyond `u32` becomes `u32::MAX`, which no valid layout accepts.
     pub fn new(name: &str, kind: FieldKind, offset: usize, count: u32) -> Self {
-        FieldDesc { name: name.to_string(), kind, offset: offset as u32, count }
+        FieldDesc { name: name.to_string(), kind, offset: u32::try_from(offset).unwrap_or(u32::MAX), count }
     }
 
-    fn end(&self) -> u32 {
-        self.offset + self.kind.size() * self.count
+    /// The byte after the field, or `None` on overflow (review P21-3).
+    fn end(&self) -> Option<u32> {
+        self.kind.size().checked_mul(self.count)?.checked_add(self.offset)
     }
 }
 
@@ -122,7 +128,10 @@ impl ComponentDesc {
                 return bad(format!("field {} is not aligned to {}", f.name, f.kind.align()));
             }
             max_align = max_align.max(f.kind.align());
-            at = f.end();
+            at = match f.end() {
+                Some(e) if e <= MAX_ROW => e,
+                _ => return bad(format!("field {} ends beyond the {MAX_ROW}-byte row limit", f.name)),
+            };
         }
         if !at.is_multiple_of(max_align) {
             return bad(format!("row size {at} is not a multiple of its alignment {max_align}"));
@@ -227,9 +236,19 @@ impl Registry {
         r
     }
 
-    /// Adds a description. Registering the same description twice is a no-op; a different one under the
-    /// same id is an error.
+    /// Adds a runtime description (logic modules, tests): its id must be at least
+    /// [`ComponentId::FIRST_USER`]. Registering the same description twice is a no-op; a different one under
+    /// the same id is an error.
     pub fn register(&mut self, desc: ComponentDesc) -> Result<(), Error> {
+        if desc.id.0 < ComponentId::FIRST_USER {
+            return Err(Error::Reserved { component: desc.id.0 });
+        }
+        self.register_engine(desc)
+    }
+
+    /// Adds a description under any id, including the engine's reserved ids below
+    /// [`ComponentId::FIRST_USER`]. For engine crates only (`pe-physics` and others).
+    pub fn register_engine(&mut self, desc: ComponentDesc) -> Result<(), Error> {
         match self.comps.get(&desc.id) {
             Some(d) if d == &desc => Ok(()),
             Some(_) => Err(Error::SchemaMismatch { component: desc.id.0 }),
@@ -240,8 +259,9 @@ impl Registry {
         }
     }
 
+    /// Registers a native component type (engine or user id).
     pub fn register_type<T: Component>(&mut self) -> Result<(), Error> {
-        self.register(T::desc())
+        self.register_engine(T::desc())
     }
 
     pub fn get(&self, id: ComponentId) -> Option<&ComponentDesc> {
@@ -284,6 +304,21 @@ mod tests {
         r.register(ok.clone()).unwrap();
         r.register(ok).unwrap();
         assert_eq!(r.register(other), Err(Error::SchemaMismatch { component: 2000 }));
+    }
+
+    #[test]
+    fn overflow_and_reserved_ids() {
+        // Review P21-3: a count that overflows u32 is refused, not wrapped to a zero-size row.
+        let huge = ComponentDesc::new(ComponentId(2002), "h", vec![FieldDesc::new("a", FieldKind::U32, 0, 0x4000_0000)]);
+        assert!(matches!(huge, Err(Error::BadLayout(_))));
+        let big = ComponentDesc::new(ComponentId(2003), "b", vec![FieldDesc::new("a", FieldKind::U8, 0, MAX_ROW + 1)]);
+        assert!(big.is_err());
+        assert!(ComponentDesc::new(ComponentId(2004), "o", vec![FieldDesc::new("a", FieldKind::U8, usize::MAX, 1)]).is_err());
+        // Review P21-11: runtime descriptions cannot take the engine's ids.
+        let low = ComponentDesc::new(ComponentId(7), "low", vec![FieldDesc::new("a", FieldKind::U32, 0, 1)]).unwrap();
+        let mut r = Registry::new();
+        assert_eq!(r.register(low.clone()), Err(Error::Reserved { component: 7 }));
+        r.register_engine(low).unwrap();
     }
 
     #[test]

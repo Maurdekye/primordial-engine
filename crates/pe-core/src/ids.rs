@@ -17,8 +17,10 @@ pub struct Frame(pub u64);
 impl Frame {
     pub const ZERO: Frame = Frame(0);
 
+    /// The arithmetic here is checked explicitly, so overflow panics identically in debug and release
+    /// builds (review P21-8). Frames come nowhere near 2^64; state transfers refuse frames above 2^62.
     pub fn next(self) -> Frame {
-        Frame(self.0 + 1)
+        Frame(self.0.checked_add(1).expect("frame overflow"))
     }
 
     /// Frames from `earlier` to `self`; `None` if `earlier` is later.
@@ -30,14 +32,14 @@ impl Frame {
 impl core::ops::Add<u64> for Frame {
     type Output = Frame;
     fn add(self, n: u64) -> Frame {
-        Frame(self.0 + n)
+        Frame(self.0.checked_add(n).expect("frame overflow"))
     }
 }
 
 impl core::ops::Sub<u64> for Frame {
     type Output = Frame;
     fn sub(self, n: u64) -> Frame {
-        Frame(self.0 - n)
+        Frame(self.0.checked_sub(n).expect("frame underflow"))
     }
 }
 

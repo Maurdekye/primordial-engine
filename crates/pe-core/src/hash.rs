@@ -90,7 +90,7 @@ impl Hasher {
     }
 
     pub fn write(&mut self, mut data: &[u8]) {
-        self.total += data.len() as u64;
+        self.total = self.total.wrapping_add(data.len() as u64);
         if self.buf_len > 0 {
             let take = (32 - self.buf_len).min(data.len());
             self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);

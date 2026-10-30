@@ -8,6 +8,8 @@
 //! * [`SessionClock`] maps the local monotonic clock to session time through an offset that slews toward
 //!   the clock-sync estimate by at most `max_slew_ppm` of elapsed time, and never runs backwards. It is
 //!   loop machinery, not sim state.
+//!
+//! All arithmetic saturates, so extreme inputs behave the same in debug and release builds (review P21-8).
 
 use crate::ids::Frame;
 
@@ -47,7 +49,7 @@ impl TickRate {
     /// The first microsecond (from the epoch) at which `frames_in` reaches `f`: `ceil(f * 1e6 / hz)`.
     pub fn start_us(self, f: Frame) -> i64 {
         let n = f.0 as u128 * 1_000_000;
-        n.div_ceil(self.hz as u128) as i64
+        i64::try_from(n.div_ceil(self.hz as u128)).unwrap_or(i64::MAX)
     }
 }
 
@@ -66,7 +68,7 @@ impl FrameClock {
     /// The present frame at session time `session_us`: the sim has stepped every frame before it. Before
     /// the epoch the present is frame 0.
     pub fn present(&self, session_us: i64) -> Frame {
-        Frame(self.rate.frames_in(session_us - self.epoch_us).unwrap_or(0))
+        Frame(self.rate.frames_in(session_us.saturating_sub(self.epoch_us)).unwrap_or(0))
     }
 
     /// How many frames a sim whose state is at `state` must step to reach the present (0 if it is ahead).
@@ -76,7 +78,7 @@ impl FrameClock {
 
     /// Session time at which frame `f` becomes the present.
     pub fn start_us(&self, f: Frame) -> i64 {
-        self.epoch_us + self.rate.start_us(f)
+        self.epoch_us.saturating_add(self.rate.start_us(f))
     }
 }
 
@@ -101,7 +103,7 @@ impl SessionClock {
             target_us: offset_us,
             max_slew_ppm: Self::DEFAULT_SLEW_PPM,
             last_local_us: local_now_us,
-            last_session_us: local_now_us + offset_us,
+            last_session_us: local_now_us.saturating_add(offset_us),
         }
     }
 
@@ -121,12 +123,12 @@ impl SessionClock {
 
     /// Session time at local monotonic time `local_now_us`. Never decreases between calls.
     pub fn now(&mut self, local_now_us: i64) -> i64 {
-        let dt = (local_now_us - self.last_local_us).max(0) as i128;
-        let max_step = (dt * self.max_slew_ppm as i128 / 1_000_000) as i64;
-        let gap = self.target_us - self.offset_us;
-        self.offset_us += gap.clamp(-max_step, max_step);
+        let dt = local_now_us.saturating_sub(self.last_local_us).max(0) as i128;
+        let max_step = (dt * self.max_slew_ppm as i128 / 1_000_000).min(i64::MAX as i128) as i64;
+        let gap = self.target_us.saturating_sub(self.offset_us);
+        self.offset_us = self.offset_us.saturating_add(gap.clamp(-max_step, max_step));
         self.last_local_us = self.last_local_us.max(local_now_us);
-        let session = (local_now_us + self.offset_us).max(self.last_session_us);
+        let session = local_now_us.saturating_add(self.offset_us).max(self.last_session_us);
         self.last_session_us = session;
         session
     }

@@ -5,7 +5,7 @@ mod scenario;
 use pe_core::coords::WorldPos;
 use pe_core::{Error, ObjectId};
 use pe_sim::registry::ComponentId;
-use pe_sim::{Node, SimStore, Transform};
+use pe_sim::{Node, SimStore, Transform, WorldTransform};
 use scenario::*;
 
 fn kids(s: &SimStore, p: ObjectId) -> Vec<ObjectId> {
@@ -117,15 +117,16 @@ fn world_transforms_compose() {
     let [root, mid, leaf, plain, under] = [0; 5].map(|_| s.create(1).unwrap());
     // Root: chunk (3, 0, -2), 1023.5 m into it, turned 90 degrees about +y, scaled x2.
     let q = [0.0, core::f32::consts::FRAC_1_SQRT_2, 0.0, core::f32::consts::FRAC_1_SQRT_2];
+    // Build the hierarchy first, then give each object its local transform in its frame.
+    s.set_parent(mid, Some(root), None).unwrap();
+    s.set_parent(plain, Some(mid), None).unwrap();
+    s.set_parent(under, Some(plain), None).unwrap();
+    s.set_parent(leaf, Some(mid), Some(0)).unwrap();
     s.insert(root, Transform::at(WorldPos::new([3, 0, -2], [1023.5, 0.0, 0.0])).with_rot(q).with_scale([2.0; 3])).unwrap();
     s.insert(mid, Transform::local([1.0, 0.0, 0.0])).unwrap();
     s.insert(leaf, Transform::local([0.0, 1.0, 0.0])).unwrap();
-    s.set_parent(mid, Some(root), None).unwrap();
-    s.set_parent(plain, Some(mid), None).unwrap();
     // `under` sits below an object without a Transform: its frame is `mid`'s.
     s.insert(under, Transform::local([0.0, 0.0, 1.0])).unwrap();
-    s.set_parent(under, Some(plain), None).unwrap();
-    s.set_parent(leaf, Some(mid), Some(0)).unwrap();
     let mid_w = s.world_transform(mid).unwrap();
     // +x local, rotated 90 degrees about +y, is -z; scaled by 2.
     let d = mid_w.pos.sub(&WorldPos::new([3, 0, -2], [1023.5, 0.0, 0.0]));
@@ -141,4 +142,105 @@ fn world_transforms_compose() {
     for (id, w) in all {
         assert_eq!(Some(w), s.world_transform(id));
     }
+}
+
+fn close(a: &WorldTransform, b: &WorldTransform) -> bool {
+    let d = a.pos.sub(&b.pos);
+    d.iter().all(|x| x.abs() < 1e-6)
+        && a.rot.iter().zip(&b.rot).all(|(x, y)| (x - y).abs() < 1e-6)
+        && a.scale.iter().zip(&b.scale).all(|(x, y)| (x - y).abs() < 1e-6 * x.abs().max(1.0))
+}
+
+/// Review P21-6: reparenting, and adding or removing an ancestor's Transform, keep world transforms.
+#[test]
+fn hierarchy_edits_keep_world_transforms() {
+    let mut s = new_store();
+    let [far, near, obj, kid, holder] = [0; 5].map(|_| s.create(1).unwrap());
+    let q = [0.0, 0.6, 0.0, 0.8];
+    s.insert(far, Transform::at(WorldPos::new([5_000_000_000, 0, -7], [10.0, 2.0, 3.0])).with_rot(q).with_scale([3.0, 1.0, 0.5])).unwrap();
+    s.insert(near, Transform::at(WorldPos::new([-2, 0, 1], [500.0, 0.0, 9.0]))).unwrap();
+    s.set_parent(obj, Some(far), None).unwrap();
+    s.insert(obj, Transform::local([4.0, 1.0, -2.0]).with_scale([2.0; 3])).unwrap();
+    s.set_parent(kid, Some(obj), None).unwrap();
+    s.insert(kid, Transform::local([0.0, 0.0, 1.0])).unwrap();
+    let (w_obj, w_kid) = (s.world_transform(obj).unwrap(), s.world_transform(kid).unwrap());
+    // Detach to a root: placed in its world chunk, not at chunk 0.
+    s.set_parent(obj, None, None).unwrap();
+    assert!(close(&s.world_transform(obj).unwrap(), &w_obj));
+    assert_eq!(s.get::<Transform>(obj).unwrap().chunk, w_obj.pos.chunk);
+    assert!(close(&s.world_transform(kid).unwrap(), &w_kid), "the subtree moves with it");
+    // Under another parent, and under an object without a Transform (whose frame is `near`).
+    s.set_parent(holder, Some(near), None).unwrap();
+    s.set_parent(obj, Some(holder), None).unwrap();
+    assert!(close(&s.world_transform(obj).unwrap(), &w_obj));
+    assert_eq!(s.get::<Transform>(obj).unwrap().chunk, [0; 3]);
+    // `holder` gains a Transform: `obj` is rewritten for the new frame and stays put.
+    s.insert(holder, Transform::local([7.0, 7.0, 7.0])).unwrap();
+    assert!(close(&s.world_transform(obj).unwrap(), &w_obj));
+    // ...and loses it again.
+    s.remove::<Transform>(holder).unwrap();
+    assert!(close(&s.world_transform(obj).unwrap(), &w_obj));
+    assert!(close(&s.world_transform(kid).unwrap(), &w_kid));
+    // A move whose rewritten transform would exceed the limits (2^50 m from its new frame) is refused,
+    // and nothing changes.
+    let remote = s.create(1).unwrap();
+    s.insert(remote, Transform::at(WorldPos::new([2_000_000_000_000, 0, 0], [0.0; 3]))).unwrap();
+    let before = s.state_hash();
+    assert!(matches!(s.set_parent(remote, Some(near), None), Err(Error::InvalidValue { field, .. }) if field == "pos"));
+    assert_eq!(s.state_hash(), before);
+    assert_eq!(s.parent(remote), None);
+}
+
+/// Review P21-2: finite but absurd transforms are refused at the boundary, and propagation never panics.
+#[test]
+fn transform_limits() {
+    let mut s = new_store();
+    let [a, b] = [0; 2].map(|_| s.create(1).unwrap());
+    let bad = |s: &mut SimStore, id, t: Transform| matches!(s.insert(id, t), Err(Error::InvalidValue { .. }));
+    // The reviewer's repro: chunk [1, 0, 0], local 1e300.
+    assert!(bad(&mut s, a, Transform { chunk: [1, 0, 0], pos: [1e300, 0.0, 0.0], ..Transform::IDENTITY }));
+    assert!(bad(&mut s, a, Transform { chunk: [i64::MAX, 0, 0], ..Transform::IDENTITY }));
+    assert!(bad(&mut s, a, Transform::IDENTITY.with_rot([3.0, 0.0, 0.0, 0.0])));
+    assert!(bad(&mut s, a, Transform::IDENTITY.with_scale([0.0, 1.0, 1.0])));
+    assert!(bad(&mut s, a, Transform::IDENTITY.with_scale([1e30, 1.0, 1.0])));
+    assert!(bad(&mut s, a, Transform { _pad: 1, ..Transform::IDENTITY }));
+    s.insert(a, Transform::IDENTITY).unwrap();
+    s.set_parent(b, Some(a), None).unwrap();
+    assert!(bad(&mut s, b, Transform { chunk: [0, 0, 1], ..Transform::IDENTITY }), "a child's chunk must be zero");
+    s.insert(b, Transform::local([1.0, 0.0, 0.0])).unwrap();
+    // A root insert is rebased into its chunk, exactly.
+    let c = s.create(1).unwrap();
+    s.insert(c, Transform::at(WorldPos { chunk: [0, 0, 0], local: [5000.5, -1.0, 0.0] })).unwrap();
+    let t = *s.get::<Transform>(c).unwrap();
+    assert_eq!((t.chunk, t.pos), ([4, -1, 0], [904.5, 1023.0, 0.0]));
+    // Sim code can still write anything through get_mut: propagation saturates instead of panicking, and
+    // the check pass reports it.
+    s.get_mut::<Transform>(a).unwrap().pos = [1e300, 0.0, 0.0];
+    s.get_mut::<Transform>(a).unwrap().rot = [1e30, 1e30, 0.0, 0.0];
+    let w = s.world_transform(b).unwrap();
+    assert!(w.pos.local.iter().all(|x| x.is_finite()) && w.rot.iter().all(|x| x.is_finite()));
+    assert!(s.check_values().is_err());
+    assert!(s.checked_state_hash().is_err());
+    // rebase_roots moves positions edited through get_mut back inside their chunk.
+    s.get_mut::<Transform>(c).unwrap().pos[0] += 2048.0;
+    s.rebase_roots();
+    let t = *s.get::<Transform>(c).unwrap();
+    assert_eq!((t.chunk[0], t.pos[0]), (6, 904.5));
+}
+
+/// Review P21-1: loading a deep chain is linear, not quadratic.
+#[test]
+fn deep_chain_loads_in_linear_time() {
+    let mut s = new_store();
+    let chain: Vec<ObjectId> = (0..20_000).map(|_| s.create(1).unwrap()).collect();
+    // Linked bottom-up, so each new parent is still a root.
+    for i in (1..chain.len()).rev() {
+        s.set_parent(chain[i], Some(chain[i - 1]), None).unwrap();
+    }
+    let bytes = s.snapshot().to_bytes();
+    let t = std::time::Instant::now();
+    let back = pe_sim::Snapshot::from_bytes(&bytes, s.registry()).unwrap();
+    // Quadratic took 12.6 s at 16k objects in the review (release); linear is milliseconds.
+    assert!(t.elapsed().as_secs_f64() < 5.0, "from_bytes took {:?}", t.elapsed());
+    assert_eq!(back.state_hash(), s.state_hash());
 }
