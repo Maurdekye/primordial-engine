@@ -128,7 +128,9 @@ async fn run(mut a: Args) -> Result<(), String> {
     }
     let bind: SocketAddr = match a.take("--bind") {
         Some(b) => b.parse().map_err(|_| format!("bad --bind {b}"))?,
-        None => SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), entry.addr.port()),
+        // The session address itself: a loopback session never listens on the network (and never
+        // triggers a firewall prompt). Use --bind 0.0.0.0:PORT behind NAT or with several interfaces.
+        None => entry.addr,
     };
     let faults: Vec<FaultStep> = match a.take("--faults") {
         Some(p) => {
