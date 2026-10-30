@@ -5,26 +5,45 @@
 # Parts: physics wasm mcp session r18 p2p hooks history (default: all, in that order).
 # Physics checks write to spikes/out/integration/; the other parts regenerate their usual logs.
 # Timings in these logs are noisy (low priority, shared machine); digests and counts are exact.
+#
+# Settings for the determinism matrix (scripts/run_matrix.sh, design 23.4 P2-6); all optional:
+#   PE_OUT=<dir>        write every output under <dir> instead of spikes/out (the records stay as they are)
+#   PE_TARGET=<triple>  build for this target; binaries land in target/<triple>/{release,debug}
+#   PE_BIN=<dir>        run prebuilt release binaries from <dir>; nothing is built but the wasm guests
+#   PE_DEBUG_BIN=<dir>  the debug physics binary's directory, or "none" to skip the debug checks
+#   PE_BUILD_ONLY=1     build the binaries, then stop
+#   PE_HEAVY=<script>   run every cargo command as `bash <script> cargo ...` (the org's heavy-job lock)
 set -u
 cd "$(dirname "$0")/.."
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
 PARTS=" ${*:-physics wasm mcp session r18 p2p hooks history} "
 has() { case "$PARTS" in *" $1 "*) return 0 ;; esac; return 1; }
-O=spikes/out/integration
-mkdir -p $O
+run_cargo() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" cargo "$@"; else cargo "$@"; fi; }
+PO=${PE_OUT:-spikes/out}
+O=$PO/integration
+mkdir -p $O $PO/r15
 fail=0
 check() { if [ "$1" = ok ]; then echo "OK    $2"; else echo "FAIL  $2"; fail=1; fi; }
 same() { if cmp -s "$1" "$2"; then check ok "$3"; else check bad "$3"; fi; }
 
-echo "== build"
-cargo build --release -q -p pe-spike-physics -p pe-spike-session-sim -p pe-spike-p2p \
-  -p pe-spike-wasm-hotswap -p pe-spike-mcp-stub || exit 1
-if has physics; then cargo build -q -p pe-spike-physics || exit 1; fi
+T=${PE_TARGET:+--target $PE_TARGET}
+TD=target/${PE_TARGET:+$PE_TARGET/}
+DBIN=${PE_DEBUG_BIN:-${TD}debug}
+if [ -z "${PE_BIN:-}" ]; then
+  echo "== build"
+  run_cargo build --release -q $T -p pe-spike-physics -p pe-spike-session-sim -p pe-spike-p2p \
+    -p pe-spike-wasm-hotswap -p pe-spike-mcp-stub || exit 1
+  if has physics && [ "$DBIN" != none ]; then run_cargo build -q $T -p pe-spike-physics || exit 1; fi
+fi
+[ "${PE_BUILD_ONLY:-}" = 1 ] && exit 0
+BIN=${PE_BIN:-${TD}release}
+export PE_BIN=$BIN   # the sub-scripts below run these binaries and build nothing
 
 if has physics; then
   echo "== physics: goldens, 600-frame trace, snapshot images, rollback (release and debug)"
   for b in release debug; do
-    P=target/$b/pe-spike-physics
+    if [ $b = release ]; then P=$BIN/pe-spike-physics; else P=$DBIN/pe-spike-physics; fi
+    if [ $b = debug ] && [ "$DBIN" = none ]; then continue; fi
     $P goldens > $O/goldens-vdw-$b.log 2>&1; grep -q "RESULT: PASS" $O/goldens-vdw-$b.log && r=ok || r=bad
     check $r "engine goldens ($b)"
     $P --upstream goldens > $O/goldens-off-$b.log 2>&1; grep -q "RESULT: PASS" $O/goldens-off-$b.log && r=ok || r=bad
@@ -38,60 +57,63 @@ if has physics; then
     $P rollback > $O/rollback-vdw-$b.log 2>&1; grep -q "RESULT: PASS" $O/rollback-vdw-$b.log && r=ok || r=bad
     check $r "rollback T1-T5 ($b)"
   done
-  same $O/trace-vdw-release.txt $O/trace-vdw-debug.txt "trace 600: release == debug"
+  [ "$DBIN" = none ] || same $O/trace-vdw-release.txt $O/trace-vdw-debug.txt "trace 600: release == debug"
   grep -h "digest" $O/trace-vdw-release.log $O/images-vdw-release.log | cut -c1-120
 fi
 
 if has wasm; then
   echo "== wasm guests and hot-swap (d1-d4, eager and lazy)"
-  bash scripts/build_wasm_guests.sh || exit 1
+  PE_HEAVY=${PE_HEAVY:-} bash scripts/build_wasm_guests.sh || exit 1
   R=target/wasm32-unknown-unknown/release      # logic guests, in spikes/wasm-guests
   P=target/wasm32-unknown-unknown/wasm-guest   # physics_in_wasm, in the root workspace
-  sha256sum spikes/wasm-guests/$R/*.wasm $P/physics_in_wasm.wasm > spikes/out/guest-wasm-sha256.txt
-  cat spikes/out/guest-wasm-sha256.txt
-  ./target/release/pe-spike-wasm-hotswap > spikes/out/wasm-hotswap-eager.log 2>&1
-  grep -q "RESULT: PASS" spikes/out/wasm-hotswap-eager.log && r=ok || r=bad
+  sha256sum spikes/wasm-guests/$R/logic_*.wasm $P/physics_in_wasm.wasm > $PO/guest-wasm-sha256.txt
+  cat $PO/guest-wasm-sha256.txt
+  $BIN/pe-spike-wasm-hotswap > $PO/wasm-hotswap-eager.log 2>&1
+  grep -q "RESULT: PASS" $PO/wasm-hotswap-eager.log && r=ok || r=bad
   check $r "wasm-hotswap d1-d4 (eager): the wasm32 pile's digest == native"
-  ./target/release/pe-spike-wasm-hotswap --lazy > spikes/out/wasm-hotswap-lazy.log 2>&1
-  grep -h "RESULT" spikes/out/wasm-hotswap-lazy.log | head -3
+  $BIN/pe-spike-wasm-hotswap --lazy > $PO/wasm-hotswap-lazy.log 2>&1
+  grep -h "RESULT" $PO/wasm-hotswap-lazy.log | head -3
 
   echo "== module identity: the guests built again at a second checkout path (review M8)"
   E=$(mktemp -d)
   # The whole checked-out tree (about 11 MB, untracked and ignored files left out).
   git ls-files -z -co --exclude-standard | tar --null -T - -cf - | tar -x -C "$E"
-  bash scripts/build_wasm_guests.sh "$E" || exit 1
+  PE_HEAVY=${PE_HEAVY:-} bash scripts/build_wasm_guests.sh "$E" || exit 1
   EW=$(cygpath -m "$E" 2>/dev/null || echo "$E")
-  python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/$R/*.wasm $P/physics_in_wasm.wasm \
-    "$EW"/spikes/wasm-guests/$R/*.wasm "$EW"/$P/physics_in_wasm.wasm \
-    | sed "s#$EW#<copy at another path>#" > spikes/out/wasm-canonical-hash.txt
-  cat spikes/out/wasm-canonical-hash.txt
-  n=$(grep -oE "canonical sha256 [0-9a-f]+" spikes/out/wasm-canonical-hash.txt | sort -u | wc -l)
+  ${PE_PYTHON:-python} -I scripts/wasm_canonical_hash.py spikes/wasm-guests/$R/logic_*.wasm $P/physics_in_wasm.wasm \
+    "$EW"/spikes/wasm-guests/$R/logic_*.wasm "$EW"/$P/physics_in_wasm.wasm \
+    | sed "s#$EW#<copy at another path>#" > $PO/wasm-canonical-hash.txt
+  cat $PO/wasm-canonical-hash.txt
+  n=$(grep -oE "canonical sha256 [0-9a-f]+" $PO/wasm-canonical-hash.txt | sort -u | wc -l)
   [ "$n" = 4 ] && r=ok || r=bad
   check $r "canonical hash of each of the 4 modules equal at both paths"
-  grep -aqE '[A-Za-z]:\\' $P/physics_in_wasm.wasm "$E"/$P/physics_in_wasm.wasm && r=bad || r=ok
-  check $r "no local (drive-letter) path inside either physics_in_wasm.wasm"
+  n=$(grep -oE "raw sha256 [0-9a-f]+" $PO/wasm-canonical-hash.txt | sort -u | wc -l)
+  [ "$n" = 4 ] && r=ok || r=bad
+  check $r "raw hash of each of the 4 modules equal at both paths"
+  grep -aqE '[A-Za-z]:\\|/home/|/Users/' $P/physics_in_wasm.wasm "$E"/$P/physics_in_wasm.wasm && r=bad || r=ok
+  check $r "no local path inside either physics_in_wasm.wasm"
   rm -rf "$E"
 fi
 
 if has mcp; then
   echo "== MCP stub"
-  ./target/release/pe-spike-mcp-stub < spikes/mcp-stub/session.jsonl > spikes/out/mcp-session.out.jsonl 2> $O/mcp-stub.err
-  n=$(grep -c '"jsonrpc"' spikes/out/mcp-session.out.jsonl)
+  $BIN/pe-spike-mcp-stub < spikes/mcp-stub/session.jsonl > $PO/mcp-session.out.jsonl 2> $O/mcp-stub.err
+  n=$(grep -c '"jsonrpc"' $PO/mcp-session.out.jsonl)
   [ "$n" = 10 ] && r=ok || r=bad
   check $r "MCP stub: $n of 10 responses"
 fi
 
 if has session; then
   echo "== session simulator suite"
-  bash scripts/run_session_sim.sh > $O/session-sim-suite.log 2>&1 && r=ok || r=bad
-  cp $O/session-sim-suite.log spikes/out/session-sim/summary.txt
+  PE_OUT=$PO bash scripts/run_session_sim.sh > $O/session-sim-suite.log 2>&1 && r=ok || r=bad
+  cp $O/session-sim-suite.log $PO/session-sim/summary.txt
   tail -1 $O/session-sim-suite.log
   check $r "session-sim suite"
 fi
 
 if has r18; then
   echo "== R18 caps"
-  bash scripts/run_r18.sh > $O/r18.log 2>&1 && r=ok || r=bad
+  PE_OUT=$PO bash scripts/run_r18.sh > $O/r18.log 2>&1 && r=ok || r=bad
   check $r "run_r18.sh"
   grep -c "RESULT" $O/r18.log
 fi
@@ -110,13 +132,13 @@ fi
 
 if has hooks; then
   echo "== R15 hooks (call counts with the engine default)"
-  ./target/release/pe-spike-physics hooks > spikes/out/r15/hooks.log 2>&1
-  grep -h "RESULT" spikes/out/r15/hooks.log
+  $BIN/pe-spike-physics hooks > $PO/r15/hooks.log 2>&1
+  grep -h "RESULT" $PO/r15/hooks.log
 fi
 
 if has history; then
   echo "== perturbation history"
-  bash scripts/run_perturbation_history.sh > $O/perturbation-history.log 2>&1 && r=ok || r=bad
+  PE_OUT=$PO bash scripts/run_perturbation_history.sh > $O/perturbation-history.log 2>&1 && r=ok || r=bad
   check $r "run_perturbation_history.sh"
 fi
 
