@@ -21,6 +21,7 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | round 2 | Do the round-2 Criticals and Highs hold fixed, and do capped links recover? | **Yes [V]** (5g). The reviewer's four repros pass (no fork, no panic); proofless R14 relays do nothing; batching plus the congestion controller keep 32-64 kbit/s caps real-time. Finality lag rose from 4.2 to 8.5 frames |
 | round 3 | Do colluders, crashes, untrusted worlds and links below 20 kbit/s break the protocol? | **No fork in any case; stalls only where no honest majority exists [V]** (5i). Two colluders stall safely instead of crashing everyone; a crashed member is removed after 3 s; a crashed carrier's transfer completes through another member; worlds trade only along route lists; 16 kbit/s stays real time, 12 kbit/s recovers, a slow third member is demoted. Two members need about 12 kbit/s each way |
 | integration | Does everything still hold with every branch merged and vdW physics on? | **Yes [V]** (5j). The full determinism set passes at low priority: goldens, traces, images and rollback in release and debug, the wasm digest, 30 session scenarios, 10 R18 cells, UDP and the snapshot study. Two defects found and fixed: a test-harness bug exposed by the new physics, and module identity (M8) depending on the checkout path |
+| view change | Can a session remove several failed or cheating members at once, and admit joiners, without a fork? | **Yes under D80 (b) [V]** (5k). Two members silent at once, colluders, a lying proposer and joins all recover with every member equal; at 256 members the removal is decided 2.77 s after the silence. Under (a), one cheater bridging a partition splits a session of five in two |
 | r15 | What does it cost to run physics hooks or a whole physics engine as a wasm guest? | **Measured [V, noisy]** (5h). A per-contact hook call costs 64 ns in wasmi and 16 ns in Cranelift; batched, 12 and 4.7 ns. On an active 1,024-body pile, guest hooks cost 7-11% of the step one call at a time, 1.2-1.5% batched. A whole engine in wasm costs 21x native under wasmi |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
@@ -506,6 +507,60 @@ rest regenerate their usual logs. Digests and counts are exact; timings are nois
   re-simulation instead of "this pile never sleeps".
 * **Some doc numbers were stale before integration** and are refreshed: the observer table (from
   442286f), the 90 Hz ball-pit work count (from 3b02a68), and the knob-moving memory peak.
+
+### 5k. Phase 2, P2-4: the proposer-based view change [V]
+
+Design 10.8, 22.7 (P25-5) and 8.4 (`handowner`). Branch `viewchange`, on main 9af3414. Logs:
+`spikes/out/session-sim/` (`p2-4-*`, `review3-*`, `handowner`, `r14-chain-epoch`, `summary.txt`). The
+suite ran at idle priority under the org build lock; outcomes, frames and digests are deterministic, wall
+times are noise.
+
+```bash
+cargo test --release -p pe-sim-core --lib     # 4 provenance unit tests, epoch certificates included
+bash scripts/run_session_sim.sh               # 44 scenario logs plus the two P2-5 controls
+```
+
+* **Suite:** every replica equals its offline replay, every transferred object is conserved, no panic,
+  0 false checks, 0 non-finite states, and no confirmed frame is rolled back (asserted). The p2p spike
+  builds. Design 10.8 has the full table; in short (D80 (b) unless named):
+  * **Several failures at once:** two of six silent members are removed in one change at 6.15 s
+    (`twosilent`); two of five are removed under (a), and under (b) the other three pause safely at
+    confirmed frame 169 (`twosilent5`).
+  * **Proofs and colluders:** the round-3 stalls recover. `badvote` and `liar` remove both colluders with
+    no pause (round 3: stuck at confirmed frame 203 after 150 paused frames); `colluders` removes both in
+    one change at 3.73 s; `withheld` removes the equivocator about 160 ms after its second signature,
+    without the member that casts no view-change entry.
+  * **A lying proposer** (`badproposer`): its round fails, and round 1 removes it with the silent member
+    at 6.58 s.
+  * **A cheater bridging a partition** (`bridge`, five members): under (a) the two sides remove each other
+    and end as two sessions, the fork D80 describes; under (b) nothing is decided during the partition
+    (527 paused frames), and after the heal the one session removes the cheater at 13.65 s.
+  * **Joins:** member 4 is admitted at 2.10 s with boundary frame 175, and its touch at frame 420 applies
+    at every member (`join`). A member that keeps acking but stops referencing the others' chains is
+    removed at 5.23 s (`refwithhold`).
+  * **Scale** (`vcscale`, a log-only world, two members silent from 1 s): all 62 live members of 64 (with
+    ack heads) and all 254 of 256 (without) decide the removal 2.77 s after the silence began, against the
+    world log's 8.9 s budget (25.5.2). Without heads nothing confirms, so the 256 run times the decision
+    alone: full heads grow as n³ when every replica runs in one process, about 3 GB at 256 [I]. Wall
+    times 41 s and 91 s.
+* **Epoch certificates across worlds** (P25-5, `r14 chain-epoch`): A removes member 5 (epoch 1 from frame
+  250); its hop to B, signed by epoch 1 at frame 326, carries that certificate, and C, which does not
+  route to A, accepts the chain. The object is conserved and every world equals its replay.
+* **A member moves only its own hands** (`handowner`): member 2's 46 entries for member 1's hand are
+  refused at both replicas, and the history equals the run without them.
+* **Changed against main**, outside the new scenarios: `backdate` removes its lagging member sooner (66
+  paused frames instead of 128, cut at seq 87 instead of 119); `r14 crash` pauses 5 or 6 frames longer
+  (80 and 78 instead of 75 and 72); in `crashstall` member 2 pauses 74 frames instead of 72, with the same
+  cut and history; and the `r14 forge` and `r14 chain` digests changed because hops now carry their
+  commit frame and epoch certificates. Every outcome is unchanged; the ball pit's lines differ only in
+  timings.
+* **Found and fixed while building it:** exclusions were not verified before deciding, so a faulty
+  minority could have shrunk the quorum; a pending joiner's entries acted before admission; a vote froze
+  processing of the suspect's chain, so after `bridge`'s heal no reset could be decided; and a member
+  acking without referencing others stalled confirmation for good (it is now voted out).
+* **Not done yet:** the port into `pe-session` (P2-3) and real networks; removed members are not told;
+  a faulty member can keep forcing resets; the departure half of a fork proof still records epoch 0
+  (22.7). D80 is open.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
