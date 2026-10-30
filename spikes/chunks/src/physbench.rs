@@ -147,10 +147,20 @@ pub fn far() {
     for scene in ["pile256", "tower", "roll"] {
         let base = run_far(scene, [0.0; 3]);
         for d in ds {
-            let off = [d, 0.0, -0.75 * d];
-            let r = catch_unwind(AssertUnwindSafe(|| run_far(scene, off)));
+            // Far on all three axes (a planet-surface frame is far from its origin in 3D), with
+            // fractional parts so nothing lands on a coarse float grid by accident. `+ 0.0` keeps
+            // the origin run free of negative zeros.
+            let off = if d == 0.0 { [0.0; 3] } else { [d + 0.37, 0.5 * d + 0.21, -0.75 * d + 0.13] };
+            // Region-local: the same object, but box3d coordinates are measured from the centre of
+            // the object's level-0 chunk (the proposed region origin), so they stay below ~900 m.
+            let wp = pe_spike_chunks::coords::WorldPos::from_abs(off);
+            let local = wp.to_region(wp.chunk, 0);
+            for (frame, o) in [("absolute", off), ("region-local", local)] {
+            let r = catch_unwind(AssertUnwindSafe(|| run_far(scene, o)));
+            let off = o;
+            let _ = off;
             match r {
-                Err(_) => println!("RESULT far mode={} scene={scene} D={d:e} PANIC", mode()),
+                Err(_) => println!("RESULT far mode={} frame={frame} scene={scene} D={d:e} PANIC", mode()),
                 Ok(r) => {
                     // Largest deviation of any body's origin-relative position from the run at the
                     // origin, over all sampled frames.
@@ -173,15 +183,16 @@ pub fn far() {
                         _ => String::new(),
                     };
                     println!(
-                        "RESULT far mode={} scene={scene} D={d:e} max_dev_vs_origin_m={dev:.3e} same_hash_as_origin={} step_ms={:.3} awake_end={} contacts={} sleep_frame={}{extra}",
+                        "RESULT far mode={} frame={frame} scene={scene} D={d:e} max_dev_vs_origin_m={dev:.3e} same_hash_as_origin={} step_ms={:.3} awake_end={} contacts={} sleep_frame={}{extra}",
                         mode(),
-                        r.hash == base.hash && d == 0.0,
+                        r.hash == base.hash,
                         r.step_ms,
                         r.awake_end,
                         r.contacts,
                         r.sleep_frame.map(|f| f.to_string()).unwrap_or("-".into())
                     );
                 }
+            }
             }
         }
     }
@@ -198,7 +209,7 @@ struct ScaleRun {
 
 /// An 8-cube tower of edge `s` metres on a ground slab. `unit` is the region's length unit (box3d
 /// sees every length divided by it). `invariant` keeps gravity at 10 units/s^2.
-fn run_tower(s: f64, unit: f64, invariant: bool, substeps: i32) -> ScaleRun {
+fn run_tower(s: f64, unit: f64, invariant: bool, substeps: i32, dt: f32) -> ScaleRun {
     let k = s / unit; // edge in box3d units
     let mut w = new_world(&world_def(unit, 10.0, invariant));
     static_box(&mut w, [0.0, -0.5 * k, 0.0], [(5.0 * k) as f32, (0.5 * k) as f32, (5.0 * k) as f32]);
@@ -214,7 +225,7 @@ fn run_tower(s: f64, unit: f64, invariant: bool, substeps: i32) -> ScaleRun {
     let mut sleep_frame = None;
     let (_, ms) = time_ms(|| {
         for f in 0..frames {
-            w.step(DT, substeps);
+            w.step(dt, substeps);
             let y0 = pos_f64(body_get_position(&w, bodies[0]))[1];
             if f >= 120 {
                 min_y = min_y.min(y0);
@@ -240,18 +251,26 @@ fn run_tower(s: f64, unit: f64, invariant: bool, substeps: i32) -> ScaleRun {
 pub fn scale() {
     println!("== scale: 8-cube tower, edge s, 600 frames ({}) ==", mode());
     let sizes: [f64; 9] = [1.0e-4, 1.0e-3, 1.0e-2, 0.1, 1.0, 10.0, 100.0, 1000.0, 1.0e4];
-    let ref_hash = run_tower(1.0, 1.0, true, SUBSTEPS).hash;
+    let ref_hash = run_tower(1.0, 1.0, true, SUBSTEPS, DT).hash;
     for s in sizes {
         // Real time constant sqrt(s/g): keep about as many sub-steps per time constant as at 1 m.
         let scaled_sub = if s < 1.0 { (SUBSTEPS as f64 * (1.0 / s).sqrt()).ceil().min(256.0) as i32 } else { SUBSTEPS };
-        let modes: [(&str, f64, bool, i32); 4] = [
-            ("unscaled", 1.0, false, SUBSTEPS),
-            ("unit=s,invariant-g", s, true, SUBSTEPS),
-            ("unit=s,real-g", s, false, SUBSTEPS),
-            ("unit=s,real-g,scaled-substeps", s, false, scaled_sub),
+        // Real gravity at scale s is the scale-invariant system with time running 1/sqrt(s) times
+        // faster: one 60 Hz tick of real time is DT/sqrt(s) of invariant time, at the same
+        // 240 Hz invariant sub-step rate.
+        let k = (1.0 / s).sqrt();
+        let ts_dt = (DT as f64 * k) as f32;
+        let ts_sub = ((SUBSTEPS as f64 * k).ceil() as i32).max(1);
+        let modes: [(&str, f64, bool, i32, f32); 5] = [
+            ("unscaled", 1.0, false, SUBSTEPS, DT),
+            ("unit=s,invariant-g", s, true, SUBSTEPS, DT),
+            ("unit=s,real-g", s, false, SUBSTEPS, DT),
+            ("unit=s,real-g,scaled-substeps", s, false, scaled_sub, DT),
+            ("unit=s,real-g,time-scaled", s, true, ts_sub, ts_dt),
         ];
-        for (name, unit, inv, sub) in modes {
-            let r = catch_unwind(AssertUnwindSafe(|| run_tower(s, unit, inv, sub)));
+        for (name, unit, inv, sub, dt) in modes {
+            // The time-scaled variant runs 600 ticks of real time = 600 * k invariant frames.
+            let r = catch_unwind(AssertUnwindSafe(|| run_tower(s, unit, inv, sub, dt)));
             match r {
                 Err(_) => println!("RESULT scale mode={} s={s:e} variant={name} PANIC", mode()),
                 Ok(r) => println!(

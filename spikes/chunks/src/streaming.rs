@@ -269,11 +269,17 @@ fn run_speed(speed: f64, seconds: f64, rebase_dist: f64) {
         let mut pass_total = 0.0;
         if f % PASS_EVERY == 0 {
             let ((made, evicted), gms) = time_ms(|| s.generate());
-            let q = Query { center: s.player_pos, ratio: RATIO, min_r: 1.7 / 64.0 };
+            // Relevance around the anchor now and where it will be at the next pass (look-ahead),
+            // so fast movers find their surroundings already active.
+            let ahead = s.player_pos.offset([speed * PASS_EVERY as f64 / 60.0, 0.0, 0.0]);
             let (want, qms) = time_ms(|| {
                 let mut v = Vec::new();
-                s.grid.query(&q, &mut v, &mut QueryStats::default());
+                for c in [s.player_pos, ahead] {
+                    let q = Query { center: c, ratio: RATIO, min_r: 1.7 / 64.0 };
+                    s.grid.query(&q, &mut v, &mut QueryStats::default());
+                }
                 v.sort_unstable();
+                v.dedup();
                 v
             });
             // Sorted-list difference: deterministic order of creation and destruction.
