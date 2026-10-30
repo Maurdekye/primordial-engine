@@ -325,6 +325,8 @@ pub struct World {
     pub user_debug_shape_context: u64,
 
     pub worker_count: i32,
+    /// Primordial Engine fork: threads for `worker_count > 1` (None when serial).
+    pub(crate) worker_pool: Option<std::sync::Arc<crate::worker_pool::WorkerPool>>,
     /// Lane width of the wide convex kernels: 4, or 8 for AVX2. Always 4 in the scalar port,
     /// which only has the width 4 kernels. (world->simdWidth)
     pub(crate) simd_width: i32,
@@ -455,7 +457,7 @@ impl World {
         solver_sets.push(awake);
         debug_assert!(solver_sets[AWAKE_SET as usize].set_index == AWAKE_SET);
 
-        World {
+        let mut world = World {
             broad_phase: BroadPhase::new(&def.capacity),
             constraint_graph: ConstraintGraph::new(16),
             body_id_pool: IdPool::new(),
@@ -532,6 +534,7 @@ impl World {
             destroy_debug_shape: def.destroy_debug_shape,
             user_debug_shape_context: def.user_debug_shape_context,
             worker_count: 1,
+            worker_pool: None,
             simd_width: crate::simd_scalar::get_simd_width(),
             user_data: def.user_data,
             inv_h: 0.0,
@@ -544,7 +547,10 @@ impl World {
             enable_speculative: true,
             in_use: true,
             recording: None,
-        }
+        };
+        // Primordial Engine fork: the def chooses the worker count (b3WorldDef::workerCount).
+        crate::world::world_set_worker_count(&mut world, def.worker_count);
+        world
     }
 
     /// (b3World_EnableContinuous)
