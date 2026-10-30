@@ -69,6 +69,9 @@ Depends on `pe-core` and `bytemuck`.
     * every scale component non-zero, with magnitude in [2^-40, 2^40];
     * the rotation's squared norm within 2% of 1;
     * `_pad` zero.
+  * **Precision:** a root has the chunk system's precision everywhere (25.2). A child's position is an `f64`
+    offset from its frame, so its precision is that offset's ulp: about 5e-13 m at 3 km, 1 mm at 5e12 m.
+    Children far from their frame are allowed (up to 2^50 m) but coarse; keep them within a region.
   * **Hierarchy edits keep world transforms.** `set_parent`, and inserting or removing an ancestor's
     `Transform`, rewrite the affected local transforms for their new frame, with the root chunk recomputed
     exactly. An edit whose rewrite would break the limits is refused and changes nothing. `rebase_roots`

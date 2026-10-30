@@ -158,7 +158,9 @@ fn hierarchy_edits_keep_world_transforms() {
     let [far, near, obj, kid, holder] = [0; 5].map(|_| s.create(1).unwrap());
     let q = [0.0, 0.6, 0.0, 0.8];
     s.insert(far, Transform::at(WorldPos::new([5_000_000_000, 0, -7], [10.0, 2.0, 3.0])).with_rot(q).with_scale([3.0, 1.0, 0.5])).unwrap();
-    s.insert(near, Transform::at(WorldPos::new([-2, 0, 1], [500.0, 0.0, 9.0]))).unwrap();
+    // `near` is about 3 km from `far`. A child's position is an f64 offset from its frame, so its precision
+    // is that offset's ulp: about 5e-13 m here, but about 1 mm 5e12 m away.
+    s.insert(near, Transform::at(WorldPos::new([5_000_000_003, 0, -5], [500.0, 0.0, 9.0]))).unwrap();
     s.set_parent(obj, Some(far), None).unwrap();
     s.insert(obj, Transform::local([4.0, 1.0, -2.0]).with_scale([2.0; 3])).unwrap();
     s.set_parent(kid, Some(obj), None).unwrap();
