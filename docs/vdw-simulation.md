@@ -174,7 +174,10 @@ in the world definition and never change them mid-session, so this does not affe
 `pe-spike-physics vdw-bench 1800 <out.jsonl>` and `pe-spike-physics vdw-perf 1200 5 <out.jsonl>`
 (source: `spikes/physics/src/vdw_bench.rs`). The machine and toolchain are those in
 `docs/spike-report.md` section 2: Ryzen 7 9700X, Windows 11, rustc 1.99.0, release build, serial
-port. Each run is 60 Hz with 4 substeps.
+port. Each run is 60 Hz with 4 substeps. All timings here were taken before the fork stopped
+running `validate_solver_sets` and `validate_island` in release (`crates/box3d-fork/FORK.md`).
+That overhead applied to every mode alike, so the comparisons stand, but absolute step times are
+now lower.
 
 * **Scales.** s = 1 mm, 1 cm, 10 cm, 1 m, 10 m and 30 m. s is the edge of the reference cube.
   Every length in a scene scales with s, but gravity stays at 10 m/s^2. Large scenes therefore

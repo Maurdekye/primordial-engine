@@ -488,9 +488,12 @@ fn rollback() -> bool {
 }
 
 fn bench() -> bool {
-    for (side, layers) in [(8usize, 4usize), (16, 4), (16, 8)] {
+    for (side, layers) in [(8usize, 4usize), (16, 4), (16, 8), (32, 4)] {
         let count = side * side * layers;
-        let mut gs = GameState::new(pile_scene(side, layers), SEED);
+        let t = Instant::now();
+        let scene = pile_scene(side, layers);
+        let build = t.elapsed();
+        let mut gs = GameState::new(scene, SEED);
         let mut snapper = Snapshotter::new();
         let frames = 300u64;
         let mut step_total = std::time::Duration::ZERO;
@@ -514,7 +517,8 @@ fn bench() -> bool {
         }
         let per = |d: std::time::Duration| d.as_secs_f64() * 1e6 / frames as f64;
         println!(
-            "bench {count:5} bodies: step avg {:8.1} us (max {:8.1} us), save avg {:7.1} us, restore avg {:7.1} us, max image {:8} bytes, awake at end {}",
+            "bench {count:5} bodies: build {:7.1} us, step avg {:8.1} us (max {:8.1} us), save avg {:7.1} us, restore avg {:7.1} us, max image {:8} bytes, awake at end {}",
+            build.as_secs_f64() * 1e6,
             per(step_total),
             max_step.as_secs_f64() * 1e6,
             per(save_total),

@@ -636,9 +636,13 @@ pub fn split_island(world: &mut World, base_id: i32) {
 
 /// Validate island connectivity and bookkeeping. (b3ValidateIsland)
 ///
-/// C compiles this only with B3_VALIDATE; here it always runs and asserts in
-/// debug builds.
+/// C compiles this only with B3_VALIDATE; here it runs and asserts in debug builds only.
+/// Primordial Engine fork: release builds return at once (upstream walked the island in release
+/// with its asserts compiled away).
 pub fn validate_island(world: &World, island_id: i32) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     if island_id == NULL_INDEX {
         return;
     }

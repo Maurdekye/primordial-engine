@@ -9,9 +9,14 @@ use crate::world::World;
 impl World {
     /// Debug validation of solver set bookkeeping. (b3ValidateSolverSets)
     ///
-    /// C gates this behind B3_VALIDATE; here it always runs and asserts in
-    /// debug builds (release builds compile the checks away).
+    /// C gates this behind B3_VALIDATE; here it runs and asserts in debug builds only.
+    /// Primordial Engine fork: release builds return at once. Upstream kept the loops in release
+    /// with their asserts compiled away, which made every body create/destroy O(bodies).
     pub fn validate_solver_sets(&self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+
         use crate::body::body_flags;
         use crate::broad_phase::proxy_type;
         use crate::constants::GRAPH_COLOR_COUNT;

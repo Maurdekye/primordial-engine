@@ -27,6 +27,25 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
 | `src/recording/snapshot/pods.rs` | World-config flag bit `0x20` plus 13 bytes of parameters, written only when scaling is on |
 | `src/recycle_scale_tests.rs` (new) | Tests for the formula, the hook, the 1 cm ledge regression, and the snapshot and recording round trips |
 | `Cargo.toml` | Fork metadata; see the header comment |
+| `src/world/validate.rs`, `src/island.rs` | `World::validate_solver_sets` and `validate_island` return at once in release builds. Upstream ran their loops in release with every assert compiled away. C compiles them out unless `B3_VALIDATE` is set. Debug builds still validate. Found by @world-chunks |
+
+### Release validators: measured effect
+
+Release, the engine pile scene, 5 interleaved runs of `pe-spike-physics bench`, medians. Raw data is in
+`spikes/out/fork/validate-gate-ab-win-release.txt`.
+
+| Bodies | Scene build, before → after | Step, before → after |
+| --- | --- | --- |
+| 256 | 0.78 → 0.44 ms | 462 → 481 µs (noise) |
+| 1024 | 4.0 → 1.3 ms | 2144 → 1859 µs (−13%) |
+| 2048 | 15.3 → 2.3 ms | 7695 → 5242 µs (−32%) |
+| 4096 | 63.5 → 4.2 ms | 13951 → 10077 µs (−28%) |
+
+Before the change, build time was quadratic in body count, because every `create_body` walked
+every body. After it, build time is linear. The simulation is unchanged: the C goldens
+(`--upstream`), the engine goldens, the 600-frame traces and snapshot-image bytes in both modes,
+and rollback T1-T5 are byte-identical to the committed outputs in release, opt-level 1,
+opt-level s and target-cpu=native. Debug runs the same code as before.
 
 ## Invariants
 
