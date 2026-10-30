@@ -1,0 +1,9 @@
+RESULT observer: 500 balls, 60 Hz, one-way 100+-16 ms, 2% loss; member 1 sweeps its hand, member 2 watches; errors vs the final (confirmed) history, sweep window
+RESULT   hand rule HOLD (3d0f98a): remote hand shown vs true during the sweep proper: mean 149.4 mm, p95 197.3, max 763.2
+RESULT     balls: corrections >1 mm 2086/s (34.8 balls/frame), per-frame worst correction p50 27.0 mm p99 122.3 max 1241.9; balls off by >1 mm vs truth 52.5/frame
+RESULT     ball error vs truth (all balls x frames) raw: p99 63.4 mm, max 1241.9; smoothed tau 50 ms: p99 91.4 max 1241.9 (max drain 21.12 m/s); tau 100 ms: p99 118.4 max 1241.9 (max drain 11.44 m/s)
+RESULT     rollbacks 58.5/s, sim CPU 8.06 ms per frame (step + re-sim + snapshots), worst tick 21.20 ms; end 541350f6c35aad3a members equal
+RESULT   hand rule DEAD-RECKON <=6 frames, <=3 m/s: remote hand shown vs true during the sweep proper: mean 41.5 mm, p95 37.0, max 782.6
+RESULT     balls: corrections >1 mm 1523/s (25.4 balls/frame), per-frame worst correction p50 7.1 mm p99 110.5 max 1319.3; balls off by >1 mm vs truth 39.5/frame
+RESULT     ball error vs truth (all balls x frames) raw: p99 14.4 mm, max 1326.1; smoothed tau 50 ms: p99 24.6 max 1326.1 (max drain 22.44 m/s); tau 100 ms: p99 34.4 max 1326.1 (max drain 12.15 m/s)
+RESULT     rollbacks 58.5/s, sim CPU 7.76 ms per frame (step + re-sim + snapshots), worst tick 22.30 ms; end c53d6b7c7a92a842 members equal

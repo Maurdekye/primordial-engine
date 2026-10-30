@@ -1,0 +1,27 @@
+RESULT snap 500 balls, 3 members, member 3's acks dropped 3.0-4.6 s (confirmation stalls), 60 Hz, 60+-10 ms, 2% loss; member 2 observes member 1's hand; window = the 3.66 s sweep; timings = fastest of 3
+RESULT   policy     | image MB held mean / max | images mean / max | CPU ms per frame (save / restore) | saves/s | worst tick ms (p99) | rollbacks/s | re-sim frames/s | max lag | end hash
+RESULT   every1     |  56.99 / 183.66 |  36.4 / 116 |   6.64 ( 2.57 /  0.67) |  197.5 |  21.82 (16.24) |  58.7 |  196.2 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     every1: ring as base + 64 B block deltas: full 56.64 MB -> vs base 60.23 MB (106%), vs previous 57.24 MB (101%)
+RESULT   every2     |  29.45 /  93.39 |  18.8 /  59 |   5.02 ( 1.14 /  0.49) |   99.2 |  17.64 (12.82) |  58.7 |  225.4 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     every2: ring as base + 64 B block deltas: full 29.67 MB -> vs base 31.90 MB (108%), vs previous 31.29 MB (105%)
+RESULT   every4     |  15.28 /  47.49 |   9.8 /  30 |   4.27 ( 0.52 /  0.42) |   49.5 |  12.43 ( 8.22) |  58.7 |  284.4 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     every4: ring as base + 64 B block deltas: full 14.95 MB -> vs base 16.03 MB (107%), vs previous 15.89 MB (106%)
+RESULT   every8     |   8.61 /  25.30 |   5.5 /  16 |   4.99 ( 0.26 /  0.40) |   24.9 |  14.37 (10.90) |  58.7 |  401.4 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     every8: ring as base + 64 B block deltas: full 8.46 MB -> vs base 8.94 MB (106%), vs previous 8.92 MB (105%)
+RESULT   every16    |   4.88 /  12.62 |   3.1 /   8 |   7.95 ( 0.14 /  0.48) |   12.3 |  19.92 (17.01) |  58.7 |  646.2 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     every16: ring as base + 64 B block deltas: full 4.79 MB -> vs base 5.08 MB (106%), vs previous 5.07 MB (106%)
+RESULT   log2       |  12.15 /  19.39 |   7.7 /  12 |   4.37 ( 1.01 /  0.43) |   97.5 |  13.53 ( 9.71) |  58.7 |  226.0 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     log2: ring as base + 64 B block deltas: full 11.99 MB -> vs base 12.63 MB (105%), vs previous 12.26 MB (102%)
+RESULT   log4       |   9.04 /  16.09 |   5.8 /  10 |   7.10 ( 0.82 /  0.73) |   49.5 |  22.48 (14.27) |  58.7 |  284.4 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     log4: ring as base + 64 B block deltas: full 8.85 MB -> vs base 9.34 MB (105%), vs previous 9.22 MB (104%)
+RESULT   log8       |   6.53 /  12.80 |   4.2 /   8 |   6.07 ( 0.33 /  0.54) |   24.9 |  18.41 (12.19) |  58.7 |  401.4 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     log8: ring as base + 64 B block deltas: full 6.44 MB -> vs base 6.73 MB (105%), vs previous 6.71 MB (104%)
+RESULT   log16      |   4.53 /   9.52 |   2.9 /   6 |   7.67 ( 0.16 /  0.49) |   12.3 |  20.68 (15.84) |  58.7 |  646.2 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     log16: ring as base + 64 B block deltas: full 4.46 MB -> vs base 4.71 MB (106%), vs previous 4.71 MB (106%)
+RESULT   base1      |   3.10 /   3.33 |   2.0 /   2 |  20.74 ( 0.15 /  0.54) |   10.9 |  86.23 (65.03) |  58.7 | 2138.0 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     base1: ring as base + 64 B block deltas: full 3.10 MB -> vs base 3.09 MB (100%), vs previous 3.09 MB (100%)
+RESULT   base4      |   3.09 /   3.33 |   2.0 /   2 |  20.21 ( 0.08 /  0.51) |    6.8 |  85.36 (66.59) |  58.7 | 2030.9 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     base4: ring as base + 64 B block deltas: full 3.10 MB -> vs base 3.09 MB (100%), vs previous 3.09 MB (100%)
+RESULT   knob-moving |  13.66 / 143.79 |   8.7 /  90 |  10.53 ( 1.18 /  0.40) |  118.6 |  99.11 (48.76) |  58.7 |  982.0 | 116 | 47bb8c7274b143d3 all members equal
+RESULT     knob-moving: ring as base + 64 B block deltas: full 13.32 MB -> vs base 13.86 MB (104%), vs previous 13.54 MB (102%)
+RESULT   end hash identical across all 12 runs: YES; deepest rollback 13 frames
