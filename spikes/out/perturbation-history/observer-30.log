@@ -1,9 +1,11 @@
 RESULT observer: 500 balls, 60 Hz, one-way 30+-5 ms, 2% loss; member 1 sweeps its hand, member 2 watches; errors vs the final (confirmed) history, sweep window
-RESULT   hand rule HOLD (3d0f98a): remote hand shown vs true during the sweep proper: mean 23.5 mm, p95 32.6, max 65.1
-RESULT     balls: corrections >1 mm 764/s (12.7 balls/frame), per-frame worst correction p50 13.3 mm p99 51.7 max 506.8; balls off by >1 mm vs truth 15.4/frame
-RESULT     ball error vs truth (all balls x frames) raw: p99 5.3 mm, max 506.8; smoothed tau 50 ms: p99 14.4 max 516.8 (max drain 8.79 m/s); tau 100 ms: p99 22.6 max 518.7 (max drain 4.78 m/s)
-RESULT     rollbacks 59.6/s, sim CPU 3.82 ms per frame (step + re-sim + snapshots), worst tick 10.54 ms; end 47bb8c7274b143d3 members equal
+RESULT   hand rule HOLD (3d0f98a): remote hand shown vs true during the sweep proper: mean 24.0 mm, p95 33.5, max 64.2
+RESULT     remote hand in the 0.25 s after each change of motion (review PH-6): mean 58.7 mm, p95 50.0, max 602.1
+RESULT     balls: corrections >1 mm 821/s (13.7 balls/frame), per-frame worst correction p50 12.6 mm p99 63.6 max 501.5; balls off by >1 mm vs truth 20.2/frame
+RESULT     ball error vs truth (all balls x frames) raw: p99 8.9 mm, max 527.5; smoothed tau 50 ms: p99 20.1 max 527.5 (max drain 8.53 m/s); tau 100 ms: p99 31.1 max 527.5 (max drain 4.62 m/s)
+RESULT     rollbacks 58.7/s, sim CPU 4.62 ms per frame (step + re-sim + snapshots), worst tick 15.87 ms; end 47bb8c7274b143d3 members equal
 RESULT   hand rule DEAD-RECKON <=6 frames, <=3 m/s: remote hand shown vs true during the sweep proper: mean 1.3 mm, p95 2.0, max 21.7
-RESULT     balls: corrections >1 mm 61/s (1.0 balls/frame), per-frame worst correction p50 0.9 mm p99 23.6 max 487.5; balls off by >1 mm vs truth 1.3/frame
-RESULT     ball error vs truth (all balls x frames) raw: p99 0.3 mm, max 487.5; smoothed tau 50 ms: p99 1.0 max 487.5 (max drain 8.29 m/s); tau 100 ms: p99 1.7 max 487.5 (max drain 4.49 m/s)
-RESULT     rollbacks 59.6/s, sim CPU 3.92 ms per frame (step + re-sim + snapshots), worst tick 12.84 ms; end 47bb8c7274b143d3 members equal
+RESULT     remote hand in the 0.25 s after each change of motion (review PH-6): mean 23.1 mm, p95 59.7, max 600.0
+RESULT     balls: corrections >1 mm 85/s (1.4 balls/frame), per-frame worst correction p50 0.9 mm p99 30.3 max 487.5; balls off by >1 mm vs truth 2.5/frame
+RESULT     ball error vs truth (all balls x frames) raw: p99 0.5 mm, max 487.5; smoothed tau 50 ms: p99 1.4 max 487.5 (max drain 8.29 m/s); tau 100 ms: p99 2.4 max 487.5 (max drain 4.49 m/s)
+RESULT     rollbacks 58.7/s, sim CPU 4.49 ms per frame (step + re-sim + snapshots), worst tick 18.44 ms; end 47bb8c7274b143d3 members equal
