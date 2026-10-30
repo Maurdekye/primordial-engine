@@ -71,10 +71,12 @@ for f in "$out"/windows-*.txt "$out"/linux-*.txt; do
   [ -e "$f" ] || continue
   commit=$(head -1 "$f")
   passed=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '{s += $4} END {print s + 0}')
-  binaries=$(grep -c "^test result: ok" "$f" || true)
+  # Test binaries that ran at least one test (doc-test binaries with 0 tests do not count; review P21S-5).
+  binaries=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '$4 > 0' | wc -l)
   if grep -qE "FAILED|panicked|^error" "$f" || [ "$binaries" -lt 4 ]; then
     echo "TESTS FAILED in $f ($binaries passing test binaries)"; status=1
   fi
+  if [ "$(sed -n 2p "$f")" != "working tree changes: 0" ]; then echo "DIRTY TREE in $f"; status=1; fi
   d=$(grep -oE "RESULT (dmath golden|golden).*" "$f" | sort || true)
   if [ -z "$d" ]; then echo "NO DIGESTS in $f"; status=1; continue; fi
   if [ -z "$ref" ]; then
@@ -87,6 +89,10 @@ for f in "$out"/windows-*.txt "$out"/linux-*.txt; do
     else echo "same digests: $f ($commit, $passed tests passed)"; fi
   fi
 done
-if [ "$wasm" = yes ] && ! grep -q "^    Finished" "$out/wasm32-build.txt"; then echo "WASM BUILD FAILED"; status=1; fi
+if [ "$wasm" = yes ]; then
+  if ! grep -q "^    Finished" "$out/wasm32-build.txt"; then echo "WASM BUILD FAILED"; status=1; fi
+  if [ "$(head -1 "$out/wasm32-build.txt")" != "$ref_commit" ]; then echo "WASM LOG FROM ANOTHER COMMIT"; status=1; fi
+  if [ "$(sed -n 2p "$out/wasm32-build.txt")" != "working tree changes: 0" ]; then echo "DIRTY TREE in the wasm32 log"; status=1; fi
+fi
 echo "run_p2_1_tests: done, status $status"
 exit $status
