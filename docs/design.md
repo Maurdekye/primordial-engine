@@ -1000,7 +1000,9 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   hand through `pe-mcp`, and every peer accepted it).
   * Hands are part of a member's avatar (16.3), and an entry's author is its chain's signed member (10.3).
     So every replica refuses a `Hand` entry for a hand that is not its author's, with `RejectedNotOwner`.
-    It is a validity rule like the others, not a claim: it holds at every frame {HANDOWNER}.
+    It is a validity rule like the others, not a claim: it holds at every frame [V handowner: member
+    2's 46 entries for member 1's hand are refused at both replicas, and the history equals the run
+    without them].
   * The same goes for any object that belongs to one member, as each such kind is added [I].
   * An agent at an unlocked panel acts as the panel's owner (D27a). The panel's messages carry their
     verified sender, but the owner's peer signs the entries, so the agent moves only the owner's hands.
@@ -1510,21 +1512,25 @@ is fixed once the author's chain is contiguous up to it.
 
 | Scenario | What happens | Result |
 |---|---|---|
-| `crashstall` | member 3 of 3 silent from 3 s | removed {CRASH_T}; same cut as round 3 (seq 86, from frame 173); paused 72 frames; all equal |
-| `twosilent` | members 5 and 6 of 6 silent from 3 s | {TWOSILENT} |
-| `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.05 s. (b): no decision, the three left pause safely (confirmed frame 169) |
-| `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed 80 ms after its second signature, without 8; the confirmed touch stands; no pause |
-| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed (3.65 s, 4.12 s); no pause |
+| `crashstall` | member 3 of 3 silent from 3 s | removed with round 3's cut (seq 86, from frame 173) and history; paused 72 and 74 frames (round 3: 72); all equal |
+| `twosilent` | members 5 and 6 of 6 silent from 3 s | both removed in one change at 6.15 s (round 0); paused 74 frames; all equal |
+| `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.15 s. (b): no decision, the three left pause safely (confirmed frame 169) |
+| `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed at 3.73 s, about 160 ms after its second signature, without 8; the confirmed touch stands; no pause |
+| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed in one change at 3.73 s; no pause |
 | `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
 | `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
-| `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; the next removes the proposer (proven) and 5 together |
-| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | {BRIDGE} |
-| `join` | member 4 asks to join at 2 s, touches an object at frame 420 | {JOIN} |
-| `vcscale` | {VCSCALE} | {VCSCALE_R} |
+| `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.58 s |
+| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (527 paused frames); after the heal the one session removes 8 at 13.65 s. (a): {1,2} removes 3 and 4 at 6.18 s, {3,4} removes 1 and 2 at 7.80 s, and each side then removes 8: **two sessions** |
+| `join` | member 4 asks to join at 2 s, touches an object at frame 420 | admitted at 2.10 s with boundary frame 175; its touch applies at every member; all four equal |
+| `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s | 8 removed at 5.23 s; paused 78 frames; all equal |
+| `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
 
   Every scenario's honest members equal each other and the offline replay of the final log, with no false
   check failure; no confirmed frame was rolled back (that is asserted). The rest of the suite is
-  unchanged: {SUITE}.
+  unchanged except where the view change acts: `backdate` removes its lagging member sooner (66 paused
+  frames instead of 128, cut at seq 87 instead of 119), `r14 crash` pauses 5 or 6 frames longer for its
+  crashed carrier, and the R14 chain digests changed because hops now carry their commit frame and epoch
+  certificates (every outcome is the same) [V 5k].
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -4756,12 +4762,13 @@ entry says so.
   * Options, counting the members not proven faulty:
     * **(a) A strict majority.** Up to just under half can drop at once and still be removed: two of five,
       three of seven or eight. But one cheating member that reaches both sides of a partition between
-      honest members can get each side to remove the other, and the session forks into two sessions with
-      different histories [V bridge]. Even session sizes resist one such member; odd sizes none.
+      honest members can get each side to remove the other, and the session forks into two sessions
+      [V bridge: of five members, {1, 2} and {3, 4} each remove the other and end as two sessions]. Their
+      histories diverge from the next touch [I]. Even session sizes resist one such member; odd sizes none.
     * **(b) A Byzantine quorum, just over two thirds:** 3 of 4, 4 of 5, 6 of 8, 171 of 256. No fork while
-      fewer than a third of the members not proven faulty cheat, partition or not [V bridge]. But fewer
-      members can drop at once: one of five, two of six to eight; when more drop together, the rest pause
-      safely until enough come back [V twosilent5].
+      fewer than a third of the members not proven faulty cheat, partition or not [V bridge: one session,
+      the cheater removed after the heal]. But fewer members can drop at once: one of five, two of six to
+      eight; when more drop together, the rest pause safely until enough come back [V twosilent5].
     * **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds of friends.
   * Members proven faulty (by two contradicting signed entries) never count, under any option, so
     proven cheaters cannot stall a removal [V badvote, colluders].

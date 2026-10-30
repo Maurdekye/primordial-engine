@@ -10,7 +10,7 @@ from measured parts; **inferred** = design reasoning, not run.
 
 | ID | Question | Options and their main cost | Recommendation | Evidence |
 |---|---|---|---|---|
-| D80 | How many members must agree to remove members (crashed, too slow, or caught cheating) or let someone join? | **(a) A strict majority:** up to just under half can drop at once and still be removed (two of five). But one cheater that can reach both sides of a network split between honest players can get each side to remove the other, and the session forks into two different histories. **(b) Just over two thirds:** no fork while fewer than a third cheat, split or not. But fewer can drop at once (one of five, two of eight); when more drop together, the rest pause until enough come back. **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds | (b) | Measured in the simulator (bridge, twosilent5); 10.8, 24 |
+| D80 | How many members must agree to remove members (crashed, too slow, or caught cheating) or let someone join? | **(a) A strict majority:** up to just under half can drop at once and still be removed (two of five). But one cheater that can reach both sides of a network split between honest players can get each side to remove the other, and the session splits into two sessions. **(b) Just over two thirds:** no fork while fewer than a third cheat, split or not. But fewer can drop at once (one of five, two of eight); when more drop together, the rest pause until enough come back. **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds | (b) | Measured in the simulator: under (a) bridge split into two sessions, under (b) it stayed one; twosilent5 shows (b)'s pause. 10.8, 24 |
 
 ## B. Your rulings
 
