@@ -4563,8 +4563,11 @@ entry says so.
     transferable fork proofs when the copies meet, and it can then be cut off. A per-object registry at
     the birth world was considered and rejected, not even as an opt-in: it costs one more relay round per
     hop, and objects freeze while their birth world is unreachable.
-  * Within detect-only, P2-5 follow-up P25-2 makes each hop carry the destination's verdict
-    certificate, so an object no longer depends on its source world to prove where it went.
+  * The reviewer's follow-up P25-2 (each hop carrying the destination's verdict certificate) is not
+    taken: @provenance-eng measured that it would turn refund-and-keep from refused into detect-only.
+    The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
+    vanished source world can stop an object it handed over from leaving its new world again. That is
+    griefing, not duplication.
 
 ---
 
