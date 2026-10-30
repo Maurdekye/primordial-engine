@@ -105,9 +105,10 @@ pub enum Payload {
     /// Impulse on an object. `grab` = a held grab, which renews its claim; a plain impulse claims
     /// once and never renews (review M3).
     Touch { obj: u32, impulse: [f32; 3], grab: bool },
-    /// Kinematic hand target for this frame, in millimetres (quantized so every peer sees the
-    /// same bits). `active = false` parks the hand.
-    Hand { obj: u32, target_mm: [i32; 3], active: bool },
+    /// Kinematic hand target, in millimetres (quantized so every peer sees the same bits), to be
+    /// reached `span` frames after the stamp (1 normally; more when the author thins its entry
+    /// rate under congestion, R18). `active = false` parks the hand.
+    Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8 },
     /// R14, source world: carry `obj` out through the portal into escrow, bound for world `dest`.
     /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
     Depart { obj: u32, dest: u32, deadline: u64 },
@@ -161,6 +162,8 @@ pub enum Msg {
     Entry(Entry),
     /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
     Fetch { author: MemberId, from: u32, to: u32 },
+    /// Everything one member sends one peer in one tick, in one datagram (R18, viz-4).
+    Batch(Vec<Msg>),
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -190,8 +193,8 @@ impl Wr {
             Payload::Touch { obj, impulse, grab } => {
                 self.u8(1); self.u32(*obj); for c in impulse { self.u32(c.to_bits()) } self.u8(*grab as u8);
             }
-            Payload::Hand { obj, target_mm, active } => {
-                self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8);
+            Payload::Hand { obj, target_mm, active, span } => {
+                self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
             }
             Payload::Depart { obj, dest, deadline } => {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
@@ -224,6 +227,7 @@ impl Wr {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e) }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
+            Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
         }
     }
 }
@@ -258,7 +262,7 @@ impl Rd<'_> {
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
-            2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0 },
+            2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0, span: self.u8()? },
             3 => Payload::Depart { obj: self.u32()?, dest: self.u32()?, deadline: self.u64()? },
             4 => {
                 let transfer = self.u64()?;
@@ -291,6 +295,12 @@ impl Rd<'_> {
         Some(match self.u8()? {
             1 => Msg::Entry(self.entry()?),
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
+            4 => {
+                let n = self.u32()? as usize;
+                let mut v = Vec::with_capacity(n.min(256));
+                for _ in 0..n { v.push(self.msg()?) }
+                Msg::Batch(v)
+            }
             _ => return None,
         })
     }
@@ -1473,14 +1483,15 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Hand { obj, target_mm, active } => {
+            Payload::Hand { obj, target_mm, active, span } => {
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 let p = if *active {
                     Pos { x: target_mm[0] as f32 * 0.001, y: target_mm[1] as f32 * 0.001, z: target_mm[2] as f32 * 0.001 }
                 } else {
                     Pos { x: 0.0, y: 1.5, z: 0.0 }
                 };
-                body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, self.cfg.dt, true);
+                let dt = self.cfg.dt * (*span).max(1) as f32;
+                body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, dt, true);
                 hands_set.insert(*obj);
                 if *active {
                     self.t.hand_idle.insert(*obj, 0);
