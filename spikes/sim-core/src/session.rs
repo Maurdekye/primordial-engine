@@ -37,6 +37,7 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+pub use crate::provenance::{birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, ForkProof, Hop, Seen};
 
 pub type MemberId = u32;
 pub type EntryId = u64;
@@ -96,6 +97,8 @@ pub struct ObjRecord {
     pub state: BodyState,
     pub src_world: u32,
     pub src_frame: u64,
+    /// P2-5: the transfer that brought the object into `src_world` (0: born there).
+    pub via: u64,
 }
 
 // ---- entries, acks, messages ---------------------------------------------------------------------
@@ -111,18 +114,25 @@ pub enum Payload {
     Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8 },
     /// R14, source world: carry `obj` out through the portal into escrow, bound for world `dest`.
     /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
-    Depart { obj: u32, dest: u32, deadline: u64 },
+    /// P2-5: `hop` is the certified hop that brought the object here, when this world does not
+    /// hold it yet (copied from a `Provenance` entry); without it an arrived object cannot leave.
+    Depart { obj: u32, dest: u32, deadline: u64, hop: Option<Hop> },
     /// R14, destination world: the object arrives. `cert` is a strict majority of the source
     /// world's members' signatures over "departure `depart` of this record to this world, by
     /// this deadline, is confirmed" (reviews NEW-4, R3-8); without it the entry does nothing.
     /// `deadline` is a frame of the destination world: a later arrival is refused (R3-6).
-    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)> },
+    /// P2-5: `chain` is the object's provenance from its birth into the source world; the
+    /// certificate covers its hash.
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop> },
     /// R14, source world: the destination's confirmed verdict, with a strict majority of the
     /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
     Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
     Attest { fact: u64, sig: u64 },
+    /// P2-5, destination world: the source's certified commit of a transfer into this world, relayed
+    /// so every member holds the hop the object's next departure must carry. Never simulated.
+    Provenance { hop: Hop },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
@@ -149,6 +159,9 @@ pub enum Payload {
 
 /// `valid_round` of a proposal that no quorum has prevoted before.
 pub const NO_ROUND: u32 = u32::MAX;
+
+/// Frames a proposer waits, from the start of a round, for votes on every member it suspects.
+pub const VC_GATHER: u64 = 6;
 
 /// Two signed entries of one member that contradict each other (design 10.8): two versions of one
 /// seq; an entry whose `prev` names a version of its predecessor other than `a`; or an ack `a` and a
@@ -177,7 +190,8 @@ pub struct Change {
     pub epoch: u32,
     pub remove: Vec<Removal>,
     pub add: Vec<MemberId>,
-    /// First frame at which the added members count (design 10.8, joins); 0 without joins.
+    /// First frame of the next epoch: added members count from it (10.8, joins), and facts about
+    /// frames from it on are the next epoch's to certify. Set on every change.
     pub boundary: u64,
     pub excluded: Vec<(MemberId, Proof)>,
 }
@@ -219,47 +233,92 @@ pub fn vc_sig(world: u32, member: MemberId, epoch: u32, round: u32, value: u64) 
 }
 
 /// An epoch certificate (design 10.8, review R3-8b): what another world needs to follow this
-/// world's membership from `epoch - 1` to `epoch`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// world's membership from `epoch - 1` to `epoch`. The precommits sign the change's value, so the
+/// change itself (removals, joins, exclusions and the boundary frame) is what is certified.
+#[derive(Clone, Debug, PartialEq)]
 pub struct EpochCert {
     pub world: u32,
-    /// The epoch this certificate starts.
+    /// The epoch this certificate starts (`change.epoch + 1`).
     pub epoch: u32,
-    /// First frame at which exactly `members` count.
-    pub from_frame: u64,
-    pub members: Vec<MemberId>,
-    /// (member, cut seq, cut id, first frame it no longer counts for).
-    pub removed: Vec<(MemberId, u32, EntryId, u64)>,
-    /// (member, first frame it counts for).
-    pub added: Vec<(MemberId, u64)>,
-    pub excluded: Vec<(MemberId, Proof)>,
+    pub change: Change,
     pub round: u32,
-    pub value: u64,
-    /// Precommit signatures over `(world, epoch - 1, round, value)`.
+    /// The members of `epoch`: the previous epoch's, minus the removed, plus the added.
+    pub members: Vec<MemberId>,
+    /// Precommit signatures over `(world, epoch - 1, round, change value)`.
     pub precommits: Vec<(MemberId, u64)>,
+    /// The two entries of each exclusion proof, so a verifier needs no chain of this world.
+    pub proofs: Vec<Entry>,
 }
 
-/// Check `cert` against the members of the previous epoch: signatures from a quorum of those not
-/// excluded, and a member list that follows from the change. The exclusion proofs need the
-/// entries they name; the spike trusts the listed set (P2-5 carries the entries).
+impl EpochCert {
+    /// First frame of the epoch: facts about frames from here on are this epoch's to sign.
+    pub fn from_frame(&self) -> u64 {
+        self.change.boundary
+    }
+
+    pub fn hash(&self) -> u64 {
+        let mut v = vec![self.world as u64, self.epoch as u64, self.change.value(), self.round as u64];
+        v.extend(self.members.iter().map(|m| *m as u64));
+        for (m, s) in &self.precommits {
+            v.extend([*m as u64, *s]);
+        }
+        v.extend(self.proofs.iter().map(|e| e.id()));
+        fnv_u64s(v)
+    }
+}
+
+/// Whether `p` proves `m` faulty from its two entries alone (design 10.8): two versions of one seq;
+/// an entry whose `prev` names another version of its predecessor; or an ack that references a
+/// seq of some chain beyond the frozen head of a later vote by the same member against it.
+pub fn proof_self_contained(m: MemberId, p: Proof, a: &Entry, b: &Entry) -> bool {
+    if a.member != m || b.member != m || a.id() != p.a || b.id() != p.b {
+        return false;
+    }
+    if a.seq == b.seq {
+        return p.a != p.b;
+    }
+    if b.seq == a.seq + 1 {
+        return b.prev != p.a;
+    }
+    match (&a.payload, &b.payload) {
+        (Payload::Ack { heads, .. }, Payload::Vote { target, frozen, .. }) => {
+            a.seq < b.seq && heads.iter().any(|h| h.0 == *target && h.1 > frozen.0)
+        }
+        _ => false,
+    }
+}
+
+/// Check `cert` against the members of the previous epoch: every exclusion proved by the entries
+/// it carries; precommits from a quorum of the members not excluded; the member list following
+/// from the change.
 pub fn epoch_cert_ok(rule: QuorumRule, prev: &[MemberId], cert: &EpochCert) -> bool {
-    let excluded: BTreeSet<MemberId> = cert.excluded.iter().map(|(m, _)| *m).collect();
+    let c = &cert.change;
+    if cert.epoch == 0 || c.epoch + 1 != cert.epoch {
+        return false;
+    }
+    let by_id: BTreeMap<EntryId, &Entry> = cert.proofs.iter().map(|e| (e.id(), e)).collect();
+    let mut excluded = BTreeSet::new();
+    for &(m, p) in &c.excluded {
+        let (Some(a), Some(b)) = (by_id.get(&p.a), by_id.get(&p.b)) else { return false };
+        if !prev.contains(&m) || !excluded.insert(m) || !proof_self_contained(m, p, a, b) {
+            return false;
+        }
+    }
     let base: Vec<MemberId> = prev.iter().copied().filter(|m| !excluded.contains(m)).collect();
     let (_, q) = quorum(rule, base.len());
+    let value = c.value();
     let signers: BTreeSet<MemberId> = cert
         .precommits
         .iter()
-        .filter(|(m, s)| base.contains(m) && *s == vc_sig(cert.world, *m, cert.epoch - 1, cert.round, cert.value))
+        .filter(|(m, s)| base.contains(m) && *s == vc_sig(cert.world, *m, c.epoch, cert.round, value))
         .map(|(m, _)| *m)
         .collect();
     let mut expect: BTreeSet<MemberId> = prev.iter().copied().collect();
-    for (m, ..) in &cert.removed {
-        expect.remove(m);
+    for r in &c.remove {
+        expect.remove(&r.member);
     }
-    for (m, _) in &cert.added {
-        expect.insert(*m);
-    }
-    cert.epoch > 0 && signers.len() >= q && expect.into_iter().collect::<Vec<_>>() == cert.members
+    expect.extend(c.add.iter().copied());
+    signers.len() >= q && expect.into_iter().collect::<Vec<_>>() == cert.members
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -319,6 +378,18 @@ impl Wr {
     fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
     fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
+    fn hop(&mut self, h: &Hop) {
+        self.u32(h.src); self.u32(h.dest); self.u64(h.transfer); self.u64(h.via); self.u32(h.epoch); self.u64(h.frame);
+        self.u32(h.certs.len() as u32); for c in &h.certs { self.epoch_cert(c) }
+        self.cert(&h.cert)
+    }
+    fn epoch_cert(&mut self, c: &EpochCert) {
+        self.u32(c.world); self.u32(c.epoch); self.change(&c.change); self.u32(c.round);
+        self.u32(c.members.len() as u32); for m in &c.members { self.u32(*m) }
+        self.cert(&c.precommits);
+        self.u32(c.proofs.len() as u32); for e in &c.proofs { self.entry(e) }
+    }
+    fn chain(&mut self, c: &[Hop]) { self.u32(c.len() as u32); for h in c { self.hop(h) } }
     fn entry(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
@@ -331,14 +402,16 @@ impl Wr {
             Payload::Hand { obj, target_mm, active, span } => {
                 self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
             }
-            Payload::Depart { obj, dest, deadline } => {
+            Payload::Depart { obj, dest, deadline, hop } => {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
+                match hop { Some(h) => { self.u8(1); self.hop(h) } None => self.u8(0) }
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
-                self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame);
-                self.u64(*depart); self.u64(*deadline); self.cert(cert);
+                self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame); self.u64(record.via);
+                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain);
             }
+            Payload::Provenance { hop } => { self.u8(16); self.hop(hop) }
             Payload::Verdict { transfer, accepted, cert } => {
                 self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
             }
@@ -413,6 +486,30 @@ impl Rd<'_> {
         for _ in 0..n { c.push((self.u32()?, self.u64()?)) }
         Some(c)
     }
+    fn hop(&mut self) -> Option<Hop> {
+        let (src, dest, transfer, via, epoch, frame) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?, self.u32()?, self.u64()?);
+        let n = self.u32()? as usize;
+        let mut certs = Vec::with_capacity(n.min(64));
+        for _ in 0..n { certs.push(self.epoch_cert()?) }
+        Some(Hop { src, dest, transfer, via, epoch, frame, certs, cert: self.cert()? })
+    }
+    fn epoch_cert(&mut self) -> Option<EpochCert> {
+        let (world, epoch, change, round) = (self.u32()?, self.u32()?, self.change()?, self.u32()?);
+        let n = self.u32()? as usize;
+        let mut members = Vec::with_capacity(n.min(256));
+        for _ in 0..n { members.push(self.u32()?) }
+        let precommits = self.cert()?;
+        let n = self.u32()? as usize;
+        let mut proofs = Vec::with_capacity(n.min(64));
+        for _ in 0..n { proofs.push(self.entry()?) }
+        Some(EpochCert { world, epoch, change, round, members, precommits, proofs })
+    }
+    fn chain(&mut self) -> Option<Vec<Hop>> {
+        let n = self.u32()? as usize;
+        let mut c = Vec::with_capacity(n.min(64));
+        for _ in 0..n { c.push(self.hop()?) }
+        Some(c)
+    }
     fn state(&mut self) -> Option<BodyState> {
         let mut s = [0u32; 13];
         for b in &mut s { *b = self.u32()? }
@@ -426,14 +523,20 @@ impl Rd<'_> {
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
             2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0, span: self.u8()? },
-            3 => Payload::Depart { obj: self.u32()?, dest: self.u32()?, deadline: self.u64()? },
+            3 => {
+                let (obj, dest, deadline) = (self.u32()?, self.u32()?, self.u64()?);
+                let hop = if self.u8()? == 1 { Some(self.hop()?) } else { None };
+                Payload::Depart { obj, dest, deadline, hop }
+            }
             4 => {
                 let transfer = self.u64()?;
                 let record = ObjRecord {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
+                    via: self.u64()?,
                 };
-                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()? }
+                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()? }
             }
+            16 => Payload::Provenance { hop: self.hop()? },
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
@@ -508,7 +611,13 @@ pub fn decode_msg(b: &[u8]) -> Option<Msg> {
 pub fn is_protocol(p: &Payload) -> bool {
     matches!(
         p,
-        Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }
+        Payload::Ack { .. }
+            | Payload::Vote { .. }
+            | Payload::Attest { .. }
+            | Payload::Provenance { .. }
+            | Payload::Propose { .. }
+            | Payload::Prevote { .. }
+            | Payload::Precommit { .. }
     )
 }
 
@@ -535,10 +644,13 @@ pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
 }
 
 /// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
-/// (a frame of `dest`)." Covers every field of the record (review R3-8).
-pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64) -> u64 {
+/// (a frame of `dest`), with provenance `chain` (its [`chain_hash`])." Covers every field of the
+/// record (review R3-8) and the chain (P2-5), so a relayer can neither strip nor swap the chain.
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64) -> u64 {
     fnv_u64s([
         1,
+        record.via,
+        chain,
         src as u64,
         depart,
         record.global,
@@ -734,6 +846,9 @@ pub struct Tables {
     pub cooldown: BTreeMap<u32, (MemberId, u64)>,
     pub escrow: BTreeMap<u64, Escrow>,
     pub arrivals: BTreeMap<u64, Arrival>,
+    /// P2-5: per global id, here (with its provenance) or the transfer that last took it away.
+    /// Never pruned: a world's own last exit is what lets it refuse a forked chain.
+    pub seen: BTreeMap<u64, Seen>,
     pub portal_open: bool,
     /// Active hands: frames since the hand's last entry (dead reckoning, `SimConfig::hand_predict`).
     pub hand_idle: BTreeMap<u32, u64>,
@@ -780,6 +895,8 @@ pub struct Stats {
     pub view_changes: u64,
     pub resets: u64,
     pub max_round: u32,
+    /// Members this replica voted out for withholding references (P2-4).
+    pub withholders: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -891,6 +1008,12 @@ pub enum Outcome {
     RejectedLiveId,
     /// R14: the deadline is more than `MAX_DEADLINE_FRAMES` away (round 3, low).
     RejectedDeadline,
+    /// P2-5: the chain does not prove the object's way from its birth into the source world.
+    RejectedNoProvenance,
+    /// P2-5: the object left this world by a transfer the arrival's chain does not contain.
+    RejectedFork,
+    /// P2-5: the object arrived here and the departure lacks its certified hop in.
+    RejectedUnsettled,
 }
 
 /// One member's vote to remove another, as read from its chain (reviews R3-1, R3-2).
@@ -973,6 +1096,14 @@ pub struct WorldSim {
     /// (D46 trust config, part of the world's genesis; reviews R3-4 to R3-6). Any other world can
     /// neither receive its objects nor vouch for one.
     pub peers_of: BTreeMap<u32, Vec<MemberId>>,
+    /// P2-5: epoch certificates of every world a provenance chain may pass through (static stub of
+    /// P2-4's interface), and whether arrivals check provenance (off only for the control run).
+    pub epochs: EpochBook,
+    pub provenance: bool,
+    /// Number of objects this world was born with: its birth records.
+    pub genesis_objects: u64,
+    /// P2-5: double spends this world has proof of (diagnostic; not part of the state).
+    pub fork_proofs: BTreeSet<ForkProof>,
     attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
@@ -1044,9 +1175,17 @@ pub struct WorldSim {
     join_caps: BTreeMap<MemberId, (u32, u64)>,
     /// Per member: the first seq of its chain whose ack declares each epoch after 0.
     ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
+    /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
+    hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
+    /// (referrer, author) -> my present frame when the referrer's acks last referenced more of that
+    /// author's chain (P2-4: a member that stops referencing a chain stalls everyone's confirmation).
+    ref_advanced: BTreeMap<(MemberId, MemberId), u64>,
+    /// The last frame withheld references were checked for.
+    withhold_checked: u64,
     /// Test fixture (D80 bridge): a faulty member that backs every vote another member casts,
-    /// prevotes and precommits every proposal it sees, in every round, never proposes, and never
-    /// applies a decision, so it can back both sides of a partition in one epoch.
+    /// prevotes and precommits every proposal it sees, in every round, echoes the nil votes of
+    /// rounds it holds no proposal for, never proposes, and never applies a decision, so it can
+    /// back both sides of a partition in one epoch.
     pub byz_ally: bool,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
@@ -1112,6 +1251,7 @@ pub fn now_us() -> u64 {
 impl WorldSim {
     pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig) -> Self {
         let (world, objs) = build_scene(scene, world_id);
+        let genesis_objects = objs.len() as u64;
         WorldSim {
             world_id,
             me,
@@ -1127,8 +1267,12 @@ impl WorldSim {
             ring: BTreeMap::new(),
             scratch: None,
             peers_of: BTreeMap::new(),
+            epochs: EpochBook::default(),
+            provenance: true,
+            genesis_objects,
+            fork_proofs: BTreeSet::new(),
             attested: BTreeSet::new(),
-            known: members.iter().copied().collect(),
+            known: members.iter().copied().chain([me]).collect(),
             entries: BTreeMap::new(),
             by_author: BTreeMap::new(),
             contiguous: BTreeMap::new(),
@@ -1156,6 +1300,9 @@ impl WorldSim {
             vc_log: Vec::new(),
             withhold_vc: false,
             byz_ally: false,
+            hidden: None,
+            ref_advanced: BTreeMap::new(),
+            withhold_checked: 0,
             followers: BTreeSet::new(),
             join_requests: BTreeSet::new(),
             admitted: BTreeMap::new(),
@@ -1292,6 +1439,9 @@ impl WorldSim {
                 Arrival::Rejected { frame, until } => v.extend([*t, 2, *frame, *until]),
             }
         }
+        for (g, s) in &self.t.seen {
+            s.hash_into(*g, &mut v);
+        }
         v.push(self.t.portal_open as u64);
         if self.cfg.hand_predict > 0 {
             for (o, n) in &self.t.hand_idle {
@@ -1337,7 +1487,10 @@ impl WorldSim {
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
     fn set_eff(&mut self, id: EntryId) {
         let e = &self.entries[&id];
-        let acts = !is_protocol(&e.payload);
+        // A member that asked to join acts only once admitted (10.8): until then nothing it signs
+        // touches the simulation.
+        let counted = e.member == LOGIC || self.members.contains(&e.member) || self.evicted.contains_key(&e.member);
+        let acts = counted && !is_protocol(&e.payload);
         let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
@@ -1426,9 +1579,17 @@ impl WorldSim {
     /// hash (reviews NEW-1, H4).
     pub fn author_ack(&mut self) -> Entry {
         let mut heads = Vec::new();
-        for (&q, &s) in &self.contiguous {
+        for (&q, &held) in &self.contiguous {
+            // A vote's frozen head is this replica's last word on that chain in the epoch (R3-1).
+            let s = match self.frozen.get(&q) {
+                Some(&f) if !self.evicted.contains_key(&q) => held.min(f),
+                _ => held,
+            };
             if s > 0 && q != self.me && self.cfg.ack_heads {
-                heads.push((q, s, self.by_author[&(q, s)]));
+                match self.hidden.as_ref().and_then(|h| h.get(&q)) {
+                    Some(&(hs, hid)) if hs < s => heads.push((q, hs, hid)),
+                    _ => heads.push((q, s, self.by_author[&(q, s)])),
+                }
             }
         }
         let check = if self.dirty_from.is_none() {
@@ -1510,7 +1671,10 @@ impl WorldSim {
         }
         loop {
             let c = self.contiguous.get(&m).copied().unwrap_or(0);
-            if self.frozen.get(&m).is_some_and(|&f| c >= f) {
+            // A removed member's chain ends at its cut. A vote only caps what the voter references
+            // (stable_seq, author_ack): it keeps processing the chain, so a member wrongly
+            // suspected can still take part in the reset that keeps it (P2-4).
+            if self.evicted.contains_key(&m) && self.frozen.get(&m).is_some_and(|&f| c >= f) {
                 break;
             }
             let Some(&id) = self.by_author.get(&(m, c + 1)) else { break };
@@ -1575,6 +1739,10 @@ impl WorldSim {
                     if self.votes.get(&q).is_some_and(|v| v.contains_key(&m)) {
                         continue;
                     }
+                    let newer = self.refs.get(&(m, q)).and_then(|r| r.keys().next_back()).is_none_or(|&old| s > old);
+                    if newer {
+                        self.ref_advanced.insert((m, q), self.now);
+                    }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
                 }
                 if m != self.me {
@@ -1600,7 +1768,12 @@ impl WorldSim {
     /// each other member's newest reference at or below my own head, checked against my copy.
     /// Monotone: what was once stable stays stable (review R3-1).
     fn stable_seq(&mut self, m: MemberId) -> u32 {
-        let mine = self.contiguous.get(&m).copied().unwrap_or(0);
+        // After voting against m, this replica references no more of m's chain than its frozen head.
+        let held = self.contiguous.get(&m).copied().unwrap_or(0);
+        let mine = match self.frozen.get(&m) {
+            Some(&f) if !self.evicted.contains_key(&m) => held.min(f),
+            _ => held,
+        };
         let mut s = mine;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
@@ -1701,8 +1874,14 @@ impl WorldSim {
             return None;
         }
         let f = self.contiguous.get(&m).copied().unwrap_or(0);
-        self.frozen.insert(m, f);
-        let fid = if f == 0 { 0 } else { self.by_author[&(m, f)] };
+        // A faulty member (fixture) votes without freezing: it keeps processing that chain.
+        if !self.byz_ally {
+            self.frozen.insert(m, f);
+        }
+        let (f, fid) = match self.hidden.as_ref().and_then(|h| h.get(&m)) {
+            Some(&(hs, hid)) if hs < f => (hs, hid),
+            _ => (f, if f == 0 { 0 } else { self.by_author[&(m, f)] }),
+        };
         let (f, fid) = if self.lie_in_votes { (0, 0) } else { (f, fid) };
         let v = Entry {
             member: self.me,
@@ -1799,6 +1978,69 @@ impl WorldSim {
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
             }
             out.extend(self.freeze_and_vote(j, 0));
+        }
+        out.extend(self.withholders_due());
+        out
+    }
+
+    /// P2-4: a member whose acks have referenced no more of some chain for `suspect_after` frames,
+    /// while every other member (this replica included) holds and references more of it, stalls that
+    /// chain's stability, and so everyone's confirmation, as surely as a silent member. It is voted
+    /// out the same way. A member that acks slowly still advances, and is not.
+    fn withholders_due(&mut self) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if self.now < self.withhold_checked + 30 || self.withhold_vc || !self.cfg.ack_heads {
+            return out;
+        }
+        self.withhold_checked = self.now;
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let newest = |s: &Self, k: MemberId, y: MemberId| s.refs.get(&(k, y)).and_then(|r| r.keys().next_back()).copied().unwrap_or(0);
+        // Per chain y: the two lowest references to it among the other members, so "every member but
+        // j" is one comparison (O(n^2) per check, not O(n^3)).
+        let mut low: BTreeMap<MemberId, ((u32, MemberId), u32)> = BTreeMap::new();
+        for &y in &members {
+            if self.voted(y) {
+                continue;
+            }
+            let mut best = (u32::MAX, 0);
+            let mut second = u32::MAX;
+            for &k in &members {
+                if k == y || k == self.me {
+                    continue;
+                }
+                let r = newest(self, k, y);
+                if r < best.0 {
+                    second = best.0;
+                    best = (r, k);
+                } else if r < second {
+                    second = r;
+                }
+            }
+            low.insert(y, (best, second));
+        }
+        for &j in &members {
+            if j == self.me || self.voted(j) {
+                continue;
+            }
+            let mut blocks = None;
+            for (&y, &((min1, who), min2)) in &low {
+                if y == j {
+                    continue;
+                }
+                let mine = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
+                let others = mine.min(if who == j { min2 } else { min1 });
+                let theirs = newest(self, j, y);
+                let still = self.ref_advanced.get(&(j, y)).map_or(self.now >= self.cfg.suspect_after, |&t| self.now >= t + self.cfg.suspect_after);
+                if theirs < others && still {
+                    blocks = Some(y);
+                    break;
+                }
+            }
+            if let Some(y) = blocks {
+                self.stats.withholders += 1;
+                self.ev(format!("member {j} has referenced no more of member {y}'s chain for {} frames while every other member has: vote to remove it", self.cfg.suspect_after));
+                out.extend(self.freeze_and_vote(j, 0));
+            }
         }
         out
     }
@@ -2031,8 +2273,18 @@ impl WorldSim {
     /// holds proofs against; with nothing to remove, a reset if a vote of this epoch stands
     /// against a member this replica hears from (it was wrongly suspected, or came back).
     fn build_change(&mut self) -> Option<Change> {
-        let proven = self.proven_set();
-        let excluded: Vec<(MemberId, Proof)> = proven.iter().map(|&m| (m, self.proof_of(m))).collect();
+        // Only proofs that their two entries show alone, so other worlds can check the certificate.
+        let mut proven = BTreeSet::new();
+        let mut excluded = Vec::new();
+        for m in self.proven_set() {
+            let p = self.proof_of(m);
+            if let (Some(a), Some(b)) = (self.entries.get(&p.a), self.entries.get(&p.b)) {
+                if proof_self_contained(m, p, a, b) {
+                    proven.insert(m);
+                    excluded.push((m, p));
+                }
+            }
+        }
         let (base, t, q) = self.base(&proven);
         let mut remove = Vec::new();
         let targets: Vec<MemberId> = self.votes.keys().copied().collect();
@@ -2052,7 +2304,8 @@ impl WorldSim {
             remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut });
         }
         let add: Vec<MemberId> = self.join_requests.iter().copied().filter(|j| !self.members.contains(j) && !self.evicted.contains_key(j)).collect();
-        let boundary = if add.is_empty() { 0 } else { self.now + self.cfg.join_lead };
+        let last = self.decided.last().map_or(0, |d| d.0.boundary);
+        let boundary = if add.is_empty() { self.now.max(last) } else { (self.now + self.cfg.join_lead).max(last) };
         if remove.is_empty() && add.is_empty() {
             let now = self.now;
             let reset = self.votes.iter().any(|(y, vs)| {
@@ -2069,7 +2322,8 @@ impl WorldSim {
     /// Whether `c` is a valid change for this epoch. Deterministic once this replica holds every
     /// entry it names (and has validated the voters' chains up to their votes); None until then.
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
-        if c.epoch != self.epoch || c.add.is_empty() != (c.boundary == 0) {
+        let last = self.decided.last().map_or(0, |d| d.0.boundary);
+        if c.epoch != self.epoch || c.boundary < last || c.boundary > self.now + 2 * self.cfg.join_lead {
             return Some(false);
         }
         // Joins: requests this replica holds, from non-members, with a boundary still ahead of it
@@ -2083,8 +2337,14 @@ impl WorldSim {
                 return None;
             }
         }
-        if c.boundary != 0 && (c.boundary <= self.now + 1 || c.boundary > self.now + 2 * self.cfg.join_lead) {
+        if !c.add.is_empty() && c.boundary <= self.now + 1 {
             return Some(false);
+        }
+        for &(m, p) in &c.excluded {
+            let (Some(a), Some(b)) = (self.entries.get(&p.a), self.entries.get(&p.b)) else { return None };
+            if !proof_self_contained(m, p, a, b) {
+                return Some(false);
+            }
         }
         let mut xs = BTreeSet::new();
         for &(m, p) in &c.excluded {
@@ -2182,14 +2442,32 @@ impl WorldSim {
                 if !self.vc.prevotes.get(&r).is_some_and(|x| x.contains_key(&me)) {
                     let epoch = self.epoch;
                     out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
-                    let boundary = self.vc.changes.get(&v).map_or(0, |c| c.boundary);
+                    let boundary = self.vc.changes.get(&v).filter(|c| !c.add.is_empty()).map_or(0, |c| c.boundary);
                     out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary }));
+                }
+            }
+            // Drive every round another member gave up on: echo its nil prevote or precommit where no
+            // proposal is held, so a side of a partition that is no quorum alone still reaches a round
+            // one of its own members proposes in.
+            let (me, epoch) = (self.me, self.epoch);
+            let nil_in = |votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>| -> Vec<u32> {
+                votes.iter().filter(|(_, ms)| !ms.contains_key(&me) && ms.values().any(|v| *v == 0)).map(|(r, _)| *r).collect()
+            };
+            for r in nil_in(&self.vc.prevotes) {
+                if !self.vc.proposals.contains_key(&r) {
+                    out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: 0 }));
+                }
+            }
+            for r in nil_in(&self.vc.precommits) {
+                if !self.vc.proposals.contains_key(&r) {
+                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: 0, boundary: 0 }));
                 }
             }
             return out;
         }
         if self.vc.since.is_none() {
-            let busy = !self.votes.is_empty() || !self.vc.proposals.is_empty() || !self.vc.prevotes.is_empty() || !self.vc.precommits.is_empty();
+            let joins = self.join_requests.iter().any(|j| !self.members.contains(j) && !self.evicted.contains_key(j));
+            let busy = joins || !self.votes.is_empty() || !self.vc.proposals.is_empty() || !self.vc.prevotes.is_empty() || !self.vc.precommits.is_empty();
             if !busy {
                 return out;
             }
@@ -2235,7 +2513,14 @@ impl WorldSim {
                 Some((v, vr)) => (vr, self.vc.changes.get(&v).cloned()),
                 None => (NO_ROUND, self.build_change()),
             };
-            if let Some(c) = change {
+            // Members that fail together are suspected within a few frames of each other: give the
+            // votes on every member this replica itself suspects a few frames to arrive, so that one
+            // change removes them all.
+            let me = self.me;
+            let gathering = vr == NO_ROUND
+                && self.now < self.vc.round_at + VC_GATHER
+                && change.as_ref().is_some_and(|c| self.votes.iter().any(|(y, vs)| vs.contains_key(&me) && !c.remove.iter().any(|x| x.member == *y)));
+            if let Some(c) = change.filter(|_| !gathering) {
                 self.vc.proposed = true;
                 self.ev(format!("view change: propose in round {r}: remove {:?}, excluded {:?}", c.remove.iter().map(|x| (x.member, x.cut.0)).collect::<Vec<_>>(), c.excluded.iter().map(|x| x.0).collect::<Vec<_>>()));
                 out.push(self.author_vc(Payload::Propose { epoch: e, round: r, valid_round: vr, change: c }));
@@ -2271,12 +2556,12 @@ impl WorldSim {
             if let Some(&(v, _)) = self.vc.proposals.get(&r) {
                 if self.quorum_for(&self.vc.prevotes, r, v) {
                     let c = self.vc.changes.get(&v).cloned().unwrap_or_default();
-                    let in_time = c.boundary == 0 || c.boundary > self.now;
+                    let in_time = c.add.is_empty() || c.boundary > self.now;
                     if self.vc.changes.contains_key(&v) && in_time && self.change_valid(&c) == Some(true) {
                         self.vc.polka_done.insert(r);
                         if self.vc.step == Step::Prevote {
                             self.vc.locked = Some((v, r));
-                            self.precommit_join(v, c.boundary, out);
+                            self.precommit_join(v, if c.add.is_empty() { 0 } else { c.boundary }, out);
                         }
                         self.vc.valid = Some((v, r));
                     }
@@ -2313,7 +2598,7 @@ impl WorldSim {
     /// Lines 49-54: a quorum precommitted a value in some round: decide it and apply it. A value
     /// this replica holds no proposal for is fetched from those that precommitted it.
     fn try_decide(&mut self, out: &mut Vec<Entry>) -> bool {
-        let mut found = None;
+        let mut candidates = Vec::new();
         let mut unknown = Vec::new();
         for (&rr, ms) in &self.vc.precommits {
             let mut vals: BTreeMap<u64, Vec<MemberId>> = BTreeMap::new();
@@ -2326,12 +2611,8 @@ impl WorldSim {
                 if !self.vc.changes.contains_key(&v) {
                     unknown.push((v, ms));
                 } else if self.quorum_for(&self.vc.precommits, rr, v) {
-                    found = Some((rr, v));
-                    break;
+                    candidates.push((rr, v));
                 }
-            }
-            if found.is_some() {
-                break;
             }
         }
         for (v, ms) in unknown {
@@ -2341,10 +2622,23 @@ impl WorldSim {
                 }
             }
         }
-        let Some((rr, v)) = found else { return false };
-        let c = self.vc.changes[&v].clone();
-        self.apply_change(c, rr, out);
-        true
+        for (rr, v) in candidates {
+            // A change's exclusions set its quorum: decide it only once every one is proved, or a
+            // faulty minority could exclude honest members and decide alone (P2-4).
+            let ex = self.vc.changes[&v].excluded.clone();
+            let mut proved = true;
+            for (m, p) in ex {
+                if self.verify_proof(m, p) != Some(true) {
+                    proved = false;
+                }
+            }
+            if proved {
+                let c = self.vc.changes[&v].clone();
+                self.apply_change(c, rr, out);
+                return true;
+            }
+        }
+        false
     }
 
     /// Apply a decided change: the next epoch's members, each removed member's cut, a new epoch
@@ -2378,7 +2672,7 @@ impl WorldSim {
         self.epoch += 1;
         self.vc_log.push((self.epoch, self.now, round, removed.clone()));
         self.stats.view_changes += 1;
-        if removed.is_empty() {
+        if removed.is_empty() && c.add.is_empty() {
             self.stats.resets += 1;
         }
         self.ev(format!(
@@ -2404,6 +2698,11 @@ impl WorldSim {
         }
         for x in removed {
             self.adopt_cut(x);
+        }
+        // An admitted member's entries act from now on (those stamped before its boundary are void).
+        let joined: Vec<EntryId> = self.entries.iter().filter(|(_, e)| c.add.contains(&e.member)).map(|(id, _)| *id).collect();
+        for id in joined {
+            self.set_eff(id);
         }
         if let Some(ids) = self.vc_later.remove(&self.epoch) {
             for id in ids {
@@ -2462,36 +2761,48 @@ impl WorldSim {
         }
     }
 
-    /// The certificate of the view change that started `epoch` (R3-8b), once this replica holds
-    /// every removed member's prefix up to its cut.
+    /// The certificate of the view change that started `epoch` (R3-8b).
     pub fn epoch_cert(&self, epoch: u32) -> Option<EpochCert> {
         let (c, round, sigs) = self.decided.get(epoch.checked_sub(1)? as usize)?;
-        let mut members: BTreeSet<MemberId> = self.members_at(epoch - 1)?.into_iter().collect();
-        let mut removed = Vec::new();
-        for r in &c.remove {
-            members.remove(&r.member);
-            if self.contiguous.get(&r.member).copied().unwrap_or(0) < r.cut.0 {
-                return None;
+        let mut proofs = Vec::new();
+        for (_, p) in &c.excluded {
+            proofs.push(self.entries.get(&p.a)?.clone());
+            proofs.push(self.entries.get(&p.b)?.clone());
+        }
+        Some(EpochCert { world: self.world_id, epoch, change: c.clone(), round: *round, members: self.members_at(epoch)?, precommits: sigs.clone(), proofs })
+    }
+
+    /// This world's certificates for epochs 1..=`epoch`: what a fact signed in `epoch` carries so
+    /// any world can check it from this world's genesis (P2-5).
+    pub fn epoch_certs_upto(&self, epoch: u32) -> Option<Vec<EpochCert>> {
+        (1..=epoch).map(|e| self.epoch_cert(e)).collect()
+    }
+
+    /// The epoch of this world active at `frame`, by the boundaries of the decided changes.
+    pub fn epoch_at(&self, frame: u64) -> u32 {
+        self.decided.iter().take_while(|d| d.0.boundary <= frame).count() as u32
+    }
+
+    /// A certificate for `fact`, a fact about `frame`: Attest entries of a strict majority of the
+    /// members of the epoch active at that frame (P2-5's epoch-at-frame rule). Members that the next
+    /// epoch excluded by proof do not count in that majority's size.
+    pub fn cert_at(&self, fact: u64, frame: u64) -> Option<(u32, Vec<(MemberId, u64)>)> {
+        let e = self.epoch_at(frame);
+        let mut members: BTreeSet<MemberId> = self.members_at(e)?.into_iter().collect();
+        if let Some((next, _, _)) = self.decided.get(e as usize) {
+            for (m, _) in &next.excluded {
+                members.remove(m);
             }
-            let v = self.evicted.get(&r.member).map(|p| p.1)?;
-            removed.push((r.member, r.cut.0, r.cut.1, v));
         }
-        for m in &c.add {
-            members.insert(*m);
+        let mut c: BTreeMap<MemberId, u64> = BTreeMap::new();
+        for (id, en) in &self.entries {
+            if let Payload::Attest { fact: f, sig } = en.payload {
+                if f == fact && !self.is_void(*id) && members.contains(&en.member) {
+                    c.insert(en.member, sig);
+                }
+            }
         }
-        let from_frame = removed.iter().map(|r| r.3).chain((!c.add.is_empty()).then_some(c.boundary)).max().unwrap_or(0);
-        Some(EpochCert {
-            world: self.world_id,
-            epoch,
-            from_frame,
-            members: members.into_iter().collect(),
-            removed,
-            added: c.add.iter().map(|m| (*m, c.boundary)).collect(),
-            excluded: c.excluded.clone(),
-            round: *round,
-            value: c.value(),
-            precommits: sigs.clone(),
-        })
+        (c.len() * 2 > members.len()).then(|| (e, c.into_iter().collect()))
     }
 
     /// The members of `epoch`, replayed from the genesis members and the decided changes.
@@ -2532,23 +2843,41 @@ impl WorldSim {
         self.members.iter().chain(self.followers.iter()).copied().filter(|m| *m != self.me).collect::<BTreeSet<_>>().into_iter().collect()
     }
 
-    /// Test fixture (D80 bridge): stop extending, and so referencing, every other member's chain, as
-    /// a faulty member hiding what it hears; `unfreeze_others` ends it.
+    /// Test fixture (D80 bridge): from now on, acks and votes report no more of every other
+    /// member's chain than this replica holds now, as a faulty member hiding what it hears. It keeps
+    /// processing everything. `unfreeze_others` ends it.
     pub fn freeze_others(&mut self) {
-        let others: Vec<MemberId> = self.members.iter().copied().filter(|m| *m != self.me).collect();
-        for m in others {
-            let c = self.contiguous.get(&m).copied().unwrap_or(0);
-            self.frozen.entry(m).or_insert(c);
-        }
+        let heads: BTreeMap<MemberId, (u32, EntryId)> = self
+            .contiguous
+            .iter()
+            .filter(|(m, s)| **m != self.me && **s > 0)
+            .map(|(m, s)| (*m, (*s, self.by_author[&(*m, *s)])))
+            .collect();
+        self.hidden = Some(heads);
     }
 
     pub fn unfreeze_others(&mut self) {
-        let thawed: Vec<MemberId> = self.frozen.keys().copied().filter(|m| !self.evicted.contains_key(m) && !self.voted(*m)).collect();
-        for m in thawed {
-            self.frozen.remove(&m);
-            let mut out = Vec::new();
-            self.extend_chain(m, &mut out);
-        }
+        self.hidden = None;
+    }
+
+    /// Diagnostics: this replica's view-change state and how much of each chain it holds.
+    pub fn vc_debug(&self) -> String {
+        let pv: Vec<String> = self.vc.prevotes.iter().map(|(r, m)| format!("r{r}:{:?}", m.iter().map(|(k, v)| (*k, *v != 0)).collect::<Vec<_>>())).collect();
+        let pc: Vec<String> = self.vc.precommits.iter().map(|(r, m)| format!("r{r}:{:?}", m.iter().map(|(k, v)| (*k, *v != 0)).collect::<Vec<_>>())).collect();
+        format!(
+            "now {} epoch {} round {} step {:?} since {:?} proposals {:?} prevotes [{}] precommits [{}] votes {:?} contiguous {:?} heard {:?}",
+            self.now,
+            self.epoch,
+            self.vc.round,
+            self.vc.step,
+            self.vc.since,
+            self.vc.proposals.keys().collect::<Vec<_>>(),
+            pv.join(" "),
+            pc.join(" "),
+            self.votes.iter().map(|(t, v)| (*t, v.keys().copied().collect::<Vec<_>>())).collect::<Vec<_>>(),
+            self.contiguous,
+            self.heard
+        )
     }
 
     /// The proposer of `round` of the view change ending `epoch`, if `epoch` is the current one.
@@ -2651,7 +2980,16 @@ impl WorldSim {
         for esc in self.t.escrow.values() {
             if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
                 if esc.depart_frame < self.conf {
-                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline));
+                    let chain = chain_hash(&self.chain_of(rec.global));
+                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain));
+                }
+            }
+        }
+        // P2-5: a committed transfer is the hop the destination's next departure needs.
+        for (g, s) in &self.t.seen {
+            if let Seen::Left { transfer, dest, via, frame, .. } = s {
+                if *frame < self.conf {
+                    facts.push(fact_committed(self.world_id, *transfer, *g, *dest, *via));
                 }
             }
         }
@@ -2694,6 +3032,50 @@ impl WorldSim {
         }
         let c: Vec<(MemberId, u64)> = c.into_iter().collect();
         cert_ok(&members, self.world_id, fact, &c).then_some(c)
+    }
+
+    // ---- P2-5 provenance ---------------------------------------------------------------------------
+
+    /// What this world knows of global id `g`. An object born here that has no entry yet is here,
+    /// with an empty chain.
+    pub fn seen_of(&self, g: u64) -> Option<Seen> {
+        self.t.seen.get(&g).cloned().or_else(|| {
+            (birth_world(g) == self.world_id && (g & 0xFFFF_FFFF) < self.genesis_objects)
+                .then(|| Seen::Here { via: 0, from: self.world_id, from_via: 0, chain: Vec::new(), settled: true })
+        })
+    }
+
+    /// The provenance chain of an object here: what its next departure's `Arrive` carries.
+    pub fn chain_of(&self, g: u64) -> Vec<Hop> {
+        match self.seen_of(g) {
+            Some(Seen::Here { chain, .. }) => chain,
+            _ => Vec::new(),
+        }
+    }
+
+    /// The hop a departure of local object `obj` must carry: the certified commit that brought it
+    /// here, from a `Provenance` entry in this world's log, if this world does not hold it yet.
+    pub fn pending_hop(&self, obj: u32) -> Option<Hop> {
+        let g = self.live(obj)?.global;
+        let here = self.seen_of(g)?;
+        if !matches!(here, Seen::Here { settled: false, .. }) {
+            return None;
+        }
+        // Anyone may publish a Provenance entry: take one that proves the hop.
+        self.entries.iter().find_map(|(id, e)| match &e.payload {
+            Payload::Provenance { hop } if !self.is_void(*id) && self.hop_in_ok(g, &here, hop) => Some(hop.clone()),
+            _ => None,
+        })
+    }
+
+    /// `hop` is the certified commit of the transfer that brought object `g` here.
+    fn hop_in_ok(&self, g: u64, here: &Seen, hop: &Hop) -> bool {
+        let Seen::Here { via, from, from_via, .. } = here else { return false };
+        hop.src == *from
+            && hop.dest == self.world_id
+            && hop.transfer == *via
+            && hop.via == *from_via
+            && self.epochs.hop_ok(hop, fact_committed(hop.src, hop.transfer, g, hop.dest, hop.via))
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -2768,7 +3150,7 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Depart { obj, dest, deadline } => {
+            Payload::Depart { obj, dest, deadline, hop } => {
                 let transfer = &transfer_id(self.world_id, id);
                 if self.t.escrow.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
@@ -2798,18 +3180,41 @@ impl WorldSim {
                         return Outcome::RejectedClaimed { by: c.member, until: c.until };
                     }
                 }
-                let record = ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.body), src_world: self.world_id, src_frame: f };
+                // P2-5: an object that arrived here leaves again only with the certified hop in, so
+                // the next destination can check its whole way from birth.
+                let mut via = 0;
+                if self.provenance {
+                    let here = self.seen_of(o.global);
+                    match here.clone() {
+                        Some(Seen::Here { settled: true, via: v, .. }) => via = v,
+                        Some(Seen::Here { settled: false, via: v, from, from_via, mut chain }) => {
+                            let Some(h) = hop.as_ref().filter(|h| self.hop_in_ok(o.global, here.as_ref().unwrap(), h)) else {
+                                self.t.escrow.insert(*transfer, gone);
+                                return Outcome::RejectedUnsettled;
+                            };
+                            chain.push(h.clone());
+                            via = v;
+                            self.t.seen.insert(o.global, Seen::Here { via, from, from_via, chain, settled: true });
+                        }
+                        _ => {
+                            self.t.escrow.insert(*transfer, gone);
+                            return Outcome::RejectedUnsettled;
+                        }
+                    }
+                }
+                let record =
+                    ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.body), src_world: self.world_id, src_frame: f, via };
                 destroy_body(&mut self.world, o.body);
                 self.t.objs[*obj as usize] = None;
                 self.t.claims.remove(obj);
                 self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
                 Outcome::Accepted
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
                 let src = record.src_world;
                 // Reviews R3-4, R3-5: only a world on the agreed route list can vouch for an object.
                 let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
-                let fact = fact_departed(src, *depart, record, self.world_id, *deadline);
+                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chain_hash(chain));
                 if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
@@ -2831,6 +3236,34 @@ impl WorldSim {
                 }
                 if self.t.arrivals.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
+                }
+                // P2-5: the source's majority vouches for the departure, not for how the object got
+                // there. Check the chain back to its birth world against each hop's epoch
+                // certificates, and that it passes through this world's own last exit of the
+                // object. A refusal is certified like any other, and returns the object to the
+                // source (whose majority signed this chain).
+                if self.provenance {
+                    if check_chain(&self.epochs, record.global, src, record.via, chain).is_err() {
+                        self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                        return Outcome::RejectedNoProvenance;
+                    }
+                    let known = self.seen_of(record.global);
+                    if let Some(p) = known.as_ref().and_then(|k| fork_proof(k, record.global, chain, src, record.via, *transfer)) {
+                        if self.fork_proofs.insert(p) {
+                            self.ev(format!("P2-5 fork proof: world {} exported global id {:#x} twice from its entry {}: transfers {} and {}", p.world, p.global, p.via, p.a, p.b));
+                        }
+                    }
+                    match known {
+                        Some(Seen::Here { .. }) => {
+                            self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                            return Outcome::RejectedLiveId;
+                        }
+                        Some(Seen::Left { transfer: out, .. }) if !chain.iter().any(|h| h.transfer == out && h.src == self.world_id) => {
+                            self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                            return Outcome::RejectedFork;
+                        }
+                        _ => {}
+                    }
                 }
                 // Review R3-6: past the deadline the arrival is refused, and that certified refusal
                 // returns the object to the source. Nobody can hold it in limbo by never relaying:
@@ -2856,6 +3289,8 @@ impl WorldSim {
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });
+                let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), settled: false };
+                self.t.seen.insert(record.global, here);
                 self.watched.insert(obj);
                 Outcome::Accepted
             }
@@ -2869,6 +3304,12 @@ impl WorldSim {
                     return Outcome::RejectedNoProof;
                 }
                 if *accepted {
+                    let rec = esc.record.expect("pending escrow holds its record");
+                    let (from, from_via) = match self.seen_of(rec.global) {
+                        Some(Seen::Here { from, from_via, .. }) => (from, from_via),
+                        _ => (self.world_id, 0),
+                    };
+                    self.t.seen.insert(rec.global, Seen::Left { transfer: *transfer, dest: esc.dest, via: rec.via, frame: f, from, from_via });
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Committed, record: None, ..esc });
                 } else {
                     let rec = esc.record.expect("pending escrow holds its record");
@@ -2883,9 +3324,13 @@ impl WorldSim {
                 Outcome::Accepted
             }
             // Protocol entries never reach the sim (set_eff schedules only perturbations).
-            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => {
-                Outcome::Accepted
-            }
+            Payload::Ack { .. }
+            | Payload::Vote { .. }
+            | Payload::Attest { .. }
+            | Payload::Provenance { .. }
+            | Payload::Propose { .. }
+            | Payload::Prevote { .. }
+            | Payload::Precommit { .. } => Outcome::Accepted,
         }
     }
 
@@ -3157,18 +3602,35 @@ pub fn replay_sim_with(
 ) -> WorldSim {
     let mut s = WorldSim::new(world_id, u32::MAX, members, scene, cfg);
     s.peers_of = peers_of.clone();
-    for (e, eff) in log {
-        let id = e.id();
-        s.by_author.insert((e.member, e.seq), id);
-        s.entries.insert(id, e.clone());
-        s.eff.insert(id, *eff);
-        s.at_frame.entry(*eff).or_default().insert(id);
+    s.run_log(log, frames)
+}
+
+/// As [`replay_sim_with`], with `like`'s cross-world config: route list, epoch certificates and
+/// whether provenance is checked (P2-5).
+pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], log: &[(Entry, u64)], frames: u64) -> WorldSim {
+    let mut s = WorldSim::new(like.world_id, u32::MAX, members, scene, like.cfg);
+    s.peers_of = like.peers_of.clone();
+    s.epochs = like.epochs.clone();
+    s.provenance = like.provenance;
+    s.run_log(log, frames)
+}
+
+impl WorldSim {
+    /// Offline reference: load a final log with its effective frames and simulate `frames`.
+    fn run_log(mut self, log: &[(Entry, u64)], frames: u64) -> WorldSim {
+        for (e, eff) in log {
+            let id = e.id();
+            self.by_author.insert((e.member, e.seq), id);
+            self.entries.insert(id, e.clone());
+            self.eff.insert(id, *eff);
+            self.at_frame.entry(*eff).or_default().insert(id);
+        }
+        self.conf = u64::MAX / 2;
+        while self.frame < frames {
+            self.step_frame(true);
+        }
+        self
     }
-    s.conf = u64::MAX / 2;
-    while s.frame < frames {
-        s.step_frame(true);
-    }
-    s
 }
 
 /// The log this member would hand to [`replay`]: every non-void entry with its effective frame.
