@@ -2,13 +2,15 @@
 # P2-1 (pe-core, pe-sim): runs the tests and records their golden digests in spikes/out/p2-1/.
 #   scripts/run_p2_1_tests.sh            Windows debug and release (Git Bash)
 #   scripts/run_p2_1_tests.sh --linux    also Linux: the static musl build, run inside WSL
-# Machine-load rule: every build runs at low priority with 3 jobs.
+# Machine-load rule: every cargo job goes through the org-wide lock (heavy.sh: one at a time, idle
+# priority, 2 jobs).
 # The golden digests (RESULT lines) must be identical in every file; the end of this script checks that.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=spikes/out/p2-1
 mkdir -p "$out"
-low() { CARGO_BUILD_JOBS=3 cmd //c start "" //low //b //wait "$@"; }
+heavy="/c/Users/<user>/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh"
+low() { bash "$heavy" "$@"; }
 
 for prof in debug release; do
   flag=""

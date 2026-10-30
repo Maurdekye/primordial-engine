@@ -9,6 +9,8 @@
 //! * Range: +-2^63 chunks * 1024 m = +-2^73 m (about 1 million light-years). Resolution inside a
 //!   chunk: one ulp of `f64` just below 1024, 2^-43 m (about 1.1e-13 m), anywhere in that range.
 
+#![allow(clippy::needless_range_loop)] // per-axis loops read clearest with an index
+
 /// log2 of the level-0 chunk width in metres.
 pub const CHUNK_EXP: i32 = 10;
 /// Level-0 chunk width in metres (exactly representable).

@@ -68,7 +68,7 @@ fn pick(store: &SimStore, ctx: &TickCtx, stream: u64) -> Option<ObjectId> {
 }
 
 fn spawn(store: &mut SimStore, ctx: &TickCtx) {
-    if ctx.frame.0 % 3 != 0 {
+    if !ctx.frame.0.is_multiple_of(3) {
         return;
     }
     let mut rng = ctx.rng(1);
@@ -119,27 +119,27 @@ fn heat(store: &mut SimStore, ctx: &TickCtx) {
 }
 
 fn reshuffle(store: &mut SimStore, ctx: &TickCtx) {
-    if ctx.frame.0 % 13 == 5 {
-        if let (Some(c), Some(p)) = (pick(store, ctx, 3), pick(store, ctx, 4)) {
-            let idx = ctx.rng(5).below(3) as usize;
-            // Cycles are refused identically everywhere; that refusal is part of the scenario.
-            let _ = store.set_parent(c, Some(p), Some(idx));
-        }
+    if ctx.frame.0 % 13 == 5
+        && let (Some(c), Some(p)) = (pick(store, ctx, 3), pick(store, ctx, 4))
+    {
+        let idx = ctx.rng(5).below(3) as usize;
+        // Cycles are refused identically everywhere; that refusal is part of the scenario.
+        let _ = store.set_parent(c, Some(p), Some(idx));
     }
-    if ctx.frame.0 % 29 == 11 {
-        if let Some(c) = pick(store, ctx, 6) {
-            store.set_parent(c, None, None).unwrap();
-        }
+    if ctx.frame.0 % 29 == 11
+        && let Some(c) = pick(store, ctx, 6)
+    {
+        store.set_parent(c, None, None).unwrap();
     }
-    if ctx.frame.0 % 11 == 7 {
-        if let Some(d) = pick(store, ctx, 7) {
-            store.destroy(d).unwrap();
-        }
+    if ctx.frame.0 % 11 == 7
+        && let Some(d) = pick(store, ctx, 7)
+    {
+        store.destroy(d).unwrap();
     }
-    if ctx.frame.0 % 17 == 3 {
-        if let Some(d) = pick(store, ctx, 8) {
-            store.remove::<Velocity>(d).unwrap();
-        }
+    if ctx.frame.0 % 17 == 3
+        && let Some(d) = pick(store, ctx, 8)
+    {
+        store.remove::<Velocity>(d).unwrap();
     }
 }
 
@@ -151,7 +151,7 @@ pub fn schedule() -> Schedule {
         .with("reshuffle", reshuffle)
 }
 
-pub const SEED: u64 = 0x5EED_0F_C0FFEE;
+pub const SEED: u64 = 0x5EED_0FC0_FFEE;
 
 pub fn new_store() -> SimStore {
     SimStore::new(registry(), SEED)
