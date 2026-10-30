@@ -393,9 +393,8 @@ impl World {
     /// Differences from C, all documented in the module header: there is no
     /// global world registry (the returned World is owned; `world_id` stays 0
     /// unless the embedder assigns one), no arena stack / manifold block
-    /// allocator yet, and the serial task path is always used
-    /// (worker_count = 1 with one task context), which is the C fallback when
-    /// no task system is supplied.
+    /// allocator yet. Primordial Engine fork (D2): `def.worker_count` workers, the world
+    /// owning their threads (1, the default, is C's serial fallback).
     pub fn new(def: &crate::types::WorldDef) -> World {
         use crate::constants::{
             contact_recycle_distance, linear_slop, mesh_rest_offset, speculative_distance,
