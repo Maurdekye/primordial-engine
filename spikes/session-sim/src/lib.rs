@@ -47,12 +47,11 @@ pub fn kind(m: &Msg) -> &'static str {
         Msg::Entry(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
+            Payload::Ack { .. } => "ack",
+            Payload::Vote { .. } => "vote",
             _ => "entry/transfer",
         },
-        Msg::Ack(_) => "ack",
         Msg::Fetch { .. } => "fetch",
-        Msg::Hash { .. } => "hash",
-        Msg::Vote { .. } => "vote",
     }
 }
 
@@ -275,19 +274,17 @@ impl Sim {
                     let carried = e.carried.map(|(o, _)| o);
                     let author = e.member;
                     let id = e.id();
-                    let votes = r.sim.insert(e, r.sim.now);
+                    // Proofs of equivocation come back with this member's vote: broadcast them.
+                    let out = r.sim.insert(e);
                     if let Some(obj) = carried {
                         if author != to {
                             r.pending_accept.push((id, author, obj));
                         }
                     }
-                    for v in votes {
-                        broadcast(&mut self.net, w, to, &members, &v);
+                    for v in out {
+                        broadcast(&mut self.net, w, to, &members, &Msg::Entry(v));
                     }
-                }
-                Msg::Ack(a) => {
-                    let reqs = r.sim.on_ack(a);
-                    for (dest, f) in r.sim.take_fetches(reqs, now / 1000) {
+                    for (dest, f) in r.sim.take_fetches(now / 1000) {
                         if dest != to {
                             self.net.send(w, to, dest, &f);
                         }
@@ -297,10 +294,6 @@ impl Sim {
                     for e in r.sim.on_fetch(author, a, b) {
                         self.net.send(w, to, from, &e);
                     }
-                }
-                Msg::Hash { frame, hash } => r.sim.on_hash(from, frame, hash),
-                Msg::Vote { target, seq } => {
-                    r.sim.on_vote(from, target, seq);
                 }
             }
         }
@@ -377,9 +370,13 @@ impl Sim {
             let r = self.peers[pi].worlds.get_mut(&w).unwrap();
             if now >= r.next_ack_us {
                 r.next_ack_us = now + r.ack_every_us;
-                let a = r.sim.make_ack();
-                let _ = r.sim.on_ack(a.clone());
-                broadcast(&mut self.net, w, pid, &members, &Msg::Ack(a));
+                let a = r.sim.author_ack();
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
+            }
+            for (dest, f) in r.sim.take_fetches(now / 1000) {
+                if dest != pid {
+                    self.net.send(w, pid, dest, &f);
+                }
             }
         }
         self.peers[pi].jobs.extend(new_jobs);

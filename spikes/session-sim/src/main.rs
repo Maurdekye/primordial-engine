@@ -7,11 +7,13 @@
 //!   r14 [ok|abort|reject|throttle] [--reverse]
 //!   ballpit [--hz 60|90] [--ahead N] [--hands 1|2] [--loss P]
 //!   snap [--balls N] [--stall]        snapshot-policy sweep (the memory/CPU knob, design 6.7)
+//!   ackfork | lateequiv | evict | outage   round-2 review repros (design 10.8)
 //!   observer [--delay MS] [--hz H]    what an observer sees of a remote hand (design 6.9)
 
 use std::collections::BTreeMap;
 
 mod history;
+mod review2;
 
 use pe_session_sim::*;
 use pe_sim_core::session::*;
@@ -83,6 +85,17 @@ fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str) -> bool {
     let reference = replay(w, r.scene, r.sim.cfg, &members, &final_log(&r.sim), frames);
     let rd = digest(&reference, frames);
     let all_equal = digests.iter().all(|(_, d)| *d == rd);
+    if !all_equal {
+        if let Some(f) = (0..frames).find(|f| reference.get(f) != r.sim.hashes.get(f)) {
+            let log = final_log(&r.sim);
+            let near: Vec<String> = log.iter().filter(|(_, ef)| *ef + 3 >= f && *ef <= f + 1).map(|(e, ef)| format!("m{}s{}@{} eff {ef}", e.member, e.seq, e.stamp)).collect();
+            println!("  first replay mismatch at frame {f}; final-log entries near it: {}", near.join(", "));
+            let rs = replay_sim(w, r.scene, r.sim.cfg, &members, &log, f + 1);
+            for (e, _) in log.iter().filter(|(_, ef)| *ef == f) {
+                println!("    m{}s{}: live {:?} replay {:?} carried {:?}", e.member, e.seq, r.sim.outcomes.get(&e.id()), rs.outcomes.get(&e.id()), e.carried.map(|c| c.0));
+            }
+        }
+    }
     println!(
         "RESULT {label} world {w}: frames 0..{frames} digests {} | offline replay {rd:016x} | {}",
         digests.iter().map(|(m, d)| format!("m{m}={d:016x}")).collect::<Vec<_>>().join(" "),
@@ -271,8 +284,8 @@ fn state_frame(diverged: bool, loss: u32) {
         // member 2 are delayed 400 ms, so member 2 runs without it for a while.
         net.filter = Some(Box::new(|t, _w, from, to, m| match m {
             Msg::Entry(e) if from == 3 && to == 2 && e.stamp == 300 && t < 6_000_000 => Fate::Drop,
-            Msg::Ack(_) if from == 3 && to == 2 && (5_000_000..5_600_000).contains(&t) => Fate::Delay(400_000),
-            Msg::Ack(_) if from == 1 && to == 2 && (5_000_000..5_600_000).contains(&t) => Fate::Delay(400_000),
+            Msg::Entry(e) if matches!(e.payload, Payload::Ack { .. }) && from == 3 && to == 2 && (5_000_000..5_600_000).contains(&t) => Fate::Delay(400_000),
+            Msg::Entry(e) if matches!(e.payload, Payload::Ack { .. }) && from == 1 && to == 2 && (5_000_000..5_600_000).contains(&t) => Fate::Delay(400_000),
             _ => Fate::Deliver,
         }));
     }
@@ -331,9 +344,10 @@ fn claims() {
 }
 
 fn backdate() {
-    // Part 1: member 3 backdates by 20 frames but publishes honest horizons -> provable violation.
-    // Part 2: member 3 also lags its published horizon by 30 frames -> not provable, but arrival
-    // reports from the majority re-stamp its entries to (arrival - allowance).
+    // Part 1: member 3 backdates by 20 frames but publishes honest horizons -> chain-local violation.
+    // Part 2: member 3 also lags its published horizon by 30 frames to open a backdating window ->
+    // every such ack breaks the horizon-slack rule and is void for every member, so no window
+    // opens; member 3 instead blocks confirmation (removal is a view change, design 10.8).
     for (part, lag) in [(1, 0u64), (2, 30)] {
         let ids = [1, 2, 3];
         let cheats: Vec<(u64, Action)> = [200u64, 320, 440].iter().map(|&f| (f, Action::Backdated { obj: 50, impulse: [0.0, 6.0, 0.0], back: 20 })).collect();
@@ -351,7 +365,8 @@ fn backdate() {
             );
         }
         print_stats(&sim, 1);
-        check_world(&sim, 1, 600, &format!("backdate part {part}"));
+        let frames = sim.peers.iter().map(|p| p.worlds[&1].sim.frame).min().unwrap_or(0).min(600);
+        check_world(&sim, 1, frames, &format!("backdate part {part}"));
     }
 }
 
@@ -623,6 +638,10 @@ fn main() {
             get("--hands").map_or(1, |v| v.parse().unwrap()),
             get("--loss").map_or(2, |v| v.parse().unwrap()),
         ),
+        Some("ackfork") => review2::ackfork(),
+        Some("lateequiv") => review2::lateequiv(),
+        Some("evict") => review2::evict(),
+        Some("outage") => review2::outage(),
         Some("snap") => history::snap(get("--balls").map_or(500, |v| v.parse().unwrap()), args.iter().any(|a| a == "--stall"), get("--reps").map_or(3, |v| v.parse().unwrap())),
         Some("observer") => history::observer(get("--delay").map_or(60, |v| v.parse().unwrap()), get("--hz").map_or(60, |v| v.parse().unwrap())),
         _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),

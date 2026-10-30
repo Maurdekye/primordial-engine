@@ -116,6 +116,13 @@ pub enum Payload {
     Verdict { transfer: u64, accepted: bool },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
+    /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
+    /// before `horizon`; per other author, the newest seq it holds contiguously and that entry's
+    /// id; its newest confirmed check frame and full-state hash (review H4).
+    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)> },
+    /// Vote to evict `target`, which signed two versions of its entry `seq`. `frozen` is the head
+    /// of target's chain this voter holds and will ever reference (review NEW-2).
+    Vote { target: MemberId, seq: u32, frozen: (u32, EntryId) },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,30 +148,12 @@ impl Entry {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct Ack {
-    pub member: MemberId,
-    /// The sender will author nothing stamped at or before this frame.
-    pub horizon: u64,
-    /// Per author: highest contiguous seq held, and that entry's id.
-    pub held: Vec<(MemberId, u32, EntryId)>,
-    /// Entries that reached the sender later than `stamp + late_allowance` (frames), with the
-    /// sender's clock frame at arrival. Absent = arrived on time (review H5).
-    pub late: Vec<(EntryId, u64)>,
-    /// Newest confirmed check frame and its full-state hash (review H4: every ack repeats it, so
-    /// a lost ack loses nothing).
-    pub check: Option<(u64, u64)>,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg {
+    /// Any chain entry: a perturbation, an ack or a vote.
     Entry(Entry),
-    Ack(Ack),
+    /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
     Fetch { author: MemberId, from: u32, to: u32 },
-    /// Full-state hash of a confirmed check frame (review H4).
-    Hash { frame: u64, hash: u64 },
-    /// Vote to evict `target`, whose entries from `seq` on are void (equivocation proof held).
-    Vote { target: MemberId, seq: u32 },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -205,6 +194,14 @@ impl Wr {
             }
             Payload::Verdict { transfer, accepted } => { self.u8(5); self.u64(*transfer); self.u8(*accepted as u8) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
+            Payload::Ack { horizon, heads, check } => {
+                self.u8(7); self.u64(*horizon); self.u32(heads.len() as u32);
+                for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.u64(*id) }
+                match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
+            }
+            Payload::Vote { target, seq, frozen } => {
+                self.u8(8); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1)
+            }
         }
         match &e.carried {
             Some((obj, s)) => { self.u8(1); self.u32(*obj); self.state(s) }
@@ -214,17 +211,7 @@ impl Wr {
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e) }
-            Msg::Ack(a) => {
-                self.u8(2); self.u32(a.member); self.u64(a.horizon);
-                self.u32(a.held.len() as u32);
-                for (q, s, id) in &a.held { self.u32(*q); self.u32(*s); self.u64(*id) }
-                self.u32(a.late.len() as u32);
-                for (id, f) in &a.late { self.u64(*id); self.u64(*f) }
-                match a.check { Some((f, h)) => { self.u8(1); self.u64(f); self.u64(h) } None => self.u8(0) }
-            }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
-            Msg::Hash { frame, hash } => { self.u8(4); self.u64(*frame); self.u64(*hash) }
-            Msg::Vote { target, seq } => { self.u8(5); self.u32(*target); self.u32(*seq) }
         }
     }
 }
@@ -264,6 +251,15 @@ impl Rd<'_> {
             }
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0 },
             6 => Payload::Portal { open: self.u8()? != 0 },
+            7 => {
+                let horizon = self.u64()?;
+                let n = self.u32()? as usize;
+                let mut heads = Vec::with_capacity(n.min(256));
+                for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.u64()?)) }
+                let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
+                Payload::Ack { horizon, heads, check }
+            }
+            8 => Payload::Vote { target: self.u32()?, seq: self.u32()?, frozen: (self.u32()?, self.u64()?) },
             _ => return None,
         };
         let carried = match self.u8()? {
@@ -275,21 +271,7 @@ impl Rd<'_> {
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(self.entry()?),
-            2 => {
-                let member = self.u32()?;
-                let horizon = self.u64()?;
-                let n = self.u32()? as usize;
-                let mut held = Vec::with_capacity(n.min(256));
-                for _ in 0..n { held.push((self.u32()?, self.u32()?, self.u64()?)) }
-                let n = self.u32()? as usize;
-                let mut late = Vec::with_capacity(n.min(256));
-                for _ in 0..n { late.push((self.u64()?, self.u64()?)) }
-                let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
-                Msg::Ack(Ack { member, horizon, held, late, check })
-            }
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
-            4 => Msg::Hash { frame: self.u64()?, hash: self.u64()? },
-            5 => Msg::Vote { target: self.u32()?, seq: self.u32()? },
             _ => return None,
         })
     }
@@ -547,8 +529,9 @@ pub struct SimConfig {
     /// Speculation limit: a member stops advancing when `frame - conf` reaches this (frames).
     pub window: u64,
     pub snap: SnapPolicy,
-    /// Backdating allowance in frames (review H5).
-    pub late_allowance: u64,
+    /// How far an ack's horizon may lag its own stamp, in frames: bounds backdating (review H5,
+    /// user rule 14:31Z). Replaces the arrival-based late allowance; nothing is re-stamped.
+    pub horizon_slack: u64,
     pub seed: u64,
     pub check_every: u64,
     /// Remote-hand dead reckoning: an active hand with no entry for a frame keeps its last
@@ -562,7 +545,7 @@ impl Default for SimConfig {
             dt: 1.0 / 60.0,
             window: 120,
             snap: SnapPolicy::Every(4),
-            late_allowance: 15,
+            horizon_slack: 2,
             seed: 0x5052_494D_4F52_4449,
             check_every: 30,
             hand_predict: 0,
@@ -594,22 +577,36 @@ pub struct WorldSim {
     slots: Vec<RegistrySlot>,
     slot_count: usize,
     ring: BTreeMap<u64, Keyframe>,
-    // ---- log
+    /// Scratch world for canonical check hashes (review NEW-7).
+    scratch: Option<World>,
+    // ---- log (round 2: chains, stability, chain-local verdicts)
+    known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
+    /// The version of each (member, seq) this member holds and references: the first one seen.
     by_author: BTreeMap<(MemberId, u32), EntryId>,
+    /// Per author: the verified contiguous prefix (hash-linked) held.
     contiguous: BTreeMap<MemberId, u32>,
-    void: BTreeSet<EntryId>,
-    void_from: BTreeMap<MemberId, u32>,
+    /// Void by a chain-local rule (horizon violations): identical for every holder.
+    violations: BTreeSet<EntryId>,
+    /// Withdrawn by an equivocation proof or an eviction cut.
+    disputed: BTreeSet<EntryId>,
     eff: BTreeMap<EntryId, u64>,
     at_frame: BTreeMap<u64, BTreeSet<EntryId>>,
-    /// My clock frame when each entry first reached me.
-    arrived: BTreeMap<EntryId, u64>,
-    /// Late reports from other members: entry -> member -> arrival frame.
-    late_reports: BTreeMap<EntryId, BTreeMap<MemberId, u64>>,
-    // ---- acks
-    acks: BTreeMap<MemberId, Ack>,
-    /// Per author: (horizon, own contiguous seq) from each of its acks, in order.
-    horizons: BTreeMap<MemberId, Vec<(u64, u32)>>,
+    /// Per author: (max horizon declared so far, last ack stamp) along its verified prefix.
+    chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
+    /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
+    ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
+    /// (referrer, author) -> seq -> id: what each member's acks said it holds of each chain.
+    refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, EntryId>>,
+    /// Equivocators: first disputed seq and the two versions.
+    proofs: BTreeMap<MemberId, (u32, EntryId, EntryId)>,
+    /// Heads this member froze when it learned of a proof.
+    frozen: BTreeMap<MemberId, u32>,
+    /// target -> voter -> the voter's frozen head of target's chain.
+    votes: BTreeMap<MemberId, BTreeMap<MemberId, (u32, EntryId)>>,
+    /// Evicted members: (cut seq, first frame they no longer count for).
+    evicted: BTreeMap<MemberId, (u32, u64)>,
+    wants: Vec<(MemberId, MemberId, u32, u32)>,
     pub conf: u64,
     /// My clock frame (my present), set by the harness each tick.
     pub now: u64,
@@ -617,15 +614,12 @@ pub struct WorldSim {
     /// Test fixture (review H5): publish horizons this many frames behind the present.
     pub horizon_lag: u64,
     my_last: EntryId,
-    votes: BTreeMap<(MemberId, u32), BTreeSet<MemberId>>,
-    voted: BTreeSet<(MemberId, u32)>,
-    fetch_asked: BTreeMap<MemberId, (u32, u64)>,
+    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64)>,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
     pub check_hashes: BTreeMap<u64, u64>,
     remote_checks: BTreeMap<u64, BTreeMap<MemberId, u64>>,
     evaluated: BTreeSet<(u64, MemberId)>,
-    checks_sent: BTreeSet<u64>,
     pub outcomes: BTreeMap<EntryId, (u64, Outcome)>,
     pub watched: BTreeSet<u32>,
     /// (frame, obj) -> object state hash after that frame, for watched objects.
@@ -680,30 +674,33 @@ impl WorldSim {
             slots: Vec::new(),
             slot_count: 0,
             ring: BTreeMap::new(),
+            scratch: None,
+            known: members.iter().copied().collect(),
             entries: BTreeMap::new(),
             by_author: BTreeMap::new(),
             contiguous: BTreeMap::new(),
-            void: BTreeSet::new(),
-            void_from: BTreeMap::new(),
+            violations: BTreeSet::new(),
+            disputed: BTreeSet::new(),
             eff: BTreeMap::new(),
             at_frame: BTreeMap::new(),
-            arrived: BTreeMap::new(),
-            late_reports: BTreeMap::new(),
-            acks: BTreeMap::new(),
-            horizons: BTreeMap::new(),
+            chain_state: BTreeMap::new(),
+            ack_hist: BTreeMap::new(),
+            refs: BTreeMap::new(),
+            proofs: BTreeMap::new(),
+            frozen: BTreeMap::new(),
+            votes: BTreeMap::new(),
+            evicted: BTreeMap::new(),
+            wants: Vec::new(),
             conf: 0,
             now: 0,
             my_seq: 0,
             horizon_lag: 0,
             my_last: 0,
-            votes: BTreeMap::new(),
-            voted: BTreeSet::new(),
             fetch_asked: BTreeMap::new(),
             hashes: BTreeMap::new(),
             check_hashes: BTreeMap::new(),
             remote_checks: BTreeMap::new(),
             evaluated: BTreeSet::new(),
-            checks_sent: BTreeSet::new(),
             outcomes: BTreeMap::new(),
             watched: BTreeSet::new(),
             obj_hist: BTreeMap::new(),
@@ -788,7 +785,14 @@ impl WorldSim {
         let (n, us) = (self.stats.saves, self.stats.save_us);
         let k = self.save();
         (self.stats.saves, self.stats.save_us) = (n, us);
-        fnv_bytes(&k.image) ^ self.tables_hash().rotate_left(17)
+        // Review NEW-7: after a destroy, a world that stepped continuously and one restored from a
+        // keyframe hold the same physics but different image bytes. Hash the image of a scratch
+        // world restored from this one instead, so both paths hash alike.
+        let scratch = self.scratch.get_or_insert_with(|| World::new(&default_world_def()));
+        assert!(deserialize_into_shell(&k.image, scratch, &mut self.slots), "canonical restore failed");
+        let mut buf = RecBuffer::new();
+        serialize_world(scratch, &mut buf, &mut self.registry);
+        fnv_bytes(&buf.data) ^ self.tables_hash().rotate_left(17)
     }
 
     fn tables_hash(&self) -> u64 {
@@ -832,6 +836,16 @@ impl WorldSim {
     }
 
     // ---- log -------------------------------------------------------------------------------------
+    //
+    // Round-2 protocol (design 10.8; reviews NEW-1, NEW-2; user rule 14:31Z):
+    // * every input to a deterministic decision is an entry in its author's hash chain:
+    //   perturbations, acks (horizon, holdings, check hash) and eviction votes;
+    // * an entry's frame is its stamp. Nothing is ever re-stamped, so an author never sees its own
+    //   interaction corrected; lateness is paid by the late receiver's rollback;
+    // * validity is chain-local: an entry is void iff its own chain breaks a rule, so every holder
+    //   decides the same;
+    // * confirmation uses only stable data: a seq of a chain is stable once every member's chain
+    //   references it with the same id (Wuu-Bernstein's 2-D time table, over signed hash chains).
 
     pub fn entry(&self, id: EntryId) -> Option<&Entry> {
         self.entries.get(&id)
@@ -841,32 +855,15 @@ impl WorldSim {
         self.eff.get(&id).copied()
     }
 
-    /// Effective frame (review H5): the stamp, unless at least half of the other members saw the
-    /// entry later than `stamp + late_allowance`; then their median arrival minus the allowance.
-    fn compute_eff(&self, id: EntryId) -> u64 {
-        let e = &self.entries[&id];
-        let others: Vec<MemberId> = self.members.iter().copied().filter(|&m| m != e.member).collect();
-        if others.is_empty() {
-            return e.stamp;
-        }
-        let ontime = e.stamp + self.cfg.late_allowance;
-        let reports = self.late_reports.get(&id);
-        let mut v: Vec<u64> = others
-            .iter()
-            .map(|m| {
-                let r = if *m == self.me { self.arrived.get(&id).copied() } else { reports.and_then(|r| r.get(m)).copied() };
-                r.filter(|&a| a > ontime).unwrap_or(ontime)
-            })
-            .collect();
-        v.sort_unstable();
-        // The lower median of the other members' arrivals: an entry moves only if at least half of
-        // the other members saw it late.
-        let k = others.len().div_ceil(2);
-        e.stamp.max(v[k - 1] - self.cfg.late_allowance)
+    fn is_void(&self, id: EntryId) -> bool {
+        self.violations.contains(&id) || self.disputed.contains(&id)
     }
 
+    /// Apply or withdraw an entry's effect on the sim according to its current verdict.
     fn set_eff(&mut self, id: EntryId) {
-        let new = if self.void.contains(&id) { None } else { Some(self.compute_eff(id)) };
+        let e = &self.entries[&id];
+        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. });
+        let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
             return;
@@ -882,16 +879,28 @@ impl WorldSim {
             self.eff.insert(id, n);
             self.at_frame.entry(n).or_default().insert(id);
             self.mark_dirty(n);
-            if old.is_some() {
-                self.ev(format!("entry {id:016x} re-stamped {:?} -> {n}", old));
-            }
         }
     }
 
     fn mark_dirty(&mut self, f: u64) {
+        // Review NEW-2: confirmed frames are final. Getting here below `conf` is a protocol bug,
+        // never a rollback.
+        assert!(
+            f >= self.conf,
+            "protocol invariant violated: member {} would roll back to frame {f}, below its confirmed frame {}",
+            self.me,
+            self.conf
+        );
         if f < self.frame {
             self.dirty_from = Some(self.dirty_from.map_or(f, |d| d.min(f)));
         }
+    }
+
+    fn publish(&mut self, e: Entry) -> Entry {
+        self.my_seq += 1;
+        self.my_last = e.id();
+        let _ = self.insert(e.clone());
+        e
     }
 
     /// Author an entry at the current frame. With `carry`, the entry carries the touched object's
@@ -920,159 +929,31 @@ impl WorldSim {
             e.carried = st.map(|s| (obj, s));
             self.watched.insert(obj);
         }
-        self.my_seq += 1;
-        let id = e.id();
-        self.my_last = id;
-        self.insert(e.clone(), self.now);
-        e
+        self.publish(e)
     }
 
-    /// Author a state-free entry stamped `ahead` frames after the present (input delay).
+    /// Author a state-free entry stamped `ahead` frames after the present (opt-in input delay).
     pub fn author_ahead(&mut self, payload: Payload, ahead: u64) -> Entry {
         let stamp = self.frame.max(self.now) + ahead;
         let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
-        self.my_seq += 1;
-        self.my_last = e.id();
-        self.insert(e.clone(), self.now);
-        e
+        self.publish(e)
     }
 
     /// Test fixture for review H5: author with an arbitrary (backdated) stamp.
     pub fn author_backdated(&mut self, payload: Payload, back: u64) -> Entry {
         let stamp = self.frame.max(self.now).saturating_sub(back);
         let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
-        self.my_seq += 1;
-        self.my_last = e.id();
-        self.insert(e.clone(), self.now);
-        e
+        self.publish(e)
     }
 
-    /// True if `e` breaks a horizon its author already published: an ack with a smaller own seq
-    /// promised nothing would be stamped at or before that horizon (review H5).
-    fn breaks_horizon(&self, e: &Entry) -> bool {
-        self.horizons.get(&e.member).is_some_and(|h| h.iter().any(|&(hz, own)| own < e.seq && e.stamp <= hz))
-    }
-
-    /// Store a received entry. Returns messages to send (votes) if it proves equivocation.
-    pub fn insert(&mut self, e: Entry, arrival_frame: u64) -> Vec<Msg> {
-        let id = e.id();
-        if self.entries.contains_key(&id) {
-            return vec![];
-        }
-        if let Some(&first) = self.void_from.get(&e.member) {
-            if e.seq >= first {
-                return vec![];
-            }
-        }
-        if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
-            if other != id {
-                // Two signed entries with the same (member, seq): transferable proof (review C2).
-                self.entries.insert(id, e.clone());
-                return self.equivocation(e.member, e.seq);
-            }
-        }
-        if !self.members.contains(&e.member) && e.member != LOGIC {
-            return vec![];
-        }
-        if e.member != self.me && self.breaks_horizon(&e) {
-            self.stats.entries_rejected_violation += 1;
-            self.ev(format!("violation: m{} s{} stamped {} at or before its own published horizon", e.member, e.seq, e.stamp));
-            self.by_author.insert((e.member, e.seq), id);
-            self.entries.insert(id, e.clone());
-            self.void.insert(id);
-            let mut c = self.contiguous.get(&e.member).copied().unwrap_or(0);
-            while self.by_author.contains_key(&(e.member, c + 1)) {
-                c += 1;
-            }
-            self.contiguous.insert(e.member, c);
-            return vec![];
-        }
-        if e.stamp < self.conf {
-            // The author promised (horizon) not to stamp here, and every member held all entries
-            // up to `conf`: a protocol violation, refused identically by everyone.
-            self.stats.entries_rejected_violation += 1;
-            self.ev(format!("violation: entry m{} s{} stamped {} < confirmed {}", e.member, e.seq, e.stamp, self.conf));
-            return vec![];
-        }
-        if let Some((obj, _)) = e.carried {
-            self.watched.insert(obj);
-        }
-        if let Payload::Touch { obj, .. } = e.payload {
-            self.watched.insert(obj);
-        }
-        self.by_author.insert((e.member, e.seq), id);
-        self.entries.insert(id, e.clone());
-        self.arrived.insert(id, arrival_frame);
-        // Contiguous seq per author.
-        let mut c = self.contiguous.get(&e.member).copied().unwrap_or(0);
-        while self.by_author.contains_key(&(e.member, c + 1)) {
-            c += 1;
-        }
-        self.contiguous.insert(e.member, c);
-        self.set_eff(id);
-        vec![]
-    }
-
-    fn equivocation(&mut self, member: MemberId, seq: u32) -> Vec<Msg> {
-        self.stats.equivocations += 1;
-        self.ev(format!("EQUIVOCATION proof: member {member} seq {seq} has two different signed entries"));
-        self.void_member_from(member, seq);
-        let key = (member, seq);
-        if self.voted.insert(key) {
-            self.record_vote(member, seq, self.me);
-            return vec![Msg::Vote { target: member, seq }];
-        }
-        vec![]
-    }
-
-    fn void_member_from(&mut self, member: MemberId, seq: u32) {
-        self.void_from.insert(member, seq.min(self.void_from.get(&member).copied().unwrap_or(u32::MAX)));
-        let bad: Vec<EntryId> = self
-            .entries
-            .iter()
-            .filter(|(_, e)| e.member == member && e.seq >= seq)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in bad {
-            self.void.insert(id);
-            self.set_eff(id);
-        }
-        let c = self.contiguous.get(&member).copied().unwrap_or(0).min(seq - 1);
-        self.contiguous.insert(member, c);
-    }
-
-    fn record_vote(&mut self, target: MemberId, seq: u32, from: MemberId) {
-        if !self.members.contains(&from) || from == target {
-            return;
-        }
-        let n = self.members.len();
-        let s = self.votes.entry((target, seq)).or_default();
-        s.insert(from);
-        if s.len() * 2 > n && self.members.contains(&target) {
-            // Strict majority of the epoch's members: deterministic eviction (view change).
-            self.members.remove(&target);
-            self.epoch += 1;
-            self.void_member_from(target, seq);
-            self.ev(format!("member {target} evicted by majority vote (epoch {}); its entries from seq {seq} are void", self.epoch));
-            for id in self.eff.keys().copied().collect::<Vec<_>>() {
-                self.set_eff(id);
-            }
-        }
-    }
-
-    pub fn make_ack(&self) -> Ack {
-        let mut held: Vec<(MemberId, u32, EntryId)> = Vec::new();
+    /// Author this member's ack: a chain entry stating its horizon (it will author nothing stamped
+    /// at or before it), the head it holds of every other chain, and its newest confirmed check
+    /// hash (reviews NEW-1, H4).
+    pub fn author_ack(&mut self) -> Entry {
+        let mut heads = Vec::new();
         for (&q, &s) in &self.contiguous {
-            if s > 0 {
-                held.push((q, s, self.by_author[&(q, s)]));
-            }
-        }
-        let mut late = Vec::new();
-        for (id, &a) in &self.arrived {
-            if let Some(e) = self.entries.get(id) {
-                if e.member != self.me && a > e.stamp + self.cfg.late_allowance && e.stamp + 2 * self.cfg.window >= self.conf {
-                    late.push((*id, a));
-                }
+            if s > 0 && q != self.me {
+                heads.push((q, s, self.by_author[&(q, s)]));
             }
         }
         let check = if self.dirty_from.is_none() {
@@ -1080,108 +961,292 @@ impl WorldSim {
         } else {
             None
         };
-        Ack { member: self.me, horizon: self.now.saturating_sub(1 + self.horizon_lag), held, late, check }
+        let stamp = self.frame.max(self.now);
+        let horizon = self.now.saturating_sub(1 + self.horizon_lag);
+        let e = Entry {
+            member: self.me,
+            seq: self.my_seq + 1,
+            prev: self.my_last,
+            stamp,
+            payload: Payload::Ack { horizon, heads, check },
+            carried: None,
+        };
+        self.publish(e)
     }
 
-    /// Process an ack (mine included). Returns fetch requests for entries we lack.
-    pub fn on_ack(&mut self, a: Ack) -> Vec<(MemberId, Msg)> {
-        let mut out = Vec::new();
-        if !self.members.contains(&a.member) {
+    /// Store an entry (received, fetched or my own). Returns entries to broadcast: when it proves
+    /// equivocation, both versions and this member's vote.
+    pub fn insert(&mut self, e: Entry) -> Vec<Entry> {
+        let id = e.id();
+        if self.entries.contains_key(&id) || (!self.known.contains(&e.member) && e.member != LOGIC) {
+            return vec![];
+        }
+        if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
+            // Two signed entries for the same (member, seq): a transferable proof (review C2).
+            self.entries.insert(id, e.clone());
+            self.disputed.insert(id);
+            let mut out = vec![self.entries[&other].clone(), e.clone()];
+            out.extend(self.on_proof(e.member, e.seq, other, id));
+            // A fetched version may be what a pending eviction's cut was waiting for.
+            self.maybe_evict(e.member);
             return out;
         }
-        let own = a.held.iter().find(|(q, _, _)| *q == a.member).map_or(0, |x| x.1);
-        let hist = self.horizons.entry(a.member).or_default();
-        if hist.last().is_none_or(|&(h, s)| a.horizon >= h && own >= s) {
-            hist.push((a.horizon, own));
-            if hist.len() > 4096 {
-                hist.drain(..2048);
-            }
+        self.by_author.insert((e.member, e.seq), id);
+        if let Some((obj, _)) = e.carried {
+            self.watched.insert(obj);
         }
-        let backdated: Vec<EntryId> = self
-            .entries
-            .iter()
-            .filter(|(id, e)| e.member == a.member && e.member != self.me && !self.void.contains(id) && self.breaks_horizon(e))
-            .map(|(id, _)| *id)
-            .collect();
-        for id in backdated {
-            let e = &self.entries[&id];
-            let msg = format!("violation: m{} s{} stamped {} is at or before a horizon it published", e.member, e.seq, e.stamp);
-            self.ev(msg);
-            self.stats.entries_rejected_violation += 1;
-            self.void.insert(id);
-            self.set_eff(id);
+        if let Payload::Touch { obj, .. } = e.payload {
+            self.watched.insert(obj);
         }
-        for &(id, f) in &a.late {
-            let changed = self.late_reports.entry(id).or_default().insert(a.member, f) != Some(f);
-            if changed {
-                self.ev(format!("late report from m{} for {id:016x}: arrived at its frame {f}", a.member));
-            }
-            if changed && self.entries.contains_key(&id) {
-                self.set_eff(id);
-            }
+        // Below the confirmed frame only a horizon violation can be new (design 10.8): never apply.
+        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. }) {
+            self.violations.insert(id);
         }
-        // Gap detection and equivocation suspicion.
-        for &(q, s, id) in &a.held {
-            if q == self.me {
-                continue; // an author never fetches its own entries
-            }
-            let mine = self.contiguous.get(&q).copied().unwrap_or(0);
-            if s > mine && !self.void_from.get(&q).is_some_and(|&v| v <= mine + 1) {
-                out.push((a.member, Msg::Fetch { author: q, from: mine + 1, to: s }));
-            } else if s <= mine && self.by_author.get(&(q, s)).is_some_and(|&x| x != id) {
-                out.push((a.member, Msg::Fetch { author: q, from: s, to: s }));
-            }
+        let disputed = self.proofs.get(&e.member).is_some_and(|&(k, _, _)| e.seq >= k)
+            || self.evicted.get(&e.member).is_some_and(|&(cut, _)| e.seq > cut);
+        if disputed {
+            self.disputed.insert(id);
         }
-        if let Some((f, h)) = a.check {
-            if a.member != self.me {
-                self.remote_checks.entry(f).or_default().insert(a.member, h);
-            }
+        let (member, seq) = (e.member, e.seq);
+        self.entries.insert(id, e);
+        self.set_eff(id);
+        let mut out = Vec::new();
+        self.extend_chain(member, &mut out);
+        // An entry past a hole in its author's chain shows the hole: ask for it.
+        let c = self.contiguous.get(&member).copied().unwrap_or(0);
+        if member != self.me && seq > c + 1 {
+            self.want_all(member, c + 1, seq - 1);
         }
-        self.acks.insert(a.member, a);
-        self.recompute_conf();
-        self.evaluate_checks();
+        if self.votes.contains_key(&member) {
+            self.maybe_evict(member);
+        }
         out
     }
 
-    /// Confirmed frame from acks only (review C1): frame f is confirmed when every member has
-    /// promised not to author at or before f, and every member holds every author's entries that
-    /// could be stamped at or before f, with identical ids.
+    /// Extend `m`'s verified contiguous prefix: each next entry must link to the previous by hash.
+    fn extend_chain(&mut self, m: MemberId, out: &mut Vec<Entry>) {
+        loop {
+            let c = self.contiguous.get(&m).copied().unwrap_or(0);
+            if self.frozen.get(&m).is_some_and(|&f| c >= f) {
+                break;
+            }
+            let Some(&id) = self.by_author.get(&(m, c + 1)) else { break };
+            let prev = if c == 0 { 0 } else { self.by_author[&(m, c)] };
+            if self.entries[&id].prev != prev {
+                // The chain continues from a version of seq c we do not hold: fetch it.
+                self.want_all(m, c, c);
+                break;
+            }
+            self.contiguous.insert(m, c + 1);
+            self.validate(m, id, out);
+        }
+    }
+
+    /// Chain-local rules, in chain order (reviews NEW-1, H5; user rule 14:31Z):
+    /// * an ack is void if its stamp goes backwards, or its horizon lags its stamp by more than
+    ///   `horizon_slack` frames (so no member can hold a backdating window open);
+    /// * any other entry is void if stamped at or before a horizon its author declared earlier.
+    fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
+        let e = self.entries[&id].clone();
+        let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
+        let valid = match &e.payload {
+            Payload::Ack { horizon, .. } => e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp,
+            Payload::Vote { .. } => true,
+            _ => max_h.is_none_or(|h| e.stamp > h),
+        };
+        if !valid {
+            self.stats.entries_rejected_violation += 1;
+            self.ev(format!("violation: m{m} s{} stamped {} breaks its chain's horizon rules: void for every member", e.seq, e.stamp));
+            self.violations.insert(id);
+            self.set_eff(id);
+            return;
+        }
+        match e.payload {
+            Payload::Ack { horizon, heads, check } => {
+                let h = max_h.map_or(horizon, |x| x.max(horizon));
+                self.chain_state.insert(m, (Some(h), e.stamp));
+                self.ack_hist.entry(m).or_default().insert(e.seq, h);
+                if m != self.me {
+                    for &(q, s, hid) in &heads {
+                        let mine = self.contiguous.get(&q).copied().unwrap_or(0);
+                        if q != self.me && s > mine {
+                            self.want_from(m, q, mine + 1, s);
+                        } else if self.by_author.get(&(q, s)).is_some_and(|&x| x != hid) {
+                            self.want_from(m, q, s, s);
+                        }
+                        let r = self.refs.entry((m, q)).or_default();
+                        r.insert(s, hid);
+                        if r.len() > 256 {
+                            let k = *r.keys().next().unwrap();
+                            r.remove(&k);
+                        }
+                    }
+                    if let Some((f, hh)) = check {
+                        self.remote_checks.entry(f).or_default().insert(m, hh);
+                    }
+                }
+                self.recompute_conf();
+                self.evaluate_checks();
+            }
+            Payload::Vote { target, frozen, .. } => {
+                self.votes.entry(target).or_default().insert(m, frozen);
+                self.maybe_evict(target);
+            }
+            _ => {}
+        }
+        let _ = out;
+    }
+
+    /// The highest seq of `m`'s chain that every member is known to hold with identical ids:
+    /// each other member's newest reference at or below my own head, checked against my copy.
+    fn stable_seq(&mut self, m: MemberId) -> u32 {
+        let mine = self.contiguous.get(&m).copied().unwrap_or(0);
+        let mut s = mine;
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        for j in members {
+            if j == self.me || j == m {
+                continue;
+            }
+            let Some((rs, rid)) = self.refs.get(&(j, m)).and_then(|r| r.range(..=mine).next_back()).map(|(a, b)| (*a, *b)) else {
+                return 0;
+            };
+            if self.by_author.get(&(m, rs)) != Some(&rid) {
+                // j holds another version: wait for the proof (fetch it from j).
+                self.want_from(j, m, rs, rs);
+                return 0;
+            }
+            s = s.min(rs);
+        }
+        s
+    }
+
+    /// Confirmed frame from stable data only (reviews C1, NEW-1): frame f is confirmed once, for
+    /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
+    /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     fn recompute_conf(&mut self) {
         let mut c = u64::MAX;
-        for m in &self.members {
-            match self.acks.get(m) {
-                Some(a) => c = c.min(a.horizon + 1),
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        for j in members {
+            let s = self.stable_seq(j);
+            match self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h) {
+                Some(h) => c = c.min(h + 1),
                 None => return,
             }
         }
-        for m in &self.members {
-            let a = &self.acks[m];
-            for q in &self.members {
-                let held = a.held.iter().find(|x| x.0 == *q);
-                let (hs, hid) = held.map_or((0, 0), |x| (x.1, x.2));
-                if hs > 0 && self.by_author.get(&(*q, hs)).is_some_and(|&x| x != hid) {
-                    return; // disagreement: possible equivocation, no confirmation
-                }
-                let hist = match self.horizons.get(q) {
-                    Some(h) => h,
-                    None => return,
-                };
-                // Largest horizon among q's acks whose own seq <= what m holds.
-                let mut cover = None;
-                for &(h, s) in hist.iter().rev() {
-                    if s <= hs {
-                        cover = Some(h + 1);
-                        break;
-                    }
-                }
-                match cover {
-                    Some(cv) => c = c.min(cv),
-                    None => return,
-                }
+        if c != u64::MAX && c > self.conf {
+            self.conf = c;
+        }
+    }
+
+    fn on_proof(&mut self, m: MemberId, k: u32, a: EntryId, b: EntryId) -> Vec<Entry> {
+        let first = !self.proofs.contains_key(&m);
+        if first {
+            self.stats.equivocations += 1;
+            self.ev(format!("EQUIVOCATION proof: member {m} seq {k} has two signed versions {a:016x} / {b:016x}"));
+        }
+        let k0 = self.proofs.get(&m).map_or(k, |p| p.0.min(k));
+        self.proofs.insert(m, (k0, a, b));
+        let mut out = Vec::new();
+        if first && m != self.me && self.members.contains(&m) {
+            // Freeze what this member will ever reference of m's chain, and say so in a vote.
+            let f = self.contiguous.get(&m).copied().unwrap_or(0);
+            self.frozen.insert(m, f);
+            let fid = if f == 0 { 0 } else { self.by_author[&(m, f)] };
+            let v = Entry {
+                member: self.me,
+                seq: self.my_seq + 1,
+                prev: self.my_last,
+                stamp: self.frame.max(self.now),
+                payload: Payload::Vote { target: m, seq: k0, frozen: (f, fid) },
+                carried: None,
+            };
+            out.push(self.publish(v));
+        }
+        self.reconcile(m);
+        out
+    }
+
+    /// Which of `m`'s entries count after an equivocation proof (review NEW-2): until the eviction
+    /// is decided, every entry from the disputed seq on is withdrawn unless it is stable (held
+    /// identically by every member, so possibly confirmed somewhere); after it, exactly the cut.
+    fn reconcile(&mut self, m: MemberId) {
+        let k = self.proofs.get(&m).map(|p| p.0);
+        let decided = self.evicted.get(&m).map(|p| p.0);
+        let stable = self.stable_seq(m);
+        let ids: Vec<(u32, EntryId)> = self.entries.iter().filter(|(_, e)| e.member == m).map(|(id, e)| (e.seq, *id)).collect();
+        for (seq, id) in ids {
+            let mine = self.by_author.get(&(m, seq)) == Some(&id);
+            let keep = match (decided, k) {
+                (Some(cut), _) => mine && seq <= cut,
+                (None, Some(k)) => mine && (seq < k || seq <= stable),
+                (None, None) => mine,
+            };
+            let changed = if keep { self.disputed.remove(&id) } else { self.disputed.insert(id) };
+            if changed {
+                self.set_eff(id);
             }
         }
-        if c > self.conf && c != u64::MAX {
-            self.conf = c;
+    }
+
+    /// Follow `m`'s chain back from `head` to seq `to`; None if an entry on the way is missing.
+    fn walk_back(&self, m: MemberId, head: (u32, EntryId), to: u32) -> Option<EntryId> {
+        let (mut s, mut id) = head;
+        while s > to {
+            id = self.entries.get(&id)?.prev;
+            s -= 1;
+        }
+        let _ = m;
+        Some(id)
+    }
+
+    /// Evict `m` once every remaining member has voted (a strict majority of the epoch). The cut is
+    /// the longest common prefix of the voters' frozen heads, so it contains every entry of m that
+    /// could have been stable anywhere; m stops counting from the frame after its last valid
+    /// horizon (virtual synchrony's flush, here decided from chain data alone).
+    fn maybe_evict(&mut self, m: MemberId) {
+        if self.evicted.contains_key(&m) || !self.members.contains(&m) {
+            return;
+        }
+        let remaining: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != m).collect();
+        let Some(votes) = self.votes.get(&m).cloned() else { return };
+        if remaining.len() * 2 <= self.members.len() || !remaining.iter().all(|j| votes.contains_key(j)) {
+            return;
+        }
+        let mut cut = remaining.iter().map(|j| votes[j].0).min().unwrap_or(0);
+        while cut > 0 {
+            let ids: Vec<Option<EntryId>> = remaining.iter().map(|j| self.walk_back(m, votes[j], cut)).collect();
+            if ids.iter().any(|x| x.is_none()) {
+                for (j, x) in remaining.iter().zip(&ids) {
+                    if x.is_none() {
+                        self.want_from(*j, m, cut, votes[j].0);
+                    }
+                }
+                return;
+            }
+            if ids.windows(2).all(|w| w[0] == w[1]) {
+                break;
+            }
+            cut -= 1;
+        }
+        let v = self.ack_hist.get(&m).and_then(|a| a.range(..=cut).next_back()).map_or(0, |(_, h)| h + 1);
+        self.evicted.insert(m, (cut, v));
+        self.members.remove(&m);
+        self.epoch += 1;
+        self.ev(format!("member {m} evicted (epoch {}): its chain is cut at seq {cut}; it no longer counts from frame {v}", self.epoch));
+        self.reconcile(m);
+        self.recompute_conf();
+    }
+
+    fn want_from(&mut self, holder: MemberId, author: MemberId, from: u32, to: u32) {
+        if holder != self.me && from <= to {
+            self.wants.push((holder, author, from, to));
+        }
+    }
+
+    fn want_all(&mut self, author: MemberId, from: u32, to: u32) {
+        let known: Vec<MemberId> = self.known.iter().copied().collect();
+        for j in known {
+            self.want_from(j, author, from, to);
         }
     }
 
@@ -1192,75 +1257,49 @@ impl WorldSim {
             .collect()
     }
 
-    /// Fetch requests for authors whose acks show entries we lack (rate-limited per author).
-    pub fn take_fetches(&mut self, reqs: Vec<(MemberId, Msg)>, now_ms: u64) -> Vec<(MemberId, Msg)> {
+    /// Fetch requests from gap and conflict detection: (who to ask, request), rate-limited.
+    pub fn take_fetches(&mut self, now_ms: u64) -> Vec<(MemberId, Msg)> {
         let mut out = Vec::new();
-        for (to, m) in reqs {
-            if let Msg::Fetch { author, from, .. } = m {
-                let last = self.fetch_asked.get(&author).copied();
-                if last.is_some_and(|(f, t)| f == from && now_ms < t + 60) {
-                    continue;
-                }
-                self.fetch_asked.insert(author, (from, now_ms));
+        for (to, author, from, upto) in std::mem::take(&mut self.wants) {
+            let last = self.fetch_asked.get(&(to, author)).copied();
+            if last.is_some_and(|(f, t)| f == from && now_ms < t + 60) {
+                continue;
             }
-            out.push((to, m));
+            self.fetch_asked.insert((to, author), (from, now_ms));
+            out.push((to, Msg::Fetch { author, from, to: upto }));
         }
         out
     }
 
-    pub fn on_vote(&mut self, from: MemberId, target: MemberId, seq: u32) -> Vec<Msg> {
-        self.record_vote(target, seq, from);
-        vec![]
-    }
-
-    pub fn on_hash(&mut self, from: MemberId, frame: u64, hash: u64) {
-        self.remote_checks.entry(frame).or_default().insert(from, hash);
-        self.evaluate_checks();
-    }
-
+    /// Compare check hashes only for confirmed frames this member has finished simulating with the
+    /// complete log (viz-1: never while a re-simulation is pending).
     fn evaluate_checks(&mut self) {
-        let mut done = Vec::new();
-        for (f, theirs) in &self.remote_checks {
-            if let Some(mine) = self.check_hashes.get(f) {
-                for (m, h) in theirs {
-                    if !self.evaluated.insert((*f, *m)) {
-                        continue;
-                    }
-                    if h == mine {
-                        self.stats.checks_ok += 1;
-                    } else {
-                        self.stats.checks_bad += 1;
-                        self.events.push(format!(
-                            "[w{} m{}] NONDETERMINISM at confirmed frame {f}: mine {mine:016x} member {m} {h:016x}",
-                            self.world_id, self.me
-                        ));
-                    }
-                }
-                done.push(*f);
-            }
-        }
-        for f in done {
-            self.remote_checks.remove(&f);
-        }
-    }
-
-    /// Hash messages for confirmed check frames, but only once this member's simulation of them
-    /// used the complete log (caught up, no re-simulation pending). The newest few are re-sent with
-    /// every ack, so a lost hash message is repaired (review H4); receivers evaluate each
-    /// (frame, member) pair once.
-    pub fn due_checks(&mut self) -> Vec<Msg> {
         if self.dirty_from.is_some() {
-            return vec![];
+            return;
         }
         let fin = self.conf.min(self.frame);
-        let ready: Vec<u64> = self.check_hashes.range(..fin).rev().take(4).map(|(f, _)| *f).collect();
-        let mut out = Vec::new();
-        for f in ready {
-            self.checks_sent.insert(f);
-            out.push(Msg::Hash { frame: f, hash: self.check_hashes[&f] });
+        let frames: Vec<u64> = self.remote_checks.range(..fin).map(|(f, _)| *f).collect();
+        for f in frames {
+            let Some(&mine) = self.check_hashes.get(&f) else {
+                self.remote_checks.remove(&f);
+                continue;
+            };
+            let theirs = self.remote_checks.remove(&f).unwrap_or_default();
+            for (m, h) in theirs {
+                if !self.evaluated.insert((f, m)) {
+                    continue;
+                }
+                if h == mine {
+                    self.stats.checks_ok += 1;
+                } else {
+                    self.stats.checks_bad += 1;
+                    self.events.push(format!(
+                        "[w{} m{}] NONDETERMINISM at confirmed frame {f}: mine {mine:016x} member {m} {h:016x}",
+                        self.world_id, self.me
+                    ));
+                }
+            }
         }
-        self.evaluate_checks();
-        out
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -1270,7 +1309,7 @@ impl WorldSim {
         let mut v: Vec<(EntryId, Entry)> = self
             .at_frame
             .get(&f)
-            .map(|s| s.iter().filter(|id| !self.void.contains(id)).map(|id| (*id, self.entries[id].clone())).collect())
+            .map(|s| s.iter().filter(|id| !self.is_void(**id)).map(|id| (*id, self.entries[id].clone())).collect())
             .unwrap_or_default();
         let seed = self.cfg.seed;
         v.sort_by_key(|(_, e)| (tie_rank(seed, f, e.member), e.member, e.seq));
@@ -1388,6 +1427,8 @@ impl WorldSim {
                 self.t.portal_open = *open;
                 Outcome::Accepted
             }
+            // Protocol entries never reach the sim (set_eff schedules only perturbations).
+            Payload::Ack { .. } | Payload::Vote { .. } => Outcome::Accepted,
         }
     }
 
@@ -1533,6 +1574,7 @@ impl WorldSim {
                 self.stats.resim_frames += 1;
             }
             self.stats.resim_us += now_us() - t0;
+            self.evaluate_checks();
         }
         self.trim_ring();
         let mut n = 0;
@@ -1597,8 +1639,12 @@ impl WorldSim {
         self.entries.values().cloned().collect()
     }
 
-    pub fn void_ids(&self) -> &BTreeSet<EntryId> {
-        &self.void
+    pub fn void_ids(&self) -> BTreeSet<EntryId> {
+        self.violations.union(&self.disputed).copied().collect()
+    }
+
+    pub fn members_evicted(&self) -> &BTreeMap<MemberId, (u32, u64)> {
+        &self.evicted
     }
 }
 
@@ -1608,6 +1654,10 @@ impl WorldSim {
 /// single-world reference used to check that sharing a process with other worlds, rollbacks and
 /// throttling changed nothing.
 pub fn replay(world_id: u32, scene: SceneKind, cfg: SimConfig, members: &[MemberId], log: &[(Entry, u64)], frames: u64) -> BTreeMap<u64, u64> {
+    replay_sim(world_id, scene, cfg, members, log, frames).hashes
+}
+
+pub fn replay_sim(world_id: u32, scene: SceneKind, cfg: SimConfig, members: &[MemberId], log: &[(Entry, u64)], frames: u64) -> WorldSim {
     let mut s = WorldSim::new(world_id, u32::MAX, members, scene, cfg);
     for (e, eff) in log {
         let id = e.id();
@@ -1620,7 +1670,7 @@ pub fn replay(world_id: u32, scene: SceneKind, cfg: SimConfig, members: &[Member
     while s.frame < frames {
         s.step_frame(true);
     }
-    s.hashes
+    s
 }
 
 /// The log this member would hand to [`replay`]: every non-void entry with its effective frame.

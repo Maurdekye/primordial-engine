@@ -130,7 +130,7 @@ pub fn run_pit(c: &PitRun) -> PitOut {
     let mut net = Net::new(Link { delay_us: c.delay_ms * 1000, jitter_us: c.jitter_ms * 1000, loss_pct: c.loss }, 17);
     if let Some((a, b)) = c.stall {
         net.filter = Some(Box::new(move |now, _w, from, _to, m| {
-            if from == 3 && matches!(m, Msg::Ack(_)) && now >= a && now < b {
+            if from == 3 && matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Ack { .. })) && now >= a && now < b {
                 Fate::Drop
             } else {
                 Fate::Deliver
