@@ -4,6 +4,8 @@
 #
 #   bash crates/pe-mcp/run-linux-tests.sh build   # on Windows (Git Bash), through the org's heavy.sh lock
 #   bash crates/pe-mcp/run-linux-tests.sh run     # on Windows: runs the binaries in WSL Ubuntu-24.04 (via `inner`)
+#   bash crates/pe-mcp/run-linux-tests.sh glibc   # on Windows: native glibc build and test inside WSL, from a
+#                                                 # copy of HEAD in ~/pe-mcp-glibc (via `glibc-inner`)
 #
 # The test binaries carry Windows paths from compile time; PE_MCP_EXE and PE_MCP_DIR point them at
 # the Linux paths instead.
@@ -35,11 +37,31 @@ inner)
         b="$(wslpath "$exe")"
         echo "== $(basename "$b")"
         "$b" --test-threads=2 || fail=1
-    done < <(tr -d '' < "target/$T/pe-mcp-tests.txt")
+    done < <(tr -d '
+' < "target/$T/pe-mcp-tests.txt")
     exit $fail
     ;;
+glibc)
+    rm -f target/pe-mcp-head.tar
+    git archive --format=tar -o target/pe-mcp-head.tar HEAD
+    MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 --cd "$(pwd -W)" -- bash crates/pe-mcp/run-linux-tests.sh glibc-inner "$(git rev-parse --short HEAD)"
+    ;;
+glibc-inner)
+    source ~/.cargo/env 2>/dev/null || true
+    W=~/pe-mcp-glibc
+    mkdir -p "$W"
+    # Replace the sources, keep the target dir. Touch everything: archived files carry the commit's
+    # time, which could be older than a previous build's outputs and leave a stale binary.
+    find "$W" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
+    tar -xf target/pe-mcp-head.tar -C "$W"
+    find "$W" -path "$W/target" -prune -o -type f -exec touch {} +
+    cd "$W"
+    echo "# $(uname -srm); $(rustc --version); $(gcc --version | head -1); sources: HEAD ${2:-?}"
+    export CARGO_BUILD_JOBS=2
+    nice -n 19 cargo test -p pe-mcp -- --test-threads=2
+    ;;
 *)
-    echo "usage: $0 build|run" >&2
+    echo "usage: $0 build|run|glibc" >&2
     exit 2
     ;;
 esac
