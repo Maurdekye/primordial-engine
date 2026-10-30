@@ -49,6 +49,7 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+pub use crate::sign::{test_sign, KeyRing, Sig, SignedEntry};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
@@ -170,6 +171,8 @@ pub struct Stats {
     /// D80: kicks and role entries the decided changes applied, and those they refused.
     pub admin_applied: u64,
     pub admin_refused: u64,
+    /// Received entries dropped because their signature did not verify (S3).
+    pub bad_sigs: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -541,6 +544,10 @@ pub struct WorldSim {
     pub pos_hist: BTreeMap<u64, Vec<[f32; 3]>>,
     pub stats: Stats,
     pub events: Vec<String>,
+    /// This replica's signing key and the members' public keys (S3).
+    keys: KeyRing,
+    /// The author's signature of every entry held, for relaying it.
+    sigs: BTreeMap<EntryId, Sig>,
 }
 
 /// Bytes needed to store `b` as a patch on `a`: every `block`-byte block of `b` that differs from
@@ -568,7 +575,7 @@ pub fn now_us() -> u64 {
 }
 
 impl WorldSim {
-    pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig) -> Self {
+    pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig, keys: KeyRing) -> Self {
         let (world, objs) = build_scene(scene, world_id);
         let genesis_objects = objs.len() as u64;
         let hand_owners = match scene {
@@ -675,6 +682,8 @@ impl WorldSim {
             pos_hist: BTreeMap::new(),
             stats: Stats::default(),
             events: Vec::new(),
+            keys,
+            sigs: BTreeMap::new(),
         }
     }
 

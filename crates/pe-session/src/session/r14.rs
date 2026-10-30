@@ -66,7 +66,12 @@ impl WorldSim {
     /// Sign, as chain entries, the cross-world facts this replica has confirmed: a pending
     /// departure (for the destination) and an arrival's outcome (for the source). A relay needs a
     /// strict majority of them (reviews NEW-3, NEW-4).
-    pub fn attest_due(&mut self) -> Vec<Entry> {
+    pub fn attest_due(&mut self) -> Vec<SignedEntry> {
+        let out = self.attest_due_entries();
+        self.signed_all(out)
+    }
+
+    fn attest_due_entries(&mut self) -> Vec<Entry> {
         if self.dirty_from.is_some() || !self.members.contains(&self.me) {
             return vec![];
         }

@@ -173,7 +173,7 @@ pub fn fork9() {
                     }
                     b_id.insert(b.seq, b.id());
                     crafted.borrow_mut().insert(b.id());
-                    sim.net.send(1, 9, 3, &Msg::Entry(b.clone()));
+                    sim.net.send(1, 9, 3, &Msg::Entry(test_sign(1, b.clone())));
                     b_last = Some(b);
                 }
             } else if extra < 10 && now >= next_t {
@@ -189,7 +189,7 @@ pub fn fork9() {
                 };
                 b_ack = Some(b.payload.clone());
                 crafted.borrow_mut().insert(b.id());
-                sim.net.send(1, 9, 3, &Msg::Entry(b.clone()));
+                sim.net.send(1, 9, 3, &Msg::Entry(test_sign(1, b.clone())));
                 b_last = Some(b);
                 extra += 1;
                 next_t = now + 50_000;
@@ -571,7 +571,7 @@ pub fn onesided() {
                 x2.carried = None;
                 crafted.borrow_mut().insert(x2.id());
                 for m in [1, 2] {
-                    sim.net.send(1, c, m, &Msg::Entry(x2.clone()));
+                    sim.net.send(1, c, m, &Msg::Entry(test_sign(1, x2.clone())));
                 }
             }
             forked = true;

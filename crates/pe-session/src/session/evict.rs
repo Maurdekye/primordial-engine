@@ -63,7 +63,12 @@ impl WorldSim {
     /// and fetches). The view change (10.8) then decides which removals happen and their cuts. A
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
-    pub fn suspects_due(&mut self) -> Vec<Entry> {
+    pub fn suspects_due(&mut self) -> Vec<SignedEntry> {
+        let out = self.suspects_due_entries();
+        self.signed_all(out)
+    }
+
+    fn suspects_due_entries(&mut self) -> Vec<Entry> {
         if !self.members.contains(&self.me) || self.closed_at.is_some() {
             return vec![];
         }

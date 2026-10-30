@@ -160,8 +160,8 @@ impl Entry {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg {
-    /// Any chain entry: a perturbation, an ack or a vote.
-    Entry(Entry),
+    /// Any chain entry: a perturbation, an ack or a vote, with its author's signature (S3).
+    Entry(SignedEntry),
     /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
     Fetch { author: MemberId, from: u32, to: u32 },
     /// Everything one member sends one peer in one tick, in one datagram (R18, viz-4).
@@ -289,7 +289,7 @@ impl Wr {
     }
     pub fn msg(&mut self, m: &Msg) {
         match m {
-            Msg::Entry(e) => { self.u8(1); self.entry(e) }
+            Msg::Entry(e) => { self.u8(1); self.entry(e); self.0.extend_from_slice(&e.sig) }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
@@ -438,7 +438,7 @@ impl Rd<'_> {
     }
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
-            1 => Msg::Entry(self.entry()?),
+            1 => Msg::Entry(SignedEntry { entry: self.entry()?, sig: self.take(64)?.try_into().ok()? }),
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
             4 => {
                 let n = self.u32()? as usize;

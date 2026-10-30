@@ -25,7 +25,7 @@ pub fn replay_sim_with(
     log: &[(Entry, u64)],
     frames: u64,
 ) -> WorldSim {
-    let mut s = WorldSim::new(world_id, u32::MAX, members, scene, cfg);
+    let mut s = WorldSim::new(world_id, u32::MAX, members, scene, cfg, KeyRing::none());
     s.peers_of = peers_of.clone();
     s.run_log(log, frames)
 }
@@ -33,7 +33,7 @@ pub fn replay_sim_with(
 /// As [`replay_sim_with`], with `like`'s cross-world config: route list, epoch certificates and
 /// whether provenance is checked (P2-5).
 pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], log: &[(Entry, u64)], frames: u64) -> WorldSim {
-    let mut s = WorldSim::new(like.world_id, u32::MAX, members, scene, like.cfg);
+    let mut s = WorldSim::new(like.world_id, u32::MAX, members, scene, like.cfg, KeyRing::none());
     s.peers_of = like.peers_of.clone();
     s.epochs = like.epochs.clone();
     s.provenance = like.provenance;

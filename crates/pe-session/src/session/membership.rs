@@ -483,21 +483,24 @@ impl WorldSim {
 
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
     /// every replica judges it.
-    pub fn kick(&mut self, target: MemberId) -> Entry {
+    pub fn kick(&mut self, target: MemberId) -> SignedEntry {
         let epoch = self.epoch;
-        self.author_vc(Payload::Kick { epoch, target })
+        let e = self.author_vc(Payload::Kick { epoch, target });
+        self.signed(e)
     }
 
     /// D80: give `member` the role `role`.
-    pub fn set_role(&mut self, member: MemberId, role: RoleId) -> Entry {
+    pub fn set_role(&mut self, member: MemberId, role: RoleId) -> SignedEntry {
         let epoch = self.epoch;
-        self.author_vc(Payload::SetRole { epoch, member, role })
+        let e = self.author_vc(Payload::SetRole { epoch, member, role });
+        self.signed(e)
     }
 
     /// D80: define custom role `role`.
-    pub fn define_role(&mut self, role: RoleId, perms: u64) -> Entry {
+    pub fn define_role(&mut self, role: RoleId, perms: u64) -> SignedEntry {
         let epoch = self.epoch;
-        self.author_vc(Payload::DefineRole { epoch, role, perms })
+        let e = self.author_vc(Payload::DefineRole { epoch, role, perms });
+        self.signed(e)
     }
 
     /// A member's freeze of its own chain when a valid kick targets it (D80): it lets a kick go
@@ -941,7 +944,12 @@ impl WorldSim {
 
     /// Run this epoch's view change and return the entries to broadcast. Called every tick:
     /// Tendermint's rules (algorithm 1, lines 11-65) over chain entries, timeouts in clock frames.
-    pub fn view_change_due(&mut self) -> Vec<Entry> {
+    pub fn view_change_due(&mut self) -> Vec<SignedEntry> {
+        let out = self.view_change_due_entries();
+        self.signed_all(out)
+    }
+
+    fn view_change_due_entries(&mut self) -> Vec<Entry> {
         let mut out = Vec::new();
         if self.closed_at.is_some() {
             return out;
@@ -1510,6 +1518,6 @@ impl WorldSim {
 
     /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version.
     pub fn on_fetch_value(&self, value: u64) -> Vec<Msg> {
-        self.proposal_ids.get(&value).and_then(|id| self.entries.get(id)).map(|e| vec![Msg::Entry(e.clone())]).unwrap_or_default()
+        self.proposal_ids.get(&value).and_then(|id| self.signed_entry(*id)).map(|e| vec![Msg::Entry(e)]).unwrap_or_default()
     }
 }

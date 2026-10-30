@@ -423,7 +423,7 @@ impl Peer {
         self.worlds.insert(
             world,
             Replica {
-                sim: WorldSim::new(world, self.id, members, scene, cfg),
+                sim: WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)),
                 scene,
                 epoch_us,
                 dt_us,

@@ -1162,10 +1162,11 @@ name = "pe-session"
 version = "0.1.0"
 dependencies = [
  "box3d-rust",
+ "ed25519-dalek",
 ]
 
 [[package]]
-name = "pe-session-sim"
+name = "pe-session-harness"
 version = "0.1.0"
 dependencies = [
  "pe-session",

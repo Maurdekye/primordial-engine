@@ -71,13 +71,31 @@ impl WorldSim {
     pub(super) fn publish(&mut self, e: Entry) -> Entry {
         self.my_seq += 1;
         self.my_last = e.id();
-        let _ = self.insert(e.clone());
+        let se = self.keys.sign(self.world_id, e.clone());
+        self.sigs.insert(self.my_last, se.sig);
+        let _ = self.insert_entry(e.clone());
         e
+    }
+
+    /// `e` with the signature this replica holds for it (every entry it holds came signed, or is
+    /// its own).
+    pub(super) fn signed(&self, e: Entry) -> SignedEntry {
+        let sig = *self.sigs.get(&e.id()).expect("every held entry has its signature");
+        SignedEntry { entry: e, sig }
+    }
+
+    pub(super) fn signed_all(&self, v: Vec<Entry>) -> Vec<SignedEntry> {
+        v.into_iter().map(|e| self.signed(e)).collect()
+    }
+
+    /// The entry `id` with its author's signature, for relaying.
+    pub fn signed_entry(&self, id: EntryId) -> Option<SignedEntry> {
+        self.entries.get(&id).map(|e| self.signed(e.clone()))
     }
 
     /// Author an entry at the current frame. With `carry`, the entry carries the touched object's
     /// state after this frame: computed by stepping the frame once on a scratch copy.
-    pub fn author(&mut self, payload: Payload, carry: Option<u32>) -> Entry {
+    pub fn author(&mut self, payload: Payload, carry: Option<u32>) -> SignedEntry {
         let stamp = if carry.is_some() {
             assert!(self.dirty_from.is_none() && self.frame >= self.now, "carrying state needs a caught-up sim");
             self.frame
@@ -101,27 +119,30 @@ impl WorldSim {
             e.carried = st.map(|s| (obj, s));
             self.watched.insert(obj);
         }
-        self.publish(e)
+        let e = self.publish(e);
+        self.signed(e)
     }
 
     /// Author a state-free entry stamped `ahead` frames after the present (opt-in input delay).
-    pub fn author_ahead(&mut self, payload: Payload, ahead: u64) -> Entry {
+    pub fn author_ahead(&mut self, payload: Payload, ahead: u64) -> SignedEntry {
         let stamp = self.frame.max(self.now) + ahead;
         let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
-        self.publish(e)
+        let e = self.publish(e);
+        self.signed(e)
     }
 
     /// Test fixture for review H5: author with an arbitrary (backdated) stamp.
-    pub fn author_backdated(&mut self, payload: Payload, back: u64) -> Entry {
+    pub fn author_backdated(&mut self, payload: Payload, back: u64) -> SignedEntry {
         let stamp = self.frame.max(self.now).saturating_sub(back);
         let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
-        self.publish(e)
+        let e = self.publish(e);
+        self.signed(e)
     }
 
     /// Author this member's ack: a chain entry stating its horizon (it will author nothing stamped
     /// at or before it), the head it holds of every other chain, and its newest confirmed check
     /// hash (reviews NEW-1, H4).
-    pub fn author_ack(&mut self) -> Entry {
+    pub fn author_ack(&mut self) -> SignedEntry {
         let mut heads = Vec::new();
         for (&q, &held) in &self.contiguous {
             // A vote's frozen head is this replica's last word on that chain in the epoch (R3-1).
@@ -151,12 +172,32 @@ impl WorldSim {
             payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
             carried: None,
         };
-        self.publish(e)
+        let e = self.publish(e);
+        self.signed(e)
     }
 
-    /// Store an entry (received, fetched or my own). Returns entries to broadcast: when it proves
-    /// equivocation, both versions and this member's vote.
-    pub fn insert(&mut self, e: Entry) -> Vec<Entry> {
+    /// Store a received or fetched entry, once its signature verifies (S3; a bad one is dropped and
+    /// counted). Returns entries to broadcast: when it proves equivocation, both versions and this
+    /// member's vote.
+    pub fn insert(&mut self, se: SignedEntry) -> Vec<SignedEntry> {
+        let id = se.id();
+        if self.entries.contains_key(&id) {
+            return vec![];
+        }
+        if !self.keys.verify(self.world_id, &se) {
+            self.stats.bad_sigs += 1;
+            return vec![];
+        }
+        self.sigs.insert(id, se.sig);
+        let out = self.insert_entry(se.entry);
+        if !self.entries.contains_key(&id) {
+            self.sigs.remove(&id);
+        }
+        self.signed_all(out)
+    }
+
+    /// Store an entry whose signature is verified, or this replica's own.
+    pub(super) fn insert_entry(&mut self, e: Entry) -> Vec<Entry> {
         let id = e.id();
         if self.entries.contains_key(&id) || (!self.known.contains(&e.member) && e.member != LOGIC) {
             return vec![];

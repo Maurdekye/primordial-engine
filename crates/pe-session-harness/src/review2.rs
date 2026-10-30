@@ -127,7 +127,7 @@ pub fn ackfork() {
             };
             forged = (e.seq, e.id());
             forged_ids.borrow_mut().insert(e.id());
-            sim.net.send(1, 9, 2, &Msg::Entry(e));
+            sim.net.send(1, 9, 2, &Msg::Entry(test_sign(1, e)));
         }
     });
     println!("  9's touch at m1: {}", touch_state(&sim, 1, 9));
@@ -154,8 +154,8 @@ pub fn lateequiv() {
             let mut x2 = x.clone();
             x2.payload = Payload::Touch { obj: 10, impulse: [6.0, 0.0, 0.0], grab: false };
             x2.carried = None;
-            sim.net.send(1, 9, 1, &Msg::Entry(x2.clone()));
-            sim.net.send(1, 9, 2, &Msg::Entry(x2));
+            sim.net.send(1, 9, 1, &Msg::Entry(test_sign(1, x2.clone())));
+            sim.net.send(1, 9, 2, &Msg::Entry(test_sign(1, x2)));
             done = true;
         }
     });
@@ -185,7 +185,7 @@ pub fn evict() {
                 x2.payload = Payload::Touch { obj: 33, impulse: [0.0, 0.0, 3.0], grab: false };
                 x2.carried = None;
                 for to in [1, 2, 3] {
-                    sim.net.send(1, 9, to, &Msg::Entry(x2.clone()));
+                    sim.net.send(1, 9, to, &Msg::Entry(test_sign(1, x2.clone())));
                 }
                 done = true;
             }
