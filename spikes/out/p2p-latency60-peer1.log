@@ -1,0 +1,14 @@
+[peer 1 t= 0.000s f=   0] bound 127.0.0.1:40001 -> peer 127.0.0.1:40002 (delay 60 ms, jitter 20 ms, loss 0%, drop_seq None)
+[peer 1 t= 0.060s f=   0] pinned peer 2 key 1c6b27649c824edd
+[peer 1 t= 0.428s f=   0] proposing session epoch (+500 ms); min RTT 123139 us, offset estimate -18 us
+[peer 1 t= 2.525s f=  95] remote input peer 2 seq 0 for frame 90 arrived 5 frames late -> rollback
+[peer 1 t= 3.025s f= 125] remote input peer 2 seq 1 for frame 120 arrived 5 frames late -> rollback
+[peer 1 t= 3.104s f= 130] remote input peer 2 seq 2 for frame 125 arrived 5 frames late -> rollback
+[peer 1 t= 4.387s f= 206] remote input peer 2 seq 3 for frame 200 arrived 6 frames late -> rollback
+[peer 1 t= 6.519s f= 335] remote input peer 2 seq 4 for frame 330 arrived 5 frames late -> rollback
+[peer 1 t= 8.857s f= 475] remote input peer 2 seq 5 for frame 470 arrived 5 frames late -> rollback
+[peer 1 t=13.938s f= 690] DONE frames 0..600: digest 933b3a6e42ab5b94; rollbacks 6 (max depth 6, resimulated 31), sync checks ok 31 mismatched 0, reconciles 0, nondeterminism 0, bad signatures 0, datagrams sent 110 dropped 0
+[peer 1 t=13.938s f= 690] verdict frame 120: peer 1 seq 1 object 50 -> Accepted
+[peer 1 t=13.938s f= 690] verdict frame 120: peer 2 seq 1 object 50 -> RejectedClaimed { by_peer: 1, until_frame: 150 }
+[peer 1 t=13.938s f= 690] verdict frame 125: peer 2 seq 2 object 50 -> RejectedClaimed { by_peer: 1, until_frame: 150 }
+[peer 1 t=13.938s f= 690] verdict frame 126: peer 1 seq 2 object 50 -> Accepted
