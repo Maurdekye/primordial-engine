@@ -14,3 +14,8 @@ opt-level = "s"
 lto = true
 panic = "abort"
 codegen-units = 1
+
+# Same box3d-rust fork as the root workspace (crates/box3d-fork, scale-dependent contact
+# recycling), so physics-in-wasm runs the engine world definition.
+[patch.crates-io]
+box3d-rust = { path = "../../crates/box3d-fork" }

@@ -374,9 +374,9 @@ fn main() {
         let el = t.elapsed();
         all &= check(
             "D4 Box3D pile run compiled to wasm32 + wasmi == native digest",
-            digest == 0x7903_109a_ab28_ed9b,
+            digest == 0x8083_9f4a_5413_3e13,
             format!(
-                "digest {digest:016x} (native 7903109aab28ed9b); module compile {compile:?}; {FRAMES} frames in {el:?} ({:.0} us/frame interpreted)",
+                "digest {digest:016x} (native 80839f4a54133e13, engine world def); module compile {compile:?}; {FRAMES} frames in {el:?} ({:.0} us/frame interpreted)",
                 el.as_secs_f64() * 1e6 / FRAMES as f64
             ),
         );

@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! L_i   = BodySim::min_extent of body i     (inner radius: smallest shape extent)
-//! L     = combine(L_a, L_b)                 (Min by default; a static side takes the other's L)
+//! L     = combine(L_a, L_b)                 (HarmonicMean by default; a static side takes the other's L)
 //! r     = clamp(length_fraction * L, min_distance, max_distance)
 //! touching pair:      tolerance = r
 //! non-touching pair:  tolerance = min(r, speculative_distance)   (as upstream)
@@ -47,9 +47,12 @@ use crate::math_functions::{max_float, min_float};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RecycleLengthCombine {
-    /// `min(L_a, L_b)`. The smaller body bounds how far stale contact points may slide. Default.
+    /// `min(L_a, L_b)`. The smaller body bounds how far stale contact points may slide. The most
+    /// conservative choice.
     Min = 0,
     /// `2 L_a L_b / (L_a + L_b)`, between `min` and `2 * min`. Slightly looser for unequal pairs.
+    /// Default (user ruling 2026-10-30: it was 11-13% faster on a 10-30 m pile with no measured
+    /// stability loss).
     HarmonicMean = 1,
 }
 
@@ -102,7 +105,7 @@ impl ContactRecycleScaling {
             length_fraction: DEFAULT_RECYCLE_LENGTH_FRACTION,
             min_distance: default_recycle_min_distance(),
             max_distance: default_recycle_max_distance(),
-            combine: RecycleLengthCombine::Min,
+            combine: RecycleLengthCombine::HarmonicMean,
         }
     }
 
