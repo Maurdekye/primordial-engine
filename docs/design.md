@@ -3387,6 +3387,20 @@ confirmed facts, and only with proof.**
     (`RejectedNoProof`);
   * a correctly certified record with a NaN position, standing for a bug or a compromised majority in A
     (`RejectedInvalid`).
+* **Measured dishonest-majority attacks** (P2-5) [V session-sim `r14 forge`]. W is on A's and B's route
+  lists, and members 2 and 3, its whole membership, sign as W. Every one of these was refused, and
+  objects 52 to 55 stayed one live copy each in the honest worlds A and B:
+  * W mints A:53, which is live in A, into B as if born in W (`RejectedNoProvenance`);
+  * W mints an id it was never born with (`RejectedNoProvenance`);
+  * W forges an earlier hop A to W, signed by the one member of A it controls (`RejectedNoProvenance`);
+  * W splices A's genuine hop of another object onto A:54 (`RejectedNoProvenance`);
+  * refund and keep: W certifies to A a refusal of A:55, so A refunds it, while W's replicas accepted it.
+    W then exports it to B, presenting A's departure certificate as the hop (`RejectedNoProvenance`);
+  * resurrection: A:52 went A to W to B and back to A. W exports it again into B (`RejectedFork`: the
+    chain skips B's own last exit, and B now holds a fork proof against W), and into A (`RejectedLiveId`).
+  * Control, the same run with the provenance checks off [V `r14 forge --no-provenance`]: the two mints,
+    the forged hop, refund and keep, and the resurrection into B were all accepted. That left a second
+    copy of A:52, A:53, A:54 and A:55 in B, plus a minted W:500.
 * **Why settled rather than optimistic:** only confirmed, certified facts cross, so neither world ever acts
   on the other's speculation, and no correction is ever needed. The optimistic alternative is D45.
 
@@ -3418,17 +3432,54 @@ persists until a verdict arrives.
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
-  * **Conservation assumes that every world on a route list has an honest majority** (D46). A world that
-    one member controls is that member's word, so it never belongs on another world's route list.
-    * A route-listed world whose majority is dishonest can sign a fresh departure of any global id: one
-      born elsewhere, live elsewhere, or spent. Any world where that id is not live would accept it, so
-      that is a cross-world duplicate or a resurrection [I, review of f060e30].
   * With route lists, a single member, including the carrier, can no longer mint, lose or duplicate an
-    object [V r14 forge]. A dishonest majority of a routed world still can: trust is per route.
-  * **Global ids are not bound to their birth world.** The reviewer proposed that a global id's world
-    prefix must equal the source world, but objects travel on (A to B to C), and B's records then carry
-    A's ids. Instead, a record is vouched for by its source's majority, and B refuses a global id that is
-    already live in B.
+    object [V r14 forge]. Without provenance, a dishonest majority of a routed world still could. It
+    could sign a fresh departure of any global id (born elsewhere, live elsewhere, or spent), and any
+    world where that id is not live would accept it [I, review of f060e30; V `r14 forge --no-provenance`].
+  * **Per-object provenance chains** (D46's option for untrusted partners, MVP under D21; package P2-5,
+    `spikes/sim-core/src/provenance.rs`) [V r14 forge, r14 chain]:
+    * **Birth binding.** A global id is (birth world, index), and its birth record is the birth world's
+      genesis object list. Production adds runtime births as a `Born` fact certified by the birth
+      world's majority [I].
+    * **Hops.** When A commits a transfer (on B's certified acceptance), A's members attest "A committed
+      transfer t of object g to B; g had entered A by transfer v (0: born in A)". That certificate is the
+      hop. A departure certificate alone is not enough: a dishonest B could certify a refusal to A, which
+      refunds the object, and still claim to hold it.
+    * **Chains.** Each `Arrive` carries the hops from the object's birth into its source world, and the
+      source's departure certificate covers the chain's hash, so a relayer can neither strip nor swap it.
+      The destination checks every hop against the epoch certificates of the world that signed it,
+      whether or not that world is on its own route list (P2-4 supplies them; the spike uses a static
+      stub). A to B to C to A works [V r14 chain: three hops, conserved, all equal in both orders].
+    * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
+      entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
+      hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
+      verdict was confirmed in A, 0.65 s after the departure [V r14 ok, chain]. A world can export only an object whose way in
+      it can prove.
+    * **Last exits.** Each world keeps, per global id, whether the object is here (live or in escrow) or
+      which transfer last took it away (never pruned: about 48 bytes per object that ever left, in the spike's layout). An arrival
+      of an object that is here is `RejectedLiveId`. An arrival whose chain skips this world's last exit
+      is `RejectedFork`, and two exports by one world of the same incoming hop are kept as a fork proof
+      against that world's majority.
+    * **Why not a world prefix.** The reviewer of round 3 proposed that a global id's prefix must equal
+      the source world. Objects travel on (A to B to C), so the chain binds the id to its birth world
+      instead.
+    * **What remains: double spends by a holder** [V `r14 doublespend`]. A dishonest-majority world can
+      export an object it legitimately received a second time, into a world that has not seen the object
+      since. A:52 went A to W to B; W then exported it into A, citing its genuine hop in, and A accepted it.
+      That left two copies, in A and B. When the copies meet (here, B's return of A:52 into A), the
+      receiving world holds a transferable fork proof: two exports by W's majority of one incoming hop.
+      Prevention needs a per-object registry that orders every hop, for example at the birth world. That
+      costs one extra relay round per hop, and the birth world must stay reachable [I]; it is offered as
+      an option for the user. So a dishonest majority can lose, keep or double-spend only objects that
+      passed through it, and cannot touch any other object.
+    * **Chain size.** Each hop is a certificate of the source's epoch majority. With Ed25519 that is about
+      64 bytes per signer, about 0.65 KB per hop for a 16-member world, so a chain grows linearly with
+      hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
+      its own last exit (it checked the earlier ones on the way in) [I].
+    * **Long-range forgery.** Members of an old epoch who have since left can still sign facts for that
+      epoch. Binding a fact's frame to the epoch active at that frame (P2-4's `from_frame`) stops a later
+      epoch backdating, but not an old majority that colludes. This is the long-range attack of
+      proof-of-stake systems [I].
   * **Member lists change** (review R3-8b). In the spike they are fixed at startup, so an evicted member
     would still count toward the other world's majority. Production keys certificates to a membership
     epoch, and each membership change is certified by the previous epoch's majority, so another world can
@@ -3491,7 +3542,8 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 | abort | Member 2's earlier grab reaches member 1 150 ms late: A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 live copy (A) | all equal |
 | reject | Member 3 closes B's portal at a frame member 1 hears of 150 ms late: B rolls back 10 frames past fB | Arrival rejected; verdict returns the object to A | 1 live copy (A) | all equal |
 | throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
-| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid` | 1 live copy (B), 0 pending; objects 50 and 51 still in A | all equal |
+| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed. P2-5 adds a routed world W whose whole membership is dishonest: two mints, a forged hop, a spliced hop, refund and keep, and two resurrections (22.6) | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid`; P2-5: `RejectedNoProvenance`, `RejectedFork`, `RejectedLiveId` | 1 live copy (B), 0 pending; objects 50 and 51 still in A; A:52 to A:55 one copy each in A and B | all equal (A, B and W) |
+| chain (P2-5) | Three worlds, A (60 Hz), B (50 Hz) and C (60 Hz), routed to each other. Member 1 carries object 40 A to B to C to A; each next departure carries the hop in | Every departure and arrival accepted; the arrival back in A checks a two-hop chain that contains A's own last exit | 1 live copy (A), 0 pending | all equal, all three worlds and both orders (digests differ between orders, for abort's reason) |
 | late | A 2-frame deadline, shorter than the certificate round | Arrival `RejectedLate`; the certified refusal returns the object to A | 1 live copy (A), 0 pending | all equal |
 | crash | Three members per world; member 4 is in both. The carrier goes silent 84 ms after its departure (reviews NEW-6, R3-7) | Both worlds remove the carrier after 180 frames of silence; member 4 relays the transfer; accepted in B | 1 live copy (B), 0 pending | all equal (live members) |
 | ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | all equal. ok and reject have digests identical to forward. abort's A digest differs (review round 3): the escrow key derives from the Depart's entry id, whose chain contents depend on processing order |
@@ -4208,10 +4260,14 @@ entry says so.
   * **Trust assumption:** every route-listed world has an honest majority. A world whose majority is
     dishonest can sign a departure of any global id, which another world accepts wherever that id is
     not live: a cross-world duplicate, or a resurrected object.
-  * **Option for untrusted partners** [I]: bind each global id to its birth world, and require a
+  * **Option for untrusted partners**: bind each global id to its birth world, and require a
     provenance chain. Each `Arrive` certificate then references the certified transfer, or the birth
     record, that brought the object into its source world. A destination checks the chain back to the
-    birth world, which costs one extra reference per hop.
+    birth world, which costs one extra reference per hop. **Built in the spike (P2-5, 22.7)** [V r14 forge,
+    r14 chain]: mints, forged or spliced hops, refund and keep, and resurrections are refused. What remains
+    is a double spend by a world of an object it legitimately held [V r14 doublespend]. Closing that needs
+    a per-object registry at the birth world (one more relay round per hop, and the birth world must stay
+    reachable) [I]: a possible further decision for the user.
   * Cost: one attestation entry per member per transfer step, and each world must know the other's member
     keys.
   * Alternatives:
