@@ -67,7 +67,7 @@ pub fn tints(snap: &[Vec<f32>]) -> Vec<Vec<f32>> {
         .collect()
 }
 
-pub fn build_frame(shot: &Shot, tint: &[f32], colors: &[[f32; 3]], show_ghost: bool) -> Frame {
+pub fn build_frame(shot: &Shot, tint: &[f32], frozen: &[bool], colors: &[[f32; 3]], show_ghost: bool) -> Frame {
     let mut f = Frame::default();
     let lin = |c: [f32; 3]| c.map(srgb_to_linear);
     f.boxes.push(Instance::cuboid([0.0, -0.5, 0.0], [2.0, 0.5, 2.0], { let c = lin([0.30, 0.31, 0.34]); [c[0], c[1], c[2], 1.0] }));
@@ -80,7 +80,8 @@ pub fn build_frame(shot: &Shot, tint: &[f32], colors: &[[f32; 3]], show_ghost: b
     let snap_c = lin([1.0, 0.08, 0.85]);
     for i in 0..BALLS {
         let t = tint[i];
-        let c = colors[i];
+        // Frozen balls are drawn dark grey; snapped balls fade from magenta.
+        let c = if frozen[i] { lin([0.16, 0.16, 0.18]) } else { colors[i] };
         let c = [c[0] + (snap_c[0] - c[0]) * t, c[1] + (snap_c[1] - c[1]) * t, c[2] + (snap_c[2] - c[2]) * t];
         f.spheres.push(Instance::sphere(shot.pos[i], 0.06, [c[0], c[1], c[2], 1.0]));
     }
@@ -220,6 +221,7 @@ fn lines(cell: &Cell, a: &Analysis, r: &Recording, f: usize, observer: bool, com
         }
     }
     v.push((format!("ball snaps {:.0}/s", d.snaps_s), if d.snaps_s > 0.0 { [255, 120, 230] } else { dim }, 1.0));
+    v.push((format!("frozen balls now {}", d.frozen), if d.frozen > 0 { [150, 160, 175] } else { dim }, 1.0));
     v.push((String::new(), dim, 0.5));
     if naive && observer {
         v.push(("no simulation: draws the".into(), dim, 1.0));
@@ -265,8 +267,8 @@ pub fn prepare(a: &Analysis) -> Prepared {
 /// One peer's view: a text column (width `tw`) left of the 3D render (width `w - tw`).
 #[allow(clippy::too_many_arguments)]
 pub fn view(rd: &mut Renderer, text: &Text, colors: &[[f32; 3]], r: &Recording, a: &Analysis, p: &Prepared, f: usize, observer: bool, w: usize, tw: usize, h: usize, compact: bool) -> Vec<u8> {
-    let (shot, tint) = if observer { (&r.obs[f], &p.tints_o[f]) } else { (&r.eng[f], &p.tints_e[f]) };
-    let fr = build_frame(shot, tint, colors, true);
+    let (shot, tint, frozen) = if observer { (&r.obs[f], &p.tints_o[f], &a.obs_frozen[f]) } else { (&r.eng[f], &p.tints_e[f], &a.eng_frozen[f]) };
+    let fr = build_frame(shot, tint, frozen, colors, true);
     let w3 = w - tw;
     let mut px3 = rd.render(&fr, w3 as u32, h as u32);
     {
@@ -304,7 +306,7 @@ pub fn view(rd: &mut Renderer, text: &Text, colors: &[[f32; 3]], r: &Recording, 
 pub const VW: usize = 960;
 pub const TW: usize = 320;
 pub const VH: usize = 540;
-pub const HDR: usize = 36;
+pub const HDR: usize = 46;
 
 pub fn cell_video(rd: &mut Renderer, text: &Text, colors: &[[f32; 3]], r: &Recording, a: &Analysis, out: &str) {
     let p = prepare(a);
@@ -321,10 +323,9 @@ pub fn cell_video(rd: &mut Renderer, text: &Text, colors: &[[f32; 3]], r: &Recor
         {
             let mut img = Img { px: &mut frame, w, h };
             let title = format!("{}   |   {}", r.cell.mode_label(), r.cell.net_label());
-            text.draw(&mut img, 10.0, 8.0, 20.0, &title, [255, 255, 255]);
-            let legend = "magenta = ball snapped (correction)   white ghost = engager's controller now";
-            let lw = text.width(14.0, legend);
-            text.draw(&mut img, w as f32 - lw - 12.0, 12.0, 14.0, legend, [180, 185, 195]);
+            text.draw(&mut img, 10.0, 3.0, 19.0, &title, [255, 255, 255]);
+            let legend = "magenta = ball snapped (correction)   dark grey = ball frozen (no new state)   white ghost = engager's controller now";
+            text.draw(&mut img, 10.0, 26.0, 14.0, legend, [180, 185, 195]);
         }
         let e = view(rd, text, colors, r, a, &p, f, false, VW, TW, VH, false);
         let o = view(rd, text, colors, r, a, &p, f, true, VW, TW, VH, false);
@@ -375,7 +376,7 @@ pub fn grid_video(rd: &mut Renderer, text: &Text, colors: &[[f32; 3]], recs: &[(
             let mut img = Img { px: &mut frame, w, h };
             let (ph, pc) = phase(recs[0].0.eng[f].k);
             text.draw(&mut img, 12.0, 2.0, 20.0, &ph, pc);
-            let legend = "each cell: ENGAGER (left) | OBSERVER (right)   magenta = snapped ball   white ghost = engager's controller";
+            let legend = "each cell: ENGAGER (left) | OBSERVER (right)   magenta = snapped ball   dark grey = frozen ball   white ghost = engager's controller";
             let lw = text.width(15.0, legend);
             text.draw(&mut img, w as f32 - lw - 12.0, 4.0, 15.0, legend, [180, 185, 195]);
             for (ci, m) in modes.iter().enumerate() {

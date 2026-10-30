@@ -66,14 +66,29 @@ game would render it.
 * The translucent white ghost marks where the engager's controller is right now, from the
   scripted target. It makes input delay and observer lag visible.
 * **Magenta** marks a ball that just *snapped*: its drawn displacement differs from what its own
-  drawn velocity explains (|Δx − v·dt| > 1 cm). The tint fades over 15 frames.
+  drawn velocity explains over the sim frames its state advanced (|Δx − v·dt·Δframes| > 1 cm,
+  where Δframes is the displayed sim-frame difference, or for the naive observer, that ball's
+  newest-update frame difference). The tint fades over 15 frames.
+* **Dark grey** marks a ball that is *frozen* this tick: its drawn state did not advance
+  (Δframes = 0) although its drawn velocity is above 0.06 m/s (1 mm per frame). This happens
+  when a pose peer stalls, or when a naive observer has no new update for that ball. A frozen
+  ball is not a snap. When it resumes, the jump counts as a snap only if it differs from its own
+  velocity extrapolated over the skipped frames.
 * The bar under each 3D view is the timeline, with the gesture shown in orange.
 
 **Calibrating the snap detector (verified).** In the six pose-source cells where the engager
 never rolls back, its own display registers 70 snapped ball-frames in the whole run. They come
 from contact pushes, most of them at ticks 141-148, when the scripted hand jumps 0.6 m sideways
 at the end of its descent. That jump is a property of the 5d script and is kept as it is. So 70 is
-the detector's noise floor; anything above it is corrections or stale updates.
+the detector's noise floor; anything above it is a correction (a rollback, or a state update that
+disagrees with what the peer drew). Freezes are counted separately. The 1 cm threshold equals a
+0.6 m/s velocity error at 60 Hz. It is fitted to this pit and gesture, not a general constant.
+
+*Revision after review (V-1):* the first version predicted with v·dt alone. It assumed one sim
+frame per display tick, so it counted frozen ticks as snaps, inflating the capped naive cells and
+the pose-d4 64 kbit/s cells by up to about 3.5x. The detector now uses Δframes, and freezes have
+their own tint and count. The pose-source cells that never stall did not change, including the
+300 ms engager's 8,437.
 
 **Overlay metrics (all measured).**
 
@@ -82,7 +97,8 @@ the detector's noise floor; anything above it is corrections or stale updates.
 * **queue** is the backlog of the peer's outgoing bottleneck; **q-drops** counts datagrams
   dropped there.
 * **rollbacks/s** and **re-sim CPU**: re-sim is the measured CPU time on this machine, averaged
-  per display frame over the last second. It is the only number that varies between runs.
+  per display frame over the last second. It is the only number that varies between runs, by up
+  to about ±50% here, because other agents shared the machine.
 * **snapshots** is the bytes of rollback keyframes held (`WorldSim::ring_bytes`, new). The naive
   engager needs no snapshots. The naive observer holds a 32 kB state table.
 * **confirmed lag** is the displayed frame minus the confirmed frame. "SIM STALLED" means the
@@ -108,7 +124,8 @@ matrix uses 18:
 * Bandwidth is not crossed with the other latencies. The cap's effect, queueing, adds to latency
   and does not interact with it otherwise. Crossing them would double the matrix without showing
   anything new.
-* **Configurations:** naive state streaming; pose-source with input delay 0; pose-source with
+* **Configurations:** naive state streaming, labelled "no rate control, no resend" in the
+  videos; pose-source with input delay 0; pose-source with
   input delay 4, which **adds 67 ms (+4 frames) of latency to the engager's own hand, by
   design**. Its rows and labels say so.
 
@@ -120,26 +137,26 @@ until no ball differs by more than 1 cm for the rest of the video. "Final state"
 compares full-state hashes and replay digests; for naive, it compares the observer's table with
 the engager's state.
 
-| Cell | Engager hand lag behind controller | Observer hand lag | Engager rollbacks/s (sweep) | Observer rollbacks/s, re-sim ms/frame (sweep) | Engager tx (sweep) | Observer tx (sweep) | Max queue, queue drops | Peak snapshot memory | Balls >1 cm off at the observer: sweep mean / peak | Snapped ball-frames: engager / observer | Converged after gesture end | Final state |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `naive_0ms_unl` | 1.0 frames (17 ms) | 1.8 frames (30 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 13.2 / 54 | 70 / 1397 | 0.08 s | identical |
-| `naive_50ms_unl` | 1.0 frames (17 ms) | 4.8 frames (80 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 39.0 / 94 | 70 / 1397 | 0.20 s | identical |
-| `naive_150ms_unl` | 1.0 frames (17 ms) | 10.8 frames (180 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 56.6 / 114 | 70 / 1397 | 0.30 s | identical |
-| `naive_300ms_unl` | 1.0 frames (17 ms) | 19.8 frames (331 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 78.8 / 138 | 70 / 1397 | 0.45 s | identical |
-| `naive_50ms_256k` | 1.0 frames (17 ms) | 32.0 frames (533 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 500 ms, 3959 | 0.0 MB | 218.8 / 372 | 70 / 21814 | never (within 4.3 s) | DIFFERENT (367 balls off, max 1.65 m) |
-| `naive_50ms_64k` | 1.0 frames (17 ms) | 31.1 frames (519 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 500 ms, 4063 | 0.0 MB | 233.1 / 388 | 70 / 12412 | never (within 4.3 s) | DIFFERENT (387 balls off, max 1.87 m) |
-| `pose-d0_0ms_unl` | 1.0 frames (17 ms) | 1.0 frames (17 ms) | 0.0 | 0.5, 0.01 | 8.3 kB/s | 3.3 kB/s | 0 ms, 0 | 3.5 MB | 0.1 / 11 | 70 / 70 | by gesture end | identical |
-| `pose-d0_50ms_unl` | 1.0 frames (17 ms) | 3.8 frames (63 ms) | 0.0 | 51.0, 1.94 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 16.2 / 105 | 70 / 1826 | by gesture end | identical |
-| `pose-d0_150ms_unl` | 1.0 frames (17 ms) | 9.8 frames (164 ms) | 0.5 | 49.3, 4.56 | 10.6 kB/s | 3.7 kB/s | 0 ms, 0 | 18.7 MB | 57.3 / 129 | 329 / 3063 | by gesture end | identical |
-| `pose-d0_300ms_unl` | 1.0 frames (17 ms) | 18.8 frames (314 ms) | 19.7 | 46.6, 6.83 | 18.0 kB/s | 35.3 kB/s | 0 ms, 0 | 33.5 MB | 116.6 / 222 | 8437 / 2260 | 0.47 s | identical |
-| `pose-d0_50ms_256k` | 1.0 frames (17 ms) | 3.8 frames (63 ms) | 0.0 | 51.0, 1.99 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 16.2 / 105 | 70 / 1826 | by gesture end | identical |
-| `pose-d0_50ms_64k` | 1.0 frames (17 ms) | 17.3 frames (289 ms) | 7.0 | 43.9, 4.41 | 9.8 kB/s | 13.6 kB/s | 500 ms, 783 | 54.8 MB | 105.1 / 243 | 4508 / 2077 | 2.97 s | identical |
-| `pose-d4_0ms_unl` | 5.0 frames (83 ms) | 5.0 frames (83 ms) | 0.0 | 0.0, 0.00 | 8.3 kB/s | 3.3 kB/s | 0 ms, 0 | 3.5 MB | 0.0 / 0 | 70 / 70 | by gesture end | identical |
-| `pose-d4_50ms_unl` | 5.0 frames (83 ms) | 5.0 frames (84 ms) | 0.0 | 0.8, 0.05 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 2.0 / 84 | 70 / 202 | by gesture end | identical |
-| `pose-d4_150ms_unl` | 5.0 frames (83 ms) | 9.8 frames (164 ms) | 0.5 | 49.3, 2.63 | 10.6 kB/s | 3.7 kB/s | 0 ms, 0 | 18.7 MB | 44.0 / 126 | 315 / 2583 | by gesture end | identical |
-| `pose-d4_300ms_unl` | 5.0 frames (83 ms) | 18.8 frames (314 ms) | 0.7 | 46.6, 6.01 | 18.0 kB/s | 3.8 kB/s | 0 ms, 0 | 33.2 MB | 98.2 / 218 | 555 / 2955 | by gesture end | identical |
-| `pose-d4_50ms_256k` | 5.0 frames (83 ms) | 5.0 frames (84 ms) | 0.0 | 0.8, 0.05 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 2.0 / 84 | 70 / 202 | by gesture end | identical |
-| `pose-d4_50ms_64k` | 5.0 frames (83 ms) | 17.7 frames (294 ms) | 6.2 | 29.8, 4.31 | 10.0 kB/s | 9.8 kB/s | 500 ms, 770 | 55.0 MB | 87.9 / 270 | 4557 / 3370 | 4.00 s | identical |
+| Cell | Engager hand lag behind controller | Observer hand lag | Engager rollbacks/s (sweep) | Observer rollbacks/s, re-sim ms/frame (sweep) | Engager tx (sweep) | Observer tx (sweep) | Max queue, queue drops | Peak snapshot memory | Balls >1 cm off at the observer: sweep mean / peak | Snapped ball-frames: engager / observer | Frozen ball-ticks: engager / observer | Converged after gesture end | Final state |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `naive_0ms_unl` | 1.0 frames (17 ms) | 1.8 frames (30 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 13.2 / 54 | 70 / 655 | 0 / 1838 | 0.08 s | identical |
+| `naive_50ms_unl` | 1.0 frames (17 ms) | 4.8 frames (80 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 39.0 / 94 | 70 / 655 | 0 / 1838 | 0.20 s | identical |
+| `naive_150ms_unl` | 1.0 frames (17 ms) | 10.8 frames (180 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 56.6 / 114 | 70 / 655 | 0 / 1838 | 0.30 s | identical |
+| `naive_300ms_unl` | 1.0 frames (17 ms) | 19.8 frames (331 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 0 ms, 0 | 0.0 MB | 78.8 / 138 | 70 / 655 | 0 / 1838 | 0.45 s | identical |
+| `naive_50ms_256k` | 1.0 frames (17 ms) | 32.0 frames (533 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 500 ms, 3959 | 0.0 MB | 218.8 / 372 | 70 / 248 | 0 / 34781 | never (within 4.3 s) | DIFFERENT (367 balls off, max 1.65 m) |
+| `naive_50ms_64k` | 1.0 frames (17 ms) | 31.1 frames (519 ms) | 0.0 | 0.0, 0.00 | 844.7 kB/s | 0.0 kB/s | 500 ms, 4063 | 0.0 MB | 233.1 / 388 | 70 / 111 | 0 / 18624 | never (within 4.3 s) | DIFFERENT (387 balls off, max 1.87 m) |
+| `pose-d0_0ms_unl` | 1.0 frames (17 ms) | 1.0 frames (17 ms) | 0.0 | 0.5, 0.01 | 8.3 kB/s | 3.3 kB/s | 0 ms, 0 | 3.5 MB | 0.1 / 11 | 70 / 70 | 0 / 0 | by gesture end | identical |
+| `pose-d0_50ms_unl` | 1.0 frames (17 ms) | 3.8 frames (63 ms) | 0.0 | 51.0, 2.35 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 16.2 / 105 | 70 / 1826 | 0 / 0 | by gesture end | identical |
+| `pose-d0_150ms_unl` | 1.0 frames (17 ms) | 9.8 frames (164 ms) | 0.5 | 49.3, 5.20 | 10.6 kB/s | 3.7 kB/s | 0 ms, 0 | 18.7 MB | 57.3 / 129 | 329 / 3063 | 0 / 0 | by gesture end | identical |
+| `pose-d0_300ms_unl` | 1.0 frames (17 ms) | 18.8 frames (314 ms) | 19.7 | 46.6, 7.23 | 18.0 kB/s | 35.3 kB/s | 0 ms, 0 | 33.5 MB | 116.6 / 222 | 8437 / 2260 | 0 / 0 | 0.47 s | identical |
+| `pose-d0_50ms_256k` | 1.0 frames (17 ms) | 3.8 frames (63 ms) | 0.0 | 51.0, 2.13 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 16.2 / 105 | 70 / 1826 | 0 / 0 | by gesture end | identical |
+| `pose-d0_50ms_64k` | 1.0 frames (17 ms) | 17.3 frames (289 ms) | 7.0 | 43.9, 5.74 | 9.8 kB/s | 13.6 kB/s | 500 ms, 783 | 54.8 MB | 105.1 / 243 | 4506 / 2077 | 2 / 0 | 2.97 s | identical |
+| `pose-d4_0ms_unl` | 5.0 frames (83 ms) | 5.0 frames (83 ms) | 0.0 | 0.0, 0.00 | 8.3 kB/s | 3.3 kB/s | 0 ms, 0 | 3.5 MB | 0.0 / 0 | 70 / 70 | 0 / 0 | by gesture end | identical |
+| `pose-d4_50ms_unl` | 5.0 frames (83 ms) | 5.0 frames (84 ms) | 0.0 | 0.8, 0.07 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 2.0 / 84 | 70 / 202 | 0 / 0 | by gesture end | identical |
+| `pose-d4_150ms_unl` | 5.0 frames (83 ms) | 9.8 frames (164 ms) | 0.5 | 49.3, 3.40 | 10.6 kB/s | 3.7 kB/s | 0 ms, 0 | 18.7 MB | 44.0 / 126 | 315 / 2583 | 0 / 0 | by gesture end | identical |
+| `pose-d4_300ms_unl` | 5.0 frames (83 ms) | 18.8 frames (314 ms) | 0.7 | 46.6, 9.93 | 18.0 kB/s | 3.8 kB/s | 0 ms, 0 | 33.2 MB | 98.2 / 218 | 555 / 2955 | 0 / 0 | by gesture end | identical |
+| `pose-d4_50ms_256k` | 5.0 frames (83 ms) | 5.0 frames (84 ms) | 0.0 | 0.8, 0.06 | 8.8 kB/s | 3.3 kB/s | 0 ms, 0 | 8.1 MB | 2.0 / 84 | 70 / 202 | 0 / 0 | by gesture end | identical |
+| `pose-d4_50ms_64k` | 5.0 frames (83 ms) | 17.7 frames (294 ms) | 6.2 | 29.8, 5.02 | 10.0 kB/s | 9.8 kB/s | 500 ms, 770 | 55.0 MB | 87.9 / 270 | 3615 / 2573 | 1531 / 1400 | 4.00 s | identical |
 
 All 12 pose-source cells: both members' histories equal an offline replay of the final log, and
 the end-state hashes are identical (`verification.txt`).
@@ -155,8 +172,8 @@ the end-state hashes are identical (`verification.txt`).
    What differs is the balls:
    * **Pose-source:** the observer predicts with the hand held still, so balls the hand is
      about to hit stay put until the entry lands, then **snap** into place (magenta). It does
-     this about 50 times a second at 50 ms and above, re-simulating about 1.9 ms per frame at
-     50 ms, 4.4 ms at 150 ms and 7.1 ms at 300 ms. Once the entries land, the observer's balls
+     this about 50 times a second at 50 ms and above, re-simulating about 2-2.4 ms per frame at
+     50 ms, 3.4-5.2 ms at 150 ms and 7-10 ms at 300 ms (measured CPU; noisy). Once the entries land, the observer's balls
      match the engager's *frame*. But the comparison is with what the engager shows *now*, so
      balls near the hand are off by up to about 10-25 cm while it moves: a mean of 16 balls at
      50 ms and 57 at 150 ms.
@@ -165,8 +182,9 @@ the end-state hashes are identical (`verification.txt`).
      delay 0.
    * **Naive (unlimited):** the observer simply draws the engager's world one-way latency late.
      It never mispredicts, but every moving ball is stale, so more balls are off at the same
-     instant than with pose-source (39 vs 16 at 50 ms). It snaps where jitter or loss skips a
-     frame. It costs **845 kB/s**, against **8.8 kB/s** for pose-source.
+     instant than with pose-source (39 vs 16 at 50 ms). Where jitter or loss delays a frame's
+     update, the ball freezes for a tick (1,838 frozen ball-ticks) and occasionally snaps (655
+     ball-frames). It costs **845 kB/s**, against **8.8 kB/s** for pose-source.
 3. **300 ms crosses the late allowance (pose-source, delay 0).** Every Hand entry reaches the
    observer more than 250 ms after its stamp. The observer's late reports then **re-stamp** all
    222 entries later (design H5), so the agreed history has the hand moving later than the
@@ -177,13 +195,15 @@ the end-state hashes are identical (`verification.txt`).
 4. **Bandwidth.**
    * At 256 kbit/s, pose-source is identical to unlimited.
    * Naive collapses: 95% of its datagrams are tail-dropped and the observer's pit freezes in
-     patches. Its end state is **never** correct: 367 balls off, up to 1.65 m, and no repair,
+     patches (dark grey: 34,781 frozen ball-ticks at 256 kbit/s and 18,624 at 64 kbit/s, against
+     248 and 111 snaps). Its end state is **never** correct: 367 balls off, up to 1.65 m, and no repair,
      because the naive scheme only resends balls that move again.
    * At 64 kbit/s, pose-source as built also exceeds the cap, and the result is the most
      instructive cell:
      * 500 ms of bufferbloat and about 780 queue drops lead to re-stamping (151 entries), and the
        acks swell further.
-     * Both peers hit the speculation limit and **freeze** ("SIM STALLED").
+     * Both peers hit the speculation limit and **freeze** ("SIM STALLED"). With delay 4, about
+       1,400-1,500 ball-ticks per peer are frozen while moving.
      * The re-stamped history makes the engager's hand **replay part of its sweep after the
        player finished the gesture**. Balls are flung out of the pit.
      * The final state is still bit-identical on both peers, about 3 s (delay 0) or 4 s

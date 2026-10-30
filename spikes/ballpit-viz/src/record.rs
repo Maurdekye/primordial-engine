@@ -57,7 +57,7 @@ pub struct Cell {
 impl Cell {
     pub fn mode_label(&self) -> String {
         match self.mode {
-            Mode::Naive => "naive state streaming".into(),
+            Mode::Naive => "naive state streaming (no rate control, no resend)".into(),
             Mode::Pose { ahead: 0 } => "pose-source, input delay 0".into(),
             Mode::Pose { ahead } => format!("pose-source, input delay {ahead} (+{:.0} ms engager latency)", ahead as f64 * 1000.0 / HZ as f64),
         }
@@ -121,6 +121,10 @@ pub struct Shot {
     pub sim_frame: u64,
     pub pos: Vec<[f32; 3]>,
     pub vel: Vec<[f32; 3]>,
+    /// Per object: the sim frame its drawn state belongs to (pose-source and the naive engager:
+    /// the displayed frame for every object; naive observer: the frame of the newest update
+    /// received for that object).
+    pub frames: Vec<u64>,
     pub m: Metrics,
 }
 
@@ -265,7 +269,7 @@ fn record_pose(cell: &Cell, ahead: u64) -> Recording {
                 restamps: s.events.iter().filter(|e| e.contains("re-stamped")).count() as u64,
                 ..Default::default()
             };
-            shots[pi].push(Shot { k, t_us: now, sim_frame: s.frame, pos, vel, m });
+            shots[pi].push(Shot { k, t_us: now, sim_frame: s.frame, pos, vel, frames: vec![s.frame; N_OBJ], m });
         }
         sim.net.now_us += 1000;
     }
@@ -423,7 +427,7 @@ fn record_naive(cell: &Cell) -> Recording {
                         stalled,
                         ..Default::default()
                     };
-                    shots[0].push(Shot { k, t_us: now, sim_frame: s.frame, pos, vel, m });
+                    shots[0].push(Shot { k, t_us: now, sim_frame: s.frame, pos, vel, frames: vec![s.frame; N_OBJ], m });
                 }
             }
         }
@@ -440,7 +444,8 @@ fn record_naive(cell: &Cell) -> Recording {
                         stalled: obs_last_change + DT_US < now,
                         ..Default::default()
                     };
-                    shots[1].push(Shot { k, t_us: now, sim_frame: newest, pos, vel, m });
+                    let frames = disp.iter().map(|d| d.map_or(0, |(f, _)| f)).collect();
+                    shots[1].push(Shot { k, t_us: now, sim_frame: newest, pos, vel, frames, m });
                 }
             }
         }
