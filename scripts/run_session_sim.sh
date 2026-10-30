@@ -38,6 +38,8 @@ for v in badvote liar crashstall; do run review3-$v $v; done
 # equivocating proposer, a join, and the D80 quorum comparisons (twosilent5 and bridge run both rules;
 # bridge under a strict majority forks by design, and each side is checked on its own).
 for v in twosilent twosilent5 withheld colluders badproposer bridge join refwithhold; do run p2-4-$v $v; done
+# A member moves only its own hand (design 8.4; P2-8 review).
+run handowner handowner
 run p2-4-vcscale-64 vcscale --members 64 --silent 2
 run p2-4-vcscale-256 vcscale --members 256 --silent 2 --no-heads
 # Fail on any fork, replay mismatch, panic, false check or lost/duplicated object (reviews NEW-2, NEW-7).
