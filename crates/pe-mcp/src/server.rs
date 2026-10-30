@@ -91,7 +91,7 @@ pub fn scope_of(tool: &str) -> Scope {
 impl PeerServer {
     pub fn new(engine: EngineHandle, auth: Auth) -> Self {
         let tool_router = Self::tool_router();
-        let tools = tool_router
+        let mut tools: Vec<Tool> = tool_router
             .list_all()
             .into_iter()
             .map(|mut t| {
@@ -100,6 +100,7 @@ impl PeerServer {
                 t
             })
             .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name)); // a stable tools/list
         PeerServer { engine, auth, tool_router, tools: Arc::new(tools) }
     }
 

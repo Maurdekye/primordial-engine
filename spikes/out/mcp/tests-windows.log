@@ -1,5 +1,5 @@
    Compiling pe-mcp v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\mcp\crates\pe-mcp)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 19s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 32s
      Running unittests src\lib.rs (target\debug\deps\pe_mcp-811b60eeda840725.exe)
 
 running 5 tests
@@ -21,30 +21,30 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 9 tests
 test binds_loopback_only ... ok
-test ipv6_loopback_when_available ... ok
 test foreign_host_is_refused ... ok
+test ipv6_loopback_when_available ... ok
 test preflight_gets_no_cors ... ok
 test origin_is_refused_unless_allowed ... ok
 test revoked_token_stops_working ... ok
-test token_is_required_and_checked ... ok
 test scopes_come_from_the_token ... ok
+test token_is_required_and_checked ... ok
 test valid_request_is_served ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
      Running tests\pipe.rs (target\debug\deps\pipe-3ba8d98e5f0191b7.exe)
 
 running 7 tests
 test pipe_dacl_admits_only_the_current_user ... ok
-test handshake_then_mcp_as_the_tokens_principal ... ok
 test revocation_takes_effect_on_an_open_connection ... ok
+test handshake_then_mcp_as_the_tokens_principal ... ok
 test two_principals_share_one_peer ... ok
 test wrong_or_malformed_handshake_is_refused ... ok
 test bridge_without_environment_fails ... ok
-pe-mcp: pipe \\.\pipe\primordial-mcp-108140-68e328af10d0b7a9235f0f9d
+pe-mcp: pipe \\.\pipe\primordial-mcp-109820-a8164157610779533b59e86a
 test serve_launches_bridge_end_to_end ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
 
      Running tests\tools.rs (target\debug\deps\tools-f7a55e3b0f47a24b.exe)
 
@@ -55,9 +55,9 @@ test forbidden_without_scope ... ok
 test hands_in_the_ball_pit ... ok
 test interaction_status_errors_and_isolation ... ok
 test claims_reject_contending_touches ... ok
-test crash_pause_eviction_and_recovery ... ok
-test propose_validates_arguments ... ok
 test propose_touch_resolves_and_moves_the_object ... ok
+test propose_validates_arguments ... ok
+test crash_pause_eviction_and_recovery ... ok
 test resources_list_and_read ... ok
 test rate_limit_on_unresolved_interactions ... ok
 test scenario_fault_arguments ... ok
@@ -73,7 +73,7 @@ test same_scenario_same_run ... ok
 test world_step_arguments ... ok
 test partition_heal_and_slow_links_stay_consistent ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.71s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.16s
 
    Doc-tests pe_mcp
 

@@ -21,7 +21,7 @@ a git-style source-control layer, AI-first through MCP, VR via OpenXR.
 | `spikes/session-sim` | In-process session simulator: the review fixes, the ball pit, two worlds with a cross-world handoff (R14) |
 | `spikes/iter-bench` | Iteration-latency and logic-runtime benchmark: generated guests, wasmi/wasmtime host |
 | `spikes/wasm-hotswap` + `spikes/wasm-guests` | (d) Rust->WASM game logic hot-swap in wasmi, fuel, rollback across swaps |
-| `spikes/mcp-stub` | Minimal MCP server (JSON-RPC over stdio) reading world state, proposing interactions |
+| `crates/pe-mcp` | The engine's MCP server (rmcp): the phase-2 tool catalogue, tokens and scopes, stdio / named pipe / loopback HTTP (replaces the phase-1 `spikes/mcp-stub`) |
 | `spikes/stack-audit` + `scripts/audit_native.py` | Native-code audit of the candidate dependency stack (100% Rust rule) |
 
 ```bash
