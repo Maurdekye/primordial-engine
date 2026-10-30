@@ -19,8 +19,8 @@ impl WorldSim {
     pub fn on_fetch(&self, author: MemberId, from: u32, to: u32) -> Vec<Msg> {
         // At most 16 entries per reply (review R3-9): the requester asks again for the rest.
         (from..=to.min(from + 15))
-            .filter_map(|s| self.by_author.get(&(author, s)).and_then(|id| self.entries.get(id)))
-            .map(|e| Msg::Entry(e.clone()))
+            .filter_map(|s| self.by_author.get(&(author, s)).and_then(|id| self.signed_entry(*id)))
+            .map(Msg::Entry)
             .collect()
     }
 

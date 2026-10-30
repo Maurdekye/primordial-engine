@@ -8,3 +8,4 @@ description = "Primordial Engine session protocol core (P2-3): entry chains, ack
 
 [dependencies]
 box3d-rust.workspace = true
+ed25519-dalek = "3"

@@ -38,7 +38,7 @@ pub(crate) fn equivocate_after_conf(sim: &mut Sim, to: &[MemberId]) -> bool {
     x2.payload = Payload::Touch { obj: 10, impulse: [6.0, 0.0, 0.0], grab: false };
     x2.carried = None;
     for &m in to {
-        sim.net.send(1, 9, m, &Msg::Entry(x2.clone()));
+        sim.net.send(1, 9, m, &Msg::Entry(test_sign(1, x2.clone())));
     }
     true
 }
@@ -83,7 +83,7 @@ pub fn badvote() {
                     f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0), kick };
                     forged_vote.set(f.id());
                     for to in [1, 2] {
-                        sim.net.send(1, 8, to, &Msg::Entry(f.clone()));
+                        sim.net.send(1, 8, to, &Msg::Entry(test_sign(1, f.clone())));
                     }
                     println!("  t={} ms: 8 sends members 1 and 2 a forged vote against {target} with frozen head (0, 0)", sim.net.now_us / 1000);
                     forged = true;

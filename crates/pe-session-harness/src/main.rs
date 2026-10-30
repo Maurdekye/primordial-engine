@@ -266,7 +266,7 @@ fn c2() {
                 let mut x2 = x.clone();
                 x2.payload = Payload::Touch { obj: 10, impulse: [6.0, 0.0, 0.0], grab: false };
                 x2.carried = None;
-                sim.net.send(1, 9, 2, &Msg::Entry(x2));
+                sim.net.send(1, 9, 2, &Msg::Entry(test_sign(1, x2)));
                 injected = true;
             }
         }
@@ -388,7 +388,7 @@ fn backdate() {
 
 /// P2-5: a forged arrival from the dishonest-majority world W (6, members 2 and 3), signed by both
 /// of W's members, into world `w` by member `by`.
-fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chain: Vec<Hop>) -> Entry {
+fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chain: Vec<Hop>) -> SignedEntry {
     let fake = pe_session::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64);
     let deadline = sim.replica(by, w).sim.now + 600;
     let fact = fact_departed(6, fake, &record, w, deadline, chain_hash(&chain));
@@ -534,7 +534,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
     // P2-5 attack state: A:55's transfer and escrow, once W's majority has certified a refusal to A.
     let mut refunded: Option<(u64, Escrow)> = None;
     let g = |i: u64| (1u64 << 32) | i;
-    let send_all = |sim: &mut Sim, w: WorldId, from: MemberId, e: &Entry| {
+    let send_all = |sim: &mut Sim, w: WorldId, from: MemberId, e: &SignedEntry| {
         let members: Vec<MemberId> = sim.replica(from, w).sim.members.iter().copied().collect();
         for to in members {
             if to != from {

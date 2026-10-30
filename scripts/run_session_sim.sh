@@ -3,13 +3,13 @@
 # Logs go to spikes/out/session-sim/; the RESULT lines are the evidence cited in docs/design.md.
 # usage: scripts/run_session_sim.sh            (from any directory; needs only a Rust toolchain)
 #        scripts/run_session_sim.sh --pe       the same scenarios on crates/pe-session through its fork
-#                                              of this harness, crates/pe-session-sim (P2-3); logs in
+#                                              of this harness, crates/pe-session-harness (P2-3); logs in
 #                                              spikes/out/session-sim-pe/
 set -u
 cd "$(dirname "$0")/.."
 if [ "${1:-}" = --pe ]; then
-  cargo build --release -q -p pe-session-sim || exit 1
-  B=target/release/pe-session-sim
+  cargo build --release -q -p pe-session-harness || exit 1
+  B=target/release/pe-session-harness
   O=spikes/out/session-sim-pe
 else
   cargo build --release -q -p pe-spike-session-sim || exit 1
