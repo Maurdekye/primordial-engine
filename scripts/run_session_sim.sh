@@ -28,6 +28,12 @@ run ballpit-60hz-2hands ballpit --hands 2
 for v in ackfork lateequiv evict outage; do run review2-$v $v; done
 # Round-3 review repros (design 9.3, 10.8): colluding voters, a crashed member.
 for v in badvote liar crashstall; do run review3-$v $v; done
+# P2-4, the view change (design 10.8): several members at once, a withheld vote, colluders, an
+# equivocating proposer, a join, and the D80 quorum comparisons (twosilent5 and bridge run both rules;
+# bridge under a strict majority forks by design, and each side is checked on its own).
+for v in twosilent twosilent5 withheld colluders badproposer bridge join; do run p2-4-$v $v; done
+run p2-4-vcscale-64 vcscale --members 64 --silent 2
+run p2-4-vcscale-256 vcscale --members 256 --silent 2 --no-heads
 # Fail on any fork, replay mismatch, panic, false check or lost/duplicated object (reviews NEW-2, NEW-7).
 bad=$(grep -lE "MISMATCH|DIFFER|FAIL|PANIC|panicked|NOT CONSERVED" $O/*.log)
 falsechecks=$(grep -hoE "checks ok [0-9]+ bad [1-9][0-9]*|nonfinite [1-9][0-9]*" $O/*.log | head -5)

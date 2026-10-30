@@ -127,15 +127,139 @@ pub enum Payload {
     Portal { open: bool },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
     /// before `horizon`; per other author, the newest seq it holds contiguously and that entry's
-    /// id; its newest confirmed check frame and full-state hash (review H4).
-    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)> },
-    /// Vote to evict `target`, which signed two versions of its entry `seq`, or (`seq` = 0) which
-    /// has gone silent (review R3-2). `frozen` is the head of target's chain this voter holds and
-    /// will ever reference (review NEW-2).
-    Vote { target: MemberId, seq: u32, frozen: (u32, EntryId) },
-    /// Withdraw this member's silence vote against `target`, which was heard from again before
-    /// the removal could be decided (review R3-2). Votes on proofs are never withdrawn.
-    Unvote { target: MemberId },
+    /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
+    /// its author is in (design 10.8: an ack from a newer epoch than the reader's never counts
+    /// toward the reader's confirmation).
+    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32 },
+    /// Vote, in membership epoch `epoch`, to remove `target`: it signed two versions of its entry
+    /// `seq` (or another proof), or (`seq` = 0) it has gone silent or cannot keep up (reviews
+    /// R3-2, R3-9). `frozen` is the head of target's chain this voter holds and will ever
+    /// reference in this epoch (review NEW-2). A vote stands until the epoch ends (P2-4).
+    Vote { epoch: u32, target: MemberId, seq: u32, frozen: (u32, EntryId) },
+    /// View change (P2-4, design 10.8): the round's proposer proposes `change` for epoch `epoch`;
+    /// `valid_round` is the round in which it saw a quorum prevote this value (`NO_ROUND` if none).
+    Propose { epoch: u32, round: u32, valid_round: u32, change: Change },
+    /// View change: this member's first-phase vote for a proposal's value in a round (0 = nil).
+    Prevote { epoch: u32, round: u32, value: u64 },
+    /// View change: this member's second-phase vote; a quorum of them decides the value. A value
+    /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
+    /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
+    Precommit { epoch: u32, round: u32, value: u64, boundary: u64 },
+}
+
+/// `valid_round` of a proposal that no quorum has prevoted before.
+pub const NO_ROUND: u32 = u32::MAX;
+
+/// Two signed entries of one member that contradict each other (design 10.8): two versions of one
+/// seq; an entry whose `prev` names a version of its predecessor other than `a`; or an ack `a` and a
+/// later vote `b` whose frozen head drops an entry that ack referenced. Anyone holding both entries
+/// (and, for a vote, the target's chain) can check it, so it travels in certificates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Proof {
+    pub a: EntryId,
+    pub b: EntryId,
+}
+
+/// One member removed by a view change: the votes that justify it (each names its voter's frozen
+/// head of the member's chain) and the cut those votes determine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removal {
+    pub member: MemberId,
+    pub votes: Vec<EntryId>,
+    pub cut: (u32, EntryId),
+}
+
+/// A membership change from epoch `epoch` to `epoch + 1` (design 10.8). `excluded` are the members
+/// this decision treats as proven faulty: they count neither in its quorums nor in their size. An
+/// empty change is a reset: same members, every vote of the epoch cleared.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Change {
+    pub epoch: u32,
+    pub remove: Vec<Removal>,
+    pub add: Vec<MemberId>,
+    /// First frame at which the added members count (design 10.8, joins); 0 without joins.
+    pub boundary: u64,
+    pub excluded: Vec<(MemberId, Proof)>,
+}
+
+impl Change {
+    /// The value the view change votes on: a hash of the whole change, never 0 (0 is nil).
+    pub fn value(&self) -> u64 {
+        let mut w = Wr(Vec::with_capacity(64));
+        w.change(self);
+        fnv_bytes(&w.0) | 1
+    }
+}
+
+/// D80 (open): how many members a view change needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuorumRule {
+    /// A strict majority of the members not excluded by proof (option a): survives crashes and
+    /// partitions, but tolerates no faulty member that has not been proven so.
+    Majority,
+    /// A Byzantine quorum (option b, recommended): more than (m + t) / 2 of the m members not
+    /// excluded by proof, which tolerates t = floor((m - 1) / 3) faulty members not yet proven.
+    Bft,
+}
+
+/// `(t, q)` for `m` members not excluded by proof: unproven faulty members tolerated, and the
+/// quorum size. Any two quorums then share an honest member while at most t of the m are faulty.
+pub fn quorum(rule: QuorumRule, m: usize) -> (usize, usize) {
+    let t = match rule {
+        QuorumRule::Majority => 0,
+        QuorumRule::Bft => m.saturating_sub(1) / 3,
+    };
+    (t, (m + t + 2) / 2)
+}
+
+/// Spike model of a member's signature over its precommit of `value` in `round` of the view change
+/// that ends epoch `epoch` of `world`: the signatures an epoch certificate carries.
+pub fn vc_sig(world: u32, member: MemberId, epoch: u32, round: u32, value: u64) -> u64 {
+    member_sig(world, member, fnv_u64s([3, epoch as u64, round as u64, value]))
+}
+
+/// An epoch certificate (design 10.8, review R3-8b): what another world needs to follow this
+/// world's membership from `epoch - 1` to `epoch`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochCert {
+    pub world: u32,
+    /// The epoch this certificate starts.
+    pub epoch: u32,
+    /// First frame at which exactly `members` count.
+    pub from_frame: u64,
+    pub members: Vec<MemberId>,
+    /// (member, cut seq, cut id, first frame it no longer counts for).
+    pub removed: Vec<(MemberId, u32, EntryId, u64)>,
+    /// (member, first frame it counts for).
+    pub added: Vec<(MemberId, u64)>,
+    pub excluded: Vec<(MemberId, Proof)>,
+    pub round: u32,
+    pub value: u64,
+    /// Precommit signatures over `(world, epoch - 1, round, value)`.
+    pub precommits: Vec<(MemberId, u64)>,
+}
+
+/// Check `cert` against the members of the previous epoch: signatures from a quorum of those not
+/// excluded, and a member list that follows from the change. The exclusion proofs need the
+/// entries they name; the spike trusts the listed set (P2-5 carries the entries).
+pub fn epoch_cert_ok(rule: QuorumRule, prev: &[MemberId], cert: &EpochCert) -> bool {
+    let excluded: BTreeSet<MemberId> = cert.excluded.iter().map(|(m, _)| *m).collect();
+    let base: Vec<MemberId> = prev.iter().copied().filter(|m| !excluded.contains(m)).collect();
+    let (_, q) = quorum(rule, base.len());
+    let signers: BTreeSet<MemberId> = cert
+        .precommits
+        .iter()
+        .filter(|(m, s)| base.contains(m) && *s == vc_sig(cert.world, *m, cert.epoch - 1, cert.round, cert.value))
+        .map(|(m, _)| *m)
+        .collect();
+    let mut expect: BTreeSet<MemberId> = prev.iter().copied().collect();
+    for (m, ..) in &cert.removed {
+        expect.remove(m);
+    }
+    for (m, _) in &cert.added {
+        expect.insert(*m);
+    }
+    cert.epoch > 0 && signers.len() >= q && expect.into_iter().collect::<Vec<_>>() == cert.members
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -169,6 +293,12 @@ pub enum Msg {
     Fetch { author: MemberId, from: u32, to: u32 },
     /// Everything one member sends one peer in one tick, in one datagram (R18, viz-4).
     Batch(Vec<Msg>),
+    /// View change: ask for the proposal entry carrying `value` (a member that saw a quorum of
+    /// precommits for a value it holds no proposal for; the proposer may have equivocated).
+    FetchValue { value: u64 },
+    /// A non-member asks to join the world (P2-4). Production: signed by the joiner's key, after an
+    /// invite or the world's ACL admits it (12); the spike admits any request.
+    Join { member: MemberId },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -214,26 +344,53 @@ impl Wr {
             }
             Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
-            Payload::Ack { horizon, heads, check } => {
-                self.u8(7); self.u64(*horizon); self.u32(heads.len() as u32);
+            Payload::Ack { horizon, heads, check, epoch } => {
+                // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
+                // their entry ids; a later epoch is tag 14 with the epoch appended.
+                self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.u64(*id) }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
+                if *epoch != 0 { self.u32(*epoch) }
             }
-            Payload::Vote { target, seq, frozen } => {
-                self.u8(8); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1)
+            Payload::Vote { epoch, target, seq, frozen } => {
+                self.u8(8); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1)
             }
-            Payload::Unvote { target } => { self.u8(10); self.u32(*target) }
+            Payload::Propose { epoch, round, valid_round, change } => {
+                self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
+            }
+            Payload::Prevote { epoch, round, value } => { self.u8(12); self.u32(*epoch); self.u32(*round); self.u64(*value) }
+            Payload::Precommit { epoch, round, value, boundary } => {
+                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary)
+            }
         }
         match &e.carried {
             Some((obj, s)) => { self.u8(1); self.u32(*obj); self.state(s) }
             None => self.u8(0),
         }
     }
+    fn change(&mut self, c: &Change) {
+        self.u32(c.epoch);
+        self.u32(c.remove.len() as u32);
+        for r in &c.remove {
+            self.u32(r.member);
+            self.u32(r.votes.len() as u32);
+            for v in &r.votes { self.u64(*v) }
+            self.u32(r.cut.0);
+            self.u64(r.cut.1);
+        }
+        self.u32(c.add.len() as u32);
+        for m in &c.add { self.u32(*m) }
+        self.u64(c.boundary);
+        self.u32(c.excluded.len() as u32);
+        for (m, p) in &c.excluded { self.u32(*m); self.u64(p.a); self.u64(p.b) }
+    }
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e) }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
+            Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
+            Msg::Join { member } => { self.u8(6); self.u32(*member) }
         }
     }
 }
@@ -280,16 +437,19 @@ impl Rd<'_> {
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
-            7 => {
+            tag @ (7 | 14) => {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
                 for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.u64()?)) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
-                Payload::Ack { horizon, heads, check }
+                let epoch = if tag == 14 { self.u32()? } else { 0 };
+                Payload::Ack { horizon, heads, check, epoch }
             }
-            8 => Payload::Vote { target: self.u32()?, seq: self.u32()?, frozen: (self.u32()?, self.u64()?) },
-            10 => Payload::Unvote { target: self.u32()? },
+            8 => Payload::Vote { epoch: self.u32()?, target: self.u32()?, seq: self.u32()?, frozen: (self.u32()?, self.u64()?) },
+            11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
+            12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
+            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()? },
             _ => return None,
         };
         let carried = match self.u8()? {
@@ -297,6 +457,26 @@ impl Rd<'_> {
             _ => None,
         };
         Some(Entry { member, seq, prev, stamp, payload, carried })
+    }
+    fn change(&mut self) -> Option<Change> {
+        let epoch = self.u32()?;
+        let n = self.u32()? as usize;
+        let mut remove = Vec::with_capacity(n.min(256));
+        for _ in 0..n {
+            let member = self.u32()?;
+            let k = self.u32()? as usize;
+            let mut votes = Vec::with_capacity(k.min(256));
+            for _ in 0..k { votes.push(self.u64()?) }
+            remove.push(Removal { member, votes, cut: (self.u32()?, self.u64()?) });
+        }
+        let n = self.u32()? as usize;
+        let mut add = Vec::with_capacity(n.min(256));
+        for _ in 0..n { add.push(self.u32()?) }
+        let boundary = self.u64()?;
+        let n = self.u32()? as usize;
+        let mut excluded = Vec::with_capacity(n.min(256));
+        for _ in 0..n { excluded.push((self.u32()?, Proof { a: self.u64()?, b: self.u64()? })) }
+        Some(Change { epoch, remove, add, boundary, excluded })
     }
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
@@ -308,6 +488,8 @@ impl Rd<'_> {
                 for _ in 0..n { v.push(self.msg()?) }
                 Msg::Batch(v)
             }
+            5 => Msg::FetchValue { value: self.u64()? },
+            6 => Msg::Join { member: self.u32()? },
             _ => return None,
         })
     }
@@ -320,6 +502,14 @@ pub fn encode_msg(m: &Msg) -> Vec<u8> {
 }
 pub fn decode_msg(b: &[u8]) -> Option<Msg> {
     Rd(b, 0).msg()
+}
+
+/// Entries that never act on the simulation: acks, attestations and the membership protocol.
+pub fn is_protocol(p: &Payload) -> bool {
+    matches!(
+        p,
+        Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }
+    )
 }
 
 /// Same-frame tie-break (user ruling 09:32Z): a per-frame pseudo-random permutation of members.
@@ -387,6 +577,8 @@ pub enum SceneKind {
     Pile { side: usize, layers: usize },
     /// A walled pit of small balls plus one kinematic hand per listed member.
     BallPit { balls: usize, hands: usize },
+    /// No bodies: a log-only world, for membership measurements at scale (P2-4).
+    Empty,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,6 +683,7 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             }
             (world, objs)
         }
+        SceneKind::Empty => (World::new(&crate::engine_world_def()), Vec::new()),
     }
 }
 
@@ -582,8 +775,11 @@ pub struct Stats {
     pub suspicions: u64,
     /// Members this replica voted to demote because their link could not keep up (review R3-9).
     pub demotions: u64,
-    /// Silence votes this replica withdrew because the member was heard from again (review R3-2).
-    pub withdrawn_votes: u64,
+    /// View changes this replica decided, those that changed no member (resets), and the highest
+    /// round any of them needed (P2-4).
+    pub view_changes: u64,
+    pub resets: u64,
+    pub max_round: u32,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -641,6 +837,17 @@ pub struct SimConfig {
     /// A member none of whose entries has arrived for this many frames is presumed crashed and
     /// voted out (review R3-2). 1.5x the speculation limit, so a congested member is not.
     pub suspect_after: u64,
+    /// The view change's quorum rule (D80, open; the default is the recommendation).
+    pub quorum: QuorumRule,
+    /// View-change timeouts (frames): a round's steps time out after `vc_timeout + round *
+    /// vc_timeout_step` frames, so rounds lengthen until messages arrive in time.
+    pub vc_timeout: u64,
+    pub vc_timeout_step: u64,
+    /// Acks list the heads held of every other chain. Off only for membership timing at scale, where
+    /// full heads cost n^3 memory across the simulated replicas: nothing then becomes stable.
+    pub ack_heads: bool,
+    /// How far ahead of its present a proposer puts a join's boundary frame (P2-4).
+    pub join_lead: u64,
 }
 
 impl Default for SimConfig {
@@ -654,6 +861,11 @@ impl Default for SimConfig {
             check_every: 30,
             hand_predict: 0,
             suspect_after: 180,
+            quorum: QuorumRule::Bft,
+            vc_timeout: 20,
+            vc_timeout_step: 10,
+            ack_heads: true,
+            join_lead: 60,
         }
     }
 }
@@ -681,18 +893,65 @@ pub enum Outcome {
     RejectedDeadline,
 }
 
-/// One member's eviction vote, as read from its chain (review R3-1).
+/// One member's vote to remove another, as read from its chain (reviews R3-1, R3-2).
 #[derive(Clone, Copy, Debug)]
 struct VoteRec {
     /// The voter's frozen head of the target's chain.
     frozen: (u32, EntryId),
-    /// The vote's own seq in the voter's chain: it must be stable among the remaining members
-    /// before any member acts on it.
-    at: u32,
-    /// A vote on silence (review R3-2), which its voter may withdraw, rather than on a proof.
-    silence: bool,
     /// The frame the vote was stamped at.
     stamp: u64,
+    /// The vote entry's id: a view change names the votes it relies on.
+    id: EntryId,
+}
+
+/// Result of checking a vote against its voter's own earlier acks (review R3-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VoteCheck {
+    Valid,
+    /// The vote drops an entry this ack of the voter referenced.
+    Lie(EntryId),
+    /// An entry needed to tell is missing (it is fetched).
+    Missing,
+}
+
+/// Steps of a view-change round (Tendermint's propose, prevote and precommit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum Step {
+    #[default]
+    Propose,
+    Prevote,
+    Precommit,
+}
+
+/// The view change of the current epoch as this replica runs it (P2-4, design 10.8): Tendermint's
+/// algorithm for one decision (Buchman, Kwon and Milosevic 2018, algorithm 1), whose messages are
+/// chain entries, so they are signed, ordered per member, fetched like any entry, and a member
+/// that sends two different ones to two members has equivocated.
+#[derive(Clone, Debug, Default)]
+struct Vc {
+    /// Clock frame at which this replica began the instance (round 0); None while idle.
+    since: Option<u64>,
+    round: u32,
+    step: Step,
+    /// Clock frame at which the current round began (the propose timeout runs from it).
+    round_at: u64,
+    proposed: bool,
+    /// (value, round) this replica is locked on, and the latest value it saw a quorum prevote.
+    locked: Option<(u64, u32)>,
+    valid: Option<(u64, u32)>,
+    /// Round -> (value, valid round) of the first proposal by that round's proposer, in chain order.
+    proposals: BTreeMap<u32, (u64, u32)>,
+    /// Every change proposed in this epoch, by value, including another version of an equivocating
+    /// proposer's entry.
+    changes: BTreeMap<u64, Change>,
+    /// Round -> member -> value (0 = nil): each member's first prevote and first precommit.
+    prevotes: BTreeMap<u32, BTreeMap<MemberId, u64>>,
+    precommits: BTreeMap<u32, BTreeMap<MemberId, u64>>,
+    /// Rounds whose proposal this replica already saw a quorum prevote.
+    polka_done: BTreeSet<u32>,
+    /// Armed timeouts: round -> clock frame armed.
+    prevote_timer: BTreeMap<u32, u64>,
+    precommit_timer: BTreeMap<u32, u64>,
 }
 
 pub struct WorldSim {
@@ -732,29 +991,69 @@ pub struct WorldSim {
     chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
     /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
     ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
-    /// (referrer, author) -> seq -> id: what each member's acks said it holds of each chain, up to
-    /// the referrer's vote against that author (review R3-1). Never pruned in the spike; production
-    /// keeps only the newest reference per pair, because consecutive references must extend each
-    /// other [I].
-    refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, EntryId>>,
+    /// (referrer, author) -> seq -> (id, the referrer's ack that said so): what each member's acks
+    /// said it holds of each chain, up to the referrer's vote against that author (review R3-1).
+    /// Never pruned in the spike; production keeps only the newest reference per pair, because
+    /// consecutive references must extend each other [I].
+    refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (EntryId, EntryId)>>,
     /// Per author: the highest seq ever found stable. Stability is permanent (chains only grow), so
     /// a later conflicting reference can never shrink it (review R3-1).
     stable_hi: BTreeMap<MemberId, u32>,
-    /// (target, voter) pairs whose vote was found to be a lie (review R3-1).
-    lies: BTreeSet<(MemberId, MemberId)>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
     /// by more than half the speculation limit (review R3-9, demotion).
     lagging: BTreeMap<MemberId, u64>,
-    /// Equivocators: first disputed seq and the two versions.
+    /// Equivocators: first disputed seq and the two contradicting entries (two versions of one seq,
+    /// or an entry and a successor that names another version of it).
     proofs: BTreeMap<MemberId, (u32, EntryId, EntryId)>,
-    /// Heads this member froze when it learned of a proof.
+    /// Members proven faulty by a vote that contradicts their own earlier ack (ack, vote). Their
+    /// chain is consistent, so nothing of it is withdrawn before the view change removes them.
+    liars: BTreeMap<MemberId, Proof>,
+    /// Heads this member froze when it voted (per epoch), or cuts of removed members.
     frozen: BTreeMap<MemberId, u32>,
-    /// target -> voter -> the voter's first vote against target (later ones are ignored).
+    /// This epoch's votes: target -> voter -> the voter's first vote against target.
     votes: BTreeMap<MemberId, BTreeMap<MemberId, VoteRec>>,
-    /// Evicted members: (cut seq, first frame they no longer count for).
+    /// Evicted members: (cut seq, first frame they no longer count for, from the cut prefix held).
     evicted: BTreeMap<MemberId, (u32, u64)>,
+    /// Evicted members: the id at the cut, naming which version of their chain counts.
+    cut_ids: BTreeMap<MemberId, EntryId>,
+    /// Evicted members whose prefix up to the cut this replica holds and has reconciled.
+    cut_done: BTreeSet<MemberId>,
+    /// The view change of the current epoch.
+    vc: Vc,
+    /// View-change entries (votes, proposals, prevotes, precommits) of later epochs, processed on
+    /// entering their epoch.
+    vc_later: BTreeMap<u32, Vec<EntryId>>,
+    /// Every proposal entry seen, by value (answers `Msg::FetchValue`).
+    proposal_ids: BTreeMap<u64, EntryId>,
+    /// Decided changes, one per epoch boundary: (change, round, precommit signatures).
+    decided: Vec<(Change, u32, Vec<(MemberId, u64)>)>,
+    /// Decisions: (epoch reached, my clock frame when I decided, round, members removed).
+    pub vc_log: Vec<(u32, u64, u32, Vec<MemberId>)>,
+    /// Test fixture: author no vote, proposal, prevote or precommit (a member that withholds them).
+    pub withhold_vc: bool,
+    /// Non-members this replica sends its entries to: members that asked to join, or followers.
+    pub followers: BTreeSet<MemberId>,
+    /// Members that asked to join and are not admitted yet.
+    join_requests: BTreeSet<MemberId>,
+    /// Admitted members: the first frame each counts for.
+    pub admitted: BTreeMap<MemberId, u64>,
+    /// This epoch: members that precommitted a value adding members, at seq, with its boundary. Their
+    /// later acks count only below the boundary, until they reach a later epoch (10.8).
+    join_caps: BTreeMap<MemberId, (u32, u64)>,
+    /// Per member: the first seq of its chain whose ack declares each epoch after 0.
+    ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
+    /// Test fixture (D80 bridge): a faulty member that backs every vote another member casts,
+    /// prevotes and precommits every proposal it sees, in every round, never proposes, and never
+    /// applies a decision, so it can back both sides of a partition in one epoch.
+    pub byz_ally: bool,
+    /// The genesis members (epoch 0), from which every later epoch's members follow.
+    genesis: Vec<MemberId>,
+    /// Values decided by a quorum of precommits that this replica holds no proposal for:
+    /// (member to ask, value), and every pair asked so far.
+    value_wants: Vec<(MemberId, u64)>,
+    value_asked: BTreeSet<(MemberId, u64)>,
     wants: Vec<(MemberId, MemberId, u32, u32)>,
     pub conf: u64,
     /// My clock frame (my present), set by the harness each tick.
@@ -841,13 +1140,30 @@ impl WorldSim {
             ack_hist: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
-            lies: BTreeSet::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
+            liars: BTreeMap::new(),
             frozen: BTreeMap::new(),
             votes: BTreeMap::new(),
             evicted: BTreeMap::new(),
+            cut_ids: BTreeMap::new(),
+            cut_done: BTreeSet::new(),
+            vc: Vc::default(),
+            vc_later: BTreeMap::new(),
+            proposal_ids: BTreeMap::new(),
+            decided: Vec::new(),
+            vc_log: Vec::new(),
+            withhold_vc: false,
+            byz_ally: false,
+            followers: BTreeSet::new(),
+            join_requests: BTreeSet::new(),
+            admitted: BTreeMap::new(),
+            join_caps: BTreeMap::new(),
+            ack_epoch_from: BTreeMap::new(),
+            genesis: members.to_vec(),
+            value_wants: Vec::new(),
+            value_asked: BTreeSet::new(),
             wants: Vec::new(),
             conf: 0,
             now: 0,
@@ -1021,7 +1337,7 @@ impl WorldSim {
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
     fn set_eff(&mut self, id: EntryId) {
         let e = &self.entries[&id];
-        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. });
+        let acts = !is_protocol(&e.payload);
         let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
@@ -1111,7 +1427,7 @@ impl WorldSim {
     pub fn author_ack(&mut self) -> Entry {
         let mut heads = Vec::new();
         for (&q, &s) in &self.contiguous {
-            if s > 0 && q != self.me {
+            if s > 0 && q != self.me && self.cfg.ack_heads {
                 heads.push((q, s, self.by_author[&(q, s)]));
             }
         }
@@ -1127,7 +1443,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp,
-            payload: Payload::Ack { horizon, heads, check },
+            payload: Payload::Ack { horizon, heads, check, epoch: self.epoch },
             carried: None,
         };
         self.publish(e)
@@ -1144,10 +1460,10 @@ impl WorldSim {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
             self.entries.insert(id, e.clone());
             self.disputed.insert(id);
+            // Another version of a proposal still names a value someone may decide (P2-4).
+            self.note_proposal(id);
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
-            // A fetched version may be what a pending eviction's cut was waiting for.
-            self.maybe_evict(e.member);
             return out;
         }
         self.by_author.insert((e.member, e.seq), id);
@@ -1161,7 +1477,7 @@ impl WorldSim {
             self.watched.insert(obj);
         }
         // Below the confirmed frame only a horizon violation can be new (design 10.8): never apply.
-        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. }) {
+        if e.stamp < self.conf && !is_protocol(&e.payload) {
             self.violations.insert(id);
         }
         let disputed = self.proofs.get(&e.member).is_some_and(|&(k, _, _)| e.seq >= k)
@@ -1179,14 +1495,19 @@ impl WorldSim {
         if member != self.me && seq > c + 1 {
             self.want_all(member, c + 1, seq - 1);
         }
-        if self.votes.contains_key(&member) {
-            self.maybe_evict(member);
+        // A removed member's chain may still be missing entries up to its cut.
+        if self.evicted.contains_key(&member) {
+            self.adopt_cut(member);
         }
         out
     }
 
     /// Extend `m`'s verified contiguous prefix: each next entry must link to the previous by hash.
     fn extend_chain(&mut self, m: MemberId, out: &mut Vec<Entry>) {
+        // A member that asked to join is validated once admitted, when its boundary is known.
+        if m != LOGIC && !self.members.contains(&m) && !self.evicted.contains_key(&m) {
+            return;
+        }
         loop {
             let c = self.contiguous.get(&m).copied().unwrap_or(0);
             if self.frozen.get(&m).is_some_and(|&f| c >= f) {
@@ -1195,8 +1516,16 @@ impl WorldSim {
             let Some(&id) = self.by_author.get(&(m, c + 1)) else { break };
             let prev = if c == 0 { 0 } else { self.by_author[&(m, c)] };
             if self.entries[&id].prev != prev {
-                // The chain continues from a version of seq c we do not hold: fetch it.
+                // The chain continues from a version of seq c we do not hold: fetch it. And the
+                // two signed entries already prove that m signed two versions of seq c (P2-4: a
+                // member that forks its vote is proven faulty even if it never sends the other).
                 self.want_all(m, c, c);
+                if c > 0 && !self.evicted.contains_key(&m) && !self.proofs.contains_key(&m) {
+                    let held = self.by_author[&(m, c)];
+                    out.push(self.entries[&held].clone());
+                    out.push(self.entries[&id].clone());
+                    out.extend(self.on_proof(m, c, held, id));
+                }
                 break;
             }
             self.contiguous.insert(m, c + 1);
@@ -1213,8 +1542,9 @@ impl WorldSim {
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, .. } => e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp,
-            Payload::Vote { .. } | Payload::Unvote { .. } => true,
-            _ => max_h.is_none_or(|h| e.stamp > h),
+            Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => true,
+            // A member admitted by a view change acts from its boundary frame on (10.8).
+            _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
         };
         if !valid {
             self.stats.entries_rejected_violation += 1;
@@ -1224,7 +1554,10 @@ impl WorldSim {
             return;
         }
         match e.payload {
-            Payload::Ack { horizon, heads, check } => {
+            Payload::Ack { horizon, heads, check, epoch } => {
+                if epoch > 0 {
+                    self.ack_epoch_from.entry(m).or_default().entry(epoch).or_insert(e.seq);
+                }
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
@@ -1238,11 +1571,11 @@ impl WorldSim {
                         }
                     }
                     // Review R3-1: once m has voted against q, its vote's frozen head is its last
-                    // word on q's chain; later references never count toward stability.
+                    // word on q's chain in this epoch; later references never count toward stability.
                     if self.votes.get(&q).is_some_and(|v| v.contains_key(&m)) {
                         continue;
                     }
-                    self.refs.entry((m, q)).or_default().insert(s, hid);
+                    self.refs.entry((m, q)).or_default().insert(s, (hid, id));
                 }
                 if m != self.me {
                     if let Some((f, hh)) = check {
@@ -1251,60 +1584,44 @@ impl WorldSim {
                 }
                 self.recompute_conf();
                 self.evaluate_checks();
-                // An ack can make the votes of a pending eviction stable (review R3-1).
-                let pending: Vec<MemberId> = self.votes.keys().copied().filter(|t| !self.evicted.contains_key(t)).collect();
-                for t in pending {
-                    self.maybe_evict(t);
-                }
             }
-            Payload::Vote { target, seq, frozen } => {
-                // Only a member's first standing vote against a target counts (review R3-1).
-                let rec = VoteRec { frozen, at: e.seq, silence: seq == 0, stamp: e.stamp };
-                self.votes.entry(target).or_default().entry(m).or_insert(rec);
-                self.maybe_evict(target);
-            }
-            Payload::Unvote { target } => {
-                if let Some(v) = self.votes.get_mut(&target) {
-                    if v.get(&m).is_some_and(|r| r.silence) {
-                        v.remove(&m);
-                    }
+            Payload::Vote { epoch, .. } | Payload::Propose { epoch, .. } | Payload::Prevote { epoch, .. } | Payload::Precommit { epoch, .. } => {
+                if epoch > self.epoch {
+                    self.vc_later.entry(epoch).or_default().push(id);
+                } else if epoch == self.epoch {
+                    self.record_vc(m, id, out);
                 }
             }
             _ => {}
         }
-        let _ = out;
     }
 
     /// The highest seq of `m`'s chain that every member is known to hold with identical ids:
     /// each other member's newest reference at or below my own head, checked against my copy.
     /// Monotone: what was once stable stays stable (review R3-1).
     fn stable_seq(&mut self, m: MemberId) -> u32 {
-        let s = self.stable_among(m, None);
-        let hi = self.stable_hi.entry(m).or_insert(0);
-        *hi = (*hi).max(s);
-        *hi
-    }
-
-    /// As [`Self::stable_seq`], over every member except `skip`, without the memo.
-    fn stable_among(&mut self, m: MemberId, skip: Option<MemberId>) -> u32 {
         let mine = self.contiguous.get(&m).copied().unwrap_or(0);
         let mut s = mine;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
-            if j == self.me || j == m || Some(j) == skip {
+            if j == self.me || j == m {
                 continue;
             }
-            let Some((rs, rid)) = self.refs.get(&(j, m)).and_then(|r| r.range(..=mine).next_back()).map(|(a, b)| (*a, *b)) else {
-                return 0;
+            let Some((rs, rid)) = self.refs.get(&(j, m)).and_then(|r| r.range(..=mine).next_back()).map(|(a, b)| (*a, b.0)) else {
+                s = 0;
+                break;
             };
             if self.by_author.get(&(m, rs)) != Some(&rid) {
                 // j holds another version: wait for the proof (fetch it from j).
                 self.want_from(j, m, rs, rs);
-                return 0;
+                s = 0;
+                break;
             }
             s = s.min(rs);
         }
-        s
+        let hi = self.stable_hi.entry(m).or_insert(0);
+        *hi = (*hi).max(s);
+        *hi
     }
 
     /// Confirmed frame from stable data only (reviews C1, NEW-1): frame f is confirmed once, for
@@ -1314,10 +1631,36 @@ impl WorldSim {
         let mut c = u64::MAX;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
-            let s = self.stable_seq(j);
-            match self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h) {
-                Some(h) => c = c.min(h + 1),
-                None => return,
+            let mut s = self.stable_seq(j);
+            // An ack from an epoch newer than mine never counts toward my confirmation (10.8): its
+            // author may know of members I do not.
+            if let Some(&first) = self.ack_epoch_from.get(&j).and_then(|a| a.range(self.epoch + 1..).map(|(_, s)| s).min()) {
+                s = s.min(first.saturating_sub(1));
+            }
+            let mut h = self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h);
+            // After precommitting a join, its author's acks count only below the join's boundary.
+            if let (Some(hh), Some(&(at, b))) = (h, self.join_caps.get(&j)) {
+                if s > at {
+                    h = Some(hh.min(b.saturating_sub(1)));
+                }
+            }
+            match (h, self.admitted.get(&j)) {
+                (Some(h), Some(&b)) => c = c.min((h + 1).max(b)),
+                (None, Some(&b)) => c = c.min(b),
+                (Some(h), None) => c = c.min(h + 1),
+                (None, None) => return,
+            }
+        }
+        // P2-4: a removed member's entries up to its cut count, and a replica that did not vote
+        // may not hold them all yet. Until it does, it confirms only the frames that the acks it
+        // holds of that prefix cover: an entry stamped at or before a declared horizon must come
+        // before that ack in the chain (8.2).
+        for (&x, &(cut, _)) in &self.evicted {
+            let held = self.contiguous.get(&x).copied().unwrap_or(0);
+            let right = self.cut_ids.get(&x).is_none_or(|&cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
+            if held < cut || !right {
+                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=held.min(cut)).next_back()).map_or(0, |(_, h)| h + 1);
+                c = c.min(h);
             }
         }
         if c != u64::MAX && c > self.conf {
@@ -1325,25 +1668,38 @@ impl WorldSim {
         }
     }
 
+    /// Two signed entries of `m` contradict each other (`a` at seq `k`, `b` another version of it
+    /// or a successor that names another version): record the proof, withdraw what it disputes,
+    /// and vote to remove `m` in this epoch (design 9.3, 10.8).
     fn on_proof(&mut self, m: MemberId, k: u32, a: EntryId, b: EntryId) -> Vec<Entry> {
-        let first = !self.proofs.contains_key(&m);
-        if first {
+        if !self.proofs.contains_key(&m) {
             self.stats.equivocations += 1;
-            self.ev(format!("EQUIVOCATION proof: member {m} seq {k} has two signed versions {a:016x} / {b:016x}"));
+            self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:016x} / {b:016x})"));
         }
-        let k0 = self.proofs.get(&m).map_or(k, |p| p.0.min(k));
-        self.proofs.insert(m, (k0, a, b));
+        let (k0, a0, b0) = match self.proofs.get(&m) {
+            Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
+            _ => (k, a, b),
+        };
+        self.proofs.insert(m, (k0, a0, b0));
         let mut out = Vec::new();
-        if first && m != self.me && self.members.contains(&m) {
-            out.push(self.freeze_and_vote(m, k0));
+        if m != self.me && self.members.contains(&m) && !self.voted(m) {
+            out.extend(self.freeze_and_vote(m, k0));
         }
         self.reconcile(m);
         out
     }
 
-    /// Freeze what this member will ever reference of m's chain, and say so in a vote. `k0` is the
-    /// disputed seq of an equivocation, or 0 for a member presumed crashed.
-    fn freeze_and_vote(&mut self, m: MemberId, k0: u32) -> Entry {
+    /// Whether this replica has voted against `m` in the current epoch.
+    fn voted(&self, m: MemberId) -> bool {
+        self.votes.get(&m).is_some_and(|v| v.contains_key(&self.me))
+    }
+
+    /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
+    /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
+    fn freeze_and_vote(&mut self, m: MemberId, k0: u32) -> Option<Entry> {
+        if self.withhold_vc {
+            return None;
+        }
         let f = self.contiguous.get(&m).copied().unwrap_or(0);
         self.frozen.insert(m, f);
         let fid = if f == 0 { 0 } else { self.by_author[&(m, f)] };
@@ -1353,58 +1709,53 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp: self.frame.max(self.now),
-            payload: Payload::Vote { target: m, seq: k0, frozen: (f, fid) },
+            payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid) },
             carried: None,
         };
-        self.publish(v)
+        Some(self.publish(v))
     }
 
-    /// Review R3-2 (the general view change, for a silent member): a member none of whose
-    /// entries has reached this replica, directly or fetched, for `suspect_after` frames is
-    /// presumed crashed, unless another member's acks show more of its chain than this replica
-    /// holds (then this replica is behind, and fetches). Its chain is frozen and a vote to remove
-    /// it is published. Removal then follows the eviction rules (9.3): every remaining member
-    /// votes, the votes become stable among them, and the cut keeps everything that could have
-    /// been stable, so no confirmed frame changes. Returns the votes to broadcast.
+    /// Review R3-2 (a silent member) and R3-9 (a member too slow to keep up), and proofs carried
+    /// into a new epoch: vote to remove members. A member none of whose entries has reached this
+    /// replica, directly or fetched, for `suspect_after` frames is presumed crashed, unless another
+    /// member's acks show more of its chain than this replica holds (then this replica is behind,
+    /// and fetches). The view change (10.8) then decides which removals happen and their cuts. A
+    /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
+    /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<Entry> {
-        // Removal needs a strict majority without the removed member, so a two-member world never
-        // suspects: both members pause instead (D7).
-        if !self.members.contains(&self.me) || (self.members.len() - 1) * 2 <= self.members.len() {
+        if !self.members.contains(&self.me) {
             return vec![];
         }
         let mut out = Vec::new();
-        // Withdraw a silence vote against a member heard from again, while this replica does not
-        // yet see a standing vote from every other remaining member. Then no member can have
-        // decided the removal: a decision needs this member's acks to reference every vote, and
-        // those acks come after this withdrawal in its chain.
-        let mine: Vec<(MemberId, u64)> =
-            self.votes.iter().filter_map(|(t, v)| v.get(&self.me).filter(|r| r.silence).map(|r| (*t, r.stamp))).collect();
-        for (j, voted) in mine {
-            if self.evicted.contains_key(&j) || !self.members.contains(&j) || self.heard.get(&j).is_none_or(|&h| h <= voted) {
-                continue;
+        // A proof outlives an epoch that did not remove its member: vote again.
+        let proven: Vec<(MemberId, u32)> = self
+            .proofs
+            .iter()
+            .map(|(m, p)| (*m, p.0))
+            .chain(self.liars.iter().map(|(m, p)| (*m, self.entries.get(&p.b).map_or(1, |e| e.seq))))
+            .collect();
+        for (m, k) in proven {
+            if m != self.me && self.members.contains(&m) && !self.voted(m) {
+                out.extend(self.freeze_and_vote(m, k.max(1)));
             }
-            let complete = self.members.iter().filter(|&&k| k != j).all(|k| self.votes[&j].contains_key(k));
-            if complete {
-                continue;
+        }
+        if self.byz_ally {
+            let targets: Vec<MemberId> = self.votes.keys().copied().filter(|t| *t != self.me && self.members.contains(t)).collect();
+            for t in targets {
+                if !self.voted(t) {
+                    out.extend(self.freeze_and_vote(t, 0));
+                }
             }
-            self.stats.withdrawn_votes += 1;
-            self.ev(format!("member {j} heard from again: withdraw the vote to remove it"));
-            let e = Entry {
-                member: self.me,
-                seq: self.my_seq + 1,
-                prev: self.my_last,
-                stamp: self.frame.max(self.now),
-                payload: Payload::Unvote { target: j },
-                carried: None,
-            };
-            out.push(self.publish(e));
-            self.frozen.remove(&j);
-            let mut more = Vec::new();
-            self.extend_chain(j, &mut more);
+            return out;
+        }
+        // Removal on silence needs a quorum without the removed member, so a two-member world
+        // never suspects: both members pause instead (D7).
+        if self.members.len() < 3 {
+            return out;
         }
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
-            if j == self.me || self.frozen.contains_key(&j) || self.evicted.contains_key(&j) {
+            if j == self.me || self.voted(j) {
                 continue;
             }
             let heard = self.heard.get(&j).copied().unwrap_or(0);
@@ -1437,6 +1788,9 @@ impl WorldSim {
                 }
                 continue;
             }
+            if self.withhold_vc {
+                continue;
+            }
             if silent {
                 self.stats.suspicions += 1;
                 self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
@@ -1444,14 +1798,13 @@ impl WorldSim {
                 self.stats.demotions += 1;
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
             }
-            out.push(self.freeze_and_vote(j, 0));
-            self.maybe_evict(j);
+            out.extend(self.freeze_and_vote(j, 0));
         }
         out
     }
 
-    /// Which of `m`'s entries count after an equivocation proof (review NEW-2): until the eviction
-    /// is decided, every entry from the disputed seq on is withdrawn unless it is stable (held
+    /// Which of `m`'s entries count after an equivocation proof (review NEW-2): until a view change
+    /// removes it, every entry from the disputed seq on is withdrawn unless it is stable (held
     /// identically by every member, so possibly confirmed somewhere); after it, exactly the cut.
     fn reconcile(&mut self, m: MemberId) {
         let k = self.proofs.get(&m).map(|p| p.0);
@@ -1472,103 +1825,740 @@ impl WorldSim {
         }
     }
 
-    /// Follow `m`'s chain back from `head` to seq `to`; None if an entry on the way is missing.
-    fn walk_back(&self, m: MemberId, head: (u32, EntryId), to: u32) -> Option<EntryId> {
-        let (mut s, mut id) = head;
-        while s > to {
-            id = self.entries.get(&id)?.prev;
-            s -= 1;
-        }
-        let _ = m;
-        Some(id)
-    }
-
-    /// Evict `m` once every remaining member has voted (a strict majority of the epoch) and every
-    /// vote is stable among the remaining members. The cut is the longest common prefix of the
-    /// frozen heads of the valid votes, so it contains every entry of m that could have been
-    /// stable anywhere; m stops counting from the frame after its last valid horizon (virtual
-    /// synchrony's flush, here decided from chain data alone).
-    ///
-    /// Review R3-1: a frozen head is self-reported, so it is checked against the references its
-    /// voter published before voting; a vote that drops one is a provable lie and is void. And
-    /// votes are used only once every remaining member holds them identically, so a voter that
-    /// forks its own vote can stall the eviction but never give two honest members two cuts.
-    fn maybe_evict(&mut self, m: MemberId) {
-        if self.evicted.contains_key(&m) || !self.members.contains(&m) {
-            return;
-        }
-        let remaining: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != m).collect();
-        let Some(votes) = self.votes.get(&m).cloned() else { return };
-        if remaining.len() * 2 <= self.members.len() || !remaining.iter().all(|j| votes.contains_key(j)) {
-            return;
-        }
-        for &j in &remaining {
-            if self.stable_among(j, Some(m)) < votes[&j].at {
-                return;
-            }
-        }
-        let mut valid = Vec::new();
-        for &j in &remaining {
-            match self.vote_valid(m, j, votes[&j].frozen) {
-                None => return,
-                Some(true) => valid.push(j),
-                Some(false) => {
-                    if self.lies.insert((m, j)) {
-                        self.stats.lying_votes += 1;
-                        self.ev(format!("LYING VOTE: member {j}'s vote against {m} drops entries its own acks referenced: void"));
-                    }
-                }
-            }
-        }
-        let mut cut = valid.iter().map(|j| votes[j].frozen.0).min().unwrap_or(0);
-        while cut > 0 {
-            let ids: Vec<Option<EntryId>> = valid.iter().map(|j| self.walk_back(m, votes[j].frozen, cut)).collect();
-            if ids.iter().any(|x| x.is_none()) {
-                for (j, x) in valid.iter().zip(&ids) {
-                    if x.is_none() {
-                        self.want_from(*j, m, cut, votes[j].frozen.0);
-                    }
-                }
-                return;
-            }
-            if ids.windows(2).all(|w| w[0] == w[1]) {
-                break;
-            }
-            cut -= 1;
-        }
-        let v = self.ack_hist.get(&m).and_then(|a| a.range(..=cut).next_back()).map_or(0, |(_, h)| h + 1);
-        self.evicted.insert(m, (cut, v));
-        self.members.remove(&m);
-        self.epoch += 1;
-        self.ev(format!("member {m} evicted (epoch {}): its chain is cut at seq {cut}; it no longer counts from frame {v}", self.epoch));
-        self.reconcile(m);
-        self.recompute_conf();
-    }
-
-    /// Review R3-1: Some(true) if `voter`'s frozen head of `target`'s chain extends every reference
-    /// to that chain the voter published before its vote, Some(false) if it provably does not
-    /// (a lie), None while a chain entry needed to tell is missing (it is fetched from the voter).
-    fn vote_valid(&mut self, target: MemberId, voter: MemberId, frozen: (u32, EntryId)) -> Option<bool> {
-        let refs: Vec<(u32, EntryId)> =
-            self.refs.get(&(voter, target)).map(|r| r.iter().rev().map(|(s, id)| (*s, *id)).collect()).unwrap_or_default();
+    /// Review R3-1: whether `voter`'s frozen head of `target`'s chain extends every reference to
+    /// that chain the voter published before its vote. A vote that drops one is a lie, and the
+    /// ack it contradicts plus the vote prove its voter faulty.
+    fn vote_check(&mut self, target: MemberId, voter: MemberId, frozen: (u32, EntryId)) -> VoteCheck {
+        let refs: Vec<(u32, EntryId, EntryId)> =
+            self.refs.get(&(voter, target)).map(|r| r.iter().rev().map(|(s, (id, ack))| (*s, *id, *ack)).collect()).unwrap_or_default();
         let (mut s, mut id) = frozen;
-        for (rs, rid) in refs {
+        for (rs, rid, ack) in refs {
             if rs > frozen.0 {
-                return Some(false);
+                return VoteCheck::Lie(ack);
             }
             while s > rs {
                 let Some(e) = self.entries.get(&id) else {
                     self.want_from(voter, target, s, s);
-                    return None;
+                    return VoteCheck::Missing;
                 };
                 id = e.prev;
                 s -= 1;
             }
             if id != rid {
+                return VoteCheck::Lie(ack);
+            }
+        }
+        VoteCheck::Valid
+    }
+
+    /// `voter`'s vote `vote` contradicts its own earlier ack `ack`: it is proven faulty.
+    fn on_lie(&mut self, voter: MemberId, ack: EntryId, vote: EntryId) {
+        if self.liars.contains_key(&voter) || voter == self.me {
+            return;
+        }
+        self.liars.insert(voter, Proof { a: ack, b: vote });
+        self.stats.lying_votes += 1;
+        self.ev(format!("LYING VOTE: member {voter}'s vote drops entries its own ack referenced: proven faulty"));
+    }
+
+    // ---- view change (P2-4, design 10.8) ---------------------------------------------------------
+
+    /// Record a validated membership entry of the current epoch, in chain order.
+    fn record_vc(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
+        if !self.members.contains(&m) {
+            return;
+        }
+        let e = self.entries[&id].clone();
+        match e.payload {
+            Payload::Vote { target, frozen, .. } => {
+                if target == m || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
+                    return;
+                }
+                let rec = VoteRec { frozen, stamp: e.stamp, id };
+                self.votes.entry(target).or_default().insert(m, rec);
+                if let VoteCheck::Lie(ack) = self.vote_check(target, m, frozen) {
+                    self.on_lie(m, ack, id);
+                    if self.members.contains(&self.me) && !self.voted(m) && m != self.me {
+                        out.extend(self.freeze_and_vote(m, e.seq));
+                    }
+                }
+            }
+            Payload::Propose { round, valid_round, ref change, .. } => {
+                self.note_proposal(id);
+                if m == self.proposer(self.epoch, round) {
+                    self.vc.proposals.entry(round).or_insert((change.value(), valid_round));
+                }
+            }
+            Payload::Prevote { round, value, .. } => {
+                self.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
+            }
+            Payload::Precommit { round, value, boundary, .. } => {
+                self.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
+                if boundary > 0 {
+                    self.join_caps.entry(m).or_insert((e.seq, boundary));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keep the change a proposal entry carries, by value, if its author proposes its round in the
+    /// current epoch; any version counts (an equivocating proposer's other version may be decided).
+    fn note_proposal(&mut self, id: EntryId) {
+        let e = &self.entries[&id];
+        let Payload::Propose { epoch, round, ref change, .. } = e.payload else { return };
+        let v = change.value();
+        self.proposal_ids.entry(v).or_insert(id);
+        if epoch == self.epoch && change.epoch == epoch && e.member == self.proposer(epoch, round) {
+            let c = change.clone();
+            self.vc.changes.entry(v).or_insert(c);
+        }
+    }
+
+    /// The proposer of `round` of the view change that ends `epoch`: a seeded rotation over the
+    /// epoch's members, so no member can choose to propose.
+    fn proposer(&self, epoch: u32, round: u32) -> MemberId {
+        let mut order: Vec<MemberId> = self.members.iter().copied().collect();
+        let salt = self.cfg.seed ^ ((self.world_id as u64) << 40) ^ ((epoch as u64) << 8);
+        order.sort_by_key(|&m| (splitmix64(salt ^ (m as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)), m));
+        order[round as usize % order.len()]
+    }
+
+    /// Members this replica holds a proof against.
+    fn proven_set(&self) -> BTreeSet<MemberId> {
+        self.proofs.keys().chain(self.liars.keys()).copied().filter(|m| self.members.contains(m)).collect()
+    }
+
+    fn proof_of(&self, m: MemberId) -> Proof {
+        match self.proofs.get(&m) {
+            Some(&(_, a, b)) => Proof { a, b },
+            None => self.liars[&m],
+        }
+    }
+
+    /// This epoch's members outside `excluded`, and (t, q) over them.
+    fn base(&self, excluded: &BTreeSet<MemberId>) -> (BTreeSet<MemberId>, usize, usize) {
+        let b: BTreeSet<MemberId> = self.members.iter().copied().filter(|m| !excluded.contains(m)).collect();
+        let (t, q) = quorum(self.cfg.quorum, b.len());
+        (b, t, q)
+    }
+
+    /// The members a change excludes from its quorums.
+    fn excluded_of(&self, v: u64) -> Option<BTreeSet<MemberId>> {
+        self.vc.changes.get(&v).map(|c| c.excluded.iter().map(|(m, _)| *m).collect())
+    }
+
+    /// Whether a quorum (counted as the change `v` defines it) sent `v` in `round` of `votes`.
+    fn quorum_for(&self, votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, v: u64) -> bool {
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        votes.get(&round).is_some_and(|r| r.iter().filter(|&(m, &x)| x == v && base.contains(m)).count() >= q)
+    }
+
+    /// Members of `base` that sent anything (`nil_only`: nil) in `round` of `votes`.
+    fn count_round(votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, base: &BTreeSet<MemberId>, nil_only: bool) -> usize {
+        votes.get(&round).map_or(0, |r| r.iter().filter(|&(m, &x)| base.contains(m) && (!nil_only || x == 0)).count())
+    }
+
+    /// The deepest point of `x`'s chain that at least `k` of the given frozen heads extend
+    /// (design 10.8). With at most t faulty voters among them and `k` = their number minus t,
+    /// every honest head extends it, so it keeps every entry of `x` stable anywhere; and since
+    /// they number more than 2t, two branches can never both reach `k`. None while an entry
+    /// needed to walk back is missing (it is fetched from the voter).
+    fn robust_cut(&mut self, x: MemberId, heads: &[(MemberId, (u32, EntryId))], k: usize) -> Option<(u32, EntryId)> {
+        let mut cur: Vec<(MemberId, u32, EntryId)> = heads.iter().map(|(v, (s, id))| (*v, *s, *id)).collect();
+        let mut c = cur.iter().map(|h| h.1).max().unwrap_or(0);
+        loop {
+            if c == 0 || k == 0 {
+                return Some((0, 0));
+            }
+            for h in cur.iter_mut() {
+                while h.1 > c {
+                    let Some(e) = self.entries.get(&h.2) else {
+                        let (voter, s) = (h.0, h.1);
+                        self.want_from(voter, x, s, s);
+                        return None;
+                    };
+                    h.2 = e.prev;
+                    h.1 -= 1;
+                }
+            }
+            let mut groups: BTreeMap<EntryId, usize> = BTreeMap::new();
+            for h in &cur {
+                if h.1 == c {
+                    *groups.entry(h.2).or_default() += 1;
+                }
+            }
+            if let Some((&id, _)) = groups.iter().find(|&(_, &n)| n >= k) {
+                return Some((c, id));
+            }
+            c -= 1;
+        }
+    }
+
+    /// Whether `p` proves `m` faulty (see [`Proof`]). None while an entry it names is missing.
+    fn verify_proof(&mut self, m: MemberId, p: Proof) -> Option<bool> {
+        let (a, b) = (self.entries.get(&p.a)?.clone(), self.entries.get(&p.b)?.clone());
+        if a.member != m || b.member != m {
+            return Some(false);
+        }
+        if a.seq == b.seq && p.a != p.b {
+            return Some(true);
+        }
+        if b.seq == a.seq + 1 && b.prev != p.a {
+            return Some(true);
+        }
+        if let (Payload::Ack { heads, .. }, Payload::Vote { target, frozen, .. }) = (&a.payload, &b.payload) {
+            if a.seq < b.seq {
+                if let Some(&(_, s, rid)) = heads.iter().find(|h| h.0 == *target) {
+                    if s > frozen.0 {
+                        return Some(true);
+                    }
+                    let (mut fs, mut fid) = *frozen;
+                    while fs > s {
+                        fid = self.entries.get(&fid)?.prev;
+                        fs -= 1;
+                    }
+                    return Some(fid != rid);
+                }
+            }
+        }
+        Some(false)
+    }
+
+    /// What this replica proposes when it is the round's proposer: remove every member that a
+    /// quorum of usable votes names (each with its cut), excluding from the quorum the members it
+    /// holds proofs against; with nothing to remove, a reset if a vote of this epoch stands
+    /// against a member this replica hears from (it was wrongly suspected, or came back).
+    fn build_change(&mut self) -> Option<Change> {
+        let proven = self.proven_set();
+        let excluded: Vec<(MemberId, Proof)> = proven.iter().map(|&m| (m, self.proof_of(m))).collect();
+        let (base, t, q) = self.base(&proven);
+        let mut remove = Vec::new();
+        let targets: Vec<MemberId> = self.votes.keys().copied().collect();
+        for x in targets {
+            let recs: Vec<(MemberId, VoteRec)> = self.votes[&x].iter().filter(|(v, _)| base.contains(v)).map(|(v, r)| (*v, *r)).collect();
+            let mut usable = Vec::new();
+            for (v, r) in recs {
+                if self.vote_check(x, v, r.frozen) == VoteCheck::Valid {
+                    usable.push((v, r));
+                }
+            }
+            if usable.len() < q {
+                continue;
+            }
+            let heads: Vec<(MemberId, (u32, EntryId))> = usable.iter().map(|(v, r)| (*v, r.frozen)).collect();
+            let Some(cut) = self.robust_cut(x, &heads, usable.len() - t) else { continue };
+            remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut });
+        }
+        let add: Vec<MemberId> = self.join_requests.iter().copied().filter(|j| !self.members.contains(j) && !self.evicted.contains_key(j)).collect();
+        let boundary = if add.is_empty() { 0 } else { self.now + self.cfg.join_lead };
+        if remove.is_empty() && add.is_empty() {
+            let now = self.now;
+            let reset = self.votes.iter().any(|(y, vs)| {
+                let heard = self.heard.get(y).copied().unwrap_or(0);
+                !proven.contains(y) && now < heard + self.cfg.suspect_after && vs.get(&self.me).is_none_or(|r| heard > r.stamp)
+            });
+            if !reset {
+                return None;
+            }
+        }
+        Some(Change { epoch: self.epoch, remove, add, boundary, excluded })
+    }
+
+    /// Whether `c` is a valid change for this epoch. Deterministic once this replica holds every
+    /// entry it names (and has validated the voters' chains up to their votes); None until then.
+    fn change_valid(&mut self, c: &Change) -> Option<bool> {
+        if c.epoch != self.epoch || c.add.is_empty() != (c.boundary == 0) {
+            return Some(false);
+        }
+        // Joins: requests this replica holds, from non-members, with a boundary still ahead of it
+        // and not too far ahead (10.8).
+        let mut joiners = BTreeSet::new();
+        for &j in &c.add {
+            if self.members.contains(&j) || self.evicted.contains_key(&j) || !joiners.insert(j) {
+                return Some(false);
+            }
+            if !self.join_requests.contains(&j) {
+                return None;
+            }
+        }
+        if c.boundary != 0 && (c.boundary <= self.now + 1 || c.boundary > self.now + 2 * self.cfg.join_lead) {
+            return Some(false);
+        }
+        let mut xs = BTreeSet::new();
+        for &(m, p) in &c.excluded {
+            if !self.members.contains(&m) || !xs.insert(m) || !self.verify_proof(m, p)? {
+                return Some(false);
+            }
+        }
+        let (base, t, q) = self.base(&xs);
+        let mut seen = BTreeSet::new();
+        for r in &c.remove {
+            let x = r.member;
+            if !self.members.contains(&x) || !seen.insert(x) || r.votes.len() < q {
+                return Some(false);
+            }
+            let mut voters = BTreeSet::new();
+            let mut heads = Vec::new();
+            for &vid in &r.votes {
+                let e = self.entries.get(&vid)?.clone();
+                let Payload::Vote { epoch, target, frozen, .. } = e.payload else { return Some(false) };
+                if epoch != self.epoch || target != x || !base.contains(&e.member) || !voters.insert(e.member) {
+                    return Some(false);
+                }
+                // The voter's first vote against x in this epoch, in the copy of its chain I hold.
+                match self.votes.get(&x).and_then(|v| v.get(&e.member)) {
+                    Some(rec) if rec.id == vid => {}
+                    Some(_) => return Some(false),
+                    None => return None,
+                }
+                match self.vote_check(x, e.member, frozen) {
+                    VoteCheck::Valid => {}
+                    VoteCheck::Missing => return None,
+                    VoteCheck::Lie(ack) => {
+                        self.on_lie(e.member, ack, vid);
+                        return Some(false);
+                    }
+                }
+                heads.push((e.member, frozen));
+            }
+            if self.robust_cut(x, &heads, heads.len() - t)? != r.cut {
                 return Some(false);
             }
         }
         Some(true)
+    }
+
+    fn author_vc(&mut self, payload: Payload) -> Entry {
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp: self.frame.max(self.now), payload, carried: None };
+        self.publish(e)
+    }
+
+    fn start_round(&mut self, r: u32) {
+        self.vc.round = r;
+        self.vc.step = Step::Propose;
+        self.vc.round_at = self.now;
+        self.vc.proposed = false;
+        self.stats.max_round = self.stats.max_round.max(r);
+    }
+
+    fn prevote(&mut self, v: u64, out: &mut Vec<Entry>) {
+        self.vc.step = Step::Prevote;
+        if !self.withhold_vc {
+            let (epoch, round) = (self.epoch, self.vc.round);
+            out.push(self.author_vc(Payload::Prevote { epoch, round, value: v }));
+        }
+    }
+
+    fn precommit(&mut self, v: u64, out: &mut Vec<Entry>) {
+        self.precommit_join(v, 0, out);
+    }
+
+    fn precommit_join(&mut self, v: u64, boundary: u64, out: &mut Vec<Entry>) {
+        self.vc.step = Step::Precommit;
+        if !self.withhold_vc {
+            let (epoch, round) = (self.epoch, self.vc.round);
+            out.push(self.author_vc(Payload::Precommit { epoch, round, value: v, boundary }));
+        }
+    }
+
+    /// Run this epoch's view change and return the entries to broadcast. Called every tick:
+    /// Tendermint's rules (algorithm 1, lines 11-65) over chain entries, timeouts in clock frames.
+    pub fn view_change_due(&mut self) -> Vec<Entry> {
+        let mut out = Vec::new();
+        // Everyone that holds the log follows its decisions, members or not (a joiner learns so).
+        if !self.byz_ally && self.try_decide(&mut out) {
+            return out;
+        }
+        if !self.members.contains(&self.me) {
+            return out;
+        }
+        if self.byz_ally {
+            // Prevote and precommit every proposal seen, first per round (a linear chain).
+            let props: Vec<(u32, u64)> = self.vc.proposals.iter().map(|(r, (v, _))| (*r, *v)).collect();
+            for (r, v) in props {
+                let me = self.me;
+                if !self.vc.prevotes.get(&r).is_some_and(|x| x.contains_key(&me)) {
+                    let epoch = self.epoch;
+                    out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
+                    let boundary = self.vc.changes.get(&v).map_or(0, |c| c.boundary);
+                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary }));
+                }
+            }
+            return out;
+        }
+        if self.vc.since.is_none() {
+            let busy = !self.votes.is_empty() || !self.vc.proposals.is_empty() || !self.vc.prevotes.is_empty() || !self.vc.precommits.is_empty();
+            if !busy {
+                return out;
+            }
+            self.vc.since = Some(self.now);
+            self.start_round(0);
+        }
+        for _ in 0..16 {
+            let before = (self.vc.round, self.vc.step, self.vc.proposed, self.vc.polka_done.len(), self.vc.prevote_timer.len(), self.vc.precommit_timer.len());
+            self.vc_rules(&mut out);
+            if self.try_decide(&mut out) {
+                return out;
+            }
+            if before == (self.vc.round, self.vc.step, self.vc.proposed, self.vc.polka_done.len(), self.vc.prevote_timer.len(), self.vc.precommit_timer.len()) {
+                break;
+            }
+        }
+        out
+    }
+
+    fn vc_rules(&mut self, out: &mut Vec<Entry>) {
+        let (e, r) = (self.epoch, self.vc.round);
+        let proven = self.proven_set();
+        let (any_base, t_any, q_any) = self.base(&proven);
+        // Lines 55-56: more than t members are in a later round: go there.
+        let mut hi: BTreeMap<MemberId, u32> = BTreeMap::new();
+        for votes in [&self.vc.prevotes, &self.vc.precommits] {
+            for (&rr, ms) in votes.range(r + 1..) {
+                for m in ms.keys().filter(|m| any_base.contains(m)) {
+                    let x = hi.entry(*m).or_insert(rr);
+                    *x = (*x).max(rr);
+                }
+            }
+        }
+        let mut later: Vec<u32> = hi.into_values().collect();
+        later.sort_unstable_by(|a, b| b.cmp(a));
+        if later.len() > t_any {
+            self.start_round(later[t_any]);
+            return;
+        }
+        // Lines 14-19: the round's proposer proposes its valid value, or a new one.
+        if self.vc.step == Step::Propose && !self.vc.proposed && !self.withhold_vc && self.proposer(e, r) == self.me {
+            let (vr, change) = match self.vc.valid {
+                Some((v, vr)) => (vr, self.vc.changes.get(&v).cloned()),
+                None => (NO_ROUND, self.build_change()),
+            };
+            if let Some(c) = change {
+                self.vc.proposed = true;
+                self.ev(format!("view change: propose in round {r}: remove {:?}, excluded {:?}", c.remove.iter().map(|x| (x.member, x.cut.0)).collect::<Vec<_>>(), c.excluded.iter().map(|x| x.0).collect::<Vec<_>>()));
+                out.push(self.author_vc(Payload::Propose { epoch: e, round: r, valid_round: vr, change: c }));
+            }
+        }
+        // Lines 22-33: prevote on the round's proposal.
+        if self.vc.step == Step::Propose {
+            if let Some(&(v, vr)) = self.vc.proposals.get(&r) {
+                let c = self.vc.changes.get(&v).cloned();
+                let ok = match c {
+                    Some(c) => self.change_valid(&c),
+                    None => Some(false),
+                };
+                let decision = match ok {
+                    None => None,
+                    Some(ok) if vr == NO_ROUND => Some(ok && self.vc.locked.is_none_or(|(lv, _)| lv == v)),
+                    Some(ok) if vr < r && self.quorum_for(&self.vc.prevotes, vr, v) => {
+                        Some(ok && self.vc.locked.is_none_or(|(lv, lr)| lr <= vr || lv == v))
+                    }
+                    Some(_) => None,
+                };
+                if let Some(yes) = decision {
+                    self.prevote(if yes { v } else { 0 }, out);
+                }
+            }
+        }
+        // Lines 34-35: a quorum of prevotes of any kind arms the prevote timeout.
+        if self.vc.step == Step::Prevote && !self.vc.prevote_timer.contains_key(&r) && Self::count_round(&self.vc.prevotes, r, &any_base, false) >= q_any {
+            self.vc.prevote_timer.insert(r, self.now);
+        }
+        // Lines 36-43: a quorum prevoted the round's proposal: lock it and precommit it.
+        if self.vc.step != Step::Propose && !self.vc.polka_done.contains(&r) {
+            if let Some(&(v, _)) = self.vc.proposals.get(&r) {
+                if self.quorum_for(&self.vc.prevotes, r, v) {
+                    let c = self.vc.changes.get(&v).cloned().unwrap_or_default();
+                    let in_time = c.boundary == 0 || c.boundary > self.now;
+                    if self.vc.changes.contains_key(&v) && in_time && self.change_valid(&c) == Some(true) {
+                        self.vc.polka_done.insert(r);
+                        if self.vc.step == Step::Prevote {
+                            self.vc.locked = Some((v, r));
+                            self.precommit_join(v, c.boundary, out);
+                        }
+                        self.vc.valid = Some((v, r));
+                    }
+                }
+            }
+        }
+        // Lines 44-46: a quorum prevoted nil.
+        if self.vc.step == Step::Prevote && Self::count_round(&self.vc.prevotes, r, &any_base, true) >= q_any {
+            self.precommit(0, out);
+        }
+        // Lines 47-48: a quorum of precommits of any kind arms the precommit timeout; a quorum of
+        // nil precommits ends the round at once (no value can be decided in it).
+        if Self::count_round(&self.vc.precommits, r, &any_base, true) >= q_any {
+            self.start_round(r + 1);
+            return;
+        }
+        if !self.vc.precommit_timer.contains_key(&r) && Self::count_round(&self.vc.precommits, r, &any_base, false) >= q_any {
+            self.vc.precommit_timer.insert(r, self.now);
+        }
+        // Lines 57-65: timeouts, lengthening with the round.
+        let to = self.cfg.vc_timeout + self.cfg.vc_timeout_step * r as u64;
+        if self.vc.step == Step::Propose && self.now >= self.vc.round_at + to {
+            self.prevote(0, out);
+        }
+        if self.vc.step == Step::Prevote && self.vc.prevote_timer.get(&r).is_some_and(|&a| self.now >= a + to) {
+            self.precommit(0, out);
+        }
+        if self.vc.precommit_timer.get(&r).is_some_and(|&a| self.now >= a + to) {
+            self.start_round(r + 1);
+        }
+        let _ = t_any;
+    }
+
+    /// Lines 49-54: a quorum precommitted a value in some round: decide it and apply it. A value
+    /// this replica holds no proposal for is fetched from those that precommitted it.
+    fn try_decide(&mut self, out: &mut Vec<Entry>) -> bool {
+        let mut found = None;
+        let mut unknown = Vec::new();
+        for (&rr, ms) in &self.vc.precommits {
+            let mut vals: BTreeMap<u64, Vec<MemberId>> = BTreeMap::new();
+            for (&m, &v) in ms {
+                if v != 0 {
+                    vals.entry(v).or_default().push(m);
+                }
+            }
+            for (v, ms) in vals {
+                if !self.vc.changes.contains_key(&v) {
+                    unknown.push((v, ms));
+                } else if self.quorum_for(&self.vc.precommits, rr, v) {
+                    found = Some((rr, v));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        for (v, ms) in unknown {
+            for m in ms {
+                if m != self.me && self.value_asked.insert((m, v)) {
+                    self.value_wants.push((m, v));
+                }
+            }
+        }
+        let Some((rr, v)) = found else { return false };
+        let c = self.vc.changes[&v].clone();
+        self.apply_change(c, rr, out);
+        true
+    }
+
+    /// Apply a decided change: the next epoch's members, each removed member's cut, a new epoch
+    /// with no votes, and the epoch certificate's material.
+    fn apply_change(&mut self, c: Change, round: u32, out: &mut Vec<Entry>) {
+        let v = c.value();
+        let xs: BTreeSet<MemberId> = c.excluded.iter().map(|(m, _)| *m).collect();
+        let sigs: Vec<(MemberId, u64)> = self
+            .vc
+            .precommits
+            .get(&round)
+            .map(|ms| ms.iter().filter(|&(m, &x)| x == v && !xs.contains(m)).map(|(&m, _)| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect())
+            .unwrap_or_default();
+        let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
+        for r in &c.remove {
+            self.members.remove(&r.member);
+            self.frozen.insert(r.member, r.cut.0);
+            self.cut_ids.insert(r.member, r.cut.1);
+            self.evicted.insert(r.member, (r.cut.0, 0));
+        }
+        for &j in &c.add {
+            self.members.insert(j);
+            self.known.insert(j);
+            self.admitted.insert(j, c.boundary);
+            self.followers.remove(&j);
+            self.join_requests.remove(&j);
+        }
+        self.join_caps.clear();
+        let from = self.epoch;
+        self.decided.push((c.clone(), round, sigs));
+        self.epoch += 1;
+        self.vc_log.push((self.epoch, self.now, round, removed.clone()));
+        self.stats.view_changes += 1;
+        if removed.is_empty() {
+            self.stats.resets += 1;
+        }
+        self.ev(format!(
+            "VIEW CHANGE decided (epoch {from} -> {}, round {round}): removed {:?} with cuts {:?}, excluded by proof {:?}, added {:?} from frame {}; members {:?}",
+            self.epoch,
+            removed,
+            c.remove.iter().map(|r| r.cut.0).collect::<Vec<_>>(),
+            xs,
+            c.add,
+            c.boundary,
+            self.members
+        ));
+        // A new epoch: the old one's votes, freezes and view-change state end.
+        self.votes.clear();
+        self.vc = Vc::default();
+        let unfreeze: Vec<MemberId> = self.frozen.keys().copied().filter(|m| !self.evicted.contains_key(m)).collect();
+        for m in unfreeze {
+            self.frozen.remove(&m);
+        }
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        for m in members {
+            self.extend_chain(m, out);
+        }
+        for x in removed {
+            self.adopt_cut(x);
+        }
+        if let Some(ids) = self.vc_later.remove(&self.epoch) {
+            for id in ids {
+                let m = self.entries[&id].member;
+                self.record_vc(m, id, out);
+            }
+        }
+        self.recompute_conf();
+    }
+
+    /// Make the version of removed member `x`'s chain that ends at its cut the one this replica
+    /// holds: walk back from the cut id, fetch what is missing, replace any other version (8.2
+    /// verdicts are re-derived along it), and keep exactly the cut (P2-4).
+    fn adopt_cut(&mut self, x: MemberId) {
+        if self.cut_done.contains(&x) {
+            return;
+        }
+        let (Some(&(cut, _)), Some(&cid)) = (self.evicted.get(&x), self.cut_ids.get(&x)) else { return };
+        let held = self.contiguous.get(&x).copied().unwrap_or(0);
+        if cut > 0 && !(held >= cut && self.by_author.get(&(x, cut)) == Some(&cid)) {
+            let mut ids = Vec::with_capacity(cut as usize);
+            let (mut s, mut id) = (cut, cid);
+            loop {
+                let Some(e) = self.entries.get(&id) else {
+                    self.want_all(x, s, s);
+                    return;
+                };
+                ids.push((s, id));
+                if s == 1 {
+                    break;
+                }
+                id = e.prev;
+                s -= 1;
+            }
+            let mut changed = false;
+            for &(s, id) in &ids {
+                if self.by_author.get(&(x, s)) != Some(&id) {
+                    self.by_author.insert((x, s), id);
+                    changed = true;
+                }
+            }
+            if changed {
+                self.contiguous.insert(x, 0);
+                self.chain_state.remove(&x);
+                self.ack_hist.remove(&x);
+            }
+            let mut out = Vec::new();
+            self.extend_chain(x, &mut out);
+        }
+        self.reconcile(x);
+        if self.contiguous.get(&x).copied().unwrap_or(0) >= cut {
+            let v = self.ack_hist.get(&x).and_then(|a| a.range(..=cut).next_back()).map_or(0, |(_, h)| h + 1);
+            self.evicted.insert(x, (cut, v));
+            self.cut_done.insert(x);
+            self.ev(format!("member {x} evicted (epoch {}): its chain is cut at seq {cut}; it no longer counts from frame {v}", self.epoch));
+        }
+    }
+
+    /// The certificate of the view change that started `epoch` (R3-8b), once this replica holds
+    /// every removed member's prefix up to its cut.
+    pub fn epoch_cert(&self, epoch: u32) -> Option<EpochCert> {
+        let (c, round, sigs) = self.decided.get(epoch.checked_sub(1)? as usize)?;
+        let mut members: BTreeSet<MemberId> = self.members_at(epoch - 1)?.into_iter().collect();
+        let mut removed = Vec::new();
+        for r in &c.remove {
+            members.remove(&r.member);
+            if self.contiguous.get(&r.member).copied().unwrap_or(0) < r.cut.0 {
+                return None;
+            }
+            let v = self.evicted.get(&r.member).map(|p| p.1)?;
+            removed.push((r.member, r.cut.0, r.cut.1, v));
+        }
+        for m in &c.add {
+            members.insert(*m);
+        }
+        let from_frame = removed.iter().map(|r| r.3).chain((!c.add.is_empty()).then_some(c.boundary)).max().unwrap_or(0);
+        Some(EpochCert {
+            world: self.world_id,
+            epoch,
+            from_frame,
+            members: members.into_iter().collect(),
+            removed,
+            added: c.add.iter().map(|m| (*m, c.boundary)).collect(),
+            excluded: c.excluded.clone(),
+            round: *round,
+            value: c.value(),
+            precommits: sigs.clone(),
+        })
+    }
+
+    /// The members of `epoch`, replayed from the genesis members and the decided changes.
+    pub fn members_at(&self, epoch: u32) -> Option<Vec<MemberId>> {
+        if epoch > self.epoch {
+            return None;
+        }
+        let mut m: BTreeSet<MemberId> = self.genesis.iter().copied().collect();
+        for (c, _, _) in self.decided.iter().take(epoch as usize) {
+            for r in &c.remove {
+                m.remove(&r.member);
+            }
+            for a in &c.add {
+                m.insert(*a);
+            }
+        }
+        Some(m.into_iter().collect())
+    }
+
+    /// A non-member asks to join (P2-4): keep its request, store its entries, send it the log.
+    pub fn on_join(&mut self, j: MemberId) {
+        if !self.members.contains(&j) && !self.evicted.contains_key(&j) && j != self.me {
+            self.join_requests.insert(j);
+            self.follow(j);
+        }
+    }
+
+    /// Send `j` this replica's entries and store its own (a member about to join, in the spike).
+    pub fn follow(&mut self, j: MemberId) {
+        if !self.members.contains(&j) && j != self.me {
+            self.known.insert(j);
+            self.followers.insert(j);
+        }
+    }
+
+    /// Who this replica sends its entries to: the members and the followers.
+    pub fn audience(&self) -> Vec<MemberId> {
+        self.members.iter().chain(self.followers.iter()).copied().filter(|m| *m != self.me).collect::<BTreeSet<_>>().into_iter().collect()
+    }
+
+    /// Test fixture (D80 bridge): stop extending, and so referencing, every other member's chain, as
+    /// a faulty member hiding what it hears; `unfreeze_others` ends it.
+    pub fn freeze_others(&mut self) {
+        let others: Vec<MemberId> = self.members.iter().copied().filter(|m| *m != self.me).collect();
+        for m in others {
+            let c = self.contiguous.get(&m).copied().unwrap_or(0);
+            self.frozen.entry(m).or_insert(c);
+        }
+    }
+
+    pub fn unfreeze_others(&mut self) {
+        let thawed: Vec<MemberId> = self.frozen.keys().copied().filter(|m| !self.evicted.contains_key(m) && !self.voted(*m)).collect();
+        for m in thawed {
+            self.frozen.remove(&m);
+            let mut out = Vec::new();
+            self.extend_chain(m, &mut out);
+        }
+    }
+
+    /// The proposer of `round` of the view change ending `epoch`, if `epoch` is the current one.
+    pub fn proposer_of(&self, epoch: u32, round: u32) -> Option<MemberId> {
+        (epoch == self.epoch).then(|| self.proposer(epoch, round))
+    }
+
+    /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version.
+    pub fn on_fetch_value(&self, value: u64) -> Vec<Msg> {
+        self.proposal_ids.get(&value).and_then(|id| self.entries.get(id)).map(|e| vec![Msg::Entry(e.clone())]).unwrap_or_default()
     }
 
     fn want_from(&mut self, holder: MemberId, author: MemberId, from: u32, to: u32) {
@@ -1610,6 +2600,9 @@ impl WorldSim {
             };
             self.fetch_asked.insert((to, author), (from, now_ms, wait));
             out.push((to, Msg::Fetch { author, from, to: upto }));
+        }
+        for (to, value) in std::mem::take(&mut self.value_wants) {
+            out.push((to, Msg::FetchValue { value }));
         }
         out
     }
@@ -1890,7 +2883,9 @@ impl WorldSim {
                 Outcome::Accepted
             }
             // Protocol entries never reach the sim (set_eff schedules only perturbations).
-            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } => Outcome::Accepted,
+            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Attest { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => {
+                Outcome::Accepted
+            }
         }
     }
 
