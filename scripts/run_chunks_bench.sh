@@ -29,9 +29,15 @@ run() { # name subcommand
 for round in 1 2 3 4 5; do
   for b in "${BINS[@]}"; do echo "### round $round build ${b%%:*}"; "./${b#*:}" cost; done 2>&1 | tee -a "$OUT/cost.log"
 done
+# f32/f64 A/B: 8 interleaved rounds of fixed 20-frame blocks; compare per-block minima across rounds.
+: > "$OUT/ab.log"
+for round in 1 2 3 4 5 6 7 8; do
+  for b in "${BINS[@]}"; do echo "### round $round build ${b%%:*}"; "./${b#*:}" ab; done 2>&1 | tee -a "$OUT/ab.log"
+done
 run far far
 run scale scale
 run regions regions
 run players players
 run streaming streaming
 ./target/release/pe-spike-chunks spatial | tee "$OUT/spatial.log"
+./target/release/pe-spike-chunks avatars | tee "$OUT/avatars.log"

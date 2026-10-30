@@ -1,6 +1,7 @@
 //! R16 spike driver. Usage: pe-spike-chunks <precision|cost|far|scale|spatial|regions|players|streaming|all>
 //! Build twice: default (box3d f32 positions) and `--features f64` (box3d double-precision).
 
+mod avatars;
 mod physbench;
 mod players;
 mod precision;
@@ -13,6 +14,8 @@ fn main() {
     match arg.as_str() {
         "precision" => precision::run(),
         "cost" => physbench::cost(),
+        "ab" => physbench::ab(),
+        "avatars" => avatars::run(),
         "far" => physbench::far(),
         "scale" => physbench::scale(),
         "spatial" => spatialbench::run(),

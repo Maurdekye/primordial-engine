@@ -30,6 +30,42 @@ fn step_avg(world: &mut World, frames: usize, mut per_frame: impl FnMut(&mut Wor
     median(&mut runs)
 }
 
+/// One A/B sample for the f32/f64 comparison: per-block step times (20 frames each) over a fixed
+/// frame window, so blocks can be matched across builds and rounds and their minimum taken (the
+/// estimator least sensitive to other load on the machine).
+pub fn ab() {
+    for scene in ["pile1024", "pile2048", "ballpit500"] {
+        let mut w = new_world(&world_def(1.0, 10.0, false));
+        let mut hand = None;
+        match scene {
+            "pile1024" => {
+                build_pile(&mut w, 16, 4, [0.0; 3]);
+            }
+            "pile2048" => {
+                build_pile(&mut w, 16, 8, [0.0; 3]);
+            }
+            _ => hand = Some(build_ballpit(&mut w, 500, [0.0; 3]).1),
+        }
+        let mut blocks = Vec::new();
+        for f in 0..660u64 {
+            if let Some(h) = hand {
+                set_kinematic_target(&mut w, h, hand_target([0.0; 3], f, 0.0));
+            }
+            if f < 60 {
+                w.step(DT, SUBSTEPS);
+                continue;
+            }
+            if (f - 60) % 20 == 0 {
+                blocks.push(0.0);
+            }
+            let (_, ms) = time_ms(|| w.step(DT, SUBSTEPS));
+            *blocks.last_mut().unwrap() += ms / 20.0;
+        }
+        let v: Vec<String> = blocks.iter().map(|b| format!("{b:.4}")).collect();
+        println!("RESULT ab mode={} scene={scene} blocks={}", mode(), v.join(","));
+    }
+}
+
 pub fn cost() {
     println!("== physics cost ({}) ==", mode());
     for (side, layers) in [(8usize, 4usize), (16, 4), (16, 8)] {
