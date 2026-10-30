@@ -3,7 +3,7 @@
 //! The same peer logic drives the UDP spike (spikes/p2p) with a real clock and sockets.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use pe_sim_core::session::*;
 use pe_sim_core::splitmix64;
@@ -300,6 +300,9 @@ pub struct Peer {
     pub skew_us: i64,
     pub worlds: BTreeMap<WorldId, Replica>,
     pub jobs: Vec<Job>,
+    /// R14 genesis config of each world this peer joined: the worlds it trades objects with.
+    /// Every member of a world holds the same list (reviews R3-4 to R3-6).
+    pub routes: BTreeMap<WorldId, BTreeSet<WorldId>>,
 }
 
 /// Result of one acceptance check (user ruling 09:31Z): after the receiver re-simulated to its
@@ -324,11 +327,20 @@ pub struct Sim {
     pub end_us: u64,
     /// Process peers in reverse order (order-independence check).
     pub reverse_order: bool,
+    /// R14: a carrier's deadline, in frames of the destination after its present (review R3-6).
+    pub carry_deadline_frames: u64,
 }
 
 impl Peer {
     pub fn new(id: MemberId, skew_us: i64) -> Self {
-        Peer { id, skew_us, worlds: BTreeMap::new(), jobs: Vec::new() }
+        Peer { id, skew_us, worlds: BTreeMap::new(), jobs: Vec::new(), routes: BTreeMap::new() }
+    }
+
+    /// R14: world `w` trades objects with the worlds `to` (its genesis route list).
+    pub fn route(&mut self, w: WorldId, to: &[WorldId]) {
+        if self.worlds.contains_key(&w) {
+            self.routes.insert(w, to.iter().copied().collect());
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -381,7 +393,8 @@ pub const ACK_FRAMES: [u64; 4] = [2, 3, 4, 6];
 
 impl Sim {
     pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
-        // R14 trust config (D46): every replica knows every world's member list.
+        // R14 trust config (D46): each world knows the member lists of the worlds on its own route
+        // list, and of no other (reviews R3-4 to R3-6).
         let mut worlds: BTreeMap<WorldId, Vec<MemberId>> = BTreeMap::new();
         for p in &peers {
             for (w, r) in &p.worlds {
@@ -389,11 +402,12 @@ impl Sim {
             }
         }
         for p in &mut peers {
-            for r in p.worlds.values_mut() {
-                r.sim.peers_of = worlds.clone();
+            for (w, r) in p.worlds.iter_mut() {
+                let routes = p.routes.get(w).cloned().unwrap_or_default();
+                r.sim.peers_of = worlds.iter().filter(|(x, _)| routes.contains(x)).map(|(x, m)| (*x, m.clone())).collect();
             }
         }
-        Sim { net, peers, acceptance: Vec::new(), end_us, reverse_order: false }
+        Sim { net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600 }
     }
 
     fn peer_index(&self, id: MemberId) -> usize {
@@ -466,6 +480,13 @@ impl Sim {
         let skew = self.peers[pi].skew_us;
         let wids: Vec<WorldId> = self.peers[pi].worlds.keys().copied().collect();
         let mut new_jobs = Vec::new();
+        // Each world's present for this peer (R14 deadlines are frames of the destination).
+        let presents: BTreeMap<WorldId, u64> = self.peers[pi]
+            .worlds
+            .iter()
+            .map(|(w, r)| (*w, ((now as i64 + skew).max(0) as u64).saturating_sub(r.epoch_us) / r.dt_us))
+            .collect();
+        let deadline_frames = self.carry_deadline_frames;
         for w in wids {
             let r = self.peers[pi].worlds.get_mut(&w).unwrap();
             let clock = (now as i64 + skew).max(0) as u64;
@@ -544,7 +565,8 @@ impl Sim {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
                                 Action::Carry { obj, dest, .. } => {
-                                    let e = r.sim.author(Payload::Depart { obj, dest, deadline: u64::MAX }, None);
+                                    let deadline = presents.get(&dest).map_or(u64::MAX, |p| p + deadline_frames);
+                                    let e = r.sim.author(Payload::Depart { obj, dest, deadline }, None);
                                     let id = e.id();
                                     let transfer = transfer_id(w, id);
                                     new_jobs.push(Job {
@@ -607,14 +629,14 @@ impl Sim {
                     }
                     let esc = src.t.escrow.get(&j.transfer).copied();
                     match esc {
-                        Some(Escrow { status: EscrowStatus::Pending, record: Some(rec), .. }) => {
+                        Some(Escrow { status: EscrowStatus::Pending, record: Some(rec), deadline, .. }) => {
                             // Relay only with A's certificate (review NEW-4).
-                            let Some(cert) = src.cert(fact_departed(j.src, j.depart, &rec, j.dst)) else { continue };
+                            let Some(cert) = src.cert(fact_departed(j.src, j.depart, &rec, j.dst, deadline)) else { continue };
                             let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
                             if !dst.sim.caught_up() || dst.sim.frame < dst.sim.now {
                                 continue;
                             }
-                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, cert }, None);
+                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, deadline, cert }, None);
                             j.log.push(format!(
                                 "t={}ms depart confirmed in world {} (frame {f}); arrive authored in world {} at frame {}",
                                 now / 1000, j.src, j.dst, e.stamp

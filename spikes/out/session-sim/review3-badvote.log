@@ -1,0 +1,9 @@
+  t=3575 ms: 9's touch s26 at frame 50 confirmed at m1: true, at m2: true (m1 conf 201) -> 9 signs a second version
+  t=3609 ms: 8 sends members 1 and 2 a forged vote against 9 with frozen head (0, 0)
+  9's touches at m1: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
+  9's touches at m2: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
+RESULT badvote: m1 members {1, 2, 8, 9} evicted {} conf 203 frame 323 paused frames 150 lying votes found 0
+RESULT badvote: m2 members {1, 2, 8, 9} evicted {} conf 203 frame 323 paused frames 150 lying votes found 0
+  m1: conf 203 frame 323 members {1, 2, 8, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 21 bad 0
+  m2: conf 203 frame 323 members {1, 2, 8, 9} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 21 bad 0
+RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..322 honest m1=5f8e20beed8e75f3 m2=5f8e20beed8e75f3 | offline replay 5f8e20beed8e75f3 | ALL EQUAL, NO FALSE CHECKS ; checks ok 42 bad 0

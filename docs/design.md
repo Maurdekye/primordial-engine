@@ -981,12 +981,27 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
     3. broadcasts both versions.
   * **Before eviction is decided**, every entry from the disputed seq on is withdrawn, except those that
     are already **stable**: held identically by every member, and so possibly confirmed somewhere.
-  * **Eviction** is decided once every remaining member has voted (a strict majority of the epoch).
-    * The **cut** is the longest common prefix of the voters' frozen heads.
+  * **Eviction** is decided once every remaining member has voted (a strict majority of the epoch) and
+    every vote is **stable among the remaining members** (review R3-1).
+    * **A vote is checked against its voter's own chain.** Its frozen head is self-reported, so it counts
+      only if it extends every reference to that chain that the voter's acks published before the vote.
+      A vote that drops one is a provable lie: it is void and logged.
+    * **After voting, a member's references to that chain no longer count** toward stability. Its frozen
+      head is its last word.
+    * **Votes are used only once every remaining member holds them identically.** A voter that sends
+      different votes to different members can then stall the eviction, but cannot give two honest
+      members two different cuts.
+    * The **cut** is the longest common prefix of the frozen heads of the valid votes.
     * Entries after the cut are void. The evicted member stops counting from the frame after its last valid
       horizon.
-    * Any stable entry is inside the cut, so no confirmed frame ever changes. This is virtual synchrony's
-      flush, decided from chain data alone.
+    * Any stable entry is inside the cut. Every valid voter referenced it before voting, and its frozen
+      head extends those references. So no confirmed frame ever changes, even when members collude. This
+      is virtual synchrony's flush, decided from chain data alone.
+    * **Stability never shrinks:** once every member has referenced an entry, a later conflicting
+      reference cannot withdraw it (R3-1).
+  * **What colluders can still do** [V badvote]: stall. Two colluders of four leave no honest majority,
+    so nothing can be decided without one of them. The honest members keep their confirmed history and
+    pause at the speculation limit. With an honest majority, the general view change (10.8) removes them.
   * Measured on the reviewer's repros, ported to session-sim [V]:
     * `ackfork`: member 9 showed member 2 a different chain. Both honest members found the conflict,
       evicted 9 with a cut before its touch, and agreed. Before, they forked.
@@ -994,6 +1009,14 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
       (cut at seq 103, from frame 206), and nobody panicked. Before, every honest member crashed.
     * `evict`: after an eviction, a late entry kept its frame (60) on every member. Before, a member crashed.
     * c2 equivocation before confirmation: as in 3d0f98a, both members ended equal and equal to the replay.
+    * `badvote` (round 3): 9 equivocated on a touch confirmed at frame 50. Colluding member 8 showed the
+      honest members a forged vote with frozen head (0, 0), and kept its genuine vote to itself.
+      * Before: the cut fell to 0, and every honest member panicked.
+      * Now: the forged vote never became stable, so the eviction waited. Both honest members stayed
+        equal to each other and to the replay, at confirmed frame 203, paused at the speculation limit.
+    * `liar` (round 3): as `badvote`, but 8 cast only the forged vote and otherwise behaved. Its vote
+      contradicted its own acks and was void. 9 was evicted with a cut that kept the confirmed touch (seq
+      104, from frame 208), and confirmation resumed.
   * Decision: **D55**.
 * **Same entries, different state (true nondeterminism):** never observed in any spike.
   * With 3 or more members, the majority state at the confirmed frame wins and minority members take a
@@ -2919,7 +2942,7 @@ Three separate things are true of a player and a world:
 * **Throttling changes when a peer computes frames, never what they contain.** A world's state is a
   function of its log, so computing frames later in bursts gives the same results. [V session-sim r14
   throttle: from t = 3 s, member 1's replica of world A advanced only once per 250 ms. Member 1 still
-  authored in A: a relay and a touch. A's 500-frame digest equalled the unthrottled run's (`89ba8fb8…`)
+  authored in A: a relay and a touch. A's 500-frame digest equalled the unthrottled run's (`df10ff5b…`)
   and the offline replay.]
 * **Confirmation depends on holding entries, not on simulating them.** An ack states what you hold
   (10.8), and a background member keeps sending acks on schedule, so it never delays its world's
@@ -3019,34 +3042,47 @@ confirmed facts, and only with proof.**
 * 3d0f98a relayed without proofs. Any member could then lose, duplicate or mint the object, and squat a
   transfer id (NEW-3 to NEW-5).
 
-1. **Depart (in A, at fA).** The carrier authors `Depart{object, destination, deadline}`.
+1. **Depart (in A, at fA).** The carrier authors `Depart{object, destination, deadline}`. The deadline
+   is a frame of the destination.
    * The **transfer id is derived**, as hash(A, the Depart's entry id), so nobody can choose or squat it
      (NEW-5).
+   * **The destination must be on A's route list** (reviews R3-4, R3-6). The route list is part of A's
+     genesis config, so every member of A agreed to it. Changing it is an ACL'd entry in A's log [I].
+     A departure anywhere else is `RejectedNoRoute`, and the object stays. So no member can send an
+     object to a world it controls alone, or to a world nobody knows.
    * A's sim validates the departure: the object is live; the carrier holds its claim, or it is unclaimed;
      the carrier has the export right in A's ACL; the object is not already departing.
    * If valid, the object leaves A's physics into **escrow**, with its record, destination and deadline.
 2. **A attests.** Each member of A whose replica has confirmed the departure publishes, as an entry in A's
-   log, its **signature over the fact** "A confirmed departure *d* of this record to world B".
+   log, its **signature over the fact** "A confirmed departure *d* of this record to world B, by this
+   deadline". The fact covers every field of the record: global id, shape kind, state, source world and
+   source frame (review R3-8).
 3. **Relay (anyone).** Once a strict majority of A's members have signed, anyone holding the signatures
    authors `Arrive{transfer, record, departure, certificate}` in B.
    * Because the proof is self-certifying, relaying needs no trusted carrier (NEW-6).
-4. **Arrive (in B, at fB).** B's sim first checks that the transfer id matches the departure and that the
-   certificate holds signatures from a strict majority of A's members (D46). If not, the entry does nothing
-   (NEW-4).
+4. **Arrive (in B, at fB).** B's sim first checks that the source is on B's own route list
+   (`RejectedNoRoute` otherwise; R3-4, R3-5). Then it checks that the transfer id matches the departure
+   and that the certificate holds signatures from a strict majority of A's members (D46). If not, the
+   entry does nothing (NEW-4).
    * Then B validates as before: the import right in B's ACL, B's body budget, the deadline, the arrival
      portal open, the component policy (22.8), and no duplicate transfer id.
    * B also validates the record itself, because a certificate proves who said it, not that it is sane
      (review NEW-21): every value finite, a unit rotation (norm within 1%), speed at most 200 m/s and spin
      at most 2,000 rad/s. Otherwise the arrival is `RejectedInvalid`.
+   * B also refuses an arrival stamped after the deadline (`RejectedLate`; R3-6), and an object whose
+     global id is already live in B (`RejectedLiveId`; R3-5).
    * The object is created with a new local id and the same global id (Accepted), or Rejected.
 5. **B attests** its confirmed verdict in the same way. A `Verdict{transfer, accepted, certificate}`, with
    a strict majority of B's signatures, can be relayed into A by anyone.
    * A applies only a verdict whose certificate covers exactly that outcome (NEW-3).
 6. **Resolve (in A).** Accepted commits the escrow. Rejected returns the object at its departure pose.
-7. **Timeout [I].**
-   * B refuses an `Arrive` stamped after the deadline.
-   * When B's confirmed history passes the deadline without the arrival, B's members attest "not
-     received", and that certified rejection returns the object in A.
+7. **Timeout** (review R3-6).
+   * B refuses an `Arrive` stamped after the deadline. B attests that refusal like any verdict, and the
+     certified refusal returns the object in A [V r14 late: a 2-frame deadline; the arrival was refused,
+     and the object came back to A].
+   * No separate "not received" step is needed. Anyone holding A's certificate may relay the `Arrive` at
+     any time, and past the deadline that relay is refused. An object therefore waits only while nobody
+     can reach B at all (22.7).
    * Without a certificate, A never refunds on a timer alone. B may have accepted, and refunding would
      duplicate the object.
 
@@ -3063,6 +3099,12 @@ confirmed facts, and only with proof.**
   * The carrier hides the gap with a presentation-only copy in its hand.
 * **Measured attacks** [V session-sim `r14 forge`]. Every one of these did nothing and the object stayed
   conserved, with every replica equal to its offline replay:
+  * a member of A departing an object to a world it controls alone, where it could certify "accepted" and
+    then "rejected" (`RejectedNoRoute`; review R3-4);
+  * a member of A departing an object to an unknown world with deadline 0 (`RejectedNoRoute`; R3-6);
+  * a member of B minting A's object from a world it controls alone (`RejectedNoRoute`; R3-5);
+  * the carrier relaying A's genuine certificate with the record's shape kind changed (`RejectedNoProof`;
+    R3-8);
   * a member of B minting A's object without a departure (`RejectedNoProof`);
   * a member of B squatting the real transfer id before the relay (`RejectedNoProof`);
   * a member of A committing the escrow with no certificate (`RejectedNoProof`);
@@ -3095,8 +3137,22 @@ persists until a verdict arrives.
   rejected. In B, the arrival is ordered like any entry.
 * **Trust (D46):** a relayed fact counts only with a certificate: signatures by a strict majority of the
   other world's members over exactly that fact. In the spike these are keyed hashes that stand in for
-  Ed25519 signatures, and each world knows the other's member list from configuration [V session-sim
-  r14 forge]. A single member, including the carrier, can no longer mint, lose or duplicate an object.
+  Ed25519 signatures [V session-sim r14 forge].
+  * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
+    member lists from the same genesis config. Round 3 showed why: when every world counted, a member
+    who controlled a world alone could duplicate or mint objects.
+  * **Conservation assumes that every world on a route list has an honest majority.** A world that one
+    member controls is that member's word, so it never belongs on another world's route list.
+  * With route lists, a single member, including the carrier, can no longer mint, lose or duplicate an
+    object [V r14 forge]. A dishonest majority of a routed world still can: trust is per route.
+  * **Global ids are not bound to their birth world.** The reviewer proposed that a global id's world
+    prefix must equal the source world, but objects travel on (A to B to C), and B's records then carry
+    A's ids. Instead, a record is vouched for by its source's majority, and B refuses a global id that is
+    already live in B.
+  * **Member lists change** (review R3-8b). In the spike they are fixed at startup, so an evicted member
+    would still count toward the other world's majority. Production keys certificates to a membership
+    epoch, and each membership change is certified by the previous epoch's majority, so another world can
+    follow it [I].
 
 ### 22.8 What crosses: avatars, components, code
 
@@ -3155,8 +3211,9 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 | abort | Member 2's earlier grab reaches member 1 150 ms late: A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 live copy (A) | all equal |
 | reject | Member 3 closes B's portal at a frame member 1 hears of 150 ms late: B rolls back 10 frames past fB | Arrival rejected; verdict returns the object to A | 1 live copy (A) | all equal |
 | throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
-| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance | Every forged entry `RejectedNoProof` | 1 live copy (B), 0 pending | all equal |
-| ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | digests identical to forward |
+| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid` | 1 live copy (B), 0 pending; objects 50 and 51 still in A | all equal |
+| late | A 2-frame deadline, shorter than the certificate round | Arrival `RejectedLate`; the certified refusal returns the object to A | 1 live copy (A), 0 pending | all equal |
+| ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | all equal. ok and reject have digests identical to forward. abort's A digest differs (review round 3): the escrow key derives from the Depart's entry id, whose chain contents depend on processing order |
 
 These runs have live carriers. With a crashed carrier and nobody else in both worlds, the object waits in escrow (22.7), so 3d0f98a's "nothing in limbo" held only for the scripted runs (review NEW-6).
 
@@ -3646,6 +3703,9 @@ entry says so.
   * Recommend for every session: a certificate of signatures by a strict majority of the source (or
     destination) world's members over exactly that fact, published as attestations in that world's log. A
     relaying member's signature alone let any member mint, lose or duplicate an object.
+  * Each world names, in its genesis config, the worlds it trades with (its route list), and accepts
+    certificates only from them. Without route lists, a member who controls a world alone could duplicate
+    or mint objects [V r14 forge; review R3-4, R3-5].
   * Cost: one attestation entry per member per transfer step, and each world must know the other's member
     keys.
   * Alternatives:
@@ -3723,10 +3783,13 @@ entry says so.
     * gossiped acks with conflict proofs, deciding on first receipt: faster, but a decision made before a
       conflict surfaces would have to be undone.
 * **D55. Eviction cut (9.3, 10.8; review NEW-2).**
-  * Recommend: an equivocator is evicted once every remaining member has voted. Its cut is the longest
-    common prefix of the voters' frozen heads, so no confirmed frame ever changes [V].
-  * With 5 or more members, a silent voter blocks the cut, so the general view change takes over
-    (PBFT-style; [I]).
+  * Recommend: an equivocator is evicted once every remaining member has voted and the votes are stable
+    among them. A vote counts only if it extends its voter's own published references; otherwise it is a
+    provable lie and void. The cut is the longest common prefix of the valid votes' frozen heads, so no
+    confirmed frame ever changes, also against colluders [V badvote, liar; review R3-1].
+  * A silent or colluding voter can block the cut. That costs liveness, not safety, and the general view
+    change takes over (10.8). Two colluders of four can stall a session, because no honest majority is
+    left.
   * Alternative: evict on a bare strict majority, with the cut chosen by a leader: faster, but it needs
     the general view-change protocol now.
 * **D56. R18 defaults (10.9).** The controller thresholds:
