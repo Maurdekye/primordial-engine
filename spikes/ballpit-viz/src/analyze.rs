@@ -5,12 +5,19 @@ use pe_session_sim::ballpit_target_mm;
 
 use crate::record::*;
 
-/// A ball "snaps" in a displayed frame when its displayed displacement differs from what its own
-/// displayed velocity explains: |dx - v*dt| > SNAP_M. Physically continuous motion (including
-/// collisions, since Box3D integrates position with the new velocity) stays well under it; a
-/// rollback correction or a late state update does not. Calibrated against the engager of the
-/// pose-source cells, which never rolls back (see `calibrate`).
+/// A ball "snaps" in a displayed frame when its drawn displacement differs from what its own
+/// drawn velocity explains over the sim frames that state advanced: |dx - v*dt*dframes| > SNAP_M.
+/// Physically continuous motion (including collisions, since Box3D integrates position with the
+/// new velocity) stays well under it; a rollback correction or a late state update does not. A
+/// tick whose state did not advance (dframes = 0: a stalled sim, or a naive observer with no new
+/// update for that ball) is a snap only if the drawn position changed anyway; a moving ball that
+/// stays put is counted as *frozen* instead (see FROZEN_V). Calibrated against the engager of
+/// the pose-source cells, which never rolls back (see main.rs). The 1 cm threshold equals a
+/// 0.6 m/s velocity error at 60 Hz: fitted to this pit and gesture, not a general constant.
 pub const SNAP_M: f32 = 0.01;
+/// A ball is frozen in a tick when its drawn state did not advance although its drawn velocity
+/// would move it more than 1 mm per frame.
+pub const FROZEN_V: f32 = 0.06;
 /// Divergence threshold for "this ball is visibly somewhere else".
 pub const DIV_M: f32 = 0.01;
 
@@ -25,6 +32,8 @@ pub struct Derived {
     /// Balls snapping this frame, and snaps per second over the last second.
     pub snaps: u32,
     pub snaps_s: f64,
+    /// Balls frozen this frame (state did not advance while moving).
+    pub frozen: u32,
 }
 
 pub struct Analysis {
@@ -33,6 +42,9 @@ pub struct Analysis {
     /// Per-ball snap magnitude per frame (for tinting): [frame][ball].
     pub eng_snap: Vec<Vec<f32>>,
     pub obs_snap: Vec<Vec<f32>>,
+    /// Per-ball frozen flag per frame: [frame][ball].
+    pub eng_frozen: Vec<Vec<bool>>,
+    pub obs_frozen: Vec<Vec<bool>>,
     pub summary: Summary,
 }
 
@@ -50,6 +62,8 @@ pub struct Summary {
     pub final_div_max_m: f32,
     pub eng_snaps: u64,
     pub obs_snaps: u64,
+    pub eng_frozen: u64,
+    pub obs_frozen: u64,
     pub sweep_tx_eng_bps: f64,
     pub sweep_tx_obs_bps: f64,
     pub sweep_rollbacks_s: f64,
@@ -65,25 +79,29 @@ fn d3(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-fn snaps(shots: &[Shot]) -> Vec<Vec<f32>> {
+/// Per frame and ball: the snap magnitude |dx - v*dt*dframes| and whether the ball is frozen.
+fn snaps(shots: &[Shot]) -> (Vec<Vec<f32>>, Vec<Vec<bool>>) {
     let dt = 1.0 / HZ as f32;
     shots
         .iter()
         .enumerate()
         .map(|(n, s)| {
             if n == 0 {
-                return vec![0.0; BALLS];
+                return (vec![0.0; BALLS], vec![false; BALLS]);
             }
             let p = &shots[n - 1];
             (0..BALLS)
                 .map(|i| {
                     let v = s.vel[i];
-                    let pred = [p.pos[i][0] + v[0] * dt, p.pos[i][1] + v[1] * dt, p.pos[i][2] + v[2] * dt];
-                    d3(s.pos[i], pred)
+                    let df = s.frames[i].saturating_sub(p.frames[i]) as f32;
+                    let pred = [p.pos[i][0] + v[0] * dt * df, p.pos[i][1] + v[1] * dt * df, p.pos[i][2] + v[2] * dt * df];
+                    let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    let frozen = df == 0.0 && speed > FROZEN_V && d3(s.pos[i], p.pos[i]) == 0.0;
+                    (d3(s.pos[i], pred), frozen)
                 })
-                .collect()
+                .unzip()
         })
-        .collect()
+        .unzip()
 }
 
 /// Display ticks between the controller (scripted target at tick k) and where the hand is drawn:
@@ -115,8 +133,8 @@ fn hand_lag(shots: &[Shot]) -> f64 {
 
 pub fn analyze(r: &Recording) -> Analysis {
     let n = r.eng.len().min(r.obs.len());
-    let eng_snap = snaps(&r.eng);
-    let obs_snap = snaps(&r.obs);
+    let (eng_snap, eng_frozen) = snaps(&r.eng);
+    let (obs_snap, obs_frozen) = snaps(&r.obs);
     let mut eng = Vec::with_capacity(n);
     let mut obs = Vec::with_capacity(n);
     for f in 0..n {
@@ -137,6 +155,8 @@ pub fn analyze(r: &Recording) -> Analysis {
         let mut de = Derived { div_max_m: 0.0, ..Default::default() };
         de.snaps = eng_snap[f].iter().filter(|&&x| x > SNAP_M).count() as u32;
         d.snaps = obs_snap[f].iter().filter(|&&x| x > SNAP_M).count() as u32;
+        de.frozen = eng_frozen[f].iter().filter(|&&x| x).count() as u32;
+        d.frozen = obs_frozen[f].iter().filter(|&&x| x).count() as u32;
         eng.push(de);
         obs.push(d);
     }
@@ -162,6 +182,8 @@ pub fn analyze(r: &Recording) -> Analysis {
         }
         sm.eng_snaps += eng[f].snaps as u64;
         sm.obs_snaps += d.snaps as u64;
+        sm.eng_frozen += eng[f].frozen as u64;
+        sm.obs_frozen += d.frozen as u64;
         sm.max_queue_ms = sm.max_queue_ms.max(e.m.queue_ms).max(o.m.queue_ms);
         sm.cap_drops = sm.cap_drops.max(e.m.cap_drops + o.m.cap_drops);
         sm.max_snapshot_bytes = sm.max_snapshot_bytes.max(e.m.snapshot_bytes).max(o.m.snapshot_bytes);
@@ -193,5 +215,5 @@ pub fn analyze(r: &Recording) -> Analysis {
         Some(k) if k + 1 < r.eng[n - 1].k => Some(((k + 1) as f64 - gesture_end_k as f64).max(0.0) / HZ as f64),
         Some(_) => None,
     };
-    Analysis { eng, obs, eng_snap, obs_snap, summary: sm }
+    Analysis { eng, obs, eng_snap, obs_snap, eng_frozen, obs_frozen, summary: sm }
 }
