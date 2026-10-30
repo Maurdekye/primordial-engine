@@ -3465,10 +3465,12 @@ persists until a verdict arrives.
       since. A:52 went A to W to B; W then exported it into A, citing its genuine hop in, and A accepted it.
       That left two copies, in A and B. When the copies meet (here, B's return of A:52 into A), the
       receiving world holds a transferable fork proof: two exports by W's majority of one incoming hop.
-      Prevention needs a per-object registry that orders every hop, for example at the birth world. That
-      costs one extra relay round per hop, and the birth world must stay reachable [I]; it is offered as
-      an option for the user. So a dishonest majority can lose, keep or double-spend only objects that
-      passed through it, and cannot touch any other object.
+      **Detect only (user, D79, 20:07Z):** the fork proof is the defence, and the cheating world can then
+      be cut off (removed from route lists). A per-object registry that orders every hop, for example at
+      the birth world, was considered and rejected under D79, not even as an opt-in: it costs one extra
+      relay round per hop, and objects freeze when their birth world is unreachable [I]. So a dishonest
+      majority can lose, keep or double-spend only objects that passed through it, and cannot touch any
+      other object.
     * **Chain size.** Each hop is a certificate of the source's epoch majority. With Ed25519 that is about
       64 bytes per signer, about 0.65 KB per hop for a 16-member world, so a chain grows linearly with
       hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
@@ -4262,9 +4264,11 @@ entry says so.
     record, that brought the object into its source world. A destination checks the chain back to the
     birth world, which costs one extra reference per hop. **Built in the spike (P2-5, 22.7)** [V r14 forge,
     r14 chain]: mints, forged or spliced hops, refund and keep, and resurrections are refused. What remains
-    is a double spend by a world of an object it legitimately held [V r14 doublespend]. Closing that needs
-    a per-object registry at the birth world (one more relay round per hop, and the birth world must stay
-    reachable) [I]: a possible further decision for the user.
+    is a double spend by a world of an object it legitimately held [V r14 doublespend]. **Settled (user,
+    D79, 20:07Z): detect only.** It is caught by transferable fork proofs when the copies meet, and the
+    cheating world can then be cut off. A per-object registry at the birth world was considered and
+    rejected, not even as an opt-in (one more relay round per hop, and objects freeze when their birth
+    world is unreachable) [I].
   * Cost: one attestation entry per member per transfer step, and each world must know the other's member
     keys.
   * Alternatives:
