@@ -132,8 +132,16 @@ pub enum Reject {
 }
 
 /// Verify and decode a datagram. `key_of` maps a member to its pinned key. Entries whose author
-/// signature fails make the whole datagram invalid: its sender relayed a forgery.
-pub fn unpack(session: u64, buf: &[u8], key_of: impl Fn(MemberId) -> Option<VerifyingKey>) -> Result<(MemberId, Vec<Item>), Reject> {
+/// signature fails make the whole datagram invalid: its sender relayed a forgery. `held` says whether
+/// the receiver already holds an entry with this id (same id, same content): its signature was
+/// verified on first receipt and is not checked again. Repair resends held entries often, and an
+/// Ed25519 verification costs far more than the rest of the datagram.
+pub fn unpack(
+    session: u64,
+    buf: &[u8],
+    key_of: impl Fn(MemberId) -> Option<VerifyingKey>,
+    held: impl Fn(&Entry) -> bool,
+) -> Result<(MemberId, Vec<Item>), Reject> {
     if buf.len() < HEADER + SIG || &buf[0..2] != MAGIC || buf[2] != VERSION {
         return Err(Reject::Malformed);
     }
@@ -166,9 +174,11 @@ pub fn unpack(session: u64, buf: &[u8], key_of: impl Fn(MemberId) -> Option<Veri
                 match (kind, m) {
                     (1, Msg::Entry(e)) => {
                         let s: [u8; SIG] = take(&mut p, SIG)?.try_into().unwrap();
-                        let k = key_of(e.member).ok_or(Reject::BadEntrySignature)?;
-                        if !verify_entry(&k, session, &e, &s) {
-                            return Err(Reject::BadEntrySignature);
+                        if !held(&e) {
+                            let k = key_of(e.member).ok_or(Reject::BadEntrySignature)?;
+                            if !verify_entry(&k, session, &e, &s) {
+                                return Err(Reject::BadEntrySignature);
+                            }
                         }
                         Item::Entry(e, s)
                     }
@@ -216,7 +226,7 @@ mod tests {
         // Member 1 relays member 2's entry: fine, the author signature travels with it.
         let d = pack(9, 1, &items, &key(1));
         assert_eq!(d.len(), 1);
-        let (from, got) = unpack(9, &d[0], keys).unwrap();
+        let (from, got) = unpack(9, &d[0], keys, |_| false).unwrap();
         assert_eq!((from, got), (1, items));
     }
 
@@ -224,22 +234,25 @@ mod tests {
     fn rejects() {
         let e = entry(2, 1);
         let good = pack(9, 1, &[Item::Entry(e.clone(), sign_entry(&key(2), 9, &e))], &key(1)).remove(0);
-        assert_eq!(unpack(10, &good, keys), Err(Reject::WrongSession));
+        let none = |_: &Entry| false;
+        assert_eq!(unpack(10, &good, keys, none), Err(Reject::WrongSession));
         let mut flipped = good.clone();
         flipped[20] ^= 1;
-        assert!(unpack(9, &flipped, keys).is_err());
+        assert!(unpack(9, &flipped, keys, none).is_err());
         // Signed by the wrong datagram key.
         let imp = pack(9, 1, &[Item::Ping(1)], &key(3)).remove(0);
-        assert_eq!(unpack(9, &imp, keys), Err(Reject::BadSignature));
+        assert_eq!(unpack(9, &imp, keys, none), Err(Reject::BadSignature));
         // An entry "by member 2" signed by member 1: a forgery, even inside 1's valid datagram.
         let forged = pack(9, 1, &[Item::Entry(e.clone(), sign_entry(&key(1), 9, &e))], &key(1)).remove(0);
-        assert_eq!(unpack(9, &forged, keys), Err(Reject::BadEntrySignature));
+        assert_eq!(unpack(9, &forged, keys, none), Err(Reject::BadEntrySignature));
+        // A held entry is not re-verified (its first copy was), so a relayed copy passes.
+        assert!(unpack(9, &forged, keys, |x| *x == e).is_ok());
         // An entry signed for another session.
         let other = pack(9, 1, &[Item::Entry(e.clone(), sign_entry(&key(2), 8, &e))], &key(1)).remove(0);
-        assert_eq!(unpack(9, &other, keys), Err(Reject::BadEntrySignature));
+        assert_eq!(unpack(9, &other, keys, none), Err(Reject::BadEntrySignature));
         let unknown = pack(9, 4, &[Item::Ping(1)], &key(4)).remove(0);
-        assert_eq!(unpack(9, &unknown, keys), Err(Reject::UnknownSender));
-        assert_eq!(unpack(9, &good[..10], keys), Err(Reject::Malformed));
+        assert_eq!(unpack(9, &unknown, keys, none), Err(Reject::UnknownSender));
+        assert_eq!(unpack(9, &good[..10], keys, none), Err(Reject::Malformed));
     }
 
     #[test]
@@ -251,7 +264,7 @@ mod tests {
         let d = pack(9, 2, &items, &key(2));
         assert!(d.len() > 1);
         assert!(d.iter().all(|x| x.len() <= MTU));
-        let all: Vec<Item> = d.iter().flat_map(|x| unpack(9, x, keys).unwrap().1).collect();
+        let all: Vec<Item> = d.iter().flat_map(|x| unpack(9, x, keys, |_| false).unwrap().1).collect();
         assert_eq!(all, items);
     }
 }

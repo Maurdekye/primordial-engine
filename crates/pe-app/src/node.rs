@@ -247,12 +247,15 @@ impl Node {
         loop {
             let (n, _from) = match self.sock.recv_from(&mut buf) {
                 Ok(x) => x,
-                // WouldBlock, or Windows' ICMP-unreachable reset (a peer not up yet / gone).
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                // Windows reports an ICMP port-unreachable for an earlier send (a member not up yet,
+                // or gone) as a reset on the next receive: skip it, more datagrams may be waiting.
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
                 Err(_) => break,
             };
             self.traffic.datagrams_received += 1;
-            let keys = &self.keys;
-            let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied());
+            let (keys, sigs) = (&self.keys, &self.sigs);
+            let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied(), |e| sigs.contains_key(&e.id()));
             match r {
                 Ok((sender, items)) if sender != self.me => {
                     for i in items {
@@ -527,7 +530,9 @@ impl Node {
                 std::process::exit(3);
             }
         }
+        let t0 = self.local_us();
         self.receive_all();
+        let t1 = self.local_us();
         self.sync_clock();
         self.apply_faults();
         if self.epoch.is_some() {
@@ -535,9 +540,14 @@ impl Node {
             self.core.tick(now);
             self.run_plan();
         }
+        let t2 = self.local_us();
         self.drain_events();
         self.flush_out();
         self.finish();
+        let t3 = self.local_us();
+        if t3 - t0 > 100_000 {
+            self.note(format!("slow step: {} ms (receive {} ms, tick {} ms, send {} ms)", (t3 - t0) / 1000, (t1 - t0) / 1000, (t2 - t1) / 1000, (t3 - t2) / 1000));
+        }
         let local = self.local_us();
         if self.verbose && self.epoch.is_some() && local >= self.last_status + 2_000_000 {
             self.last_status = local;
