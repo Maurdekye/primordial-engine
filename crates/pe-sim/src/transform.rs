@@ -4,21 +4,36 @@
 //! * An object's *frame* is its nearest ancestor that has a `Transform`. An object with no frame is placed
 //!   as a root: its `chunk` (level-0 chunk, `i64`) plus `pos` from that chunk's corner. An object with a
 //!   frame is placed relative to it, and its `chunk` must be zero.
-//! * **Hierarchy edits keep world transforms** (review P21-6): reparenting an object, or giving or taking
-//!   a `Transform` from one of its ancestors, rewrites the affected local transforms so their world
-//!   transforms stay where they were (up to rounding), with the root chunk recomputed exactly. An edit
-//!   whose rewritten transform would fall outside the limits below is refused.
-//! * **Root positions are kept inside their chunk** (review P21-7): inserting a root transform rebases it
-//!   exactly, and [`rebase_roots`] does the same for roots that sim code has moved through `get_mut`.
-//! * **Limits** (review P21-2), checked on insert, in `check_values` and on loading bytes: `|pos| <= 2^50` m
-//!   (about 1.1e15 m: chunks hold the far range); a root's `|chunk| <= 2^61`; scale components non-zero
-//!   with magnitude in [2^-40, 2^40]; the rotation's squared norm within 2% of 1; `_pad` zero.
+//! * **Precision.** A root has the chunk system's precision everywhere. A child's position is an `f64`
+//!   offset from its frame, so its precision is that offset's ulp: about 1e-13 m at 1 km, 1e-10 m at
+//!   1,000 km, 1 um out to about 4e9 m. Keep children within about 10^6 km of their frame; far content
+//!   belongs in its own root.
+//! * **Plain edits are data edits** (review P21R-3): `insert`/`insert_raw` and `remove` of a `Transform`,
+//!   and [`SimStore::set_parent`], store exactly what they are given and never rewrite other objects. So a
+//!   state rebuilt by a loader is the same whatever order it inserts in. An edit that would leave an object
+//!   with a frame and a non-zero `chunk` is refused.
+//! * **Keep-world edits are explicit** (review P21-6): [`SimStore::set_parent_keep_world`],
+//!   [`SimStore::insert_transform_keep_world`] and [`SimStore::remove_transform_keep_world`] rewrite the
+//!   affected local transforms so their world transforms stay where they were (up to rounding), with the
+//!   root chunk recomputed exactly. Each computes the old and new frame once, so its cost is linear in the
+//!   objects it moves (review P21R-2). An edit whose rewritten transforms would break the limits is refused,
+//!   and nothing changes.
+//! * **Limits** (review P21-2), checked on insert, in `check_values` and on loading bytes, on the stored form:
+//!   `|pos| <= 2^50` m; a root's `|chunk| <= 2^61`, so a root's position never saturates; scale components
+//!   non-zero with magnitude in [2^-40, 2^40]; the rotation's squared norm within 2% of 1; `_pad` zero.
+//!   Deep chains of maximal scales and offsets can still saturate a *world* position at the chunk limit;
+//!   that is deterministic.
+//! * **Maintenance** (reviews P21-7, P21R-5): [`SimStore::maintain_transforms`] (also the system
+//!   [`maintain_transforms`]) rebases root positions into their chunk when the rebased form is within the
+//!   limits, and repairs out-of-limit values written through `get_mut` (clamped, renormalized, zeroed), so
+//!   the state stays loadable by joiners.
 //! * Composition: `world.pos = frame.pos + rotate(frame.rot, frame.scale * local.pos)` in `f64`, then
 //!   renormalized into its chunk; `world.rot = normalize(frame.rot * local.rot)` and `world.scale =
-//!   frame.scale * local.scale` (clamped to [2^-100, 2^100] in magnitude) in `f32`. Non-uniform scale under
-//!   rotation does not shear children; it multiplies per axis, as in most engines. Every step is plain IEEE
-//!   arithmetic in a fixed order and never panics, so [`SimStore::world_transform`] and
-//!   [`SimStore::world_transforms`] give the same bits everywhere.
+//!   frame.scale * local.scale` (clamped to [2^-100, 2^100] in magnitude) in `f32`. `rotate` normalizes the
+//!   quaternion in `f64` (review P21R-4). Non-uniform scale under rotation does not shear children; it
+//!   multiplies per axis, as in most engines. Every step is plain IEEE arithmetic in a fixed order and never
+//!   panics, so [`SimStore::world_transform`] and [`SimStore::world_transforms`] give the same bits
+//!   everywhere.
 
 use bytemuck::{Pod, Zeroable};
 use core::mem::offset_of;
@@ -163,10 +178,15 @@ fn quat_conj(q: [f32; 4]) -> [f32; 4] {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
-/// Rotates `v` by the unit quaternion `q`, in `f64` (the quaternion converts exactly):
-/// `v + 2w (u x v) + 2 u x (u x v)`.
+/// Rotates `v` by the quaternion `q`, normalized in `f64` first (review P21R-4: an `f32` quaternion is
+/// unit only to about 1e-7): `v + 2w (u x v) + 2 u x (u x v)`.
 pub fn rotate(q: [f32; 4], v: [f64; 3]) -> [f64; 3] {
-    let (ux, uy, uz, w) = (q[0] as f64, q[1] as f64, q[2] as f64, q[3] as f64);
+    let (x, y, z, w) = (q[0] as f64, q[1] as f64, q[2] as f64, q[3] as f64);
+    let n = (x * x + y * y + z * z + w * w).sqrt();
+    if !(n.is_finite() && n > 0.0) {
+        return v;
+    }
+    let (ux, uy, uz, w) = (x / n, y / n, z / n, w / n);
     let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     let u = [ux, uy, uz];
     let t = cross(u, v);
@@ -233,6 +253,32 @@ impl WorldTransform {
     }
 }
 
+fn invalid(object: ObjectId, field: &str) -> Error {
+    Error::InvalidValue { component: ComponentId::TRANSFORM.0, object, field: field.to_string() }
+}
+
+/// The nearest value to `t` that passes [`Transform::validate`] (`maintain_transforms`' repair).
+fn repaired(t: &Transform, has_frame: bool) -> Transform {
+    let mut r = *t;
+    if has_frame {
+        r.chunk = [0; 3];
+    } else {
+        r.chunk = r.chunk.map(|c| c.clamp(-ROOT_CHUNK_LIMIT, ROOT_CHUNK_LIMIT));
+    }
+    r.pos = r.pos.map(|p| if p.is_finite() { p.clamp(-POS_LIMIT, POS_LIMIT) } else { 0.0 });
+    r.rot = quat_normalize(r.rot);
+    r.scale = r.scale.map(|v| {
+        if !v.is_finite() || v == 0.0 {
+            1.0
+        } else {
+            let m = v.abs().clamp(SCALE_MIN, SCALE_MAX);
+            if v < 0.0 { -m } else { m }
+        }
+    });
+    r._pad = 0;
+    r
+}
+
 impl SimStore {
     /// The nearest ancestor of `id` that has a `Transform` (its frame).
     pub fn frame_of(&self, id: ObjectId) -> Option<ObjectId> {
@@ -252,7 +298,7 @@ impl SimStore {
     }
 
     /// The transformed objects whose frame is `id` or would be `id` if it had a `Transform`: descendants
-    /// reached without passing another transformed object. In depth-first order.
+    /// reached without passing another transformed object. In depth-first order; linear in what it visits.
     pub(crate) fn frame_children(&self, id: ObjectId) -> Vec<ObjectId> {
         let mut out = Vec::new();
         let mut stack: Vec<ObjectId> = self.children(id).collect::<Vec<_>>().into_iter().rev().collect();
@@ -264,6 +310,28 @@ impl SimStore {
             }
         }
         out
+    }
+
+    /// For every row of the Transform column, in column order, whether the object has a frame. One
+    /// depth-first pass from the roots (review P21R-2).
+    pub(crate) fn transform_frame_flags(&self) -> Vec<bool> {
+        let ids = self.column::<Transform>().0;
+        let mut flags = vec![false; ids.len()];
+        let roots: Vec<ObjectId> = self.roots().collect();
+        let mut stack: Vec<(ObjectId, bool)> = roots.into_iter().map(|r| (r, false)).collect();
+        while let Some((id, above)) = stack.pop() {
+            let here = match ids.binary_search(&id) {
+                Ok(i) => {
+                    flags[i] = above;
+                    true
+                }
+                Err(_) => false,
+            };
+            for k in self.children(id) {
+                stack.push((k, above || here));
+            }
+        }
+        flags
     }
 
     /// The world transform of one object, composed from the top down. `None` if it has no `Transform`.
@@ -310,56 +378,82 @@ impl SimStore {
         out
     }
 
-    /// New local transforms that keep `objects` at their current world transforms in the frame `frame`
-    /// (an object, or `None` for root placement). Validated; nothing is written.
-    pub(crate) fn relocalize(&self, objects: &[ObjectId], frame: Option<ObjectId>) -> Result<Vec<(ObjectId, Transform)>, Error> {
-        let fw = frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
+    /// New local transforms that keep `objects`, which all have the frame `old_frame` now, at their world
+    /// transforms in the frame `new_frame` (`None`: placed as roots). Each frame's world transform is
+    /// computed once. Validated; nothing is written.
+    pub(crate) fn relocalize(
+        &self,
+        objects: &[ObjectId],
+        old_frame: Option<ObjectId>,
+        new_frame: Option<ObjectId>,
+    ) -> Result<Vec<(ObjectId, Transform)>, Error> {
+        let old = old_frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
+        let new = new_frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
+        self.relocalize_in(objects, old.as_ref(), new.as_ref())
+    }
+
+    fn relocalize_in(
+        &self,
+        objects: &[ObjectId],
+        old: Option<&WorldTransform>,
+        new: Option<&WorldTransform>,
+    ) -> Result<Vec<(ObjectId, Transform)>, Error> {
         objects
             .iter()
             .map(|&o| {
-                let w = self.world_transform(o).expect("relocalized objects have a Transform");
-                let t = w.local_in(fw.as_ref());
-                let t = if fw.is_none() { t.rebased() } else { t };
-                t.validate(fw.is_some()).map_err(|field| Error::InvalidValue {
-                    component: ComponentId::TRANSFORM.0,
-                    object: o,
-                    field: field.to_string(),
-                })?;
-                Ok((o, t))
+                let t = self.get::<Transform>(o).expect("relocalized objects have a Transform");
+                let w = match old {
+                    Some(f) => f.compose(t),
+                    None => WorldTransform::root(t),
+                };
+                let lt = w.local_in(new);
+                lt.validate(new.is_some()).map_err(|field| invalid(o, field))?;
+                Ok((o, lt))
             })
             .collect()
     }
 
-    /// Validates and writes a `Transform` (the path behind `insert::<Transform>` and `insert_raw`). If the
-    /// object had none, the transformed objects below it keep their world transforms in the new frame.
-    pub(crate) fn insert_transform(&mut self, id: ObjectId, mut t: Transform) -> Result<(), Error> {
-        let has_frame = self.frame_of(id).is_some();
-        let bad = |field: &str| Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: id, field: field.to_string() };
-        t.validate(has_frame).map_err(bad)?;
-        if !has_frame {
-            t = t.rebased();
+    /// Validates and writes a `Transform` as given (the path behind `insert::<Transform>` and `insert_raw`).
+    /// A data edit: nothing else is rewritten, so objects below that take this object as their new frame
+    /// keep their local values. Refused if one of them would then have a frame and a non-zero `chunk`.
+    pub(crate) fn insert_transform(&mut self, id: ObjectId, t: Transform) -> Result<(), Error> {
+        t.validate(self.frame_of(id).is_some()).map_err(|field| invalid(id, field))?;
+        if !self.has::<Transform>(id) && self.frame_of(id).is_none() {
+            // Objects below that had no frame gain one.
+            for k in self.frame_children(id) {
+                if self.get::<Transform>(k).unwrap().chunk != [0; 3] {
+                    return Err(invalid(k, "chunk"));
+                }
+            }
         }
+        self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&t));
+        Ok(())
+    }
+
+    /// Removes a `Transform` (a data edit: objects below keep their local values in the frame above).
+    pub(crate) fn remove_transform(&mut self, id: ObjectId) -> Result<bool, Error> {
+        Ok(self.drop_row(ComponentId::TRANSFORM, id))
+    }
+
+    /// Inserts or overwrites a `Transform`; if the object had none, the transformed objects below it keep
+    /// their world transforms in the new frame.
+    pub fn insert_transform_keep_world(&mut self, id: ObjectId, t: Transform) -> Result<(), Error> {
+        if !self.exists(id) {
+            return Err(Error::UnknownObject(id));
+        }
+        let frame = self.frame_of(id);
+        t.validate(frame.is_some()).map_err(|field| invalid(id, field))?;
         if self.has::<Transform>(id) {
             self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&t));
             return Ok(());
         }
-        // The frame children's new locals need the new frame's world transform: compose it now.
-        let new_frame = match self.frame_of(id).and_then(|f| self.world_transform(f)) {
+        let old = frame.map(|f| self.world_transform(f).expect("a frame has a Transform"));
+        let new = match &old {
             Some(f) => f.compose(&t),
             None => WorldTransform::root(&t),
         };
         let kids = self.frame_children(id);
-        let mut rewritten = Vec::with_capacity(kids.len());
-        for k in kids {
-            let w = self.world_transform(k).expect("frame children have a Transform");
-            let lt = w.local_in(Some(&new_frame));
-            lt.validate(true).map_err(|field| Error::InvalidValue {
-                component: ComponentId::TRANSFORM.0,
-                object: k,
-                field: field.to_string(),
-            })?;
-            rewritten.push((k, lt));
-        }
+        let rewritten = self.relocalize_in(&kids, old.as_ref(), Some(&new))?;
         self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&t));
         for (k, lt) in rewritten {
             self.put_row(ComponentId::TRANSFORM, k, bytemuck::bytes_of(&lt));
@@ -368,12 +462,12 @@ impl SimStore {
     }
 
     /// Removes a `Transform`; the transformed objects below keep their world transforms in the frame above.
-    pub(crate) fn remove_transform(&mut self, id: ObjectId) -> Result<bool, Error> {
+    pub fn remove_transform_keep_world(&mut self, id: ObjectId) -> Result<bool, Error> {
         if !self.has::<Transform>(id) {
             return Ok(false);
         }
         let kids = self.frame_children(id);
-        let rewritten = self.relocalize(&kids, self.frame_of(id))?;
+        let rewritten = self.relocalize(&kids, Some(id), self.frame_of(id))?;
         self.drop_row(ComponentId::TRANSFORM, id);
         for (k, lt) in rewritten {
             self.put_row(ComponentId::TRANSFORM, k, bytemuck::bytes_of(&lt));
@@ -381,21 +475,33 @@ impl SimStore {
         Ok(true)
     }
 
-    /// Moves every root transform's position inside its chunk (exact; review P21-7).
-    pub fn rebase_roots(&mut self) {
+    /// Rebases root positions into their chunk (exact; review P21-7) where the rebased form is within the
+    /// limits, and repairs any `Transform` outside them (written through `get_mut`; review P21R-5). Returns
+    /// how many rows it changed. Linear in the objects.
+    pub fn maintain_transforms(&mut self) -> usize {
+        let flags = self.transform_frame_flags();
         let ids: Vec<ObjectId> = self.column::<Transform>().0.to_vec();
-        for id in ids {
-            if self.frame_of(id).is_none() {
-                let t = self.get::<Transform>(id).unwrap().rebased();
-                if t != *self.get::<Transform>(id).unwrap() {
-                    self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&t));
+        let mut changed = 0;
+        for (i, id) in ids.into_iter().enumerate() {
+            let t = *self.get::<Transform>(id).unwrap();
+            let mut n = if t.validate(flags[i]).is_ok() { t } else { repaired(&t, flags[i]) };
+            if !flags[i] {
+                let r = n.rebased();
+                if r.validate(false).is_ok() {
+                    n = r;
                 }
             }
+            if n != t {
+                self.put_row(ComponentId::TRANSFORM, id, bytemuck::bytes_of(&n));
+                changed += 1;
+            }
         }
+        changed
     }
 }
 
-/// [`SimStore::rebase_roots`] as a system, for schedules whose systems move roots through `get_mut`.
-pub fn rebase_roots(store: &mut SimStore, _ctx: &TickCtx) {
-    store.rebase_roots();
+/// [`SimStore::maintain_transforms`] as a system, for schedules whose systems write transforms through
+/// `get_mut` or `column_mut`.
+pub fn maintain_transforms(store: &mut SimStore, _ctx: &TickCtx) {
+    store.maintain_transforms();
 }

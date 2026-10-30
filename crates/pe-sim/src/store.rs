@@ -186,10 +186,10 @@ impl SimStore {
         Some(col.row_mut(i))
     }
 
-    /// Inserts or overwrites a component row given as raw little-endian bytes (logic modules, MCP, state
-    /// transfer). Validated: the object exists, the size matches and the values are legal. A `Transform` is
-    /// also checked against its limits and rebased (see [`crate::transform`]); if the object had none, the
-    /// transformed objects below it keep their world transforms.
+    /// Inserts or overwrites a component row given as raw little-endian bytes (logic modules, MCP, scene
+    /// loading). Validated: the object exists, the size matches and the values are legal; a `Transform` is
+    /// also checked against its limits (see [`crate::transform`]). A data edit: the row is stored as given,
+    /// so the result does not depend on the order rows are inserted in. (Whole states travel as snapshots.)
     pub fn insert_raw(&mut self, c: ComponentId, id: ObjectId, row: &[u8]) -> Result<(), Error> {
         if c == ComponentId::NODE {
             return Err(Error::Reserved { component: c.0 });
@@ -215,8 +215,7 @@ impl SimStore {
         self.row(c, id)
     }
 
-    /// Removes a component row. Returns whether there was one. Removing a `Transform` keeps the world
-    /// transforms of the transformed objects below it.
+    /// Removes a component row. Returns whether there was one.
     pub fn remove_raw(&mut self, c: ComponentId, id: ObjectId) -> Result<bool, Error> {
         if c == ComponentId::NODE {
             return Err(Error::Reserved { component: c.0 });
@@ -297,8 +296,9 @@ impl SimStore {
                 }
             }
         }
-        for (id, t) in self.iter::<Transform>() {
-            if let Err(field) = t.validate(self.frame_of(id).is_some()) {
+        let flags = self.transform_frame_flags();
+        for ((id, t), has_frame) in self.iter::<Transform>().zip(flags) {
+            if let Err(field) = t.validate(has_frame) {
                 return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: id, field: field.to_string() });
             }
         }

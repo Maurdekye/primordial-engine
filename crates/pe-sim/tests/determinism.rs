@@ -177,8 +177,8 @@ fn hash_ignores_history_only_state() {
 
 /// Golden values for the cross-platform check (P2-1 "done": equal on Windows and Linux). They were
 /// recorded on Windows x64; a different value on any target is a determinism bug, not a test to update.
-const GOLDEN_TRACE: u64 = 0x37f7c134152aadd9;
-const GOLDEN_WORLD: u64 = 0x5627f9c11ffc392e;
+const GOLDEN_TRACE: u64 = 0x820d14b183fb6434;
+const GOLDEN_WORLD: u64 = 0xa15e17ef2b97bc12;
 
 #[test]
 fn golden_trace() {
