@@ -1,8 +1,10 @@
 //! The floating-point environment check (design 4.3 rule 9).
 //!
-//! Sim results assume IEEE defaults: round to nearest, subnormals kept (no flush-to-zero or
-//! denormals-are-zero), exceptions masked. Native libraries loaded in-process (OpenXR runtimes, audio
-//! drivers) can change these thread-local flags. The sim thread calls [`check_and_reset`] every tick.
+//! Sim results assume the platform's default floating-point environment: round to nearest, subnormals
+//! kept (no flush-to-zero or denormals-are-zero), exceptions masked, and on ARM no default-NaN or
+//! alternate-behaviour modes. Native libraries loaded in-process (OpenXR runtimes, audio drivers) can
+//! change these thread-local flags. The sim thread calls [`check_and_reset`] every tick, which compares
+//! the whole control register against the default (review P21-5), not selected bits.
 
 /// Restores the default environment on this thread. Returns `true` if it already was the default, and
 /// `false` if something had changed it (the caller should log that).
@@ -14,10 +16,14 @@ pub fn check_and_reset() -> bool {
 mod imp {
     use core::arch::asm;
 
+    #[cfg(test)]
     const DAZ: u32 = 1 << 6;
-    const MASKS: u32 = 0x1F80;
-    const ROUNDING: u32 = 3 << 13;
+    #[cfg(test)]
     const FTZ: u32 = 1 << 15;
+    /// The power-on default: all exceptions masked, round to nearest, no FTZ or DAZ.
+    const DEFAULT: u32 = 0x1F80;
+    /// Sticky exception flags (bits 0-5): status, not control, so they are ignored.
+    const FLAGS: u32 = 0x3F;
 
     pub fn read() -> u32 {
         let mut csr: u32 = 0;
@@ -33,11 +39,10 @@ mod imp {
 
     pub fn check_and_reset() -> bool {
         let csr = read();
-        let want = (csr & !(DAZ | ROUNDING | FTZ)) | MASKS;
-        if want == csr {
+        if csr & !FLAGS == DEFAULT {
             return true;
         }
-        write(want);
+        write(DEFAULT | (csr & FLAGS));
         false
     }
 
@@ -51,10 +56,11 @@ mod imp {
 mod imp {
     use core::arch::asm;
 
-    const TRAPS: u64 = 0x9F00; // IOE, DZE, OFE, UFE, IXE, IDE trap enables
-    const FZ16: u64 = 1 << 19;
-    const RMODE: u64 = 3 << 22;
+    #[cfg(test)]
     const FZ: u64 = 1 << 24;
+    /// Linux and Windows start threads with FPCR = 0: round to nearest, no FZ/FZ16/DN, no traps, and the
+    /// FEAT_AFP bits (FIZ, AH, NEP) clear.
+    const DEFAULT: u64 = 0;
 
     pub fn read() -> u64 {
         let fpcr: u64;
@@ -64,17 +70,15 @@ mod imp {
     }
 
     pub fn write(fpcr: u64) {
-        // SAFETY: we only clear flush-to-zero, rounding-mode and trap-enable bits.
+        // SAFETY: writing FPCR only changes this thread's floating-point modes; we write the default.
         unsafe { asm!("msr fpcr, {}", in(reg) fpcr, options(nomem, nostack, preserves_flags)) };
     }
 
     pub fn check_and_reset() -> bool {
-        let fpcr = read();
-        let want = fpcr & !(TRAPS | FZ16 | RMODE | FZ);
-        if want == fpcr {
+        if read() == DEFAULT {
             return true;
         }
-        write(want);
+        write(DEFAULT);
         false
     }
 

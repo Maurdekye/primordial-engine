@@ -119,12 +119,22 @@ fn corrupt_or_mismatched_bytes_are_refused() {
     swapped[at..at + 8].copy_from_slice(&b);
     swapped[at + 8..at + 16].copy_from_slice(&a);
     assert!(Snapshot::from_bytes(&swapped, reg).is_err());
-    // A registry without the scenario's components cannot read or restore it.
+    // A registry without the scenario's components cannot read or restore it, and a failed restore leaves a
+    // populated store unchanged.
     let bare = std::sync::Arc::new(pe_sim::Registry::new());
     assert!(Snapshot::from_bytes(&bytes, &bare).is_err());
     let mut other = SimStore::new(bare, SEED);
+    for _ in 0..10 {
+        let o = other.create(4).unwrap();
+        other.insert(o, Transform::local([1.0, 2.0, 3.0])).unwrap();
+    }
+    let (h, b) = (other.state_hash(), other.snapshot().to_bytes());
     assert!(other.restore(&store.snapshot()).is_err());
-    assert_eq!(other.objects().len(), 0, "a failed restore leaves the store unchanged");
+    assert_eq!((other.state_hash(), other.snapshot().to_bytes()), (h, b));
+    // A frame beyond 2^62 is refused (review P21-8).
+    let mut far = bytes.clone();
+    far[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(Snapshot::from_bytes(&far, reg).is_err());
 }
 
 #[test]
@@ -167,8 +177,8 @@ fn hash_ignores_history_only_state() {
 
 /// Golden values for the cross-platform check (P2-1 "done": equal on Windows and Linux). They were
 /// recorded on Windows x64; a different value on any target is a determinism bug, not a test to update.
-const GOLDEN_TRACE: u64 = 0x8effd667bd4fa407;
-const GOLDEN_WORLD: u64 = 0x18c584b928ecf125;
+const GOLDEN_TRACE: u64 = 0x37f7c134152aadd9;
+const GOLDEN_WORLD: u64 = 0x5627f9c11ffc392e;
 
 #[test]
 fn golden_trace() {

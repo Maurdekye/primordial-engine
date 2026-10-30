@@ -5,10 +5,12 @@
 //! conversions, which are exact or correctly rounded on every target, so they return the same bits
 //! everywhere.
 //!
-//! The `f32` functions evaluate an `f64` kernel (fdlibm's polynomials) and round once to `f32`. Measured
-//! against `std` in the tests: within 1 ulp of `f32` over the ranges tested. Argument reduction for
-//! `sin`/`cos`/`tan` is accurate for |x| < 2^20 rad; beyond that the result is still deterministic but
-//! loses accuracy (sim code has no reason to pass such angles).
+//! The `f32` functions evaluate an `f64` kernel (fdlibm's polynomials) and convert the result to `f32`.
+//! Measured against `std` in the tests: within 1 ulp of `f32` over the ranges tested.
+//!
+//! `sin`/`cos`/`tan` reduce their argument exactly for every finite `f32` (review P21-4): below 2^19 with
+//! a two-part pi/2 in `f64`, above it with a 98-bit window of the bits of 2/pi (Payne-Hanek). So they
+//! stay in range and accurate up to `f32::MAX`.
 //!
 //! Special values follow IEEE conventions (`ln(0) = -inf`, `ln(-1) = NaN`, `exp(1000) = inf`). NaN must
 //! never enter sim state (4.3 rule 6): callers validate at their boundaries. `asin`/`acos` clamp their
@@ -62,11 +64,62 @@ fn k_cos(x: f64) -> f64 {
     1.0 - 0.5 * z + z * z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))))
 }
 
-/// `(sin x, cos x)` in `f64`, for finite `x`.
-fn sin_cos_f64(x: f64) -> (f64, f64) {
-    let k = round_i64(x * FRAC_2_PI);
-    let kf = k as f64;
-    let r = (x - kf * PIO2_HI) - kf * PIO2_LO;
+/// 2/pi as a binary fraction: bits 1 to 384 after the point, most significant first. Computed exactly with
+/// integer arithmetic (Machin's formula); it begins 0xA2F9836E4E44..., the published expansion.
+const TWO_OVER_PI: [u64; 6] = [
+    0xA2F9_836E_4E44_1529,
+    0xFC27_57D1_F534_DDC0,
+    0xDB62_9599_3C43_9041,
+    0xFE51_63AB_DEBB_C561,
+    0xB724_6E3A_424D_D2E0,
+    0x0649_2EEA_09D1_921C,
+];
+
+const PIO2: f64 = 1.57079632679489661923e+00;
+
+/// Bit `i` (1-based, weight 2^-i) of 2/pi.
+fn two_over_pi_bit(i: i32) -> u128 {
+    if !(1..=384).contains(&i) {
+        return 0;
+    }
+    let j = (i - 1) as usize;
+    ((TWO_OVER_PI[j / 64] >> (63 - j % 64)) & 1) as u128
+}
+
+/// Exact reduction of a finite `f32` with |x| >= 2^19: `x = q * pi/2 + r` with |r| <= pi/4.
+///
+/// |x| = m * 2^e with m a 24-bit integer. Bits of 2/pi with weight above 2^(e-1) only add multiples of 4 to
+/// x * 2/pi, so the 98 bits from 2^-(e-1) to 2^-(e+96) give `x * 2/pi mod 4` with 96 fractional bits. The
+/// bits dropped below change r by under 2^-71.
+fn reduce_large(x: f32) -> (i64, f64) {
+    let bits = x.to_bits();
+    let m = ((bits & 0x7f_ffff) | 0x80_0000) as u128;
+    let e = ((bits >> 23) & 0xff) as i32 - 150;
+    let mut w = 0u128;
+    for i in (e - 1)..=(e + 96) {
+        w = (w << 1) | two_over_pi_bit(i);
+    }
+    let v = (m * w) & ((1u128 << 98) - 1);
+    let mut q = (v >> 96) as i64;
+    let mut f = (v & ((1u128 << 96) - 1)) as i128;
+    if f >= 1i128 << 95 {
+        f -= 1i128 << 96;
+        q += 1;
+    }
+    let r = f as f64 * pow2(-96) * PIO2;
+    if x < 0.0 { (-q, -r) } else { (q, r) }
+}
+
+/// `(sin x, cos x)` in `f64`, for a finite `f32` `x`.
+fn sin_cos_f64(x: f32) -> (f64, f64) {
+    let (k, r) = if x.abs() >= 524_288.0 {
+        reduce_large(x)
+    } else {
+        let xd = x as f64;
+        let k = round_i64(xd * FRAC_2_PI);
+        let kf = k as f64;
+        (k, (xd - kf * PIO2_HI) - kf * PIO2_LO)
+    };
     let (s, c) = (k_sin(r), k_cos(r));
     match k & 3 {
         0 => (s, c),
@@ -81,7 +134,7 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
     if !x.is_finite() {
         return (f32::NAN, f32::NAN);
     }
-    let (s, c) = sin_cos_f64(x as f64);
+    let (s, c) = sin_cos_f64(x);
     (s as f32, c as f32)
 }
 
@@ -97,7 +150,7 @@ pub fn tan(x: f32) -> f32 {
     if !x.is_finite() {
         return f32::NAN;
     }
-    let (s, c) = sin_cos_f64(x as f64);
+    let (s, c) = sin_cos_f64(x);
     (s / c) as f32
 }
 
@@ -307,13 +360,13 @@ pub fn log2(x: f32) -> f32 {
 }
 
 /// `x^y` for `x > 0` (and `x = 0`, `y > 0` gives 0). Negative `x` gives NaN; use [`powi`] for integer
-/// exponents of negative bases.
+/// exponents of negative bases. As in C99, `pow(x, 0)` and `pow(1, y)` are 1 for every `x` and `y`.
 pub fn pow(x: f32, y: f32) -> f32 {
+    if y == 0.0 || x == 1.0 {
+        return 1.0;
+    }
     if x.is_nan() || y.is_nan() || x < 0.0 {
         return f32::NAN;
-    }
-    if y == 0.0 {
-        return 1.0;
     }
     if x == 0.0 {
         return if y > 0.0 { 0.0 } else { f32::INFINITY };
@@ -388,6 +441,13 @@ mod tests {
         check("sin", sin, f32::sin, &angles, 1);
         check("cos", cos, f32::cos, &angles, 1);
         check("tan", tan, f32::tan, &sweep(-1.5, 1.5, 100_000), 1);
+        // Large arguments (review P21-4), against std's f64 functions, which reduce exactly.
+        let large: Vec<f32> = (0..20_000).map(|i| f32::from_bits(0x4880_0000 + i * 0xB439)).chain([f32::MAX, -f32::MAX, 1.0e38, -3.0e30]).collect();
+        check("sin large", sin, |x| (x as f64).sin() as f32, &large, 1);
+        check("cos large", cos, |x| (x as f64).cos() as f32, &large, 1);
+        for &x in &large {
+            assert!(sin(x).abs() <= 1.0 && cos(x).abs() <= 1.0 && tan(x).is_finite(), "x = {x}");
+        }
         let wide = sweep(-50.0, 50.0, 200_000);
         check("atan", atan, f32::atan, &wide, 1);
         check("asin", asin, f32::asin, &sweep(-1.0, 1.0, 100_000), 1);
@@ -427,12 +487,19 @@ mod tests {
             put(pow(x.abs(), 1.7));
             put(powi(x, 5));
         }
+        for i in 0..20_000u32 {
+            let x = f32::from_bits(0x4880_0000 + i * 0xB439);
+            let (s, c) = sin_cos(x);
+            put(s);
+            put(c);
+            put(tan(-x));
+        }
         let got = h.finish();
         println!("RESULT dmath golden={got:#018x}");
         assert_eq!(got, GOLDEN_DMATH);
     }
 
-    const GOLDEN_DMATH: u64 = 0xf1cf7f9547a5d079;
+    const GOLDEN_DMATH: u64 = 0xf17f26f98ad6b88c;
 
     #[test]
     fn special_values() {
@@ -454,6 +521,9 @@ mod tests {
         assert_eq!(cos(0.0), 1.0);
         assert!(sin(f32::INFINITY).is_nan());
         assert_eq!(pow(0.0, 2.0), 0.0);
+        assert_eq!(pow(1.0, f32::INFINITY), 1.0);
+        assert_eq!(pow(1.0, f32::NAN), 1.0);
+        assert_eq!(pow(f32::NAN, 0.0), 1.0);
         assert_eq!(powi(-2.0, 3), -8.0);
     }
 }

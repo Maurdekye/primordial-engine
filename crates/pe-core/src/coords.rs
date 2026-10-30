@@ -15,6 +15,9 @@
 pub const CHUNK_EXP: i32 = 10;
 /// Level-0 chunk width in metres (exactly representable).
 pub const CHUNK: f64 = 1024.0;
+/// Chunk indices saturate at +-2^62 (review P21-2): positions never overflow, and the sim crates refuse
+/// transforms that come near this limit.
+pub const CHUNK_LIMIT: i64 = 1 << 62;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WorldPos {
@@ -68,20 +71,39 @@ impl WorldPos {
         WorldPos::new([0; 3], x)
     }
 
-    /// Bring `local` back into `[0, CHUNK)`, carrying whole chunks into `chunk`. Exact: removing
-    /// a multiple of 1024 from a value whose magnitude shrinks never rounds. The one inexact case
-    /// is a negative offset smaller than half an ulp of 1024, which becomes 0 of the next chunk.
+    /// Bring `local` back into `[0, CHUNK)`, carrying whole chunks into `chunk`. Exact for every finite
+    /// offset: `local - 1024 * floor(local / 1024)` is `local mod 1024`, which is representable. The one
+    /// inexact case is a negative offset smaller than half an ulp of 1024, which becomes 0 of the next
+    /// chunk.
+    ///
+    /// Never panics (review P21-2): a chunk index beyond [`CHUNK_LIMIT`] saturates there, with the offset
+    /// clamped to that chunk's edge. A non-finite offset is treated as 0. Both are deterministic, and the
+    /// sim crates' input validation keeps real positions far from either case.
     pub fn normalize(&mut self) {
         for a in 0..3 {
+            if !self.local[a].is_finite() {
+                self.local[a] = 0.0;
+            }
             let k = (self.local[a] / CHUNK).floor();
+            let mut c = self.chunk[a] as i128;
             if k != 0.0 {
                 self.local[a] -= k * CHUNK;
-                self.chunk[a] = self.chunk[a].checked_add(k as i64).expect("chunk coordinate overflow");
+                // |k| < 2^1014; clamping it to +-2^63 first keeps the sum exact in i128.
+                c += k.clamp(-9.223_372_036_854_775_808e18, 9.223_372_036_854_775_808e18) as i128;
             }
             if self.local[a] >= CHUNK {
                 self.local[a] -= CHUNK;
-                self.chunk[a] += 1;
+                c += 1;
             }
+            let lim = CHUNK_LIMIT as i128;
+            if c > lim {
+                c = lim;
+                self.local[a] = f64::from_bits(CHUNK.to_bits() - 1); // the largest offset below 1024
+            } else if c < -lim {
+                c = -lim;
+                self.local[a] = 0.0;
+            }
+            self.chunk[a] = c as i64;
         }
     }
 
@@ -243,6 +265,16 @@ mod tests {
         let p = WorldPos::new([7, 0, 0], [0.001, 0.0, 0.0]);
         let q = WorldPos::from_region([7, 0, 0], 0, p.to_region([7, 0, 0], 0));
         assert!((q.local[0] - p.local[0]).abs() <= 512f64 * f64::EPSILON);
+    }
+
+    #[test]
+    fn normalize_never_panics() {
+        // Review P21-2's repro: a finite but absurd offset saturates instead of panicking.
+        let p = WorldPos::new([1, 0, 0], [1e300, -1e300, f64::NAN]);
+        assert_eq!(p.chunk, [CHUNK_LIMIT, -CHUNK_LIMIT, 0]);
+        assert!(p.local.iter().all(|v| (0.0..CHUNK).contains(v)));
+        let q = WorldPos::new([i64::MAX, i64::MIN, 0], [5.0, 5.0, 2048.0]);
+        assert_eq!(q.chunk, [CHUNK_LIMIT, -CHUNK_LIMIT, 2]);
     }
 
     #[test]
