@@ -28,10 +28,10 @@ run ballpit-60hz-2hands ballpit --hands 2
 for v in ackfork lateequiv evict outage; do run review2-$v $v; done
 # Fail on any fork, replay mismatch, panic or false check (reviews NEW-2, NEW-7).
 bad=$(grep -lE "MISMATCH|DIFFER|FAIL|PANIC|panicked" $O/*.log)
-falsechecks=$(grep -hoE "checks ok [0-9]+ bad [1-9][0-9]*" $O/*.log | head -5)
+falsechecks=$(grep -hoE "checks ok [0-9]+ bad [1-9][0-9]*|nonfinite [1-9][0-9]*" $O/*.log | head -5)
 if [ -n "$bad$falsechecks" ]; then
   echo "SUMMARY: FAILED: $bad $falsechecks"
   exit 1
 fi
-echo "SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks"
+echo "SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states"
 
