@@ -1737,7 +1737,7 @@ impl WorldSim {
         for esc in self.t.escrow.values() {
             if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
                 if esc.depart_frame < self.conf {
-                    let chain = chain_hash(&self.chain_of(rec.global));
+                    let chain = self.chain_hash_of(rec.global);
                     facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain));
                 }
             }
@@ -1825,6 +1825,14 @@ impl WorldSim {
     }
 
     /// The provenance chain of an object here: what its next departure's `Arrive` carries.
+    /// The cached hash of [`Self::chain_of`] (what a departure certificate covers).
+    pub fn chain_hash_of(&self, g: u64) -> u64 {
+        match self.t.seen.get(&g) {
+            Some(Seen::Here { chash, .. }) => *chash,
+            _ => chain_hash(&self.chain_of(g)),
+        }
+    }
+
     pub fn chain_of(&self, g: u64) -> Vec<Hop> {
         match self.seen_of(g) {
             Some(Seen::Here { chain, .. }) => chain,
