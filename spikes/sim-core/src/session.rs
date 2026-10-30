@@ -1379,6 +1379,11 @@ impl WorldSim {
         self.ring.len()
     }
 
+    /// Bytes of rollback snapshot data held: every keyframe's world image plus its object table.
+    pub fn ring_bytes(&self) -> usize {
+        self.ring.values().map(|k| k.image.len() + k.t.objs.len() * std::mem::size_of::<Option<Obj>>()).sum()
+    }
+
     pub fn caught_up(&self) -> bool {
         self.dirty_from.is_none()
     }

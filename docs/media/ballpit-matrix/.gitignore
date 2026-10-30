@@ -1,0 +1,2 @@
+# Rendered videos (42 MB in total) stay out of git. Regenerate with scripts/run_ballpit_viz.sh.
+*.mp4

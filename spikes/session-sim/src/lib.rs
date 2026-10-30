@@ -17,6 +17,74 @@ pub struct Link {
     pub loss_pct: u32,
 }
 
+/// Wire overhead per datagram (IP/UDP/AEAD/session), as in the ball-pit wire estimate.
+pub const DATAGRAM_OVERHEAD: u64 = 52;
+
+/// Bandwidth cap for one directed link: a token bucket feeding a FIFO queue. Tokens refill at
+/// `rate_bps` bits/s up to `burst_bytes`; a datagram leaves the queue when the bucket holds its
+/// wire size. A datagram that would wait in the queue longer than `max_queue_us` is dropped
+/// (tail drop), as a router with a full buffer would.
+#[derive(Clone, Copy, Debug)]
+pub struct Cap {
+    pub rate_bps: u64,
+    pub burst_bytes: u64,
+    pub max_queue_us: u64,
+}
+
+/// Token-bucket state of one directed link.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Shaper {
+    /// Bucket level (bytes) at `t_ref_us`, the departure time of the last queued datagram.
+    tokens: f64,
+    t_ref_us: u64,
+    started: bool,
+}
+
+impl Shaper {
+    /// Departure time from the bottleneck for a datagram of `wire` bytes offered at `now_us`, or
+    /// None if the queue is full. FIFO: never departs before the previous datagram.
+    pub fn offer(&mut self, cap: &Cap, now_us: u64, wire: u64) -> Option<u64> {
+        let rate = cap.rate_bps as f64 / 8.0 / 1e6; // bytes per microsecond
+        if !self.started {
+            self.started = true;
+            self.tokens = cap.burst_bytes as f64;
+            self.t_ref_us = now_us;
+        }
+        let t0 = now_us.max(self.t_ref_us);
+        let have = (self.tokens + (t0 - self.t_ref_us) as f64 * rate).min(cap.burst_bytes as f64);
+        let (depart, left) = if have >= wire as f64 {
+            (t0, have - wire as f64)
+        } else {
+            (t0 + ((wire as f64 - have) / rate).ceil() as u64, 0.0)
+        };
+        if depart - now_us > cap.max_queue_us {
+            return None;
+        }
+        self.tokens = left;
+        self.t_ref_us = depart;
+        Some(depart)
+    }
+
+    /// How long a datagram offered now would wait (queue backlog), in microseconds.
+    pub fn backlog_us(&self, now_us: u64) -> u64 {
+        self.t_ref_us.saturating_sub(now_us)
+    }
+}
+
+/// One send attempt, for per-peer traffic metrics.
+#[derive(Clone, Copy, Debug)]
+pub struct SendRec {
+    pub at_us: u64,
+    pub from: MemberId,
+    pub to: MemberId,
+    /// Payload plus [`DATAGRAM_OVERHEAD`].
+    pub wire: u64,
+    /// 0 sent, 1 dropped by a full bandwidth queue, 2 lost on the link or by a filter.
+    pub fate: u8,
+    /// Arrival time at the receiver (fate 0 only).
+    pub arrive_us: u64,
+}
+
 /// What a scripted fault does to one message.
 pub enum Fate {
     Deliver,
@@ -40,6 +108,15 @@ pub struct Net {
     /// Count only from this virtual time (to measure a window).
     pub count_from_us: u64,
     pub count_to_us: u64,
+    /// Bandwidth caps per directed link (none = unlimited). See [`Cap`].
+    pub caps: BTreeMap<(MemberId, MemberId), Cap>,
+    pub default_cap: Option<Cap>,
+    pub shapers: BTreeMap<(MemberId, MemberId), Shaper>,
+    /// Datagrams dropped by a full bandwidth queue (also counted in `dropped`).
+    pub cap_dropped: u64,
+    /// Every send attempt, when `tracing` is on.
+    pub tracing: bool,
+    pub trace: Vec<SendRec>,
 }
 
 pub fn kind(m: &Msg) -> &'static str {
@@ -70,6 +147,12 @@ impl Net {
             dropped: 0,
             count_from_us: 0,
             count_to_us: u64::MAX,
+            caps: BTreeMap::new(),
+            default_cap: None,
+            shapers: BTreeMap::new(),
+            cap_dropped: 0,
+            tracing: false,
+            trace: Vec::new(),
         }
     }
 
@@ -92,19 +175,50 @@ impl Net {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
+                    self.record(from, to, bytes.len() as u64, 2, 0);
                     return;
                 }
                 Fate::Delay(d) => extra = d,
             }
         }
+        // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
+        let depart = match self.shape(from, to, bytes.len() as u64) {
+            Some(d) => d,
+            None => {
+                self.dropped += 1;
+                self.cap_dropped += 1;
+                self.record(from, to, bytes.len() as u64, 1, 0);
+                return;
+            }
+        };
         if link.loss_pct > 0 && (self.rand() % 100) < link.loss_pct as u64 {
             self.dropped += 1;
+            self.record(from, to, bytes.len() as u64, 2, 0);
             return;
         }
         let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
-        let at = self.now_us + link.delay_us + jitter + extra;
+        let at = depart + link.delay_us + jitter + extra;
+        self.record(from, to, bytes.len() as u64, 0, at);
         self.seq += 1;
         self.queue.push(Reverse((at, self.seq, to, world, from, bytes)));
+    }
+
+    /// Departure time through the link's bandwidth cap for a payload of `payload` bytes (now, if
+    /// the link is uncapped), or None if its queue is full.
+    pub fn shape(&mut self, from: MemberId, to: MemberId, payload: u64) -> Option<u64> {
+        let Some(cap) = self.caps.get(&(from, to)).copied().or(self.default_cap) else { return Some(self.now_us) };
+        self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + DATAGRAM_OVERHEAD)
+    }
+
+    /// Current queue backlog of a capped link, in microseconds (0 if uncapped).
+    pub fn backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
+        self.shapers.get(&(from, to)).map_or(0, |s| s.backlog_us(self.now_us))
+    }
+
+    fn record(&mut self, from: MemberId, to: MemberId, payload: u64, fate: u8, arrive_us: u64) {
+        if self.tracing {
+            self.trace.push(SendRec { at_us: self.now_us, from, to, wire: payload + DATAGRAM_OVERHEAD, fate, arrive_us });
+        }
     }
 
     /// Messages due now: (to, world, from, msg).
@@ -493,4 +607,47 @@ impl Sim {
     pub fn replica(&self, peer: MemberId, w: WorldId) -> &Replica {
         &self.peers[self.peer_index(peer)].worlds[&w]
     }
+}
+
+/// The ball-pit hand target (millimetres) that `member`'s controller is at in frame `fr`, or None
+/// outside the scripted gesture: descend over 0.33 s, sweep for 3 s in a sine across the pit, rise.
+pub fn ballpit_target_mm(hz: u64, member: MemberId, fr: u64) -> Option<[i32; 3]> {
+    let f = |s: f64| (s * hz as f64).round() as u64; // seconds -> frames
+    let (s0, s1, s2, s3) = (f(2.0), f(2.33), f(5.33), f(5.66));
+    if fr < s0 || fr > s3 {
+        return None;
+    }
+    let t = fr as f64 / hz as f64;
+    let dir = if member == 1 { 1.0 } else { -1.0 };
+    let (x, z) = if fr < s1 {
+        (-0.9 * dir, -0.6)
+    } else if fr <= s2 {
+        let u = (fr - s1) as f64 / (s2 - s1) as f64;
+        ((-0.9 + 1.8 * u) * dir, 0.6 * (std::f64::consts::TAU * 1.5 * u).sin() - 0.0 * t)
+    } else {
+        (0.9 * dir, 0.6 * (std::f64::consts::TAU * 1.5).sin())
+    };
+    let y = if fr < s1 {
+        1.2 - 1.0 * (fr - s0) as f64 / (s1 - s0) as f64
+    } else if fr <= s2 {
+        0.2
+    } else {
+        0.2 + 1.0 * (fr - s2) as f64 / (s3 - s2) as f64
+    };
+    Some([(x * 1000.0).round() as i32, (y * 1000.0).round() as i32, (z * 1000.0).round() as i32])
+}
+
+/// The ball-pit plan for `member`'s hand (object 500 + member - 1): one Hand action per frame of
+/// the gesture, stamped `ahead` frames later (input delay), then park.
+pub fn ballpit_sweep(hz: u64, member: MemberId, ahead: u64) -> Vec<(u64, Action)> {
+    let obj = 500 + (member - 1);
+    let s3 = (5.66 * hz as f64).round() as u64;
+    let mut v = Vec::new();
+    for fr in 0..=s3 {
+        if let Some(target_mm) = ballpit_target_mm(hz, member, fr) {
+            v.push((fr, Action::Hand { obj, target_mm, active: true, ahead }));
+        }
+    }
+    v.push((s3 + 1, Action::Hand { obj, target_mm: [0, 1500, 0], active: false, ahead }));
+    v
 }
