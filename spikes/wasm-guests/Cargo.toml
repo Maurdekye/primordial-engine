@@ -1,0 +1,16 @@
+# Game-logic guest modules. Build with:
+#   cargo build --release --target wasm32-unknown-unknown   (from this directory)
+[workspace]
+resolver = "3"
+members = ["logic-v1", "logic-v2", "logic-runaway", "physics-in-wasm"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1

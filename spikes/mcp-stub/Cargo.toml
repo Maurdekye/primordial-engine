@@ -1,0 +1,12 @@
+[package]
+name = "pe-spike-mcp-stub"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Phase-1 stub: minimal MCP server (JSON-RPC 2.0 over stdio) exposing world state and interactions"
+
+[dependencies]
+pe-sim-core.workspace = true
+box3d-rust.workspace = true
+serde_json = "1"
