@@ -7,8 +7,9 @@
 use super::{
     add_sym_w, gather_bodies, ints_to_float_w, invert_sym_w, lane, mul_mvw, perp_w,
     ContactConstraintPointWide, ContactConstraintWide, ContactManifoldWide, SymMatrix2W,
-    SymMatrix3W, Vec2W, WideContactConstraints, EMPTY_LANE, SYM3W_ZERO, VEC3W_ZERO,
+    SymMatrix3W, Vec2W, WideContactConstraints, WideView, EMPTY_LANE, SYM3W_ZERO, VEC3W_ZERO,
 };
+use crate::worker_pool::SharedSlice;
 use crate::body::{decode_awake_index, BodySim, BodyState};
 use crate::constants::{speculative_distance, MAX_MANIFOLD_POINTS, MIN_FRICTION_WEIGHT};
 use crate::contact::{contact_flags, Contact, ContactSpec};
@@ -61,15 +62,24 @@ const EMPTY_POINT: ContactConstraintPointWide = ContactConstraintPointWide {
 /// Writes the sampled normal velocity onto the manifold points of lanes that enable hit
 /// events, like C.
 #[allow(clippy::too_many_arguments)]
-fn prepare_constraint_w(
-    set: &mut WideContactConstraints,
+///
+/// Primordial Engine fork (D2): writes `constraint_out` and `manifolds_out` (exactly
+/// `manifold_count` slots) instead of appending, so the constraints of a color can be prepared
+/// in parallel blocks. Reads only the lane contacts and writes only their manifold points.
+///
+/// # Safety
+/// No other thread accesses the lane contacts during the call.
+unsafe fn prepare_constraint_w(
+    constraint_out: &mut ContactConstraintWide,
+    manifolds_out: &mut [ContactManifoldWide],
     lane_contact_ids: &[i32; SIMD_WIDTH],
     manifold_count: i32,
-    contacts: &mut [Contact],
+    contacts: SharedSlice<Contact>,
     sims: &[BodySim],
     states: &[BodyState],
     warm_start_scale: FloatW,
 ) -> bool {
+    debug_assert!(manifolds_out.len() == manifold_count as usize);
     let zero_sim = BodySim {
         inv_mass: 0.0,
         inv_inertia_world: crate::math_functions::MAT3_ZERO,
@@ -95,7 +105,8 @@ fn prepare_constraint_w(
     for lane_index in 0..SIMD_WIDTH {
         let contact_id = lane_contact_ids[lane_index];
         if contact_id != EMPTY_LANE {
-            let contact = &contacts[contact_id as usize];
+            // SAFETY: the function contract.
+            let contact = unsafe { contacts.get(contact_id as usize) };
             let a = decode_awake_index(contact.encoded_body_sim_a);
             let b = decode_awake_index(contact.encoded_body_sim_b);
 
@@ -114,7 +125,6 @@ fn prepare_constraint_w(
 
     debug_assert!(max_manifold_count == manifold_count);
 
-    let contacts_ro: &[Contact] = contacts;
     let sim_lanes_a: [&BodySim; SIMD_WIDTH] = core::array::from_fn(|i| {
         if sim_index_a[i] == NULL_INDEX {
             &zero_sim
@@ -133,7 +143,8 @@ fn prepare_constraint_w(
         if lane_contact_ids[i] == EMPTY_LANE {
             None
         } else {
-            Some(&contacts_ro[lane_contact_ids[i] as usize])
+            // SAFETY: the function contract.
+            Some(unsafe { contacts.get(lane_contact_ids[i] as usize) })
         }
     });
 
@@ -165,8 +176,6 @@ fn prepare_constraint_w(
 
     let rolling_resistance_mask = greater_than_w(rolling_resistance, zero);
 
-    let manifold_base = set.manifolds.len();
-    set.manifold_starts.push(manifold_base as i32);
 
     for manifold_index in 0..manifold_count as usize {
         let mut active_lanes = [0i32; SIMD_WIDTH];
@@ -357,7 +366,7 @@ fn prepare_constraint_w(
             blend_w(zero, div_w(one_w, k_twist), greater_than_w(k_twist, zero))
         };
 
-        set.manifolds.push(ContactManifoldWide {
+        manifolds_out[manifold_index] = ContactManifoldWide {
             normal,
             tangent1,
             tangent2,
@@ -373,10 +382,10 @@ fn prepare_constraint_w(
             tangent_velocity2,
             point_count,
             points,
-        });
+        };
     }
 
-    set.constraints.push(ContactConstraintWide {
+    *constraint_out = ContactConstraintWide {
         index_a,
         index_b,
         contact_ids: *lane_contact_ids,
@@ -389,7 +398,7 @@ fn prepare_constraint_w(
         rolling_resistance,
         restitution,
         manifold_count,
-    });
+    };
 
     // Only sample contact point normal velocity if needed.
     let have_restitution = any_true_w(greater_than_w(restitution, zero));
@@ -398,7 +407,7 @@ fn prepare_constraint_w(
         let b_b = gather_bodies(states, &index_b);
 
         for manifold_index in 0..manifold_count as usize {
-            let cm = &mut set.manifolds[manifold_base + manifold_index];
+            let cm = &mut manifolds_out[manifold_index];
 
             for point_index in 0..cm.point_count as usize {
                 let cp = &mut cm.points[point_index];
@@ -416,8 +425,11 @@ fn prepare_constraint_w(
                             continue;
                         }
 
-                        let manifold =
-                            &mut contacts[lane_contact_ids[l] as usize].manifolds[manifold_index];
+                        // SAFETY: the function contract.
+                        let manifold = &mut unsafe {
+                            contacts.get_mut(lane_contact_ids[l] as usize)
+                        }
+                        .manifolds[manifold_index];
                         if (point_index as i32) < manifold.point_count {
                             manifold.points[point_index].normal_velocity = lane(vn, l);
                         }
@@ -438,6 +450,45 @@ fn warm_start_scale_w(enable_warm_starting: bool) -> FloatW {
     }
 }
 
+/// Size `set` for `wide_count` constraints whose manifolds start at `manifold_starts` (one per
+/// constraint plus a sentinel, relative to the first). The slots are zeroed and every one is
+/// overwritten by the prepare. Primordial Engine fork (D2): preallocating lets blocks of a
+/// color be prepared in parallel; C writes into a preallocated stream too.
+fn allocate_wide(
+    set: &mut WideContactConstraints,
+    wide_count: usize,
+    manifold_starts: impl Iterator<Item = i32>,
+) {
+    set.clear();
+    set.manifold_starts.extend(manifold_starts);
+    debug_assert!(set.manifold_starts.len() == wide_count + 1);
+    let manifold_count = *set.manifold_starts.last().unwrap() as usize;
+    set.constraints.resize(wide_count, ContactConstraintWide::zeroed());
+    set.manifolds.resize(manifold_count, ContactManifoldWide::zeroed());
+}
+
+/// Allocate the wide constraints for a color with `color_contact_count` convex contacts.
+pub fn allocate_contacts_convex(set: &mut WideContactConstraints, color_contact_count: usize) {
+    let wide_count = if color_contact_count == 0 {
+        0
+    } else {
+        ((color_contact_count - 1) >> 2) + 1
+    };
+    allocate_wide(set, wide_count, 0..=wide_count as i32);
+}
+
+/// Allocate the wide constraints for a color's mesh contact groups (`manifold_starts` from
+/// `solver::mesh_lanes`, one per group plus a sentinel).
+pub fn allocate_contacts_mesh_wide(set: &mut WideContactConstraints, manifold_starts: &[i32]) {
+    let group_count = manifold_starts.len().saturating_sub(1);
+    let base = manifold_starts.first().copied().unwrap_or(0);
+    if group_count == 0 {
+        allocate_wide(set, 0, std::iter::once(0));
+    } else {
+        allocate_wide(set, group_count, manifold_starts.iter().map(|s| s - base));
+    }
+}
+
 /// Prepare the wide constraints for the convex contacts of one graph color. Returns true if
 /// any lane has restitution. (b3PrepareContacts_Convex, one color)
 ///
@@ -450,38 +501,69 @@ pub fn prepare_contacts_convex(
     states: &[BodyState],
     enable_warm_starting: bool,
 ) -> bool {
+    allocate_contacts_convex(set, contact_ids.len());
+    let wide_count = set.len();
+    // SAFETY: exclusive borrows of the set and the contacts.
+    unsafe {
+        prepare_contacts_convex_range(
+            WideView::new(set),
+            0..wide_count,
+            contact_ids,
+            SharedSlice::new(contacts),
+            sims,
+            states,
+            enable_warm_starting,
+        )
+    }
+}
+
+/// [`prepare_contacts_convex`] for wide constraints `wide_range` of a color allocated with
+/// [`allocate_contacts_convex`]. (D2 block)
+///
+/// # Safety
+/// The set is allocated and live, and no other thread touches these constraints or the
+/// contacts of their lanes during the call.
+pub(crate) unsafe fn prepare_contacts_convex_range(
+    set: WideView,
+    wide_range: core::ops::Range<usize>,
+    contact_ids: &[i32],
+    contacts: SharedSlice<Contact>,
+    sims: &[BodySim],
+    states: &[BodyState],
+    enable_warm_starting: bool,
+) -> bool {
     let warm_start_scale = warm_start_scale_w(enable_warm_starting);
     let mut any_restitution = false;
 
     let color_contact_count = contact_ids.len();
-    let wide_count = if color_contact_count == 0 {
-        0
-    } else {
-        ((color_contact_count - 1) >> 2) + 1
-    };
 
-    set.clear();
-    set.constraints.reserve(wide_count);
-    set.manifolds.reserve(wide_count);
-    set.manifold_starts.reserve(wide_count + 1);
-
-    for local_wide_index in 0..wide_count {
+    for local_wide_index in wide_range {
         let mut lane_ids = [EMPTY_LANE; SIMD_WIDTH];
         for (lane_index, lane_id) in lane_ids.iter_mut().enumerate() {
             let contact_index = SIMD_WIDTH * local_wide_index + lane_index;
             if contact_index < color_contact_count {
                 let contact_id = contact_ids[contact_index];
-                debug_assert!(contacts[contact_id as usize].manifold_count() == 1);
+                // SAFETY: the function contract.
+                debug_assert!(unsafe { contacts.get(contact_id as usize) }.manifold_count() == 1);
                 *lane_id = contact_id;
             }
         }
 
-        let have_restitution =
-            prepare_constraint_w(set, &lane_ids, 1, contacts, sims, states, warm_start_scale);
+        // SAFETY: the function contract.
+        let have_restitution = unsafe {
+            prepare_constraint_w(
+                set.constraint_mut(local_wide_index),
+                set.manifolds_mut(local_wide_index),
+                &lane_ids,
+                1,
+                contacts,
+                sims,
+                states,
+                warm_start_scale,
+            )
+        };
         any_restitution = any_restitution || have_restitution;
     }
-
-    set.manifold_starts.push(set.manifolds.len() as i32);
 
     any_restitution
 }
@@ -503,49 +585,76 @@ pub fn prepare_contacts_mesh_wide(
     states: &[BodyState],
     enable_warm_starting: bool,
 ) -> bool {
+    allocate_contacts_mesh_wide(set, manifold_starts);
+    let group_count = set.len();
+    // SAFETY: exclusive borrows of the set and the contacts.
+    unsafe {
+        prepare_contacts_mesh_wide_range(
+            WideView::new(set),
+            0..group_count,
+            specs,
+            order,
+            SharedSlice::new(contacts),
+            sims,
+            states,
+            enable_warm_starting,
+        )
+    }
+}
+
+/// [`prepare_contacts_mesh_wide`] for groups `group_range` of a color allocated with
+/// [`allocate_contacts_mesh_wide`]. (D2 block)
+///
+/// # Safety
+/// As for [`prepare_contacts_convex_range`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn prepare_contacts_mesh_wide_range(
+    set: WideView,
+    group_range: core::ops::Range<usize>,
+    specs: &[ContactSpec],
+    order: &[i32],
+    contacts: SharedSlice<Contact>,
+    sims: &[BodySim],
+    states: &[BodyState],
+    enable_warm_starting: bool,
+) -> bool {
     let warm_start_scale = warm_start_scale_w(enable_warm_starting);
     let mut any_restitution = false;
 
     let color_contact_count = specs.len();
     debug_assert!(order.len() == color_contact_count);
-    let group_count = manifold_starts.len().saturating_sub(1);
 
-    set.clear();
-    set.constraints.reserve(group_count);
-    set.manifold_starts.reserve(group_count + 1);
-
-    for local_wide_index in 0..group_count {
+    for local_wide_index in group_range {
         let mut lane_ids = [EMPTY_LANE; SIMD_WIDTH];
         for (lane_index, lane_id) in lane_ids.iter_mut().enumerate() {
             let contact_index = SIMD_WIDTH * local_wide_index + lane_index;
             if contact_index < color_contact_count {
                 let spec = &specs[order[contact_index] as usize];
-                let contact = &contacts[spec.contact_id as usize];
+                // SAFETY: the function contract.
+                let contact = unsafe { contacts.get(spec.contact_id as usize) };
                 debug_assert!(contact.contact_id == spec.contact_id);
                 debug_assert!(contact.manifold_count() == spec.manifold_count as i32);
                 *lane_id = spec.contact_id;
             }
         }
 
-        let manifold_count =
-            manifold_starts[local_wide_index + 1] - manifold_starts[local_wide_index];
-        let have_restitution = prepare_constraint_w(
-            set,
-            &lane_ids,
-            manifold_count,
-            contacts,
-            sims,
-            states,
-            warm_start_scale,
-        );
+        // SAFETY: the function contract.
+        let have_restitution = unsafe {
+            let manifolds = set.manifolds_mut(local_wide_index);
+            let manifold_count = manifolds.len() as i32;
+            prepare_constraint_w(
+                set.constraint_mut(local_wide_index),
+                manifolds,
+                &lane_ids,
+                manifold_count,
+                contacts,
+                sims,
+                states,
+                warm_start_scale,
+            )
+        };
         any_restitution = any_restitution || have_restitution;
     }
-
-    set.manifold_starts.push(set.manifolds.len() as i32);
-    debug_assert!(
-        group_count == 0
-            || set.manifolds.len() as i32 == manifold_starts[group_count] - manifold_starts[0]
-    );
 
     any_restitution
 }

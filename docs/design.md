@@ -2239,13 +2239,62 @@ tools also exists as an MCP tool, with structured input and output.
     constant time and never logged, and never appears in a URL or on a command line.
   * **Rotation:** a new token at every harness launch and resume. Tokens expire when the session ends,
     after an idle TTL, and immediately on revocation. `Mcp-Session-Id` is not an authentication factor.
-* **Library:** `rmcp` 3.8 (official Rust SDK), pure Rust with server, stdio, macros and schemars
-  [V audit `mcp-rmcp`].
-* **Spike coverage:** the spike's hand-written stub covered the core protocol shapes: initialize,
-  tools/list, tools/call with `structuredContent` and `isError`, resources/read, and JSON-RPC errors. It
-  has not been tested against a third-party MCP client [V mcp].
+* **Library:** `rmcp` 3.8.0 (official Rust SDK): server, macros, schemars, stdio and Streamable HTTP
+  [V audit `mcp-rmcp`; V pe-mcp].
+* **Built (P2-8):** `crates/pe-mcp` replaced `spikes/mcp-stub`. Claude Code 2.1.292 drove a peer through
+  a scripted scenario over the pipe and over HTTP, and both runs passed with identical results [V pe-mcp:
+  `crates/pe-mcp`'s 46 tests on Windows and Linux, and the recorded runs in `spikes/out/mcp/`].
+* **Pipe and socket specifics** [V pe-mcp; on Linux, the tests only]:
+  * Windows: a protected DACL with one ACE, full access for the current user's SID
+    (`D:P(A;;GA;;;<sid>)`, read back from the pipe in a test). The first instance is created with
+    `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a second server on the same name fails. Remote clients are refused,
+    and the name is random.
+  * Unix: the socket lives in a fresh `0700` directory under `$XDG_RUNTIME_DIR`, the socket file is `0600`,
+    and the peer's uid (SO_PEERCRED) must equal the engine's.
+  * Token: the bridge's first line is `PE-MCP-AUTH <token>`, and the engine answers `OK` or
+    `ERR unauthorized` and closes. The token is re-checked on every call, so revocation and expiry act on
+    open connections.
+  * The token reaches the harness only through its environment (`PE_MCP_TOKEN`), which harness MCP configs
+    can reference (`${PE_MCP_TOKEN}`). Every subprocess the harness starts (its shell tool, for example)
+    inherits it, and so can reach the peer with the harness's scopes. Launch profiles (`pe-harness`) should
+    remove it from tool subprocesses where the harness allows, and give a harness no more scopes than it
+    needs [I].
+  * No re-issue yet: a harness idle past the token's TTL (1 h by default) loses the server until it is
+    launched again. Re-issue on resume belongs to `pe-harness` [I].
+* **HTTP specifics** [V pe-mcp]: the server runs stateless (no `Mcp-Session-Id`), so authority comes from
+  each request's token alone. Tests cover a foreign `Host`, a suffix-attack `Host`, a second `Host`
+  header, a refused and an allowed `Origin`, preflight, the absence of CORS headers, a token that is
+  missing, wrong, sent in the wrong scheme or sent in the URL, and revocation.
 
 ### 17.2 Tool and resource catalog (proposed) [I]
+
+* **Tool names use underscores:** `world_get_state`, not `world.get_state`. The Anthropic API accepts only
+  `^[a-zA-Z0-9_-]{1,64}$` in tool names [I: the API's documented pattern, not re-checked here; Claude Code
+  passed underscore names through unchanged in both runs, V pe-mcp]. The table keeps the dotted names as the
+  catalogue's spelling.
+* **Phase 2 implements** [V pe-mcp]: `session_info`, `world_get_state`, `world_get_object`,
+  `world_propose_interaction`, `world_interaction_status`, `world_step`, `world_hashes`,
+  `session_members`, `session_sync_status`, `scenario_load`, `scenario_fault`, `scenario_check`, and the
+  resources `primordial://world/state`, `primordial://session/members` and `primordial://session/sync`.
+  The full schemas are in `crates/pe-mcp/schema/tools.json`.
+* **Phase-2 scopes** (the token decides them): `read`, `interact` (propose, and read its own tickets) and
+  `control` (`world_step` and `scenario_*`, simulator only: a live peer's clock is real time).
+  `tools/list` shows only what the token's scopes allow. The session kinds of the table below map onto
+  scope sets when panels arrive.
+* **Errors:** a tool error carries `{code, message, field?, details?}`. The codes are `invalid_argument`,
+  `unknown_object`, `unknown_ticket`, `forbidden`, `not_owner`, `rate_limited`, `not_ready`, `peer_crashed`,
+  `no_scenario_control`, `session_faulted` and `internal`. An unknown tool or a malformed request is a
+  JSON-RPC error.
+* **Interaction tickets:** proposing returns a ticket. Its status is `pending`, `accepted`, `rejected`
+  (with reason, such as `claimed` with its holder and end frame) or `void`, plus `final` once the stamp is
+  confirmed. Before that, a rollback can still change it. At most 64 unresolved interactions per principal
+  (`rate_limited`) is the first per-session rate limit of 17.4.
+* **A hand is its member's alone:** proposing a `hand` move for another member's hand returns `not_owner`
+  before anything is authored [V pe-mcp]. That protects only an honest peer, so every replica's
+  validation also refuses such an entry (8.4, `RejectedNotOwner`; in the spike on branch `viewchange`,
+  in review), and pe-session carries the rule (P2-3).
+* **Ordering:** the peer runs MCP calls one at a time, in arrival order. Calls a client sends in parallel
+  have no defined order between them [I].
 
 | Area | Tools / resources |
 |---|---|
@@ -2289,6 +2338,9 @@ tools also exists as an MCP tool, with structured input and output.
 * In the fork it applies a candidate commit or interactions, runs N frames faster than real time, and reads
   back hashes, metrics and object states. Nothing reaches the network.
 * This gives AI authors a safe edit-test loop with exact reproducibility.
+* The phase-2 simulator backend already shows the property forks rely on. The same `scenario_load`
+  parameters and seed, with the same calls, give identical hashes: tested across two engines, and seen in
+  two Claude Code runs over different transports that agreed on every reported number [V pe-mcp].
 
 ### 17.4 Same checks as human edits [I]
 
@@ -2327,6 +2379,8 @@ tools also exists as an MCP tool, with structured input and output.
 * Introspectable schemas and state.
 * Deterministic forks for testing.
 * Fast check loops: about 0.25 s for a small guest [V d5], milliseconds for WGSL validation [I].
+* Tool schemas carry no non-standard JSON Schema formats. schemars' `uint32` and `uint64` made Claude Code's
+  validator warn on every tool, so the server strips them and keeps the `minimum` bounds [V pe-mcp].
 
 ---
 
@@ -3946,6 +4000,14 @@ Rules for every package:
 * Depends on: P2-3's API (start against the spike API).
 * Done: Claude Code connects and drives a peer through a scripted scenario; every tool has tests,
   including its errors; the schema is documented.
+* **Status: merged** (main 7ed07cc; approved by @shader-reviewer at b3b54e9). 46 tests pass on Windows and
+  on Linux (WSL2: static musl binaries built on Windows, and a native glibc build), and Claude Code drove a
+  peer over the pipe and over HTTP on Windows. Not yet: Claude Code on Linux, resource subscriptions, and
+  `schema.components`. **The P2-3 seam** is `crates/pe-mcp/src/backend.rs` (`DrivenPeer`, plus
+  `ScenarioControl` for the simulator only). `pe-session` needs, per driven member: author an interaction
+  at the present frame and broadcast it, an entry's verdict and whether it is confirmed, frame and `conf`,
+  object state, hashes and check hashes, membership with evictions and view-change decisions, sync
+  counters, and the protocol events log.
 
 **P2-9. Session simulator as a test tool (`tools/session-sim`).**
 * What: the phase-1 simulator turned into a tool: scenarios in files, fault injection (partitions,
