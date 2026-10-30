@@ -4,7 +4,7 @@
 //!
 //! usage: pe-spike-session-sim <scenario> [options]
 //!   c1 | c2 | state-frame | diverged | loss | ties | claims | backdate
-//!   r14 [ok|abort|reject|throttle] [--reverse]
+//!   r14 [ok|abort|reject|throttle|forge|late] [--reverse]
 //!   ballpit [--hz 60|90] [--ahead N] [--hands 1|2] [--loss P]
 //!   snap [--balls N] [--stall]        snapshot-policy sweep (the memory/CPU knob, design 6.7)
 //!   ackfork | lateequiv | evict | outage   round-2 review repros (design 10.8)
@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 mod history;
 mod r18;
 mod review2;
+mod review3;
 
 use pe_session_sim::*;
 use pe_sim_core::session::*;
@@ -416,6 +417,20 @@ fn r14(variant: &str, reverse: bool) {
             peers[2].join(2, &[1, 3], b_scene, b_cfg, 150_000, plan(&p3_b));
         }
     }
+    if variant == "forge" {
+        // Reviews R3-4, R3-5: one-member worlds that a single member controls, D (4, member 2) and
+        // E (5, member 3). Their owners route them to A and B; A and B do not route to them.
+        let tiny = SceneKind::Pile { side: 3, layers: 1 };
+        peers[1].join(4, &[2], tiny, SimConfig { seed: 0xD, ..cfg60() }, 120_000, BTreeMap::new());
+        peers[2].join(5, &[3], tiny, SimConfig { seed: 0xE, ..cfg60() }, 120_000, BTreeMap::new());
+        peers[1].route(4, &[1]);
+        peers[2].route(5, &[2]);
+    }
+    // Route lists (genesis config, D46): A and B trade with each other only.
+    for p in &mut peers {
+        p.route(1, &[2]);
+        p.route(2, &[1]);
+    }
     if variant == "throttle" {
         // After the departure, world A becomes a background world for member 1: it advances only
         // every 250 ms, in one burst (design 22.3).
@@ -432,6 +447,11 @@ fn r14(variant: &str, reverse: bool) {
     }));
     let mut sim = Sim::new(net, peers, 9_000_000);
     sim.reverse_order = reverse;
+    if variant == "late" {
+        // Review R3-6: a deadline 2 frames of B after the departure, shorter than the certificate
+        // round: the arrival is late, B refuses it, and that certified refusal returns the object.
+        sim.carry_deadline_frames = 2;
+    }
     let mut lag_samples: Vec<(u64, u64)> = Vec::new();
     // "forge" (reviews NEW-3..NEW-5): proofless relays by members who cannot have proofs.
     let mut forged: Vec<(WorldId, MemberId, EntryId, &'static str)> = Vec::new();
@@ -449,14 +469,40 @@ fn r14(variant: &str, reverse: bool) {
             let t = sim.net.now_us;
             let pidx = |sim: &Sim, id: MemberId| sim.peers.iter().position(|p| p.id == id).unwrap();
             let esc = sim.replica(2, 1).sim.t.escrow.iter().next().map(|(t, e)| (*t, *e));
+            if t == 2_000_000 {
+                // R3-4: member 2 departs A's object 50 to its own one-member world D, where it could
+                // certify anything (accept, then "rejected" for a refund).
+                let i = pidx(&sim, 2);
+                let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Depart { obj: 50, dest: 4, deadline: u64::MAX }, None);
+                forged.push((1, 2, e.id(), "member 2 departs A's object 50 to D, a world it controls alone"));
+                send_all(&mut sim, 1, 2, &e);
+                // R3-6: member 2 departs A's object 51 to a world nobody knows, deadline 0.
+                let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Depart { obj: 51, dest: 999, deadline: 0 }, None);
+                forged.push((1, 2, e.id(), "member 2 departs A's object 51 to unknown world 999"));
+                send_all(&mut sim, 1, 2, &e);
+            }
+            if t == 2_200_000 {
+                // R3-5: member 3 certifies, as the whole membership of its world E, a departure that
+                // never happened, of a record carrying A's object 40's global id.
+                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 5, src_frame: 0 };
+                let fake = 0x1234_5678;
+                let fact = fact_departed(5, fake, &record, 2, u64::MAX);
+                let i = pidx(&sim, 3);
+                let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
+                    Payload::Arrive { transfer: transfer_id(5, fake), record, depart: fake, deadline: u64::MAX, cert: vec![(3, member_sig(5, 3, fact))] },
+                    None,
+                );
+                forged.push((2, 3, e.id(), "member 3 mints A's object 40 into B from its own world E"));
+                send_all(&mut sim, 2, 3, &e);
+            }
             if t == 2_500_000 {
                 // NEW-4: member 3 (only in B) mints object 40 into B with no departure behind it.
                 let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 1, src_frame: 100 };
                 let fake = 0xDEAD_BEEF;
-                let fact = fact_departed(1, fake, &record, 2);
+                let fact = fact_departed(1, fake, &record, 2, u64::MAX);
                 let i = pidx(&sim, 3);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, cert: vec![(3, member_sig(1, 3, fact))] },
+                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, deadline: u64::MAX, cert: vec![(3, member_sig(1, 3, fact))] },
                     None,
                 );
                 forged.push((2, 3, e.id(), "member 3 mints object 40 into B (no departure; signs as itself)"));
@@ -467,7 +513,7 @@ fn r14(variant: &str, reverse: bool) {
                     // NEW-5: member 3 squats the real transfer id before the carrier relays.
                     let i = pidx(&sim, 3);
                     let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                        Payload::Arrive { transfer, record: x.record.unwrap(), depart: x.depart, cert: vec![] },
+                        Payload::Arrive { transfer, record: x.record.unwrap(), depart: x.depart, deadline: x.deadline, cert: vec![] },
                         None,
                     );
                     forged.push((2, 3, e.id(), "member 3 squats the real transfer id with a proofless Arrive"));
@@ -482,11 +528,11 @@ fn r14(variant: &str, reverse: bool) {
                 st.0[6] = 1.0f32.to_bits();
                 let record = ObjRecord { global: (1u64 << 32) | 41, kind: 1, state: st, src_world: 1, src_frame: 150 };
                 let fake = 0x0BAD_0BAD;
-                let fact = fact_departed(1, fake, &record, 2);
+                let fact = fact_departed(1, fake, &record, 2, u64::MAX);
                 let cert: Vec<(MemberId, u64)> = [1u32, 2].iter().map(|&m| (m, member_sig(1, m, fact))).collect();
                 let i = pidx(&sim, 1);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, cert },
+                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, deadline: u64::MAX, cert },
                     None,
                 );
                 forged.push((2, 1, e.id(), "a certified record with a NaN position (a bug or a compromised majority in A)"));
@@ -499,6 +545,24 @@ fn r14(variant: &str, reverse: bool) {
                     let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: true, cert: vec![] }, None);
                     forged.push((1, 2, e.id(), "member 2 commits the escrow with a proofless Verdict"));
                     send_all(&mut sim, 1, 2, &e);
+                }
+            }
+            if t == 3_020_000 {
+                if let Some((transfer, x)) = esc {
+                    // R3-8: the carrier relays A's genuine certificate with the record's kind changed.
+                    let rec = x.record.unwrap();
+                    let fact = fact_departed(1, x.depart, &rec, 2, x.deadline);
+                    let cert = sim.replica(1, 1).sim.cert(fact);
+                    if let Some(cert) = cert {
+                        let bad = ObjRecord { kind: (rec.kind + 1) % 3, ..rec };
+                        let i = pidx(&sim, 1);
+                        let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
+                            Payload::Arrive { transfer, record: bad, depart: x.depart, deadline: x.deadline, cert },
+                            None,
+                        );
+                        forged.push((2, 1, e.id(), "the carrier relays A's genuine certificate with the record's kind changed"));
+                        send_all(&mut sim, 2, 1, &e);
+                    }
                 }
             }
             if t == 3_050_000 {
@@ -521,7 +585,13 @@ fn r14(variant: &str, reverse: bool) {
         sim.net.now_us += 1000;
     }
     for (w, by, id, what) in &forged {
-        let witness = if *w == 1 { 2 } else { 3 };
+        // An honest member of that world other than the author.
+        let witness = match (*w, *by) {
+            (1, 2) => 1,
+            (1, _) => 2,
+            (_, 3) => 1,
+            _ => 3,
+        };
         let o = sim.replica(witness, *w).sim.outcomes.get(id).copied();
         println!("RESULT   forged by m{by} in world {w}: {what} -> {:?}", o.map(|x| x.1));
     }
@@ -555,6 +625,15 @@ fn r14(variant: &str, reverse: bool) {
         if reverse { " (reverse order)" } else { "" },
         if live_a + live_b == 1 && pending == 0 { "CONSERVED (exactly one live copy, nothing in limbo)" } else { "NOT CONSERVED" }
     );
+    if variant == "forge" {
+        let live = |m: MemberId, w: WorldId, g: u64| sim.replica(m, w).sim.t.objs.iter().flatten().filter(|o| o.global == g).count();
+        let (g50, g51) = ((1u64 << 32) | 50, (1u64 << 32) | 51);
+        let (a50, a51, d50, b40) = (live(1, 1, g50), live(1, 1, g51), live(2, 4, g50), live(3, 2, gid));
+        println!(
+            "RESULT r14 forge: A's objects 50 and 51 live in A {a50} and {a51}, object 50 in D {d50}; copies of A:40 in B {b40} -> {}",
+            if a50 == 1 && a51 == 1 && d50 == 0 && b40 <= 1 { "CONSERVED" } else { "NOT CONSERVED" }
+        );
+    }
     print_stats(&sim, 1);
     print_stats(&sim, 2);
     check_world(&sim, 1, 500, &format!("r14 {variant} A"));
@@ -763,8 +842,11 @@ fn main() {
         Some("lateequiv") => review2::lateequiv(),
         Some("evict") => review2::evict(),
         Some("outage") => review2::outage(),
+        Some("badvote") => review3::badvote(),
+        Some("liar") => review3::liar(),
+        Some("crashstall") => review3::crashstall(),
         Some("snap") => history::snap(get("--balls").map_or(500, |v| v.parse().unwrap()), args.iter().any(|a| a == "--stall"), get("--reps").map_or(3, |v| v.parse().unwrap())),
         Some("observer") => history::observer(get("--delay").map_or(60, |v| v.parse().unwrap()), get("--hz").map_or(60, |v| v.parse().unwrap())),
-        _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),
+        _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle|forge|late] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),
     }
 }

@@ -1,22 +1,27 @@
+RESULT   forged by m2 in world 1: member 2 departs A's object 50 to D, a world it controls alone -> Some(RejectedNoRoute)
+RESULT   forged by m2 in world 1: member 2 departs A's object 51 to unknown world 999 -> Some(RejectedNoRoute)
+RESULT   forged by m3 in world 2: member 3 mints A's object 40 into B from its own world E -> Some(RejectedNoRoute)
 RESULT   forged by m3 in world 2: member 3 mints object 40 into B (no departure; signs as itself) -> Some(RejectedNoProof)
 RESULT   forged by m1 in world 2: a certified record with a NaN position (a bug or a compromised majority in A) -> Some(RejectedInvalid)
 RESULT   forged by m3 in world 2: member 3 squats the real transfer id with a proofless Arrive -> Some(RejectedNoProof)
 RESULT   forged by m2 in world 1: member 2 commits the escrow with a proofless Verdict -> Some(RejectedNoProof)
+RESULT   forged by m1 in world 2: the carrier relays A's genuine certificate with the record's kind changed -> Some(RejectedNoProof)
 RESULT   forged by m1 in world 1: the carrier claims a rejection with B's signatures over the acceptance -> Some(RejectedNoProof)
   carrier: t=2766ms depart authored in world 1 at frame 160
-  carrier: t=2966ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 140
-  carrier: t=3185ms arrival confirmed in world 2 (frame 140, accepted=true); verdict authored in world 1 at frame 185 (its sim there at frame 185)
-  carrier: t=3350ms verdict confirmed in world 1; transfer 1915210267660769567 resolved
+  carrier: t=2977ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 141
+  carrier: t=3182ms arrival confirmed in world 2 (frame 141, accepted=true); verdict authored in world 1 at frame 184 (its sim there at frame 184)
+  carrier: t=3317ms verdict confirmed in world 1; transfer 6769980426196232950 resolved
   carrier: phase Done accepted Some(true)
   carrier: depart entry final outcome at A frame 160: Accepted
-  m1 world A: object 40 live copies 0; escrow ["T1915210267660769567:Committed"]; arrivals []
-  m2 world A: object 40 live copies 0; escrow ["T1915210267660769567:Committed"]; arrivals []
-  m1 world B: object 40 live copies 1; escrow []; arrivals ["T1915210267660769567:Accepted { obj: 75, frame: 140 }", "T11435913114873983945:Rejected { frame: 127 }"]
-  m3 world B: object 40 live copies 1; escrow []; arrivals ["T1915210267660769567:Accepted { obj: 75, frame: 140 }", "T11435913114873983945:Rejected { frame: 127 }"]
+  m1 world A: object 40 live copies 0; escrow ["T6769980426196232950:Committed", "T7225605872235229452:DepartRejected", "T9978736213255163097:DepartRejected"]; arrivals []
+  m2 world A: object 40 live copies 0; escrow ["T6769980426196232950:Committed", "T7225605872235229452:DepartRejected", "T9978736213255163097:DepartRejected"]; arrivals []
+  m1 world B: object 40 live copies 1; escrow []; arrivals ["T6769980426196232950:Accepted { obj: 75, frame: 141 }", "T11435913114873983945:Rejected { frame: 127 }"]
+  m3 world B: object 40 live copies 1; escrow []; arrivals ["T6769980426196232950:Accepted { obj: 75, frame: 141 }", "T11435913114873983945:Rejected { frame: 127 }"]
 RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 4 max depth 4 resim frames 19 (3.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 15 max depth 3 resim frames 63 (11.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 4 max depth 3 resim frames 12 (1.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 2 max depth 3 resim frames 9 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 436 frame 442
-RESULT r14 forge A world 1: frames 0..500 digests m1=9bd3d4da52442711 m2=9bd3d4da52442711 | offline replay 9bd3d4da52442711 | ALL EQUAL
-RESULT r14 forge B world 2: frames 0..400 digests m1=89a0f87741a7f4ef m3=89a0f87741a7f4ef | offline replay 89a0f87741a7f4ef | ALL EQUAL
+RESULT r14 forge: A's objects 50 and 51 live in A 1 and 1, object 50 in D 0; copies of A:40 in B 1 -> CONSERVED
+  m1 world 1: rollbacks 6 max depth 4 resim frames 29 (5.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
+  m2 world 1: rollbacks 15 max depth 4 resim frames 64 (12.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 5 max depth 3 resim frames 19 (2.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 16 (2.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+RESULT r14 forge A world 1: frames 0..500 digests m1=af83356cd40fb299 m2=af83356cd40fb299 | offline replay af83356cd40fb299 | ALL EQUAL
+RESULT r14 forge B world 2: frames 0..400 digests m1=5f57fbf5672bcdd7 m3=5f57fbf5672bcdd7 | offline replay 5f57fbf5672bcdd7 | ALL EQUAL
