@@ -3,9 +3,10 @@
 # three transports. Logs go to spikes/out/r18/. Run it at low priority on a shared machine.
 set -eu
 cd "$(dirname "$0")/.."
-cargo build --release -q -p pe-spike-session-sim
-B=./target/release/pe-spike-session-sim
-O=spikes/out/r18
+# PE_BIN / PE_OUT: a prebuilt binary directory and an output root, as in run_session_sim.sh.
+[ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim
+B=${PE_BIN:-./target/release}/pe-spike-session-sim
+O=${PE_OUT:-spikes/out}/r18
 mkdir -p $O
 for k in 256 64 48 32; do
   $B capped --kbps $k > $O/capped-${k}kbps.log

@@ -3,3 +3,7 @@
 # Regenerable benchmark guests (scripts/iter_bench_gen.py --scale 3 / --scale 8); about 4 MB together.
 spikes/iter-bench/guests-x3/
 spikes/iter-bench/guests-x8/
+
+# Determinism matrix (scripts/run_matrix.sh): full per-machine outputs stay local; digests are committed.
+spikes/out/matrix/*/o/*
+!spikes/out/matrix/*/o/digests.txt
