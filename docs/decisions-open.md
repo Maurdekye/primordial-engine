@@ -1,20 +1,14 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of main, 30 October 2026, after your decisions of 18:42-19:21Z. This summarises design.md section 24
+As of main, 30 October 2026, after your decisions of 18:42-20:07Z. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
 from measured parts; **inferred** = design reasoning, not run.
 
-## A. Still open: five questions your rulings raised
+## A. Still open
 
-| ID | Question | Options and their main cost | Recommendation | Evidence |
-|---|---|---|---|---|
-| D74 | Every peer compiles (D11). What happens when one peer's build of a commit doesn't match the author's? | **(a) That peer pauses the world** until the cause is fixed; the author gets a report. Nobody ever runs code it didn't build. **(b) As (a), but the peer may choose** to run the author's module for that commit. **(c) The majority's build wins:** quicker, but a peer runs code it didn't build without choosing to. | (a), with (b) as an opt-in | Inferred (13.2) |
-| D75 | Where does the pinned Rust toolchain (about 1 GB) come from, now that every peer needs it? | **(a) Peers share it** as verified, content-addressed files, with the official Rust servers as a fallback: no server of ours. **(b) Always from the official Rust servers:** simplest, but a central point we don't control. **(c) Bundled with the engine:** the download grows by about 1 GB, and every toolchain update is an engine update. | (a) | Inferred (13.2) |
-| D76 | What switches a world from 90 Hz to 60 Hz (D4)? | **(a) The world owner,** warned by the engine when players' machines can't keep up. **(b) Automatic,** when overload persists: one weak or dishonest peer can then slow a world. **(c) Fixed when the world is created.** | (a) | Inferred (5) |
-| D77 | Voice input on Linux, now a day-one platform? Linux has no built-in speech recognition like Windows'. | **(a) None in the MVP;** the VR keyboard instead. **(b) A local speech model in pure Rust:** offline, but a download of hundreds of MB and extra CPU or GPU load. **(c) A separate non-Rust speech service.** | (a) now, (b) later | Inferred (21.2) |
-| D78 | Should the automatic Hubchat identities work out of the box? | **(a) No default hub:** identities are made on your machine and register once you add a hub (address, invite or QR code). **(b) A preconfigured hub:** works at once, but every player depends on that hub for the bridge. **(c) A list of community hubs** to pick from. | (a), then (c) | Inferred (21.7) |
+None. Your 19:58Z rulings settled D74-D78, the five questions your earlier rulings raised.
 
 ## B. Your rulings
 
@@ -53,6 +47,14 @@ from measured parts; **inferred** = design reasoning, not run.
 | Everything else in the old Table A | As recommended (section C) | 19:11Z (m160ec0e51f3e) |
 | D32 messaging and the hub | All in-game messaging over our P2P network; the hub only as an optional bridge to Orgtree and Hubchat | 19:20Z |
 | D32, refined | Every player and every agent panel gets a Hubchat identity automatically; engine panels are a fourth, purple mailhub client type | 19:21Z |
+| D74 build mismatch | The peer pauses and the author gets a report; the peer may opt in to run the author's module for that commit | 19:58Z |
+| D75 toolchain | Shared between peers and verified by hash, with the official Rust servers as the fallback | 19:58Z |
+| D76 90 to 60 Hz | The world owner switches, warned by the engine | 19:58Z |
+| D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
+| D78 default hub | No default hub | 19:58Z |
+| D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
+| Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
+| Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
 
 The times are yours; @coordinator-opus relayed most of these rulings.
 
@@ -86,7 +88,8 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 
 **Built: working spike code, with tests or scenario suites**
 * Deterministic Box3D in Rust, with our van der Waals fork on by default: reference goldens, a 600-frame
-  trace equal across release, debug and other build settings, snapshot and rollback.
+  trace equal across release, debug and other build settings, snapshot and rollback. Byte-identical on
+  this PC, on <laptop> (Intel) and as a Linux build, the wasm modules included.
 * The session protocol: signed entries, confirmation, cheater proofs and eviction, removal of one crashed
   member, demotion, transfers between two worlds, congestion control. 30 scenarios in the session
   simulator all match their offline replays; a two-process UDP version also matches.
@@ -109,9 +112,9 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 
 ## Top 5 risks
 
-1. **Determinism beyond one machine:** with the default physics it is verified on this PC only; the Intel
-   and Linux re-checks are running now. Linux is a day-one platform, and parallel physics must stay
-   bit-exact across thread counts.
+1. **Determinism on ARM and macOS:** main is byte-identical on this PC, on <laptop> (Intel) and as a Linux
+   build, but ARM and macOS have never run. Parallel physics must also stay bit-exact across thread
+   counts.
 2. **CPU at 90 Hz and at scale:** the ball pit already needs about 2.8 ms of re-simulation per 60 Hz frame;
    90 Hz costs 1.5x that. Parallel physics is the chosen answer, and its feasibility is still being
    studied.
