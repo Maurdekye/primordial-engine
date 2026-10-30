@@ -1,0 +1,2 @@
+RESULT claims (member 1 nudges every 29 frames, member 2 every frame, impulses do not renew claims): {(1, "accepted"): 9, (1, "rejected"): 12, (2, "accepted"): 360, (2, "rejected"): 240}
+RESULT claims world 1: frames 0..750 digests m1=73ef41c38a9a0bd2 m2=73ef41c38a9a0bd2 | offline replay 73ef41c38a9a0bd2 | ALL EQUAL
