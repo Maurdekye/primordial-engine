@@ -1343,10 +1343,11 @@ and the engager's hand replayed after the gesture had ended.
 3. **Congestion control** on each member's uplink.
    * **Signal:** this member's own queue delay. The spike reads the bottleneck queue directly. Production
      estimates it from the one-way delay gradient of ack timestamps, as WebRTC's GCC does [I].
-   * **Response:** four levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
+   * **Response:** six levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
      (after 300 ms below 10 ms).
-     * Each level thins the hand stream to one entry every 1/2/3/4 frames, and acks to one every 2/3/4/6
-       frames.
+     * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
+       2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
+       datagram (review R3-9 added the two coarsest levels and the alignment).
      * A thinned hand entry carries a `span`: its target is reached over that many frames, and dead
        reckoning (6.10) covers the gaps.
      * Every peer, the author included, applies the same entries, so the author's own physics stays exact
@@ -1355,34 +1356,60 @@ and the engager's hand replayed after the gesture had ended.
      be dropped.
 4. **Bounded queues:** the controller keeps the uplink queue near its 40 ms trigger. The router queue
    (500 ms in the matrix) is only reached under a cap the stream cannot fit even at the coarsest level.
-5. **Leaving a stall.**
+5. **Repairs yield to the queue** (review R3-9). Below about 20 kbit/s, repairs were what collapsed the
+   session: each drop led to fetches, re-asked every 60 ms, which is shorter than a congested round trip,
+   and answered with up to 65 entries in one unsplit datagram, which the full queue then dropped whole.
+   Now:
+   * a fetch for the same range is re-asked with exponential backoff, from 60 ms up to 2 s;
+   * a reply holds at most 16 entries, and the requester asks again for the rest;
+   * a member answers a fetch only while its uplink to the requester holds under 100 ms;
+   * every batch is split into datagrams of at most 1,200 bytes.
+6. **Leaving a stall.**
    * A member that fell behind re-simulates in the background, at up to 8 ms per tick (6.5), and draws
      only its present. The catch-up is never shown as a replay.
    * Render-only smoothing (6.10) blends the jump.
    * Its own new input is stamped at its present, never in the past.
-6. **Demotion beyond the hard bound** [I]:
-   * A member whose acks or entries keep confirmation stalled past half the speculation limit, three times
-     within 10 s, is demoted to **spectator** by a view change (10.8).
-   * A spectator keeps receiving the log and rendering, but stops counting for confirmation, and its new
-     input is refused.
-   * It rejoins as a member with a state transfer at a confirmed frame (9.5) once its link holds.
+7. **Demotion** (review R3-9) [V capped, slow member; backdate part 2]:
+   * A member whose newest validated horizon trails a replica's present by more than half the
+     speculation limit for 3 s is voted out exactly like a silent member (10.8). The 3 s keep a short
+     congestion from qualifying: in c1 a member's traffic is 2 s late, and it stays.
+   * It then stops counting for confirmation, and its entries after the cut are void.
+   * A two-member world cannot demote anyone (D7).
+   * Still [I]: the demoted member continuing as a **spectator** (it keeps receiving the log and
+     rendering, and its new input is refused), and rejoining as a member with a state transfer at a
+     confirmed frame (9.5) once its link holds.
    * Demotion is the only case in which an author's input is undone: its entries after the cut, which no
      other member holds. Others' histories are never rewritten.
-7. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
+8. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
    None was observed.
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
-500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18]:
+500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
 
-| Cap | Transport | Uplink m1→m2 | Max queue | Stalled frames (m1 / m2) | Max confirmation lag | Back to real time after the gesture | End state |
+| Cap | Transport | Uplink m1 | Max queue, drops | Stalled frames | Max confirmation lag | Back to real time after the gesture | End state |
 |---|---|---|---|---|---|---|---|
-| 256 kbit/s | any | 65-78 kbit/s | 0 ms | 0 / 0 | 9-10 frames | at once | all equal |
-| 64 kbit/s | per message (3d0f98a transport) | 77 kbit/s | 274 ms | 0 / 0 | 26 frames | 515 ms | equal |
-| 64 kbit/s | batched | 65 kbit/s | 0 ms | 0 / 0 | 9 frames | at once | equal |
-| 48 kbit/s | per message | 244 kbit/s offered (repairs pile on) | 499 ms, 4,324 drops | 236 / 254 | 340 frames | never in the run | not converged |
-| 48 kbit/s | batched | 65 kbit/s | 498 ms, 55 drops | 117 / 119 | 184 frames | never in the run | equal |
-| 48 kbit/s | **batched + adaptive** | 57 kbit/s | **54 ms**, 0 drops | **0 / 0** | 14 frames | **at once** | equal |
-| 32 kbit/s | **batched + adaptive** (levels 1-3 used) | 41 kbit/s | **94 ms**, 0 drops | **0 / 0** | 16 frames | **at once** | equal |
+| 256 kbit/s | any | 65-78 kbit/s | 0 ms, 0 | 0 / 0 | 9-10 frames | at once | all equal |
+| 64 kbit/s | per message (3d0f98a transport) | 77 kbit/s | 274 ms, 0 | 0 / 0 | 26 frames | 515 ms | equal |
+| 64 kbit/s | batched, or batched + adaptive | 65 kbit/s | 0 ms, 0 | 0 / 0 | 9 frames | at once | equal |
+| 48 kbit/s | per message | 76 kbit/s | 499 ms, 52 | 238 / 262 | 328 frames | never in the run | not converged |
+| 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 22 | 139 frames | 2.4 s | equal |
+| 48 kbit/s | **batched + adaptive** | 57 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
+| 32 kbit/s | **batched + adaptive** | 41 kbit/s | **105 ms**, 0 | **0 / 0** | 15 frames | **at once** | equal |
+| 16 kbit/s | **batched + adaptive** (30 s run) | 17 kbit/s | **364 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
+| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 484 ms, 11 | 1,201 / 1,214 | 1,332 frames | 19.3 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 35 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
+| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 36 kbit/s | **343 ms**, 0 | **0 / 0** | 33 frames | **60 ms** | equal |
+| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 68 kbit/s | **215 ms**, 0 | **0** (all four) | 33 frames | **at once** | all four equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 30 kbit/s | 498 ms on member 3's links | 135 / 135 before the demotion | 255 frames | at once | member 3 demoted after 3 s of lag; members 1 and 2 equal |
+
+* **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
+  members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
+  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 20 s of the gesture's end, and a
+  member too slow for the session is demoted.
+* **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
+  even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
+  wire format]. Below the floor a two-member session stalls, because it cannot demote either member
+  (D7). With three or more members, the member on the bad link is demoted.
 
 * In every run the author never rolled back and none of its entries moved. The engager's view was never
   corrected.
@@ -1393,6 +1420,9 @@ and the engager's hand replayed after the gesture had ended.
 * **Wire cost of signatures [I]:** with one Ed25519 signature per datagram, on its newest entry, add 64 B
   per datagram. That is about 3.8 kB/s per peer at 60 datagrams/s, unless signatures ride only on acks
   (about 1.9 kB/s).
+* **What the matrix does not cover** (review R3-14): two hands at once (each author then rolls back,
+  124 times at 32 kbit/s in the reviewer's probe), and a production queue estimate in place of the
+  spike's direct reading of the bottleneck queue.
 * Decisions: **D53** (recovery policy), **D56** (controller defaults).
 
 
@@ -3705,7 +3735,9 @@ entry says so.
     Lateness is paid by the late receiver.
   * Recommend for the parameters:
     * a horizon slack of 2 frames, which bounds backdating to about 4 frames;
-    * demotion to spectator (10.9) for a member that stalls confirmation past W/2 three times within 10 s.
+    * demotion (10.9) for a member whose horizon trails the present by more than W/2 for 3 s [V capped
+      slow member, backdate part 2: a member that lags its horizon on purpose is now demoted, where
+      before it stalled confirmation for good].
   * Alternatives:
     * a larger slack: more tolerant of bursty acks, but a wider backdating window;
     * no demotion: a persistently late member stalls everyone at the speculation limit;
@@ -3811,8 +3843,11 @@ entry says so.
 * **D53. Remote and late input under congestion (10.9; R18).** Settled by the user: recover, never replay.
   * Recommend:
     * per-tick batching, on by default;
-    * the four-level controller, with hand strides 1/2/3/4 and acks every 2/3/4/6 frames;
-    * demotion to spectator beyond W/2 (D42);
+    * the six-level controller, with hand strides 1/2/3/4/6/8 and acks every 2/2/3/4/6/8 frames, on
+      shared ticks;
+    * repairs that yield to the queue: backoff, small replies, no answers into a congested uplink, and
+      datagrams split at 1,200 bytes (review R3-9);
+    * demotion when a member's horizon trails the present by more than W/2 for 3 s (D42) [V];
     * a background catch-up budget of 8 ms per tick.
   * Alternatives:
     * fixed rates: collapse below the stream's need [V r18 capped];
@@ -3841,7 +3876,7 @@ entry says so.
   * down after 300 ms below 10 ms.
 
   Production measures the queue by delay gradient, as GCC does [I]. These defaults kept a 32-64 kbit/s cap
-  real-time with queues under 100 ms [V].
+  real-time with queues under about 100 ms, and 16 kbit/s with queues under 400 ms (review R3-9) [V].
   * Alternative: loss-based control (as in TCP Reno). It reacts only after the router queue is already
     full, the 500 ms bufferbloat this replaces.
 * **D57. Logic-state snapshots (7.4; review NEW-17).**
