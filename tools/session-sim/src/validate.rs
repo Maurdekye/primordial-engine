@@ -343,7 +343,21 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     }
                 }
             }
-            Report::R14Conservation { .. } | Report::R14ForgeConservation | Report::R14Lag { .. } | Report::R14Forged | Report::R14Jobs => {
+            Report::R14ChainJobs | Report::R14ChainOutcomes | Report::R14ChainConservation { .. } => {
+                for (w, m) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 1), (3, 4)] {
+                    if v.world(w, "r14 chain report (r14 chain's worlds)") {
+                        v.member(w, m, "r14 chain report (r14 chain's members)");
+                    }
+                }
+            }
+            Report::R14ForgeConservation { .. } => {
+                for (w, m) in [(1, 1), (2, 1), (2, 3), (6, 2)] {
+                    if v.world(w, "r14_forge_conservation (r14 forge's worlds, W = 6)") {
+                        v.member(w, m, "r14_forge_conservation (r14 forge's members)");
+                    }
+                }
+            }
+            Report::R14Conservation { .. } | Report::R14Lag { .. } | Report::R14Forged | Report::R14Jobs => {
                 for (w, m) in [(1, 2), (2, 3), (1, 1)] {
                     if v.world(w, "r14 report (r14's worlds)") {
                         v.member(w, m, "r14 report (r14's members)");

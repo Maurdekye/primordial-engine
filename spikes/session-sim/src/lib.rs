@@ -137,6 +137,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } | Payload::Unvote { .. } => "vote",
             Payload::Attest { .. } => "attest",
+            Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
         },
         Msg::Fetch { .. } => "fetch",
@@ -311,6 +312,9 @@ pub enum JobPhase {
     WaitDepart,
     WaitArrive,
     WaitVerdict,
+    /// P2-5: the transfer committed; relay the source's commit certificate (the hop) into the
+    /// destination, so the object can leave it again.
+    WaitCommit,
     Done,
 }
 
@@ -325,6 +329,8 @@ pub struct Job {
     pub verdict: Option<EntryId>,
     pub phase: JobPhase,
     pub accepted: Option<bool>,
+    /// The departed record (P2-5: its global id and `via` name the hop to relay).
+    pub record: Option<ObjRecord>,
     pub log: Vec<String>,
 }
 
@@ -468,6 +474,19 @@ impl Sim {
             for (w, r) in p.worlds.iter_mut() {
                 let routes = p.routes.get(w).cloned().unwrap_or_default();
                 r.sim.peers_of = worlds.iter().filter(|(x, _)| routes.contains(x)).map(|(x, m)| (*x, m.clone())).collect();
+            }
+        }
+        // P2-5: epoch certificates (static stub of P2-4's interface) of every world, standing in for
+        // self-certifying world ids: a chain may pass through worlds off this world's route list.
+        let mut epochs = StaticEpochs::default();
+        for p in &peers {
+            for (w, r) in &p.worlds {
+                epochs.worlds.entry(*w).or_insert_with(|| (worlds[w].clone(), r.sim.genesis_objects));
+            }
+        }
+        for p in &mut peers {
+            for r in p.worlds.values_mut() {
+                r.sim.epochs = epochs.clone();
             }
         }
         Sim { net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600 }
@@ -642,7 +661,8 @@ impl Sim {
                                 }
                                 Action::Carry { obj, dest, .. } => {
                                     let deadline = presents.get(&dest).map_or(u64::MAX, |p| p + deadline_frames);
-                                    let e = r.sim.author(Payload::Depart { obj, dest, deadline }, None);
+                                    let hop = r.sim.pending_hop(obj);
+                                    let e = r.sim.author(Payload::Depart { obj, dest, deadline, hop }, None);
                                     let id = e.id();
                                     let transfer = transfer_id(w, id);
                                     new_jobs.push(Job {
@@ -654,6 +674,7 @@ impl Sim {
                                         verdict: None,
                                         phase: JobPhase::WaitDepart,
                                         accepted: None,
+                                        record: None,
                                         log: vec![format!("t={}ms depart authored in world {w} at frame {}", now / 1000, e.stamp)],
                                     });
                                     broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
@@ -709,6 +730,7 @@ impl Sim {
                         verdict: None,
                         phase: JobPhase::WaitDepart,
                         accepted: None,
+                        record: None,
                         log: vec![format!("t={}ms relaying transfer {t} from world {src}, as a member of both worlds", now / 1000)],
                     });
                 }
@@ -734,13 +756,16 @@ impl Sim {
                     let esc = src.t.escrow.get(&j.transfer).copied();
                     match esc {
                         Some(Escrow { status: EscrowStatus::Pending, record: Some(rec), deadline, .. }) => {
-                            // Relay only with A's certificate (review NEW-4).
-                            let Some(cert) = src.cert(fact_departed(j.src, j.depart, &rec, j.dst, deadline)) else { continue };
+                            // Relay only with A's certificate (review NEW-4), which covers the
+                            // object's provenance chain (P2-5).
+                            let chain = src.chain_of(rec.global);
+                            let Some(cert) = src.cert(fact_departed(j.src, j.depart, &rec, j.dst, deadline, chain_hash(&chain))) else { continue };
                             let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
                             if !dst.sim.caught_up() || dst.sim.frame < dst.sim.now {
                                 continue;
                             }
-                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, deadline, cert }, None);
+                            j.record = Some(rec);
+                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, deadline, cert, chain }, None);
                             j.log.push(format!(
                                 "t={}ms depart confirmed in world {} (frame {f}); arrive authored in world {} at frame {}",
                                 now / 1000, j.src, j.dst, e.stamp
@@ -785,8 +810,23 @@ impl Sim {
                     let src = &self.peers[pi].worlds[&j.src].sim;
                     if src.is_confirmed(id) && src.effective_frame(id).is_some_and(|f| src.frame > f) {
                         j.log.push(format!("t={}ms verdict confirmed in world {}; transfer {} resolved", now / 1000, j.src, j.transfer));
-                        j.phase = JobPhase::Done;
+                        let committed = matches!(src.t.escrow.get(&j.transfer), Some(Escrow { status: EscrowStatus::Committed, .. }));
+                        j.phase = if committed { JobPhase::WaitCommit } else { JobPhase::Done };
                     }
+                }
+                JobPhase::WaitCommit => {
+                    // P2-5: once A's majority has attested the commit, copy the hop into B's log.
+                    let rec = j.record.expect("relayed record");
+                    let src = &self.peers[pi].worlds[&j.src].sim;
+                    let fact = fact_committed(j.src, j.transfer, rec.global, j.dst, rec.via);
+                    let Some(cert) = src.cert(fact) else { continue };
+                    let hop = Hop { src: j.src, dest: j.dst, transfer: j.transfer, via: rec.via, epoch: 0, cert };
+                    let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
+                    let e = dst.sim.author(Payload::Provenance { hop }, None);
+                    j.log.push(format!("t={}ms commit certified in world {}; hop relayed into world {} at frame {}", now / 1000, j.src, j.dst, e.stamp));
+                    j.phase = JobPhase::Done;
+                    let members: Vec<MemberId> = dst.sim.members.iter().copied().collect();
+                    broadcast(&mut self.net, j.dst, pid, &members, &Msg::Entry(e));
                 }
                 JobPhase::Done => {}
             }

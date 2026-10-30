@@ -299,7 +299,10 @@ impl Probe {
                 }
             }
             Report::R14Conservation { label } => r14_conservation(sim, label),
-            Report::R14ForgeConservation => r14_forge_conservation(sim, &ctx.forged),
+            Report::R14ForgeConservation { label, original, attacks, control } => r14_forge_conservation(sim, &ctx.forged, label, *original, *attacks, *control),
+            Report::R14ChainJobs => r14_chain_jobs(sim),
+            Report::R14ChainOutcomes => r14_chain_outcomes(sim),
+            Report::R14ChainConservation { label } => r14_chain_conservation(sim, label),
             Report::R14Lag { label, throttled } => r14_lag(sim, &self.lag, label, *throttled),
             Report::Ballpit { .. } => self.ballpit(sim),
         }
@@ -381,7 +384,7 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
     }
     let r = first.unwrap();
     let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
-    let reference = replay_sim_with(w, r.scene, r.sim.cfg, &members, &r.sim.peers_of, &final_log(&r.sim), frames).hashes;
+    let reference = replay_sim_like(&r.sim, r.scene, &members, &final_log(&r.sim), frames).hashes;
     let rd = digest(&reference, frames);
     let all_equal = digests.iter().all(|(_, d)| *d == rd);
     if !all_equal {
@@ -390,7 +393,7 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
             let near: Vec<String> =
                 log.iter().filter(|(_, ef)| *ef + 3 >= f && *ef <= f + 1).map(|(e, ef)| format!("m{}s{}@{} eff {ef}", e.member, e.seq, e.stamp)).collect();
             println!("  first replay mismatch at frame {f}; final-log entries near it: {}", near.join(", "));
-            let rs = replay_sim(w, r.scene, r.sim.cfg, &members, &log, f + 1);
+            let rs = replay_sim_like(&r.sim, r.scene, &members, &log, f + 1);
             for (e, _) in log.iter().filter(|(_, ef)| *ef == f) {
                 println!("    m{}s{}: live {:?} replay {:?} carried {:?}", e.member, e.seq, r.sim.outcomes.get(&e.id()), rs.outcomes.get(&e.id()), e.carried.map(|c| c.0));
             }
@@ -620,19 +623,115 @@ fn r14_conservation(sim: &Sim, label: &str) {
     );
 }
 
-fn r14_forge_conservation(sim: &Sim, forged: &[Forged]) {
+fn r14_forge_conservation(sim: &Sim, forged: &[Forged], label: &str, original: bool, attacks: Option<usize>, control: bool) {
     let live = |m: MemberId, w: WorldId, g: u64| sim.replica(m, w).sim.t.objs.iter().flatten().filter(|o| o.global == g).count();
     let (g50, g51) = ((1u64 << 32) | 50, (1u64 << 32) | 51);
     let (a50, a51, d50, b40) = (live(1, 1, g50), live(1, 1, g51), live(2, 4, g50), live(3, 2, GID40));
-    println!(
-        "RESULT r14 forge: A's objects 50 and 51 live in A {a50} and {a51}, object 50 in D {d50}; copies of A:40 in B {b40} -> {}",
-        if a50 == 1 && a51 == 1 && d50 == 0 && b40 <= 1 { "CONSERVED" } else { "NOT CONSERVED" }
-    );
+    if original {
+        println!(
+            "RESULT r14 forge: A's objects 50 and 51 live in A {a50} and {a51}, object 50 in D {d50}; copies of A:40 in B {b40} -> {}",
+            if a50 == 1 && a51 == 1 && d50 == 0 && b40 <= 1 { "CONSERVED" } else { "NOT CONSERVED" }
+        );
+    }
     // Every attack must have been tried: one whose moment passed (the carry resolved earlier)
     // would otherwise drop out silently.
-    if forged.len() != 9 {
-        println!("RESULT r14 forge: FAIL: {} of 9 forged entries authored", forged.len());
+    if let Some(n) = attacks {
+        if forged.len() != n {
+            println!("RESULT r14 forge: FAIL: {} of {n} forged entries authored", forged.len());
+        }
     }
+    // P2-5: copies in the honest worlds A and B (W's own replicas are its majority's word).
+    let pending_of = |m: MemberId, w: WorldId, g: u64| {
+        sim.replica(m, w).sim.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending && e.record.is_some_and(|r| r.global == g)).count()
+    };
+    let mut ok = true;
+    let mut parts = Vec::new();
+    for (name, g, want) in [("A:52", (1u64 << 32) | 52, 1), ("A:53", (1 << 32) | 53, 1), ("A:54", (1 << 32) | 54, 1), ("A:55", (1 << 32) | 55, 1), ("W:500", (6 << 32) | 500, 0)] {
+        let (a, b, w) = (live(1, 1, g), live(3, 2, g), live(2, 6, g));
+        let p = pending_of(1, 1, g) + pending_of(3, 2, g);
+        ok &= a + b == want && p == 0;
+        parts.push(format!("{name} A {a} B {b} pending {p} (W {w})"));
+    }
+    println!(
+        "RESULT r14 {label}: dishonest-majority W ({}): {} -> {}",
+        if control { "CONTROL, provenance off" } else { "provenance on" },
+        parts.join("; "),
+        if ok { "CONSERVED in the honest worlds" } else { "NOT CONSERVED in the honest worlds" }
+    );
+    for (m, w) in [(1, 1), (1, 2)] {
+        let r = &sim.replica(m, w).sim;
+        for p in r.fork_proofs.values() {
+            // P25-3: the proof carries both certificates, so a third party checks it on its own.
+            println!(
+                "RESULT r14 {label}: world {w} holds a fork proof against world {}: it exported {:#x} twice from its entry {} (transfers {} and {}); verifies for a third party: {}",
+                p.world,
+                p.global,
+                p.via,
+                p.a.transfer(),
+                p.b.transfer(),
+                p.verify(&r.epochs)
+            );
+        }
+    }
+}
+
+// ---- R14 chain (main.rs r14_chain, P2-5) --------------------------------------------------------
+
+fn r14_chain_jobs(sim: &Sim) {
+    for p in &sim.peers {
+        for j in &p.jobs {
+            for l in &j.log {
+                println!("  m{}: {l}", p.id);
+            }
+            println!("  m{}: transfer {} world {} -> {}: phase {:?} accepted {:?}", p.id, j.transfer, j.src, j.dst, j.phase, j.accepted);
+        }
+    }
+}
+
+fn r14_chain_outcomes(sim: &Sim) {
+    for (w, label) in [(1, "A"), (2, "B"), (3, "C")] {
+        let r = &sim.replica(1, w).sim;
+        for e in r.all_entries() {
+            if let Payload::Depart { obj, dest, hop, .. } = &e.payload {
+                println!(
+                    "RESULT r14 chain: departure of local {obj} from {label} to world {dest} (hop in carried: {}) -> {:?}",
+                    hop.is_some(),
+                    r.outcomes.get(&e.id()).map(|x| x.1)
+                );
+            }
+            if let Payload::Arrive { chain, .. } = &e.payload {
+                let route: Vec<String> = chain.iter().map(|h| format!("{}->{}", h.src, h.dest)).collect();
+                println!("RESULT r14 chain: arrival into {label} with a chain of {} hops [{}] -> {:?}", chain.len(), route.join(", "), r.outcomes.get(&e.id()).map(|x| x.1));
+            }
+        }
+    }
+}
+
+fn r14_chain_conservation(sim: &Sim, label: &str) {
+    let (mut total, mut pending) = (0, 0);
+    let mut parts = Vec::new();
+    for (w, name, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
+        let r = &sim.replica(m, w).sim;
+        let live = r.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
+        pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
+        total += live;
+        parts.push(format!(
+            "{name} {live} ({:?})",
+            r.t.seen.get(&GID40).map(|s| match s {
+                Seen::Here { chain, settled, .. } => format!("here, chain {} hops, settled {settled}", chain.len()),
+                Seen::Left { dest, .. } => format!("left for {dest}"),
+            })
+        ));
+    }
+    println!(
+        "RESULT {label}: A:40 live copies {} ; pending escrows {pending} -> {}",
+        parts.join(", "),
+        if total == 1 && pending == 0 && sim.replica(2, 1).sim.t.objs.iter().flatten().any(|o| o.global == GID40) {
+            "CONSERVED (back in A, nothing in limbo)"
+        } else {
+            "NOT CONSERVED"
+        }
+    );
 }
 
 fn r14_lag(sim: &Sim, lag: &[(u64, u64)], label: &str, throttled: bool) {

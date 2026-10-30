@@ -40,15 +40,21 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | Folder | Logs | What |
 |---|---|---|
 | `phase1/` | 8 | c1, c2, state-frame, diverged, loss, ties, claims, backdate |
-| `r14/` | 10 | R14 settled handoff: ok, abort, reject, throttle, forge, late, crash, and ok/abort/reject in reverse peer order |
+| `r14/` | 14 | R14 settled handoff: ok, abort, reject, throttle, forge (16 attacks, P2-5's dishonest-majority world W included), late, crash, chain (P2-5: A -> B -> C -> A), and ok/abort/reject/chain in reverse peer order; plus P2-5's two controls, forge-no-provenance and doublespend |
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 
-The first 30 are the phase-1 suite of `scripts/run_session_sim.sh`; their logs are identical to the
-committed ones. The `faults/` logs are new in P2-9. All of them are identical on Windows and on Linux
-(WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`, `regress-linux.txt`.
+All but `faults/` are the suite of `scripts/run_session_sim.sh` (32 scenarios and P2-5's two controls,
+whose logs are in `spikes/out/session-sim/p2-5-controls/`); their logs are identical to the committed
+ones. The `faults/` logs are new in P2-9. All of them are identical on Windows and on Linux (WSL2,
+glibc): `spikes/out/session-sim/regress-windows.txt`, `regress-linux.txt`.
+
+A control run (`control = true`) switches a protection off to show what it prevents, so it is
+expected to print failures such as NOT CONSERVED. `regress` still compares its log, but does not
+count those failures. `golden = "p2-5-controls/r14-doublespend"` names a committed log other than
+`<file stem>.log`.
 
 ## Validation
 
@@ -119,6 +125,7 @@ count_ms = [2100, 5760]             # count traffic in this window only
 [sim]
 reverse_order = true                # tick peers in reverse order
 carry_deadline_frames = 2           # R14 carrier deadline; default 600
+provenance = false                  # P2-5 control only: arrivals skip provenance checks
 
 [[part]]                            # several runs in one log, each merged onto the rest of the file
 ```
@@ -169,7 +176,11 @@ behaviour `x` has fired.
 - `r14_forgeries`: the R14 attacks, each at its time: `attacks = [{ at_ms = 2000, attack = "depart_to_own_world" }, ...]`.
   The attacks are `depart_to_own_world`, `depart_to_unknown_world`, `mint_from_own_world`,
   `mint_without_departure`, `nan_record`, `squat_transfer`, `proofless_verdict`,
-  `relabel_record` and `false_rejection`. They assume r14's worlds: A = 1, B = 2, D = 4, E = 5.
+  `relabel_record` and `false_rejection`, and P2-5's attacks by W: `w_mint_live_id`,
+  `w_mint_unborn_id`, `w_forge_earlier_hop`, `w_splice_hop`, `w_refund_setup` (watches every
+  millisecond from its time until it fires), `w_refund_export`, `carry_back`, `w_resurrect` and
+  `w_doublespend`. List them in the spike's order. They assume r14's worlds: A = 1, B = 2, D = 4,
+  E = 5, W = 6.
 
 Backdated touches are a plan action (`backdated`).
 
@@ -192,7 +203,7 @@ Reports print after the run, in file order, in the spike's formats:
 - `touches`.
 - `phase1_rule`: c1 or c2 before the fix, on the old RollbackSim.
 - `line`: one templated line.
-- The R14 reports: `r14_forged`, `r14_jobs`, `r14_crash`, `r14_conservation`, `r14_forge_conservation`, `r14_lag`.
+- The R14 reports: `r14_forged`, `r14_jobs`, `r14_crash`, `r14_conservation`, `r14_forge_conservation`, `r14_lag`, and for `r14 chain`, `r14_chain_jobs`, `r14_chain_outcomes` and `r14_chain_conservation`.
 - `ballpit`.
 
 Templates (`say`, `line`) substitute the following:

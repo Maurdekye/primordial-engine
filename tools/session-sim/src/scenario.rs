@@ -22,6 +22,13 @@ use toml::Value;
 pub struct Scenario {
     #[serde(default)]
     pub description: String,
+    /// The committed log, relative to the expected folder and without `.log` (default: the file
+    /// stem), e.g. `p2-5-controls/r14-doublespend`.
+    pub golden: Option<String>,
+    /// A control run: its log is still compared, but it is expected to show failures (e.g. NOT
+    /// CONSERVED with a protection switched off), so regress does not count them.
+    #[serde(default)]
+    pub control: bool,
     /// Last 1 ms step at or before this virtual time (`end_us` wins if both are given).
     pub end_ms: Option<u64>,
     pub end_us: Option<u64>,
@@ -242,6 +249,8 @@ pub struct SimOpts {
     pub reverse_order: bool,
     /// R14: a carrier's deadline in destination frames after its present. Default 600.
     pub carry_deadline_frames: Option<u64>,
+    /// P2-5: arrivals check provenance chains (default true; false only for a control run).
+    pub provenance: Option<bool>,
 }
 
 /// One or several member ids.
@@ -487,8 +496,23 @@ pub enum Report {
     R14Crash { at: Vec<[u32; 2]> },
     /// R14: object 40 is conserved (exactly one live copy, no pending escrow).
     R14Conservation { label: String },
-    /// R14 forge: the forged objects did not multiply, and all 9 forgeries were tried.
-    R14ForgeConservation,
+    /// R14 forge (and doublespend): with `original`, the R3/NEW forged objects did not multiply;
+    /// with `attacks`, that many forgeries were tried; then P2-5's dishonest-majority W check in
+    /// the honest worlds A and B, and the fork proofs A and B hold.
+    R14ForgeConservation {
+        label: String,
+        #[serde(default)]
+        original: bool,
+        attacks: Option<usize>,
+        #[serde(default)]
+        control: bool,
+    },
+    /// R14 chain (P2-5): every member's job logs.
+    R14ChainJobs,
+    /// R14 chain: each departure's and arrival's outcome at the carrier, in worlds A, B and C.
+    R14ChainOutcomes,
+    /// R14 chain: A:40 is back in A, one live copy, nothing pending.
+    R14ChainConservation { label: String },
     /// R14: member 2's confirmation lag in A and how late check hashes come (sampled every 100 ms).
     R14Lag { label: String, throttled: bool },
     /// Ball pit: wire cost of the perturbation source vs naive state streaming, member 2's
