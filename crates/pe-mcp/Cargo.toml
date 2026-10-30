@@ -1,0 +1,36 @@
+[package]
+name = "pe-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The engine's MCP server (design 17): the test and driver interface for one peer, over stdio, a named pipe / Unix socket, or loopback HTTP"
+
+[lib]
+name = "pe_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pe-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Phase 2 drives a peer of the in-process session simulator; P2-3's pe-session replaces it behind
+# the `DrivenPeer` trait (src/backend.rs).
+pe-sim-core.workspace = true
+pe-spike-session-sim = { path = "../../spikes/session-sim" }
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "process"] }
+tokio-util = "0.7"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.2"
+getrandom = "0.3"
+subtle = "2.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Memory"] }
+
+[dev-dependencies]
+rmcp = { version = "=3.8.0", default-features = false, features = ["client", "server", "macros", "schemars", "transport-async-rw"] }
