@@ -1024,6 +1024,9 @@ pub enum Outcome {
     RejectedUnsettled,
     /// P25-1: this world's import policy refuses the object's birth world, chain or kind.
     RejectedPolicy,
+    /// A `Hand` entry for a hand that is not its author's: a member moves only its own hands (P2-8
+    /// review, 8.4).
+    RejectedNotOwner,
 }
 
 /// One member's vote to remove another, as read from its chain (reviews R3-1, R3-2).
@@ -1114,6 +1117,10 @@ pub struct WorldSim {
     pub genesis_objects: u64,
     /// P25-1: what this world accepts beyond identity (birth worlds, chain worlds, kinds).
     pub import_policy: ImportPolicy,
+    /// Hands belong to members (a hand is part of its member's avatar, 16.3): hand object -> owner.
+    /// A `Hand` entry by anyone else is refused (P2-8 review, 8.4). In the ball pit, hand k is the
+    /// k-th genesis member's. Fixed for the world's life; not part of the rollback state.
+    pub hand_owners: BTreeMap<u32, MemberId>,
     /// P25-3: double spends this world holds transferable proof of, from confirmed frames only
     /// (keyed by world, global id, entry and the two transfers). Not part of the state.
     pub fork_proofs: BTreeMap<(u32, u64, u64, u64, u64), ForkProof>,
@@ -1271,6 +1278,14 @@ impl WorldSim {
     pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig) -> Self {
         let (world, objs) = build_scene(scene, world_id);
         let genesis_objects = objs.len() as u64;
+        let hand_owners = match scene {
+            SceneKind::BallPit { balls, hands } => {
+                let mut ms = members.to_vec();
+                ms.sort_unstable();
+                (0..hands).zip(ms).map(|(k, m)| ((balls + k) as u32, m)).collect()
+            }
+            _ => BTreeMap::new(),
+        };
         WorldSim {
             world_id,
             me,
@@ -1290,6 +1305,7 @@ impl WorldSim {
             provenance: true,
             genesis_objects,
             import_policy: ImportPolicy::default(),
+            hand_owners,
             fork_proofs: BTreeMap::new(),
             frame_effects: BTreeMap::new(),
             commits_due: Vec::new(),
@@ -3187,6 +3203,10 @@ impl WorldSim {
                 Outcome::Accepted
             }
             Payload::Hand { obj, target_mm, active, span } => {
+                // A member moves only its own hands; the author is the signed chain's member.
+                if self.hand_owners.get(obj) != Some(&e.member) {
+                    return Outcome::RejectedNotOwner;
+                }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 let p = if *active {
                     Pos { x: target_mm[0] as f32 * 0.001, y: target_mm[1] as f32 * 0.001, z: target_mm[2] as f32 * 0.001 }
@@ -3682,6 +3702,7 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
     s.epochs = like.epochs.clone();
     s.provenance = like.provenance;
     s.import_policy = like.import_policy.clone();
+    s.hand_owners = like.hand_owners.clone();
     s.run_log(log, frames)
 }
 

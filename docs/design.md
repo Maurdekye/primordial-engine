@@ -996,6 +996,15 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   member's grab of the same object in that time is refused with `RejectedClaimed{by, until}`.
 * **Every other physical interaction is never refused.** Touches, pushes and impulses all apply,
   physically, including on a held object, which they move through the grab's constraint.
+* **A member moves only its own hands** (P2-8 review: @shader-reviewer's probe moved another member's
+  hand through `pe-mcp`, and every peer accepted it).
+  * Hands are part of a member's avatar (16.3), and an entry's author is its chain's signed member (10.3).
+    So every replica refuses a `Hand` entry for a hand that is not its author's, with `RejectedNotOwner`.
+    It is a validity rule like the others, not a claim: it holds at every frame {HANDOWNER}.
+  * The same goes for any object that belongs to one member, as each such kind is added [I].
+  * An agent at an unlocked panel acts as the panel's owner (D27a). The panel's messages carry their
+    verified sender, but the owner's peer signs the entries, so the agent moves only the owner's hands.
+    `pe-mcp` also refuses such a move before authoring it (`not_owner`, 17.2).
 * **The one stated exception** to "an author never sees its own interaction corrected" (14:31Z): when two
   grabs of one object land within one latency, the loser's grab is undone on re-simulation. It stands
   next to demotion (10.9) and portal carries (22.7).
@@ -3867,12 +3876,13 @@ Rules for every package:
 * What: the session protocol ported from `spikes/sim-core` and `spikes/session-sim` into a crate with a
   stable API: entries and chains, acks, votes, stable-data confirmation, equivocation proofs and
   eviction, crash removal, demotion, the tie rank, carried state, keyframes and rollback, sync checks, gap
-  repair, the congestion controller, R14 transfers. **Grabs-only claims** (D72) change here.
+  repair, the congestion controller, R14 transfers. **Grabs-only claims** (D72) change here. Validation
+  includes "a member moves only its own hands" (8.4), from the verified author of each entry.
 * Skills: distributed protocols, Rust.
 * Depends on: P2-1, P2-2; P2-4's view change and P2-5's provenance chains are merged into it.
 * Done: all 30 phase-1 scenarios pass against `pe-session` (every replica equal to its offline replay,
   conserved, 0 false checks), plus grab-race scenarios: two grabs within one latency (the loser's grab
-  undone), and pushes on a held object (never refused).
+  undone), and pushes on a held object (never refused), and `handowner`.
 
 **P2-4. The proposer-based view change, @engine-architect**
 (@item:primordial-engine/phase-2-proposer-based-view-change-multiple-fail).
