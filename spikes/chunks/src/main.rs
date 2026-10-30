@@ -3,7 +3,9 @@
 
 mod avatars;
 mod closure;
+mod closure2;
 mod liveness;
+mod safety;
 mod physbench;
 mod players;
 mod precision;
@@ -22,7 +24,9 @@ fn main() {
             avatars::sim_isolation();
         }
         "closure" => closure::run_all(),
+        "closure2" => closure2::run_all(),
         "liveness" => liveness::run_all(),
+        "safety" => safety::run_all(),
         "far" => physbench::far(),
         "scale" => physbench::scale(),
         "scale-mixed" => physbench::scale_mixed(),
