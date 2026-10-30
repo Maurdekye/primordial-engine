@@ -139,14 +139,21 @@ impl SimStore {
     /// The world transform of one object, composed from its root down. `None` if it has no `Transform`.
     pub fn world_transform(&self, id: ObjectId) -> Option<WorldTransform> {
         let t = self.get::<Transform>(id)?;
-        let mut ancestor = self.parent(id);
-        while let Some(a) = ancestor {
-            if self.has::<Transform>(a) {
-                return Some(self.world_transform(a)?.compose(t));
+        // The transformed ancestors, nearest first; then compose from the top down (no recursion, so any
+        // depth works).
+        let mut chain = vec![t];
+        let mut at = self.parent(id);
+        while let Some(a) = at {
+            if let Some(ta) = self.get::<Transform>(a) {
+                chain.push(ta);
             }
-            ancestor = self.parent(a);
+            at = self.parent(a);
         }
-        Some(WorldTransform::root(t))
+        let mut w = WorldTransform::root(chain.pop().unwrap());
+        while let Some(t) = chain.pop() {
+            w = w.compose(t);
+        }
+        Some(w)
     }
 
     /// Every object's world transform, in depth-first order (objects without a `Transform` are skipped).

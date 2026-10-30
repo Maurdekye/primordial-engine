@@ -23,11 +23,12 @@ if [ "${1:-}" = "--linux" ]; then
     --config "target.$target.linker=\"rust-lld\"" --no-run --message-format=json > "$out/.linux-build.json"
   bins=$(python -I -c "
 import json, sys
+sys.stdout.reconfigure(newline='\n')
 for l in open(sys.argv[1], encoding='utf-8'):
     try: m = json.loads(l)
     except ValueError: continue
-    if m.get('reason') == 'compiler-artifact' and m.get('executable'):
-        print(m['executable'].replace('\\\\', '/'))
+    if m.get('reason') == 'compiler-artifact' and m.get('executable') and m['profile']['test']:
+        print(m['executable'].replace(chr(92), '/'))
 " "$out/.linux-build.json")
   rm -f "$out/.linux-build.json"
   root=$(pwd -W 2>/dev/null || pwd)

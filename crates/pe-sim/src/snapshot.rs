@@ -17,6 +17,7 @@ use pe_core::hash::Hasher;
 use pe_core::{Error, Frame, ObjectId};
 
 use crate::column::Column;
+use crate::hierarchy::Node;
 use crate::registry::{ComponentId, Registry};
 use crate::store::SimStore;
 
@@ -218,13 +219,76 @@ impl Snapshot {
         if r.at != bytes.len() {
             return Err(Error::Corrupt("trailing bytes"));
         }
-        // Every live object has a hierarchy node.
+        // Every live object has a hierarchy node, and the links form a forest.
         let nodes = columns.iter().find(|c| c.id == ComponentId::NODE);
         if nodes.map_or(0, |c| c.col.len()) != objects.len() {
             return Err(Error::Corrupt("objects without hierarchy nodes"));
         }
+        if let Some(n) = nodes {
+            check_forest(&n.col.ids, bytemuck::cast_slice(n.col.bytes()))?;
+        }
         Ok(Snapshot { frame, seed, objects: Arc::new(objects), counters: Arc::new(counters), columns })
     }
+}
+
+/// Checks hierarchy links read from untrusted bytes: every link names a live object, each parent's child
+/// list is a consistent doubly linked list holding exactly the objects that name it as parent, and no object
+/// is its own ancestor. Traversals of a store that passed this terminate.
+fn check_forest(ids: &[ObjectId], nodes: &[Node]) -> Result<(), Error> {
+    let bad = |m| Err(Error::Corrupt(m));
+    let idx = |id: ObjectId| ids.binary_search(&id).ok();
+    let live = |id: ObjectId| id.is_none() || idx(id).is_some();
+    // Every link first, so the walks below only follow live ids.
+    for n in nodes {
+        if ![n.parent, n.first_child, n.last_child, n.prev_sibling, n.next_sibling].into_iter().all(live) {
+            return bad("hierarchy link to a missing object");
+        }
+    }
+    let mut listed = vec![false; ids.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        if n.first_child.is_none() != n.last_child.is_none() {
+            return bad("hierarchy child list ends disagree");
+        }
+        // Walk this object's child list.
+        let (mut prev, mut at, mut steps) = (ObjectId::NONE, n.first_child, 0usize);
+        while let Some(c) = at.some() {
+            let ci = idx(c).unwrap();
+            let cn = &nodes[ci];
+            if cn.parent != ids[i] || cn.prev_sibling != prev || listed[ci] {
+                return bad("hierarchy child list inconsistent");
+            }
+            listed[ci] = true;
+            steps += 1;
+            if steps > ids.len() {
+                return bad("hierarchy child list loops");
+            }
+            prev = c;
+            at = cn.next_sibling;
+        }
+        if prev != n.last_child {
+            return bad("hierarchy last child wrong");
+        }
+    }
+    for (i, n) in nodes.iter().enumerate() {
+        if n.parent.is_none() == listed[i] {
+            return bad("hierarchy node not in its parent's child list");
+        }
+        if n.parent.is_none() && !(n.prev_sibling.is_none() && n.next_sibling.is_none()) {
+            return bad("hierarchy root with siblings");
+        }
+    }
+    // No cycles: from every object, the parent chain reaches a root within n steps.
+    for i in 0..ids.len() {
+        let (mut at, mut steps) = (nodes[i].parent, 0usize);
+        while let Some(p) = at.some() {
+            steps += 1;
+            if steps > ids.len() {
+                return bad("hierarchy cycle");
+            }
+            at = nodes[idx(p).unwrap()].parent;
+        }
+    }
+    Ok(())
 }
 
 fn strictly_sorted(ids: &[ObjectId]) -> bool {
@@ -260,5 +324,39 @@ impl<'a> Reader<'a> {
     fn ids(&mut self) -> Result<Vec<ObjectId>, Error> {
         let n = self.u64()? as usize;
         self.ids_n(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: u32) -> ObjectId {
+        ObjectId::new(1, n)
+    }
+
+    #[test]
+    fn forest_check() {
+        let none = ObjectId::NONE;
+        let ids = [id(1), id(2), id(3)];
+        // 1 is the parent of 2 and 3, in that order.
+        let good = [
+            Node { parent: none, first_child: id(2), last_child: id(3), prev_sibling: none, next_sibling: none },
+            Node { parent: id(1), first_child: none, last_child: none, prev_sibling: none, next_sibling: id(3) },
+            Node { parent: id(1), first_child: none, last_child: none, prev_sibling: id(2), next_sibling: none },
+        ];
+        assert_eq!(check_forest(&ids, &good), Ok(()));
+        let mut cyc = good;
+        cyc[0].parent = id(3); // 1 -> 3 -> 1, and 1 is not in 3's child list
+        assert!(check_forest(&ids, &cyc).is_err());
+        let mut lost = good;
+        lost[2].parent = none; // 3 claims to be a root but is listed under 1
+        assert!(check_forest(&ids, &lost).is_err());
+        let mut looped = good;
+        looped[2].next_sibling = id(2); // the sibling list loops
+        assert!(check_forest(&ids, &looped).is_err());
+        let mut missing = good;
+        missing[1].next_sibling = id(9);
+        assert!(check_forest(&ids, &missing).is_err());
     }
 }
