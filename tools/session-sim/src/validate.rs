@@ -96,7 +96,7 @@ impl V<'_> {
             }
         }
         let obj = a.touch.as_ref().map(|t| t.obj).or(a.hand.as_ref().map(|h| h.obj)).or(a.carry.as_ref().map(|c| c.obj)).or(a.backdated.as_ref().map(|b| b.obj));
-        if let (Some(o), false) = (obj, self.s.allow_missing_objects) {
+        if let (Some(o), false) = (obj, a.missing_ok) {
             self.object(w, o, &what);
         }
         if let Some(c) = &a.carry {

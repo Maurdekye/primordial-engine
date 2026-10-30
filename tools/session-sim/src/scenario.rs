@@ -22,10 +22,6 @@ use toml::Value;
 pub struct Scenario {
     #[serde(default)]
     pub description: String,
-    /// Accept plan actions on objects the scene lacks (the protocol rejects them as gone). Only for
-    /// reproducing a spike scenario that did this; say why next to it.
-    #[serde(default)]
-    pub allow_missing_objects: bool,
     /// Last 1 ms step at or before this virtual time (`end_us` wins if both are given).
     pub end_ms: Option<u64>,
     pub end_us: Option<u64>,
@@ -120,6 +116,10 @@ pub struct ActionSpec {
     pub backdated: Option<BackdatedSpec>,
     /// The ball-pit hand gesture of session-sim's `ballpit_sweep` (no `at`).
     pub ballpit_sweep: Option<SweepSpec>,
+    /// Accept this action on an object the scene lacks (the protocol rejects it as gone). Only
+    /// for reproducing a spike scenario that did this; say why next to it.
+    #[serde(default)]
+    pub missing_ok: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -61,8 +61,8 @@ committed ones. The `faults/` logs are new in P2-9. All of them are identical on
 - `loss_pct` above 100, `hz`, `kbps`, `every`, `count` or `times` of 0;
 - both `end_ms` and `end_us`;
 - a plan action at a frame its member never reaches;
-- an object the scene doesn't have (unless the scenario sets `allow_missing_objects = true` and
-  says why, as `phase1/backdate.toml` does to reproduce the spike);
+- an object the scene doesn't have, unless that one action sets `missing_ok = true` and says
+  why, as one touch in `phase1/backdate.toml` does to reproduce the spike;
 - a `check_world` over frames the run doesn't simulate;
 - no checking report (`check_world` or `verdict`) at all.
 
