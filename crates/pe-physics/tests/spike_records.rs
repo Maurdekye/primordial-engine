@@ -1,0 +1,273 @@
+//! P2-2's done criterion: the phase-1 spike's goldens, 600-frame trace, snapshot images and
+//! rollback T1-T5 reproduce through pe-physics, with the digests committed in
+//! `spikes/out/vdw/` (engine configuration "vdw" and upstream "off"), at several worker counts.
+
+mod common;
+
+use box3d_rust::determinism::{
+    create_falling_ragdolls, create_mesh_drop, create_query_spawn, create_wave_pile, update_falling_ragdolls,
+    update_mesh_drop, update_query_spawn, update_wave_pile,
+};
+use box3d_rust::math_functions::POS_ZERO;
+use common::*;
+use pe_physics::{PhysicsConfig, PhysicsWorld};
+
+/// Worker counts every record is checked at (results must not depend on them, D2).
+const WORKERS: [i32; 3] = [1, 3, 8];
+
+#[derive(Debug, PartialEq)]
+struct Golden {
+    sleep_step: i32,
+    hash: u32,
+    query: Option<(i32, u32)>,
+}
+
+fn goldens(config: PhysicsConfig) -> Vec<(&'static str, Golden)> {
+    let dt = 1.0 / 60.0;
+    let mut out = Vec::new();
+    let new = || PhysicsWorld::new(config);
+    {
+        let mut pw = new();
+        let mut d = create_falling_ragdolls(pw.raw_mut());
+        for _ in 0..1000 {
+            pw.step(dt);
+            if update_falling_ragdolls(pw.raw(), &mut d) {
+                break;
+            }
+        }
+        out.push(("falling ragdolls", Golden { sleep_step: d.sleep_step, hash: d.hash, query: None }));
+    }
+    {
+        let mut pw = new();
+        let mut d = create_wave_pile(pw.raw_mut());
+        for _ in 0..1000 {
+            pw.step(dt);
+            if update_wave_pile(pw.raw(), &mut d) {
+                break;
+            }
+        }
+        out.push(("wave pile", Golden { sleep_step: d.sleep_step, hash: d.hash, query: None }));
+    }
+    {
+        let mut pw = new();
+        let mut d = create_query_spawn(pw.raw_mut());
+        for _ in 0..1000 {
+            pw.step(dt);
+            if update_query_spawn(pw.raw_mut(), &mut d) {
+                break;
+            }
+        }
+        let query = Some((d.query_hit_count, d.query_hash));
+        out.push(("query spawn", Golden { sleep_step: d.sleep_step, hash: d.hash, query }));
+    }
+    {
+        let mut pw = new();
+        let mut d = create_mesh_drop(pw.raw_mut(), POS_ZERO);
+        for _ in 0..1000 {
+            pw.step(dt);
+            if update_mesh_drop(pw.raw(), &mut d) {
+                break;
+            }
+        }
+        out.push(("mesh drop", Golden { sleep_step: d.sleep_step, hash: d.hash, query: None }));
+    }
+    out
+}
+
+/// The engine goldens (spikes/physics `goldens`) and Box3D C's goldens (`--upstream`).
+#[test]
+fn goldens_match() {
+    let g = |sleep_step, hash| Golden { sleep_step, hash, query: None };
+    let q = |sleep_step, hash, hits, qh| Golden { sleep_step, hash, query: Some((hits, qh)) };
+    let engine = [
+        g(358, 0xB1EB_47AE),
+        g(307, 0x0809_EA96),
+        q(242, 0x9EA3_A8B9, 59, 0xE327_1F3D),
+        g(220, 0xCE3B_7A62),
+    ];
+    let c = [
+        g(291, 0xFF4C_605B),
+        g(272, 0x266F_83B0),
+        q(242, 0xF3AD_9BA6, 59, 0xE327_1F3D),
+        g(226, 0xD2FF_069D),
+    ];
+    for workers in WORKERS {
+        for (config, expected) in [(PhysicsConfig::engine(), &engine), (PhysicsConfig::upstream(), &c)] {
+            let got = goldens(config.with_workers(workers));
+            for (scene, got) in &got {
+                let scaling = config.contact_recycle_scaling.enabled;
+                println!("RESULT golden {scene} recycle_scaling={scaling} workers={workers} {got:?}");
+            }
+            for ((scene, got), want) in got.iter().zip(expected.iter()) {
+                assert_eq!(got, want, "{scene}, {workers} workers, recycle scaling {}", config.contact_recycle_scaling.enabled);
+            }
+        }
+    }
+}
+
+/// The 600-frame trace, line for line equal to the committed record, and its digest.
+#[test]
+fn trace_matches_record() {
+    for (config, mode) in modes() {
+        let want = std::fs::read_to_string(record(&format!("trace-{mode}-win-{}.txt", profile()))).expect("record");
+        let digest = if mode == "vdw" { 0x8083_9f4a_5413_3e13 } else { 0x7903_109a_ab28_ed9b };
+        for workers in WORKERS {
+            let (state, world) = reference_run(config.with_workers(workers), 600);
+            let got: String = state
+                .iter()
+                .zip(&world)
+                .enumerate()
+                .map(|(i, (s, w))| format!("{i} {w:016x} {s:016x}\n"))
+                .collect();
+            assert!(got == want.replace("\r\n", "\n"), "trace differs from the record: {mode}, {workers} workers");
+            let d = fnv_u64s(state.iter().copied().chain(world.iter().copied()));
+            assert_eq!(d, digest, "trace digest, {mode}, {workers} workers");
+            println!("RESULT trace {mode} workers={workers} digest {d:016x}");
+        }
+    }
+}
+
+/// The world-image bytes every 50 frames (FNV-64 and length), equal to the committed record:
+/// pe-physics builds exactly the spike's world.
+#[test]
+fn images_match_record() {
+    for (config, mode) in modes() {
+        let want = std::fs::read_to_string(record(&format!("images-{mode}-win-{}.txt", profile()))).expect("record");
+        for workers in WORKERS {
+            let inputs = scripted_inputs();
+            let mut g = Game::pile(config.with_workers(workers));
+            let mut got = String::new();
+            while g.frame <= 600 {
+                if g.frame.is_multiple_of(50) {
+                    let image = g.pw.save_image();
+                    let bytes = image.world_bytes();
+                    got += &format!("{} {} {:016x}\n", g.frame, bytes.len(), fnv_bytes(bytes));
+                }
+                let f = g.frame;
+                let now: Vec<Interaction> = inputs.iter().copied().filter(|i| i.frame == f).collect();
+                g.advance(&now);
+            }
+            assert!(got == want.replace("\r\n", "\n"), "images differ from the record: {mode}, {workers} workers\n{got}");
+            println!("RESULT images {mode} {} workers={workers} digest {:016x}", profile(), fnv_bytes(got.as_bytes()));
+        }
+    }
+}
+
+fn first_mismatch(a: &[u64], b: &[u64]) -> Option<usize> {
+    a.iter().zip(b).position(|(x, y)| x != y).or(if a.len() != b.len() { Some(a.len().min(b.len())) } else { None })
+}
+
+/// Rollback T1-T5 (spikes/physics `rollback`) through pe-physics images.
+#[test]
+fn rollback_t1_to_t5() {
+    const FRAMES: u64 = 600;
+    for (config, mode) in modes() {
+        for workers in WORKERS {
+            let config = config.with_workers(workers);
+            let ctx = format!("{mode}, {workers} workers");
+            let (reference, _) = reference_run(config, FRAMES);
+            let inputs = scripted_inputs();
+
+            // T1: snapshot at 300, step to 400, restore in place, step to 400 again.
+            {
+                let mut g = Game::pile(config);
+                g.step_scripted(&inputs, 300);
+                let snap = g.save();
+                let first = g.step_scripted(&inputs, 400);
+                g.restore(&snap);
+                assert!(g.pw.all_bodies_valid(), "T1 body ids, {ctx}");
+                let second = g.step_scripted(&inputs, 400);
+                assert_eq!(first, second, "T1 replay, {ctx}");
+                assert_eq!(first[..], reference[300..400], "T1 vs reference, {ctx}");
+            }
+
+            // T2: one interaction learned 60 frames late: one rollback of depth 60.
+            {
+                let late = inputs.iter().copied().find(|i| i.frame == 200).unwrap();
+                let mut sim = RollbackSim::new(Game::pile(config), 120);
+                for i in inputs.iter().filter(|i| i.frame != 200) {
+                    sim.add_input(*i).unwrap();
+                }
+                sim.advance_to(260);
+                assert_ne!(sim.hashes[&259], reference[259], "T2 diverges before the rollback, {ctx}");
+                assert_eq!(sim.add_input(late), Ok(true), "T2 late, {ctx}");
+                sim.advance_to(FRAMES);
+                let got: Vec<u64> = (0..FRAMES).map(|f| sim.hashes[&f]).collect();
+                assert_eq!(first_mismatch(&got, &reference), None, "T2 converges, {ctx}");
+                assert_eq!((sim.rollbacks, sim.resimulated), (1, 60), "T2 rollback depth, {ctx}");
+            }
+
+            // T3: every interaction 1..=45 frames late (network-like).
+            {
+                let mut sim = RollbackSim::new(Game::pile(config), 120);
+                let mut arrivals: Vec<(u64, Interaction)> = inputs
+                    .iter()
+                    .map(|i| (i.frame + 1 + splitmix64(i.frame ^ ((i.peer as u64) << 32)) % 45, *i))
+                    .collect();
+                arrivals.sort_by_key(|(a, i)| (*a, i.peer, i.seq));
+                for f in 0..FRAMES {
+                    for (_, i) in arrivals.iter().filter(|(a, _)| *a == f) {
+                        sim.add_input(*i).unwrap();
+                    }
+                    sim.advance_to(f + 1);
+                }
+                let got: Vec<u64> = (0..FRAMES).map(|f| sim.hashes[&f]).collect();
+                assert_eq!(first_mismatch(&got, &reference), None, "T3 converges, {ctx}");
+            }
+
+            // T4: the frame-300 image restored into a brand-new world (a late joiner), which
+            // gets the image and the geometry, as it would over the network.
+            {
+                let mut sim = RollbackSim::new(Game::pile(config), 120);
+                for i in &inputs {
+                    sim.add_input(*i).unwrap();
+                }
+                sim.advance_to(300);
+                let snap = sim.game.save();
+                let image = pe_physics::WorldImage::from_bytes(&snap.image.to_bytes()).unwrap();
+                let geometry = pe_physics::GeometryBlobs::from_bytes(&sim.game.pw.geometry().to_bytes()).unwrap();
+                // The joiner may run a different worker count.
+                let pw = PhysicsWorld::from_image(PhysicsConfig::engine().with_workers(9 - workers), &geometry, &image)
+                    .expect("fresh restore");
+                let mut g = Game { pw, objects: sim.game.objects.clone(), frame: snap.frame, claims: snap.claims.clone(), seed: SEED };
+                assert!(g.pw.all_bodies_valid(), "T4 body ids, {ctx}");
+                let hs = g.step_scripted(&inputs, FRAMES);
+                assert_eq!(first_mismatch(&hs, &reference[300..]), None, "T4 continues identically, {ctx}");
+            }
+
+            // T5: an interaction older than the 120-frame window is refused.
+            {
+                let mut sim = RollbackSim::new(Game::pile(config), 120);
+                sim.advance_to(400);
+                let r = sim.add_input(Interaction { frame: 100, peer: 9, seq: 0, body: 1, impulse: [0.0, 1.0, 0.0] });
+                assert_eq!(r, Err(InputError::TooLate), "T5, {ctx}");
+            }
+            println!("RESULT rollback T1-T5 {mode} workers={workers} PASS");
+        }
+    }
+}
+
+/// Several worlds in one process, stepped interleaved, with different configurations and
+/// worker counts: each reproduces its own trace digest.
+#[test]
+fn several_worlds_per_process() {
+    let inputs = scripted_inputs();
+    let mut games = [
+        Game::pile(PhysicsConfig::engine().with_workers(2)),
+        Game::pile(PhysicsConfig::upstream().with_workers(1)),
+        Game::pile(PhysicsConfig::engine().with_workers(4)),
+    ];
+    let mut hashes: Vec<(Vec<u64>, Vec<u64>)> = vec![(Vec::new(), Vec::new()); games.len()];
+    for f in 0..600u64 {
+        let now: Vec<Interaction> = inputs.iter().copied().filter(|i| i.frame == f).collect();
+        for (g, h) in games.iter_mut().zip(hashes.iter_mut()) {
+            g.advance(&now);
+            h.0.push(g.hash());
+            h.1.push(g.pw.box3d_hash());
+        }
+    }
+    let digest = |(s, w): &(Vec<u64>, Vec<u64>)| fnv_u64s(s.iter().copied().chain(w.iter().copied()));
+    assert_eq!(digest(&hashes[0]), 0x8083_9f4a_5413_3e13);
+    assert_eq!(digest(&hashes[1]), 0x7903_109a_ab28_ed9b);
+    assert_eq!(digest(&hashes[2]), 0x8083_9f4a_5413_3e13);
+}
