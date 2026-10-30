@@ -1,0 +1,173 @@
+# pe-session-sim regress at 0919561, Windows 11 x64, rustc 1.99.0, release, 2026-10-30
+regress: 35 scenarios from E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-9\tools\session-sim\scenarios, logs to E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-9\target/session-sim, expected E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-9\spikes/out/session-sim
+== backdate: identical
+RESULT backdate part 1 world 1: frames 0..600 digests m1=154a1f2b17360d56 m2=154a1f2b17360d56 m3=154a1f2b17360d56 | offline replay 154a1f2b17360d56 | ALL EQUAL
+RESULT backdate part 2: removed from the session (cut, from frame): {3: (119, 1)}
+RESULT backdate part 2 world 1: frames 0..600 digests m1=82bbd09d92a73a47 m2=82bbd09d92a73a47 | offline replay 82bbd09d92a73a47 | ALL EQUAL
+== ballpit-60hz: identical
+RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 220 frames
+RESULT   perturbation source (hand target per frame + acks): hand entries 286 (3516 B/s payload, 7580 B/s wire est.), acks 259 (8775 B/s wire est.), all messages 16905 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 292 balls changed per frame; exact state 985521 B/s, quantized ~26 B/ball 458079 B/s (one direction, payload only)
+RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 291.8 re-simulated frames/s, re-sim 5.13 ms per rendered sim frame (1129 ms over the window); step avg 0.574 ms; max depth 13
+RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 020828ac9b6fb6c8 m2 020828ac9b6fb6c8 -> IDENTICAL
+RESULT ballpit 60Hz world 1: frames 0..510 digests m1=84fd01d1d13bb6a5 m2=84fd01d1d13bb6a5 | offline replay 84fd01d1d13bb6a5 | ALL EQUAL
+== ballpit-60hz-2hands: identical
+RESULT ballpit 60 Hz, 2 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 220 frames
+RESULT   perturbation source (hand target per frame + acks): hand entries 520 (6393 B/s payload, 13781 B/s wire est.), acks 255 (8639 B/s wire est.), all messages 23380 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 375 balls changed per frame; exact state 1264619 B/s, quantized ~26 B/ball 587660 B/s (one direction, payload only)
+RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 276.8 re-simulated frames/s, re-sim 6.20 ms per rendered sim frame (1365 ms over the window); step avg 0.869 ms; max depth 12
+RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 607c5ff6dec64cc5 m2 607c5ff6dec64cc5 -> IDENTICAL
+RESULT ballpit 60Hz world 1: frames 0..510 digests m1=89bba46995b379c6 m2=89bba46995b379c6 | offline replay 89bba46995b379c6 | ALL EQUAL
+== ballpit-60hz-ahead4: identical
+RESULT ballpit 60 Hz, 1 hand(s), input delay 4 frames, loss 2%: sweep window 3.66 s, 220 frames
+RESULT   perturbation source (hand target per frame + acks): hand entries 286 (3516 B/s payload, 7580 B/s wire est.), acks 259 (8775 B/s wire est.), all messages 16905 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 284 balls changed per frame; exact state 957062 B/s, quantized ~26 B/ball 444866 B/s (one direction, payload only)
+RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+RESULT   member 2 during the sweep: 2.2 rollbacks/s, 18.6 re-simulated frames/s, re-sim 0.36 ms per rendered sim frame (80 ms over the window); step avg 0.509 ms; max depth 9
+RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 020828ac9b6fb6c8 m2 020828ac9b6fb6c8 -> IDENTICAL
+RESULT ballpit 60Hz world 1: frames 0..510 digests m1=a26b494508aba729 m2=a26b494508aba729 | offline replay a26b494508aba729 | ALL EQUAL
+== ballpit-60hz-noloss: identical
+RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 0%: sweep window 3.66 s, 220 frames
+RESULT   perturbation source (hand target per frame + acks): hand entries 228 (2803 B/s payload, 6043 B/s wire est.), acks 219 (7420 B/s wire est.), all messages 13658 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 292 balls changed per frame; exact state 985521 B/s, quantized ~26 B/ball 458079 B/s (one direction, payload only)
+RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.8 re-simulated frames/s, re-sim 12.50 ms per rendered sim frame (2749 ms over the window); step avg 1.962 ms; max depth 4
+RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 020828ac9b6fb6c8 m2 020828ac9b6fb6c8 -> IDENTICAL
+RESULT ballpit 60Hz world 1: frames 0..510 digests m1=84fd01d1d13bb6a5 m2=84fd01d1d13bb6a5 | offline replay 84fd01d1d13bb6a5 | ALL EQUAL
+== ballpit-90hz: identical
+RESULT ballpit 90 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 329 frames
+RESULT   perturbation source (hand target per frame + acks): hand entries 450 (5533 B/s payload, 11926 B/s wire est.), acks 396 (13416 B/s wire est.), all messages 26408 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 303 balls changed per frame; exact state 1525373 B/s, quantized ~26 B/ball 708979 B/s (one direction, payload only)
+RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+RESULT   member 2 during the sweep: 88.3 rollbacks/s, 614.8 re-simulated frames/s, re-sim 7.43 ms per rendered sim frame (2443 ms over the window); step avg 0.633 ms; max depth 21
+RESULT   end state at frame 799 (all 500 balls, both hands, all tables): m1 4dce646df37ff962 m2 4dce646df37ff962 -> IDENTICAL
+RESULT ballpit 90Hz world 1: frames 0..765 digests m1=ea2f5d8b438dd372 m2=ea2f5d8b438dd372 | offline replay ea2f5d8b438dd372 | ALL EQUAL
+== c1: identical
+RESULT c1 before (phase-1 rule): A Ok(true), B Err(TooLate { frame: 50, oldest: 51 }); hash@299 equal: false
+RESULT c1 after world 1: frames 0..700 digests m1=67a2b658e186a06e m2=67a2b658e186a06e m3=67a2b658e186a06e | offline replay 67a2b658e186a06e | ALL EQUAL
+== c2: identical
+RESULT c2 before (phase-1 rule): repair a<-x' Err(Duplicate), b<-x Err(Duplicate); hash@199 equal: false
+RESULT c2 after (honest members 1,2) world 1: frames 0..450 digests m1=70fcaec32e3c69d2 m2=70fcaec32e3c69d2 | offline replay 70fcaec32e3c69d2 | ALL EQUAL
+== claims: identical
+RESULT claims (member 1 nudges every 29 frames, member 2 every frame, impulses do not renew claims): {(1, "accepted"): 9, (1, "rejected"): 12, (2, "accepted"): 360, (2, "rejected"): 240}
+RESULT claims world 1: frames 0..750 digests m1=73ef41c38a9a0bd2 m2=73ef41c38a9a0bd2 | offline replay 73ef41c38a9a0bd2 | ALL EQUAL
+== diverged: identical
+RESULT diverged acceptance, uncontended checks: 23/25 equal at that instant and 25/25 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
+RESULT diverged acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 33/35 equal to the author's copy at that instant, 34/35 equal to the author's final history
+RESULT diverged world 1: frames 0..700 digests m1=60ddd49e7dbc3ed7 m2=60ddd49e7dbc3ed7 m3=60ddd49e7dbc3ed7 | offline replay 60ddd49e7dbc3ed7 | ALL EQUAL
+== fault-asymmetric: identical
+RESULT fault-asymmetric acceptance, uncontended checks: 33/33 equal at that instant and 33/33 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
+RESULT fault-asymmetric acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 42/43 equal to the author's copy at that instant, 42/43 equal to the author's final history
+RESULT fault-asymmetric world 1: frames 0..550 digests m1=b4641cd8ae3cdcea m2=b4641cd8ae3cdcea m3=b4641cd8ae3cdcea | offline replay b4641cd8ae3cdcea | ALL EQUAL
+== fault-capped: identical
+RESULT fault-capped world 1: frames 0..550 digests m1=b4641cd8ae3cdcea m2=b4641cd8ae3cdcea m3=b4641cd8ae3cdcea | offline replay b4641cd8ae3cdcea | ALL EQUAL
+== fault-crash-recover: identical
+RESULT fault-crash-recover: m1 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m2 members {1, 2, 3} evicted {} conf 587 frame 594 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m3 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-crash-recover world 1: frames 0..550 digests m1=0f886b653567571e m2=0f886b653567571e m3=0f886b653567571e | offline replay 0f886b653567571e | ALL EQUAL
+== fault-partition-evict: identical
+RESULT fault-partition-evict: m1 members {1, 2} evicted {3: (56, 112)} conf 705 frame 713 paused frames 71 lying votes found 0
+RESULT fault-partition-evict: m2 members {1, 2} evicted {3: (56, 112)} conf 707 frame 714 paused frames 71 lying votes found 0
+RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=e3c3932b8e51f97b m2=e3c3932b8e51f97b | offline replay e3c3932b8e51f97b | ALL EQUAL, NO FALSE CHECKS ; checks ok 47 bad 0
+== fault-partition-heal: identical
+RESULT fault-partition-heal: m1 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-partition-heal: m2 members {1, 2, 3} evicted {} conf 587 frame 594 paused frames 0 lying votes found 0
+RESULT fault-partition-heal: m3 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-partition-heal world 1: frames 0..550 digests m1=e9ee3d58d782958e m2=e9ee3d58d782958e m3=e9ee3d58d782958e | offline replay e9ee3d58d782958e | ALL EQUAL
+== loss: identical
+RESULT loss acceptance, uncontended checks: 25/25 equal at that instant and 25/25 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 35/35 equal to the author's copy at that instant, 35/35 equal to the author's final history
+RESULT loss world 1: frames 0..700 digests m1=255efbf3d9457fdd m2=255efbf3d9457fdd m3=255efbf3d9457fdd | offline replay 255efbf3d9457fdd | ALL EQUAL
+== r14-abort: identical
+RESULT r14 abort: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 abort A world 1: frames 0..500 digests m1=d5e243b6c61cb3ce m2=d5e243b6c61cb3ce | offline replay d5e243b6c61cb3ce | ALL EQUAL
+RESULT r14 abort B world 2: frames 0..400 digests m1=c85a509f8b86a712 m3=c85a509f8b86a712 | offline replay c85a509f8b86a712 | ALL EQUAL
+== r14-abort-reverse: identical
+RESULT r14 abort (reverse order): object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 abort A world 1: frames 0..500 digests m1=1abe569871a62987 m2=1abe569871a62987 | offline replay 1abe569871a62987 | ALL EQUAL
+RESULT r14 abort B world 2: frames 0..400 digests m1=c85a509f8b86a712 m3=c85a509f8b86a712 | offline replay c85a509f8b86a712 | ALL EQUAL
+== r14-crash: identical
+RESULT r14 crash: world 1 at m2: members {2, 4} evicted {1: (94, 163)} conf 526 frame 533 paused frames 75
+RESULT r14 crash: world 2 at m3: members {3, 4} evicted {1: (68, 134)} conf 434 frame 442 paused frames 72
+RESULT r14 crash: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 crash A world 1: frames 0..500 digests m2=69114ba32211d25e m4=69114ba32211d25e | offline replay 69114ba32211d25e | ALL EQUAL
+RESULT r14 crash B world 2: frames 0..400 digests m3=d4501f03e5c8af1d m4=d4501f03e5c8af1d | offline replay d4501f03e5c8af1d | ALL EQUAL
+== r14-forge: identical
+RESULT   forged by m2 in world 1: member 2 departs A's object 50 to D, a world it controls alone -> Some(RejectedNoRoute)
+RESULT   forged by m2 in world 1: member 2 departs A's object 51 to unknown world 999 -> Some(RejectedNoRoute)
+RESULT   forged by m3 in world 2: member 3 mints A's object 40 into B from its own world E -> Some(RejectedNoRoute)
+RESULT   forged by m3 in world 2: member 3 mints object 40 into B (no departure; signs as itself) -> Some(RejectedNoProof)
+RESULT   forged by m1 in world 2: a certified record with a NaN position (a bug or a compromised majority in A) -> Some(RejectedInvalid)
+RESULT   forged by m3 in world 2: member 3 squats the real transfer id with a proofless Arrive -> Some(RejectedNoProof)
+RESULT   forged by m2 in world 1: member 2 commits the escrow with a proofless Verdict -> Some(RejectedNoProof)
+RESULT   forged by m1 in world 2: the carrier relays A's genuine certificate with the record's kind changed -> Some(RejectedNoProof)
+RESULT   forged by m1 in world 1: the carrier claims a rejection with B's signatures over the acceptance -> Some(RejectedNoProof)
+RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 forge: A's objects 50 and 51 live in A 1 and 1, object 50 in D 0; copies of A:40 in B 1 -> CONSERVED
+RESULT r14 forge A world 1: frames 0..500 digests m1=3483fad5b012fdcc m2=3483fad5b012fdcc | offline replay 3483fad5b012fdcc | ALL EQUAL
+RESULT r14 forge B world 2: frames 0..400 digests m1=21b1b1d97c32ea5c m3=21b1b1d97c32ea5c | offline replay 21b1b1d97c32ea5c | ALL EQUAL
+== r14-late: identical
+RESULT r14 late: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 late A world 1: frames 0..500 digests m1=c48ece7f2a624e08 m2=c48ece7f2a624e08 | offline replay c48ece7f2a624e08 | ALL EQUAL
+RESULT r14 late B world 2: frames 0..400 digests m1=f48dfee011c5f5e9 m3=f48dfee011c5f5e9 | offline replay f48dfee011c5f5e9 | ALL EQUAL
+== r14-ok: identical
+RESULT r14 ok: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 ok A world 1: frames 0..500 digests m1=aa4149ef994062be m2=aa4149ef994062be | offline replay aa4149ef994062be | ALL EQUAL
+RESULT r14 ok B world 2: frames 0..400 digests m1=f295c844586fa635 m3=f295c844586fa635 | offline replay f295c844586fa635 | ALL EQUAL
+RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.6 after (member 1 not throttled from t=3 s)
+RESULT r14 ok: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
+RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 10.0, max 13 over 12 check frames; member 2 avg 10.5, max 17 over 12 check frames
+== r14-ok-reverse: identical
+RESULT r14 ok (reverse order): object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 ok A world 1: frames 0..500 digests m1=aa4149ef994062be m2=aa4149ef994062be | offline replay aa4149ef994062be | ALL EQUAL
+RESULT r14 ok B world 2: frames 0..400 digests m1=f295c844586fa635 m3=f295c844586fa635 | offline replay f295c844586fa635 | ALL EQUAL
+RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.5 after (member 1 not throttled from t=3 s)
+RESULT r14 ok: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
+RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 9.7, max 11 over 12 check frames; member 2 avg 9.8, max 13 over 12 check frames
+== r14-reject: identical
+RESULT r14 reject: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 reject A world 1: frames 0..500 digests m1=85557349250d841b m2=85557349250d841b | offline replay 85557349250d841b | ALL EQUAL
+RESULT r14 reject B world 2: frames 0..400 digests m1=81c0e8d896d77c02 m3=81c0e8d896d77c02 | offline replay 81c0e8d896d77c02 | ALL EQUAL
+== r14-reject-reverse: identical
+RESULT r14 reject (reverse order): object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 reject A world 1: frames 0..500 digests m1=85557349250d841b m2=85557349250d841b | offline replay 85557349250d841b | ALL EQUAL
+RESULT r14 reject B world 2: frames 0..400 digests m1=81c0e8d896d77c02 m3=81c0e8d896d77c02 | offline replay 81c0e8d896d77c02 | ALL EQUAL
+== r14-throttle: identical
+RESULT r14 throttle: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 throttle A world 1: frames 0..500 digests m1=aa4149ef994062be m2=aa4149ef994062be | offline replay aa4149ef994062be | ALL EQUAL
+RESULT r14 throttle B world 2: frames 0..400 digests m1=f295c844586fa635 m3=f295c844586fa635 | offline replay f295c844586fa635 | ALL EQUAL
+RESULT r14 throttle: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.6 after (member 1 throttled to one burst per 250 ms from t=3 s)
+RESULT r14 throttle: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
+RESULT r14 throttle: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 10.2, max 13 over 12 check frames; member 2 avg 10.5, max 17 over 12 check frames
+== review2-ackfork: identical
+RESULT ackfork (9 shows member 2 a different chain): frames 0..472 honest m1=97d7f533ee96ffe4 m2=97d7f533ee96ffe4 | offline replay 97d7f533ee96ffe4 | ALL EQUAL, NO FALSE CHECKS ; checks ok 32 bad 0
+== review2-evict: identical
+RESULT evict (late entry, then an eviction): frames 0..592 honest m1=d4e1b4397fad782e m2=d4e1b4397fad782e m3=d4e1b4397fad782e | offline replay d4e1b4397fad782e | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+== review2-lateequiv: identical
+RESULT lateequiv (second version of a confirmed entry): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 46 bad 0
+== review2-outage: identical
+RESULT outage (honest members, 6.5 s one-way ack outage): frames 0..712 honest m1=29f3bfb2d906e824 m2=29f3bfb2d906e824 m3=29f3bfb2d906e824 | offline replay 29f3bfb2d906e824 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+== review3-badvote: identical
+RESULT badvote: m1 members {1, 2, 8, 9} evicted {} conf 203 frame 323 paused frames 150 lying votes found 0
+RESULT badvote: m2 members {1, 2, 8, 9} evicted {} conf 203 frame 323 paused frames 150 lying votes found 0
+RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..322 honest m1=f3638c5cfffd0f10 m2=f3638c5cfffd0f10 | offline replay f3638c5cfffd0f10 | ALL EQUAL, NO FALSE CHECKS ; checks ok 42 bad 0
+== review3-crashstall: identical
+RESULT crashstall: m1 members {1, 2} evicted {3: (86, 173)} conf 889 frame 893 paused frames 72 lying votes found 0
+RESULT crashstall: m2 members {1, 2} evicted {3: (86, 173)} conf 887 frame 893 paused frames 72 lying votes found 0
+RESULT crashstall: member 3 silent from t=3 s; at t=15 s m1 conf 889 (frame 893), member 3 still a member: false
+RESULT crashstall (member 3 silent from t=3 s): frames 0..892 honest m1=1dd44f33b4c1d266 m2=1dd44f33b4c1d266 | offline replay 1dd44f33b4c1d266 | ALL EQUAL, NO FALSE CHECKS ; checks ok 62 bad 0
+== review3-liar: identical
+RESULT liar: m1 members {1, 2, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
+RESULT liar: m2 members {1, 2, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
+RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 78 bad 0
+== state-frame: identical
+RESULT state-frame acceptance, uncontended checks: 22/22 equal at that instant and 22/22 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
+RESULT state-frame acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 32/32 equal to the author's copy at that instant, 31/32 equal to the author's final history
+RESULT state-frame world 1: frames 0..700 digests m1=255efbf3d9457fdd m2=255efbf3d9457fdd m3=255efbf3d9457fdd | offline replay 255efbf3d9457fdd | ALL EQUAL
+== ties: identical
+RESULT ties: same-frame conflicts on one object at 150 frames, winners per member {1: 41, 2: 50, 3: 59}
+RESULT ties world 1: frames 0..6000 digests m1=bf9a1dede91fe191 m2=bf9a1dede91fe191 m3=bf9a1dede91fe191 | offline replay bf9a1dede91fe191 | ALL EQUAL
+SUMMARY: 35 scenarios, 35 identical to the committed logs; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (89 s)
