@@ -1215,6 +1215,71 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
     check_world(&sim, 1, f(8.5), &format!("ballpit {hz}Hz"));
 }
 
+/// A member moves only its own hand (design 8.4; P2-8 review, from @shader-reviewer's probe through
+/// pe-mcp). In a 100-ball pit member 1 sweeps its hand (object 100) while member 2 sweeps its own
+/// (101) and, every fourth frame, also sends a hand entry for member 1's hand. Every replica refuses
+/// those (`RejectedNotOwner`), and the session's history equals the same run without them.
+fn handowner() {
+    let hz = 60u64;
+    let scene = SceneKind::BallPit { balls: 100, hands: 2 };
+    let f = |s: f64| (s * hz as f64).round() as u64;
+    let (h1, h2) = (100u32, 101u32);
+    let (a0, a1) = (f(1.0), f(4.0));
+    let path = |fr: u64, from: f64, to: f64, z: f64| {
+        let u = (fr - a0) as f64 / (a1 - a0) as f64;
+        [((from + (to - from) * u) * 1000.0).round() as i32, 400, (z * 1000.0).round() as i32]
+    };
+    let run = |forge: bool| {
+        let ids = [1, 2];
+        let peers: Vec<Peer> = ids
+            .iter()
+            .map(|&id| {
+                let own = if id == 1 { h1 } else { h2 };
+                let mut v = Vec::new();
+                for fr in a0..=a1 {
+                    let target_mm = if id == 1 { path(fr, -0.6, 0.6, 0.0) } else { path(fr, 0.6, -0.6, 0.5) };
+                    v.push((fr, Action::Hand { obj: own, target_mm, active: true, ahead: 0 }));
+                    if id == 2 && forge && fr % 4 == 0 {
+                        v.push((fr, Action::Hand { obj: h1, target_mm: [0, 3000, 0], active: true, ahead: 0 }));
+                    }
+                }
+                v.push((a1 + 1, Action::Hand { obj: own, target_mm: [0, 1500, 0], active: false, ahead: 0 }));
+                let mut p = Peer::new(id, 0);
+                p.join(1, &ids, scene, cfg60(), 100_000, plan(&v));
+                p
+            })
+            .collect();
+        let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), peers, 6_000_000);
+        let panic_at = review2::run_to_end(&mut sim, |_| {});
+        (sim, panic_at)
+    };
+    let (a, pa) = run(true);
+    let (b, pb) = run(false);
+    let frames = [&a, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let mut all_refused = true;
+    for m in [1, 2] {
+        let r = &a.replica(m, 1).sim;
+        let forged: Vec<EntryId> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && matches!(e.payload, Payload::Hand { obj, .. } if obj == h1))
+            .map(|e| e.id())
+            .collect();
+        let refused = forged.iter().filter(|&&id| r.outcomes.get(&id).is_some_and(|(_, o)| *o == Outcome::RejectedNotOwner)).count();
+        all_refused &= refused == forged.len() && !forged.is_empty();
+        println!("  m{m}: member 2's hand entries for member 1's hand: {}, refused {refused}", forged.len());
+    }
+    let (da, db) = (digest(&a.replica(1, 1).sim.hashes, frames), digest(&b.replica(1, 1).sim.hashes, frames));
+    println!(
+        "RESULT handowner: member 2's entries for member 1's hand refused at every replica: {all_refused}; frames 0..{frames} with them {da:016x}, without them {db:016x} -> {}",
+        if all_refused && da == db { "SAME HISTORY" } else { "FAIL" }
+    );
+    if pa.is_some() || pb.is_some() {
+        println!("RESULT handowner: PANIC");
+    }
+    check_world(&a, 1, frames, "handowner (member 2 also sends hand entries for member 1's hand)");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
@@ -1261,6 +1326,7 @@ fn main() {
         Some("bridge") => viewchange::bridge(),
         Some("join") => viewchange::join(),
         Some("refwithhold") => viewchange::refwithhold(),
+        Some("handowner") => handowner(),
         Some("vcscale") => viewchange::vc_scale(
             get("--members").map_or(64, |v| v.parse().unwrap()),
             get("--silent").map_or(1, |v| v.parse().unwrap()),
