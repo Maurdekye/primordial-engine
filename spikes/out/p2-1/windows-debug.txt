@@ -1,11 +1,9 @@
-commit c3e75c71c0c5c457a3966d68852ca4033431365c
+commit a71c2a332b1431d19a261585285f8139f2418458
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-core)
-   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.53s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
      Running unittests src\lib.rs (target\debug\deps\pe_core-d311829ef4486bcc.exe)
 
 running 19 tests
@@ -30,7 +28,7 @@ test rng::tests::seek_and_streams ... ok
 test rng::tests::splitmix_matches_reference ... ok
 test rng::tests::wide_range_spreads ... ok
 
-test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
 
      Running unittests src\lib.rs (target\debug\deps\pe_sim-f6212610250ef889.exe)
 
@@ -53,7 +51,7 @@ test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
 
      Running tests\store.rs (target\debug\deps\store-466851eba5fe027a.exe)
 
