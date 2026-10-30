@@ -1,8 +1,12 @@
-# Game-logic guest modules. Build with:
-#   cargo build --release --target wasm32-unknown-unknown   (from this directory)
+# Game-logic guest modules. Build with scripts/build_wasm_guests.sh, which remaps local paths
+# (design 13.2), or: cargo build --release --target wasm32-unknown-unknown   (from this directory)
+# physics_in_wasm lives in the root workspace (spikes/physics-in-wasm): it depends on sim-core and
+# the box3d fork by path, and cargo hashes a path dependency's crate identity by its absolute path
+# unless it lies inside the building workspace, which made the module's code depend on the checkout
+# path (review M8, found at integration).
 [workspace]
 resolver = "3"
-members = ["logic-v1", "logic-v2", "logic-runaway", "physics-in-wasm"]
+members = ["logic-v1", "logic-v2", "logic-runaway"]
 
 [workspace.package]
 edition = "2024"
@@ -14,8 +18,3 @@ opt-level = "s"
 lto = true
 panic = "abort"
 codegen-units = 1
-
-# Same box3d-rust fork as the root workspace (crates/box3d-fork, scale-dependent contact
-# recycling), so physics-in-wasm runs the engine world definition.
-[patch.crates-io]
-box3d-rust = { path = "../../crates/box3d-fork" }

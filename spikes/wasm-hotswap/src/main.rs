@@ -223,7 +223,7 @@ impl LogicPeer {
 
 fn load(dir: &str, name: &str) -> Vec<u8> {
     let p = format!("{dir}/{name}.wasm");
-    std::fs::read(&p).unwrap_or_else(|e| panic!("read {p}: {e} (build spikes/wasm-guests first)"))
+    std::fs::read(&p).unwrap_or_else(|e| panic!("read {p}: {e} (run scripts/build_wasm_guests.sh first)"))
 }
 
 fn check(label: &str, pass: bool, detail: String) -> bool {
@@ -232,10 +232,11 @@ fn check(label: &str, pass: bool, detail: String) -> bool {
 }
 
 fn main() {
-    let dir = std::env::args()
-        .skip(1)
-        .find(|a| !a.starts_with("--"))
-        .unwrap_or_else(|| "spikes/wasm-guests/target/wasm32-unknown-unknown/release".into());
+    // [logic guests dir] [physics_in_wasm dir]: the logic guests build in their own workspace,
+    // physics_in_wasm in the root one (scripts/build_wasm_guests.sh).
+    let dirs: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("--")).collect();
+    let dir = dirs.first().cloned().unwrap_or_else(|| "spikes/wasm-guests/target/wasm32-unknown-unknown/release".into());
+    let physics_dir = dirs.get(1).cloned().unwrap_or_else(|| "target/wasm32-unknown-unknown/wasm-guest".into());
     let mut cfg = Config::default();
     cfg.consume_fuel(true);
     // REQUIRED for deterministic fuel: wasmi's default (LazyTranslation) charges fuel for
@@ -362,7 +363,7 @@ fn main() {
     // D4: physics compiled to wasm32 and interpreted gives the native digest.
     {
         let t = Instant::now();
-        let m = Module::new(&engine, &load(&dir, "physics_in_wasm")).expect("physics module");
+        let m = Module::new(&engine, &load(&physics_dir, "physics_in_wasm")).expect("physics module");
         let compile = t.elapsed();
         let mut store = Store::new(&engine, HostState::default());
         store.set_fuel(u64::MAX).unwrap();

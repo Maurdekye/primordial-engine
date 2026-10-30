@@ -173,7 +173,7 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Sim-thread work per tick, per world, including rollback | ≤ 8 ms; anything beyond that is amortized over the next ticks (6.5) | — |
 | Physics step per world | ≤ 1 ms at the MVP body budget, about 500 awake bodies (D2) | 0.36 ms at 256 bodies, 1.5-1.9 ms at 1,024 [V b6]; 0.35 ms for the 500-ball pit [V session-sim] |
 | Typical rollback depth | one-way latency + ack interval: 4-8 frames | max 4 at 60 ms ± 20 ms, 9-14 with loss [V session-sim, p2p-v2]; deeper for a late receiver, which now pays for its own lateness (8.2): 38 frames after a 600 ms delay [V session-sim outage] |
-| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls, 60 Hz, 2 members, ≤ 60 ms one-way | 289-298 re-simulated frames/s ≈ 2.6-2.8 ms per frame at 60 Hz [V ballpit, work counts × 0.35 ms per step]. **Over budget** at 90 Hz (597 frames/s, about 3.7 ms per 11.1 ms frame) and at 100 ms one-way (6-8 ms of total sim CPU per frame) [V ballpit-90hz, observer-100] (review NEW-15); budgeted per latency band, with p99 ticks (6.8). 0.27 ms with the opt-in 4-frame input delay (default 0, D41) |
+| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls, 60 Hz, 2 members, ≤ 60 ms one-way | 289-298 re-simulated frames/s ≈ 2.6-2.8 ms per frame at 60 Hz [V ballpit, work counts × 0.35 ms per step]. **Over budget** at 90 Hz (615 frames/s, about 3.8 ms per 11.1 ms frame) and at 100 ms one-way (6-8 ms of total sim CPU per frame) [V ballpit-90hz, observer-100] (review NEW-15); budgeted per latency band, with p99 ticks (6.8). 0.27 ms with the opt-in 4-frame input delay (default 0, D41) |
 | Confirmation (finality) | ≤ 200 ms on 30-60 ms links (it was 150 ms until round 2; ed347ac raised it for stable-data confirmation, D54, without saying so: review R3-12) | 8.5 frames (142 ms) at 50 ms ± 15 ms [V session-sim r14]. **Over budget under jitter and loss** [V reviewer, average / p95 / max]: 169 / 200 / 200 ms at 60 ± 20 ms; 199 / 333 / 400 ms with 2% loss added; with 2% loss and 3, 4 or 8 members, averages of 234, 275 and 344 ms |
 | Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3. Grows with the confirmation lag: 11 MB at 60 ± 10 ms with 2% loss, 17-19 MB at 32 kbit/s with 5% loss [V reviewer, R3-12] |
 | Game logic per tick, per world | ≤ 1 ms | 6.4 ms in wasmi, 1.6 ms in wasmtime/Cranelift, 0.9 ms native at 10k entities [V iteration-benchmark 4.1] |
@@ -456,8 +456,8 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 * **Everything between the base and the present is a cache.** It changes only how much re-simulation a
   rollback costs, never the result. Measured: 62 runs of the ball pit, under 13 snapshot policies and a
   setting moved every 7 frames, at 500 and 1,024 balls, with and without a confirmation stall. Every run of
-  the same scene ended in the same end-state hash (`47bb8c7274b143d3` at 500 balls, `bfe86c8ce148add8`
-  at 1,024) [V snap].
+  the same scene ended in the same end-state hash (`020828ac9b6fb6c8` at 500 balls, `0d739d142b58347a`
+  at 1,024, with the engine default's vdW recycling) [V snap].
 
 **Re-simulating from the base** (restore plus N steps, collapsing pile, median of 5, one thread)
 [V physics history]:
@@ -467,8 +467,12 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 | 256 bodies | 0.8 ms | 2.1 | 3.7 | 6.7 | 12.7 | 27.6 | 50.3 |
 | 1,024 bodies | 3.2 ms | 7.6 | 13.5 | 24.2 | 47.6 | 94.7 | 183.3 |
 
-These timings come from the committed log, run at 442286f on a quieter machine. A round-3 rerun at low
-priority took 1.5-2x as long, and was not kept (review PH-7).
+These timings come from a run at 442286f on a quieter machine, with upstream physics
+(`physics-history-upstream-442286f.log`). The integration rerun with the engine default, at low priority
+(`physics-history.log`), took 1.0-1.2x as long (noisy). One difference is not noise [V]: with the engine
+default, the 256-body pile started at frame 900 falls asleep during the replay (246 bodies awake, 26 after
+120 frames), so its deep re-simulations cost little (6.2 ms at 120 frames). The 1,024-body pile stays
+awake.
 
 A tick at 60 Hz has 16.7 ms. **Base-only** fits only while confirmation keeps up, because every
 rollback then re-simulates the whole confirmation lag, not just the rollback depth.
@@ -509,25 +513,27 @@ Under this model a policy that does the same work as another costs the same, by 
 
 | Policy | Max MB held, 500 balls (steady / stall) | Max MB held, 1,024 balls (steady / stall) | Re-sim frames/s (steady / stall) | Saves/s (steady / stall) | Modelled CPU ms per frame [C] (steady / stall) |
 |---|---|---|---|---|---|
-| Every(1) | 39.0 / 185.4 | 87.8 / 415.9 | 203 / 189 | 204 / 190 | 3.68 / 3.48 |
-| Every(2) | 19.5 / 94.2 | 43.9 / 211.5 | 233 / 219 | 103 / 94 | 2.98 / 2.82 |
-| Every(4) (3d0f98a) | 10.5 / 47.9 | 23.6 / 107.4 | 292 / 278 | 53 / 47 | 2.89 / 2.76 |
-| Every(8) | 6.2 / 25.4 | 14.1 / 57.1 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
-| Every(16) | 3.3 / 14.3 | 7.4 / 32.0 | 655 / 641 | 13 / 13 | 4.68 / 4.60 |
-| Log(4) | 9.4 / 17.8 | 21.1 / 39.8 | 292 / 278 | 53 / 47 | 2.89 / 2.76 |
-| Log(8) | 6.2 / 14.5 | 14.1 / 32.4 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
-| **Window(4)** | **8.3 / 8.3** | **18.5 / 18.6** | 292 / 278 | 53 / 47 | **2.89 / 2.76** |
-| Window(8) | 6.2 / 8.2 | 14.1 / 18.2 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
+| Every(1) | 39.0 / 184.5 | 88.1 / 416.1 | 203 / 189 | 204 / 190 | 3.68 / 3.48 |
+| Every(2) | 19.5 / 93.8 | 44.0 / 211.6 | 233 / 219 | 103 / 94 | 2.98 / 2.82 |
+| Every(4) (3d0f98a) | 10.5 / 47.7 | 23.7 / 107.4 | 292 / 278 | 53 / 47 | 2.89 / 2.76 |
+| Every(8) | 6.3 / 25.3 | 14.1 / 57.1 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
+| Every(16) | 3.3 / 14.2 | 7.4 / 32.1 | 655 / 641 | 13 / 13 | 4.68 / 4.60 |
+| Log(4) | 9.4 / 17.7 | 21.2 / 39.8 | 292 / 278 | 53 / 47 | 2.89 / 2.76 |
+| Log(8) | 6.3 / 14.4 | 14.1 / 32.4 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
+| **Window(4)** | **8.2 / 8.3** | **18.4 / 18.6** | 292 / 278 | 53 / 47 | **2.89 / 2.76** |
+| Window(8) | 6.3 / 8.1 | 14.1 / 18.2 | 410 / 396 | 26 / 24 | 3.35 / 3.25 |
 | Base(1) | 3.3 / 3.3 | 7.4 / 7.4 | 726 / 2,724 | 21 / 11 | 5.17 / 16.84 |
 
-[V snap, round 3: counts and image bytes; every run of a scene ended in the same end hash.]
+[V snap, integration run with the engine default: counts and image bytes; every run of a scene ended in
+the same end hash. Against round 3's upstream run, every count is identical and image bytes moved by at
+most about 1%.]
 
 What the table shows:
 * **Dense images do not buy CPU** [C]. A save costs about 1.5 steps here, so saving every frame costs more
   than the re-simulation it saves. Modelled CPU is lowest at k = 2-4.
 * **Thinning is free at 60 ms.** Log(k) and Window(k) did exactly the same work as Every(k), because they
   dropped only images that no rollback used [V counts]. Under the stall, Window(4) held 8.3 MB instead of
-  47.9 MB, and 18.6 MB instead of 107.4 MB at 1,024 balls.
+  47.7 MB, and 18.6 MB instead of 107.4 MB at 1,024 balls.
   * **At 100 ms one-way it is not** (review PH-2). The deepest rollback, 24 frames, exceeds Window(4)'s
     16, so under a stall Window(4) re-simulated 568 frames/s against 425 for Every(4) (+21% modelled CPU),
     and peaked at 11.5 MB (7 images) [V reviewer]. The adaptive window depth (below) is what keeps the
@@ -538,9 +544,9 @@ What the table shows:
   2,724 frames/s and 16.8 ms per frame modelled. It needs a guard (below).
 * **Fixed-offset byte deltas do not help; compression does** (review PH-3).
   * Storing ring images as 64-byte block deltas against the base, or against the previous image, saved at
-    most 7% on the ball-pit rings and usually nothing. A contact array that grows or shrinks shifts every
-    later block. The best case, a slow-moving 256-body pile, still needed 37-43% [V snap, physics
-    history].
+    most 8% on the ball-pit rings and usually nothing. A contact array that grows or shrinks shifts every
+    later block. The best case, a slow-moving pile, still needed 40-45% for images 1-4 frames apart, and
+    saved nothing 16 or more frames apart [V snap, physics history].
   * General-purpose compression is a different matter [V reviewer, a throwaway test]: plain LZ4 cut an
     image to 44-47%, deflate to 34-38%, and XOR against the base plus LZ4 to 8-12% on a same-size pile. It
     costs about 0.5-0.7 ms to compress and 0.2 ms to decompress per 0.5 MB.
@@ -556,9 +562,9 @@ with four positions:
 
 | Position | Policy | Max image memory (500 balls steady; stall 500 / 1,024 balls) | Modelled CPU against the best [C] | Rollback depths covered without the base |
 |---|---|---|---|---|
-| Speed | Log(4) | 9.4; 17.8 / 39.8 MB | best | any depth, at ≤1.5x |
-| **Balanced (default)** | Window(4), adaptive depth [I] | 8.3; 8.3 / 18.6 MB | best at 60 ms | ≤ 16 frames without the adaptive depth (13 at most at 60 ms, 24 at 100 ms) |
-| Lean | Window(8) | 6.2; 8.2 / 18.2 MB | +16% | ≤ 32 frames |
+| Speed | Log(4) | 9.4; 17.7 / 39.8 MB | best | any depth, at ≤1.5x |
+| **Balanced (default)** | Window(4), adaptive depth [I] | 8.2; 8.3 / 18.6 MB | best at 60 ms | ≤ 16 frames without the adaptive depth (13 at most at 60 ms, 24 at 100 ms) |
+| Lean | Window(8) | 6.3; 8.1 / 18.2 MB | +16% | ≤ 32 frames |
 | Minimum | Base(1) + stall guard [I] | 3.3; 3.3 / 7.4 MB | +79% steady; guarded under a stall | none |
 
 * **It never changes a result,** because images only cache states the log already determines.
@@ -572,7 +578,7 @@ with four positions:
     pending.
   * Moving towards more memory affects only frames simulated afterwards: images of past frames cannot be
     recreated without re-simulating them. It reaches full effect after at most one confirmation lag.
-  * In the knob-moving runs memory peaked at 57.6 MB (500 balls, stall) while Every(1) phases refilled the
+  * In the knob-moving runs memory peaked at 61.9 MB (500 balls, stall) while Every(1) phases refilled the
     ring.
 * **Adaptive window depth [I]:** track the 99.9th-percentile rollback depth over the last few seconds and
   keep the window at max(4k, that depth + k). This is local, like the knob.
@@ -591,7 +597,7 @@ sleeping or isolated islands to re-derive themselves.
     50 frames later into the same world, with `body_set_transform`, `body_set_linear_velocity` and
     `body_set_angular_velocity`.
   * Result: stepping diverged from the reference at the first frame. After 30 frames, 2 of 256 bodies were
-    bit-equal and the largest position error was 244 mm.
+    bit-equal and the largest position error was 340 mm (244 mm with upstream physics).
   * Control: a full image restore of the same frame matched 256 of 256.
 * **Test 2: one isolated island, everything else asleep.**
   * Setup: 64 separate 4-box stacks, all asleep. One stack got a different speculative push; the other 63
@@ -642,9 +648,12 @@ against the final confirmed history over the sweep.
 
 | One-way latency | Remote hand error, mean / p95 (hold → dead reckoning) | Balls visibly corrected (>1 mm) per frame | Ball error p99, raw | Sim CPU per frame |
 |---|---|---|---|---|
-| 30 ± 5 ms | 23.5 / 32.6 → **1.3 / 2.0 mm** | 12.7 → **1.0** | 5.3 → **0.3 mm** | 3.0-3.9 ms |
-| 60 ± 10 ms | 79.6 / 125.5 → **15.2 / 17.0 mm** | 30.4 → **11.3** | 44.1 → **4.3 mm** | 4.4-6.1 ms |
-| 100 ± 16 ms | 149.4 / 197.3 → **41.5 / 37.0 mm** | 34.8 → **25.4** | 63.4 → **14.4 mm** | 6.1-8.1 ms |
+| 30 ± 5 ms | 24.0 / 33.5 → **1.3 / 2.0 mm** | 10.5 → **1.1** | 7.5 → **0.4 mm** | 3.0-3.9 ms |
+| 60 ± 10 ms | 78.9 / 121.8 → **14.7 / 17.0 mm** | 21.7 → **8.6** | 30.2 → **3.6 mm** | 4.4-6.1 ms |
+| 100 ± 16 ms | 148.9 / 197.3 → **40.7 / 37.0 mm** | 25.8 → **16.6** | 61.6 → **12.5 mm** | 6.1-8.1 ms |
+
+[V observer, integration run with the engine default. The CPU column comes from 442286f on a quieter
+machine; the integration run's CPU figures are low-priority noise.]
 
 * **Dead reckoning cuts the observer's error by about 4-18x** for smooth hand motion, because the
   speculative sim pushes balls roughly where the real hand is pushing them. Its limit is any change of
@@ -655,8 +664,8 @@ against the final confirmed history over the sweep.
   are about equal or a little higher: 60 against 50 mm p95 at 30 ms, and a 797 against 758 mm maximum at
   100 ms. Those maxima come from the scripted path's own jumps, of up to 0.6 m.
 * **Smoothing trades accuracy for continuity.**
-  * At 60 ms latency, τ = 50 ms raises the p99 ball error against the truth from 4.3 to 9.2 mm, and
-    τ = 100 ms to 14.0 mm. Corrections are shown late on purpose, but nothing jumps.
+  * At 60 ms latency, τ = 50 ms raises the p99 ball error against the truth from 3.6 to 7.3 mm, and
+    τ = 100 ms to 12.1 mm. Corrections are shown late on purpose, but nothing jumps.
   * Large corrections still show as fast glides: up to about 10-18 m/s for the rare 1 m correction.
   * Proposal [I]: smooth corrections below about 5 cm over 50 ms, glide larger ones over 100 ms, and snap
     above about 0.5 m.
@@ -773,9 +782,9 @@ every player, perfectly synced, and optimized for CPU and memory.
     automatically whenever a player interacts with an object".
 * **Acceptance criterion (user, 09:31Z):** after a receiver re-simulates to its present frame, its copy of
   the object must equal the author's copy at that frame. Measured:
-  * **3 members, 60 ms ± 20 ms:** 22/22 uncontended checks equal, both to the author's copy at that instant and to its final history [V session-sim state-frame]. **Over real UDP between two processes:** 13/13 at 60 ms ± 20 ms, and 9/9 in the fault run [V p2p-v2]
-  * **10% loss on every link:** 27/27 uncontended checks equal [V session-sim loss]; 14/14 over UDP [V p2p-v2 loss10]
-  * **A receiver that had missed an earlier entry on the same object:** 23/23 equal. Its carried-state overwrite fired once and pulled the object onto the author's world line before the missing entry arrived [V session-sim diverged]. Checks are *contended* when another member touched the same object in the previous 10 frames; that is the scripted same-frame conflict on object 50, 10 checks per run. Those can differ while the competing entry is in flight, and all converge when it lands. Every run ends with all histories bit-identical [V]
+  * **3 members, 60 ms ± 20 ms:** 22/22 uncontended checks equal, both to the author's copy at that instant and to its final history [V session-sim state-frame]. **Over real UDP between two processes:** 14/14 at 60 ms ± 20 ms, and 15/15 in the fault run [V p2p-v2]
+  * **10% loss on every link:** 25/25 uncontended checks equal [V session-sim loss]; 20/21 over UDP, the one miss contended [V p2p-v2 loss10]
+  * **A receiver that had missed an earlier entry on the same object:** 25/25 equal to the author's final history, and 23/25 at that instant: two checks were influenced indirectly through the pile (below). Its carried-state overwrite fired once and pulled the object onto the author's world line before the missing entry arrived [V session-sim diverged]. Checks are *contended* when another member touched the same object in the previous 10 frames; that is the scripted same-frame conflict on object 50, 10 checks per run. Those can differ while the competing entry is in flight, and all converge when it lands. Every run ends with all histories bit-identical [V]
 * **The limit, stated plainly:** carried state makes the *touched object* exact. It cannot make an object
   exact while the receiver's *other* objects still differ, because they keep pushing on it. Bit-exactness
   everywhere comes from holding the same log. Gap detection guarantees that before a frame is confirmed
@@ -801,10 +810,11 @@ every player, perfectly synced, and optimized for CPU and memory.
     object the author touched ends where the author saw it end, on every peer. What varies with timing is
     whose view other objects follow when two players' effects meet.
 * **"Contended" should mean causally connected, not "the same object"** [I, proposal].
-  * With vdW on, uncontended acceptance at the instant in `diverged` dropped from 23/23 to 21/23. Both
-    misses were object 5 at frame 333: its author had not yet seen another member's touch on object 77,
-    whose effect reached object 5 through the pile.
-  * Final-history acceptance stayed 23/23 [V @vdw-physics, b8f130c].
+  * With vdW on, uncontended acceptance at the instant in `diverged` is 23/25 (25/25 with upstream
+    physics). Both misses are object 5, at frames 332 and 333. @vdw-physics traced the same misses
+    (b8f130c): the author had not yet seen another member's touch on object 77, whose effect reached
+    object 5 through the pile.
+  * Final-history acceptance is 25/25 [V session-sim diverged, integration run].
   * The acceptance metric should therefore count as contended any check whose object shared a contact
     island with another member's touch in the previous 10 frames.
 
@@ -1596,11 +1606,21 @@ AI or human edits Rust source (MCP: logic.write / logic.check / logic.test_in_fo
   toolchain plus compile time per commit.
 * **A module's identity is its canonical hash (review M8):** SHA-256 over the module with all custom
   sections removed (`name`, `producers`, `target_features`).
-  * The same source built from two checkout paths gave different raw hashes for `physics_in_wasm.wasm`
-    (`589e97…` and `051eee…`), because mangled names in the `name` section depend on the path. The
-    canonical hashes were identical (`66633b43…`) [V `scripts/wasm_canonical_hash.py`,
-    spikes/out/wasm-canonical-hash.txt].
-  * Builds also pass `--remap-path-prefix`, so panic locations embed no local paths [I].
+  * In phase 1 the same source built from two checkout paths gave different raw hashes for
+    `physics_in_wasm.wasm` (`589e97…` and `051eee…`), because mangled names in the `name` section
+    depended on the path, and identical canonical hashes (`66633b43…`) [V].
+  * **Builds must keep the checkout path out of the code** [V, found at integration]. It gets in two ways:
+    * panic locations embed source paths. Builds pass `--remap-path-prefix` for the checkout root and
+      the cargo home;
+    * cargo hashes a path dependency's crate identity by its absolute path, unless the dependency lies
+      inside the workspace being built, and the linker's function order follows those hashes. Once the
+      box3d fork became a path dependency, `physics_in_wasm` built at two paths had the same size but
+      permuted functions, so even its canonical hash differed. It now builds in the workspace that
+      contains its dependencies.
+  * With both rules, the four spike modules built at two checkout paths are byte-identical, raw hash
+    included [V `scripts/run_determinism.sh wasm`, spikes/out/wasm-canonical-hash.txt]. The guest SDK
+    and the engine's build service follow the same rules: dependencies from a registry or inside the
+    guest's workspace, and remapped paths [I].
 * **Only the committer compiles (review H1).**
   * `compile_failed` is advisory feedback to the author, never a peer-side rejection.
   * Peers reject only what they can decide identically: a module that fails wasm validation or the
@@ -1765,6 +1785,15 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
 * Shaders are presentation-only, so they cannot affect determinism. They still go through the same SCM
   ordering, authority checks and activation frames (15), so all peers see the same look. Rule: GPU output
   never feeds the sim.
+
+**Slang was evaluated** (branch `slang/eval`, 6344ec1, `docs/slang-evaluation.md`); the user kept WGSL-only
+for now (D13).
+* Its WGSL output matches hand WGSL bit for bit at equal GPU cost, and fits the 100 ms edit budget with a
+  resident compiler.
+* It brings modules, generics and autodiff, but needs a C++ compiler that crashed on 2 of 1,200 malformed
+  inputs.
+* It can be added later as an author-side front end without changing the committed format (WGSL) or the
+  peer-side path (naga).
 
 ---
 
@@ -3072,7 +3101,7 @@ Three separate things are true of a player and a world:
 * **Throttling changes when a peer computes frames, never what they contain.** A world's state is a
   function of its log, so computing frames later in bursts gives the same results. [V session-sim r14
   throttle: from t = 3 s, member 1's replica of world A advanced only once per 250 ms. Member 1 still
-  authored in A: a relay and a touch. A's 500-frame digest equalled the unthrottled run's (`df10ff5b…`)
+  authored in A: a relay and a touch. A's 500-frame digest equalled the unthrottled run's (`aa4149ef…`)
   and the offline replay.]
 * **Confirmation depends on holding entries, not on simulating them.** An ack states what you hold
   (10.8), and a background member keeps sending acks on schedule, so it never delays its world's
@@ -3218,10 +3247,15 @@ confirmed facts, and only with proof.**
    * **Forgetting transfers.** B forgets a rejected transfer once its deadline has passed and 3,600 frames
      after it arrived. Any replay is then late, so it is rejected again, consistently. By then the
      refusal is confirmed and attested, because a sim never runs more than the speculation limit past
-     its confirmed frame. A forgets a resolved escrow 3,600 frames after the departure. B keeps accepted transfer ids (8 bytes each). The reviewer proposed pruning all
-     transfers past their deadline, but then a late replay of an accepted transfer's `Arrive` would be
-     certified "rejected", and could refund an object that did arrive. Production drops them once A
-     certifies the transfer resolved [I].
+     its confirmed frame. A forgets a resolved escrow 3,600 frames after the departure.
+   * **B keeps accepted transfer ids** (8 bytes each). The reviewer proposed pruning all transfers past
+     their deadline, but then a late replay of an accepted transfer's `Arrive` would be certified
+     "rejected", and could refund an object that did arrive.
+   * Once B's acceptance is confirmed, the id moves out of the rollback state into an **append-only set
+     that is never rolled back or snapshotted** (round-3 final review). Snapshots then stay bounded; the
+     set grows 8 bytes per accepted transfer (8 MB per million). B may drop an id once A certifies the
+     transfer resolved, since A refunds only an escrow still pending [S spike, `Verdict`; I for the drop].
+     The spike keeps accepted ids in its rollback state.
    * Without a certificate, A never refunds on a timer alone. B may have accepted, and refunding would
      duplicate the object.
 
@@ -3557,6 +3591,8 @@ entry says so.
   * Recommend: WGSL (naga-native, pure-Rust validation, structured diagnostics).
   * Alternatives: HLSL via DXC (non-Rust DLL, no naga frontend); GLSL via naga; rust-gpu (Rust shaders,
     heavier toolchain).
+  * **Settled (user, 15:40Z): WGSL-only for now.** Slang was evaluated as an author-side front end
+    (14, end) and can be revisited later.
 * **D14a. Merge granularity (15.3; review H1).**
   * Recommend: the module is the merge unit. Commits to different modules combine without recompiling; the
     same module conflicts.
@@ -3905,7 +3941,7 @@ entry says so.
   * At the default and 60 ms one-way, the modelled CPU is the best policy's [C], by construction: Window(4)
     does Every(4)'s work and drops only images that no rollback used. Memory stays at the base plus 4-5
     images however far confirmation lags: 8.3 MB at 500 balls and 18.6 MB at 1,024 under a 116-frame
-    stall, against 47.9 and 107.4 MB for 3d0f98a's Every(4) [V snap, round 3].
+    stall, against 47.7 and 107.4 MB for 3d0f98a's Every(4) [V snap, integration run].
   * At 100 ms one-way the default needs its adaptive depth: rollbacks reach 24 frames, past the 16-frame
     window, and Window(4) then costs +21% modelled CPU under a stall and peaks at 11.5 MB [V reviewer,
     PH-2]. The adaptive depth is [I].
@@ -3981,6 +4017,10 @@ entry says so.
       Hidden state is then simply included, so it cannot diverge. A full image is about 1.1 MB per module
       at the default 1 MiB stack [V d1]. Diffs keep only the pages a tick wrote, and a typical tick writes
       few [I]. Hashing 1.1 MB at a check frame (every 30 frames) costs about 0.1 ms [I].
+      * Cost not to miss (round-3 final review): wasmi has no dirty-page tracking [S wasmi 2.0 source],
+        so finding the changed pages means hashing every page at each keyframe, about 1.1 MB per module
+        per keyframe. With a fast non-cryptographic hash that is about 0.1 ms per keyframe [I], cheap but
+        paid at every keyframe, not only at check frames.
     * **(b) The declared arena only, and zero all other writable memory after every tick.** Hidden state is
       then always zero at the start of a tick, so code that relies on it breaks visibly and identically on
       every peer. Snapshots are smaller (arena plus columns). The costs: zeroing about 1 MB per module per
@@ -4002,10 +4042,10 @@ entry says so.
       broken solver stalls every player in the world;
     * no layer 4: simpler, but it falls short of R15's "completely replace".
 * **D69. How hooks run (27.3, 27.5).**
-  * Recommend: batched per step, one guest call per hook kind with arrays in guest memory: about 1% of the
-    step even under wasmi [V parts]. This needs the fork's two-pass hook points; until then hooks run
+  * Recommend: batched per step, one guest call per hook kind with arrays in guest memory: under 2% of
+    the step even under wasmi [V parts]. This needs the fork's two-pass hook points; until then hooks run
     one call per contact.
-  * Alternative: one call per contact. A simpler guest API, but 6-9% of the step under wasmi.
+  * Alternative: one call per contact. A simpler guest API, but 7-12% of the step under wasmi.
 * **D70. Budget for a replacement engine (27.5).**
   * Recommend: a world running a guest engine declares an active-body cap, enforced by the engine: about
     48 under wasmi and about 200 under Cranelift at 60 ms one-way [I; review R15-4]. The world shows a
@@ -4040,8 +4080,12 @@ entry says so.
     * **(c) Keep claims as they are,** and state the exception in 8.2 and 6.11, next to demotion: the loser
       of a claim race sees its own touch undone after one latency.
   * Recommendation: (b). It meets the rule for every physical interaction, and it fits the core goal
-    ("every reaction physically realtime and reactive for every player"). Costs: tug of war by default,
-    grab springs to tune, and exclusive tools need world logic.
+    ("every reaction physically realtime and reactive for every player"). Costs:
+    * tug of war by default, and grab springs to tune;
+    * **anyone can pull a held object out of another player's hand.** That griefing is what claims
+      originally prevented (round 1, M3). A world that cares turns on exclusive holding for those objects,
+      or limits who may grab (the ACL);
+    * exclusive tools need world logic.
   * Either way, two players acting on one object in the same frame each see their own action at once and
     the combined result one latency later (6.11). That is physics, not a refusal.
 * **D73. Thinned hand entries and the author's own hand (10.9; review R3-10).**
@@ -4062,7 +4106,11 @@ entry says so.
       * the author's horizon must stay below the pack's first frame until the pack is sent, so
         confirmation lags by up to k frames, but only under congestion;
       * a pack may be stamped up to k - 1 frames before its author's present, a chain-local rule that
-        replaces the horizon slack for packs.
+        replaces the horizon slack for packs;
+      * so, under congestion, **the backdating window (8.2) and the room to pick a frame where `tie_rank`
+        favours the author (8.3) widen from about 4 frames to about 9 at k = 8** (k - 1 plus the slack)
+        [I, round-3 final review]. Only hand-target packs get the wider window; other entries keep the
+        4-frame bound.
     * **(b) Keep thinning as it is:** the author's hand lags by up to k frames, only under congestion.
       Simplest.
     * **(c) Never thin the author's own hand below a stride of 2, and demote earlier instead:** the lag
@@ -5166,23 +5214,36 @@ rule requires. Counts are exact.
 | wasmtime Cranelift + NaN canonicalization (D12, later) | 16 ns | 23 ns | 4.7 ns |
 | wasmtime Winch + NaN canonicalization | 21 ns | 26 ns | 5.8 ns |
 
-**How often Box3D calls the hooks**, on the phase-1 pile, which stays active [V `pe-spike-physics hooks`]:
+**How often Box3D calls the hooks**, on the phase-1 pile, which stays active [V `pe-spike-physics hooks`,
+re-measured at integration with the engine default, vdW recycling on (review R15-1)]:
 
-| Bodies | Pre-solve calls per step (avg / max) | Friction + restitution mixes per step |
-|---|---|---|
-| 256 | 141 / 247 | 281 |
-| 1,024 | 488 / 862 | 976 |
+| Bodies | Pre-solve calls per step (avg / max) | Friction + restitution mixes per step | Upstream recycling (d948898) |
+|---|---|---|---|
+| 256 | 160 / 291 | 319 | 141 / 247, 281 |
+| 1,024 | 610 / 985 | 1,220 | 488 / 862, 976 |
 
-**Cost of guest hooks per step** [V parts, I composition]. Each cell is calls/step × ns/call:
+* **Recycling made hooks fire 13-25% more often here, not less** (27.6 had inferred less). A recycled
+  contact skips the narrowphase update and its hooks [S `collide.rs`]. The engine default's radius is a
+  tenth of the pair's length (the smaller half-extent or radius), about 0.04 m for these bodies of 0.4 m
+  half-extent, below upstream's fixed 0.05 m, so fewer of their contacts are recycled [I from the formula,
+  S `recycle_scale.rs`]. Bodies whose smallest half-extent exceeds about 0.5 m recycle more than upstream,
+  and call the hooks less.
+* The pile that falls asleep is unchanged: its contacts sleep, so hooks rarely run at all.
+
+**Cost of guest hooks per step** [V parts, I composition]. Each cell is calls/step × ns/call, with the
+counts above:
 
 | Bodies | wasmi, one call each | wasmi, batched | Cranelift, batched | Step itself |
 |---|---|---|---|---|
-| 256 | 31 µs avg, 38 µs max (9-11% of a 0.36 ms step) | 5 µs (1.4%) | 2 µs (0.6%) | 0.36 ms [V b6] |
-| 1,024 | 108 µs avg, 132 µs max (6-9%) | 18 µs (about 1%) | 7 µs (0.4%) | 1.5-1.9 ms [V b6] |
+| 256 | 35 µs avg, 44 µs max (10-12% of a 0.36 ms step) | 6 µs (1.6%) | 2 µs (0.6%) | 0.36 ms [V b6] |
+| 1,024 | 135 µs avg, 159 µs max (7-11%) | 22 µs (1.2-1.5%) | 9 µs (0.5%) | 1.5-1.9 ms [V b6] |
 
-* **Layer-1 and layer-2 hooks are cheap** when batched: about 1% of the step even under wasmi.
+* **Layer-1 and layer-2 hooks are cheap** when batched: under 2% of the step even under wasmi.
   Batching needs the fork's two-pass hook points; on stock box3d-rust each contact is one call.
-* Per-contact calls cost up to 9% under wasmi. Batching is therefore the recommended model (D69).
+* Per-contact calls cost up to 12% under wasmi. Batching is therefore the recommended model (D69).
+* The step times are b6's, measured with upstream recycling. The toggle itself costs a few flops per
+  pair [V vdw-simulation.md 4.7], but fewer recycled contacts mean more narrowphase work, so this pile's
+  step may be a little slower with the engine default [I].
 * Re-simulation multiplies hook cost exactly as it multiplies the step (6.8).
 
 **Whole engine in wasm (layer 4)**: Box3D itself compiled to wasm, on the phase-1 pile, where native takes
@@ -5229,8 +5290,9 @@ rule requires. Counts are exact.
     to 0.5 m of relative motion: a one-way platform's "disable", or a friction field that changes in time.
   * So a hook that must see every step marks its contacts non-recyclable. The fork owns recycling, so
     this is a fork feature (D68). The hook API states the semantics.
-  * The call counts in 27.5 come from the phase-1 pile, which uses upstream contact handling, not vdW
-    recycling. With recycling, hooks fire less often [I]; re-measure once vdW is merged.
+  * Re-measured with vdW recycling (27.5): on the phase-1 pile (bodies of 0.4 m half-extent) hooks fire
+    13-25% more often than with upstream recycling, because the scaled radius is smaller there [V counts]. Large
+    objects recycle more, so their verdicts stay stale longer.
 * **Missing; needs the fork:**
   * contact modification (normal, friction, restitution, target velocity per contact);
   * per-substep force and field hooks;

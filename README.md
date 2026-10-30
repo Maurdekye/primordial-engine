@@ -30,5 +30,6 @@ cargo build --workspace --release
 ./target/release/pe-spike-physics rollback
 bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"
 bash scripts/run_session_sim.sh
-(cd spikes/wasm-guests && cargo build --release --target wasm32-unknown-unknown) && ./target/release/pe-spike-wasm-hotswap
+bash scripts/build_wasm_guests.sh && ./target/release/pe-spike-wasm-hotswap
+bash scripts/run_determinism.sh      # the whole determinism set (spike report 5j); run it at low priority
 ```

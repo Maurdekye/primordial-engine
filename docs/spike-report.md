@@ -14,13 +14,14 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | a | Is Box3D usable from Rust, and deterministic across runs and builds? | **Yes [V].** box3d-rust 0.5.0 (pure Rust, no FFI needed) matches all four Box3D C-reference goldens. A 600-frame, 256-body trace with interactions is bit-identical across 7 builds, including Windows-MSVC vs Linux-musl and `target-cpu=native`. **Cross-machine:** an Intel i7-13620H laptop (no AVX-512) reproduced the goldens, all four traces, rollback T1-T5 and the d4 digest bit-identically (run by @design-reviewer; review M5). ARM and macOS were not tested |
 | b | Fixed-step rollback: snapshot, step, restore, re-sim with matching hashes? | **Yes [V].** In-place and fresh-world restores replay bit-identically. Late interactions (up to 60 frames) roll back and converge exactly to the reference |
 | c | P2P transport between two processes with no server? | **Yes [V].** The phase-1 protocol (5.3) is superseded by **c-v2** (5b): the session protocol of design 6-10, with state + canonical frame, ack-based confirmation and gap fetch, over the same signed UDP. Both peers' 600-frame histories were identical and equal to an offline replay of the final log in all three runs (latency, 10% loss, a never-transmitted entry). Every acceptance check passed |
-| session | Do the review's fixes (C1, C2, H4, H5, M3) and the user's state+frame and tie-break rulings hold? | **Yes [V]** (5c). In-process, on a virtual clock: no fork in the C1 scenario; equivocation proved and the member evicted; 52/52 checks under 10% loss; uncontended acceptance 22/22, 23/23, 27/27; ties 41/50/59 of 150; backdating voided or bounded |
+| session | Do the review's fixes (C1, C2, H4, H5, M3) and the user's state+frame and tie-break rulings hold? | **Yes [V]** (5c). In-process, on a virtual clock: no fork in the C1 scenario; equivocation proved and the member evicted; 52/52 checks under 10% loss; uncontended acceptance 22/22, 25/25 under 10% loss, 25/25 against the final history in `diverged` (23/25 at the instant with vdW physics, 5j); ties 41/50/59 of 150; backdating voided or bounded |
 | ball pit | A hand sweeping through 500 balls, without per-ball state streaming? | **Yes [V]** (5d). About 15 kB/s for everything in both directions, against 1 MB/s one way for naive state streaming. The receiver re-simulates 2.8 ms per frame. The end state is bit-identical |
 | r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject, throttle, forge, late and crash variants; each world equals its offline replay, also when worlds and peers are processed in reverse order (abort's digest then differs from forward, because its escrow key derives from chain contents) |
 | history | Can a peer keep only the perturbation history? Which snapshots, at what memory and CPU? | **Almost [V]** (5f). One base image at or before the confirmed frame is unavoidable; the rest is a cache that never changes results (62 runs, 13 policies, one end hash per scene). Window(4) matches the best modelled CPU at 60 ms with 8.3 MB instead of 47.9 MB under a 116-frame confirmation stall (round 3); at 100 ms it needs its adaptive depth. Partial restores through the API are not bit-exact. Remote-hand dead reckoning cuts the observer's error about 4-18x |
 | round 2 | Do the round-2 Criticals and Highs hold fixed, and do capped links recover? | **Yes [V]** (5g). The reviewer's four repros pass (no fork, no panic); proofless R14 relays do nothing; batching plus the congestion controller keep 32-64 kbit/s caps real-time. Finality lag rose from 4.2 to 8.5 frames |
 | round 3 | Do colluders, crashes, untrusted worlds and links below 20 kbit/s break the protocol? | **No fork in any case; stalls only where no honest majority exists [V]** (5i). Two colluders stall safely instead of crashing everyone; a crashed member is removed after 3 s; a crashed carrier's transfer completes through another member; worlds trade only along route lists; 16 kbit/s stays real time, 12 kbit/s recovers, a slow third member is demoted. Two members need about 12 kbit/s each way |
-| r15 | What does it cost to run physics hooks or a whole physics engine as a wasm guest? | **Measured [V, noisy]** (5h). A per-contact hook call costs 64 ns in wasmi and 16 ns in Cranelift; batched, 12 and 4.7 ns. On an active 1,024-body pile, guest hooks cost 6-9% of the step one call at a time, about 1% batched. A whole engine in wasm costs 21x native under wasmi |
+| integration | Does everything still hold with every branch merged and vdW physics on? | **Yes [V]** (5j). The full determinism set passes at low priority: goldens, traces, images and rollback in release and debug, the wasm digest, 30 session scenarios, 10 R18 cells, UDP and the snapshot study. Two defects found and fixed: a test-harness bug exposed by the new physics, and module identity (M8) depending on the checkout path |
+| r15 | What does it cost to run physics hooks or a whole physics engine as a wasm guest? | **Measured [V, noisy]** (5h). A per-contact hook call costs 64 ns in wasmi and 16 ns in Cranelift; batched, 12 and 4.7 ns. On an active 1,024-body pile, guest hooks cost 7-11% of the step one call at a time, 1.2-1.5% batched. A whole engine in wasm costs 21x native under wasmi |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
 | d | Hot-swap Rust→WASM game logic mid-sim, deterministic across peers? | **Yes [V],** with wasmi in eager-compilation mode. The default lazy mode makes fuel nondeterministic [V]. Box3D itself compiled to WASM matches native [V] |
@@ -59,6 +60,11 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
   (`b3SerializeWorld`/`b3DeserializeIntoShell`) are internal, not part of the public API.
 
 ### 3.2 Commands
+
+These are the phase-1 commands. Since the vdW merge, engine worlds use scale-dependent contact
+recycling (`engine_world_def()`, vdw-simulation.md), so the files below are reproduced with
+`pe-spike-physics --upstream`; without it, `goldens` checks the engine goldens and `trace` gives the engine
+default's digest (3.3, last paragraph).
 
 ```bash
 cargo build -p pe-spike-physics && cargo build -p pe-spike-physics --release
@@ -104,6 +110,12 @@ the Box3D world hash and the full state hash (world + claims + frame) for one fr
 | Linux x86_64 musl, run in WSL2 (a5) | identical | same |
 
 Evidence: `spikes/out/trace-*.txt`, `trace-comparison.txt`, `physics-goldens-*.log`, `physics-linux-musl.log`.
+
+**These are upstream-physics records.** With the engine default (vdW recycling on), the engine goldens
+pass and the trace digest is `80839f4a54133e13`, identical across release, debug, opt-level 1 and s, and
+`target-cpu=native` [V @vdw-physics, `spikes/out/vdw/`]. The integration run repeated release and debug:
+both equal those records, and `--upstream` still gives `7903109aab28ed9b` [V `spikes/out/integration/`,
+5j]. Linux musl and the Intel laptop were not re-run with the engine default.
 
 **Speed:** 0.31 ms/frame release (Windows), 0.40 ms/frame (Linux musl under WSL), 3.8 ms/frame debug.
 
@@ -206,15 +218,25 @@ bash scripts/run-p2p.sh loss10 "--delay-ms 40 --jitter-ms 60 --loss-pct 10" "--d
 bash scripts/run-p2p.sh fault "--delay-ms 30 --jitter-ms 10" "--delay-ms 30 --jitter-ms 10 --drop-stamp 200"
 ```
 
+Integration run (round-3 protocol, engine default physics with vdW recycling), low priority:
+
 | Run | Peer 1 == peer 2 (600 frames) | Each peer == offline replay of its own log | Acceptance (receiver 1 / receiver 2) | Rollbacks (max depth) | Checks | Datagrams sent / dropped |
 |---|---|---|---|---|---|---|
-| latency60 | yes | yes, `cd613a64b7088dbe` | 7/7 / 6/6 | 6 (4) each | 24 ok, 0 bad | 434 / 0 each |
-| loss10 | yes | yes, `cd613a64b7088dbe` | 7/7 / 7/7 | 6 (4) / 6 (6) | 24 ok, 0 bad | 396 / 54, 396 / 47 |
-| fault: peer 2 never transmits its frame-200 entry | yes | yes, `cd613a64b7088dbe` | 6/6 / 3/3 | 4 (2) / 4 (7) | 17 ok, 0 bad | 317 / 0, 423 / 0 |
+| latency60 | yes | yes, `66d3f4a12f8bdef2` | 8/8 / 6/6 | 6 (4) / 6 (5) | 24 ok, 0 bad | 437 / 0, 438 / 0 |
+| loss10 | yes | yes, `66d3f4a12f8bdef2` | 9/10 / 11/11 | 6 (19) / 6 (5) | 23 and 24 ok, 0 bad | 667 / 78, 627 / 65 |
+| fault: peer 2 never transmits its frame-200 entry | yes | yes, `66d3f4a12f8bdef2` | 9/9 / 6/6 | 6 (7) / 6 (2) | 24 ok, 0 bad | 416 / 0, 420 / 0 |
 
-* **Fault-run repair path:** peer 2's next ack declared the entry. Peer 1 saw the gap at frame 202, fetched
-  it, received it 5-7 frames late and rolled back. The old range search is gone.
-* All three runs produced the same history, because no entry was re-stamped.
+* **Fault-run repair path:** peer 2's next ack declared the entry. Peer 1 saw the gap at frame 203, fetched
+  it, received it 7 frames late and rolled back. The old range search is gone.
+* **loss10's one miss** is receiver 1's copy of object 50 at frame 135, inside the scripted same-frame
+  conflict on that object: contended, so it may differ while the competing entry is in flight.
+* **In this run all three produced the same history** (`66d3f4a1…`), because no entry was re-stamped.
+  **That is not guaranteed under loss with the engine default [V]:** @vdw-physics got two different
+  loss10 histories in four runs, and @design-reviewer three more; fault varied too. In every run both
+  peers agreed and equalled their offline replays. The cause is the state+frame rule, not recycling: an
+  entry carries its author's speculative state, which depends on what the author had received in time
+  (vdw-simulation.md 5.1). With upstream physics the scripted touches happened not to be sensitive
+  (`cd613a64…` in every run).
 * An earlier fault attempt hit an OS-level stall of peer 1's process (no frames advanced for 3.6 s). The
   late entry was then re-stamped deterministically, by the arrival bound, and both peers still converged.
   That log was overwritten by the rerun shown above.
@@ -227,7 +249,9 @@ bash scripts/run-p2p.sh fault "--delay-ms 30 --jitter-ms 10" "--delay-ms 30 --ji
 * Every message is encoded to bytes, so byte counts are real.
 * The output is deterministic: the same command prints the same RESULT lines.
 * `scripts/run_session_sim.sh` builds it and runs every scenario. Logs are in `spikes/out/session-sim/`,
-  with a summary in `summary.txt`: 28 of 28 replica sets equal, 0 mismatches.
+  with a summary in `summary.txt`.
+* **This table records round 1 (3d0f98a).** Rounds 2 and 3 changed the protocol: nothing is re-stamped
+  (5g), and a member lagging its horizon is demoted (5i). Current results, with vdW physics: 5j.
 
 | Scenario | Setup | Result |
 |---|---|---|
@@ -291,20 +315,24 @@ final log.
 Design 6.7-6.11. Logs: `spikes/out/perturbation-history/`.
 
 * **Re-simulation from one base image** (`pe-spike-physics history`; restore plus N steps, median of 5;
-  the committed log, from 442286f on a quieter machine):
+  `physics-history-upstream-442286f.log`, from 442286f on a quieter machine, upstream physics):
   * 256 bodies: 0.8 / 2.1 / 6.7 / 27.6 / 50.3 ms at depths 1 / 4 / 15 / 60 / 120;
   * 1,024 bodies: 3.2 / 7.6 / 24.2 / 94.7 / 183.3 ms.
+  * The integration rerun with the engine default (`physics-history.log`, low priority) took 1.0-1.2x as
+    long. With vdW recycling the 256-body pile started at frame 900 falls asleep during the replay (246
+    awake, 26 after 120 frames): 6.2 ms at depth 120.
 * **Partial restore through the API is not bit-exact** (which shows the API's limit, not that per-island
   snapshots with contacts and warm starts cannot work; review PH-4):
   * every body's pose and velocity written back diverges at the first frame (2/256 equal after 30 frames,
-    244 mm);
+    340 mm with the engine default, 244 mm with upstream physics);
   * an isolated stack restored while 63 others sleep matched 0/4 (8.7 mm); the others 252/252.
-* **Image deltas (64-byte blocks)** save at most 7% on ball-pit rings, and nothing on an active pile.
+* **Image deltas (64-byte blocks)** save at most 8% on ball-pit rings, and nothing on an active pile.
   General-purpose compression does better: LZ4 to 44-47%, deflate to 34-38% [V reviewer, PH-3].
 * **Snapshot policies on the protocol** (`pe-spike-session-sim snap [--balls 1024] [--stall]`; ball pit,
   60 ± 10 ms, 2% loss):
-  * every policy and the moving knob end in the same hash per scene: `47bb8c7274b143d3` at 500 balls,
-    `bfe86c8ce148add8` at 1,024;
+  * every policy and the moving knob end in the same hash per scene: `020828ac9b6fb6c8` at 500 balls,
+    `0d739d142b58347a` at 1,024 (engine default; `47bb8c7274b143d3` and `bfe86c8ce148add8` with upstream
+    physics);
   * maximum image memory under a 116-frame stall (round 3, current protocol): Every(4) 47.9 MB, Log(4)
     17.8 MB, Window(4) 8.3 MB, base only 3.3 MB, at 278 re-simulated frames/s for the first three;
   * steady (26-frame lag): Every(4) 10.5 MB, Window(4) 8.3 MB; base only re-simulates 726 frames/s,
@@ -314,12 +342,14 @@ Design 6.7-6.11. Logs: `spikes/out/perturbation-history/`.
     noise (review PH-7).
 * **Observer** (`pe-spike-session-sim observer --delay 30|60|100`): remote-hand error, mean / p95, hold →
   dead reckoning:
-  * 30 ms: 23.5 / 32.6 → 1.3 / 2.0 mm;
-  * 60 ms: 79.6 / 125.5 → 15.2 / 17.0 mm;
-  * 100 ms: 149.4 / 197.3 → 41.5 / 37.0 mm.
-  * Balls visibly corrected per frame at 60 ms: 30.4 → 11.3.
-* **Regression:** the default settings (Every(4), hold) reproduce 3d0f98a's ball-pit end hash
-  `47bb8c7274b143d3` and digest `1a9f1fb5fce6acc6`.
+  * 30 ms: 24.0 / 33.5 → 1.3 / 2.0 mm;
+  * 60 ms: 78.9 / 121.8 → 14.7 / 17.0 mm;
+  * 100 ms: 148.9 / 197.3 → 40.7 / 37.0 mm.
+  * Balls visibly corrected per frame at 60 ms: 21.7 → 8.6 (engine default).
+  * The hand errors do not depend on the physics: round 3's upstream run gave the same values.
+* **Regression:** the default settings (Every(4), hold) reproduce the ball-pit scenario's end hash
+  `020828ac9b6fb6c8` and digest `84fd01d1d13bb6a5` (engine default; with upstream physics, 3d0f98a's
+  `47bb8c7274b143d3` and `1a9f1fb5fce6acc6`).
 
 ### 5g. Round 2: chain-entry protocol, R14 proofs, recovery under caps [V]
 
@@ -382,12 +412,16 @@ call counts are exact.
   | Winch | 21 ns | 5.8 ns |
   | native | 1.3 ns | — |
 
-* **Hook frequency on the active phase-1 pile** (`pe-spike-physics hooks`):
-  * 256 bodies: 141 pre-solve calls and 281 friction/restitution mixes per step;
-  * 1,024 bodies: 488 and 976.
+* **Hook frequency on the active phase-1 pile** (`pe-spike-physics hooks`), re-measured at integration
+  with the engine default (vdW recycling on; review R15-1):
+  * 256 bodies: 160 pre-solve calls and 319 friction/restitution mixes per step (upstream recycling: 141
+    and 281);
+  * 1,024 bodies: 610 and 1,220 (upstream: 488 and 976).
+  * So 13-25% more calls: the scaled recycling radius of these bodies (0.4 m half-extent), about 0.04 m,
+    is below upstream's 0.05 m, and a recycled contact skips its hooks [S `collide.rs`; I for the cause].
 * **Composed cost:**
-  * one guest call per contact: 6-11% of the step under wasmi;
-  * batched (needs the fork): about 1% under wasmi.
+  * one guest call per contact: 7-12% of the step under wasmi;
+  * batched (needs the fork): under 2% under wasmi.
 * Box3D itself in wasm: 21x native under wasmi and 4.7-5x under Cranelift with NaN canonicalization
   (iteration-benchmark 4.5).
 
@@ -433,17 +467,57 @@ Design 9.3, 10.8, 10.9, 22.6, 22.7. Logs: `spikes/out/session-sim/` (`review3-*`
 * **UDP spike** rerun with the round-3 repair changes: latency60, loss10 and fault all equal, 24 ok and
   0 bad checks per peer.
 
+### 5j. Integration: every branch merged, everything re-run with vdW physics [V]
+
+Branch `integration` (2026-10-30), off 3d0f98a: round 2, R15, the round-2 follow-ups and round 3
+(`round3-fixes`, 11185cc, approved by @design-reviewer); vdW contact recycling (`vdw/contact-recycling`,
+d082ab5); R16 and R17 (`chunks/r16`, a9a20cc; design 25 and 26); the ball-pit video matrix
+(`viz/ballpit-matrix`, 46a9e02); and the WGSL-only note from the Slang evaluation (6344ec1, design 14).
+
+```bash
+CARGO_BUILD_JOBS=4 cmd //c start "" //low //b //wait bash scripts/run_determinism.sh   # parts: physics wasm mcp session r18 p2p hooks history
+```
+
+Everything ran at low priority, one job at a time; physics outputs are in `spikes/out/integration/`, the
+rest regenerate their usual logs. Digests and counts are exact; timings are noise.
+
+| Part | Result |
+|---|---|
+| Physics, release and debug | Engine goldens pass; the Box3D C goldens pass with `--upstream`. The 600-frame trace is `80839f4a54133e13` in both, equal to the vdW branch's record; `--upstream` gives the phase-1 `7903109aab28ed9b`. Snapshot images equal the vdW record (`7a47a3bfcdbd7eda` release). Rollback T1-T5 pass |
+| Wasm (d1-d4) | Pass. The wasm32 pile's digest is `80839f4a54133e13`, equal to native. d-lazy fails, as it should (6.3) |
+| Module identity (M8) | All four modules built at a second checkout path are byte-identical, after two fixes (6.5) |
+| MCP stub | 10 of 10 responses, the same outcomes |
+| Session suite | 30 scenarios: every replica equals its offline replay, every transfer is conserved, no panic, 0 false checks, 0 non-finite states. Against round 3, only physics-dependent lines changed: digests, the ball pit's changed balls per frame (292 / 284 / 375 / 303 at 60 Hz / ahead 4 / 2 hands / 90 Hz), and `diverged`'s acceptance at the instant, 23/25 (25/25 against the final history; design 6) |
+| R18 caps (10 cells) | Every rate, queue, drop, stall and recovery figure equals round 3's (5i); only end digests changed |
+| UDP (latency60, loss10, fault) | Peers equal and both replays EQUAL in every run; all three `66d3f4a12f8bdef2` in this run. Under loss the history can vary between runs (5b) |
+| R15 hooks | 13-25% more calls per step on the active pile (5h) |
+| Perturbation history | Every work count equals round 3's; image bytes moved by at most about 1%; end hashes `020828ac9b6fb6c8` (500 balls) and `0d739d142b58347a` (1,024) for every policy; design 6.7-6.10 refreshed |
+
+**Found at integration:**
+* **A test bug, not a protocol bug.** `r14 forge` picked the first escrow in A's map as the real
+  transfer. Transfer ids derive from the carried state, so with vdW physics the map order changed, and it
+  picked a forged departure's escrow and panicked. It now takes the pending escrow, and fails if any of
+  its 9 attacks is not tried. The 9 outcomes are the same as in round 3.
+* **Module identity had regressed** since the fork became a path dependency (6.5). Fixed and verified.
+* **Hooks fire more often with vdW** on the phase-1 pile (bodies of 0.4 m half-extent), not less as 27.6
+  had inferred (5h).
+* **The physics-history pile at frame 900 is not always awake:** with vdW recycling the 256-body pile
+  falls asleep during the replay, so the log now prints how many bodies are awake after the deepest
+  re-simulation instead of "this pile never sleeps".
+* **Some doc numbers were stale before integration** and are refreshed: the observer table (from
+  442286f), the 90 Hz ball-pit work count (from 3b02a68), and the knob-moving memory peak.
+
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
 ### 6.1 Commands
 
 ```bash
-(cd spikes/wasm-guests && cargo build --release --target wasm32-unknown-unknown)
+bash scripts/build_wasm_guests.sh                 # logic guests and physics_in_wasm, local paths remapped (6.5)
 cargo build -p pe-spike-wasm-hotswap --release
 ./target/release/pe-spike-wasm-hotswap            # d1-d4 (eager compilation)
 ./target/release/pe-spike-wasm-hotswap --lazy     # d-lazy (wasmi default compilation mode)
 python -I scripts/time_guest_rebuild.py           # d5
-(cd spikes/wasm-guests && sha256sum target/wasm32-unknown-unknown/release/*.wasm)
+sha256sum spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm target/wasm32-unknown-unknown/wasm-guest/physics_in_wasm.wasm
 cargo build -p pe-spike-mcp-stub --release
 ./target/release/pe-spike-mcp-stub < spikes/mcp-stub/session.jsonl   # mcp
 ```
@@ -453,7 +527,9 @@ cargo build -p pe-spike-mcp-stub --release
 * Guests are `no_std` cdylibs: `logic_v1` (lifts objects every 45 frames), `logic_v2` (sideways pushes every
   20 frames, float "spin" state, migrates v1's state), `logic_runaway` (infinite loop), and
   `physics_in_wasm` (the whole spike-(a) reference run compiled to wasm32).
-* Module sizes: 980 B, 1,143 B, 640 B and 505 KB.
+* Module sizes: 980 B, 1,143 B, 640 B and 497 KB (505 KB in phase 1, with upstream physics).
+* Since integration, `physics_in_wasm` is a member of the root workspace (`spikes/physics-in-wasm`,
+  profile `wasm-guest`), and the logic guests keep their own workspace (6.5).
 * The host is wasmi 2.0 with `deterministic`, fuel on (1,000,000 per tick) and `CompilationMode::Eager`.
 * Peer A knows the v1→v2 commit (activation frame 300) in advance. Peer B learns it, together with all
   interactions in frames 290-344, at frame 345. Peer C never learns it.
@@ -466,7 +542,7 @@ cargo build -p pe-spike-mcp-stub --release
 | d2 | Control C (no commit) vs A | First mismatch **exactly at frame 300**, so the swap took effect |
 | d1b | Fuel per frame on A vs B | Identical (46,800 total; max 83 per tick) |
 | d3 | Runaway tick, run twice | Trapped "all fuel consumed" after about 0.18 ms; guest state at halt identical (`bde1c36627cfa6ca`) both times |
-| d4 | Box3D pile compiled to wasm32, run in wasmi | Digest `7903109aab28ed9b` **== native**. 7.0 ms/frame interpreted, about 22x native. Module validate+compile 9.1 ms eager (2.8 ms lazy) |
+| d4 | Box3D pile compiled to wasm32, run in wasmi | Digest `80839f4a54133e13` (engine default; `7903109aab28ed9b` with upstream physics in phase 1) **== native**. 7.0 ms/frame interpreted, about 22x native. Module validate+compile 9.1 ms eager (2.8 ms lazy) (phase-1 timings; noisy reruns at low priority were slower) |
 | d-lazy | Same as d1b/d3 with wasmi's default `LazyTranslation` | **FAIL:** fuel A 49,831 vs B 46,800; the runaway halts at different points (`79f77bfc…` vs `bde1c366…`). Cause, confirmed in wasmi source: lazy translation is charged as fuel on first use of each function, which depends on process history. **Engine must use eager compilation** |
 | d5 | Edit→rebuild latency (one-constant change in `logic_v2`) | release (opt-level s, LTO, 1 CGU): 0.22-0.29 s, first edit 0.78-1.24 s; dev: 0.19-0.24 s. Rebuilding identical source gives an identical wasm (`logic_v2` sha256 `f9c5e895…`) |
 
@@ -489,14 +565,28 @@ Ten JSON-RPC requests were piped through `pe-spike-mcp-stub` (`spikes/mcp-stub/s
 ### 6.5 Reproducible module identity (review M8) [V]
 
 ```bash
+bash scripts/run_determinism.sh wasm    # builds at this checkout and at a copy elsewhere, then compares
 python -I scripts/wasm_canonical_hash.py <wasm built at path 1> <wasm built at path 2>
 ```
 
-* The whole source tree was copied to a second directory and the guests rebuilt there.
-* `physics_in_wasm.wasm`: raw SHA-256 `589e97a7008badfd` (repo path) vs `051eee…` (other path). The only
-  difference is mangled names in the `name` custom section.
-* The canonical hash (custom sections removed) is `66633b435cac94ab` for both builds.
-* The small guests are identical either way.
+* **Phase 1:** the whole source tree was copied to a second directory and the guests rebuilt there.
+  `physics_in_wasm.wasm` had raw SHA-256 `589e97a7008badfd` (repo path) vs `051eee…` (other path), with
+  only mangled names in the `name` section differing, and canonical hash `66633b435cac94ab` for both.
+* **At integration this broke, in two ways [V]:**
+  * the box3d fork is a path dependency, so panic locations embedded the absolute checkout path: 83
+    copies of it in `physics_in_wasm.wasm`, and canonical hashes `3380e839…` and `4fdb6eb1…` at two
+    worktrees, 168 bytes apart;
+  * with paths remapped (`--remap-path-prefix`), the sizes matched but at some paths the type, function,
+    element and code sections were permuted (356 kB of code bytes differed; data identical). Cargo hashes
+    a path dependency's crate identity by its absolute path unless the dependency lies inside the
+    workspace being built, and the linker's function order follows those hashes. Whether two paths
+    happened to agree was luck.
+* **Fix:** `scripts/build_wasm_guests.sh` remaps the checkout root and the cargo home (long Windows names:
+  a temp directory's 8.3 short name did not match what rustc sees), and `physics_in_wasm` builds in the
+  root workspace, which contains sim-core and the fork.
+* **Result:** all four modules built at a second checkout path (a copy of the working tree in a temp
+  directory) are byte-identical to this checkout's, raw hash included; `physics_in_wasm` is
+  `4ee3b3bb0aa6ec8f` raw, `456e42657efc62ae` canonical. No drive-letter path remains in it.
 * Output: `spikes/out/wasm-canonical-hash.txt`.
 
 ### 6.6 Iteration benchmark and logic runtimes (by @iter-bench) [V]
@@ -707,7 +797,8 @@ Inferred [I] (design proposals, not yet tested):
 ```bash
 rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl --toolchain stable
 cargo build --workspace && cargo build --workspace --release
-(cd spikes/wasm-guests && cargo build --release --target wasm32-unknown-unknown)
+bash scripts/build_wasm_guests.sh
+bash scripts/run_determinism.sh                     # the integration determinism set (5j), low priority
 ./target/release/pe-spike-physics goldens && ./target/release/pe-spike-physics rollback && ./target/release/pe-spike-physics bench
 ./target/release/pe-spike-physics trace 600 spikes/out/trace-win-release-1.txt
 bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"   # also loss10, fault (5b)
@@ -715,7 +806,7 @@ bash scripts/run_session_sim.sh                     # every session, ball-pit, R
 bash scripts/run_perturbation_history.sh            # re-sim vs depth, partial restore, snapshot knob, observer (5f)
 bash scripts/run_r18.sh                             # ball pit through 256 to 8 kbit/s caps, a step, shared uplinks, a slow member (5g, 5i)
 bash scripts/run_r15.sh                             # physics-hook call cost and frequency (5h); low priority
-python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm
+python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm target/wasm32-unknown-unknown/wasm-guest/physics_in_wasm.wasm
 # iteration benchmark: see docs/iteration-benchmark.md section 8
 ./target/release/pe-spike-wasm-hotswap
 ./target/release/pe-spike-mcp-stub < spikes/mcp-stub/session.jsonl

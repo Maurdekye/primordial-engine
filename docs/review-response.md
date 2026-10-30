@@ -314,3 +314,19 @@ round 2, NEW-6 open and 17 partial). The response is on branch `round3-fixes`, i
   it stalled confirmation for good.
 * **A congested member must not be mistaken for a crashed one:** c1's congested member is silent for
   1.95 s, so suspicion waits 3 s.
+
+## Round 3, final review (11185cc approved): folded in at integration
+
+@design-reviewer approved 11185cc for integration (`review-round3-final.md`) and agreed with both
+deliberate deviations (keeping accepted transfer ids; a liveness check instead of birth binding). Its
+remaining notes, done on the `integration` branch:
+
+| Note | Done |
+|---|---|
+| D72(b) must name its griefing cost | Added: anyone can pull a held object out of another player's hand, which claims prevented (M3); worlds can turn on exclusive holding or limit who may grab |
+| D73(a) must name its backdating cost | Added: at k = 8 under congestion, hand-target packs widen the backdating and `tie_rank` window from about 4 to about 9 frames |
+| D57(a) must name its hashing cost | Added: wasmi has no dirty-page tracking [S], so every page is hashed at each keyframe, about 1.1 MB per module |
+| Accepted transfer ids grow inside rollback state | Design (22.7): once confirmed, they move to an append-only set outside the rollback state; B may drop one once A certifies the transfer resolved [I] |
+| Found at integration: M8 (module identity) | **Fixed [V].** With the box3d fork as a path dependency, `physics_in_wasm` embedded the checkout path in its panic locations, and cargo's path-derived crate hashes permuted its functions, so its canonical hash depended on where it was built. Paths are now remapped and the module builds in the root workspace; built at two paths, all four modules are byte-identical (spike report 6.5, design 13.2) |
+| Found at integration: `r14 forge` | **Fixed [V].** A test-harness bug: it took the first escrow in A's map, which vdW physics reordered, and panicked. It now takes the pending escrow and fails if any attack is not tried; the 9 outcomes are unchanged |
+| R15-1: re-measure hook call counts with vdW recycling | Re-measured [V]: on the active phase-1 pile hooks fire 13-25% **more** often than with upstream recycling (256 bodies: 160 pre-solve calls and 319 mixes per step, was 141 and 281), because the scaled radius of its bodies (0.4 m half-extent) is below upstream's fixed one. Per-contact guest hooks now cost 7-12% of the step under wasmi, batched under 2%. 27.5, 27.6 and spike report 5h updated |

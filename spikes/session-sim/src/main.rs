@@ -492,7 +492,9 @@ fn r14(variant: &str, reverse: bool) {
         if variant == "forge" {
             let t = sim.net.now_us;
             let pidx = |sim: &Sim, id: MemberId| sim.peers.iter().position(|p| p.id == id).unwrap();
-            let esc = sim.replica(2, 1).sim.t.escrow.iter().next().map(|(t, e)| (*t, *e));
+            // The carry's escrow while it is pending (the forged departures add rejected escrows, and
+            // transfer ids, hence map order, depend on the carried state).
+            let esc = sim.replica(2, 1).sim.t.escrow.iter().find(|(_, e)| e.status == EscrowStatus::Pending).map(|(t, e)| (*t, *e));
             if t == 2_000_000 {
                 // R3-4: member 2 departs A's object 50 to its own one-member world D, where it could
                 // certify anything (accept, then "rejected" for a refund).
@@ -678,6 +680,11 @@ fn r14(variant: &str, reverse: bool) {
             "RESULT r14 forge: A's objects 50 and 51 live in A {a50} and {a51}, object 50 in D {d50}; copies of A:40 in B {b40} -> {}",
             if a50 == 1 && a51 == 1 && d50 == 0 && b40 <= 1 { "CONSERVED" } else { "NOT CONSERVED" }
         );
+        // Every attack must have been tried: one whose moment passed (the carry resolved earlier)
+        // would otherwise drop out silently.
+        if forged.len() != 9 {
+            println!("RESULT r14 forge: FAIL: {} of 9 forged entries authored", forged.len());
+        }
     }
     print_stats(&sim, 1);
     print_stats(&sim, 2);
