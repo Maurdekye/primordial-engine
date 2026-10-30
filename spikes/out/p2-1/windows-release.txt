@@ -1,5 +1,4 @@
-   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
-    Finished `release` profile [optimized] target(s) in 4.10s
+    Finished `release` profile [optimized] target(s) in 0.53s
      Running unittests src\lib.rs (target\release\deps\pe_core-29ac9d17aaef031b.exe)
 
 running 17 tests
@@ -26,11 +25,12 @@ test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
      Running unittests src\lib.rs (target\release\deps\pe_sim-f0a0a1adeb432db8.exe)
 
-running 2 tests
+running 3 tests
 test registry::tests::layout_rules ... ok
 test registry::tests::value_checks ... ok
+test snapshot::tests::forest_check ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
      Running tests\determinism.rs (target\release\deps\determinism-28957dba5eed0227.exe)
 
@@ -43,7 +43,7 @@ test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
      Running tests\store.rs (target\release\deps\store-85e5ac7963473179.exe)
 
