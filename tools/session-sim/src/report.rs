@@ -260,6 +260,28 @@ impl Probe {
                     );
                 }
             }
+            Report::Expect { world, at, conf_max, conf_min, members, label } => {
+                let r = &sim.replica(*at, *world).sim;
+                let mut bad = Vec::new();
+                if conf_max.is_some_and(|m| r.conf > m) {
+                    bad.push(format!("conf above {}", conf_max.unwrap()));
+                }
+                if conf_min.is_some_and(|m| r.conf < m) {
+                    bad.push(format!("conf below {}", conf_min.unwrap()));
+                }
+                if let Some(want) = members {
+                    if r.members.iter().copied().collect::<Vec<_>>() != *want {
+                        bad.push(format!("members not {want:?}"));
+                    }
+                }
+                println!(
+                    "RESULT {label}: m{at} world {world} conf {} members {:?} evicted {:?} -> {}",
+                    r.conf,
+                    r.members,
+                    r.members_evicted(),
+                    if bad.is_empty() { "OK".to_string() } else { format!("FAIL ({})", bad.join(", ")) }
+                );
+            }
             Report::Line { world, text } => println!("{}", template(text, &Vars { sim, world: *world, entry: None })),
             Report::R14Forged => r14_forged(sim, &ctx.forged),
             Report::R14Jobs => r14_jobs(sim),
@@ -379,6 +401,12 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
         digests.iter().map(|(m, d)| format!("m{m}={d:016x}")).collect::<Vec<_>>().join(" "),
         if all_equal { "ALL EQUAL" } else { "MISMATCH" }
     );
+    // Frames past a replica's confirmed frame are still speculative there: a correct run may
+    // legitimately differ in them, so a check must not reach them (review of fffdcbc).
+    let conf = sim.peers.iter().filter(|p| !skip.contains(&p.id)).filter_map(|p| p.worlds.get(&w)).map(|r| r.sim.conf).min().unwrap_or(0);
+    if frames > conf {
+        println!("  UNCONFIRMED: {label} checks frames {conf}..{frames}, past the lowest confirmed frame of the checked replicas ({conf})");
+    }
     all_equal
 }
 

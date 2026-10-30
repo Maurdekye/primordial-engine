@@ -20,6 +20,7 @@ mod regress;
 mod report;
 mod scenario;
 mod setup;
+mod validate;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -28,15 +29,22 @@ use byzantine::Actor;
 use report::{Ctx, Probe};
 use scenario::{Report, Scenario};
 
-/// Run one part of a scenario and print its log.
-fn run_part(mut s: Scenario, name: &str) -> Result<(), String> {
+/// Load-time checks on one part, and the built simulator with its behaviours and reports.
+fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Probe>), String> {
     for r in &s.fault {
         faults::validate(r)?;
     }
-    let mut actors = std::mem::take(&mut s.byzantine).into_iter().map(Actor::new).collect::<Result<Vec<_>, _>>()?;
+    let sim = setup::build(&s)?;
+    validate::validate(&s, &sim)?;
+    let actors = std::mem::take(&mut s.byzantine).into_iter().map(Actor::new).collect::<Result<Vec<_>, _>>()?;
+    let probes = std::mem::take(&mut s.report).into_iter().map(|r| Probe::new(r, &s)).collect::<Result<Vec<_>, _>>()?;
+    Ok((s, sim, actors, probes))
+}
+
+/// Run one part of a scenario and print its log; true if the simulator panicked.
+fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
     let has_verdict = s.report.iter().any(|r| matches!(r, Report::Verdict { .. }));
-    let mut probes = std::mem::take(&mut s.report).into_iter().map(|r| Probe::new(r, &s)).collect::<Result<Vec<_>, _>>()?;
-    let mut sim = setup::build(&s)?;
+    let (s, mut sim, mut actors, mut probes) = prepare(s)?;
     for a in &actors {
         a.configure(&mut sim)?;
     }
@@ -59,35 +67,32 @@ fn run_part(mut s: Scenario, name: &str) -> Result<(), String> {
     }
     if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
         println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
-        return Ok(());
+        return Ok(true);
     }
     for p in &probes {
         p.print(&sim, &ctx);
     }
-    Ok(())
+    Ok(ctx.panic_at_ms.is_some())
 }
 
-fn run_file(path: &Path) -> Result<(), String> {
+/// Run every part; true if any panicked. Every part is checked before the first one runs.
+fn run_file(path: &Path) -> Result<bool, String> {
+    check_file(path)?;
     let loaded = scenario::load(path)?;
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut panicked = false;
     for part in loaded.parts {
-        run_part(part, &name)?;
+        panicked |= run_part(part, &name)?;
     }
-    Ok(())
+    Ok(panicked)
 }
 
 fn check_file(path: &Path) -> Result<usize, String> {
     let loaded = scenario::load(path)?;
     let n = loaded.parts.len();
-    for mut s in loaded.parts {
-        for r in &s.fault {
-            faults::validate(r)?;
-        }
-        let actors = std::mem::take(&mut s.byzantine).into_iter().map(Actor::new).collect::<Result<Vec<_>, _>>()?;
-        for r in std::mem::take(&mut s.report) {
-            Probe::new(r, &s)?;
-        }
-        let mut sim = setup::build(&s)?;
+    for (i, s) in loaded.parts.into_iter().enumerate() {
+        let (_, mut sim, actors, _) = prepare(s).map_err(|e| format!("{} (part {}):
+  {e}", path.display(), i + 1))?;
         for a in &actors {
             a.configure(&mut sim)?;
         }
@@ -100,7 +105,8 @@ fn main() {
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let code = match args.first().map(String::as_str) {
         Some("run") if args.len() == 2 => match run_file(Path::new(&args[1])) {
-            Ok(()) => 0,
+            Ok(false) => 0,
+            Ok(true) => 3,
             Err(e) => {
                 eprintln!("error: {e}");
                 2

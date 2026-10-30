@@ -1,0 +1,31 @@
+description = """
+Fault kinds (P2-9): every link capped at 16 kbit/s, below what the pile's acks need at 60 Hz, \
+with no congestion controller (R18 off). The queues overflow, confirmation stalls near frame 100 \
+of about 590 and the members pause at the speculation limit. Safety holds: the confirmed prefix \
+is equal on every replica and to the offline replay. fault-capped-r18 is the same link with the \
+controller on."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 10000
+
+[net]
+seed = 35
+link = { delay_ms = 30, jitter_ms = 10 }
+cap = { kbps = 16 }
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "traffic"
+
+# Confirmation collapses (R18's finding): no replica gets past frame 150.
+[[report]]
+kind = "expect"
+at = 1
+conf_max = 150
+label = "fault-capped-collapse (stall)"
+
+[[report]]
+kind = "check_world"
+frames = 95
+label = "fault-capped-collapse (confirmed prefix)"

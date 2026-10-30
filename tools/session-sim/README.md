@@ -21,11 +21,17 @@ pe-session-sim list                                              # every scenari
 ```
 
 `regress` runs each scenario as a child process and writes its log to `target/session-sim/<name>.log`.
-It then compares the log line by line with `spikes/out/session-sim/<name>.log`. Measured CPU timings
-are masked: any decimal number of milliseconds, and the ball pit's "(N ms over the window)".
-`regress` fails if a log differs, a log is new, or a run exits with an error. It also fails on
-anything the old `scripts/run_session_sim.sh` failed on: `MISMATCH`, `DIFFER`, `FAIL`, `PANIC`,
-`panicked`, `NOT CONSERVED`, `checks ok N bad [1-9]` or `nonfinite [1-9]`. `--bless` writes this
+It then compares the log line by line with `spikes/out/session-sim/<name>.log`. Only the four CPU
+timings the logs print are masked: `resim frames N (<t> ms)`, `re-sim <t> ms per rendered sim
+frame`, `(<t> ms over the window)` and `step avg <t> ms;`.
+
+`regress` fails if any of these happens:
+- a log differs, or a log is new;
+- a run exits with an error, including a caught panic (`run` exits 3);
+- a committed log has no scenario (an orphan; checked on full runs only);
+- a check reaches frames that are not yet confirmed at every checked replica (`UNCONFIRMED`);
+- anything the old `scripts/run_session_sim.sh` failed on: `MISMATCH`, `DIFFER`, `FAIL`, `PANIC`,
+  `panicked`, `NOT CONSERVED`, `checks ok N bad [1-9]` or `nonfinite [1-9]`. `--bless` writes this
 run's logs over the committed ones; use it for a new scenario or an intended change, and review
 the diff. `--jobs` defaults to 1 (machine-load rule).
 
@@ -37,12 +43,28 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `r14/` | 10 | R14 settled handoff: ok, abort, reject, throttle, forge, late, crash, and ok/abort/reject in reverse peer order |
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
-| `faults/` | 5 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction, asymmetric links, capped links, crash and recovery |
+| `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 
 The first 30 are the phase-1 suite of `scripts/run_session_sim.sh`; their logs are identical to the
-committed ones. The `faults/` logs are new in P2-9. All 35 are identical on Windows and on Linux
+committed ones. The `faults/` logs are new in P2-9. All of them are identical on Windows and on Linux
 (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`, `regress-linux.txt`.
+
+## Validation
+
+`check`, `run` and `regress` refuse a scenario that is well-formed but meaningless:
+- an id that names no peer, or no member of the world concerned, in `peers`, `links`, `caps`,
+  faults, crashes, Byzantine behaviour or reports;
+- `peers` that leave out a world member;
+- an empty time window, a time after the end of the run, or `recover_ms` not after `at_ms`;
+- a member in two partition groups;
+- `loss_pct` above 100, `hz`, `kbps`, `every`, `count` or `times` of 0;
+- both `end_ms` and `end_us`;
+- a plan action at a frame its member never reaches;
+- an object the scene doesn't have (unless the scenario sets `allow_missing_objects = true` and
+  says why, as `phase1/backdate.toml` does to reproduce the spike);
+- a `check_world` over frames the run doesn't simulate;
+- no checking report (`check_world` or `verdict`) at all.
 
 ## File format
 
@@ -53,7 +75,7 @@ A scenario is a TOML file. Unknown keys are errors. Times are milliseconds of vi
 description = "..."                 # shown by `list`
 include = ["../common/pile.toml"]   # merged underneath, in order: tables key by key, other values
                                     # (arrays too) replaced whole
-end_ms = 12500                      # or end_us; the run steps 1 ms at a time up to here
+end_ms = 12500                      # or end_us (not both); the run steps 1 ms at a time up to here
 peers = [1, 2, 3]                   # simulator (tick) order; default: every member, ascending
 
 [peer.2]
@@ -155,8 +177,9 @@ Backdated touches are a plan action (`backdated`).
 
 Reports print after the run, in file order, in the spike's formats:
 
-- `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`.
-- `verdict`: honest members against an offline replay, plus the false-check count and any panic.
+- `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`. It prints `UNCONFIRMED` (a failure) if `frames` passes the lowest confirmed frame of the checked replicas.
+- `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
+- `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
 - `stats`.
 - `membership`.
 - `acceptance`.
