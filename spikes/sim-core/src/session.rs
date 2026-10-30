@@ -37,6 +37,7 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+pub use crate::provenance::{birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochCerts, ForkProof, Hop, Seen, StaticEpochs};
 
 pub type MemberId = u32;
 pub type EntryId = u64;
@@ -96,6 +97,8 @@ pub struct ObjRecord {
     pub state: BodyState,
     pub src_world: u32,
     pub src_frame: u64,
+    /// P2-5: the transfer that brought the object into `src_world` (0: born there).
+    pub via: u64,
 }
 
 // ---- entries, acks, messages ---------------------------------------------------------------------
@@ -111,18 +114,25 @@ pub enum Payload {
     Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8 },
     /// R14, source world: carry `obj` out through the portal into escrow, bound for world `dest`.
     /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
-    Depart { obj: u32, dest: u32, deadline: u64 },
+    /// P2-5: `hop` is the certified hop that brought the object here, when this world does not
+    /// hold it yet (copied from a `Provenance` entry); without it an arrived object cannot leave.
+    Depart { obj: u32, dest: u32, deadline: u64, hop: Option<Hop> },
     /// R14, destination world: the object arrives. `cert` is a strict majority of the source
     /// world's members' signatures over "departure `depart` of this record to this world, by
     /// this deadline, is confirmed" (reviews NEW-4, R3-8); without it the entry does nothing.
     /// `deadline` is a frame of the destination world: a later arrival is refused (R3-6).
-    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)> },
+    /// P2-5: `chain` is the object's provenance from its birth into the source world; the
+    /// certificate covers its hash.
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop> },
     /// R14, source world: the destination's confirmed verdict, with a strict majority of the
     /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
     Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
     Attest { fact: u64, sig: u64 },
+    /// P2-5, destination world: the source's certified commit of a transfer into this world, relayed
+    /// so every member holds the hop the object's next departure must carry. Never simulated.
+    Provenance { hop: Hop },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
@@ -189,6 +199,8 @@ impl Wr {
     fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
     fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
+    fn hop(&mut self, h: &Hop) { self.u32(h.src); self.u32(h.dest); self.u64(h.transfer); self.u64(h.via); self.u32(h.epoch); self.cert(&h.cert) }
+    fn chain(&mut self, c: &[Hop]) { self.u32(c.len() as u32); for h in c { self.hop(h) } }
     fn entry(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
@@ -201,14 +213,16 @@ impl Wr {
             Payload::Hand { obj, target_mm, active, span } => {
                 self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
             }
-            Payload::Depart { obj, dest, deadline } => {
+            Payload::Depart { obj, dest, deadline, hop } => {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
+                match hop { Some(h) => { self.u8(1); self.hop(h) } None => self.u8(0) }
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
-                self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame);
-                self.u64(*depart); self.u64(*deadline); self.cert(cert);
+                self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame); self.u64(record.via);
+                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain);
             }
+            Payload::Provenance { hop } => { self.u8(16); self.hop(hop) }
             Payload::Verdict { transfer, accepted, cert } => {
                 self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
             }
@@ -256,6 +270,15 @@ impl Rd<'_> {
         for _ in 0..n { c.push((self.u32()?, self.u64()?)) }
         Some(c)
     }
+    fn hop(&mut self) -> Option<Hop> {
+        Some(Hop { src: self.u32()?, dest: self.u32()?, transfer: self.u64()?, via: self.u64()?, epoch: self.u32()?, cert: self.cert()? })
+    }
+    fn chain(&mut self) -> Option<Vec<Hop>> {
+        let n = self.u32()? as usize;
+        let mut c = Vec::with_capacity(n.min(64));
+        for _ in 0..n { c.push(self.hop()?) }
+        Some(c)
+    }
     fn state(&mut self) -> Option<BodyState> {
         let mut s = [0u32; 13];
         for b in &mut s { *b = self.u32()? }
@@ -269,14 +292,20 @@ impl Rd<'_> {
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
             2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0, span: self.u8()? },
-            3 => Payload::Depart { obj: self.u32()?, dest: self.u32()?, deadline: self.u64()? },
+            3 => {
+                let (obj, dest, deadline) = (self.u32()?, self.u32()?, self.u64()?);
+                let hop = if self.u8()? == 1 { Some(self.hop()?) } else { None };
+                Payload::Depart { obj, dest, deadline, hop }
+            }
             4 => {
                 let transfer = self.u64()?;
                 let record = ObjRecord {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
+                    via: self.u64()?,
                 };
-                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()? }
+                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()? }
             }
+            16 => Payload::Provenance { hop: self.hop()? },
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
@@ -345,10 +374,13 @@ pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
 }
 
 /// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
-/// (a frame of `dest`)." Covers every field of the record (review R3-8).
-pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64) -> u64 {
+/// (a frame of `dest`), with provenance `chain` (its [`chain_hash`])." Covers every field of the
+/// record (review R3-8) and the chain (P2-5), so a relayer can neither strip nor swap the chain.
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64) -> u64 {
     fnv_u64s([
         1,
+        record.via,
+        chain,
         src as u64,
         depart,
         record.global,
@@ -541,6 +573,9 @@ pub struct Tables {
     pub cooldown: BTreeMap<u32, (MemberId, u64)>,
     pub escrow: BTreeMap<u64, Escrow>,
     pub arrivals: BTreeMap<u64, Arrival>,
+    /// P2-5: per global id, here (with its provenance) or the transfer that last took it away.
+    /// Never pruned: a world's own last exit is what lets it refuse a forked chain.
+    pub seen: BTreeMap<u64, Seen>,
     pub portal_open: bool,
     /// Active hands: frames since the hand's last entry (dead reckoning, `SimConfig::hand_predict`).
     pub hand_idle: BTreeMap<u32, u64>,
@@ -679,6 +714,12 @@ pub enum Outcome {
     RejectedLiveId,
     /// R14: the deadline is more than `MAX_DEADLINE_FRAMES` away (round 3, low).
     RejectedDeadline,
+    /// P2-5: the chain does not prove the object's way from its birth into the source world.
+    RejectedNoProvenance,
+    /// P2-5: the object left this world by a transfer the arrival's chain does not contain.
+    RejectedFork,
+    /// P2-5: the object arrived here and the departure lacks its certified hop in.
+    RejectedUnsettled,
 }
 
 /// One member's eviction vote, as read from its chain (review R3-1).
@@ -714,6 +755,14 @@ pub struct WorldSim {
     /// (D46 trust config, part of the world's genesis; reviews R3-4 to R3-6). Any other world can
     /// neither receive its objects nor vouch for one.
     pub peers_of: BTreeMap<u32, Vec<MemberId>>,
+    /// P2-5: epoch certificates of every world a provenance chain may pass through (static stub of
+    /// P2-4's interface), and whether arrivals check provenance (off only for the control run).
+    pub epochs: StaticEpochs,
+    pub provenance: bool,
+    /// Number of objects this world was born with: its birth records.
+    pub genesis_objects: u64,
+    /// P2-5: double spends this world has proof of (diagnostic; not part of the state).
+    pub fork_proofs: BTreeSet<ForkProof>,
     attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
@@ -813,6 +862,7 @@ pub fn now_us() -> u64 {
 impl WorldSim {
     pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig) -> Self {
         let (world, objs) = build_scene(scene, world_id);
+        let genesis_objects = objs.len() as u64;
         WorldSim {
             world_id,
             me,
@@ -828,6 +878,10 @@ impl WorldSim {
             ring: BTreeMap::new(),
             scratch: None,
             peers_of: BTreeMap::new(),
+            epochs: StaticEpochs::default(),
+            provenance: true,
+            genesis_objects,
+            fork_proofs: BTreeSet::new(),
             attested: BTreeSet::new(),
             known: members.iter().copied().collect(),
             entries: BTreeMap::new(),
@@ -976,6 +1030,9 @@ impl WorldSim {
                 Arrival::Rejected { frame, until } => v.extend([*t, 2, *frame, *until]),
             }
         }
+        for (g, s) in &self.t.seen {
+            s.hash_into(*g, &mut v);
+        }
         v.push(self.t.portal_open as u64);
         if self.cfg.hand_predict > 0 {
             for (o, n) in &self.t.hand_idle {
@@ -1021,7 +1078,7 @@ impl WorldSim {
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
     fn set_eff(&mut self, id: EntryId) {
         let e = &self.entries[&id];
-        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. });
+        let acts = !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } | Payload::Provenance { .. });
         let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
@@ -1161,7 +1218,7 @@ impl WorldSim {
             self.watched.insert(obj);
         }
         // Below the confirmed frame only a horizon violation can be new (design 10.8): never apply.
-        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. }) {
+        if e.stamp < self.conf && !matches!(e.payload, Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } | Payload::Provenance { .. }) {
             self.violations.insert(id);
         }
         let disputed = self.proofs.get(&e.member).is_some_and(|&(k, _, _)| e.seq >= k)
@@ -1658,7 +1715,16 @@ impl WorldSim {
         for esc in self.t.escrow.values() {
             if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
                 if esc.depart_frame < self.conf {
-                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline));
+                    let chain = chain_hash(&self.chain_of(rec.global));
+                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain));
+                }
+            }
+        }
+        // P2-5: a committed transfer is the hop the destination's next departure needs.
+        for (g, s) in &self.t.seen {
+            if let Seen::Left { transfer, dest, via, frame, .. } = s {
+                if *frame < self.conf {
+                    facts.push(fact_committed(self.world_id, *transfer, *g, *dest, *via));
                 }
             }
         }
@@ -1701,6 +1767,50 @@ impl WorldSim {
         }
         let c: Vec<(MemberId, u64)> = c.into_iter().collect();
         cert_ok(&members, self.world_id, fact, &c).then_some(c)
+    }
+
+    // ---- P2-5 provenance ---------------------------------------------------------------------------
+
+    /// What this world knows of global id `g`. An object born here that has no entry yet is here,
+    /// with an empty chain.
+    pub fn seen_of(&self, g: u64) -> Option<Seen> {
+        self.t.seen.get(&g).cloned().or_else(|| {
+            (birth_world(g) == self.world_id && (g & 0xFFFF_FFFF) < self.genesis_objects)
+                .then(|| Seen::Here { via: 0, from: self.world_id, from_via: 0, chain: Vec::new(), settled: true })
+        })
+    }
+
+    /// The provenance chain of an object here: what its next departure's `Arrive` carries.
+    pub fn chain_of(&self, g: u64) -> Vec<Hop> {
+        match self.seen_of(g) {
+            Some(Seen::Here { chain, .. }) => chain,
+            _ => Vec::new(),
+        }
+    }
+
+    /// The hop a departure of local object `obj` must carry: the certified commit that brought it
+    /// here, from a `Provenance` entry in this world's log, if this world does not hold it yet.
+    pub fn pending_hop(&self, obj: u32) -> Option<Hop> {
+        let g = self.live(obj)?.global;
+        let here = self.seen_of(g)?;
+        if !matches!(here, Seen::Here { settled: false, .. }) {
+            return None;
+        }
+        // Anyone may publish a Provenance entry: take one that proves the hop.
+        self.entries.iter().find_map(|(id, e)| match &e.payload {
+            Payload::Provenance { hop } if !self.is_void(*id) && self.hop_in_ok(g, &here, hop) => Some(hop.clone()),
+            _ => None,
+        })
+    }
+
+    /// `hop` is the certified commit of the transfer that brought object `g` here.
+    fn hop_in_ok(&self, g: u64, here: &Seen, hop: &Hop) -> bool {
+        let Seen::Here { via, from, from_via, .. } = here else { return false };
+        hop.src == *from
+            && hop.dest == self.world_id
+            && hop.transfer == *via
+            && hop.via == *from_via
+            && self.epochs.cert_ok(hop.src, hop.epoch, fact_committed(hop.src, hop.transfer, g, hop.dest, hop.via), &hop.cert)
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -1775,7 +1885,7 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Depart { obj, dest, deadline } => {
+            Payload::Depart { obj, dest, deadline, hop } => {
                 let transfer = &transfer_id(self.world_id, id);
                 if self.t.escrow.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
@@ -1805,18 +1915,41 @@ impl WorldSim {
                         return Outcome::RejectedClaimed { by: c.member, until: c.until };
                     }
                 }
-                let record = ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.body), src_world: self.world_id, src_frame: f };
+                // P2-5: an object that arrived here leaves again only with the certified hop in, so
+                // the next destination can check its whole way from birth.
+                let mut via = 0;
+                if self.provenance {
+                    let here = self.seen_of(o.global);
+                    match here.clone() {
+                        Some(Seen::Here { settled: true, via: v, .. }) => via = v,
+                        Some(Seen::Here { settled: false, via: v, from, from_via, mut chain }) => {
+                            let Some(h) = hop.as_ref().filter(|h| self.hop_in_ok(o.global, here.as_ref().unwrap(), h)) else {
+                                self.t.escrow.insert(*transfer, gone);
+                                return Outcome::RejectedUnsettled;
+                            };
+                            chain.push(h.clone());
+                            via = v;
+                            self.t.seen.insert(o.global, Seen::Here { via, from, from_via, chain, settled: true });
+                        }
+                        _ => {
+                            self.t.escrow.insert(*transfer, gone);
+                            return Outcome::RejectedUnsettled;
+                        }
+                    }
+                }
+                let record =
+                    ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.body), src_world: self.world_id, src_frame: f, via };
                 destroy_body(&mut self.world, o.body);
                 self.t.objs[*obj as usize] = None;
                 self.t.claims.remove(obj);
                 self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
                 Outcome::Accepted
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
                 let src = record.src_world;
                 // Reviews R3-4, R3-5: only a world on the agreed route list can vouch for an object.
                 let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
-                let fact = fact_departed(src, *depart, record, self.world_id, *deadline);
+                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chain_hash(chain));
                 if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
@@ -1838,6 +1971,34 @@ impl WorldSim {
                 }
                 if self.t.arrivals.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
+                }
+                // P2-5: the source's majority vouches for the departure, not for how the object got
+                // there. Check the chain back to its birth world against each hop's epoch
+                // certificates, and that it passes through this world's own last exit of the
+                // object. A refusal is certified like any other, and returns the object to the
+                // source (whose majority signed this chain).
+                if self.provenance {
+                    if check_chain(&self.epochs, record.global, src, record.via, chain).is_err() {
+                        self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                        return Outcome::RejectedNoProvenance;
+                    }
+                    let known = self.seen_of(record.global);
+                    if let Some(p) = known.as_ref().and_then(|k| fork_proof(k, record.global, chain, src, record.via, *transfer)) {
+                        if self.fork_proofs.insert(p) {
+                            self.ev(format!("P2-5 fork proof: world {} exported global id {:#x} twice from its entry {}: transfers {} and {}", p.world, p.global, p.via, p.a, p.b));
+                        }
+                    }
+                    match known {
+                        Some(Seen::Here { .. }) => {
+                            self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                            return Outcome::RejectedLiveId;
+                        }
+                        Some(Seen::Left { transfer: out, .. }) if !chain.iter().any(|h| h.transfer == out && h.src == self.world_id) => {
+                            self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                            return Outcome::RejectedFork;
+                        }
+                        _ => {}
+                    }
                 }
                 // Review R3-6: past the deadline the arrival is refused, and that certified refusal
                 // returns the object to the source. Nobody can hold it in limbo by never relaying:
@@ -1863,6 +2024,8 @@ impl WorldSim {
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });
+                let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), settled: false };
+                self.t.seen.insert(record.global, here);
                 self.watched.insert(obj);
                 Outcome::Accepted
             }
@@ -1876,6 +2039,12 @@ impl WorldSim {
                     return Outcome::RejectedNoProof;
                 }
                 if *accepted {
+                    let rec = esc.record.expect("pending escrow holds its record");
+                    let (from, from_via) = match self.seen_of(rec.global) {
+                        Some(Seen::Here { from, from_via, .. }) => (from, from_via),
+                        _ => (self.world_id, 0),
+                    };
+                    self.t.seen.insert(rec.global, Seen::Left { transfer: *transfer, dest: esc.dest, via: rec.via, frame: f, from, from_via });
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Committed, record: None, ..esc });
                 } else {
                     let rec = esc.record.expect("pending escrow holds its record");
@@ -1890,7 +2059,7 @@ impl WorldSim {
                 Outcome::Accepted
             }
             // Protocol entries never reach the sim (set_eff schedules only perturbations).
-            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } => Outcome::Accepted,
+            Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } | Payload::Provenance { .. } => Outcome::Accepted,
         }
     }
 
@@ -2162,18 +2331,35 @@ pub fn replay_sim_with(
 ) -> WorldSim {
     let mut s = WorldSim::new(world_id, u32::MAX, members, scene, cfg);
     s.peers_of = peers_of.clone();
-    for (e, eff) in log {
-        let id = e.id();
-        s.by_author.insert((e.member, e.seq), id);
-        s.entries.insert(id, e.clone());
-        s.eff.insert(id, *eff);
-        s.at_frame.entry(*eff).or_default().insert(id);
+    s.run_log(log, frames)
+}
+
+/// As [`replay_sim_with`], with `like`'s cross-world config: route list, epoch certificates and
+/// whether provenance is checked (P2-5).
+pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], log: &[(Entry, u64)], frames: u64) -> WorldSim {
+    let mut s = WorldSim::new(like.world_id, u32::MAX, members, scene, like.cfg);
+    s.peers_of = like.peers_of.clone();
+    s.epochs = like.epochs.clone();
+    s.provenance = like.provenance;
+    s.run_log(log, frames)
+}
+
+impl WorldSim {
+    /// Offline reference: load a final log with its effective frames and simulate `frames`.
+    fn run_log(mut self, log: &[(Entry, u64)], frames: u64) -> WorldSim {
+        for (e, eff) in log {
+            let id = e.id();
+            self.by_author.insert((e.member, e.seq), id);
+            self.entries.insert(id, e.clone());
+            self.eff.insert(id, *eff);
+            self.at_frame.entry(*eff).or_default().insert(id);
+        }
+        self.conf = u64::MAX / 2;
+        while self.frame < frames {
+            self.step_frame(true);
+        }
+        self
     }
-    s.conf = u64::MAX / 2;
-    while s.frame < frames {
-        s.step_frame(true);
-    }
-    s
 }
 
 /// The log this member would hand to [`replay`]: every non-void entry with its effective frame.
