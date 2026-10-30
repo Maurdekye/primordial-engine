@@ -1,0 +1,10 @@
+spawn of a no-op exe from Python: median 5.49 ms
+split dev incr=0                   build   0.385s [0.355-0.600]  noop 0.058s  swap    59.62ms (compile 5.7, tick1 11.6)  loop 0.445s  2870410 B
+mono dev incr=0                    build   0.603s [0.570-0.894]  noop 0.057s  swap    60.08ms (compile 5.7, tick1 11.9)  loop 0.663s  2903590 B
+split rel-fast incr=0              build   0.443s [0.424-0.481]  noop 0.057s  swap     6.22ms (compile 3.6, tick1 1.2)  loop 0.450s  224694 B
+split dev cgu=1                    build   0.377s [0.360-0.408]  noop 0.059s  swap    59.60ms (compile 5.6, tick1 11.5)  loop 0.440s  2851800 B
+split dev +breakdown               build   0.590s [0.455-0.722]  noop 0.065s  rustc-sum 576ms  direct-rustc 0.618s  3034693 B
+split rel-fast +breakdown          build   0.463s [0.451-0.485]  noop 0.062s  rustc-sum 440ms  direct-rustc 0.305s  224774 B
+split release +breakdown           build   1.348s [1.293-1.424]  noop 0.058s  rustc-sum 1302ms  direct-rustc 0.235s  263917 B
+mono dev +breakdown                build   0.473s [0.421-0.486]  noop 0.056s  rustc-sum 393ms  direct-rustc 0.388s  3010166 B
+raw: E:\Libraries\Desktop\Primordial Engine\spikes\out\iter-bench\loop-levers.jsonl

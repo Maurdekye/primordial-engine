@@ -9,6 +9,8 @@
 //! Frame convention: `snapshot(f)` is the state at the *start* of frame `f`, before frame `f`'s
 //! interactions are applied. `hashes[f]` is the hash of the state *after* frame `f` was stepped.
 
+pub mod session;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use box3d_rust::body::{body_apply_linear_impulse_to_center, body_is_valid, create_body};

@@ -215,6 +215,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe-spike-session-sim"
+version = "0.0.1"
+dependencies = [
+ "pe-sim-core",
+]
+
+[[package]]
 name = "pe-spike-wasm-hotswap"
 version = "0.0.1"
 dependencies = [
