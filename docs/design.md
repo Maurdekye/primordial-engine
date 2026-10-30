@@ -34,7 +34,7 @@ against this list. Where the order changed an answer, the text says so. Examples
     running it.
   * **[I]** inferred or proposed design. Not yet tested.
 * Choices that go beyond what the user specified are collected in **section 24, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D77**, with
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D78**, with
   letter suffixes where one topic was split (e.g. D14a). Most are now settled by the user (24 says which and
   when); the few still open are marked so.
 * Review findings (C1, H4, M3, R13-C1, …) are cited where they changed the design;
@@ -138,7 +138,7 @@ Rulings that shape the design:
   (15:40Z, D13).
 * **The open decisions** (18:42-19:21Z): the user ruled D2, D4, D11, D18a/D20, D21, D23 and D62, D27a and
   D34, D32, D49, D60 and D72, and took the recommendation for every other (19:11Z). Section 24 records
-  each. The rulings raised five new questions, D74-D78.
+  each. The rulings raised five new questions, D74-D78, which the user settled as recommended at 19:58Z.
 
 ---
 
@@ -3561,7 +3561,7 @@ What moved, and why:
 
 | Phase | Content | Milestone and exit criteria |
 |---|---|---|
-| 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on Windows and Linux, x86-64 on two CPUs and ARM. Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
+| 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on the user's machines: Windows and Linux, x86-64 on two CPUs (ARM deferred). Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
 | 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal with volunteer relays (D35) and **relay mailboxes** for offline mail (D32); state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6) and **regions** with provisional arrival and following (D60); **multi-threaded stepping** in the fork if the D2 study succeeds; **pe-worlds**: two worlds per client, the settled handoff with provenance checks, portal rendering | M2: friends and strangers play over the internet with no server of ours; late join works; a ball pit of 500 balls stays within budget at 90 Hz, or at its 60 Hz fallback (D4); an object carried through a portal between two sessions |
 | 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels: owner panels (structured adapters + PTY), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a), **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32) | M3: a player's own Claude Code or Codex, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
 | 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; voice input on Windows (D33; Linux per D77); per-eye portal straddling | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal |
@@ -3574,10 +3574,11 @@ What moved, and why:
    feasibility study is under way), coalesced rollbacks, keyframes, region-scoped rollback in phase 3,
    remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), the 60 Hz fallback (D76) and
    opt-in input delay (D41).
-2. **Determinism beyond one machine.** With the engine's physics (vdW on), it is verified on one PC, in
-   five build settings. The Intel laptop and Linux runs came before that change; @design-reviewer is
-   re-running both on main. ARM and macOS never ran. Linux is now a day-one platform (D20), and parallel
-   stepping (D2) must stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix.
+2. **Determinism beyond the machines tested.** With the engine's physics (vdW on), main (d79f160) is
+   byte-identical on this PC in five build settings, on <laptop> (Intel, also with `target-cpu=native`) and
+   as a Linux musl build, the four wasm modules included [V @design-reviewer's re-check; report
+   `determinism-main-d79f160.md` in its working folder]. ARM and macOS never ran. Parallel stepping (D2) must
+   stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
 3. **The session protocol is new code, and strangers may join from day one** (D21). Confirmation,
    eviction and fetch repair were proved in an in-process simulator and over loopback UDP, not on the
    internet. Removing one silent, slow or equivocating member is built [V crashstall, capped slow member,
@@ -3680,11 +3681,11 @@ Rules for every package:
 
 **P2-6. Determinism matrix.**
 * What: one command that builds and runs the determinism set (`scripts/run_determinism.sh`) on each
-  available machine and compares digests across them: Windows x64, Linux x64 (glibc and musl), two x86-64
-  CPUs, and ARM64.
+  available machine and compares digests across them: Windows x64, Linux x64 (glibc and musl) and two
+  x86-64 CPUs. ARM64 is deferred: no ARM machine is available.
 * Skills: build and CI engineering, cross-compilation, scripting.
-* Depends on: **a decision on where CI runs**: the repository has no remote, and no ARM machine is known.
-  @coordinator-opus to ask the user (a hosted CI, a self-hosted runner, or local machines only).
+* Depends on: nothing. **Settled (user, 19:58Z): CI runs on local machines only:** this PC's Windows and
+  WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
 
@@ -3692,8 +3693,8 @@ Rules for every package:
 * What: build the same guest commits on Windows and Linux hosts with the pinned toolchain and the 13.2
   rules; find and remove host-dependent differences; measure build times for the activation lead.
 * Skills: the Rust toolchain and reproducible builds (rustc and cargo internals), Linux.
-* Depends on: a Linux host with the pinned toolchain (WSL has none today, so it needs an install, or
-  <laptop>).
+* Depends on: a Linux host with the pinned toolchain. **Approved (user, 19:58Z):** install rustup and
+  build-essential in WSL Ubuntu-24.04. Owner: @design-reviewer.
 * Done: the spike guests plus one larger test crate are byte-identical (raw hash) on both hosts and from
   two checkout paths; every difference found is fixed or written down as a 13.2 rule; a build-time table.
 
@@ -4440,6 +4441,7 @@ entry says so.
     cost to receivers, which already pay for lateness (8.2).
 
 * **D74. When a peer's build does not match (13.2; raised by D11).**
+  * **Settled (user, 19:58Z): (a), with (b) as an opt-in.** On a mismatch the peer pauses the world at the activation frame and the author gets a report; the peer may choose to run the author's module for that commit.
   * The problem: every peer builds every commit, and a peer whose module differs from the author's hash
     cannot run it without diverging.
   * Options:
@@ -4453,6 +4455,7 @@ entry says so.
   * Recommendation: (a), with (b) as an explicit per-peer opt-in. Once builds are reproducible across
     machines (13.2), a mismatch is a bug to fix, and should be rare.
 * **D75. Where the pinned toolchain comes from (13.2; raised by D11).**
+  * **Settled (user, 19:58Z): (a).** Peers share the toolchain as content-addressed files verified against hashes pinned in the engine release, with the official Rust distribution as the fallback.
   * Every peer needs rustc and the wasm32 std, about 1 GB [I].
   * Options:
     * **(a) Peers distribute it among themselves** as content-addressed artifacts, verified against
@@ -4464,6 +4467,7 @@ entry says so.
       every toolchain update becomes an engine update.
   * Recommendation: (a).
 * **D76. What triggers the fallback from 90 to 60 Hz (5; raised by D4).**
+  * **Settled (user, 19:58Z): (a).** The world owner switches between 90 and 60 Hz, warned by the engine when members' machines cannot keep up.
   * A world's rate must change for every member at the same frame, as a logged world setting.
   * Options:
     * **(a) The world owner chooses,** changing the setting like a commit, at an activation frame. The
@@ -4475,6 +4479,7 @@ entry says so.
     * **(c) Fixed when the world is created.**
   * Recommendation: (a).
 * **D77. Voice input on Linux (21.2; raised by D20 and D33).**
+  * **Settled (user, 19:58Z): as recommended:** no voice input on Linux in the MVP (the VR keyboard instead); a local speech model later.
   * Linux has no OS speech-recognition service like Windows'.
   * Options:
     * **(a) No voice input on Linux in the MVP;** text through the VR keyboard. Recommended for the MVP.
@@ -4483,6 +4488,7 @@ entry says so.
     * **(c) A separate non-Rust speech service on Linux,** as a 20.1 boundary.
   * Recommendation: (a) now, (b) later.
 * **D78. A default hub for the automatic Hubchat identities (21.7; raised by D32).**
+  * **Settled (user, 19:58Z): (a), no default hub.** The automatic identities register once the player adds a hub.
   * Every player and panel gets a hub identity at first launch, minted locally. With no hub built in, it
     reaches Hubchat users only once the player adds a hub.
   * Options:
