@@ -5,11 +5,11 @@ members = [
     "spikes/physics",
     "spikes/p2p",
     "spikes/wasm-hotswap",
-    "spikes/mcp-stub",
     "spikes/session-sim",
     "crates/box3d-fork",
     "spikes/ballpit-viz",
     "spikes/physics-in-wasm",
+    "crates/pe-mcp",
 ]
 # Guest game-logic crates build for wasm32-unknown-unknown separately.
 exclude = ["spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
