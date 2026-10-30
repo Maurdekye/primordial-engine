@@ -89,3 +89,38 @@ fn worker_count_can_change_between_steps() {
     );
     assert_eq!(switching, reference);
 }
+
+/// Snapshot at frame 60 with 1 worker; restore it into a world with 4 workers that has run on
+/// to frame 100, and into a fresh 3-worker world; both continue exactly like the 1-worker run.
+/// (Review of 73eaedc, non-blocking.)
+#[test]
+fn snapshot_restores_across_worker_counts() {
+    use crate::recording::{deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer};
+    let step = |world: &mut World, n: usize| {
+        for _ in 0..n {
+            world.step(1.0 / 60.0, 4);
+        }
+    };
+
+    let mut reference = world_with(1);
+    create_wave_pile(&mut reference);
+    step(&mut reference, 60);
+    let mut registry = GeometryRegistry::new();
+    let mut buf = RecBuffer::new();
+    serialize_world(&reference, &mut buf, &mut registry);
+    step(&mut reference, 90);
+    let expected = hash_world_state(&reference);
+
+    let mut slots = registry.to_slots();
+    let mut ahead = world_with(4);
+    create_wave_pile(&mut ahead);
+    step(&mut ahead, 100);
+    assert!(deserialize_into_shell(&buf.data, &mut ahead, &mut slots));
+    step(&mut ahead, 90);
+    assert_eq!(hash_world_state(&ahead), expected, "in place, 4 workers");
+
+    let mut fresh = world_with(3);
+    assert!(deserialize_into_shell(&buf.data, &mut fresh, &mut slots));
+    step(&mut fresh, 90);
+    assert_eq!(hash_world_state(&fresh), expected, "fresh world, 3 workers");
+}
