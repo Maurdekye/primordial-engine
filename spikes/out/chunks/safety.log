@@ -1,0 +1,24 @@
+pe-spike-chunks safety (box3d positions: f32)
+== safety (review N1): late merges under footprint steps ==
+RESULT safety case="chunk step during a q stall (gap 4 km)" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=360 R_learns_at=435 R_had_simulated_to=434 R_frames_lost_before_learning=0
+RESULT safety case="chunk step during a q stall (gap 4 km)" rule=revised late_merge=false refused_as_join=false merge_frame=975 R_learns_at=435 R_had_simulated_to=434 R_frames_lost_before_learning=0
+RESULT safety case="chunk step, no stall (gap 4 km)" rule=2a228c6 late_merge=false refused_as_join=false merge_frame=360 R_learns_at=342 R_had_simulated_to=341 R_frames_lost_before_learning=0
+RESULT safety case="chunk step, no stall (gap 4 km)" rule=revised late_merge=false refused_as_join=false merge_frame=975 R_learns_at=342 R_had_simulated_to=341 R_frames_lost_before_learning=0
+RESULT safety case="scale x8 (+14 km), pull every 60 s or on demand (gap 10 km)" rule=2a228c6 late_merge=false refused_as_join=false merge_frame=1030 R_learns_at=1012 R_had_simulated_to=1011 R_frames_lost_before_learning=0
+RESULT safety case="scale x8 (+14 km), pull every 60 s or on demand (gap 10 km)" rule=revised late_merge=false refused_as_join=false merge_frame=9632 R_learns_at=1012 R_had_simulated_to=1011 R_frames_lost_before_learning=0
+RESULT safety case="joiner at q's near edge (+3 km), pull every 60 s or on demand (gap 5 km)" rule=2a228c6 late_merge=false refused_as_join=false merge_frame=1030 R_learns_at=1012 R_had_simulated_to=1011 R_frames_lost_before_learning=0
+RESULT safety case="joiner at q's near edge (+3 km), pull every 60 s or on demand (gap 5 km)" rule=revised late_merge=false refused_as_join=false merge_frame=2874 R_learns_at=1012 R_had_simulated_to=1011 R_frames_lost_before_learning=0
+RESULT safety case="scale x8 (+14 km), pull every 60 s only (gap 10 km)" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=1030 R_learns_at=3600 R_had_simulated_to=3599 R_frames_lost_before_learning=0
+RESULT safety case="scale x8 (+14 km), pull every 60 s only (gap 10 km)" rule=revised late_merge=false refused_as_join=false merge_frame=9632 R_learns_at=3600 R_had_simulated_to=3599 R_frames_lost_before_learning=0
+RESULT safety case="joiner at q's near edge (+3 km), pull every 60 s only (gap 5 km)" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=1030 R_learns_at=3600 R_had_simulated_to=1188 R_frames_lost_before_learning=2411
+RESULT safety case="joiner at q's near edge (+3 km), pull every 60 s only (gap 5 km)" rule=revised late_merge=false refused_as_join=false merge_frame=2874 R_learns_at=3600 R_had_simulated_to=1188 R_frames_lost_before_learning=2411
+RESULT safety case="walker at v_max toward R, 12 chunk steps, q stall mid-way (gap 12 km)" rule=2a228c6 late_merge=false refused_as_join=false merge_frame=5250 R_learns_at=5232 R_had_simulated_to=5231 R_frames_lost_before_learning=0
+RESULT safety case="walker at v_max toward R, 12 chunk steps, q stall mid-way (gap 12 km)" rule=revised late_merge=false refused_as_join=false merge_frame=5865 R_learns_at=5232 R_had_simulated_to=5231 R_frames_lost_before_learning=0
+RESULT safety case="region created 4.5 km from R, then walks toward it" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=1430 R_learns_at=never R_had_simulated_to=0 R_frames_lost_before_learning=0
+RESULT safety case="region created 4.5 km from R, then walks toward it" rule=revised late_merge=false refused_as_join=false merge_frame=2045 R_learns_at=1412 R_had_simulated_to=1411 R_frames_lost_before_learning=0
+RESULT safety case="region created 3.5 km from R, then walks toward it" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=730 R_learns_at=never R_had_simulated_to=0 R_frames_lost_before_learning=0
+RESULT safety case="region created 3.5 km from R, then walks toward it" rule=revised late_merge=false refused_as_join=true merge_frame=- R_learns_at=never R_had_simulated_to=0 R_frames_lost_before_learning=0
+RESULT safety case="region created 4.5 km from R and walks toward it, world log stalled 5 s" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=1430 R_learns_at=never R_had_simulated_to=0 R_frames_lost_before_learning=0
+RESULT safety case="region created 4.5 km from R and walks toward it, world log stalled 5 s" rule=revised late_merge=false refused_as_join=false merge_frame=2045 R_learns_at=1412 R_had_simulated_to=1411 R_frames_lost_before_learning=0
+RESULT safety case="region created 4.5 km from R and walks toward it, world log stalled 12 s" rule=2a228c6 late_merge=true refused_as_join=false merge_frame=1430 R_learns_at=never R_had_simulated_to=0 R_frames_lost_before_learning=0
+RESULT safety case="region created 4.5 km from R and walks toward it, world log stalled 12 s" rule=revised late_merge=false refused_as_join=false merge_frame=2045 R_learns_at=1412 R_had_simulated_to=1411 R_frames_lost_before_learning=185

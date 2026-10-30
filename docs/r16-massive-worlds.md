@@ -1,11 +1,10 @@
 # 25. Massive worlds: hierarchical chunks, f64 coordinates and regions (R16)
 
-Status: ready to merge as section 25, numbered after the architect's 24. Revised after @design-reviewer's
-review of 45d4940 (R16-1 to R16-7):
-* the world log is off the per-frame path (neighbour bound);
-* support and awake closure;
-* membership frozen at confirmation;
-* corrected labels.
+Status: ready to merge as section 25, numbered after the architect's 24. Revised twice:
+* after @design-reviewer's review of 45d4940 (R16-1 to R16-7);
+* after @chunks-reviewer's re-review of 2a228c6 (N1 to N8): the growth clock and region creation rule, split
+  hysteresis, single-member eviction and durability, cross-region equivocation, multi-band regions and
+  per-band constants, swept closure with static proxies, and labels.
 
 The region and group model (25.5) follows the round-2 protocol (design 10.8). It is designed, not built.
 Every measured number is tagged.
@@ -65,7 +64,8 @@ length units, per world or per region.
   * box3d `double-precision` costs 2-10% of step time and 1-2% of image size [V];
   * with a region-local origin, physics 100,000 km out behaves as at the origin [V];
   * a late entry rolls back one region: 0.7 ms instead of 10.5 ms for the 16-player world [V];
-  * spread-out players cost each other nothing: 0.12 ms per tick and 1.5 MB per player at 2 or 256 players
+  * spread-out players cost each other nothing in CPU or memory: 0.12 ms per tick and 1.5 MB per player at
+    2 or 256 players
     [V], against about 300 ms (282-635 ms across runs) and 368 MB unchunked at 256 [C, from measured
     region costs];
   * the hashed multi-level grid beats both octrees on query time, build time and memory, and matches them on
@@ -117,14 +117,18 @@ Passes run every `P` = 8 frames, a deterministic cadence. (Rules revised after r
 1. **Relevant to an anchor.** For some member anchor `a` (position `p`, height `h`, predicted over the
    next pass), `r_o >= h / 64` and `|p - o| <= min(rho * r_o, reach_cap(h))`. By default
    `reach_cap` = 2 km x `h / 1.7 m`.
-2. **Awake stays active.** An active body that is awake stays active until it falls asleep, unless it is
-   beyond the hard reach (2 x `reach_cap`) of every anchor. A coin knocked off a table lands; it does not
+2. **Awake stays active.** An active body that is awake stays active until it falls asleep, or until it
+   leaves its region's footprint (the hard reach; review N6). A coin knocked off a table lands; it does not
    freeze in mid-air.
 3. **Woken.** An object inside the swept bounds of an awake active body no more than 16 times larger
    (`r_o >= r_body / 16`) becomes active. Things you push, throw or knock over wake what they hit.
-4. **Support closure, one hop.** A dormant object whose bounds touch a body that is active by rule 1, 2 or
-   3 is included, however small it is. The included object does not pull in its own neighbours. So the
-   stones under a relevant crate are simulated and carry it, without waking the whole stone bed.
+4. **Support closure** (revised after review N7).
+   * **First hop, simulated.** A dormant object whose bounds touch a body active by rule 1, 2 or 3 is
+     included, however small it is. The bounds are swept by that body's velocity over the coming pass.
+   * **Second hop, static proxy.** Objects touching that first hop are added as static proxies: they
+     collide but are not simulated. A proxy becomes simulated when it is itself in a first hop.
+   * The stones under a relevant crate are therefore simulated, and the stones under them hold them up,
+     without waking the whole heap.
 
 Measured [V], `closure` scene: a 0.9 m crate on a bed of 3 cm stones and a coin knocked off a table, with
 the player walking in from 20 m.
@@ -132,7 +136,22 @@ the player walking in from 20 m.
 | Rule set | Crate | Stones left inside the crate | Coin | Bodies active (max) |
 |---|---|---|---|---|
 | Rule 1 + wake only (as of 45d4940) | falls 6 cm through the dormant stones to the ground | 81 | frozen in mid-air at 0.94 m | 49 |
-| Rules 1-4 | rests on the stones (settles 2 cm as they shift) | 0 | lands on the floor | 134 |
+| Rules 1-4 (one hop) | rests on the stones (settles 2 cm as they shift) | 0 | lands on the floor | 134 |
+
+Measured [V], `closure2` scenes, each with an all-dynamic control (what physics alone does):
+
+| Scene | All-dynamic control | One hop, static bounds (2a228c6) | Swept first hop + static second hop (revised) |
+|---|---|---|---|
+| 20 cm crate set on a 3-layer heap of 5 cm gravel: crate height (rests at 0.251) | 0.242, no gravel displaced | **0.197**: falls a layer; 68 gravel cubes sink | **0.243**, none sink; 124 static proxies |
+| The same crate thrown at 2 m/s onto 1.2 cm gravel (below r/16): final height (rests at 0.112) | 0.106, 16 gravel inside the crate | 0.105, 2 inside | 0.106, 21 inside |
+
+* **The heap shows the second hop matters.** Without it, the first hop's gravel falls into the space where
+  the dormant layer below should be.
+* **The thrown case is decided by the solver, not by the rule.** Gravel under 1/16 of the crate's size has
+  under 1/4,096 of its mass. Box3D lets the crate sink into it even when everything is simulated, and all
+  three variants end within 1 mm of each other.
+* A first attempt with a 0.9 m crate on 2.5 cm gravel (a mass ratio of 47,000) sank to the ground even in the
+  control, so it was replaced.
 
 * **Dormant means frozen exactly.** Position, rotation and velocities are kept bit for bit in a dormant
   record: about 100 bytes, against about 1.9 KB per body in a box3d image [V]. Time does not pass for
@@ -172,42 +191,95 @@ epoch and ack cadence.
 
 ### 25.5.2 Anchors, footprints and the neighbour bound
 
-* **Anchor.** Each member has one: the position and scale that drive activation (its avatar root).
-* **Home region.** Each member belongs to exactly one region's group, its home region. Its anchor entries
+Revised after review N1, N2 and N8. Footprints change in steps, so outsiders must never see one grow
+faster than `v_max`.
+
+* **Anchor and home region.** Each member has an anchor: the position and scale that drive activation (its
+  avatar root). Each member belongs to exactly one region's group, its **home region**. Its anchor entries
   live in that region's log:
-  * a coarse `Anchor{chunk, scale_exp}` when it nears a chunk boundary (with hysteresis), taking effect at
-    `stamp + Lambda` (default 15 frames, a few times the region log's measured 4-5 frame confirmation lag;
-    the anchor is confirmed before it changes the footprint, so topology is fixed by confirmed data);
-  * the fine quantized position at 4-10 Hz while it moves.
-  Region topology and relevance are therefore in-region, deterministic data.
-* **Speed bound.** A footprint moves at most `v_max` (default 100 m/s, a world setting). Faster travel
-  declares a larger footprint margin along its velocity, or uses a portal-style transfer (22). This bound
-  is what lets distant regions ignore each other.
-* **Footprint.** The level-0 chunks within `ceil(reach_cap / 1024) + 1` of the anchor chunk, at the
-  member's scale band. A region's footprint is the union over its members. Regions keep at least
-  `D_merge` (default 3 km, more than two footprint radii) between their footprints, or they merge
-  (25.5.4).
-* **Neighbour bound (the cross-region dependency).** Region `R` may simulate frame `f` only while, for
-  every other region `q`, `known_conf_q + slack(R, q) >= f`, where:
-  * `known_conf_q` is the newest confirmed frame of `q` that `R` holds, together with `q`'s confirmed
-    footprint at that frame;
-  * `slack(R, q) = (distance between the footprints - D_merge) / v_max`.
+  * a coarse `Anchor{chunk, scale_exp}` when it nears a chunk boundary (with hysteresis);
+  * the fine quantized position, at 4-10 Hz while it moves.
+* **`Lambda` = 30 frames.** That is above the region log's measured confirmation lag of 8.5 frames (at most
+  9-10 frames at 256 kbit/s; ed347ac 6.4).
+  * If an anchor is still unconfirmed when it takes effect (for example during a stall), its own region
+    simulates speculatively and rolls back if needed, as for any entry.
+  * Other regions only ever use confirmed data (below).
+* **Footprint.** The level-0 chunks within `ceil(reach_cap / 1024) + 1` of the anchor chunk, at the member's
+  scale band, so a radius of at least 3 chunks at human scale. A region's footprint is the union over its
+  members.
+* **Speed bound and the growth clock** (review N1). A footprint may *grow* toward any point by at most
+  `v_max` (default 100 m/s at human scale, 25.6) over time.
+  * Every change that grows a region's footprint takes effect at
+    `max(stamp + Lambda, previous growth's effect frame) + ceil(60 J / v_max)`. Here `J` is how far the
+    change extends the union of the current footprint and all pending growth.
+  * The growth clock is per region and runs in log order, so growths queue rather than add up.
+  * It covers every kind of step:
+    * a chunk crossing (`J` = 1,024 m: about 10 s, which the footprint's one-chunk margin covers);
+    * a scale-up (+14 km for x8: a 143 s ramp);
+    * a joiner, warp or respawn admitted at the edge;
+    * a travel declaration.
+  * Shrinking is immediate: it only widens gaps.
+* **Envelope.** A region `q`'s envelope, as another region `R` sees it, is computed from every anchor
+  *stamped* up to the confirmed frame `R` holds for `q`, including growth not yet in effect.
+  * By the growth clock, `q`'s true footprint at frame `f` lies within that envelope grown by
+    `v_max (f - known_conf_q)`.
+* **Neighbour bound.** `R` may simulate frame `f` only while, for every other region `q`,
+  `known_conf_q + (envelope gap - D_merge) / v_max >= f`.
+  * `R`'s members pull `q`'s confirmed prefix, with its proof (25.5.8), from `q`'s members. They pull every
+    60 s, and on demand whenever the bound comes within 2 s of `R`'s present. They record it in `R`'s log as
+    `NeighbourRef{q, frame, head, envelope}`.
+  * **A region gated by the bound keeps publishing horizons that advance with its present** (review N2).
+    Its own confirmation is unaffected, so a stall does not propagate along a chain of close regions.
+* **Region creation** (a first member, or a warp into empty space) is a world-log fact.
+  * `RegionCreated{region, footprint}` takes effect at `stamp + Lambda`.
+  * A region may be created only if its footprint is at least `D_merge + v_max * S_create` from every
+    envelope in the world log's confirmed region directory, grown by `v_max` x the directory entry's age.
+    `S_create` defaults to 10 s.
+  * Nearer than that, the newcomer **joins** the nearest region instead, as a per-region view change
+    (25.5.3).
+  * Every region simulates `f` only while it holds the world log's region directory confirmed through
+    `f - S_create`.
+  * A world-log stall shorter than `S_create` minus the world-log lag (about 9 s) therefore never stalls a
+    region. This is the world log's only per-frame role, and it is that weak.
+* **`D_merge`** (default 3 km at human scale) is the smallest allowed gap between two regions' footprints.
+  It is not "two footprint radii": a footprint radius is at least 3 chunks.
 
-  Members obtain `known_conf_q` directly from `q`'s members, as a confirmed prefix with its proof (stable
-  chain entries), and record it in `R`'s log as `NeighbourRef{q, frame, footprint, proof}`. A region 10 km
-  away has 70 s of slack, so `R` needs to hear from it about once a minute. A region on the far side of
-  the map imposes no bound in practice. The world log is not consulted.
-* **Liveness, modelled [C].** Rule-level simulation (`liveness`): 64 or 256 members, alone or in groups of
-  8, one member's acks stalled 0.5-3 s, eviction after `W` + 0.2 s.
+**Safety, modelled [C]** (`pe-spike-chunks safety`, `spikes/out/chunks/safety.log`). The model uses two
+regions on a line. It counts **late merges**: merge frames that `R` had already simulated past when it first
+learned the event causing them. That needs a rollback, possibly below `R`'s confirmed frame, which 6.4
+forbids.
 
-  | Rule | Unrelated regions that lost frames | Worst loss per region |
-  |---|---|---|
-  | World log on the path (45d4940) | **all** (63 of 63, 255 of 255, 31 of 31) for stalls of 1 s or more | 5 / 65 / 77 frames for 1 / 2 / 3 s stalls |
-  | Neighbour bound, regions 3.5-4 km apart | **none** | 0 |
-  | Neighbour bound, regions 3.2 km apart (2 s of slack) | the 2 nearest | 7 / 19 frames for 2 / 3 s stalls |
+| Case | 2a228c6 rules | Revised rules |
+|---|---|---|
+| Chunk step toward R during a stall in q (4 km gap) | **late** (merge 360, R at 434) | safe (merge at 975) |
+| Chunk step, no stall | safe | safe |
+| Scale x8, R pulls every 60 s only (10 km gap) | **late** (merge 1,030, R at 3,599) | safe (merge at 9,632) |
+| Scale x8, pull every 60 s or on demand | safe | safe |
+| Joiner at q's near edge, pull every 60 s only (5 km gap) | **late** | safe |
+| Joiner, pull every 60 s or on demand | safe | safe |
+| Walker at `v_max` toward R over 12 chunks, q stalls on the way | safe | safe (merge 615 frames later) |
+| Region created 4.5 km from R, then walks toward it | **late** (R never learns of it) | safe |
+| Region created 3.5 km from R | **late** | refused: joins R |
+| Created 4.5 km away, world log stalled 5 s / 12 s | **late** / **late** | safe / safe (R loses 185 frames in the 12 s case) |
 
-  A stalled member therefore slows only its own region (bounded by the speculation limit and eviction)
-  and neighbours closer than `v_max x` (stall time). This is the property R16's addendum asks for.
+* **0 late merges in 11 cases under the revised rules, against 7 under 2a228c6.**
+* The price:
+  * footprint growth lags by up to `J / v_max`, so a walker's merge with a neighbour happens about 10 s
+    later, and a large scale-up ramps over minutes;
+  * a world-log stall longer than about 9 s stalls regions.
+
+**Liveness, modelled [C]** (`liveness`, 8.5-frame region lag). Setup: 64 or 256 members, alone or in groups
+of 8, with one member's acks stalled 0.5-10 s. A one-member region evicts its silent member by a
+**world-log** view change, taking 3.8 s (review N3); larger regions do it in-region in 2.2 s.
+
+| Rule | Unrelated regions that lost frames | Worst loss per region |
+|---|---|---|
+| World log on the path (45d4940) | **all** (63 of 63, 255 of 255, 31 of 31) for stalls of 1 s or more | 5 / 65 / 77 / 77 frames for 1 / 2 / 3 / 10 s stalls in groups of 8; 5 / 65 / 125 / 173 for members alone |
+| Neighbour bound, footprints 3.5-4 km apart | **none**, even when the member is gone for good | 0 |
+| Neighbour bound, footprints 3.2 km apart (2 s of slack) | the 2 nearest | up to 23 frames (groups of 8), up to 119 frames (one-member regions, world-log eviction) |
+
+A stalled member slows only its own region, and neighbours whose slack is shorter than the time to evict
+it. The gaps in this table are between *footprints*; the anchors are about 6 km further apart.
 
 ### 25.5.3 Joining, leaving and confirmation
 
@@ -227,6 +299,19 @@ epoch and ack cadence.
   least `f` in `R`'s log, and holds every `R` entry up to `f`. Members outside the group never affect it.
 * **Leaving mirrors joining.** The cut is the prefix all remaining group members hold, effective after the
   leaver's last valid horizon. It never touches confirmed frames.
+* **A region whose whole group goes silent** (review N3). This is the common case for a one-member region:
+  a spread-out player whose connection drops.
+  * Nobody inside can vote it out, so eviction is a **world-log view change**, by a strict majority of the
+    session (10.8). The modelled latency is about 3.8 s.
+  * Neighbours keep simulating as long as their slack lasts. With footprints at least 3.5 km apart they
+    lost no frames in the model, even when the member never came back (25.5.2).
+  * **Durability.** Every region publishes a checkpoint every 30 s (configurable): a `Frozen{region,
+    frame, chunks, record_hash}` entry in the world log for its modified chunks.
+  * The record bytes go to at least two custodians: members of the nearest other regions, chosen
+    deterministically from the world log. When a region's whole group is evicted, its chunks revert to the
+    last checkpoint confirmed in the world log; changes since then are lost.
+  * A one-member region therefore risks up to 30 s of changes to its own chunks if its only player vanishes.
+    A group of two or more keeps every confirmed frame.
 * **Membership-dependent computations are evaluated at the entry's frame and frozen at confirmation**
   (the NEW-2 lesson, review R16-3). Every quantity that depends on who is in the group uses
   `Group(R, f_entry)`, the group at the frame of the entry or decision it concerns:
@@ -257,9 +342,12 @@ epoch and ack cadence.
     dormant chunks, so the bodies recreated at a merge are mostly asleep, far from any player.
   * A member not yet synced to both parts is pending in the merged region. Only that member's liveness
     suffers, never correctness.
-* **Split.**
-  * When a region's footprint disconnects and the gap has persisted for `T_split` (default 10 s), the
-    region splits at a deterministic frame.
+* **Split** (revised after review N2).
+  * A region splits only when its footprint has fallen into parts at least
+    `D_split = D_merge + v_max x 10 s` apart (4 km at human scale), and has stayed so for `T_split`
+    (default 10 s). It then splits at a deterministic frame.
+  * The 1 km of hysteresis between `D_merge` and `D_split` means a split region is never immediately
+    re-merged. Each new region starts with at least 10 s of slack toward the other.
   * Bodies are partitioned by chunk. Every member already holds the whole region, so nothing is
     transferred.
 * **Rollback across a merge or split.**
@@ -273,14 +361,14 @@ epoch and ack cadence.
 
 ### 25.5.5 Perturbations across region boundaries
 
-* **Regions never touch.** By construction, at least `D_merge` of dormant chunks separates two regions of
-  the same band, so physics never crosses a region boundary.
+* **Regions never touch.** Active bodies never leave their region's footprint (25.4 rule 2), and two
+  footprints stay at least `D_merge` apart, so physics never crosses a region boundary.
 * **Routing.** An entry targets objects by ObjectId and goes to the region holding the object at the
   entry's frame. A member may perturb only regions it is synced in; anything else is refused identically
   on every peer.
-* **Bodies leaving a footprint.** A body thrown out of its region's footprint keeps simulating while it is
-  awake (25.4 rule 2) inside the hard reach. It freezes when it sleeps or leaves the hard reach, and
-  continues when its chunk becomes active again.
+* **Bodies leaving a footprint.** A body thrown out of its region's footprint freezes at the edge, and
+  continues when its chunk becomes active again. The footprint's one-chunk margin beyond `reach_cap` makes
+  this rare in view of a player.
 * **Carried state** (7.3) stays per object, now with `f64` positions: 64 bytes instead of 52.
 * **Check hashes and divergence repair** (9) are per region. Repair is a region state transfer.
 
@@ -291,8 +379,9 @@ epoch and ack cadence.
 * **Bandwidth per peer:** region traffic scales with the group size. World-log traffic grows with the
   member count (membership, ACL, SCM and acks; anchors moved to region logs), and needs compact or gossiped
   acks past about 64 members.
-* **Liveness:** a stalled member slows only its own region and neighbours within `v_max` x (stall time)
-  [C, 25.5.2].
+* **Liveness:** a stalled member slows only its own region and neighbours whose slack is shorter than the
+  time to evict it [C, 25.5.2]. The world log matters only through the region directory, and only for stalls
+  longer than about 9 s.
 * **Clustered players gain nothing:** when everyone stands in one place, it is one region and the cost is
   today's.
 
@@ -311,6 +400,30 @@ epoch and ack cadence.
 * **The world log carries `Frozen{chunk, frame, record_hash}`** when a region freezes a modified chunk, so a
   later visitor can fetch the record from anyone and verify it.
 
+## 25.5.8 Cross-region proofs and equivocation (review N4) [I]
+
+* **What a `NeighbourRef` proves.** `NeighbourRef{q, frame, head, envelope}` carries `q`'s chain heads at
+  `frame` and the stable chain entries that confirm them, signed by every member of `Group(q, frame)`.
+  * That group is itself read from the referenced prefix: joins and leaves are chain entries (25.5.3).
+  * The receiver checks the signatures against identity keys from the world log's membership.
+  * A one-member `q`'s proof is that one member's signature. Nothing stronger exists without a second
+    witness.
+* **Detecting a region that shows different neighbours different histories.** Every region posts
+  `RegionHead{region, frame, head digest, envelope}` to the world log every 5 s.
+  * A `NeighbourRef` whose head conflicts with a `RegionHead` for the same `(region, frame)` is a
+    transferable equivocation proof (two signed heads). It evicts the signers, as in 9.3.
+  * So equivocation is detected within about 5 s plus the world-log lag. The world log stays off the
+    per-frame path: regions do not wait for `RegionHead`; it only audits.
+* **An object two regions both claim.** This happens only after an undetected equivocation.
+  * The world log orders the conflicting claims, and the region whose `RegionHead` covering the chunk comes
+    first in world-log order owns it.
+  * The other region repairs forward, never below its confirmed frame. At its next frame after it holds the
+    proof, it replaces its objects in those chunks with the owner's state, by a chunk-scoped state transfer,
+    as in divergence repair (9.3).
+  * Every peer reads the same world-log order, so the repair is deterministic.
+* **MVP:** sessions are trusted (D21), so this machinery only bounds the damage of a malicious member. It
+  is a phase-6 item, like the rest of public-session hardening.
+
 ## 25.6 Arbitrary scale: per-region length units (measured in 25.8)
 
 * A region simulates in units of `u = 2^k` m, chosen from its members' scales (the smallest, quantized,
@@ -323,11 +436,23 @@ epoch and ack cadence.
   like a normal one, and keeps 60 Hz valid. Real gravity (10 m/s^2) at scale `s` is the same system run
   `1/sqrt(s)` times faster. It works, but costs sub-steps in proportion: 10x at 1 cm, 32x at 1 mm [V
   stability, C cost]. Simply adding sub-steps in scaled units does not work [V].
-* **Mixed scales in one place:** players whose scales differ by less than about 2^6 share one region at the
-  smaller unit. Further apart, they get separate regions in different bands. The larger band's bodies
-  appear in the smaller band's world as kinematic proxies, and the smaller band's bodies do not exist in
-  the larger. The mass ratio across bands is at least 2^18, so one-way coupling loses less than 4e-6 of
-  the momentum [I].
+* **Mixed scales in one place** (revised after review N5).
+  * Players whose scales differ by less than about 2^6 share one region at the smaller unit.
+  * Players further apart in scale, whose footprints overlap, form **one multi-band region**: one log, one
+    group, and one box3d world per band. Each frame the bands step from the largest to the smallest.
+  * The larger band's bodies appear in the smaller band's world as kinematic proxies **of the same frame**.
+    The smaller band's bodies do not exist in the larger.
+  * So the coupling is inside one region and one log, and there is no per-frame dependency between regions.
+    The cost: members of either band simulate both worlds, and depend on each other's acks, as any group
+    does.
+  * The mass ratio across bands is at least 2^18, so one-way coupling loses less than 4e-6 of the momentum
+    [I].
+  * The alternative, separate regions with the small band reading the large band's confirmed state about 10
+    frames late, keeps the logs apart but shows a giant's foot about 0.17 s late to small objects.
+* **Per-band constants** (review N5). `D_merge`, `D_split`, `v_max` and `S_create` scale with the band's
+  unit, as footprints and `reach_cap` already do. At human scale they are 3 km, 4 km, 100 m/s and 10 s.
+  * A x100 giant's band (`u` = 128 m) gets about 380 km, 512 km and 12.8 km/s. The times stay the same.
+  * Between regions of different bands, the neighbour bound uses the larger band's constants.
 * **Levels and ranges follow scale:** a member's footprint, `reach_cap` and `min_r` scale with its height.
   A giant does not simulate pebbles, and an ant does not simulate mountains 50 km away.
 * **Consistency with the van der Waals work:** its contact-recycling radius scales per pair, which is also
@@ -443,8 +568,10 @@ Numbered after the architect's D52; to be renumbered at merge.
   * Alternative: OWO-style whole-chunk activation, about 25 million objects within 1 km in the test
     content.
 * **D55. Regions and groups (25.5).**
-  * Recommend: the two-tier log, with anchors in region logs and the speed-bounded neighbour bound (`v_max`
-    100 m/s, `D_merge` 3 km), so a stalled member slows only nearby regions [C]. Build it in phase 3 together
+  * Recommend: the two-tier log, with anchors in region logs and the speed-bounded neighbour bound (growth
+    clock, `v_max` 100 m/s, `D_merge` 3 km, `D_split` 4 km, region creation via the world log with `S_create`
+    10 s). Modelled [C]: a stalled member slows only nearby regions, and there are 0 late merges across 11
+    step, stall and creation cases. Build it in phase 3 together
     with region-scoped rollback (6.6), after the round-2 protocol is reviewed. Phase 2 stays one region per
     world.
   * The cost of the speed bound: travel faster than `v_max` needs a declared travel footprint or a

@@ -21,7 +21,7 @@ per viewer, for whole avatars and for each feature class.
   |---|---|---|
   | Engaged hand colliders | hand-target entries (7.5, 18.4) | never |
   | Optional body or foot collider (a world setting: can players push things?) | the same kind of kinematic source, streamed while it touches sim objects | never |
-  | Activation anchor (R16) | coarse anchor in the world log, fine anchor in the region log (25.5) | never |
+  | Activation anchor (R16) | coarse and fine anchor entries in the member's home-region log (25.5.2) | never |
   | Held or worn objects | ordinary sim objects with a claim (8.4) | never; their meshes are presentation and may be culled |
   | Avatar logic that writes sim state | a sim module, committed to the world (13), not an avatar feature | never |
 * **Enforced structurally:** presentation modules cannot write sim components (7.4), and the culling pass

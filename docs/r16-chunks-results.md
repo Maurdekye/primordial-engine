@@ -305,7 +305,7 @@ Unpatched `f64` for comparison: 0.14 ms spread; 588 ms (f32) for 256 unchunked.
 * **What still grows with N is the world log.** With today's ack format (one 25 B line per member) it reaches
   3.3 MB/s per player at 256. Compact acks keep it at about 100 kB/s; gossip would keep it near constant [I].
   The world log needs compact acks beyond about 64 members.
-* **Clustering cannot be optimized away by regions.** 256 engaged players in one place cost 310 ms per tick and
+* **Clustering cannot be optimized away by regions.** 256 engaged players in one place cost about 300 ms per tick [C] and
   51 MB/s each. A region needs a cap on engaged members, or else input delay and coarser LOD (D57).
 
 ## 9. Streaming [V]
@@ -395,6 +395,7 @@ the per-tier rates in 26.2.
   * Section 13 models the dependency rule, not the protocol.
 * Wake propagation (25.4 rule 3) and the mixed-scale one-way proxies (25.6) are not prototyped.
 * Section 12 tests support closure and awake-stays-active in one scene only.
+* Sections 13 and 14 model the dependency and safety rules, not the protocol; 25.5.8 (equivocation) is not modelled.
 * The quiet-machine rerun of the streaming tails is pending; the user's PC is in use for VR.
 * GPU cost of avatars: no renderer exists yet.
 * Real-gravity CPU at small scale is inferred from the sub-step count. The tower sleeps too fast to time it
@@ -417,30 +418,76 @@ the per-tier rates in 26.2.
 Closure costs bodies (134 vs 49 here), because the stones under a relevant crate are simulated. Being
 one-hop, it does not pull in the rest of the bed.
 
-## 13. Liveness: does one stalled member slow distant regions? (review R16-1) [C, rule-level model]
+## 13. Liveness: does one stalled member slow distant regions? (reviews R16-1, N3) [C, rule-level model]
 
 `pe-spike-chunks liveness` simulates the two dependency rules frame by frame. Inputs:
 * 60 Hz;
-* region confirmation lag 5 frames [V, 6.4];
-* world-log confirmation lag 66 frames [I, @engine-architect];
+* region confirmation lag 9 frames (8.5 at ed347ac 6.4, rounded up) [I, @engine-architect's measurement];
+* world-log confirmation lag 66 frames [I];
 * speculation limit 120 frames;
-* eviction 132 frames after a member's acks stop;
+* in-region eviction 132 frames after a member's acks stop;
+* **for a one-member region, eviction by world-log view change, 228 frames** (review N3);
 * `v_max` 100 m/s and `D_merge` 3 km;
 * 50 ms to learn a neighbour's confirmed frame.
 
-One member stops acking for S seconds. The table counts frames that **unrelated** regions (not containing
-that member) cannot simulate on time:
+One member stops acking for S seconds (10 s stands in for gone for good). The table counts frames that
+**unrelated** regions (not containing that member) cannot simulate on time. Gaps are between
+**footprints**; anchors are about 6 km further apart.
 
-| Members, layout | Region spacing | Stall | World log on the path (45d4940) | Neighbour bound (revised) |
+| Members, layout | Footprint gap | Stall | World log on the path (45d4940) | Neighbour bound (revised) |
 |---|---|---|---|---|
 | 64 or 256, alone or in groups of 8 | 3.5 or 4 km | 0.5 s | 0 | 0 |
 | same | same | 1 s | every region loses 5 frames | 0 |
 | same | same | 2 s | every region loses 65 frames | 0 |
-| same | same | 3 s | every region loses 77 frames | 0 |
-| same | 3.2 km (2 s of slack) | 2 s / 3 s | every region loses 65 / 77 frames | the 2 nearest lose 7 / 19 frames |
+| same | same | 3 s | every region loses 77 (groups of 8) / 125 (alone) frames | 0 |
+| same | same | 10 s | every region loses 77 / 173 frames | 0 |
+| same | 3.2 km (2 s of slack) | 2 / 3 / 10 s | as above | the 2 nearest lose 11 / 23 / 23 frames (groups of 8), 11 / 71 / 119 (alone) |
 
-For 3 s stalls with 256 members alone, that is 19,635 region-frames lost under the old rule and none under
+For 10 s stalls with 256 members alone, that is 44,115 region-frames lost under the old rule and none under
 the new one. Raw output: `spikes/out/chunks/liveness.log`.
 
-This is a model of the rules, with the protocol's lags as inputs. It shows the property, not an
-implementation of it.
+## 14. Safety: late merges under footprint steps (review N1) [C, rule-level model]
+
+`pe-spike-chunks safety` models two regions on a line. A **late merge** is a merge frame that region R had
+already simulated past when it first learned the event causing it. That would need a rollback, possibly
+below R's confirmed frame, which design 6.4 forbids.
+
+The revised rules (25.5.2) are:
+* the growth clock: footprint growth reaches outsiders no faster than `v_max`;
+* the envelope from every anchor *stamped* up to the known confirmed frame;
+* pull on demand;
+* region creation through the world log, with `S_create` = 10 s and a minimum distance.
+
+| Case | 2a228c6 | Revised |
+|---|---|---|
+| Chunk step toward R during a stall in q (4 km gap) | **late**: merge 360, R had simulated to 434 | safe; merge at 975 |
+| Chunk step, no stall | safe | safe |
+| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late**: merge 1,030, R at 3,599 | safe; merge at 9,632 |
+| Scale x8, pull every 60 s or on demand | safe | safe |
+| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe (R stalls 2,411 frames: pull on demand is needed) |
+| Joiner, pull every 60 s or on demand | safe | safe |
+| Walker at `v_max` toward R over 12 chunks, q stalls on the way (12 km gap) | safe | safe; merge 615 frames later |
+| Region created 4.5 km from R, then walks toward it | **late**: R never learns of q | safe |
+| Region created 3.5 km from R | **late** | refused: the newcomer joins R |
+| Created 4.5 km away, world log stalled 5 s | **late** | safe |
+| Created 4.5 km away, world log stalled 12 s | **late** | safe; R loses 185 frames |
+
+**Result: 7 of 11 cases were late under 2a228c6, and 0 of 11 under the revised rules.**
+
+This is a model of the rules on a line, not of the protocol or of 2D or 3D footprints.
+
+## 15. Support closure on heaps and thrown objects (review N7) [V]
+
+`pe-spike-chunks closure2`, each scene with an all-dynamic control.
+
+| Scene | All-dynamic control | One hop, static bounds | Swept first hop + static second hop |
+|---|---|---|---|
+| 20 cm crate on a 3-layer heap of 5 cm gravel: final height (rests at 0.251) | 0.242; no gravel displaced | **0.197**; 68 gravel cubes sank | **0.243**; none sank; 124 static proxies |
+| The crate thrown at 2 m/s onto 1.2 cm gravel (below r/16): final height (rests at 0.112), gravel inside | 0.106, 16 | 0.105, 2 | 0.106, 21 |
+
+* **The second hop fixes the heap**, matching the control within 1 mm.
+* **The thrown case is the solver's limit, not the rule's.** Gravel under 1/16 of the crate's size has a
+  mass ratio over 4,096. Box3D lets the crate sink into it even when everything is simulated, and all three
+  variants end within 1 mm.
+* A first version (0.9 m crate on 2.5 cm gravel, mass ratio 47,000) sank to the ground even in the control,
+  so it was replaced.

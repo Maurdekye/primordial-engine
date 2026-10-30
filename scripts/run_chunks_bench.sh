@@ -46,3 +46,5 @@ run streaming streaming
 ./target/release/pe-spike-chunks avatars | tee "$OUT/avatars.log"
 ./target/release/pe-spike-chunks closure | tee "$OUT/closure.log"
 ./target/release/pe-spike-chunks liveness | tee "$OUT/liveness.log"
+./target/release/pe-spike-chunks safety | tee "$OUT/safety.log"
+./target/release/pe-spike-chunks closure2 | tee "$OUT/closure2.log"
