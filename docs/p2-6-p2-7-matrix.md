@@ -39,17 +39,19 @@ Each column runs `scripts/run_determinism.sh` with the parts physics, wasm, mcp,
 
 **The digests.** `scripts/matrix_digest.py` digests every output of every column.
 * **Hashed raw:** data files, meaning traces, snapshot images, wasm modules and their hash lists, and the MCP transcript.
-* **Hashed after normalization:** logs. Normalization masks wall-clock timings only:
-  * numbers with time units;
-  * speed ratios;
-  * `depth:ms` values;
-  * table columns whose header names a time;
-  * cargo progress lines;
-  * column padding.
+* **Hashed after normalization:** logs. Normalization masks only wall-clock (CPU) timings, by the phrases the tools print them with: "in 349.8ms", "step avg", "(… us/frame)", "resim frames N (… ms)", "sim CPU", "worst tick" and so on.
+  * These were found by diffing two machines' raw outputs.
+  * Virtual-clock results are compared: R18 queue and recovery times, session-sim event times, and configured latencies (review of 3b07aa5, M1).
+  * Also masked: cargo progress lines, column padding, the output directory echoed in logs, and sha256sum's Windows `*` marker.
 
 **Validating the normalization:** this PC's committed d79f160 records against <laptop>'s rerun. 246 of 247 outputs were equal. The one difference was a stale committed log, which is reported on the cross-machine determinism re-check item.
 
-**The comparison** (`matrix_digest.py compare`) prints one row per output and one column per machine. Any difference fails the run, which then names the first differing output and its first differing normalized line, or byte offset.
+**The comparison** (`matrix_digest.py compare`) prints one row per output and one column per machine. The run fails on any of these (review of 3b07aa5, M2 and M3), and names the first differing output and its first differing normalized line, or byte offset:
+* a difference between columns;
+* a requested column with no outputs;
+* a column whose own build or determinism set failed, even when every column failed the same way.
+
+`run_matrix.sh` also refuses a dirty tree, so every column runs one commit. `PE_COMPARE_ONLY=1` re-checks existing outputs without running anything.
 
 ### Outputs
 

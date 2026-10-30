@@ -2,11 +2,12 @@
 
 Every output of the determinism set is either a pure data file (traces, snapshot images, wasm
 modules) or a log that mixes deterministic results with wall-clock timings. A digest is the
-SHA-256 of the file after `normalize`, which masks timings and where the machine wrote its outputs:
-  * a number followed by a time unit (ms, us, µs, ns, s), e.g. "0.351 ms", "544.2 us/frame";
-  * a speed ratio such as "22x";
-  * the values after "depth:ms" (re-simulation cost by depth);
-  * table cells whose column header names a time ("CPU ms ...", "worst tick ms ...");
+SHA-256 of the file after `normalize`, which masks wall-clock (CPU) timings and where the machine
+wrote its outputs, and nothing else:
+  * durations in the phrases the tools print CPU timings with (`WALL`: "in 349.8ms", "step avg 0.39
+    ms", "(303.9 us/frame)", ...), found by diffing two machines' raw outputs. Virtual-clock times
+    (event times, queue delays, recovery times, configured latencies) are results and are compared;
+  * the values after "depth:ms", and table cells under a CPU-timing header ("CPU ms ...", "worst tick");
   * cargo's progress lines, and runs of spaces (timing widths shift column padding);
   * the output directory echoed in logs (".../o/"), and sha256sum's Windows '*' marker.
 Data files (traces, snapshot images, wasm modules, MCP transcripts) are hashed raw: see `is_raw`.
@@ -34,10 +35,38 @@ def is_raw(rel):
 
 SKIP = ("digests.txt", "env.txt", "matrix.txt")
 CARGO = re.compile(r"^\s*(Compiling|Finished|Running|Blocking|Downloaded|Downloading|Updating|Locking|Adding|warning|Building)\b")
-TIME = re.compile(r"\d+(?:\.\d+)?(?:e-?\d+)? ?(?:ms|us|µs|ns|s)\b")
-RATIO = re.compile(r"\b\d+(?:\.\d+)?x\b")
-DEPTH = re.compile(r"(depth:ms(?: \d+:)?)((?: ?\d+:)?\d+(?:\.\d+)?)+")
-TIMECOL = re.compile(r"\b(ms|us|µs|ns|CPU|time|timings?)\b", re.I)
+# Wall-clock (CPU) timings, by the phrases the tools print them with. Only these are masked: the
+# simulators' virtual-clock times (event times, queue delays, recovery times, configured latencies)
+# are deterministic results and are compared (review M1). Found by diffing two machines' raw outputs.
+_N = r"\d+(?:\.\d+)?(?:e-?\d+)?"
+_D = _N + r" ?(?:ms|µs|us|ns|s)\b"
+WALL = [re.compile(p) for p in [
+    r"(\bin )" + _D,                                             # goldens, rollback, hotswap: "... in 349.8ms"
+    r"(\bre-sim )" + _D,                                         # ball pit: "re-sim 3.44 ms per rendered sim frame"
+    r"(\()" + _D + r"( over the window\))",                      #   "(757 ms over the window)"
+    r"(\bstep avg )" + _D,
+    r"(\bstep )" + _D + r"( plain, )" + _D + r"( with native hooks)",  # R15 hooks
+    r"(\bresim frames \d+ \()" + _D + r"(\))",                   # session-sim member stats
+    r"\b" + _D + r"( total \()" + _N + r"( us/frame\))",          # physics trace
+    r"(\btotal )" + _D,                                          # rollback T3
+    r"(\()" + _N + r"( us/frame(?: interpreted)?\))",             # rollback, hotswap
+    r"(module validate\+compile: v1 )" + _D + r"(, v2 )" + _D,   # hotswap
+    r"(module compile )" + _D,
+    r"(\bswap step )" + _D,
+    r"(\bwall )" + _D,                                           # view-change scale run
+    r"(\bsave )" + _D + r"(, restore )" + _D,                    # rollback, perturbation history
+    r"(\bdiff scan )" + _D,
+    r"(\bstep )" + _D,                                           # rollback "step 4.18ms", hotswap "swap step"
+    r"(per-frame snapshots: )" + _D,                             # hotswap
+    r"(\bafter )" + _D,                                          # hotswap D3: "trap ... after 267µs"
+    r"(\bsim CPU )" + _D,                                        # perturbation-history observer
+    r"(\bworst tick )" + _D,
+]]
+# Inside a matched phrase, only the durations themselves (and the count before "us/frame") become T.
+_UNIT = re.compile(_D)
+_PERFRAME = re.compile(_N + r"(?= us/frame)")
+# Table columns that hold CPU timings (perturbation history: "CPU ms per frame", "worst tick ms").
+TIMECOL = re.compile(r"\b(CPU|worst tick)\b")
 
 
 def normalize_lines(text):
@@ -57,8 +86,8 @@ def normalize_lines(text):
                 cells = ["T" if m else c for c, m in zip(cells, header[1])]
                 line = "|".join(cells)
         line = SHALINE.sub(r"\1 ", OUTDIR.sub("<out>/", line))
-        line = TIME.sub("T", line)
-        line = RATIO.sub("Tx", line)
+        for w in WALL:
+            line = w.sub(lambda m: _UNIT.sub("T", _PERFRAME.sub("T", m.group(0))), line)
         out.append(" ".join(line.split()))
     return out
 
