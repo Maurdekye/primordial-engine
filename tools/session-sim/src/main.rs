@@ -1,0 +1,151 @@
+//! pe-session-sim: the session simulator as a test tool (design 23.4, P2-9).
+//!
+//! Scenarios are TOML files (see scenario.rs and scenarios/README.md): worlds, members, plans,
+//! links, fault rules, crashes, Byzantine behaviour and reports. The simulator itself is the
+//! spike's (spikes/session-sim, in-process, virtual clock, deterministic), driven unchanged, so a
+//! scenario file reproduces the spike's hand-written scenario bit for bit. P2-3's `pe-session`
+//! replaces it when it lands.
+//!
+//! usage:
+//!   pe-session-sim run <file.toml>         run one scenario; its log goes to stdout
+//!   pe-session-sim check <file.toml>...    load and build only
+//!   pe-session-sim list [--scenarios DIR]  the scenarios `regress` runs
+//!   pe-session-sim regress [--scenarios DIR] [--expected DIR] [--out DIR] [--only a,b] [--jobs N] [--bless]
+//!       run every scenario, compare each log with the committed one (CPU timings masked), and
+//!       fail on any difference, fork, replay mismatch, panic, false check or lost object.
+
+mod byzantine;
+mod faults;
+mod regress;
+mod report;
+mod scenario;
+mod setup;
+mod validate;
+
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+
+use byzantine::Actor;
+use report::{Ctx, Probe};
+use scenario::{Report, Scenario};
+
+/// Load-time checks on one part, and the built simulator with its behaviours and reports.
+fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Probe>), String> {
+    for r in &s.fault {
+        faults::validate(r)?;
+    }
+    let sim = setup::build(&s)?;
+    validate::validate(&s, &sim)?;
+    let actors = std::mem::take(&mut s.byzantine).into_iter().map(Actor::new).collect::<Result<Vec<_>, _>>()?;
+    let probes = std::mem::take(&mut s.report).into_iter().map(|r| Probe::new(r, &s)).collect::<Result<Vec<_>, _>>()?;
+    Ok((s, sim, actors, probes))
+}
+
+/// Run one part of a scenario and print its log; true if the simulator panicked.
+fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
+    let has_verdict = s.report.iter().any(|r| matches!(r, Report::Verdict { .. }));
+    let (s, mut sim, mut actors, mut probes) = prepare(s)?;
+    for a in &actors {
+        a.configure(&mut sim)?;
+    }
+    sim.net.filter = faults::filter(s.fault.clone(), actors.iter().filter_map(|a| a.hook()).collect());
+    let mut ctx = Ctx::default();
+    // The spike's scenario loops: crashes and Byzantine sends before a millisecond's step,
+    // R14 forgeries and probes after it.
+    while sim.net.now_us <= sim.end_us {
+        faults::apply_crashes(&mut sim, &s.crash);
+        byzantine::before_step(&mut sim, &mut actors);
+        if catch_unwind(AssertUnwindSafe(|| sim.step_ms())).is_err() {
+            ctx.panic_at_ms = Some(sim.net.now_us / 1000);
+            break;
+        }
+        byzantine::after_step(&mut sim, &mut actors, &mut ctx.forged);
+        for p in probes.iter_mut() {
+            p.sample(&sim);
+        }
+        sim.net.now_us += 1000;
+    }
+    if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
+        println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
+        return Ok(true);
+    }
+    for p in &probes {
+        p.print(&sim, &ctx);
+    }
+    Ok(ctx.panic_at_ms.is_some())
+}
+
+/// Run every part; true if any panicked. Every part is checked before the first one runs.
+fn run_file(path: &Path) -> Result<bool, String> {
+    check_file(path)?;
+    let loaded = scenario::load(path)?;
+    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut panicked = false;
+    for part in loaded.parts {
+        panicked |= run_part(part, &name)?;
+    }
+    Ok(panicked)
+}
+
+fn check_file(path: &Path) -> Result<usize, String> {
+    let loaded = scenario::load(path)?;
+    let n = loaded.parts.len();
+    for (i, s) in loaded.parts.into_iter().enumerate() {
+        let (_, mut sim, actors, _) = prepare(s).map_err(|e| format!("{} (part {}):
+  {e}", path.display(), i + 1))?;
+        for a in &actors {
+            a.configure(&mut sim)?;
+        }
+    }
+    Ok(n)
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
+    let code = match args.first().map(String::as_str) {
+        Some("run") if args.len() == 2 => match run_file(Path::new(&args[1])) {
+            Ok(false) => 0,
+            Ok(true) => 3,
+            Err(e) => {
+                eprintln!("error: {e}");
+                2
+            }
+        },
+        Some("check") if args.len() >= 2 => {
+            let mut code = 0;
+            for f in &args[1..] {
+                match check_file(Path::new(f)) {
+                    Ok(n) => println!("ok {f} ({n} part{})", if n == 1 { "" } else { "s" }),
+                    Err(e) => {
+                        println!("error: {e}");
+                        code = 2;
+                    }
+                }
+            }
+            code
+        }
+        Some("list") => {
+            let dir = get("--scenarios").map(PathBuf::from).unwrap_or_else(regress::default_scenarios);
+            match regress::discover(&dir) {
+                Ok(v) => {
+                    for (name, p) in v {
+                        let d = scenario::load(&p).map(|l| l.parts.first().map(|s| s.description.clone()).unwrap_or_default()).unwrap_or_else(|e| format!("error: {e}"));
+                        println!("{name:<24} {}", d.lines().next().unwrap_or(""));
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    2
+                }
+            }
+        }
+        Some("regress") => regress::regress(&args[1..]),
+        _ => {
+            eprintln!("usage: pe-session-sim run <file.toml> | check <file.toml>... | list [--scenarios DIR] | regress [--scenarios DIR] [--expected DIR] [--out DIR] [--only a,b] [--jobs N] [--bless]");
+            2
+        }
+    };
+    std::process::exit(code);
+}

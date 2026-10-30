@@ -1,0 +1,7 @@
+RESULT fault-crash-recover: m1 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m2 members {1, 2, 3} evicted {} conf 587 frame 594 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m3 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+  m1 world 1: rollbacks 9 max depth 2 resim frames 26 (38.7 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 587 frame 593
+  m2 world 1: rollbacks 9 max depth 2 resim frames 23 (60.7 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 587 frame 594
+  m3 world 1: rollbacks 11 max depth 34 resim frames 117 (120.4 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 587 frame 593
+RESULT fault-crash-recover world 1: frames 0..550 digests m1=0f886b653567571e m2=0f886b653567571e m3=0f886b653567571e | offline replay 0f886b653567571e | ALL EQUAL

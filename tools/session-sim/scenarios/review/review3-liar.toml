@@ -1,0 +1,41 @@
+description = """
+Round-3 review: as review3-badvote, but 8 votes only once, with the forged head, and otherwise \
+behaves. Its vote contradicts its own acks, so it is void; 9 is evicted with a cut that keeps \
+the confirmed touch, and the session goes on."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 8, 9]
+
+[world.1.plan]
+9 = [{ at = 50, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[byzantine]]
+kind = "lie_in_votes"
+member = 8
+
+[[byzantine]]
+kind = "equivocate"
+member = 9
+entry = "first_touch"
+when = { conf_above = { at = 1, frame = 200 } }
+touch = { obj = 10, impulse = [6.0, 0.0, 0.0] }
+to = [1, 2, 8]
+say = "  t={t_ms} ms: 9's touch s{x.seq} at frame {x.stamp} confirmed at m1: {x.confirmed@1}, at m2: {x.confirmed@2} (m1 conf {conf@1}) -> 9 signs a second version"
+
+[[report]]
+kind = "touches"
+author = 9
+at = [1, 2]
+text = "9's touches at m{m}"
+
+[[report]]
+kind = "membership"
+honest = [1, 2]
+label = "liar"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2]
+label = "liar (9 equivocates on a confirmed touch; 8 votes with a forged head)"
