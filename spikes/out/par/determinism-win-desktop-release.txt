@@ -1,0 +1,15 @@
+release threads=1 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=1 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+release threads=2 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=2 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+release threads=3 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=3 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+release threads=4 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=4 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+release threads=8 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=8 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+release threads=16 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=16 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+release threads=32 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+release threads=32 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+RESULT: PASS (identical at every thread count)

@@ -230,6 +230,19 @@ impl Default for ContactSpec {
     }
 }
 
+/// Primordial Engine fork: the read-only world state the narrow phase needs, split from the
+/// contact being updated so contacts can be updated on several threads at once. Each update
+/// then borrows only its own `Contact` and its worker's `TaskContext`.
+pub(crate) struct CollideEnv<'a> {
+    pub shapes: &'a [crate::shape::Shape],
+    pub simd_width: i32,
+    pub friction_callback: Option<crate::types::FrictionCallback>,
+    pub restitution_callback: Option<crate::types::RestitutionCallback>,
+    pub pre_solve_fcn: Option<crate::world::PreSolveFcn>,
+    pub pre_solve_context: u64,
+    pub world_id: u16,
+}
+
 mod collide;
 mod lifecycle;
 mod mesh_cache;
@@ -240,5 +253,7 @@ mod update;
 
 pub use collide::*;
 pub use lifecycle::*;
-pub use mesh_contact::{apply_mesh_hit_flags, compute_mesh_manifolds};
-pub use update::*;
+
+pub(crate) use update::update_contact;
+#[cfg(test)]
+pub(crate) use update::update_contact_in_world;
