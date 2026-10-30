@@ -1,0 +1,11 @@
+# Native-code audit probe: wasmi as configured in the engine.
+[package]
+name = "audit-wasmi"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmi = { version = "=2.0.0", default-features = false, features = ["std", "validate", "deterministic"] }

@@ -1,2 +1,5 @@
 /target
 **/target
+# Regenerable benchmark guests (scripts/iter_bench_gen.py --scale 3 / --scale 8); about 4 MB together.
+spikes/iter-bench/guests-x3/
+spikes/iter-bench/guests-x8/

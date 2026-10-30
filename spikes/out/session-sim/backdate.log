@@ -1,0 +1,14 @@
+  part 1: member 3 entry stamped 300 -> effective None (void: true)
+  part 1: member 3 entry stamped 420 -> effective None (void: true)
+  part 1: member 3 entry stamped 180 -> effective None (void: true)
+  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (2.7 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 conf 650 frame 653
+  m2 world 1: rollbacks 6 max depth 2 resim frames 15 (2.4 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 conf 650 frame 654
+  m3 world 1: rollbacks 12 max depth 2 resim frames 28 (4.7 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 conf 650 frame 653
+RESULT backdate part 1 world 1: frames 0..600 digests m1=2b34e4c05ca9ee12 m2=2b34e4c05ca9ee12 m3=2b34e4c05ca9ee12 | offline replay 2b34e4c05ca9ee12 | ALL EQUAL
+  part 2: member 3 entry stamped 300 -> effective Some(307) (void: false)
+  part 2: member 3 entry stamped 420 -> effective Some(426) (void: false)
+  part 2: member 3 entry stamped 180 -> effective Some(187) (void: false)
+  m1 world 1: rollbacks 12 max depth 25 resim frames 155 (21.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 42 bad 0 conf 620 frame 653
+  m2 world 1: rollbacks 12 max depth 26 resim frames 155 (21.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 42 bad 0 conf 620 frame 654
+  m3 world 1: rollbacks 18 max depth 26 resim frames 162 (23.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 42 bad 0 conf 622 frame 653
+RESULT backdate part 2 world 1: frames 0..600 digests m1=439f5a393e172759 m2=439f5a393e172759 m3=439f5a393e172759 | offline replay 439f5a393e172759 | ALL EQUAL

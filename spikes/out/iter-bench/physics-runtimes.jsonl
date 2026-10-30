@@ -1,0 +1,10 @@
+{"kind":"physics","rt":"wasmi-eager-fuel","compile_ms":8.61,"ms_per_frame_median":6.6290,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmi-eager","compile_ms":10.20,"ms_per_frame_median":6.5315,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-cranelift","compile_ms":60.21,"ms_per_frame_median":0.7061,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-cranelift-fuel-nancanon","compile_ms":110.06,"ms_per_frame_median":1.5369,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-winch","compile_ms":9.37,"ms_per_frame_median":1.4226,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-winch-fuel","compile_ms":8.96,"ms_per_frame_median":1.5297,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-cranelift-fuel","compile_ms":97.81,"ms_per_frame_median":0.7497,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-cranelift-nancanon","compile_ms":88.64,"ms_per_frame_median":1.4148,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-cranelift-epoch-nancanon","compile_ms":94.03,"ms_per_frame_median":1.4297,"digest":"7903109aab28ed9b","digest_matches_native":true}
+{"kind":"physics","rt":"wasmtime-cranelift-fuel-nancanon","compile_ms":110.46,"ms_per_frame_median":1.4577,"digest":"7903109aab28ed9b","digest_matches_native":true}

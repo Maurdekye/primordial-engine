@@ -1,30 +1,56 @@
 # Primordial Engine: Phase-1 Architecture Design
 
-Status: phase-1 draft for agent review, then user review. Nothing here is built beyond the spikes.
-Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-report.md).
+Status: phase-1 draft, revised after the agent review of 8a403ea/b108161 (see
+[review-response.md](review-response.md)); for user review. Nothing here is built beyond the spikes.
+Date: 2026-10-30. Author: engine-architect. Companions: [spike-report.md](spike-report.md),
+[iteration-benchmark.md](iteration-benchmark.md).
+
+## Priorities (user, 2026-10-30)
+
+Every trade-off in this document was decided in this order:
+
+1. **Optimization:** CPU, memory and bandwidth at run time.
+2. **Fast iteration:** the time from a code or shader edit to seeing it run in a live session.
+3. **Stability:** no forks, no lost objects, no crashes; one shared world line.
+4. **Ease of use:** for players, and for the AI agents that author most changes.
+5. **General accessibility:** more platforms, weaker hardware, more people.
+
+Determinism, the 100%-Rust ruling and security are **constraints**, not priorities. They are never traded
+against this list. Where the order changed an answer, the text says so. Examples:
+* the logic runtime (13.3, D12);
+* confirmation-based finality, which makes commits final in about 0.1 s instead of 2 s (6.4, 15.2);
+* the body budget (D2);
+* the ball pit's perturbation-source design (7.5);
+* `rel-fast` as the iteration build profile (13.7).
 
 ## How to read this document
 
-* **R1..R13** refer to the user's requirements (listed in section 1). Rulings are cited by date.
+* **R1..R14** refer to the user's requirements (listed in section 1). Rulings are cited by time (UTC,
+  2026-10-30).
 * Every factual claim carries a tag:
-  * **[V]** verified by a spike run on this machine; the spike-report test ID follows (e.g. [V a1]).
-  * **[S]** verified by reading the source code or official docs of the dependency, not by running it.
+  * **[V]** verified by a spike run on this machine; the spike-report test ID or log follows (e.g. [V a1],
+    [V session-sim c1]).
+  * **[S]** verified by reading the source code, `--help` output or official docs of the dependency, not by
+    running it.
   * **[I]** inferred or proposed design. Not yet tested.
-* Choices that go beyond what the user specified are collected in **section 23, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D35**.
+* Choices that go beyond what the user specified are collected in **section 24, "Decisions needing
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D49**, with
+  letter suffixes where one topic was split (e.g. D14a).
+* Review findings (C1, H4, M3, R13-C1, …) are cited where they changed the design;
+  [review-response.md](review-response.md) maps each one to its fix.
 
 ## Contents
 
 1. Requirements and rulings
-2. Architecture at a glance
+2. Architecture at a glance (2.1 performance and iteration budgets)
 3. Resonite to Primordial mapping
 4. Determinism strategy (R3, R4)
 5. Fixed-timestep loop and render decoupling (R2, R10)
 6. Rollback (R3)
-7. "Only network physics interactions" (R3)
+7. Perturbations: state + canonical frame (R3, R6)
 8. "Soonest wins" without a central authority (R5)
 9. Sync checks and divergence repair (R6)
-10. P2P topology and transport (R1)
+10. P2P topology, transport and the session log (R1)
 11. Peer discovery (R9)
 12. Authority model (R1, R7, R8)
 13. Live game logic in Rust (R7, 100%-Rust clarification)
@@ -36,8 +62,9 @@ Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-r
 19. Resonite avatar import (R12, as narrowed)
 20. Non-Rust boundaries (100%-Rust ruling)
 21. In-game agent panels (R13)
-22. Crate layout, phased build plan, risks
-23. Decisions needing the user
+22. Several worlds at once, and portals (R14)
+23. Crate layout, phased build plan, risks
+24. Decisions needing the user
 
 ---
 
@@ -50,7 +77,7 @@ Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-r
 | R3 | Deterministic local sim with rollback; network carries only player-physics interactions | 4, 6, 7 |
 | R4 | Box3D physics; Rust + wgpu engine and graphics | 4, 18, 20 |
 | R5 | Simultaneous interactions: soonest wins | 8 |
-| R6 | Periodic and interaction-triggered sync checks; on mismatch find earliest interfering frame, propagate by rollback | 9 |
+| R6 | Periodic and interaction-triggered sync checks; on mismatch find earliest interfering frame, propagate by rollback | 7.3, 9 |
 | R7 | Players with authority live-edit logic and shaders; git-style SCM; earlier commit wins; later rejected with reason and asked to rebase; anti-starvation spot | 13, 14, 15 |
 | R8 | AI working with players through MCP, designed in from the start | 17 (and every section's MCP notes) |
 | R9 | Decentralized peer discovery: compare options, recommend one | 11 |
@@ -58,22 +85,38 @@ Date: 2026-10-30. Author: engine-architect. Companion: [spike-report.md](spike-r
 | R11 | Object hierarchy + ECS; assets; their interaction with determinism, rollback, P2P, SCM, MCP | 16 |
 | R12 | Resonite avatar import; v1 = mesh + skeleton/skinning + textures only | 19 |
 | R13 | Own agent harnesses (Claude Code, Codex, …) in in-game panels; panel-to-panel connections; mail-hub panel; panels unlockable for friends/session | 21 |
+| R14 | Joined to several worlds at once; mechanics for seamless, consistent world transitions (portals) | 22 |
 
 Rulings that shape the design:
 
 * **Phase 1** = design doc + feasibility spike (08:22Z).
-* **Mobile/standalone (incl. Quest-native) excluded from MVP**; desktop PC VR via OpenXR. Note where a choice
-  would preclude it later (08:26Z).
+* **Mobile/standalone (incl. Quest-native) excluded from MVP**; desktop PC VR via OpenXR. Note where a
+  choice would preclude it later (08:26Z).
 * **box3d-rust preferred** over C bindings (08:28Z). **"100% Rust"**: no C/C++ compiled or vendored, no C
   fallback (08:28Z). It **covers live game logic**, which is Rust, not a scripting language (08:28Z).
   **Shaders are exempt** (08:29Z).
 * **AI-forward**: AI agents via MCP are the main authors of logic and shader edits (08:29Z).
 * **Resonite** is the product model in broad strokes; the spec wins where they differ (08:32Z).
 * **Merge seat** lasts 10 s so a waiting merger can never starve anyone else (08:51Z).
-* **R13 additions** (09:12-09:15Z): panels talk peer to peer within a session and through a mail hub
-  (hubchat-style panel); owners can unlock panels (locked / friends / anyone in session) and revoke;
-  panel-to-panel needs an explicit connection under a per-panel policy (allow all / ask agent / ask user
-  / deny all).
+* **R13 additions** (09:12-09:15Z):
+  * panels talk peer to peer within a session, and through a mail hub (a hubchat-style panel);
+  * owners can unlock panels (locked / friends / anyone in session) and revoke;
+  * panel-to-panel communication needs an explicit connection, under a per-panel policy (allow all /
+    ask agent / ask user / deny all).
+* **Priorities** (09:26Z): optimization, fast iteration, stability, ease of use, general accessibility (see
+  the top of this document). **Iteration speed decides the logic language and structure** (09:27Z, 13).
+* **State + canonical frame** (09:30Z):
+  * a physics interaction travels as the resulting state plus the canonical frame it occurred on;
+  * receivers roll back, apply and re-simulate;
+  * acceptance: the receiver's copy equals the originator's at the current frame (09:31Z, 7.3).
+* **Same-frame conflicts** resolve by any stable total order that every peer computes identically and
+  that no self-chosen key can game (09:32Z, 8.3).
+* **Programmable systems** execute locally and synchronize over the network on perturbation, like
+  Resonite (09:39Z, 7.1).
+* **The ball pit is "the main question"** (09:42Z): very high-frequency perturbations need a dedicated,
+  measured answer (7.5).
+* The game that will run on the engine is named **Gnosarium** (12:31Z). Demo scenes may use it; the engine
+  stays "Primordial Engine".
 
 ---
 
@@ -81,36 +124,62 @@ Rulings that shape the design:
 
 ```
                 one peer process (identical on every machine)
- +-----------------------------------------------------------------------------+
- |  MCP server (rmcp) <--- local AI agents (stdio / localhost HTTP + token)    |
- |        |  tools: read state, propose interactions, edit objects,            |
- |        |         compile/test/commit logic, validate/commit shaders, assets  |
- |        v                                                                     |
- |  Action intake: signs as user/agent key, checks local ACL view               |
- |        |                                                                     |
- |        v                                                                     |
- |  +-------------------- SIM THREAD (fixed 60 Hz, deterministic) ----------+  |
- |  | input log (frame-stamped, signed) -> order: (frame, seeded tie, peer) |  |
- |  | claims ("soonest wins")  -> logic modules (WASM, wasmi, fuel)         |  |
- |  | sim ECS store + object hierarchy -> Box3D (box3d-rust) step           |  |
- |  | snapshot ring (world image + ECS + guest memory) -> rollback/resim    |  |
- |  | per-frame hashes (world, objects, inputs) -> sync checks              |  |
- |  +-------------------------------+---------------------------------------+  |
- |        | publishes interpolable state       ^ inputs, commits, hashes        |
- |        v                                    |                                |
- |  RENDER/XR THREAD (display rate)       NET THREAD                            |
- |  wgpu + WGSL (naga), interpolation,    UDP + Noise (snow), reliability,      |
- |  OpenXR swapchains, local poses        clock sync, NAT traversal, discovery, |
- |                                        P2P asset/commit transfer             |
- |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits       |
- +-----------------------------------------------------------------------------+
+ +------------------------------------------------------------------------------+
+ |  MCP server (rmcp) <--- local AI agents (stdio pipe; per-session tokens)     |
+ |        |  tools: read state, propose interactions, edit objects,             |
+ |        |         compile/test/commit logic, validate/commit shaders, assets   |
+ |        v                                                                      |
+ |  Action intake: signs as the session's key, checks the local ACL view         |
+ |        |                                                                      |
+ |        v                                                                      |
+ |  +--------------- SIM WORKERS (one task per joined world, R14) -----------+  |
+ |  | session log: signed entries (state + canonical frame), acks            |  |
+ |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
+ |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
+ |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
+ |  | Box3D step -> carried-state overwrite (if different) -> hashes          |  |
+ |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
+ |  +----------------------------------+--------------------------------------+  |
+ |        | publishes presentation state  ^ entries, acks, commits             |
+ |        v                               |                                     |
+ |  RENDER/XR THREAD (display rate)    NET THREAD (one socket, all worlds)      |
+ |  wgpu + WGSL (naga), extrapolation, UDP + Noise, acks, gap fetch, clock      |
+ |  portals, OpenXR, local poses       sync, NAT traversal, discovery, bulk     |
+ |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
+ +------------------------------------------------------------------------------+
 ```
 
-Core idea: every peer runs the same deterministic simulation from the same initial state, code and
-assets. Only frame-stamped, signed **interactions** (and code/asset commits) cross the network. Late
-arrivals are absorbed by rollback. Hash exchanges prove that everyone stayed on the same world line,
-and repair it when they did not. There is no host: ordering comes from the sim-frame stamp plus a
-deterministic tie-break that every peer computes identically. [V c1-c3]
+* **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
+* **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
+  state they produced, plus commits.
+* Late arrivals are absorbed by rollback.
+* **Acks make the confirmed frame a function of signed data** (6.4, 10.8). Below it, nothing can change,
+  and hash checks prove that every peer stayed on the same world line.
+* **There is no host:** ordering comes from the frame stamp plus a deterministic tie-break that every peer
+  computes identically [V c1-c3, V session-sim].
+
+### 2.1 Performance and iteration budgets
+
+Targets for the MVP desktop configuration, and how they compare with what was measured on the Ryzen 7 9700X
+(release builds):
+
+| Budget | Target | Measured or derived |
+|---|---|---|
+| Sim tick | 60 Hz (16.7 ms), or 90 Hz for VR-heavy worlds (D4) | — |
+| Sim-thread work per tick, per world, including rollback | ≤ 8 ms; anything beyond that is amortized over the next ticks (6.5) | — |
+| Physics step per world | ≤ 1 ms at the MVP body budget, about 500 awake bodies (D2) | 0.36 ms at 256 bodies, 1.5-1.9 ms at 1,024 [V b6]; 0.35 ms for the 500-ball pit [V session-sim] |
+| Typical rollback depth | one-way latency + ack interval: 4-8 frames | max 4 at 60 ms ± 20 ms, 9-14 with loss [V session-sim, p2p-v2] |
+| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls | 2.76 ms at 60 Hz; 0.27 ms with 4 frames of input delay [V ballpit] |
+| Confirmation (finality) | ≤ 150 ms on 30-60 ms links | 4-5 frames (67-83 ms) at 50 ms ± 15 ms [V session-sim r14] |
+| Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3 |
+| Game logic per tick, per world | ≤ 1 ms | 6.4 ms in wasmi, 1.6 ms in wasmtime/Cranelift, 0.9 ms native at 10k entities [V iteration-benchmark 4.1] |
+| **Logic edit to first frame in a live session** (one-function edit) | **≤ 0.5 s** on the author's peer at up to ~10k LOC; ≤ 1.5 s at 45k LOC | 0.45 s at 6.4k LOC, 1.2 s at 45k LOC (`rel-fast` profile) [V iteration-benchmark 3.1, 3.2] |
+| Commit visible to every peer | confirmation + activation lead ≈ 0.1 s + 0.5 s | 15.2 |
+| Shader edit to visible | ≤ 100 ms locally (naga validation is milliseconds [I]) + the same commit path | 14 |
+| Hot swap at a frame | ≤ 10 ms | 6 ms in wasmi, 29 ms with Cranelift's JIT [V iteration-benchmark 3.1] |
+| Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6 |
+| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s | 14.7 kB/s both directions [V ballpit] |
+| Head motion to photon (VR) | < 20 ms | 18.5 |
 
 ---
 
@@ -129,7 +198,9 @@ deterministic tie-break that every peer computes identically. [V c1-c3]
 | Records/inventory, cloud asset storage (resdb) | Local content-addressed store + P2P transfer; inventory = signed manifests | 16.7 |
 | Avatar (AvatarDescriptor, VRIK) | AvatarRig + IK components; import v1 = mesh + skin + textures | 18, 19 |
 | Headless session hosts | Optional always-on peers with no special authority | 10.6 |
-| Contacts, session browser (cloud) | Invites, mDNS, Mainline DHT, peer exchange | 11 |
+| Contacts, session browser (cloud) | Invites, session codes, mDNS, Mainline DHT, peer exchange | 11 |
+| Sync members replicated through the host; drives and ProtoFlux evaluated locally | Every programmable system (physics, WASM logic, components) runs locally and deterministically on every peer; only perturbations travel, as state + canonical frame, with rollback (ruling 09:39Z) | 7 |
+| Several worlds loaded, one focused (you are "away" in the others) | Joined to several worlds at once: one embodied, the others attending with real agency; portals and a settled handoff for carried objects | 22 |
 
 ---
 
@@ -146,8 +217,10 @@ deterministic tie-break that every peer computes identically. [V c1-c3]
   builds. [V a2-a5]
 * **The same scene compiled to wasm32 and run in the wasmi interpreter matches the native digest.** This
   is a different target, pointer width and execution engine. [V d4]
-* **Not verified:** ARM (aarch64), macOS, other x86 microarchitectures, and Box3D multithreading (the port
-  is serial). Upstream claims bit-identical results across Linux/Windows/macOS on x64 and arm64, enforced
+* **Cross-machine (review M5, closed):** @design-reviewer ran the goldens, all four 600-frame traces,
+  rollback T1-T5 and the d4 digest on an Intel i7-13620H laptop (no AVX-512). All were bit-identical to
+  this Ryzen 7 9700X desktop [V design-reviewer's laptop determinism run].
+* **Not verified:** ARM (aarch64), macOS, and Box3D multithreading (the port is serial). Upstream claims bit-identical results across Linux/Windows/macOS on x64 and arm64, enforced
   by CI [S upstream `docs/simulation.md`]. The port claims bit-exact results against the C scalar build
   [S port README]. These are claims, not our measurements.
 
@@ -180,6 +253,12 @@ deterministic tie-break that every peer computes identically. [V c1-c3]
    `rust-toolchain.toml`.
 8. A CI determinism matrix (Windows x64, Linux x64, Linux arm64, macOS arm64; debug and release; native and
    wasm32) compares golden traces on every change. It also catches regressions in box3d-rust updates.
+9. **NaN and the FP environment (review L2).** A debug assertion checks every body's state is finite after
+   each step. The sim thread checks MXCSR (FTZ/DAZ off) every tick and resets it, because native
+   libraries loaded in-process (OpenXR runtimes, audio drivers) can change it [I].
+10. **No process-global sim state (R14).** box3d-rust's length unit is a process global; it stays at
+    1.0 for every world. Its `human` sample module (a thread-local RNG) is never used in sim code. Logic
+    runtimes compile eagerly (22.2) [S].
 
 ### 4.4 Gaps of box3d-rust compared with the C reference (tech ruling: "note any gaps")
 
@@ -191,7 +270,7 @@ deterministic tie-break that every peer computes identically. [V c1-c3]
 | Third-party port of alpha software (Box3D v0.1.0, "alpha") [S] | API churn, latent bugs | Wrap behind `pe-physics` so the engine never calls box3d-rust directly; golden tests |
 | C-mirror API (not idiomatic Rust) [S] | Ergonomics only | Thin wrapper in `pe-physics` |
 
-No gap blocks the requirements. The serial-only port is the main performance risk (22.3).
+No gap blocks the requirements. The serial-only port is the main performance risk (23.3).
 
 ### 4.5 Large worlds
 
@@ -202,19 +281,32 @@ The port has a `double-precision` feature, which maps to `BOX3D_DOUBLE_PRECISION
 
 ## 5. Fixed-timestep loop and render decoupling (R2, R10)
 
-* **Sim clock:** `frame = floor((session_time_us - epoch_us) / 16_667)`, at 60 Hz with 4 Box3D sub-steps.
-  `session_time` is local time plus the clock-offset estimate (10.4). The sim thread steps until it reaches
-  the frame the clock says, applying pending rollbacks first. It never waits for rendering. [V c1 loop]
-* **Drift control:** if a peer runs ahead of the session median (its inputs arrive "early" everywhere), it
-  slows its clock by up to 1% until aligned, like GGPO's frame-advantage throttling. [I]
-* **Render thread** runs at display rate: monitor vsync, or `xrWaitFrame` in VR at 90-120 Hz. It
-  interpolates between the two newest published sim states with `alpha = (t - t_prev)/dt`. The sim
-  publishes a compact, double-buffered "presentation snapshot" of transforms after each step. Rollback
-  rewrites recent states. The renderer applies **error smoothing**: it blends from the old displayed pose
-  to the corrected pose over about 100 ms, so corrections do not pop. [I]
-* **Presentation-only systems** (animation, particles, audio, UI, local VR head and hands) run at render
-  rate. They read sim state but never write it (16.3).
-* Tick rate (60 Hz) and rollback window: **D4**.
+* **Sim clock:** `frame = floor((session_time_us - epoch_us) / dt_us)`. The default is 60 Hz with 4 Box3D
+  sub-steps; every world has its own tick rate (22.2).
+  * `session_time` is a **monotonic** local clock plus a slewed offset estimate (10.4). It is never wall
+    time: a time-service step on wall time would make the sim jump frames (review L6).
+  * The sim thread steps until it reaches the frame the clock says, applying pending rollbacks first. It
+    never waits for rendering [V c1 loop].
+* **Drift control in both directions (review H5):**
+  * every ack carries the sender's horizon, which is its present frame (10.8);
+  * a peer compares its present with the median horizon of the other members, corrected for measured
+    one-way latency;
+  * it slews its clock by up to 1% towards that median, whether it runs ahead or behind;
+  * a peer that stays behind the majority by more than the late allowance has its entries re-stamped
+    later anyway (8.2), so running behind wins nothing.
+* **Rendering** runs at display rate: monitor vsync, or `xrWaitFrame` at 90-120 Hz in VR (review M2):
+  * Sim objects are drawn at the **predicted display time**. The newest published state is extrapolated
+    with its velocities by the elapsed fraction of a frame, then error-smoothed (next bullet). Pure
+    interpolation between the two newest states would show the past (17-33 ms late).
+  * **Objects held by the local player's hand are attached to the late-latched hand pose** (a
+    presentation override). The sim still owns them; the override only removes the visible lag between
+    hand and object.
+  * **Error smoothing:** when a rollback corrects a pose, the renderer blends from the displayed pose to
+    the corrected one over about 100 ms, so corrections do not pop [I].
+* **Presentation-only systems** (animation, particles, audio, UI, local head and unengaged hands, panels)
+  run at render rate. They read sim state but never write it (7.4, 16.3).
+* Tick rate: **D4**. It is now a VR-driven trade-off: 90 Hz removes most hand-to-object mismatch but costs
+  1.5x the CPU, including every re-simulated frame.
 
 ---
 
@@ -222,19 +314,20 @@ The port has a `double-precision` feature, which maps to `BOX3D_DOUBLE_PRECISION
 
 ### 6.1 Rollback state
 
-A snapshot at frame *f* (the state before frame *f*'s inputs) contains:
+A snapshot at frame *f* (the state before frame *f*'s entries) contains:
 
 | Part | How | Evidence |
 |---|---|---|
-| Box3D world | `recording::serialize_world` image (POD + geometry registry); restored in place with `deserialize_into_shell`; engine-held `BodyId`s stay valid | [V b1, b4] |
-| Engine claim table ("soonest wins") | `BTreeMap` copy | [V b1-b3] |
+| Box3D world | `recording::serialize_world` image (POD + geometry registry), restored in place with `deserialize_into_shell`. Bodies created or destroyed after the snapshot are undone by the restore, and their ids are reissued identically on re-simulation | [V b1, b4; V session-sim r14: bodies destroyed by a departure and created by an arrival or return across rollbacks] |
+| Engine tables | claims, object table, R14 escrow and arrival tables: plain copies | [V session-sim] |
 | Sim ECS store (16) | column copies (memcpy) | [I] |
-| Logic module state | guest linear memory + active module ID; restore = fresh instance of that module + memory copy | [V d1] |
-| Input log, commit log | append-only; not rolled back (re-applied on re-sim) | [V b2, b3, d1] |
+| Logic module state | the module's sync state (7.4): component columns, the declared state arena, active module id | [V d1 for whole linear memory; I for the arena split] |
+| Session log | append-only; never rolled back. Entries are re-applied on re-simulation | [V b2, b3, d1, session-sim] |
 
 ### 6.2 Measured costs
 
-Release build on a Ryzen 7 9700X, two bench runs (ranges reflect run-to-run timing noise) [V b6]:
+Release build on a Ryzen 7 9700X, two bench runs (ranges reflect run-to-run timing noise) [V b6]. The
+design reviewer's run on the same CPU fell inside these ranges.
 
 | Bodies | Step (avg) | Save | Restore | Image |
 |---|---|---|---|---|
@@ -243,156 +336,340 @@ Release build on a Ryzen 7 9700X, two bench runs (ranges reflect run-to-run timi
 | 2048 | 4.8-5.9 ms | 2.2-2.7 ms | 1.7-2.1 ms | 5.4 MB |
 
 The image is about 2.3-2.6 KB per body, because it contains broadphase trees, contacts and solver sets
-along with body state. Guest memory adds about 1.1 MB per logic module at the default 1 MiB WASM stack
-[V d1].
+along with body state. Whole-memory guest snapshots added about 1.1 MB per logic module at the default
+1 MiB WASM stack [V d1]; 7.4 shrinks that to the declared sync state.
 
-### 6.3 Snapshot ring policy [I]
+### 6.3 Snapshot policy
 
-* A snapshot every frame for a 2 s window costs 120 x 2.4 MB, about 290 MB at 1024 bodies. That is too much.
-* **Proposal:** keyframe every K = 4 frames (about 72 MB at 1024 bodies), restore the nearest keyframe at or
-  before the rollback frame, and re-sim the gap. Reduce further with per-page delta compression of world
-  images and guest memory (most bytes do not change frame to frame), and shrink the guest stack
-  (`-z stack-size=65536`).
+* Keyframes are taken every K = 4 frames, and only between the **confirmed frame** (6.4) and the present.
+  Rolling back restores the newest keyframe at or before the target frame and re-simulates the gap.
+* Re-simulation saves keyframes only at multiples of K, not every frame (review M1).
+* With confirmation 4-5 frames behind the present, a world holds about 3-4 keyframes: about
+  2-2.5 MB at 256 bodies and 7-10 MB at 1,024 [I, from the image sizes]. The old proposal held a fixed 2 s
+  ring (about 72 MB at 1,024 bodies).
+* The speculation limit (6.4) caps the worst case at 120/K + 1 = 31 keyframes.
+* Later: per-page delta compression of images, and sync-state-only guest snapshots (7.4).
 
-### 6.4 Rollback depth and window
+### 6.4 Confirmed frame and the speculation limit (review C1)
 
-* Rollback depth = how late an interaction arrives = one-way latency + jitter + loss recovery. At 60-80 ms
-  one-way delay the measured depth was 5 frames, and 11 frames with 10% loss [V c1, c2].
-* **Window = 120 frames (2 s)** [I, D4]. Inputs older than the window are refused (`TooLate`) [V b5] and
-  handled by state transfer (9.5).
-* Sync-check repair needs a deeper rollback, about 65 frames in the spike [V c3], so the window must cover
-  the check delay too.
+* **Phase 1 was wrong here.** Whether an input was "too late" depended on when it reached each peer, so two
+  honest peers could disagree and fork for good [V review C1 repro: an input for frame 50 admitted at frame
+  169 and refused at frame 171].
+* **Now every admission and finality decision is a function of signed, broadcast data, never of local
+  arrival time:**
+  * each member's periodic **ack** states its *horizon* (it will author nothing stamped at or before it)
+    and the entries it holds (10.8);
+  * frame *f* is **confirmed** once every member has published a horizon ≥ *f* and holds every entry that
+    could be stamped at or before *f*, with identical ids;
+  * an entry stamped at or before the confirmed frame can only be a duplicate or a provable protocol
+    violation, and every member refuses it identically;
+  * an entry stamped after the confirmed frame is always admitted, and the peer rolls back if it has
+    already simulated that frame.
+* **Rollback only reaches unconfirmed frames.** Confirmed frames are final: they are never rolled back,
+  SCM commits and ACL entries take effect only at confirmed frames (12.2, 15.2), and R14 relays only
+  confirmed facts (22.6).
+* **Speculation limit W = 120 frames (2 s, D4).** A member whose present runs W frames ahead of the
+  confirmed frame stops advancing its sim (it keeps networking) until confirmation catches up. Persistent
+  stalls trigger a membership change (10.8).
+* **Measured** [V session-sim c1]: the reviewer's scenario rerun on the new protocol. Member 3's link was congested for about 2 s, so its frame-50 entry reached the other two members at about their frames 169 and 171. No member refused it. Both had seen it about 2 s late, so the arrival bound (8.2) moved it to frame 153 deterministically. All three 700-frame histories were bit-identical and equal to an offline replay of the final log; 50 of 50 check frames matched. The two waiting members paused 6-9 frames at the speculation limit; the congested member rolled back once, 118 frames. Before: the same input forked the peers for good.
+* **Typical confirmation lag** on 30-60 ms links: 4-5 frames (67-83 ms) behind the present on 50 ms ± 15 ms links, with acks every two frames [V session-sim r14: member 2's average lag was 5.0 and 3.9 frames in two windows].
+* Decision: **D36** (finality and membership).
 
-### 6.5 Re-simulation budget [I]
+### 6.5 Re-simulation budget (review M1)
 
-* A 60-frame rollback at 256 bodies re-simulated in 33 ms [V b2]. That is two 60 Hz frames, or three 90 Hz
-  VR frames.
-* The sim thread therefore caps re-sim work per tick (e.g. 8 ms) and catches up over several ticks while
-  the renderer shows the best-known state with smoothing.
-* Most rollbacks are shallow (5-11 frames measured), so this matters mainly for repairs and loss bursts.
+* **Cost per re-simulated frame = step + keyframe saves / K.**
+
+  | Bodies | Step [V b6] | + save / 4 | Per re-simulated frame |
+  |---|---|---|---|
+  | 256 | 0.36 ms | 0.06 ms | ≈ 0.42 ms |
+  | 512 | ≈ 0.7 ms [I, interpolated] | ≈ 0.12 ms | ≈ 0.8 ms |
+  | 1024 | 1.5-1.9 ms | 0.24-0.30 ms | ≈ 1.7-2.2 ms |
+
+* **Rollback depth is now one-way latency plus the ack interval, not a sync-check delay.** Missing entries
+  are found by gap detection within an ack round trip (9.3); the old 45-frame check delay is gone.
+  Measured depths: at most 4 frames at 60 ms ± 20 ms; 9-14 frames with 2-10% loss [V session-sim state-frame, loss, ballpit; p2p-v2].
+* **Coalescing:** each tick handles everything that arrived since the last tick with one rollback, to the
+  earliest affected frame (review option (c) for the ball pit) [V session-sim, ballpit].
+* **Per tick, at 60 Hz:**
+  * a 6-frame rollback costs about 2.5 ms at 256 bodies and 10-13 ms at 1,024;
+  * the sim thread caps re-simulation at 8 ms per tick and finishes over the next ticks while the
+    renderer smooths;
+  * priority 1 (optimization) therefore sets the MVP budget at **about 500 awake bodies per world**
+    (D2), with island- or region-scoped re-simulation (6.6) pulled forward to phase 3.
+* Debug builds are about 10x slower; determinism tests run in release.
 
 ### 6.6 Scaling past the serial port [I]
 
-* Box3D worlds are independent, so the engine can split a session into **regions**, each its own Box3D
-  world, stepped in parallel on worker threads.
-* Objects crossing regions migrate at deterministic frames. Snapshots and rollbacks can then be
-  region-scoped: only regions touched by a late interaction re-simulate. That fits R3's "interactions are
-  local" model well.
-* Not needed for the MVP target (D2).
+* Box3D worlds are independent, so a session can be split into **regions**, each its own Box3D world,
+  stepped in parallel on worker threads.
+* Objects crossing regions migrate at deterministic frames, through the same escrow pattern as R14 (22.6)
+  but inside one session log.
+* Snapshots and rollbacks then become region-scoped: only regions touched by a late entry re-simulate.
+* Under the priorities this moves from phase 6 to phase 3 (23.2).
 
 ---
 
-## 7. "Only network physics interactions" (R3)
+## 7. Perturbations: state + canonical frame (R3, R6; rulings 09:30Z and 09:39Z)
 
-* **An interaction** is any player- or agent-originated change to sim state:
-  * impulses or forces on dynamic bodies;
-  * grab, hold and release (a kinematic target joint for the duration of the hold);
-  * spawning or destroying objects;
-  * setting sim component values (in-world editing);
-  * per-frame hand targets while a VR hand is physically engaged (18.4).
-* Code, shader, asset and ACL changes are **commits**: interactions with a longer ordering and finality
-  path (15).
-* **Everything else is local:** gravity, collisions, sleeping, joints, logic-module behaviour, and
-  everything that follows from interactions. It is computed independently on every peer from the same
-  state, code and inputs. Nothing about it is sent. [V c1: only `Input` and control messages cross the
-  wire; 98-111 datagrams per peer for a 10 s session]
-* **Wire format** [V c1, I for production]: `{frame, peer, seq, object_id, kind, payload}`. Signed (spike:
-  Ed25519 per datagram; production: Noise session AEAD plus signed log batches, 10.3). Sent redundantly
-  until acknowledged [V c2].
-* **Consistency** follows from determinism plus the same input set plus the same initial state and code. It
-  is checked, not assumed (9).
-* **Bandwidth:** two peers' interactions total a few kB per minute in the spike. VR hands streaming while
-  engaged cost about 60 Hz x 32 bytes = 2 kB/s per engaged hand per receiver [I]. Remote-avatar poses are
-  presentation-only and unreliable (18.4).
+### 7.1 The unifying model (user ruling 09:39Z)
+
+* **Every programmable system runs locally and deterministically on every peer:** physics, WASM game
+  logic, and the components logic drives.
+* **The network carries perturbations only.** A perturbation is anything that changes the world line from
+  outside the deterministic simulation.
+* **Every perturbation travels as one signed entry carrying:**
+  * its canonical frame (the author's present when it acted);
+  * the perturbing input;
+  * the **resulting state** of what it directly touched (user ruling 09:30Z).
+* Receivers roll back to that frame, apply the entry, and re-simulate forward. That is the only path, for
+  physics, logic and component state alike. There is no continuous state streaming.
+* **This is Resonite's model made deterministic.** Resonite runs drives and ProtoFlux locally and
+  replicates writes through the host. We run everything locally, and replicate perturbations peer to peer
+  with rollback (3).
+
+### 7.2 What counts as a perturbation
+
+| Perturbation | Canonical frame | Resulting state carried |
+|---|---|---|
+| Player physics interaction (impulse, grab, release) | The author's present | Exact post-frame state of each touched body (7.3) |
+| Engaged VR hand (a continuous source, 7.5) | Each frame of the stream | The hand target is itself the state; touched bodies are simulated, not sent |
+| AI agent action through MCP (17) | The peer's present | As for the equivalent player action |
+| Component write (MCP `object.set_component`, in-world inspector) | The peer's present | The written component values |
+| Create, delete or reparent an object | The peer's present | The created object's record; the deletion; the new parent |
+| Code, shader or asset commit (15) | Its activation frame (a confirmed commit plus a lead) | Module or asset hash; optionally the post-migration sync-state hash, so peers can check the migration |
+| Cross-world transfer step (R14, 22.6) | fA in the source, fB in the destination | The full object record |
+| Divergence repair (9.3) | A confirmed frame | A state transfer (image plus tables) |
+
+* World logic (member 0) is **not** a perturbation. Every peer computes its actions identically, so they
+  are never sent [V d1].
+
+### 7.3 Resulting state, and the acceptance criterion
+
+* **Contents:** for each body the entry touched, its exact post-frame state as bit patterns: position,
+  rotation, linear and angular velocity, 13 × 32 bits = 52 bytes [V session-sim encoding].
+* **Application rule** (applied identically by every peer, the author included, whenever frame *f* is
+  simulated or re-simulated):
+  1. apply the entry's input at the start of *f*, in canonical order (8.3);
+  2. step;
+  3. for each carried body, overwrite its state with the carried bits **only if they differ**.
+* **Why the rule is deterministic:** whether the overwrite fires depends only on the state at *f*. That
+  state depends only on the log. So every peer holding the same log does the same thing, and the result is
+  bit-identical.
+* **What the rule buys:**
+  * a peer already on the author's world line skips the overwrite and is bit-exact by determinism;
+  * a peer that had diverged (it lacked an earlier entry, or hit a bug) gets the touched object pulled onto
+    the author's world line at once;
+  * so every interaction is also an immediate, object-scoped sync check: R6's "this sync also runs
+    automatically whenever a player interacts with an object".
+* **Acceptance criterion (user, 09:31Z):** after a receiver re-simulates to its present frame, its copy of
+  the object must equal the author's copy at that frame. Measured:
+  * **3 members, 60 ms ± 20 ms:** 22/22 uncontended checks equal, both to the author's copy at that instant and to its final history [V session-sim state-frame]. **Over real UDP between two processes:** 13/13 at 60 ms ± 20 ms, and 9/9 in the fault run [V p2p-v2]
+  * **10% loss on every link:** 27/27 uncontended checks equal [V session-sim loss]; 14/14 over UDP [V p2p-v2 loss10]
+  * **A receiver that had missed an earlier entry on the same object:** 23/23 equal. Its carried-state overwrite fired once and pulled the object onto the author's world line before the missing entry arrived [V session-sim diverged]. Checks are *contended* when another member touched the same object in the previous 10 frames; that is the scripted same-frame conflict on object 50, 10 checks per run. Those can differ while the competing entry is in flight, and all converge when it lands. Every run ends with all histories bit-identical [V]
+* **The limit, stated plainly:** carried state makes the *touched object* exact. It cannot make an object
+  exact while the receiver's *other* objects still differ, because they keep pushing on it. Bit-exactness
+  everywhere comes from holding the same log. Gap detection guarantees that before a frame is confirmed
+  (9.3), and a state transfer covers true nondeterminism (9.3, 9.5).
+* **Contact island scope (D40):**
+  * carrying the whole contact island of each touched body would make the local neighbourhood exact
+    sooner, at 52 bytes per island body;
+  * the recommendation is touched bodies only, plus an island digest so a mismatch can trigger a scoped
+    state transfer.
+* **Overwrites can erase late indirect effects.** An earlier-stamped entry that arrives late and pushed the
+  touched object indirectly loses its effect on that object at *f*. The carried state wins, identically on
+  every peer. Claims (8.4) prevent the direct case.
+* **Re-stamped entries drop their carried state** (8.2), because it describes a different frame.
+
+### 7.4 Logic and component state: what is synchronized, what stays local
+
+* **Sync state of a logic module** (snapshotted, hashed, transferred; restored on rollback):
+  * the module identity (wasm hash) and its schema version;
+  * the component columns it declared through the IDL (16.5); the host stores them, so they snapshot as
+    memcpy and hash by column;
+  * one **declared state arena** in guest memory, for state that is not a component; the SDK's allocator
+    keeps all persistent guest data there;
+  * the module's RNG stream positions.
+* The guest stack and scratch memory are at rest between ticks and excluded. Mutable globals other than
+  `__stack_pointer`, and table mutations, are refused when a module is committed (review L3). Snapshots
+  then shrink from about 1.1 MB of whole linear memory [V d1] to the arena plus the columns.
+* **Local-only state never enters any of this:**
+  * presentation modules and presentation components live in a separate store that the sim cannot read;
+  * per-peer UI, panels, local head and unengaged hands, audio, particles and IK results are all local;
+  * the host enforces the split: sim modules cannot import presentation or I/O APIs, and presentation
+    modules cannot write sim components.
+* **Logic perturbations** are exactly the rows of 7.2 that touch logic: player or AI input routed to
+  logic, MCP component writes, a hot-swap at its activation frame, and a transferred object's components
+  arriving through R14.
+
+### 7.5 Continuous perturbations: a hand sweeping through a ball pit (the main question)
+
+Read naively, the state+frame ruling would send every touched ball's state every frame while a hand sweeps
+through a pit. The spike measured that against the alternatives: 500 balls (radius 6 cm) in a 2.4 m pit,
+a kinematic hand (radius 9 cm) sweeping a sine path for 3 s, two peers, 60 ms ±10 ms one-way, 2% loss,
+release build [V session-sim ballpit].
+
+| Run | Our traffic, both directions (wire est.) | Naive state streaming, one direction | Receiver: rollbacks/s, re-sim per sim frame | End state |
+|---|---|---|---|---|
+| 60 Hz, 1 hand, 2% loss | 14.7 kB/s (hand entries 3.7 kB/s payload) | 1.00 MB/s exact; 0.47 MB/s quantized (≈26 B/ball) | 59/s, 2.76 ms (step 0.35 ms) | identical |
+| 60 Hz, no loss | 12.4 kB/s | 1.00 MB/s | 59/s, 2.69 ms | identical |
+| 60 Hz, input delay 4 frames | 14.7 kB/s | 0.97 MB/s | 2.7/s, 0.27 ms | identical |
+| 90 Hz | 22.4 kB/s | 1.44 MB/s | 88/s, 3.95 ms (of an 11.1 ms frame) | identical |
+| 60 Hz, two hands (one per peer) | 21.6 kB/s | 1.23 MB/s | 59/s, 3.01 ms | identical |
+
+* The pit settles first: 0 balls changed state per frame before the sweep. During the sweep about 297 of
+  500 balls moved every frame.
+* "Wire est." assumes one datagram per message, with 52 bytes of IP/UDP/AEAD overhead. Batching per tick
+  lowers it.
+* "End state" is the full state hash (every ball, both hands, every table) at the last common frame. Every
+  run's whole history also equalled an offline replay.
+
+**Options weighed:**
+* **(a) The hand as a perturbation source (recommended).** The hand's target pose is sent every frame as a
+  small entry: the hand's state plus the canonical frame, quantized to 1 mm. Every peer simulates the balls
+  from it. Start and end are ordinary entries, and the touched island's state is sent only when a sync
+  check flags divergence [I; the spike compared end-state hashes instead]. This satisfies the ruling, because the perturbation (the hand) carries its state
+  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1 MB/s one way for naive exact state streaming: roughly 1/70 of the volume. The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
+* **(b) Batch, delta-code and quantize island state.** This cuts naive streaming several-fold (measured
+  above). But quantized state is not bit-exact unless the sender also snaps its own copy to the quantized
+  values, and it still scales with the number of balls moving.
+* **(c) Coalesce late arrivals:** one rollback per tick, to the earliest new entry. Built in and measured
+  above. Bounding the depth is the speculation limit (6.4).
+* **(d) Two hands in one pit:** both are perturbation sources. Balls are not claimed by hand contact, so
+  physics resolves both hands together, deterministically. Only exclusive grabs use the tie-break (8.3).
+  Measured with two hands, one per peer, sweeping in opposite directions: end state identical, 21.6 kB/s, and the receiver's re-simulation cost about the same as with one hand [V].
+* **Input delay** (stamping hand targets a few frames ahead) removes most receiver rollbacks, but the
+  author's own balls then react late to its hand. Stamping hand targets 4 frames (67 ms) ahead cut the receiver's rollbacks from 59/s to 2.7/s, and its re-simulation from 2.76 to 0.27 ms per frame [V]. It is a per-world setting (D41).
+
+### 7.6 Bandwidth per interaction
+
+* **An entry is about 100-170 bytes before transport overhead** [V session-sim encoding]:
+  * a touch with carried state is 100 bytes;
+  * a hand target without state is 44 bytes.
+* **Acks** are about 54 (2 members) to 79 (3 members) bytes each, every two frames, per member.
+* In production all of these share datagrams: the per-tick batch is option (b) applied to entries, not
+  to state.
+
+### 7.7 What traffic R3 allows (review L9)
+
+R3 says the network carries changes "only when a player interacts". The design also sends:
+* acks and check hashes (they replace nothing local and carry no state);
+* clock pings;
+* presentation streams: remote avatar poses and panel views (never sim inputs);
+* panel and hub messages (21).
+
+Whether that reading is right is **D39**.
 
 ---
 
 ## 8. "Soonest wins" without a central authority (R5)
 
-1. **Logical time = sim frame.** All peers share the session epoch (agreed at session creation) and keep a
-   clock offset estimate (10.4). A peer stamps an interaction with the frame at which it applied it
-   locally, which is its present. [V c1]
-2. **Total order:** `(frame, tie = splitmix64(session_seed ^ frame*K ^ peer<<40), peer, seq)`. Earlier frame
-   wins outright. Within a frame, the seeded hash rotates priority between peers frame by frame, so no peer
-   is permanently favoured. `(peer, seq)` makes the order total. Every peer computes the same order. [V b3,
-   c1]
-3. **Claims make "wins" meaningful.** An accepted interaction claims its object for `CLAIM_FRAMES` (30
-   frames, 0.5 s, in the spike). While a claim is active, interactions from other peers on that object are
-   rejected. The rejection is deterministic and machine-readable: `RejectedClaimed{by_peer, until_frame}`.
-   The claimant may keep interacting; a held grab renews its claim. [V b3, c1: same verdicts on both peers:
-   at frame 120 peer 1 accepted and peer 2 rejected; peer 2's frame-125 attempt rejected; peer 1's frame-126
-   follow-up accepted]
-4. **"Arrive at once"** is read as "stamped for the same frame or overlapping claim windows". Arrival order
-   on the wire never matters; late arrivals roll back. Alternatives (sub-frame timestamps, additive
-   physics with no exclusivity): **D5**.
-5. **Clock skew and fairness.** Offset estimation error was 0.02-5.9 ms on loopback with injected jitter [V c1-c3],
-   well under one 16.7 ms frame. Over the internet, asymmetric routes bias it by up to half the RTT
-   asymmetry [I]. So "soonest" is fair to about one frame, with equal-frame ties shared fairly.
-6. **Backdating (cheating)** [I]. A peer can lie about its frame stamps to win. Partial defences:
-   * signed, sequenced input logs: each entry carries the sender's own "sent at frame", and stamps may not
-     precede it by more than 2 frames;
-   * statistical detection: a peer whose inputs consistently arrive "older" than its RTT explains gets
-     flagged, then removed by an owner or a majority (12).
-   Without a central authority this is detection, not prevention. Trust model: **D21**.
+### 8.1 Canonical frame
+
+An entry's canonical frame is the frame its author stamps it with: the author's present when it acted. Its
+own effect is applied locally at once, so the author sees no added delay.
+
+### 8.2 Effective frame: bounding backdating (review H5)
+
+The phase-1 defence ("stamps may not precede the author's own sent-at frame by more than 2 frames")
+constrained nothing, because both numbers came from the author. Two constraints replace it:
+1. **Published horizons are commitments.** Every ack publishes a horizon. An entry stamped at or before a
+   horizon that its author already published is a provable violation (two signed messages), and every
+   member voids it [V session-sim backdate part 1].
+2. **The majority's arrival bounds the stamp.** Members report entries that reached them more than the late
+   allowance L (default 15 frames, 250 ms) after their stamp. The **effective frame** is
+   `max(stamp, k-th smallest arrival frame among the other members - L)`, with k a majority. It is a
+   deterministic function of signed reports, and final once the frame is confirmed
+   [V session-sim backdate part 2].
+
+**Result:** a cheater gains at most about L minus its real latency, and only by publishing late horizons,
+which delays confirmation for everyone and is visible. This bounds cheating; it does not prevent it. MVP
+sessions are trust-based (D21). The allowance is **D42**.
+
+### 8.3 Total order and the tie-break (user ruling 09:32Z)
+
+* **Order key:** `(effective frame, tie_rank(seed, frame, member), member, seq)`.
+* `tie_rank` hashes the epoch seed, the frame and all 32 bits of the member id (review L7). It is a
+  **per-frame random permutation of members.**
+* **It cannot be ground:**
+  * member ids are assigned in admission order by the membership log (10.8), never chosen by the peer;
+  * the seed comes from the session or epoch genesis entry;
+  * so no vanity key or chosen id changes anyone's odds.
+* Decisions: **D37** (the tie-break and member ids); the reading of "soonest" itself is **D5**.
+* **No permanent winner:** each member tops the order in about 1/n of frames. Measured: 150 same-frame conflicts among 3 members gave 41, 50 and 59 wins (expected 50 each; χ² = 3.24, p ≈ 0.2) [V session-sim ties].
+
+### 8.4 Claims (review M3)
+
+* An accepted interaction claims its object for 30 frames; other members' interactions on it are refused
+  with `RejectedClaimed{by, until}`.
+* **A plain impulse claims once and never renews.** Only a held grab renews its claim, for as long as it is
+  held. Repeated nudges therefore cannot lock an object [V session-sim claims: in the reviewer's lock-out scenario, member 2 (trying every frame) was accepted 0 of 600 times before the fix and 360 of 600 after; member 1 (every 29 frames) still got 9 of 21].
+* **World logic (member 0) never claims** and is never refused by claims.
+* Agents are rate-limited at intake (17.4).
+* A cap on how long a grab may be held is **D38**.
+
+### 8.5 Fairness
+
+* "Soonest" is fair to the precision of clock sync plus the tie permutation. The spike's same-frame
+  conflicts were scripted (review L5), so fairness under real skew is [I].
+* Cheating is bounded (8.2), not prevented. The MVP runs trusted or invite-only sessions (D21).
 
 ---
 
 ## 9. Sync checks and divergence repair (R6)
 
-### 9.1 What is hashed [V state hash and input digest; I per-object hashes]
+### 9.1 What is hashed
 
-* **State hash per frame:** Box3D body transforms and velocities (`hash_world_state`), plus claims and the
-  frame number [V a2]. Logic-module state and module ID are added when logic runs [V d1].
-* **Input digest per frame:** an order-independent hash of the interactions known for that frame [V c3].
-* **Per-object hashes [I]** ("snapshots of certain objects' state", R6): transform, velocities and sleep
-  state of tracked objects. Tracked = recently interacted, explicitly important, or sampled round-robin.
-  This localizes divergence to objects and islands, not just "the world".
+* **Every frame:** Box3D body transforms and velocities, plus every engine table (claims, objects, escrow,
+  arrivals) and the frame number. This is cheap and used for local diagnostics.
+* **At check frames:** the **full world image plus tables** (review H4), i.e. everything that rolls back,
+  including contacts, warm-start impulses and sleep timers. At 256 bodies this costs a save, about
+  0.25 ms [V b6].
+* **Objects:** the per-object state hashes that carried state (7.3) is compared against.
 
 ### 9.2 Cadence
 
-* **Periodic:** every 30 frames (0.5 s). The hash for check frame *c* is sent once the peer reaches
-  *c + 45*, so the hash is final unless something arrives beyond the expected latency [V c1-c3].
-* **Interaction-triggered:** when an interaction on object O at frame *f* is applied, a check for *f + 15*
-  is scheduled, scoped to O and its island [V c3 triggered at whole-world scope; I for object scope].
+* **On every interaction:** the carried state is compared with, and if needed applied over, the
+  receiver's own result (7.3).
+* **Periodic:** every 30 frames, but only at **confirmed** frames. There, every member holds the same
+  entries by construction, so any mismatch is true nondeterminism, never a missing entry (review H4).
+  Every session-sim scenario and every UDP run: 0 mismatches at confirmed frames (e.g. 52/52 per member in the state-frame and loss runs) [V].
 
-### 9.3 Repair: earliest interfering frame, then rollback [V c3]
+### 9.3 Repair
 
-1. Check mismatch at frame *c*: the peers exchange per-frame `(state hash, input digest)` for
-   `[c - 60, c]` (bounded by the window).
-2. Scan forward to the **earliest frame where state hashes differ**. That is where some player's
-   interaction changed the object's world line on one peer but not the other.
-3. If the **input digests also differ** at that frame, the peers swap the interactions they each lack.
-   Each receiver rolls back to that frame and re-simulates. Both converge.
-   * In the spike, peer 2's frame-200 interaction was never transmitted. The check at frame 210 detected
-     the mismatch at frame 257. Frame 200 was identified as earliest. The interaction was exchanged, and
-     peer 1 rolled back 65 frames. Both peers' 600-frame histories then matched the offline reference.
-4. Stale mismatches (a hash compared before an in-flight interaction landed) re-check as "histories agree
-   now" and are dropped [V c3].
+* **Missing entry (the common case):** acks list what each member holds. A member that lacks an entry sees
+  the gap at the next ack and fetches it, before the frame can be confirmed. Then it rolls back to the
+  entry's canonical frame. That frame *is* "the earliest frame at which a player interfered with the
+  object" (R6), so no hash-range search is needed.
+  * [V session-sim diverged: member 2 missed member 3's frame-300 entry; it fetched the entry by gap detection, the histories ended bit-identical, and member 1's later touch on the same object had already pulled that object onto the shared world line through its carried state]
+* **Equivocation (review C2):**
+  * entry identity is the hash of the entry; each member's entries form a hash chain;
+  * two signed entries with the same (member, seq) are a transferable proof;
+  * both are voided, and a strict-majority vote evicts the member;
+  * [V session-sim c2: member 9 sent different seq-1 entries to members 1 and 2. Both saw the disagreement in each other's acks, fetched the other version, voided both and evicted member 9 by majority vote about 10 frames after the frame-50 entry. Their 450-frame histories were identical and equal to an offline replay. Before: first-seen-wins left them diverged for good].
+* **Same entries, different state (true nondeterminism):** never observed in any spike. With 3 or more
+  members, the majority state at the confirmed frame wins and minority members take a state transfer.
+  With exactly 2 there is no majority: both members re-simulate from the last agreed confirmed frame, and
+  if they still differ, both pause and report. No member's state is privileged (review M7, D6).
 
-### 9.4 Same inputs, different state
+### 9.4 Reliability
 
-This means true nondeterminism, memory corruption or tampering. The spike detects and labels it but does
-not repair it [V c3 code path, not triggered].
+* Acks are periodic, so a lost ack is superseded by the next one.
+* Fetches retry while a gap persists.
+* Check hashes are sent once a check frame is confirmed and evaluated once per (frame, member).
+* Under 10% loss: 52 of 52 check frames compared per member pair, and every history converged [V session-sim loss]. The phase-1 spike completed only 28 and 27 of 31 checks at 10% loss.
 
-**Proposed repair [I]:**
-* With 3 or more peers, the majority state hash at the earliest divergent frame wins. Minority peers
-  receive a state transfer (9.5) and are flagged.
-* With 2 peers there is no majority (**D6**).
-* Every such event is logged with both states for debugging. It should never happen if 4.3 holds.
+### 9.5 State transfer (late join, minority repair, long-parked worlds) [I]
 
-### 9.5 State transfer (beyond the window, late join, minority repair) [I]
-
-* The donor sends a snapshot at a confirmed frame *F*: world image, ECS columns, guest memories, module
-  set, claims and asset manifest. It follows with the input and commit logs from *F*.
-* The receiver restores and fast-forwards. Restoring a world image into a fresh `World` works
-  [V b4].
-* Images are POD memory layouts tied to the engine build (layout hash). Admission already requires an
-  identical build (4.3 rule 7).
+* The donor sends a snapshot at a **confirmed** frame *F*: world image, tables, sync state of the logic
+  modules, module set, claims and asset manifest. It follows with the session log from *F*.
+* The receiver restores and fast-forwards. Restoring a world image into a fresh `World` works [V b4].
+* Images are memory layouts tied to the engine build. Admission already requires an identical build
+  (4.3 rule 7).
 * Region- or island-scoped transfer is a later optimization.
 
 ---
 
-## 10. P2P topology and transport (R1)
+## 10. P2P topology, transport and the session log (R1)
 
 ### 10.1 Topology [I]
 
@@ -414,19 +691,38 @@ not repair it [V c3 code path, not triggered].
 **Recommendation (D8): A for the MVP** (sim channel plus our own bulk channel). B stays the upgrade path
 if our bulk transport proves weak.
 
-### 10.3 Identity and security [V c1-c3, I production]
+### 10.3 Identity and security [V c1-c3 for signed datagrams; I production]
 
-* Each user and device has an Ed25519 keypair. Agents get their own keys with delegation (12.3).
-* **Spike:** every datagram is Ed25519-signed, and the peer key is pinned from its self-signed Hello.
-* **Production:** Noise XX/IK handshake bound to the Ed25519 identity. AEAD (ChaCha20-Poly1305) per
-  packet. Input and commit log entries are individually signed, so any peer can forward them and third
-  parties can verify authorship. That is required for repair (9.3) and relaying.
+* **Keys:**
+  * each user has a long-term Ed25519 identity key;
+  * each device has its own key, certified by the user key;
+  * each agent has its own key with a delegation certificate (12.3).
+* **Member ids (review L7).** A session's membership log admits members one at a time. Each admission
+  assigns the next **MemberId** (u32) and records the member's full public key and device certificate.
+  * Ids are never chosen by the peer and never reused.
+  * A peer that crashes and rejoins is admitted again under a **new** MemberId, so its sequence numbers
+    can never collide with its earlier incarnation's (review C2).
+  * Object ids `(creator MemberId, counter)` stay unique for the life of the session.
+* **Entries (review C2):**
+  * every entry is signed by its author and carries the id of the author's previous entry, so each
+    member's entries form a hash chain;
+  * an entry's identity is the hash of its signed bytes. Production uses BLAKE3; the spike uses 64-bit
+    FNV over the encoding [V session-sim];
+  * per-entry signatures let any member forward any entry, which fetch-based repair (9.3) needs.
+* **Transport:** Noise XX/IK bound to the identity keys, with AEAD (ChaCha20-Poly1305) per packet.
+* **Authorship (review L4):** receivers check that an entry's member matches its signature. The phase-1
+  UDP spike accepted any peer's claimed member id inside a datagram; its successor checks it
+  [V p2p after the update].
 
 ### 10.4 Clock sync [V c1-c3]
 
-* NTP-style ping/pong. The minimum-RTT sample's offset becomes the estimate. Measured error was 0.02-5.9 ms
-  on loopback with 10-60 ms of injected one-way jitter.
-* **Production [I]:** continuous re-estimation, a median across peers, and slew instead of jumps.
+* NTP-style ping/pong. The offset comes from the minimum-RTT sample. Measured error was 0.02-5.9 ms on
+  loopback with 10-60 ms of injected one-way jitter.
+* **Clocks are monotonic** (review L6). The offset is slewed, never stepped.
+* **RTT is measured by the receiver, from its own send and receive times** (review H5). The remote's
+  reported receive time is used only for the offset, never to excuse lateness: arrival-based re-stamping
+  (8.2) uses the receivers' own clocks.
+* Continuous re-estimation, and a median across peers [I].
 
 ### 10.5 NAT traversal without a central server [I]
 
@@ -441,22 +737,21 @@ if our bulk transport proves weak.
 5. If **nobody** in the session is reachable (both ends symmetric NAT and no relay-capable member), only a
    public relay helps. That is a soft central point: **D9**.
 
-### 10.6 Join, leave, partitions [I; join building blocks V b4, c1]
+### 10.6 Join, leave, partitions [I; join building blocks V b4, c1; membership V session-sim c2]
 
-* **Join:** the invite gives addresses plus the inviter's key (11). The joiner connects to any member and
-  gets a state transfer (9.5) plus the logs. It fetches missing assets and wasm by hash from all members
-  (16.7), fast-forwards, and starts sending inputs.
-* **Leave:** a graceful "bye", or timeout after 3 s of silence. Membership needs no consensus for
-  simulation correctness. An input either reached someone, who will spread it in repair (9.3), or nobody,
-  in which case it never happened. Membership matters for ACL votes and seats (12, 15). There, a member is
-  "present" at frame *f* if it acknowledged frame *f* in its signed log.
-* **Partitions:** both halves keep simulating. On heal, sync checks diverge and input exchange repairs
-  anything within the window. Beyond the window the halves have irreconcilable histories. Policy (larger
-  partition wins vs replaying the minority's inputs at heal time): **D7**.
-* **Always-on peers** (like Resonite's headless hosts) are ordinary peers that keep a world running. They
-  have no authority.
-
----
+* **Join:**
+  * the invite carries addresses and the inviter's key (11);
+  * an admission entry, signed by a quorum of the current members (10.8), gives the joiner its MemberId
+    and the frame from which it counts towards confirmation;
+  * the joiner takes a state transfer at a confirmed frame (9.5), fetches missing assets and wasm by hash
+    (16.7), fast-forwards, and starts acking and authoring.
+* **Leave:** a graceful leave is a signed entry. Silence leads to a stall and then a view change (10.8).
+* **Partitions:** only a side holding a strict majority of the current epoch can confirm frames or change
+  membership. A minority side speculates up to the speculation limit and then pauses. On heal it rejoins
+  the majority's epoch by state transfer. Its unconfirmed entries can be resubmitted as new entries. No
+  confirmed history is ever discarded (review H3). Two-member sessions are **D7**.
+* **Always-on peers** (like Resonite's headless hosts) are ordinary members that keep a world running.
+  They have no authority.
 
 ### 10.7 e4mc lessons (user question)
 
@@ -478,12 +773,64 @@ if our bulk transport proves weak.
   I whether others do].
 
 **Lessons for Primordial [I]:**
-1. **Memorable addresses.** Two random words are easy to say and share. We adopt human-readable **session
-   codes** (e.g. `crimson-lantern-orbit` plus a check word) without DNS:
-   * the code hashes to a Mainline DHT key (BEP 44 record) that holds the session's member addresses,
-     signed by the session key;
-   * the code also seeds a PAKE (SPAKE2; the pure-Rust `spake2` crate, not yet audited), so a guessed or
-     overheard code alone cannot impersonate the session.
+1. **Memorable addresses.** Random words are easy to say and share. We adopt human-readable **session
+   codes** without DNS. A code has two parts that do different jobs [I]:
+   * **Form:** `orbit-velvet · crimson-lantern · tide`.
+     * The first pair is the **nameplate**. It is public and only locates someone to talk to.
+     * The second pair is the **password**. It is secret and used only inside a PAKE.
+     * The last word is a **check word**, used to catch typos.
+     * All words come from a 7,776-word list, so each word carries log2(7776) = 12.9 bits.
+   * **The host announces itself under the nameplate.** The member who creates the code (the host) announces
+     its address with BitTorrent `announce_peer` (BEP 5) under
+     `infohash = BLAKE3("primordial/code/v1" ‖ nameplate)[..20]`. A relay address (10.5) also works. The
+     host re-announces until the code expires.
+   * **The joiner finds the host, then proves the password.**
+     * The joiner's peer checks the check word locally, so a typo never costs an attempt.
+     * It calls `get_peers(infohash)` and contacts at most 8 of the returned addresses.
+     * With each, it runs a PAKE (SPAKE2, or CPace; neither pure-Rust crate is audited yet), with the
+       password as input and the nameplate bound into the transcript.
+   * **On success, the host sends a normal invite ticket** (11) over the PAKE-keyed channel: session ID,
+     member addresses, the inviter's key and a join secret. The join then proceeds as for any invite
+     (10.6).
+   * **Nothing derived from the password is ever published.** The DHT holds only the nameplate's infohash
+     and the host's address. No signed session record exists to forge.
+   * **Limits:**
+     * a code expires after 10 minutes, or after one use unless the owner allows more;
+     * the host accepts at most 10 failed PAKE runs per code in total, and at most one per source address
+       per 5 s, then burns the code and tells its owner;
+     * joining still passes the session's own admission rule, if it has one.
+   * **Shorter form, through a friend.** If the joiner already knows a member (a friend record, 11), the code
+     is just `crimson-lantern · tide`. The joiner contacts that member directly and runs the same PAKE.
+     Nothing is published at all.
+   * **Why the earlier scheme failed:**
+     * A three-word code holds 3 × 12.9 = 38.8 bits (7,776³ = 4.7 × 10¹¹ codes); the check word adds none.
+     * If the DHT key is a hash of the code, anyone who sees the key can test every code offline: about
+       8 minutes at 10⁹ hashes/s, one GPU. That also yields the PAKE password, which defeats the PAKE.
+     * A memory-hard KDF does not rescue 38.8 bits. At an assumed 10³ Argon2id guesses/s per GPU, one code
+       costs about 1.3 × 10⁵ GPU-hours. But every guess is tested against all live codes at once, because
+       a joiner who holds only the code cannot use a per-session salt. With 1,000 live codes, breaking
+       one takes about 130 GPU-hours [I].
+     * The earlier record was "signed by the session key", but a joiner who knows only the code cannot know
+       that key. Deriving the key from the code instead lets anyone who recovers the code overwrite the
+       record.
+   * **What the new scheme gives** [I; it assumes a secure PAKE, which allows one password guess per run]:
+
+| Attack | Bound |
+|---|---|
+| Offline guessing of the password | Not possible: nothing derived from it is published or sent outside a PAKE run |
+| Online guessing against the host | At most 10 guesses per code: 10 / 7,776² = 10 / 6.0 × 10⁷ ≈ 1.7 × 10⁻⁷ |
+| Fake hosts announced under the nameplate | Each joiner attempt contacts at most 8 candidates: ≤ 8 / 6.0 × 10⁷ ≈ 1.3 × 10⁻⁷ per attempt, and failed runs are shown to the joiner |
+| Nameplate collisions (honest) | With 10⁴ live codes, a given code shares its nameplate with probability ≈ 1.7 × 10⁻⁴. The only cost is failed PAKE runs, which can burn a code; the owner makes a new one |
+| Burning someone's code (denial of service) | Ten wrong guesses burn it. Low impact: the owner makes a new code |
+| Someone who overhears the whole code | Can join. A code is a bearer invitation, like a ticket. Use single-use codes, or admission approval |
+
+   * **Costs:**
+     * the code grows from three words plus a check word to four plus a check word (ease of use, D35a);
+     * the host must stay online and reachable, directly or through a relay, while the code is live;
+     * DHT observers learn that the announced address hosts a Primordial join code, much as BitTorrent
+       peers are visible. Announcing a relay address hides the host's address (D35b).
+   * **Rejected alternative:** binding a key fingerprint into the code. Resisting offline search and
+     second-preimage attacks needs about 6 words (77.5 bits) plus a check word, which is not memorable.
 2. **Outbound-only reachability.** A host behind NAT stays reachable by holding an outbound connection to
    a relay. Our equivalent: members with open ports, plus **volunteer relays** that anyone can run (the
    normal peer binary in relay mode).
@@ -510,6 +857,35 @@ if our bulk transport proves weak.
 self-hostable relays. The recommendation stands (D8): build that model on UDP + Noise in 100% Rust, add
 session codes and volunteer relays (D35), and reconsider iroh only if the user allows `ring`.
 
+### 10.8 Session log, confirmation and membership epochs (reviews C1, C2, H3)
+
+* **The session log** is the set of every member's signed entries: perturbations (7.2), commits (15), ACL
+  entries (12) and membership changes.
+* **Acks.** Every member sends a signed ack to all members every two frames. Each ack carries:
+  * the member's **horizon**: it will author nothing stamped at or before that frame;
+  * per author, the highest contiguous sequence number held and that entry's id;
+  * the member's late-arrival reports (8.2).
+* **The confirmed frame** is computed from acks alone, so every member that holds the same acks computes
+  the same value. Frame *f* is confirmed once:
+  * every member's horizon is at least *f*;
+  * every member holds, with identical ids, each author's entries up to the sequence number that author
+    had declared when it published a horizon of at least *f*.
+* **Gap detection and fetch:** an ack that shows another member holding entries this member lacks makes
+  it fetch them, from the acker or the author [V session-sim].
+* **Disagreeing ids block confirmation** until resolved. They mean equivocation (9.3) or a forged chain.
+* **Membership epochs:** the member list changes only through a **view change** signed by a strict majority
+  of the current epoch. Examples: admitting a joiner, removing a member that has blocked confirmation past
+  the speculation limit, or evicting an equivocator.
+  * A view change names the frame it takes effect at and, for each removed member, the last entry of it
+    that stays valid.
+  * Because a strict majority is required, at most one side of any partition can change membership or
+    confirm (review H3).
+  * Spike: eviction by majority vote after an equivocation proof [V session-sim c2]. Proposal-based view
+    changes with cutoffs and joins are [I].
+* **What the old 2 s timers become:**
+  * SCM finality and ACL ordering (12.2, 15.2) use confirmation, typically within about 70-80 ms (4-5 frames) on 50 ms links [V session-sim r14];
+  * the rollback window becomes the speculation limit (6.4).
+
 ---
 
 ## 11. Peer discovery (R9)
@@ -534,8 +910,14 @@ to run or depend on for discovery, even if it has no authority over sessions.
 4. Mainline DHT records ("user K is at addresses…", "session S members…") to re-find friends and
    sessions with no infrastructure of ours.
 5. No servers of our own. An optional, community-run relay or bootstrap list stays a user decision.
-6. Human-readable session codes (e4mc-style words, 10.7) resolve through the same DHT records, with a
-   PAKE so the code alone cannot impersonate the session.
+6. **Human-readable session codes (10.7)** use the Mainline DHT only as a rendezvous [I]:
+   * a public two-word nameplate locates a member who announced itself (BEP 5);
+   * a secret two-word password is used only inside a PAKE with that member, and is never published;
+   * the member then hands over a normal invite ticket (item 1).
+
+   Knowing the nameplate gives an attacker only online guesses: one per PAKE run, and at most 10 per code.
+   With a friend in the session, the code shrinks to the two password words plus a check word, and nothing
+   is published. Decision: **D35a**.
 
 NAT ties in through 10.5: discovery yields candidate addresses, and members broker hole punching.
 
@@ -555,7 +937,9 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Genesis:** the world creator's key signs the initial ACL. Roles: `owner`, `builder` (logic, shader and
   asset commits), `editor` (in-world object edits), `player` (interactions), `spectator`.
 * **Grants, revocations and owner changes** are signed entries ordered exactly like commits (soonest wins,
-  15.2). Each takes effect at its ordered frame.
+  15.2). Each takes effect at its ordered frame once that frame is confirmed (6.4), so no two peers ever
+  hold different ACL states for a confirmed frame. During a partition only the majority side can change
+  the ACL (10.8; review H3).
 * **Every peer validates** every interaction and commit against the ACL state *as of that frame*. A
   non-authorized action is rejected identically everywhere, with a machine-readable reason.
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
@@ -563,12 +947,37 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 
 ### 12.3 AI agents [I]
 
-* Each agent has its own Ed25519 key. A user issues a **delegation certificate**: "user U authorizes agent
-  A with scopes {interact, edit-objects, commit-logic, commit-shaders, commit-assets}, expiring at T".
-* An agent's effective rights are the intersection of the certificate scopes and the user's roles.
-  Certificates travel in the session log, so every peer can verify agent-signed actions and attribute
-  them to user U.
-* Revoking the certificate stops the agent immediately at a deterministic frame.
+* **Keys and certificates.** Each agent session has its own Ed25519 key. A user issues a **delegation
+  certificate**: "user U authorizes agent key A with scopes {interact, edit-objects, commit-logic,
+  commit-shaders, commit-assets}, expiring at T".
+* **Issuing a certificate is a human action, out of band.**
+  * Certificates are created only in the engine-owned approval layer (21.2), after the user confirms the
+    agent, its scopes and its expiry with local input.
+  * No MCP tool issues, widens or renews a certificate.
+  * Agents cannot open the dialog either: the user starts the flow from the panel UI.
+* **Agents never get admin scope.** These actions are human-only, and no certificate can carry them:
+  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10) and delegation.
+* **Sub-certificates for restricted sessions (21.3).**
+  * A panel key may issue sub-certificates to the restricted sessions it runs (guest and inbox sessions).
+    Each is narrower in scope, expires sooner, and names the principal it serves.
+  * The chain is at most user → panel → session.
+  * The engine issues them only when the owner unlocks the panel or accepts a connection, never at a
+    model's request.
+  * Every peer verifies the chain, and the scope must narrow at each step.
+* **The user key is held outside the MCP-reachable path.**
+  * It is stored encrypted at rest: DPAPI user scope on Windows, the OS keyring on Linux.
+  * Only the signing component behind the approval layer loads it, and that component signs only requests
+    tied to a confirmation the user just made.
+  * The MCP server and the harness adapters have no code path to it. The crates that handle MCP requests
+    do not depend on the user-key signer.
+  * Panel and session keys are separate. They sign only actions inside their certificate's scope.
+* **Effective rights** = certificate scopes ∩ the user's roles, intersected with any sub-certificate's
+  scope.
+* **Attribution.** Certificates travel in the session log. Every peer can verify agent-signed actions and
+  attribute them to user U, and to the guest or remote party that a sub-certificate names.
+* **Revocation.** Revoking a certificate (`CertRevoked {key, effective_frame}`) stops the agent at a
+  deterministic frame. `GuestRevoked` (21.5) is the per-guest case. The frame is a
+  confirmed frame (6.4), so every peer stops the agent at the same point.
 
 ---
 
@@ -578,10 +987,10 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 
 ```
 AI or human edits Rust source (MCP: logic.write / logic.check / logic.test_in_fork)
-   -> pinned toolchain compiles crate to wasm32-unknown-unknown (cdylib, no_std + alloc SDK)
-   -> commit {source tree hash, wasm hash, schema manifest} signed by author
-   -> ordered and finalized by the SCM (15) -> activation frame A
-   -> every peer validates the wasm (wasmi) and swaps it in at frame A, with state migration
+   -> pinned toolchain compiles one module crate to wasm32-unknown-unknown (rel-fast profile, 13.7)
+   -> commit {source tree hash, canonical wasm hash (13.2), schema manifest} signed by the author
+   -> ordered and confirmed (15.2) -> activation frame A = confirmation + lead
+   -> every peer validates the wasm and swaps it in at frame A, with state migration
 ```
 
 ### 13.2 Who compiles: trust model (D11)
@@ -589,40 +998,76 @@ AI or human edits Rust source (MCP: logic.write / logic.check / logic.test_in_fo
 * **Option 1 (recommended): the committer compiles; peers run the shared wasm.**
   * WASM is sandboxed: memory-safe and limited to the capabilities the host API grants. A malicious module
     can do no more than malicious *source* could.
-  * The residual risk is a binary that doesn't match its source, which defeats review and rebase. Peers
-    that have the toolchain run **background reproducibility checks**: rebuild from source, compare
-    hashes, flag mismatches.
-  * Rebuilding identical source on this machine reproduced the identical wasm (sha256 `f9c5e895…`) [V d5].
-    Cross-machine reproducibility needs a pinned toolchain and `--remap-path-prefix` [I].
+  * The residual risk is a binary that does not match its source, which defeats review and rebase. Peers
+    that have the toolchain run **background reproducibility checks**: they rebuild from source and
+    compare canonical hashes.
   * Peers without a toolchain can still play and run logic. That matches "end users mostly won't touch
     code".
-* **Option 2: every peer compiles from source.** Maximum trust, but every machine needs about 1 GB of
-  toolchain plus seconds of compile per commit.
+* **Option 2:** every peer compiles from source. Maximum trust, but every machine needs about 1 GB of
+  toolchain plus compile time per commit.
+* **A module's identity is its canonical hash (review M8):** SHA-256 over the module with all custom
+  sections removed (`name`, `producers`, `target_features`).
+  * The same source built from two checkout paths gave different raw hashes for `physics_in_wasm.wasm`
+    (`589e97…` and `051eee…`), because mangled names in the `name` section depend on the path. The
+    canonical hashes were identical (`66633b43…`) [V `scripts/wasm_canonical_hash.py`,
+    spikes/out/wasm-canonical-hash.txt].
+  * Builds also pass `--remap-path-prefix`, so panic locations embed no local paths [I].
+* **Only the committer compiles (review H1).**
+  * `compile_failed` is advisory feedback to the author, never a peer-side rejection.
+  * Peers reject only what they can decide identically: a module that fails wasm validation or the
+    commit-time checks (13.4), or a canonical hash that does not match the uploaded bytes.
+* **Dependencies (review L8).** Logic crates may depend only on vendored crates committed to the world
+  repository, with a `Cargo.lock`. Committers and reproducibility checkers then need no crates.io access.
+  * Build-time code (`build.rs`, proc-macro crates) runs native code on whoever compiles. It is refused in
+    logic crates, except for the engine SDK's own macros, which ship with the toolchain.
+  * The toolchain itself is pinned (`rust-toolchain.toml`). Mirroring it so committers need no rustup host
+    is **D11**.
 
-### 13.3 Runtime: wasmi (D12)
+### 13.3 Runtime: weighed for speed under the determinism constraint (D12)
 
-* **wasmi 2.0**, pure Rust [V audit `logic-wasmi`], configured as follows:
-  * `deterministic` feature: the Wasm 3.0 deterministic profile, NaN canonicalization [S];
-  * fuel metering [V d1b, d3];
-  * **eager compilation**. Verified finding: wasmi's default `LazyTranslation` charges fuel for translating
-    each function on first use, so fuel consumption depended on which instance in the process called first.
-    Measured 49,831 vs 46,800 fuel on two peers, and the runaway module halted at different points
-    [V d-lazy]. Eager compilation fixes both [V d1b, d3].
-* **Speed:** the Box3D scene ran about 22x slower interpreted than native (7.0 ms vs 0.31 ms per frame)
-  [V d4]. Game logic should be orchestration, with heavy lifting done by host APIs (physics, queries, math
-  helpers), so interpretation cost stays small. Logic ticks in the spike used ≤83 fuel units [V d1b].
-* **Alternative: wasmtime (Cranelift JIT).** Much faster, but its default build compiles C (fiber, jit-debug,
-  ittapi, zstd-sys) [V audit `logic-wasmtime`]. Whether a reduced feature set is pure Rust is unverified.
+The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the priorities, using
+@iter-bench's measurements of a 6.4k-LOC ECS-style guest
+([iteration-benchmark.md](iteration-benchmark.md), all [V] on this desktop):
 
-### 13.4 Guest ABI (phase-1 sketch) [V d1]
+| Runtime config | Logic at 10k entities (× native 0.9 ms) | Physics compiled to wasm (× native) | Module compile (264 KB) | Host call | Deterministic fuel | Canonical NaN | Native code compiled |
+|---|---|---|---|---|---|---|---|
+| wasmi 2.0, eager, fuel (phase 1) | 6.4 ms (7.0x) | 21x | 4.5 ms | 25 ns | yes | yes | none: 8 pure-Rust crates |
+| wasmtime 50 Cranelift, fuel, NaN canonicalization | 1.6 ms (1.7x) | 4.7x | 33 ms (parallel), 199 ms (serial) | 2.8 ns | yes | yes | none on Windows [V]; `helpers.c` on Linux and macOS [I, build.rs] |
+| wasmtime Cranelift, fuel, no NaN canonicalization | 1.3 ms (1.4x) | 2.4x | similar | 2.8 ns | yes | no: CPU NaN bits | as above |
+| wasmtime Winch (baseline JIT), fuel, NaN canonicalization | 2.8 ms (3.0x) | 6.3x | 4.9 ms | 3.1 ns | yes | yes | as above |
 
-* **Imports `pe.*`:** read-only world view (`body_count`, `body_pos`, …) and command buffer
+* **Determinism held everywhere it was asked for:**
+  * one final digest across all 12 configs and two processes;
+  * fuel identical across instances and processes in every eager config;
+  * wasmi's lazy mode reproduced the phase-1 fuel nondeterminism.
+* **Fuel counts differ between runtimes,** so every member of a session must run the same runtime and
+  version. Admission already pins the engine build (4.3 rule 7).
+* **Under the priorities** (optimization first), Cranelift with fuel and NaN canonicalization runs logic
+  about 4x faster than wasmi, and physics in wasm about 4.5x faster. That is the difference between 6.4 ms
+  and 1.6 ms of a 16.7 ms frame. It costs:
+  * about 25-30 ms of extra JIT per hot swap (170 ms at 45k LOC);
+  * 82 crates instead of 8;
+  * on Linux and macOS, one C file that wasmtime's build script compiles today. That breaches the
+    100%-Rust ruling until it is patched or ruled acceptable (D1, D12).
+* **Recommendation: Cranelift + fuel + NaN canonicalization on Windows as soon as logic cost matters,
+  with wasmi kept as the reference and fallback.** The fallback covers platforms that ban JIT and any
+  Linux build the user has not cleared. D12 asks the user.
+* **NaN canonicalization** doubles the cost of float-heavy code on Cranelift (physics in wasm: 4.7x vs
+  2.4x). Dropping it is safe only if guests never observe NaN bits, or if every peer is x86-64. Physics
+  stays native in the engine (13.8), so the logic penalty is small: 1.7x vs 1.4x.
+
+### 13.4 Guest ABI (phase-1 sketch) [V d1, I additions]
+
+* **Imports `pe.*`:** a read-only world view (`body_count`, `body_pos`, …) and a command buffer
   (`apply_impulse`). Production adds component queries and an object API generated from the component IDL
   (16.5).
 * **Exports:** `pe_tick(frame)`, `pe_state_ptr/len/version`, `pe_scratch_ptr`, `pe_migrate(from_version,
   len)`.
-* Logic-issued actions are applied as peer-0 ("world logic") interactions on every peer identically. They
-  are never networked, because every peer computes them. [V d1]
+* Actions issued by logic run as member-0 entries on every peer identically, are never networked, and
+  never take claims (8.4) [V d1].
+* **Sync state** (7.4): the host-owned component columns plus the declared state arena.
+* **Commit-time checks (review L3):** modules may not export or mutate globals other than
+  `__stack_pointer`, may not mutate tables, and may not import outside `pe.*`.
 
 ### 13.5 Hot reload and rollback consistency [V d1, d2]
 
@@ -630,28 +1075,64 @@ AI or human edits Rust source (MCP: logic.write / logic.check / logic.test_in_fo
   from A.
 * **State migration:** the host copies the old state bytes into the new module's scratch buffer and calls
   `pe_migrate`.
-* A peer that learns of the commit late rolls back to A: it restores physics, guest memory and *module
-  version*, swaps, and re-simulates. In the spike, peer B learned 45 frames late and matched peer A on all
+* A peer that learns of the commit late rolls back to A: it restores physics, guest state and the module
+  version, swaps, and re-simulates. In the spike, peer B learned 45 frames late and matched peer A on all
   600 frames. A control peer without the commit diverged exactly at A, which shows the swap took effect.
-* Snapshots record the active module ID, so rolling back across a swap restores the old module [V d1].
+* Snapshots record the active module id, so rolling back across a swap restores the old module [V d1].
+* Activation frames are now chosen after confirmation (15.2), so a commit can no longer be un-finalized.
 
-### 13.6 Sandboxing [V d3, I]
+### 13.6 Sandboxing (review M6)
 
 * No WASI and no host I/O: only the `pe.*` capability API.
-* Per-tick fuel budget. A runaway module stops at the identical instruction on every peer [V d3]. The
-  policy is to disable that module at that frame everywhere and auto-revert to the last good commit (D14).
-* Memory limits through wasmi's resource limiter. Host functions validate every argument (IDs, finite
-  floats) [V d1].
+* **Fuel per tick**, and every host call charges fuel in proportion to its cost: a raycast or query costs
+  what it does in time, not one instruction [I].
+* **Running out of fuel disables the module at that frame,** as a flag in rollback state. If a late entry
+  rolls the sim back so the overrun never happens, the flag rolls back with it. Reverting the module is an
+  ordinary, explicitly ordered commit by a human or an agent, never an automatic SCM action (D14d).
+  A runaway module stops at the identical instruction on every peer [V d3].
+* Memory limits through the runtime's resource limiter. Host functions validate every argument (ids,
+  finite floats) [V d1].
 
-### 13.7 Compile latency: what "real time" means [V d5, I]
+### 13.7 Iteration latency: measured, and the targets (user, 09:27Z)
 
-* A tiny no_std guest rebuilt in 0.21-0.29 s after a one-line edit. The first build took 1.24 s
-  [V d5].
-* A realistic logic crate on an engine SDK is estimated at 1-5 s [I].
-* End to end: edit, then compile (about 1-5 s), then SCM finalization (one ordering window, about 2 s),
-  then activation lead (about 0.5 s). Changes go live **within seconds**, without restarting anything.
-* AI agents iterate faster with `logic.check` (compile and diagnostics only) and `logic.test_in_fork`
-  (17.3) before committing.
+* **Measured [V iteration-benchmark 3.1-3.3]:** a one-function edit, through cargo build to wasm32, wasmi
+  compile, instantiate, state migration and the first frame:
+
+  | Guest size | `dev` | `rel-fast` (opt 3, no LTO, incremental) | `release` (fat LTO) |
+  |---|---|---|---|
+  | 6.4k LOC | 0.55 s | **0.45 s** | 1.3 s |
+  | 17k LOC | 0.72 s | 0.64 s | 2.7 s |
+  | 45k LOC (split crates) | 0.86 s | 1.2 s | 5.9 s |
+
+  * The phase-1 estimate of 1-5 s was pessimistic.
+  * Unoptimized `dev` wasm runs 12x slower in the interpreter (77 vs 6.4 ms per tick), so it is the wrong
+    profile for play-testing.
+  * Fat LTO is the only slow lever. It is for shipping builds only.
+* **Targets** (2.1):
+  * ≤ 0.5 s on the author's peer at up to about 10k LOC per module, ≤ 1.5 s at 45k LOC;
+  * + confirmation and the activation lead (about 0.6 s) for every peer.
+* **Levers that do not help [V or I as marked in the benchmark]:**
+  * rustc's Cranelift backend cannot emit wasm32 [V]; for a native dev build it is no faster than the
+    wasm `rel-fast` loop [V];
+  * sccache cannot cache crates whose inputs just changed [I];
+  * calling rustc without cargo saves at most about 0.09 s [V].
+* **Agents** iterate faster still with `logic.check` (diagnostics only) and `logic.test_in_fork` (17.3)
+  before committing.
+
+### 13.8 Structure: an engine-native core plus WASM rules
+
+* **Hot, stable systems live in the engine, natively:** physics (always), and the per-entity bulk of
+  movement, spatial queries and math helpers.
+  * In the benchmark, movement alone was 5.2 of wasmi's 6.9 ms.
+  * Moving it native leaves 2.9 ms in wasmi or 1.2 ms with Cranelift [I: a sum of measured parts; the
+    per-frame data copy, about 0.1-0.5 ms, was not measured].
+* **Rules stay in WASM** (AI, combat, crafting, spawning, game modes), where hot reload matters.
+* **Modules stay small:** split logic into crates once a module passes about 15-20k LOC [V: at 45k LOC,
+  `rel-fast` builds take 1.2 s split vs 1.4 s as one crate, and fat-LTO builds 5.9 vs 10.9 s]. Keep the
+  shared core crate stable, because a core edit rebuilds every system.
+* Pass the host as `&mut dyn Host`, not as a generic, so codegen stays in each crate.
+* **One wasm module per system** builds fastest under LTO (0.72 s vs 1.29 s) but needs a multi-module
+  host ABI. That ABI is phase-4 work [V build; I ABI cost].
 
 ---
 
@@ -681,55 +1162,113 @@ AI or human edits Rust source (MCP: logic.write / logic.check / logic.test_in_fo
 ### 15.1 Repository model [I]
 
 * A **world repository** is content-addressed (BLAKE3, pure-Rust mode; D16). It contains:
-  * `logic/` (Rust crates), `shaders/` (WGSL), `assets/` (large blobs referenced by hash), `scene/` (prefabs
-    and initial object tree), `acl/`, and `world.toml`.
-* **Commits** = `{parents, tree, author_key, delegation_cert?, proposal_frame, message, signature}`.
-* Live sim state (where things are now) is not in the repo. "Save world" writes a snapshot commit.
+  * `logic/` (Rust crates, one wasm module each, with vendored dependencies and a `Cargo.lock`, 13.2);
+  * `shaders/` (WGSL);
+  * `assets/` (large blobs referenced by hash);
+  * `scene/` (prefabs and the initial object tree);
+  * `acl/`;
+  * `world.toml`.
+* **Commits** = `{parents, tree, author_key, certificate chain?, stamp, message, signature}`. A commit is an
+  entry in the session log (10.8): signed, hash-chained per author, identified by its hash.
+* Live sim state (where things are now) is not in the repository. "Save world" writes a snapshot commit.
 
-### 15.2 Ordering under "soonest wins" (no central authority) [I]
+### 15.2 Ordering and finality (reviews C1, H3)
 
-* Commits are proposals stamped with the sim frame of submission. They are ordered by the same key as
-  interactions (8.2).
-* A branch head (`main` of the live world) advances by the **first-ordered valid commit whose parent is the
-  current head**.
-* A commit becomes **final** once it is older than the ordering window (2 s), because no earlier-stamped
-  commit can still arrive. Every peer then computes the same head.
-* Activation frame = finalization frame + lead (≥30 frames, so peers can fetch artifacts).
+* **Ordering:** commits are ordered by the same key as interactions (8.3): effective frame, then the
+  per-frame tie rank.
+* **The branch head** (`main` of the live world) advances by the first-ordered valid commit whose parent is
+  the current head.
+* **A commit is final once its frame is confirmed** (6.4, 10.8): every member holds every entry up to that
+  frame, so every member computes the same head. This replaces the phase-1 rule ("final once older than 2 s,
+  because no earlier commit can still arrive"). That rule was false under loss, stalls or partitions, and
+  could give two peers two heads (review C1).
+  * Typical confirmation is about 70-80 ms on 50 ms links [V session-sim r14], against 2 s before
+    (priority 2).
+* **Activation frame = confirmation frame + lead** (at least 30 frames, so peers can fetch the artifact).
+  Edit to running for everyone is therefore build (0.45 s, 13.7) + confirmation (~0.1 s) + lead (0.5 s).
+* **Partitions:** only a side with a strict majority of the current membership epoch confirms anything
+  (10.8). The minority's commits stay unconfirmed and are resubmitted after the heal. Nothing that ran as
+  final is ever un-finalized (review H3).
 
-### 15.3 Conflicts and rejection (R7)
+### 15.3 Conflicts and rejection (R7, review H1)
 
-* A later commit with the same parent as a winning commit **conflicts**. Proposal: it conflicts only if
-  the two touch overlapping paths. Non-overlapping commits are auto-rebased by a deterministic tree merge
-  and re-validated (compile and naga) (D14).
-* The loser is **rejected with a machine-readable reason**:
+* **The merge unit is the module.** Each logic crate builds to its own wasm module (13.8).
+  * Two commits with the same parent that touch **different** modules are merged by combining their
+    already-signed artifacts. No one recompiles anything.
+  * Two commits that touch the **same** module, or the same shader or asset path, **conflict**. The later
+    one in canonical order is rejected.
+  * Phase 1 proposed merging non-overlapping *paths* and recompiling. Every peer would then have needed a
+    toolchain, and reproducible output (review H1).
+* **The loser is rejected with a machine-readable reason:**
 
 ```json
 {"code":"conflict","your_commit":"b3:…","base":"b3:…","winner":"b3:…",
- "winner_frame":1234,"overlapping_paths":["logic/doors/src/lib.rs"],
- "required_action":"rebase","merge_seat":{"position":1,"expires_after_s":10}}
+ "winner_frame":1234,"conflicting_modules":["logic/doors"],
+ "required_action":"rebase","merge_seat":{"scope":["logic/doors"],"expires_after_s":10}}
 ```
 
-* Other rejection codes: `unauthorized`, `compile_failed` (with rustc JSON diagnostics),
-  `shader_invalid` (naga spans), `fuel_exhausted_at_frame`, `missing_asset`, `seat_held_by`.
+* **Other rejection codes:**
+  * `unauthorized`;
+  * `wasm_invalid`;
+  * `module_checks_failed` (13.4);
+  * `hash_mismatch` (the canonical hash does not match the bytes);
+  * `shader_invalid` (naga spans);
+  * `reserved_path` (15.6);
+  * `missing_artifact`;
+  * `seat_held_by`.
 
-### 15.4 The merge seat (user ruling: 10 s)
+  `compile_failed`, with rustc's JSON diagnostics, is advisory feedback from the author's own toolchain,
+  never a peer-side verdict (13.2).
 
-* A rejected submitter gets a **merge seat** in a FIFO queue ordered by rejection order.
-* The front seat is **active for 10 s = 600 frames**. Only the seat holder's commit may advance the head.
-  If the holder lands a valid rebased commit (parent = head) inside those 600 frames, it wins. Otherwise
-  the seat **lapses** and the next seat activates.
-* Commits from others during an active seat are not lost. They are rejected with `seat_held_by`, which
-  also queues a seat for them.
-* The worst-case wait is bounded by 10 s x queue position, so nobody is starved, including by a stalled
-  seat holder.
-* Seat timing is counted in sim frames, so every peer agrees on lapse.
-* Open detail: does the 10 s start when the seat is granted or when it reaches the front? The design
-  assumes the front (otherwise queued seats could lapse before their turn): **D14**.
+### 15.4 The merge seat (user ruling 08:51Z; review H2)
+
+* A rejected submitter gets a **merge seat scoped to the modules or paths it conflicted on.**
+* Within that scope, the seat at the front of the queue is active for **10 s = 600 frames.** Only its
+  holder's commit may advance the head for those modules. If the holder lands a valid rebased commit
+  inside those 600 frames, it wins. Otherwise the seat **lapses** and the next seat in that scope
+  activates.
+* **Commits outside the seat's scope proceed normally.** Phase 1 made the seat a global write lock, which
+  convoyed unrelated commits and could starve the five-agents-on-five-crates case it was meant to protect
+  (review H2).
+* A commit refused with `seat_held_by` gets **no** seat of its own. It retries when the seat ends.
+* Seat timing is counted in confirmed frames, so every peer agrees on when a seat lapses.
+* The 10 s starts when the seat reaches the front of its scope's queue, not when it is granted
+  (otherwise queued seats could lapse before their turn). Service time per seat is roughly build (0.5 s) +
+  confirmation (0.1 s) + lead (0.5 s), well inside 10 s, so queues drain. This is **D14b**.
 
 ### 15.5 Distribution [I]
 
-Commits and objects travel P2P by hash (16.7). Finalization requires only ordering, not that everyone holds
-the bytes. Activation waits for the artifact; the policy for a peer missing it is **D17**.
+Commits and objects travel P2P by hash (16.7). Finalization requires only confirmation, not that everyone
+holds the bytes. Activation waits for the artifact; the policy for a peer missing it is **D17**.
+
+### 15.6 Reserved paths (R13-C1) [I]
+
+A commit whose tree contains a **reserved path** is invalid and is rejected with
+`{"code":"reserved_path","paths":[…]}`. Every peer applies the same check, because it is a pure function
+of the tree. Reserved paths are the files that agent harnesses load as configuration, instructions or
+code, so a builder cannot make another player's harness run them (21.3).
+
+* **Reserved directory names** (any path component, any depth): `.git`, `.claude`, `.claude-plugin`,
+  `.codex`, `.agents`, `.gemini`, `.opencode`.
+* **Reserved file names** (any depth): `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`,
+  `GEMINI.md`, `.mcp.json`, `.lsp.json`, `.worktreeinclude`, `.geminiignore`, `opencode.json`,
+  `opencode.jsonc`, `.env`, and any name starting with `.env.`.
+* **Name matching** defeats Windows and macOS aliasing. Before comparing, each component is NFKC-normalized
+  and case-folded, HFS+-ignorable code points are removed, and trailing dots and spaces are stripped.
+* **Also invalid:**
+  * empty, `.` or `..` components;
+  * components containing `/`, `\`, `:`, NUL or other control characters;
+  * Windows device names (`CON`, `NUL`, `COM1`, … with any extension);
+  * 8.3-style short names (`XXXXXX~N`);
+  * symlinks and hard links (tree entries are only files and directories).
+* The list is part of the world format version. Adding a name is a rule change that takes effect at an
+  activation frame, like any other validation change.
+* Old commits are not rewritten. The panel-workspace materializer (21.3) strips reserved paths locally,
+  whatever the commit's age.
+* World authors who want to brief AI agents write `agent-guide.md` (any non-reserved name works). The
+  engine serves it over MCP as world-authored, untrusted content (17.2). No harness auto-loads it.
+* **Not covered:** build-time code. `build.rs`, proc-macro crates and `[build-dependencies]` run native
+  code on whoever compiles. That needs its own rule under 13.2 and D11 (see review finding L8).
 
 ---
 
@@ -785,6 +1324,7 @@ use the same store or bevy_ecs; it does not need rollback.
   JSON Schemas (17.2).
 * Schema changes ship in commits. Activation migrates existing data: new fields get defaults, and a custom
   migrate hook runs.
+* What of a module's state is synchronized, and how presentation-only state stays out of it: 7.4.
 
 ### 16.6 Asset pipeline [I]
 
@@ -824,29 +1364,73 @@ Assets live in the same world repository tree as code and shaders. Large blobs a
 MCP is the primary authoring interface, not an add-on. Every capability a human has through in-world
 tools also exists as an MCP tool, with structured input and output.
 
-### 17.1 Where it lives [I; protocol shape V mcp]
+### 17.1 Where it lives [I; protocol shape V mcp; transport rules S MCP spec]
 
-* **An MCP server embedded in every peer.** There is no central MCP server.
-  * Local agents connect over stdio (agent launched by the engine) or Streamable HTTP on localhost with a
-    user-issued bearer token.
-  * The agent drives *its user's* peer. The peer turns agent actions into signed interactions and commits.
+* **An MCP server is embedded in every peer.** There is no central MCP server.
+  * An agent drives *its user's* peer. The peer turns agent actions into signed interactions and commits.
+  * **Every MCP token maps to one session and its principal** (21.3). Rights come from that mapping, never
+    from tool arguments.
+* **Default transport: stdio.**
+  * The engine launches the harness, and the harness launches `pe-app mcp`.
+  * `pe-app mcp` connects to the engine over a named pipe (Windows) or a Unix socket (Linux). Its ACL
+    admits only the session's OS identity.
+  * No TCP port is opened, so web pages and other machines cannot reach the server.
+* **Fallback: Streamable HTTP on loopback,** for clients that cannot use stdio. The MCP specification
+  requires: "Servers **MUST** validate the `Origin` header on all incoming connections to prevent DNS
+  rebinding attacks"; servers "**SHOULD** bind only to localhost (127.0.0.1)"; and they "**SHOULD**
+  implement proper authentication" [S MCP spec 2025-06-18]. The engine's rules:
+  * **Bind:** `127.0.0.1` and `::1` only, on an ephemeral port. Never `0.0.0.0` or `::`.
+  * **`Host` check:** only `127.0.0.1:<port>`, `[::1]:<port>` or `localhost:<port>` is accepted; anything
+    else gets 403. A DNS-rebinding page sends its own hostname.
+  * **`Origin` check:** a request that carries an `Origin` header is refused unless the origin is on an
+    allow-list, which is empty by default. MCP clients that are not browsers send no `Origin`.
+  * **No CORS:** the server never sends `Access-Control-Allow-Origin`.
+  * **Token:** one bearer token per session, 256 random bits, sent in `Authorization`. It is compared in
+    constant time and never logged, and never appears in a URL or on a command line.
+  * **Rotation:** a new token at every harness launch and resume. Tokens expire when the session ends,
+    after an idle TTL, and immediately on revocation. `Mcp-Session-Id` is not an authentication factor.
 * **Library:** `rmcp` 3.8 (official Rust SDK), pure Rust with server, stdio, macros and schemars
   [V audit `mcp-rmcp`].
-* The spike's hand-written stub covered the core protocol shapes: initialize, tools/list, tools/call with
-  `structuredContent` and `isError`, resources/read, and JSON-RPC errors. It has not been tested against a
-  third-party MCP client [V mcp].
+* **Spike coverage:** the spike's hand-written stub covered the core protocol shapes: initialize,
+  tools/list, tools/call with `structuredContent` and `isError`, resources/read, and JSON-RPC errors. It
+  has not been tested against a third-party MCP client [V mcp].
 
 ### 17.2 Tool and resource catalog (proposed) [I]
 
 | Area | Tools / resources |
 |---|---|
-| Session and world | `world.get_state`, `world.query_objects`, `world.get_object`, `world.hashes`, `session.members`, `schema.components` (JSON Schema per component type), resource `primordial://world/state` with subscriptions for frame/commit/rejection events |
+| Session and world | `world.get_state`, `world.query_objects`, `world.get_object`, `world.hashes`, `session.members`, `schema.components` (JSON Schema per component type), resource `primordial://world/state` with subscriptions for frame/commit/rejection events; resource `primordial://world/agent-guide` (world-authored text, returned as untrusted, 15.6) |
 | Interactions | `world.propose_interaction` (same path as a player's: frame-stamped, soonest-wins, rollback [V mcp]), `object.*` edits (16.9) |
 | Logic | `logic.read`, `logic.write` (draft workspace), `logic.check` (rustc `--error-format=json` diagnostics), `logic.test_in_fork`, `scm.commit`, `scm.status`, `scm.rebase`, `scm.seat_status` |
 | Shaders | `shader.validate` (naga spans), `shader.commit`, `shader.preview_in_fork` (render-only) |
 | Assets | `asset.import`, `asset.get`, `asset.list`, `prefab.save` |
-| Admin (owner scope) | `acl.grant`, `acl.revoke`, `agent.delegate` |
-| Panels and hubs (R13) | `panel.connect`, `panel.send`, `panel.inbox`, `panel.close`, `panel.requests.*` ("ask agent" decisions), `hub.contacts`, `hub.send`, `hub.inbox` (21.6, 21.7) |
+| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`) |
+| Panels and hubs (R13) | `panel.connect` (private session only); `panel.send` (private session: any of its connections; inbox session: its own); `panel.inbox` (private session: owner-forwarded items only); `panel.close`; `panel.requests.*` (decider session only); `hub.contacts`; `hub.send` (first contact needs owner approval); `hub.inbox` (private session: owner-forwarded items only) (21.6, 21.7) |
+| Worlds and portals (R14) | `worlds.list`, `worlds.join`, `worlds.leave`, `worlds.set_presence` (owner-confirmed), `portal.*`, `transfer.request`, `transfer.status`. Every tool takes an explicit `world` (22.9) |
+
+**Scopes per session kind** (the token decides the kind, 21.3):
+
+| Session | Principal | World tools | Panel and hub tools |
+|---|---|---|---|
+| Private | Owner | The owner's delegated scope; commits per 17.4 | `panel.connect/send/close`, `hub.*`; inbound only when forwarded |
+| Guest | One guest | Owner ∩ guest ∩ guest-mode scope; commits need owner approval | None |
+| Inbox | One remote panel or hub correspondent | Read-only queries if granted; world actions only if the owner's ceiling allows | Reply on its own connection or thread only |
+| Decider | Untrusted request text | None | `panel.requests.list/accept/reject`, capped at the owner's ceiling |
+
+**Peer-authored strings are marked untrusted [I]:**
+* **Wrapping.** Every result field that holds text written by another peer is wrapped as
+  `{"untrusted": {"author": "<key fingerprint>", "source": "<kind>", "text": "…"}}`. Engine-generated
+  fields are never wrapped.
+* **What counts as peer-authored:**
+  * object names, and component string fields;
+  * logic and shader source by other authors;
+  * commit messages, and rejection reasons that quote peer content;
+  * panel messages, hub mail and presence records;
+  * the world agent guide.
+* **Cleaning.** Wrapped text is sanitized by the 21.5 rules and length-capped. Long sources, such as logic
+  files, come back as resources with the same marking.
+* **Limits.** Restricted-session system prompts explain the convention. The marking is a hint to the model,
+  not a control. The controls are scopes, containment and human confirmation.
 
 ### 17.3 Deterministic forks: the AI test bench [I, building blocks V b1/b4/d1]
 
@@ -856,12 +1440,33 @@ tools also exists as an MCP tool, with structured input and output.
   back hashes, metrics and object states. Nothing reaches the network.
 * This gives AI authors a safe edit-test loop with exact reproducibility.
 
-### 17.4 Same checks as human edits
+### 17.4 Same checks as human edits [I]
 
-* MCP actions are signed with the agent key under its delegation certificate (12.3).
-* They pass through the same ACL validation, frame stamping, soonest-wins ordering, rollback, SCM
-  ordering, rejection and merge seats. No MCP path bypasses the sim or the SCM.
-* Rate limits and fuel apply per agent.
+* MCP actions are signed with the session key under its certificate chain (12.3).
+* They pass through the same pipeline as human actions:
+  * ACL validation, frame stamping and soonest-wins ordering;
+  * rollback;
+  * SCM ordering, rejection and merge seats.
+
+  No MCP path bypasses the sim or the SCM.
+* **In shared worlds, agent-originated commits need a human, by policy.** A world is shared when more than
+  one user holds `owner` or `builder`. `world.toml` sets `agent_commits` to one of:
+  * **`confirm`** (default in shared worlds). Each commit signed by an agent key waits until its delegating
+    user confirms it in the approval layer.
+    * The dialog shows the diff summary, the author chain and the touched paths.
+    * The user key signs the confirmation, which travels with the commit.
+    * Peers reject an agent commit that lacks it.
+  * **`confirm-batch`**: one confirmation covers the agent's commits for the next N minutes, or to listed
+    paths.
+  * **`auto`**: no confirmation. This is the default in worlds with a single builder; in a shared world it
+    is an explicit owner choice.
+* **Cost of `confirm`:** each commit waits for a human round trip, which slows the AI iteration loop (user
+  priority 2). `logic.check` and `logic.test_in_fork` need no confirmation, so iteration before a commit is
+  not slowed. Decision: **D28a**.
+* **Guest-initiated commits** always need the panel owner's approval (21.5).
+* **Interactions and object edits by agents** are not confirmed one by one, because they are too frequent.
+  Scope and per-session rate limits bound them.
+* **Limits:** rate limits and fuel apply per agent session.
 
 ### 17.5 AI-friendliness requirements met by design
 
@@ -883,7 +1488,7 @@ tools also exists as an MCP tool, with structured input and output.
   CMake [V audit `vr-openxr-static`], so it is excluded.
 * The loader and vendor runtime (SteamVR, Meta/Oculus PC, Virtual Desktop, Pico, Monado) are non-Rust
   system components (section 20).
-* Target runtimes and headsets: **D18**.
+* Target runtimes and headsets: **D18a**.
 
 ### 18.2 wgpu interop [I]
 
@@ -901,7 +1506,8 @@ tools also exists as an MCP tool, with structured input and output.
 
 * `xrWaitFrame` paces the render/XR thread at 90-120 Hz. The sim stays at a fixed 60 Hz on its own thread
   (5).
-* Each XR frame interpolates sim state to the predicted display time. Head and hand poses for local
+* Each XR frame draws sim state at the predicted display time: extrapolated and error-smoothed, with
+  objects held by the local hand attached to the late-latched hand pose (5; review M2). Head and hand poses for local
   rendering are late-latched from `xrLocateViews`/`xrLocateSpace` at the predicted display time.
 * Local head motion never waits on the sim or the network. The compositor's reprojection covers
   render-time misses.
@@ -913,13 +1519,15 @@ tools also exists as an MCP tool, with structured input and output.
   with a jitter buffer of about 100 ms. They are not rollback state. This keeps R3: poses are not physics
   interactions.
 * **Hands become sim inputs only when engaged.**
-  * When a hand comes within a few cm of a dynamic object (prediction margin) or starts a grab, the peer
-    begins streaming frame-stamped **hand-target inputs**: position, rotation and grip, quantized to a
+  * When a hand starts a grab, or its swept path over the next frame (widened in proportion to its speed)
+    reaches a dynamic object, the peer begins streaming frame-stamped **hand-target inputs** (review M2:
+    at 5 m/s a hand moves 8 cm per 60 Hz frame, so a fixed few-cm margin misses fast swats): position, rotation and grip, quantized to a
     1 mm / 0.001 rad grid so every peer sees identical bits.
   * In the sim, an engaged hand is a kinematic Box3D body with that target. A grab is a weld or motor joint
     to the held body. A throw follows from the kinematic hand's velocity.
   * The engaged hand claims the touched object (8.3), so the "soonest wins" rules apply to tug-of-war.
-* Engagement thresholds and whether non-engaged hands collide at all: **D18**.
+* A hand sweeping through many objects is a continuous perturbation source (7.5).
+* Engagement thresholds and whether non-engaged hands collide at all: **D18b**.
 
 ### 18.5 Comfort and latency budgets [I]
 
@@ -933,7 +1541,7 @@ tools also exists as an MCP tool, with structured input and output.
 ### 18.6 Mobile and standalone (excluded from MVP; what would block it later)
 
 * Nothing chosen precludes Android or Quest-native: box3d-rust, wasmi and wgpu-on-Vulkan all run there,
-  and the Android OpenXR loader is loaded the same way.
+  and the Android OpenXR loader is loaded the same way [I].
 * Performance is the blocker: a serial scalar physics port plus an interpreter on a mobile CPU.
 * Avoid desktop-only assumptions in the engine core, such as 1 MiB guest stacks or a 2 GB snapshot budget.
 
@@ -975,9 +1583,9 @@ to those is noted below, not scoped.
 | Slot tree (name, local position/rotation/scale, parent) | Objects + Parent/Children/Transform (presentation objects) |
 | SkinnedMeshRenderer (mesh, bones, blendshape weights) | `SkinnedMesh {mesh: AssetId, bones: [ObjectId], bind_poses}`; blendshapes imported as data but not driven in v1 |
 | MeshX (vertices, normals, UVs, submeshes, bones, bind poses, bindings) | Engine mesh asset (content-addressed) |
-| Textures | Texture assets (PNG/JPEG/WebP decoders, pure Rust) |
+| Textures | Texture assets: PNG and JPEG decoders, pure Rust [V audit `assets-pure`]. WebP was not audited, so v1 does not decode it (review L9) |
 | Materials (PBS family) | Standard PBR with albedo, normal and base color only in v1; the rest is dropped and reported |
-| AvatarDescriptor / VRIK references (head, hands, feet) | `AvatarRig` component mapping humanoid bones; v1 IK = our own 3-point (head + hands) solver driving the skeleton |
+| AvatarDescriptor / VRIK references (head, hands, feet) | `AvatarRig` component mapping humanoid bones; v1 IK = our own 3-point (head + hands) solver driving the skeleton. Whether "wear the avatar" includes this IK is asked in D19 (review L9) |
 
 ### 19.4 What does not carry over, and the fallback
 
@@ -1014,6 +1622,8 @@ section 7. **The spike workspace itself is 100% Rust (42 packages)** [V audit].
 | The Rust compiler toolchain (rustc uses LLVM, C++) | Compiling game logic to wasm | Build tool, not linked into the engine; peers that only run committed wasm do not need it (13.2) |
 | Agent harness CLIs (Claude Code and Gemini CLI are Node.js apps; Codex CLI is a native vendor executable) and their cloud model APIs | R13 panels | Separate local processes spoken to over stdio or a PTY; the engine-side PTY (ConPTY via `portable-pty`), terminal emulator and chat UI are Rust [V audit `agent-panels`] |
 | OS speech recognition (only if chosen, D33) | Voice input | `windows` crate bindings |
+| C runtimes that Rust itself links (review L1): the MSVC CRT on Windows, and MSVC `link.exe` to build; glibc on Linux (dynamic, OS-provided). Static musl builds, such as the phase-1 Linux run, embed musl's C. Official std builds may include compiler-rt objects in `compiler_builtins` | Every Rust binary | Recommend `linux-gnu`, not static musl, for Linux (D1) |
+| OS containment for restricted harness sessions: AppContainer, job objects, ACLs; Linux users or namespaces | R13 guest, inbox and decider sessions | `windows` crate bindings (21.5) |
 
 ### 20.2 Gray areas the user should rule on
 
@@ -1022,6 +1632,9 @@ section 7. **The spike workspace itself is 100% Rust (42 packages)** [V audit].
 * **Rust inline assembly** in pure-Rust crypto (`graviola`: 149 `asm!` blocks) [S]. Only relevant if
   transport option B is chosen.
 * **Shader compiler:** DXC (C++ DLL) only if HLSL is chosen (14).
+* **wasmtime, if chosen for game logic (D12):** with default features off it compiles no C on Windows
+  [V iteration-benchmark 5]. On Linux and macOS its build script compiles `helpers.c` [I, from its
+  build.rs].
 * **Crates that ship but do not compile C/asm files** (e.g. brotli-decompressor, qoi, rav1e without its
   `asm` feature) [V audit]. Harmless.
 
@@ -1043,72 +1656,228 @@ Players work with their **own** agent harnesses (Claude Code, Codex, Gemini CLI,
 panels. The harness is a local process on the player's machine. The engine-side panel, terminal and chat
 UI are Rust. The harness itself is a separate, non-Rust or third-party process (20.1).
 
+**Security rules for this section [I]** (they answer review findings R13-C1, R13-C2 and R13-H1..H3):
+1. **One principal per harness session.** A session takes input from exactly one party: the owner, one
+   guest, or one remote party (a panel connection or a hub correspondent).
+2. **Only the owner's private session has built-in tools.** Every session that reads text written by
+   anyone else is a **restricted session**:
+   * it has no built-in tools;
+   * it runs under a separate OS identity;
+   * it authenticates with a guest-only API key, never the owner's login;
+   * it runs under spend caps (21.5).
+3. **Nothing in a world repository configures a harness.** Panel workspaces are materialized with harness
+   configuration stripped (21.3), and the SCM rejects those paths (15.6).
+4. **Rights come from the engine, never from the model.** The MCP server binds every call to the calling
+   session's token. The agent cannot choose the principal it acts for (21.3).
+5. **Unlocking ships per harness, and only after that harness passes its verification gates (21.9).**
+
+Tags in this section: **[S]** marks a flag or text read in the installed CLI's `--help` on this machine.
+**[S docs]** marks the harness's official documentation. Nothing in this section is [V].
+
 ### 21.1 Hosting a harness: two integration paths
 
-**Structured mode (recommended default).** The engine spawns the harness in its machine-readable
-headless or protocol mode. It renders the events as a chat UI: messages, streaming text, tool-call cards,
-diffs, approvals. Flags were checked against each installed CLI's `--help` on this machine [S]:
+**Structured mode (recommended default).** The engine spawns the harness in its machine-readable headless
+or protocol mode. It renders the events as a chat UI: messages, streaming text, tool-call cards, diffs and
+approvals.
 
-| Harness (installed version) | Structured path | Restriction and spend controls available |
-|---|---|---|
-| Claude Code 2.1.292 (Node.js app, installed via npm) | `claude -p --input-format stream-json --output-format stream-json --include-partial-messages`, plus `--mcp-config <json>` and `--resume <session-id>` for a persistent conversation | `--tools`, `--allowedTools`, `--disallowedTools`, `--strict-mcp-config`, `--permission-mode`, `--max-budget-usd`, `--add-dir`, `--append-system-prompt` |
-| Codex CLI 0.160.0 (native x64 executable) | `codex exec --json` (JSONL events, `--output-schema`); `codex app-server` (experimental JSON-RPC; `generate-json-schema` emits its protocol schema); MCP servers via `-c mcp_servers.<name>…` overrides or `codex mcp add` | `-s/--sandbox`, `-a/--ask-for-approval`, `-C/--cd`, `--ephemeral` |
-| Gemini CLI (Node.js app, via npm) | `--acp` (Agent Client Protocol) or `-o stream-json` | `--allowed-mcp-server-names` |
-| Any ACP-capable agent | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent |
+| Harness (installed version) | Structured path | Isolation and restriction controls | Spend controls |
+|---|---|---|---|
+| Claude Code 2.1.292 (native `claude.exe`, shipped in the npm package `@anthropic-ai/claude-code`) | `claude -p --input-format stream-json --output-format stream-json --include-partial-messages`, `--mcp-config <json>`, `--resume <session-id>` [S] | `--bare`, `--restricted`, `--tools`, `--allowedTools`, `--disallowedTools`, `--setting-sources`, `--settings`, `--strict-mcp-config`, `--permission-mode`, `--permission-prompts`, `--disable-slash-commands`, `--no-session-persistence` [S]. Config home moves with `CLAUDE_CONFIG_DIR` [S docs] | `--max-budget-usd` ("only works with --print") [S]. No turn-cap flag [S] |
+| Codex CLI 0.160.0 (native) | `codex exec --json` (JSONL events, `--output-schema`); `codex app-server` (experimental JSON-RPC); MCP servers via `-c mcp_servers.<name>…` [S flag; key path I] | `-s/--sandbox` (`read-only`, `workspace-write`, `danger-full-access`), `--ignore-user-config`, `--ignore-rules`, `--disable <FEATURE>`, `--ephemeral`, `--strict-config`, `-C/--cd` [S]. Config home moves with `CODEX_HOME` [S, S docs]. **`-a/--ask-for-approval` exists only on the interactive top-level command, not on `exec`, and offers only `on-request` and `never`** [S]. `exec` takes `approval_policy` through `-c` [S docs] | None [S] |
+| Gemini CLI 0.57.0 (Node.js app, via npm) | `--acp` (Agent Client Protocol) or `-p … -o stream-json` [S] | `--approval-mode`, `--policy`, `--allowed-mcp-server-names`, `-e/--extensions`, `-s/--sandbox` [S]. Config home moves with `GEMINI_CLI_HOME` [S docs]. Folder trust is "disabled by default", so project configuration loads from any folder [S docs] | None [S] |
+| Any ACP-capable agent (e.g. OpenCode 2.0.28 has `opencode acp` [S]) | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent | per agent |
 
-* **PTY mode (universal fallback):** run the harness's interactive TUI under a pseudo-terminal and render a
-  terminal emulator into the panel.
+**Flags and settings the engine never uses** [flags S; policy I]:
+* **Claude Code:**
+  * `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`,
+    `--permission-mode bypassPermissions`;
+  * `--add-dir`, `--plugin-dir` or `--plugin-url` pointing at content that came from peers.
+* **Codex:**
+  * `--dangerously-bypass-hook-trust`, `--dangerously-bypass-approvals-and-sandbox`, `-s danger-full-access`;
+  * in restricted sessions, also `--approve-for-me`, `-s workspace-write`, `--add-dir` and top-level
+    `--search`.
+* **Gemini CLI:** `--skip-trust`, `-y/--yolo`, `--approval-mode yolo`, and the environment variable
+  `GEMINI_CLI_TRUST_WORKSPACE=true`.
+
+**Launch profiles are pinned per harness version [I].** Each adapter records the harness versions its
+launch profiles were verified against (21.9). On any other version:
+* the owner's private panel still starts, with a warning;
+* unlocking and inbox sessions stay unavailable until the profile is re-verified.
+This costs ease of use after harness updates (D25). Harness flags change often (23.3, risk 10).
+
+**PTY mode (universal fallback).** The engine runs the harness's interactive TUI under a pseudo-terminal
+and renders a terminal emulator into the panel.
+* PTY panels are **owner-only**. They never receive guest, panel-to-panel or hub input, and they cannot be
+  unlocked, because the TUI exposes all of the harness's controls.
 * **Engine side** (all audited 100% Rust [V audit `agent-panels`]):
   * `portable-pty` (ConPTY on Windows, openpty on Unix);
   * a VT emulator (`alacritty_terminal` or `vt100`);
   * `cosmic-text` for shaping and layout, with glyphs rasterized into a wgpu texture atlas.
-* PTY mode cannot be safely shared (21.5), because the TUI exposes the harness's full controls.
-* Decision: **D25**.
+* Decisions: **D25** (integration path), **D25a** (owner-session tool profile, 21.3).
 
 ### 21.2 Rendering and input [I]
 
-* **A panel is a presentation-only object** (16.3): a world-space quad, flat or curved, attached to the
-  world, the player's wrist, or the desktop overlay. Its texture is redrawn when content changes. A
-  panel never enters the sim, rollback or hashes.
+* **A panel is a presentation-only object** (16.3):
+  * a world-space quad, flat or curved, attached to the world, the player's wrist, or the desktop overlay;
+  * its texture is redrawn when content changes;
+  * it never enters the sim, rollback or hashes.
 * **Desktop:** keyboard focus with click-to-focus, plus OS IME for text composition. The panel can also be
   shown as a screen-space overlay.
 * **VR:** laser-pointer or poke interaction, an in-engine Rust virtual keyboard, and panel grab and resize
   gestures.
+* **Text from other principals is sanitized before display** (rules in 21.5, "Input handling").
+* **Engine-owned approval layer.** Approvals render in a layer that panel content cannot draw into:
+  * connection requests;
+  * commit and edit confirmations;
+  * unlock and profile changes;
+  * first contact with a hub recipient.
+
+  The layer shows the requester's verified key and petname. Neither agents nor guests can imitate or
+  trigger it. This is the out-of-band channel that 12.3 and 17.4 rely on.
 * **Voice (D33):**
   * (a) OS speech recognition (Windows `Windows.Media.SpeechRecognition` via the `windows` crate, an OS
     boundary);
   * (b) local Whisper-class models on a pure-Rust ML runtime (heavy; GPU optional);
   * (c) push-to-talk audio handed to a harness that accepts audio, if any.
 
-### 21.3 Wiring the harness to the engine's MCP server (R8)
+### 21.3 Wiring the harness to the engine's MCP server, and the panel workspace
 
-1. Each panel gets its **own agent key** and a delegation certificate from its owner (12.3), scoped by the
-   owner (e.g. interact + edit-objects + commit-logic).
-2. The engine launches the harness with an MCP config pointing at the **local peer's** MCP server. That is
-   either a stdio command (`pe-app mcp --panel <id>`) or a localhost Streamable-HTTP URL with a per-panel
-   bearer token [I].
-   * Claude Code: `--mcp-config` plus `--strict-mcp-config`, so only the engine server loads [S flags].
+**Sessions and MCP binding [I]:**
+1. **Sessions.** A panel runs one **private session** for its owner. It also runs restricted sessions for
+   other principals:
+   * one per guest (21.5);
+   * one per inbound connection or hub correspondent (21.6, 21.7);
+   * one decider for "ask agent" (21.6).
+2. **Keys and certificates.**
+   * The private session holds the **panel key**. The owner's user key signs its delegation certificate
+     when the owner creates the panel. That is a human action (12.3).
+   * A restricted session that acts in the world gets its own key. Its **sub-certificate** is signed by
+     the panel key. The sub-certificate is narrower than the panel's scope, expires, and names the
+     principal it serves (12.3).
+3. **Tokens.** Each session gets its own MCP token: 256 random bits, created at launch, never reused, and
+   invalidated when the session ends or is revoked.
+4. **Transport: stdio.** The harness launches `pe-app mcp` as its MCP server.
+   * `pe-app mcp` connects to the engine over a local named pipe (a Unix socket on Linux) and presents the
+     token.
+   * The pipe's ACL admits only that session's OS identity.
+   * The token reaches the harness in the MCP config file in the session's own config directory. Only
+     that identity can read the file.
+   * Localhost HTTP is a fallback only, under the rules in 17.1.
+5. **Rights binding (R13-H3).** The engine maps token → session → principal → certificate. It checks every
+   tool call against that chain and signs with that session's key. No tool input carries a principal,
+   request ID or "on behalf of" field that the engine trusts.
+6. **Same checks as human edits.** Everything an agent does to the game goes through MCP tools (17.2). It
+   is signed with the session's key and passes the same pipeline as any human edit (17.4):
+   * ACL checks, frame stamping and soonest-wins ordering;
+   * rollback;
+   * SCM ordering, rejections and merge seats.
+7. **Wiring per harness:**
+   * Claude Code: `--mcp-config <file> --strict-mcp-config` [S].
    * Codex: `-c mcp_servers.primordial.command=…` [S flag; exact key path I].
-3. Everything the agent does to the game goes through MCP tools (17.2), so it is signed with the panel's
-   agent key and passes the same ACL checks, frame stamping, soonest-wins ordering, rollback, SCM
-   ordering, rejections and merge seats as any human edit (17.4).
-4. The harness's working directory is a panel workspace holding a checkout of the world repository. The
-   agent can use its own file tools on game source, then `logic.check`, `logic.test_in_fork` and
-   `scm.commit` through MCP.
+   * Gemini CLI: `--allowed-mcp-server-names primordial` [S], plus a server entry in the session's own
+     `GEMINI_CLI_HOME` settings [I].
+
+**The panel workspace (R13-C1) [I]:**
+The private session's working directory holds game source for the agent's file tools. It is **never a raw
+checkout of the world repository**, for three reasons:
+* Structured mode runs Claude Code with `-p`, and "The workspace trust dialog is skipped when Claude is run
+  in non-interactive mode" [S].
+* The docs add: "Without `--bare`, a `-p` session runs the hooks in a project's `.claude/settings.json` and
+  connects the servers in its `.mcp.json`, even in a folder you've never trusted" [S docs].
+* Any builder can commit to the world repository (12.2). Through a raw checkout, a builder's hook would
+  run as every panel owner, under the owner's OS account.
+
+The workspace is built as follows:
+* **Materialized, not checked out.** The engine writes the files of the current head into a fresh
+  directory under its own data directory (e.g. `%LOCALAPPDATA%\Primordial\panels\<panel>\ws`).
+  * Reserved paths (15.6) are skipped, whatever the commit's age.
+  * Only regular files are written: no symlinks, no `.git` directory, no executable bits.
+  * The materializer refuses to write through any directory it did not create. That blocks short-name
+    and alias tricks against a `.claude` directory that a harness creates at run time.
+* **Ancestor check.** Before every launch, the engine checks each ancestor directory of the workspace for
+  reserved names. If it finds one, it refuses to launch and tells the owner why. The reason: Claude Code
+  loads `CLAUDE.md` from "every directory above" the working directory, and Gemini CLI loads `GEMINI.md`
+  and `.env` from parent directories [S docs].
+* **Reserved names per harness** (their union is the 15.6 list):
+
+| Harness | Project-level files it loads | Source |
+|---|---|---|
+| Claude Code | `.claude/` (settings with hooks, an `env` block and helper commands; rules, skills, commands, subagents, output styles, workflows, agent memory); `.mcp.json` (under `-p`, "Connected without asking, approved or not"); `CLAUDE.md` and `CLAUDE.local.md` (working directory, every ancestor, and subdirectories on demand); `AGENTS.md` (any directory, read when no `CLAUDE.md` exists, v2.1.277+); `.worktreeinclude` | [S docs] |
+| Claude Code plugins | `.claude-plugin/`, `.lsp.json` | [I] (names in the binary) |
+| Codex | `.codex/` (`config.toml` loaded "from the project root to your current working directory", `hooks.json`, rules, agents, skills); `.agents/` (skills scanned "in every directory from your current working directory up to the repository root"); `AGENTS.md` and `AGENTS.override.md` (project root down to the working directory; the docs mention no trust gate) | [S docs]; `.agents/plugins` [I] |
+| Gemini CLI | `.gemini/` (`settings.json` with MCP servers and hooks, `.env`, commands, skills, agents, policies, `system.md`, sandbox profiles); `.agents/` (skills alias); `GEMINI.md` (ancestors up to the `.git` root or home, and up to 200 subdirectories); `.env` (working directory and parents); `.geminiignore` | [S docs] (bundled with 0.57.0) |
+| OpenCode | `.opencode/`, `opencode.json`, `opencode.jsonc`, `AGENTS.md` | [I] (names in the binary; docs not read) |
+| git, which harnesses run | `.git` (a planted one can set `core.fsmonitor`, which runs a command on `git status`) | [I] |
+
+* **Compilation stays in the engine.** The private agent edits files, then compiles with `logic.check` and
+  `logic.test_in_fork` through MCP. The default private profile (below) has no shell, so the agent cannot
+  run `cargo` on another builder's `build.rs` or proc macros. Build-time code is an open issue for 13.2
+  (15.6).
+* **Repository text is untrusted.** Source, comments, commit messages and object names written by other
+  peers reach the private agent through its file tools and MCP results. 17.2 marks peer-authored strings
+  in tool results. Files cannot be marked, so the default profile limits what an injected instruction can
+  do.
+
+**Private-session launch profile for Claude Code (the owner's own session) [flags S; profile I]:**
+
+```text
+cwd   <panel>\ws        materialized, reserved paths stripped, ancestors checked
+claude -p --input-format stream-json --output-format stream-json --include-partial-messages
+       --restricted --tools "Read,Edit,Write,Glob,Grep"
+       --permission-mode acceptEdits
+       --strict-mcp-config --mcp-config <panel>\owner\mcp.json
+       --allowedTools "mcp__primordial__*"
+       --resume <session-id>
+```
+
+* **`--restricted`** "removes the built-in tools that run commands or code … and WebFetch unless --tools
+  names them, and ignores user, project and local settings files". It also "confines the file tools to the
+  working directories" [S]. So project hooks, `env` blocks and `.mcp.json` never load, even if a reserved
+  file slipped through.
+* **Auth** is the owner's own login. `--bare` is not used here, because with it "Anthropic auth is strictly
+  ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read)" [S]. That would
+  force API billing on the owner.
+* **The full profile (D25a)** adds shell and web. It uses `--setting-sources user --tools default` in place
+  of `--restricted --tools …`.
+  * It still excludes project and local settings: "Pass `--setting-sources user` … so Claude Code reads
+    neither the project's settings files nor its `.mcp.json`" [S docs].
+  * The owner confirms the switch in the approval layer, and the panel shows which profile is active.
+* **Codex and Gemini private sessions** [I; flags S]:
+  * Codex: `codex exec --json --skip-git-repo-check -C <panel>\ws -c project_root_markers=[]`.
+  * Gemini CLI: `gemini --acp`.
+  * Neither CLI has an equivalent of `--restricted`. The stripped workspace and the ancestor check are
+    their protection, and their sandbox and approval settings are the owner's choice.
+  * Never `--dangerously-bypass-hook-trust`.
 
 ### 21.4 Locality, credentials and visibility
 
-* **Harnesses run only on their owner's machine,** under the owner's OS account and the owner's own
-  harness login or API key. The engine never reads, stores or transmits harness credentials. Nothing ever
-  runs a harness on behalf of another peer, and nothing ships a harness across peers. [I, by design]
-* **Panel contents are private by default.** Other peers see the panel object, its owner, and an
-  "agent working" indicator, plus the signed game edits the agent makes, which are attributable to the
-  agent key and the owner (12.3).
-* The owner may **share a panel's view** with chosen peers. The rendered transcript, never the harness
-  process, streams over the session transport as non-sim messages, encrypted to the recipients.
+* **Harnesses run only on their owner's machine,** and only when the owner opens a panel or unlocks one.
+  Nothing ships a harness across peers. [I, by design]
+* **The owner's own harness login or API key is used only by the owner's private session.** The engine
+  never reads, stores or transmits it.
+* **Restricted sessions never use the owner's credentials.**
+  * They authenticate with a **guest-only API key**. The owner creates it for this purpose, ideally in a
+    provider workspace or project with a hard spend limit (21.5, D34).
+  * The engine stores that key encrypted, for the restricted-session OS identity only, and never sends it
+    to peers.
+  * Claude Code keeps "your login credentials" in `.credentials.json` in its config home [S docs].
+  * On this machine, `%USERPROFILE%\.claude\.credentials.json` and `%USERPROFILE%\.codex\auth.json` both
+    exist (checked by name only). Any process running as the owner can read them. That is why restricted
+    sessions run under another OS identity (21.5).
+* **Panel contents are private by default.** Other peers see:
+  * the panel object, its owner, and an "agent working" indicator;
+  * the signed game edits it makes, attributable to the session key, the owner and, for guest sessions,
+    the guest (12.3).
+* **Who sees which transcript:**
+  * the owner sees every session of the panel;
+  * a guest sees only their own session;
+  * a remote party sees only the messages on its own connection.
+* **View sharing.** The owner may share a panel's view with chosen peers. Only the rendered transcript of
+  the private session is shared, never a process. It travels as non-sim messages encrypted to the
+  recipients.
 * Defaults and options: **D26**.
 
-### 21.5 Unlocking a panel for others (shared AI chat)
+### 21.5 Unlocking a panel for others (guest sessions)
 
 **Access levels** (per panel, owner-controlled):
 
@@ -1120,112 +1889,336 @@ diffs, approvals. Flags were checked against each installed CLI's `--help` on th
 
 **Mechanics [I]:**
 * A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
-  over the session P2P transport. These go on the control channel, not the sim.
-* The owner's peer verifies the sender's key against the access level, then forwards the text to the
-  harness as a user turn **wrapped with provenance**, e.g. `[guest: <name>, key <fingerprint>]`.
-* **Revocation is local and immediate.** The owner's peer stops accepting that guest's input, drops queued
-  prompts, and can end the guest-mode harness session. Revoking never depends on other peers.
+  over the session transport's control channel, not the sim.
+* The owner's peer checks the sender's key against the access level. It routes the text to **that guest's
+  own session**, never to the owner's private session or another guest's session (R13-H3).
+* **Each guest gets one session, one MCP token and one session key.**
+  * The guest's sub-certificate names the guest.
+  * The engine takes `requested_by = guest` from the token binding (21.3), so the agent cannot attribute
+    an action to a different guest.
+  * Guests never see each other's turns.
+* **Lifetime.** A guest session starts on the guest's first message and exits when idle. A later message
+  resumes it from the transcript in the guest's config directory.
+* **Resource cap.** Each guest session is a full harness process. At most 4 run at once per panel by
+  default [I].
+
+**Containment of restricted sessions (guest, inbox and decider sessions) [I]:**
+* **No built-in tools.** The engine MCP server is the only tool source, with the scope of that session.
+* **Separate OS identity** with no access to the owner's profile:
+  * Windows: an AppContainer profile per panel (no admin rights needed), or a dedicated low-privilege
+    local user (needs admin rights once, to create it).
+  * Linux: a separate user, or a user namespace with its own home.
+  * Each session's files live in `<data>\guests\<panel>\<session>\`: `cfg\`, an empty `ws\`, and `tmp\`.
+    They are ACL'd to that identity and the engine.
+  * Open question for gate 9c: the harness binaries currently live inside the owner's profile
+    (`%APPDATA%\npm\…`, `%USERPROFILE%\.codex\packages\…`). The other identity needs read access to the
+    binaries, but not to the credential files beside them.
+* **Separate config home.** It holds only engine-written settings and the guest-only API key, never the
+  owner's login.
+* **Clean environment.** The engine builds the environment from scratch: config home, key, temp
+  directory and a minimal `PATH`. It never inherits the owner's environment.
+* **Resource limits.** A job object (Windows) or cgroup (Linux) limits CPU, memory and process count. The
+  spend caps are below.
+* **Fail closed at launch.** Claude Code's `system/init` event "reports session metadata including the
+  model, tools, MCP servers, and loaded plugins" [S docs]. The adapter kills the session if that event
+  lists any of:
+  * a tool outside the engine server;
+  * any other MCP server;
+  * any plugin.
+
+**Claude Code restricted-session launch [flags S; this combination is untested: gate 9a]:**
+
+```text
+identity  per-panel AppContainer, or a low-privilege local user
+env       CLAUDE_CONFIG_DIR=<session>\cfg   ANTHROPIC_API_KEY=<guest-only key>   TEMP=TMP=<session>\tmp
+cwd       <session>\ws   (empty)
+claude -p --bare --restricted --tools ""
+       --strict-mcp-config --mcp-config <session>\cfg\mcp.json
+       --settings <session>\cfg\settings.json          (contains {"disableAllHooks": true})
+       --allowedTools "mcp__primordial__*"
+       --permission-mode dontAsk --permission-prompts none
+       --disable-slash-commands
+       --max-budget-usd <session budget>
+       --system-prompt <engine-written prompt>
+       --input-format stream-json --output-format stream-json --include-partial-messages
+```
+
+* **`--tools ""`** disables "all tools" of "the built-in set" [S]. Without it, `dontAsk` would still allow
+  "File reads in your working directories" [S docs].
+* **`--bare`** skips hooks, plugins, auto-memory and `CLAUDE.md` discovery, and "OAuth and keychain are
+  never read" [S]. Without the guest key, the session fails to authenticate. It never falls back to the
+  owner's login.
+* **`--bare` alone is not enough:** "The project's `env` block and helpers such as `awsAuthRefresh` in its
+  settings files still apply" [S docs]. `--restricted` ignores user, project and local settings files
+  [S], and the workspace is empty anyway.
+* **`--permission-prompts none`:** "anything that would prompt is denied automatically" [S].
+* **`CLAUDE_CONFIG_DIR`** moves every `~/.claude` path, `.claude.json` included, into the session's
+  directory [S docs].
+* **`disableAllHooks`** is the documented setting for turning hooks off for a run [S docs].
+* **Resuming** an idle guest session adds `--resume <session-id>` [S]. The transcript stays in the guest's
+  `cfg\`. If the owner chooses not to keep guest transcripts, the adapter passes
+  `--no-session-persistence` [S] instead, and an idle session cannot be resumed.
+
+**Codex: not unlockable until gate 9b passes (R13-H1).** Corrections to the first draft:
+* **`codex exec` has no `-a/--ask-for-approval` option.** The top-level `-a` offers only two values
+  [S]:
+  * `on-request`: "The model decides when to ask the user for approval";
+  * `never`: "Never ask for user approval Execution failures are immediately returned to the model".
+
+  No policy that "never auto-runs" exists, and a headless session has nobody to ask anyway.
+* **`--sandbox read-only` does not confine reads, as far as the evidence goes.** It selects "the sandbox
+  policy to use when executing model-generated shell commands" [S], and the official docs do not say it
+  confines reads [S docs]. Unless reads are confined, a guest can ask the agent to print
+  `%USERPROFILE%\.codex\auth.json` (the file exists on this machine) and get it back in the reply.
+* **Codex has no spend or turn limit option** [S].
+* **Candidate profile for gate 9b to test** [flags S; effect untested]. It runs under a separate identity,
+  with `CODEX_HOME=<session>\codex` holding only the guest-only key:
+
+```text
+codex exec --json --ephemeral --skip-git-repo-check --strict-config --ignore-user-config --ignore-rules
+      -s read-only -c approval_policy="never" -c project_root_markers=[]
+      -c shell_environment_policy.inherit="none"
+      --disable shell_tool --disable unified_exec --disable browser_use --disable computer_use
+      --disable apps --disable plugins --disable hooks --disable multi_agent --disable image_generation
+      -c mcp_servers.primordial.command=<pe-app> -C <session>\ws
+```
+
+**Gemini CLI: not unlockable until gate 9d passes.** The candidate profile:
+* Identity and keys: a separate identity, `GEMINI_CLI_HOME=<session>\gemini` [S docs], and a guest-only
+  `GEMINI_API_KEY`.
+* Mode: `--acp`, or `-p … -o stream-json` [S].
+* Approvals: `--approval-mode default`. In non-interactive mode a policy's `ask_user` "is treated as
+  `deny`" [S docs].
+* Tools: `--policy <file>` that denies built-in tools [I], and `--allowed-mcp-server-names primordial`
+  [S].
+
+**PTY panels and other harnesses** are never unlockable. An ACP agent becomes unlockable only through its
+own adapter and its own gates.
+
+**Input handling (R13-L1) [I]:**
+* Guest text enters as the content of a structured user message:
+  * Claude Code: `--input-format stream-json` [S];
+  * ACP agents: prompt content.
+
+  Each session has one principal, so no in-band `[guest: …]` wrapper is needed, and the engine trusts
+  none.
+* **No engine events as user text.** The engine never injects its own events as user text into a session
+  that a non-owner writes to.
+  * Engine events reach agents as MCP resources or tool results, in JSON fields that the guest cannot
+    write.
+  * For a harness without notification support, the adapter injects a fixed template with IDs and counts
+    only, never peer text. Example: "1 new connection request; call `panel.requests.list`".
+* **Sanitizing.** Text from any non-owner principal is cleaned before it reaches a harness or a display:
+  * C0 and C1 control characters are stripped, except newline and tab, along with ANSI/VT escape
+    sequences;
+  * so are bidi controls (U+202A–U+202E, U+2066–U+2069, U+200E, U+200F, U+061C), zero-width characters
+    (U+200B–U+200D, U+2060, U+FEFF) and Unicode tag characters (U+E0000–U+E007F), which can hide text;
+  * lines that imitate engine markers (starting with `[engine`, `[owner`, `[guest`, `[panel` or `[hub`)
+    are escaped;
+  * length is capped.
+* **Limits.** Sanitizing stops spoofing of markers and UI. It does not stop prompt injection. Containment
+  does that.
+
+**Spend caps (R13-M1):**
+* **Provider-side limit (the real bound) [S docs]:** the guest-only key belongs to a provider workspace or
+  project with a monthly hard limit.
+  * Anthropic: "A Claude Console organization sets `organization` and `workspace` limits, which are
+    monthly". The quoted page is about setting limits through the API, which is in early-access preview.
+  * OpenAI: "Reaching a project hard limit returns a `429` error", and "Enforcement is not instantaneous".
+  * Google: not checked.
+* **Harness-side:**
+  * Claude Code's `--max-budget-usd` caps one restricted process: "Maximum dollar amount to spend on API
+    calls (only works with --print)" [S]. Restricted sessions always run with `-p` and an API key, so the
+    cap applies. Its figures are client-side estimates [S docs].
+  * Codex and Gemini CLI have no such flag [S].
+* **Adapter-side, all harnesses [I]:**
+  * per turn: at most T tool calls and K output tokens. Tool calls are counted exactly at the engine MCP
+    server, which is the only tool server. Tokens come from streamed usage; the adapter interrupts the turn
+    at the limit;
+  * per guest: at most R turns per hour, and a cost ledger (`total_cost_usd` for Claude Code [S docs],
+    token counts times a price table for the others);
+  * per panel: a total per hour;
+  * illustrative defaults: T = 30, K = 8,000, R = 20.
+* **Turn caps alone do not bound spend,** because one agentic turn can run long. The per-turn tool-call and
+  token caps bound a turn.
+* **No subscriptions for guests by default.** Guests never use the owner's subscription (D34).
+* **Visibility.** The owner sees per-guest usage, the caps and the remaining provider budget, both before
+  unlocking and while unlocked.
+
+**Guest actions [I]:**
+* Effective rights = owner's roles ∩ guest's roles ∩ guest-mode scope (D28).
+* Guest-initiated SCM commits wait for the owner's approval in the engine-owned layer (21.2).
+* Interactions and object edits run within the scope, rate-limited.
+
+**Revocation (R13-M2) [I].** Revoking guest G on panel P does all of the following, in this order. The UI
+reports success only after step 5.
+1. Stop accepting G's panel input, and drop G's queued prompts.
+2. Invalidate G's MCP token in the MCP server, synchronously. Calls in flight return an error, and actions
+   not yet signed are discarded.
+3. Kill G's harness process tree (job object or cgroup).
+4. Cancel G's pending proposals, and the approvals queued for the owner on G's behalf.
+5. Close G's view streams of the panel, and any connections opened on G's behalf.
+6. Publish a signed `GuestRevoked {panel P, guest G, session key K_G, effective_frame F, reason}` entry,
+   ordered like ACL entries (12.2).
+   * Every peer rejects actions signed by K_G and stamped at frame F or later.
+   * Actions stamped before F stand. The owner reverts them with ordinary commits if needed.
+   * F is a confirmed frame (6.4), so every peer enforces it from the same point.
+7. Delete G's session files, unless the owner keeps them for audit.
+
+Setting a panel back to Locked revokes every guest this way. Steps 1–5 are local and never depend on other
+peers.
 
 **Friends without a central server [I]:**
 * A friend is an Ed25519 public key the owner explicitly trusts. It is added by an in-session "add friend"
   handshake, through an invite ticket, or by comparing a key fingerprint or QR code.
-* Friend lists are stored locally with petnames and synced across the owner's own devices as signed
+* Friend lists are stored locally with petnames, and synced across the owner's own devices as signed
   records. Mutual friendship means each key is on the other's list.
-* Optionally, a friend key can be cross-linked to a mail-hub person identity (21.7). That is a
-  convenience, not an authority.
+* Optionally, a friend key can be cross-linked to a mail-hub person identity (21.7). That is a convenience,
+  not an authority.
 
-**Risks of letting others drive your harness:**
+**Risks of letting others drive a harness** (the containment above addresses each):
 * **Prompt injection:** a guest instructs the agent to read or exfiltrate files, run commands, leak
   secrets, or make harmful edits.
-* **Filesystem and tool access** on the owner's machine through the harness's built-in shell and file
-  tools.
-* **Spend** on the owner's account or subscription, plus usage that the AI provider attributes to the
-  owner under its terms.
-* **Game damage** done under the owner's authority.
-
-**Default guest-mode sandbox while unlocked (D27) [I]:**
-* Guests are served by a **separate guest-mode harness session**, never the owner's private conversation.
-* Built-in shell, file-write, web and network tools are removed. For Claude Code: `--tools`/`--disallowedTools`
-  plus `--strict-mcp-config`. For Codex: `--sandbox read-only` and an approval policy that never
-  auto-runs [S flags exist; exact configuration I].
-* The only tool server is the engine MCP server, with **guest-scoped** tools.
-* The working directory is a throwaway workspace with no owner files.
-* The process runs under OS containment: a Windows job object or AppContainer, or Landlock / bubblewrap on
-  Linux.
-* **Spend caps:** the engine counts turns per guest per hour and per panel. Claude Code also enforces
-  `--max-budget-usd` [S]. Codex has no such flag in its help output, so the engine enforces turn caps.
-* Guest-initiated SCM commits require the owner's one-click approval by default.
-* PTY-mode panels cannot be unlocked.
-* The system prompt (`--append-system-prompt`) marks guest turns as untrusted. Safety rests on the hard
-  tool restrictions above, not on that prompt.
+* **Credential theft:** reading the owner's harness credential file through any file or shell tool.
+* **Filesystem and tool access** on the owner's machine.
+* **Spend** on the owner's account, and use that the provider attributes to the owner under its terms
+  (D34).
+* **Game damage** under the owner's authority.
+* **Cross-guest injection and misattribution,** answered by one session per guest.
 
 **Who may make the resulting game edits (authority, section 12) [I]:**
-* Actions from a guest-driven panel are signed by the panel's agent key and carry the guest's signed
-  request hash.
-* **Effective rights = owner's roles ∩ guest's roles ∩ guest-mode scope.** A guest can never borrow a
-  friend's agent to do what the guest's own role forbids. The owner's authority is never amplified.
-* Commits record `author = agent key`, `on_behalf_of = owner`, `requested_by = guest`, and every peer
-  verifies all three against the ACL log.
-* Decision: **D28**.
+* A guest session signs its actions with its own key K_G. K_G's sub-certificate chains to the panel key
+  and the owner's user key, and names guest G.
+* **Effective rights = owner's roles ∩ G's roles ∩ guest-mode scope.** A guest can never borrow a friend's
+  agent to do what the guest's own role forbids. The owner's authority is never amplified.
+* Commits record `author = K_G`, `on_behalf_of = owner` and `requested_by = G`. Every peer verifies all
+  three against the ACL log and the certificate chain.
+* Decisions: **D27a–D27h**, **D28**, **D29**.
 
 ### 21.6 Panel-to-panel connections (agent-to-agent, in-session)
 
-* There is **no implicit broadcast.** Panels communicate only over an **explicitly established
-  connection**. Everything below rides the session's P2P transport (control channel), never the sim, and
-  is not rolled back.
-* **Eligibility ("adjacent"):** recommended to mean **session membership**: any panel in the same session
-  may *request* a connection. Spatial proximity is a discovery and UX filter ("nearby panels", point to
-  connect in VR), not a security boundary, because positions are controlled by the requester. Options:
-  **D31**.
-* Panels publish a small presence record (panel ID, owner, display name, whether it accepts requests).
+* **There is no implicit broadcast.**
+  * Panels communicate only over an **explicitly established connection**.
+  * Everything below rides the session's P2P transport (control channel), never the sim, and is not
+    rolled back.
+* **Eligibility ("adjacent"):** recommended to mean **session membership**. Any panel in the same session
+  may *request* a connection.
+  * Spatial proximity is a discovery and UX filter ("nearby panels", point to connect in VR), not a
+    security boundary, because the requester controls its own position.
+  * Options: **D31**.
+* Panels publish a small presence record: panel ID, owner, display name, and whether it accepts requests.
+
+**Where inbound traffic goes (R13-C2) [I]:**
+The connection policy (allow all, ask agent, ask user, deny all) controls admission only. It does not
+decide which session reads the messages. **Inbound panel messages never reach the owner's private
+session,** which holds the owner's tools and credentials. Provenance labels alone would be the prompt-level
+defence that 21.5 rejects.
+* **Inbox session (default handler).** Each established connection gets its own restricted session,
+  contained like a guest session (21.5).
+  * It may reply on its own connection.
+  * It may run read-only world queries, if the connection was granted them.
+  * It may post a summary card to the owner.
+  * It cannot open connections, send on other connections, use the hub, or commit.
+* **Manual inbox.** The owner can choose no agent. Messages then appear in the panel as sanitized,
+  untrusted text (21.5).
+* **Into the private session only per message.** The owner can forward a single message into the private
+  session. It enters as an MCP tool result, marked untrusted and attributed.
+  * A per-connection auto-forward also exists. It is off by default and sits behind a warning.
+  * Auto-forward is available only while the private session uses the restricted profile (D25a), that
+    is, without shell or web tools.
+* **Capability ceiling.** Each panel has an owner-set ceiling on what any connection may be granted.
+  * Default: **text only**.
+  * Above it, in order: structured JSON; asset references; world actions (rights = owner ∩ remote owner ∩
+    connection scope).
+  * No connection is ever granted more than the ceiling.
+
+**Worm risk.** A message that tells its reader to forward itself to every connection is a worm.
+* Under the first draft of this section, an agent with full tools that relayed panel messages could spread
+  such a message through a session in seconds, and across sessions through hubs.
+* This design cuts the propagation path:
+  * only the private session can open connections or send to arbitrary connections;
+  * the private session receives inbound text only through a per-message owner action, or an opted-in
+    auto-forward while it has no shell or web tools;
+  * inbox sessions can reply only to their own sender.
+* **Residual risk:**
+  * an owner who forwards a message by hand can carry a payload one hop further;
+  * an inbox session can be talked into putting text in its reply.
+
+  Per-connection rate limits (messages per minute, message size) bound the volume.
 
 **Handshake [I]:**
-1. **Request.** A → B: `ConnectRequest {from_panel, to_panel, purpose (≤280 chars), requested_capabilities
-   (text | structured JSON | asset references), nonce, expiry, A's ephemeral X25519 key}`, signed by A's
-   panel key.
+1. **Request.** A → B: `ConnectRequest`, signed by A's panel key, with these fields:
+   * `from_panel`, `to_panel`;
+   * `purpose` (≤280 characters);
+   * `requested_capabilities` (text | structured JSON | asset references | world actions);
+   * `nonce`, `expiry`;
+   * A's ephemeral X25519 key.
 2. **Gatekeeping on B's peer:** verify the signature, session membership, eligibility and a per-requester
    rate limit. Then apply B's **connection policy**:
-   * **allow all:** accept.
-   * **deny all:** reject with `{code: "policy_deny"}` (no prompt, no agent involvement).
-   * **ask user:** show the owning player an in-world prompt with requester, owner and purpose. Accept,
-     reject, or let it time out after 60 s (`user_declined` / `timeout`).
-   * **ask agent:** hand the decision to B's own AI (below), with a timeout (`agent_timeout`).
-3. **Accept.** B → A: `ConnectAccept {connection_id, B's ephemeral X25519 key, limits (message rate, max
-   size, idle TTL), granted capabilities}`, signed. A replies `ConnectConfirm`. Both derive per-connection
-   keys (X25519 ECDH plus nonces). Messages stay end-to-end encrypted even when relayed through other
-   peers (10.5).
+   * **allow all:** accept, with capabilities capped at B's ceiling.
+   * **deny all:** reject with `{code: "policy_deny"}`, with no prompt and no agent involved.
+   * **ask user:** show the owning player a prompt in the approval layer (21.2), with the requester, its
+     owner and the sanitized purpose. The owner accepts, rejects, or lets it time out after 60 s
+     (`user_declined` / `timeout`).
+   * **ask agent:** hand the decision to B's decider session (below), with a timeout (`agent_timeout`).
+3. **Accept.** B → A: `ConnectAccept`, signed, with these fields:
+   * `connection_id`;
+   * B's ephemeral X25519 key;
+   * limits (message rate, maximum size, idle TTL);
+   * the granted capabilities, at most B's ceiling.
 
-**"Ask agent" presented to the harness [I]:**
-* The engine MCP server exposes a resource `primordial://panel/connection-requests`, which notifies on new
-  requests, plus tools `panel.requests.list`, `panel.requests.accept(id, capabilities)` and
+   A replies `ConnectConfirm`. Both derive per-connection keys (X25519 ECDH plus nonces). Messages stay
+   end-to-end encrypted even when relayed through other peers (10.5).
+
+**"Ask agent" [I]:**
+* The decision is made by a **decider session**. It is restricted like a guest session, and its only tools
+  are `panel.requests.list`, `panel.requests.accept(id, capabilities)` and
   `panel.requests.reject(id, reason)`.
-* For harnesses without MCP notification support, the structured adapter injects a short, clearly marked
-  engine event into the session: "connection request from …; decide with panel.requests.accept/reject".
-* The request's purpose text is untrusted input and is quoted with provenance.
+* It can grant at most the owner's ceiling (default: text only). The MCP server enforces this.
+* The requester's purpose text reaches only the decider, inside a JSON field marked untrusted. The private
+  session sees counts and IDs only.
+* The engine MCP server also exposes the resource `primordial://panel/connection-requests`, which notifies
+  on new requests. For a harness without notification support, the adapter wakes the decider with a fixed
+  template, never with peer text (21.5).
 
 **Lifecycle and teardown [I]:**
 * **States:** `requested → established → closed`.
-* **Messages** are sequenced, acknowledged, and delivered in order. Each is delivered to the receiving
-  harness as untrusted input with provenance. Agents use `panel.connect(to, purpose)`, `panel.send(conn,
-  payload)`, `panel.inbox` and `panel.close(conn, reason)`.
-* **Teardown triggers:** either side closes; idle TTL (default 30 min) expires; either owner revokes; the
-  policy changes to *deny all* (existing connections are dropped); the panel closes; a peer leaves; the
-  session ends. A `Close {reason}` is sent when possible. Silence past the TTL closes it anyway.
+* **Messages** are sequenced, acknowledged and delivered in order. They go to the connection's inbox
+  session or manual inbox, sanitized. Agents use these tools:
+  * `panel.connect(to, purpose)`, from the private session only;
+  * `panel.send(conn, payload)`: the private session may use any of its connections, an inbox session
+    only its own;
+  * `panel.inbox`: the private session gets only owner-forwarded items;
+  * `panel.close(conn, reason)`.
+* **Teardown triggers:**
+  * either side closes;
+  * the idle TTL (default 30 min) expires;
+  * either owner revokes;
+  * the policy changes to *deny all* (existing connections are dropped);
+  * the panel closes, a peer leaves, or the session ends.
+
+  A `Close {reason}` is sent when possible. Silence past the TTL closes the connection anyway.
+* **Closing a connection** invalidates its inbox session's token and kills the session, as in revocation
+  steps 2–3 (21.5).
 * **Connections are ephemeral** to a session. Reconnecting after a drop re-runs the handshake, optionally
   resuming within 5 min with a resumption token.
+* Decisions: **D30**, **D30a**, **D30b**.
 
 ### 21.7 Mail-hub integration and the hubchat-style panel
 
 **What is known about Orgtree's hub** [S Orgtree's public docs; nothing was connected or registered]:
-* A hub is an HTTP service. The main port 7370 serves an operator page with no login. An optional
-  **relay-only door** (port 7371) carries authenticated client traffic. Clients probe 7370, 7378, 7371 and
-  HTTPS.
-* The hub provides no TLS itself; use a private network (e.g. Tailscale) or a TLS proxy.
-* Identities: **person** identities (Hubchat users) and **organization** identities. An org identity has a
-  permanent public address minted with an ownership secret that proves ownership; the hub stores
-  fingerprints. Devices link to carry a person identity.
+* A hub is an HTTP service.
+  * The main port 7370 serves an operator page with no login.
+  * An optional **relay-only door** (port 7371) carries authenticated client traffic.
+  * Clients probe 7370, 7378, 7371 and HTTPS.
+* The hub provides no TLS itself. Use a private network (e.g. Tailscale) or a TLS proxy.
+* Identities:
+  * **person** identities (Hubchat users) and **organization** identities;
+  * an org identity has a permanent public address, minted with an ownership secret that proves
+    ownership, and the hub stores fingerprints;
+  * devices link to carry a person identity.
 * Clients **register, poll and transfer files** over HTTP, with at-least-once custody.
-* Hubchat finds people and orgs through a directory. It supports question messages with preset options
+* Hubchat finds people and orgs through a directory. It supports question messages with preset options,
   and file attachments.
 
 **Not verified [I]:**
@@ -1242,162 +2235,515 @@ user's go-ahead (**D32**).
 * The **hubchat-style panel** gives the player conversations, the directory, compose with question
   options, attachments from the asset store, and presence. It covers Orgtree orgs or any other hub
   identity.
-* **Agents in panels** reach hubs only through engine MCP tools (`hub.contacts`, `hub.send`, `hub.inbox`).
-  They never see the identity secret.
-* Sending to a new recipient needs the owner's approval the first time.
+* **Inbound hub mail never reaches the private session.**
+  * Each hub correspondent gets an inbox session, or the manual inbox, exactly as a panel connection does
+    (21.6).
+  * The private session receives a hub message only when the owner forwards it.
+* **Agents reach hubs only through engine MCP tools** (`hub.contacts`, `hub.send`, `hub.inbox`) and never
+  see the identity secret.
+  * In the private session, `hub.inbox` returns only owner-forwarded messages.
+  * An inbox session can reply only in its own thread.
+* Sending to a new recipient needs the owner's approval the first time, in the approval layer.
 * **All inbound hub mail is untrusted input**, as Orgtree treats outside mail: data, never instructions.
-  It reaches an agent only with provenance.
-* **Panel-to-panel over a hub:** two panels in different sessions, or players not in the same session, can
-  exchange messages through hub identities, with the same connection policy (21.6) applied to first
-  contact.
+  It reaches an agent only sanitized and with provenance. Attachments are stored as untrusted assets and
+  are never executed or imported automatically.
+* **Panel-to-panel over a hub** (players in different sessions, or not in the same session): the same
+  connection policy, ceiling and inbox routing as 21.6 apply.
 
 ### 21.8 What this adds elsewhere
 
-* MCP catalog (17.2): `panel.*`, `panel.requests.*` and `hub.*` tools.
-* Non-Rust boundaries (20.1): harness CLIs and their cloud model services, plus OS speech recognition if
-  chosen.
-* Crates (22.1): `pe-panels`, `pe-harness`, `pe-hub`.
-* Plan (22.2): desktop panels in phase 4, VR panels and voice in phase 5.
+* **SCM (15.6):** reserved paths.
+* **Authority (12.3):**
+  * delegation is issued only by a human action;
+  * sub-certificates for restricted sessions;
+  * `GuestRevoked` entries.
+* **MCP (17.1, 17.2, 17.4):**
+  * per-session tokens and scopes;
+  * admin tools are not callable by agents;
+  * untrusted marking of peer-authored strings;
+  * transport hardening;
+  * the agent-commit policy.
+* **Non-Rust boundaries (20.1):**
+  * harness CLIs and their cloud model services;
+  * OS containment (AppContainer, job objects, ACLs), which is OS-provided and called through the
+    `windows` crate;
+  * OS speech recognition, if chosen.
+* **Crates (23.1):** `pe-panels`, `pe-harness` (adapters, launch profiles, version pins), `pe-contain`
+  (OS identities, job objects, ACLs), `pe-hub`.
+* **Plan (23.2):**
+  * phase 4: owner-only desktop panels;
+  * unlocking, inbox sessions and "ask agent" ship per harness, after that harness's gates pass (21.9);
+  * phase 5: VR panels and voice.
+* **Risks (23.3, risk 10):** harness drift is handled by version-pinned launch profiles (21.1).
+* **Several worlds (22.9):** personal panels follow embodiment; a connection belongs to the world it
+  was made in.
+* **Spike report 8b, corrections:**
+  * Claude Code 2.1.292 is a native executable, not a Node.js app;
+  * Codex `-a/--ask-for-approval` exists only on the top-level command.
+
+### 21.9 Verification gates before unlocking ships (spike item 9, expanded) [I]
+
+Spike-report item 9 becomes nine gates. Unlocking for harness H ships when H's own gate passes (9a, 9b or
+9d) and gates 9c and 9e–9i also pass, on Windows first.
+
+| Gate | What it proves | Pass condition |
+|---|---|---|
+| 9a Claude Code restricted session | The 21.5 launch line leaves only engine tools | `system/init` lists only `mcp__primordial__*` tools, one MCP server and no plugins. Adversarial prompts cannot read, write, fetch or run anything. With no `ANTHROPIC_API_KEY` the session fails to authenticate. Nothing is written under the owner's `%USERPROFILE%\.claude`. `--max-budget-usd` stops the process |
+| 9b Codex containment | Reads and commands are confined | Run under the candidate profile and the 9c identity: a canary file in the owner's profile cannot be read; `--disable shell_tool --disable unified_exec` leaves no command execution; no `AGENTS.md` or hook loads from ancestors |
+| 9c OS identity | Restricted sessions cannot reach the owner's files or credentials | Under AppContainer, and separately under a low-privilege user, each harness runs and reaches its provider. It cannot open the owner's canary, `.credentials.json` or `auth.json`, or the owner's Credential Manager entries. It can reach only its own named pipe |
+| 9d Gemini CLI containment | As 9b | As 9b, with `--policy` denying built-in tools and folder trust settings checked |
+| 9e Workspace materializer | Reserved paths never reach a workspace | Every 15.6 name and alias (case, trailing dot or space, 8.3 name, NFKC, HFS-ignorable code point, `:` stream) is rejected or stripped on NTFS. A canary hook in a pre-rule commit never runs. The ancestor check fires |
+| 9f Inbox routing | No inbound text reaches the private session; no fan-out | A "forward this to all your connections" payload does not propagate. Inbox sessions cannot call `panel.connect` or send on other connections. Forwarding works only per message |
+| 9g Revocation | 21.5 steps 1–6 | Token rejected and process gone before the UI reports success; pending approvals gone; peers reject K_G actions at frame F or later |
+| 9h MCP transport | 17.1 rules hold | The named pipe rejects other identities. If HTTP is enabled: a DNS-rebinding test with a foreign `Host` or `Origin` is refused, the server binds to loopback only, and a stale token is refused |
+| 9i Version pin | Profiles fail closed on drift | A changed `--help` or an unknown version disables unlocking for that harness |
 
 ---
 
-## 22. Crate layout, phased build plan, risks
+## 22. Several worlds at once, and portals (R14)
 
-### 22.1 Proposed workspace [I]
+Resonite keeps several worlds loaded but puts you in only one of them; in the others you are "away". R14
+goes further: a player can be **actively joined** to several worlds at once. The engine also provides the
+mechanics that let creators build seamless, consistent world transitions such as portals.
+
+### 22.1 What "joined to several worlds" means
+
+Three separate things are true of a player and a world:
+* **Member:** you are in the world's session. You hold its log, acknowledge it, simulate it (possibly
+  throttled, 22.3), may author entries and have an ACL role there.
+* **Embodied:** your tracked body is there. In VR you have one body, so one world is embodied at a time.
+  The exception is a portal: while you straddle an open portal, the parts of your body on the far side
+  are embodied in the far world, mapped through the portal transform. On desktop, each view (window) has
+  its own embodied world.
+* **Attending:** you are a member and present, but not embodied.
+
+| Presence state | Simulated | Your avatar there | Your input there |
+|---|---|---|---|
+| Embodied | Full rate | Tracked avatar | Hands, locomotion, voice, panels, agents |
+| Attending | Full rate | An "elsewhere" avatar (D43) | Voice if routed there, chat, panels, agents; hands only through an open portal |
+| Background | Throttled bursts (22.3) | Away marker | Panels and agents only |
+| Parked | Not simulated; the log is kept | Away marker | None |
+
+* "Actively joined to several at once" therefore means one embodied world plus any number of attending
+  worlds, with real agency in each: voice, chat, agents and panels act there in real time, and your hands
+  reach into a world through a portal.
+* **Input routing:**
+  * hands and locomotion go to the embodied world, or through an open portal into the far world;
+  * voice goes to the embodied world by default, with push-to-talk per world and an opt-in broadcast;
+  * chat, panels and agents are per world.
+* Your presence record, visible to the members of each world you are in, says where you are embodied.
+
+### 22.2 Runtime: independent worlds in one process
+
+* **Each world is a complete, independent session:**
+  * its own fixed-step clock (epoch and tick rate: the spike runs a 60 Hz and a 50 Hz world side by side);
+  * its own session log, confirmation and rollback ring;
+  * its own ECS store, Box3D world(s), logic modules, SCM repository, ACL and P2P session.
+* **Isolation rule:** a world's simulation depends only on its own log. No sim code reads another world.
+  All cross-world effects enter a world as signed entries in its own log (22.6, 22.9).
+* **Process-level hazards** [S, box3d-rust 0.5.0 source]:
+  * box3d-rust has no global world registry: `World::new` sets `world_id = 0`, so `BodyId`s do not depend
+    on how many worlds a process created.
+  * It has one process-global setting, the length unit (`set_length_units_per_meter`, an `AtomicU32`).
+    The engine fixes it at 1.0 for every world and never calls the setter.
+  * Its `human` sample module uses a thread-local random generator. Sim code never uses that module.
+  * wasmi's lazy compilation made fuel depend on which instance compiled a function first [V d-lazy].
+    Multi-world processes make that worse, so eager compilation stays mandatory.
+* **Verified:** [V session-sim r14] two worlds (a 60 Hz world of 108 bodies and a 50 Hz world of 75 bodies) and three members in one process. In all four variants, every replica of each world matched the others and an offline single-world replay of its final log. Creating the worlds in the opposite order and processing the peers in reverse gave identical digests.
+* **Threads:**
+  * one sim task per world on a worker pool; each world stays single-threaded (4.3 rule 1), and worlds
+    run in parallel;
+  * one shared network thread: one UDP socket, sessions multiplexed by session id, one Noise channel per
+    remote peer reused by every world you share with it;
+  * the render thread draws the embodied world plus portal views (22.4).
+* **Shared:** the content-addressed store deduplicates assets and wasm across worlds by hash.
+* **Identity:** a user has one identity key. Each world assigns its own MemberId at admission (10.3).
+
+### 22.3 Budgets and background throttling
+
+* **Throttling changes when a peer computes frames, never what they contain.** A world's state is a
+  function of its log, so computing frames later in bursts gives the same results. [V session-sim r14 throttle: from t = 3 s, member 1's replica of world A advanced only once per 250 ms. World A's 500-frame digest equalled the unthrottled run's.]
+* **Confirmation depends on holding entries, not on simulating them.** An ack states what you hold
+  (10.8), so a background member never delays its world's confirmation. [V, same run: member 2's confirmation lag in world A averaged 3.9 frames whether member 1 was throttled or not.]
+* **Rules for a background member:**
+  1. It stamps entries (from panels or agents) at its present frame, not at its lagging sim frame.
+  2. There is no "too late" rule left to disagree on (C1 fix, 6.4), so lag cannot fork anything.
+  3. It answers fetches from its log, which needs no simulation.
+  4. It sends check hashes when its sim reaches confirmed check frames; late is fine.
+  5. It is never a state-transfer donor while it lags.
+* **CPU priority:** embodied, then straddled or portal-visible, then attending, then background, then parked.
+  Limits per client: **D49**.
+* **Memory:** the snapshot ring runs from the confirmed frame to the present (6.3). With confirmation
+  4-5 frames behind the present, a world keeps about 3-4 keyframes, not a 2 s ring. At 1,024
+  bodies that is about 7-10 MB per world (2.4 MB per image [V b6]); the 120-frame speculation limit caps
+  the worst case at 31 keyframes.
+* **Parked worlds** keep their log and latest confirmed keyframe. Resuming fast-forwards through the
+  logged entries, or takes a state transfer from an active member when it was parked long.
+* **Example budget [I, from measured step costs]:** one embodied world of 1,024 bodies costs 1.5-1.9 ms per
+  step [V b6]. Three attending worlds of 256 bodies cost 0.36 ms each [V b6] on other cores. Rollback
+  re-simulation comes on top (6.5). Body budgets are per world (D2).
+
+### 22.4 Rendering one world inside another
+
+* **A portal is an engine component:** destination (world and anchor), the transform M from this world's
+  portal frame to the destination's, an aperture shape, and flags (active, two-way, which objects may pass).
+* **A live view needs the destination loaded locally** (attending or background). Members of A who are
+  not in B see a fallback: a portal effect, or optionally a low-rate preview image streamed by a member of
+  both worlds (presentation only, D44).
+* **Technique (D44): stencil portals by default.**
+  1. Draw A.
+  2. Mark the portal's pixels in the stencil buffer.
+  3. For each eye, derive B's camera through the portal: view_B = view_A · M⁻¹, with an oblique near
+     plane on the portal plane so nothing behind the aperture in B is drawn.
+  4. Draw B's passes, with B's own shaders and lighting, only where the stencil matches.
+  5. Fix up depth so A's geometry in front of the portal still occludes.
+* **Render-to-texture** is the alternative: simpler compositing, cacheable, and cheaper for small or
+  distant portals, which can update at a lower resolution and rate. It costs a texture per eye per portal
+  and resampling blur.
+* **VR stereo correctness:**
+  * each eye gets its own camera through the portal; one centre-eye texture would look flat and cause
+    discomfort;
+  * a portal that scales space scales the interpupillary distance too;
+  * when the portal plane passes between the eyes, each eye renders the world on its own side, with the
+    portal showing the other;
+  * the aperture is drawn as a thin volume, so a camera passing through it never clips it to nothing.
+* **Objects straddling the aperture** are drawn twice with clip planes: the near part in A's pass and a
+  clone in B's pass. This is presentation only. There is no cross-world physics at portals: a clearance
+  zone around each aperture keeps colliders away (D47).
+* **Per-world rendering state:**
+  * each world has its own WGSL set, so pipelines are keyed by (world, shader hash);
+  * each world interpolates with its own clock (5).
+* **Budgets:**
+  * at most two live portal views per frame in VR;
+  * recursion depth 1 (a portal seen through a portal shows a cached image);
+  * distant portals fall back to render-to-texture at a reduced rate.
+* **Audio:** B's sounds are spatialized at the aperture.
+
+### 22.5 A seamless crossing
+
+1. **Approach** (the portal is within about 10 m, or visible):
+   * join B in the background; the portal carries B's join capability (11);
+   * take a state transfer at a confirmed frame and fast-forward;
+   * fetch B's sim-relevant assets, plus presentation assets near the arrival point;
+   * push your avatar's assets to B's members;
+   * compile B's render pipelines; shader compilation is the classic hitch.
+2. **Visible:** B is rendered through the portal and attending, simulated at full rate.
+3. **Reach through:** your hand starts hand-target entries in B (18.4) while your body stays in A.
+4. **A held object crosses:** the transfer runs (22.6).
+5. **Your head crosses:** embodiment switches at the display frame where the head crosses the plane (per
+   eye while straddling). Nothing loads at that moment, because B was already simulated and rendered.
+6. **After:** A becomes attending, showing the portal back. Later it goes to background, then parked.
+
+Hitches that remain possible: B's state transfer not finished (the portal shows "connecting" and stays
+closed to you until it is), a shader that was not pre-compiled, or a missing asset.
+
+### 22.6 Carrying objects across: the settled handoff
+
+Two worlds have different members and unrelated frame timelines. A transfer is therefore a two-phase
+handoff, stamped at frame **fA** in A and **fB** in B, in which **each world only ever hears confirmed facts
+about the other.** It follows the escrow pattern of IBC token transfers (Cosmos ICS-20: escrow at the
+source, mint at the destination after a finality proof, refund on error or timeout) [S, the ICS-20
+specification]. We add fast ack-based confirmation and full object state.
+
+1. **Depart (in A, at fA).** The carrier authors `Depart{transfer, object, destination, deadline}`.
+   * A's sim validates it at fA: the object is live, the carrier holds its claim (or it is unclaimed), the
+     carrier has the export right in A's ACL, and the object is not already departing.
+   * If valid, the object leaves A's physics. A records an **escrow** entry: the object record (its state
+     at fA, components, asset references, logic data), the destination, a deadline in B's frames, and the
+     status Pending. If invalid, the escrow records DepartRejected.
+2. **Relay after A confirms fA.** Confirmation means every member of A holds every entry up to fA (6.4).
+   Then the carrier, or any member of both worlds, authors `Arrive{transfer, record, proof}` in B at B's
+   present frame fB.
+3. **Arrive (in B, at fB).** B's sim validates it: the import right in B's ACL, B's body budget, the
+   deadline, the arrival portal open, the component policy (22.8), and no duplicate transfer id.
+   * If valid, the object is created in B with a new local id and the same global id: Accepted.
+   * Otherwise: Rejected.
+4. **Relay back after B confirms fB:** a member of both worlds authors `Verdict{transfer, accepted}` in A.
+5. **Resolve (in A):** an accepted verdict commits the escrow and drops the record. A rejected verdict
+   *returns* the object: it is recreated in A at its departure pose.
+6. **Timeout:** B refuses an `Arrive` stamped after its deadline. If B's confirmed history passes the
+   deadline without the arrival, a member of both worlds relays "not arrived" with proof, and A returns
+   the object.
+
+* **Held objects** arrive attached to the carrier's hand in B (the grip offset is in the record).
+  **Thrown objects** appear at B's portal with their velocity mapped through the portal transform.
+* **Latency:** other members of B see the object about one confirmation round after it crossed.
+  Spike, 50 ms ± 15 ms links with 1% loss: departure authored at 2,766 ms; confirmed in A and the arrival authored in B at 2,915 ms (+149 ms); the arrival confirmed in B at 3,041 ms; the verdict confirmed in A at 3,180 ms [V session-sim r14 ok]. Other members of B saw the object about 0.2 s after the crossing. The carrier hides the gap with a presentation-only copy in its hand.
+* **Why settled rather than optimistic:** rollbacks only change unconfirmed frames, and only confirmed facts
+  are relayed. So neither world ever acts on the other's speculation, and no correction is ever needed.
+  The optimistic alternative (D45) shows the object in B before A confirms, at the cost of rare rescinds
+  and visible corrections.
+
+### 22.7 Consistency across worlds
+
+**Invariant:** at every confirmed frame of A and of B, the object is live in at most one world; between
+departure and verdict it sits in A's escrow, where nothing can touch it. **No loss:** the escrow record
+persists until a verdict arrives.
+
+| Event | What happens |
+|---|---|
+| A rolls back past fA before confirming it; the departure stays valid | The same escrow is recomputed. Nothing was relayed yet, so B is unaffected |
+| A rolls back past fA and the departure becomes invalid (another member of A grabbed the object at an earlier frame: soonest wins) | In A's corrected history the object never left. Nothing is relayed. The carrier's client drops its proxy copy [V r14 abort: A rolled back 12 frames past fA; the departure became `RejectedClaimed`; nothing was relayed; the object stayed in A] |
+| B rolls back past fB before confirming it; the arrival stays valid | The object is recreated identically in the re-simulation |
+| B rolls back past fB and the arrival becomes invalid (an earlier portal close, the budget, or an ACL change) | B's confirmed verdict is "rejected". The verdict is relayed and the object returns in A [V r14 reject: B rolled back 10 frames past fB; the arrival was rejected; the verdict returned the object to A] |
+| Either world rolls back past a confirmed frame | Cannot happen. Confirmed frames never roll back; a partition's minority side only loses frames it never confirmed (10.8) |
+| The carrier crashes mid-transfer | The escrow keeps the record. Any member of both worlds can relay later, and the deadline plus proof of non-arrival returns the object. If nobody is in both worlds, the object waits in escrow, not lost |
+
+* **Sync checks:** the escrow and arrival tables are part of each world's hashed state (9). Members of
+  both worlds also compare A's record hash with B's arrival record.
+* **Soonest wins:** at fA the departure competes with other interactions on the object in canonical order
+  (8). Two departures of one object towards two worlds: the first in canonical order wins and the second is
+  rejected. In B, the arrival is ordered like any entry.
+* **Trust:** B's members cannot see A. They accept the relayed record on the signature of the member who
+  relays it (trusted sessions, the MVP), or on k-of-n signatures of A's members over the confirmed record,
+  a light-client proof (D46).
+
+### 22.8 What crosses: avatars, components, code
+
+* **Avatars are not sim objects** (16.3). Crossing switches embodiment; the avatar's assets were pushed to
+  B during the approach.
+* **Engine components carry over:** transform, rigid body, mesh and material references, grab state.
+* **Logic-defined components:** B may not run the module that defines them. Options (D48):
+  * by default they travel as inert data (schema hash plus bytes) and regain behaviour in any world that
+    runs that module;
+  * shared schemas, a cross-world standard library, let worlds interoperate;
+  * running a foreign module in B needs B's explicit ACL opt-in, because it is code B's builders did not
+    commit.
+* **Assets** are fetched by hash from the carrier and other members of both worlds.
+
+### 22.9 What game logic, MCP and panels see
+
+* **Game logic sees only its own world.** Cross-world reads would make a world depend on a timeline some
+  of its members do not have.
+  * Cross-world events arrive as entries in its own log: `on_depart_request` (allow or deny, e.g. a gate
+    that needs a key), `on_departed`, `on_arrival`, `on_returned`.
+  * Logic can open, close and retarget portals, and filter what may pass.
+  * **Cross-world messages** use the same relay: an outbox entry in A is relayed after confirmation as an
+    entry in B, exactly once by (source world, outbox sequence).
+* **MCP** (17): one server per peer.
+  * Every tool takes an explicit `world` argument; there is no implicit current world for agents.
+  * New tools: `worlds.list` (joined worlds, presence, clock, lag); `worlds.join`, `worlds.leave` and
+    `worlds.set_presence`, which need the owner's confirmation; `portal.*`; `transfer.request`,
+    `transfer.status`.
+  * Resource subscriptions and deterministic forks are per world. Delegation certificates name the worlds
+    they cover.
+* **Panels** (21):
+  * personal panels (wrist, HUD) follow your embodiment from world to world; they are presentation-only,
+    so they need no transfer;
+  * a panel anchored in a world stays there and can be seen through portals;
+  * a panel-to-panel connection belongs to the world it was made in, and closes when either owner leaves
+    that world;
+  * an unlocked panel's "anyone in session" means members of the panel's world.
+
+### 22.10 Spike: two worlds, three members, one object handed between them [V]
+
+Setup: world A runs at 60 Hz (a 108-body pile), world B at 50 Hz (a 75-body pile). Member 1 is in both
+and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Links are 50 ms ± 15 ms with
+1% loss. Run with `scripts/run_session_sim.sh`; logs are in `spikes/out/session-sim/`.
+
+| Variant | What it exercises | Outcome | Conservation | Replicas vs offline replay |
+|---|---|---|---|---|
+| ok | Plain handoff | Committed in A, accepted in B; done 0.41 s after departure | 1 live copy (B), 0 pending | all equal, both worlds |
+| abort | Member 2's earlier grab reaches member 1 150 ms late: A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 live copy (A) | all equal |
+| reject | Member 3 closes B's portal at a frame member 1 hears of 150 ms late: B rolls back 10 frames past fB | Arrival rejected; verdict returns the object to A | 1 live copy (A) | all equal |
+| throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
+| ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | digests identical to forward |
+
+### 22.11 What this adds elsewhere
+
+* Crates (23.1): `pe-worlds`, holding the multi-world scheduler, presence, portals and the transfer
+  relay.
+* MCP catalog (17.2): `worlds.*`, `portal.*`, `transfer.*`.
+* Plan (23.2): two worlds and the settled handoff in phase 3, with portal rendering after the renderer;
+  VR straddling in phase 5.
+* Decisions: D43-D49.
+
+---
+
+## 23. Crate layout, phased build plan, risks
+
+### 23.1 Proposed workspace [I]
 
 ```
 crates/
   pe-core        ids, fixed-step clock, deterministic math (dmath), rng streams, hashing, errors
   pe-sim         sim store (ECS columns), object hierarchy, component IDL/registry, snapshot + hash
   pe-physics     box3d-rust wrapper: body binding, interactions -> forces/joints, world images
-  pe-rollback    input log, ordering (soonest wins), claims, snapshot ring, re-sim scheduler, sync checks
-  pe-net         UDP + Noise, reliability, bulk channel, clock sync, membership, NAT traversal
-  pe-discovery   invites, mDNS, Mainline DHT records, peer exchange
-  pe-scm         content-addressed store, commits, ordering/finality, merge seats, tree merge, ACL log
-  pe-logic       wasmi host, guest ABI, fuel, hot-swap + migration, component bindings
-  pe-logic-sdk   guest-side crate (no_std + alloc) and component macros; target wasm32-unknown-unknown
+  pe-session     session log: entries, acks, confirmation, membership epochs, ordering, claims,
+                 carried state, keyframes, rollback/re-sim, sync checks (from spikes/sim-core session.rs)
+  pe-net         UDP + Noise, reliability, bulk channel, clock sync, NAT traversal
+  pe-discovery   invites, session codes + PAKE, mDNS, Mainline DHT records, peer exchange, relays
+  pe-worlds      multi-world scheduler, presence, portals, settled cross-world handoff (R14)
+  pe-scm         content-addressed store, commits, module merge, merge seats, reserved paths, ACL log
+  pe-logic       runtime host (wasmi / wasmtime per D12), guest ABI, fuel, hot-swap + migration
+  pe-logic-sdk   guest-side crate (no_std + alloc), component macros, state arena; wasm32-unknown-unknown
   pe-assets      CAS, importers (gltf, png/jpeg), deterministic processing, P2P transfer
-  pe-render      wgpu renderer, WGSL hot reload (naga), interpolation + error smoothing
-  pe-xr          OpenXR session, Vulkan interop, poses, hand engagement
-  pe-mcp         rmcp server, tool catalog, agent auth, forks
-  pe-panels      in-world panels: chat UI, terminal emulator (PTY mode), VR keyboard, text (cosmic-text)
-  pe-harness     harness adapters: Claude stream-json, Codex exec/app-server, ACP, PTY; guest-mode sandbox
+  pe-render      wgpu renderer, WGSL hot reload (naga), extrapolation + error smoothing, portal passes
+  pe-xr          OpenXR session, Vulkan interop, poses, swept hand engagement, per-eye portal straddling
+  pe-mcp         rmcp server, tool catalog, per-session tokens and scopes, forks
+  pe-panels      in-world panels: chat UI, terminal emulator (PTY mode), VR keyboard, approval layer
+  pe-harness     harness adapters, version-pinned launch profiles, restricted sessions
+  pe-contain     OS identities (AppContainer / users), job objects, ACLs for restricted sessions
   pe-hub         mail-hub client (Orgtree-style hubs), hubchat-style panel backend
   pe-resonite    package / data-tree / MeshX importers, avatar mapping
   pe-app         executable: threads, windowing (winit), config, CLI
-tools/           determinism trace runner, audit_native.py, session simulator (N peers, netem)
+tools/           determinism trace runner, audit_native.py, session simulator (from spikes/session-sim)
 spikes/          phase-1 spikes (kept as regression tests)
 ```
 
-### 22.2 Phased plan (proposal; ordering is D22)
+### 23.2 Phased plan (proposal; the order is D22)
 
 | Phase | Content | Milestone and exit criteria |
 |---|---|---|
-| 2. Deterministic core | pe-core, pe-sim (store + hierarchy), pe-physics, pe-rollback from the spikes; CI determinism matrix incl. ARM; in-process N-peer session simulator with network conditions; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on LAN, physics sandbox with interactions, sync checks, repair; AI agent drives a peer over MCP |
-| 3. Real networking + look | UDP+Noise transport, bulk channel, invites, NAT traversal, state-transfer join; wgpu renderer + interpolation; glTF assets + P2P asset transfer | M2: friends play over the internet with no server; late join works |
-| 4. Live editing + agent panels | pe-logic + SDK (WASM, hot-swap, migration, component IDL), pe-scm (ordering, rejection, merge seats, ACL), WGSL hot reload, MCP logic/shader tools + forks; desktop agent panels (structured adapters + PTY), unlockable panels with guest-mode sandbox, panel-to-panel connections, hub panel | M3: a player's own Claude Code / Codex, in an in-game panel, edits logic and shaders in a live session; conflicts reject and rebase per R7 |
-| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop), hands engagement, 3-point IK, Resonite avatar import v1, VR panels + virtual keyboard + voice input | M4: two PC VR users with imported Resonite avatars interact with physics objects |
-| 6. Scale + discovery | Mainline DHT discovery, region partitioning (parallel worlds), snapshot deltas, larger sessions | M5: discovery without invites; 1000s of bodies |
+| 2. Deterministic core | pe-core, pe-sim, pe-physics, pe-session (from the spikes); CI determinism matrix incl. ARM; the in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on LAN, physics sandbox with state+frame interactions, confirmation, gap repair and equivocation handling; an AI agent drives a peer over MCP |
+| 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal, state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6, D2); **pe-worlds**: two worlds per client, the settled handoff, portal rendering | M2: friends play over the internet with no server; late join works; a ball pit of 500 balls stays within budget (2.1); an object carried through a portal between two sessions |
+| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena), pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL), WGSL hot reload, MCP logic and shader tools + forks; owner-only desktop agent panels (structured adapters + PTY), the approval layer, inbox sessions | M3: a player's own Claude Code / Codex, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget; conflicts reject and rebase per R7. Unlocking ships per harness after its gates (21.9) |
+| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop), swept hand engagement, 3-point IK, Resonite avatar import v1, VR panels + virtual keyboard + voice input, per-eye portal straddling | M4: two PC VR users with imported Resonite avatars interact with physics objects and walk through a portal |
+| 6. Scale + discovery | Mainline DHT discovery, volunteer relays, snapshot deltas, larger sessions (relay or gossip), background-world parking | M5: discovery without invites; thousands of bodies across regions; several attended worlds per client |
 
-### 22.3 Top risks
+### 23.3 Top risks
 
-1. **Physics CPU budget (serial port).** Rollback re-sim multiplies step cost [V b2, b6]. Mitigations: 6.5
-   amortization, 6.6 region partitioning, body budgets (D2).
-2. **Unverified ARM and macOS determinism.** Mitigation: CI matrix in phase 2. Until then only x86_64 is
-   verified [V].
-3. **Snapshot memory.** 2.4 MB per frame at 1024 bodies plus 1.1 MB guest memory [V b6, d1]. Mitigations:
-   keyframes, deltas, small guest stacks (6.3).
-4. **No central authority means no prevention of timestamp cheating** (8.6). Detection plus ACL eviction
-   only. MVP targets trusted sessions (D21).
+1. **Physics CPU budget.** The port is serial and scalar, and rollback multiplies step cost [V b2, b6, ball
+   pit]. Mitigations: the 500-body budget (D2), coalesced rollbacks, keyframes, region-scoped rollback in
+   phase 3, input delay for continuous sources where acceptable (D41).
+2. **Unverified ARM and macOS determinism.** x86-64 is verified on two CPUs: the Ryzen 7 9700X desktop and an
+   Intel i7-13620H laptop with no AVX-512 (review M5, run by @design-reviewer). Mitigation: a CI matrix with
+   ARM in phase 2.
+3. **The session protocol is new code.** Confirmation, view changes and fetch repair were proved in an
+   in-process simulator and over loopback UDP, not on the internet. Proposal-based view changes with
+   cutoffs, and joins, are designed but not yet built (10.8). Mitigation: the simulator becomes a phase-2
+   test tool, and every bug found in phase 1 became a scenario.
+4. **No central authority means cheating is bounded, not prevented** (8.2, 8.5). MVP sessions are trusted
+   (D21).
 5. **Transport work.** The 100%-Rust rule excludes the turnkey stacks (iroh, libp2p, quinn's TLS), so we
    build reliability and congestion control (10.2).
 6. **Alpha upstreams.** Box3D is v0.1.0 "alpha" and box3d-rust is a recent third-party port [S]. Pin
    versions, run golden tests, wrap the API.
-7. **Resonite import legality and format churn** (D19); format details unverified locally (19.1).
-8. **OpenXR + wgpu interop** is not yet exercised (18.2). Phase-5 spike, or earlier if VR is prioritized.
-9. **Agent harness surface (R13).** Harness CLI flags and protocols change often (Codex's app-server is
-   marked experimental) [S]. Unlocked panels expose the owner's machine and account to other players
-   (21.5). Mitigations: adapters behind one trait, PTY fallback, guest-mode sandbox, spend caps.
-10. **Mail-hub protocol unknowns** (21.7): wire format unverified; permission to integrate (D32).
+7. **Logic runtime choice** (D12). The faster runtime (wasmtime) compiles C on Linux and macOS today [I], and
+   JIT-banned platforms need an interpreter.
+8. **Resonite import legality and format churn** (D19); format details unverified locally (19.1).
+9. **OpenXR + wgpu interop** is not yet exercised (18.2). Phase-5 spike, or earlier if VR is prioritized.
+10. **Agent harness surface (R13).** Harness CLI flags and protocols change often. Unlocked panels expose
+    the owner's machine and account to other players (21.5). Mitigations: version-pinned launch profiles,
+    restricted sessions under a separate OS identity, guest-only API keys, verification gates (21.9).
+11. **Mail-hub protocol unknowns** (21.7): wire format unverified; permission to integrate (D32).
+12. **Multi-world memory and CPU** (22.3): each attended world costs a full simulation. Mitigations:
+    throttling, parking and per-client limits (D49).
 
 ---
 
-## 23. Decisions needing the user
+## 24. Decisions needing the user
 
-Each entry gives a recommendation and its alternatives. Section references point to the reasoning.
+Each entry gives a recommendation and its alternatives; section references point to the reasoning. The
+priority order at the top of this document breaks ties. Where a recommendation costs a lower priority, the
+entry says so.
 
 * **D1. Non-Rust boundaries (20).**
-  * Recommend: accept the dynamically loaded or OS-provided components in 20.1 (GPU drivers and graphics
-    runtimes, OS libraries and Windows import-lib stubs, the OpenXR loader and runtime, Linux system libs)
-    and the Rust toolchain (rustc/LLVM) as a build tool for game logic.
-  * Also rule on the gray areas in 20.2: the Wayland C shim on Linux, Rust `asm!` in crypto crates, and a
-    DXC DLL if HLSL were chosen.
-  * Alternative: stricter readings. No Linux Wayland (X11 only). No inline-asm crates. Every peer must
-    avoid the toolchain (Option 1 in D11 already allows that).
-* **D2. Physics scale for the MVP (4.4, 6.5).**
-  * Recommend: target at most about 1,000 simultaneously awake bodies per session world on the serial
-    box3d-rust. Add region partitioning in phase 6.
-  * Alternatives: invest early in partitioning, or in contributing parallelism to box3d-rust (it must stay
-    bit-exact).
+  * Recommend: accept these components:
+    * the dynamically loaded or OS-provided components in 20.1: GPU drivers and graphics runtimes, OS
+      libraries and Windows import-lib stubs, the OpenXR loader and runtime, Linux system libraries;
+    * the platform C runtimes that Rust itself links (20.1, review L1);
+    * the Rust toolchain (rustc/LLVM) as a build tool for game logic.
+    Target Linux as `linux-gnu` (dynamic glibc, OS-provided), not static musl.
+  * Also rule on the gray areas in 20.2: the Wayland C shim on Linux; Rust `asm!` in crypto crates;
+    wasmtime's `helpers.c` on Linux and macOS (D12); a DXC DLL if HLSL were chosen.
+  * This entry also asks the user to confirm the coordinator's reading that "dynamically loaded system
+    components are acceptable". It absorbs D24, which duplicated it.
+  * Alternatives: stricter readings, such as no Linux Wayland (X11 only), no inline-asm crates, or no
+    wasmtime at all.
+* **D2. Physics scale for the MVP (4.4, 6.5; review M1).**
+  * Recommend: **about 500 simultaneously awake bodies per world** (priority 1).
+    * A 6-frame rollback then costs about 5 ms; at 1,024 bodies it costs 10-13 ms, beyond the 8 ms
+      per-tick budget.
+    * Pull island- or region-scoped re-simulation (6.6) forward to phase 3.
+  * Alternatives: 1,000 bodies with deeper amortization (corrections visible for longer); invest now in
+    parallelism inside box3d-rust (it must stay bit-exact).
 * **D3. Float determinism approach (4.2, 4.5).**
-  * Recommend: IEEE f32 with the 4.3 rules plus a CI matrix including ARM. Keep `double-precision` (large
-    worlds) off for the MVP.
+  * Recommend: IEEE f32 with the 4.3 rules, plus a CI matrix that includes ARM. Keep `double-precision`
+    (large worlds) off for the MVP.
   * Alternatives: enable double precision now (bigger worlds, slower, different goldens). Fixed point is
     not feasible with Box3D.
-* **D4. Tick rate and rollback window (5, 6.4).**
-  * Recommend: 60 Hz sim with 4 sub-steps; 2 s (120-frame) window.
-  * Alternatives: 90 Hz to match VR displays (+50% CPU, smoother hand physics). A 1 s window (less memory,
-    more state transfers) or 4 s (more memory and re-sim).
-* **D5. Meaning of "soonest wins" (8).**
-  * Recommend: frame stamp, then a seeded fair tie-break within a frame, plus exclusive claims (0.5 s, or
-    for the duration of a grab).
-  * Alternatives: sub-frame microsecond timestamps (finer, but trusts clocks more); lowest peer ID wins ties
-    (simple, unfair); no exclusivity, all simultaneous impulses apply (then "soonest" only orders them).
-* **D6. Divergence with identical inputs between exactly 2 peers (9.4).**
-  * Recommend: both restore the last agreed frame and re-simulate; if that diverges again, the session
-    owner's state wins and the event is reported.
-  * Alternatives: the lower key hash wins; or the session pauses for the user.
-* **D7. Partition healing beyond the rollback window (10.6).**
-  * Recommend: the partition containing more members (tie: the owner's side) keeps its history. The other
-    side's interactions are re-applied as new inputs at heal time where still valid.
-  * Alternative: always keep the owner's side; or ask the users.
+* **D4. Tick rate and speculation limit (5, 6.4, 7.5).**
+  * Recommend: 60 Hz with 4 sub-steps, and a 2 s (120-frame) speculation limit.
+  * 90 Hz removes most hand-to-object mismatch in VR, but costs 1.5x the CPU. In the ball pit, re-simulation
+    rose from 2.76 to 3.95 ms per frame, and the frame is only 11.1 ms [V ballpit]. Per-world choice, with
+    90 Hz for VR-centric worlds.
+  * Alternatives: 90 Hz everywhere; a 1 s limit (less memory, earlier pauses under stalls).
+* **D5. Meaning of "soonest wins" (8).** The user's 09:32Z ruling settles ties (D37).
+  * Recommend: effective frame first, then the per-frame tie rank, plus exclusive claims (8.4).
+  * Alternatives: sub-frame microsecond timestamps (finer, but trusts clocks more); no exclusivity, so all
+    simultaneous impulses apply and "soonest" only orders them.
+* **D6. Same entries, different state, between exactly 2 peers (9.3; review M7).**
+  * Recommend:
+    * both re-simulate from the last agreed confirmed frame;
+    * if they still differ, both pause and report;
+    * neither peer's state is privileged.
+  * Alternative: one deterministic winner, e.g. the lower member id. Simpler, but it hands one peer the
+    world line (an R1 tension).
+* **D7. Partitions (10.6, 10.8; reviews H3, M7).**
+  * Recommend: only a side with a strict majority of the current epoch confirms anything or changes
+    membership. The minority speculates up to the speculation limit, pauses, then rejoins by state
+    transfer. For **two-member sessions**: both pause.
+  * Alternatives:
+    * two-member sessions let the remaining peer continue alone after 10 s, in a new epoch. When the other
+      returns, it rejoins by state transfer and loses whatever it did alone, and a real partition can fork
+      both sides;
+    * the owner's side wins. Rejected as an R1 tension.
 * **D8. Transport (10.2).**
-  * Recommend: UDP + Noise (snow without `std`) with our own reliability and bulk channel. 100% Rust and
-    proven by spike c's model.
+  * Recommend: UDP + Noise (snow without `std`) with our own reliability and bulk channel. 100% Rust, and
+    the session protocol already runs over plain UDP [V p2p-v2].
   * Alternatives: quinn + custom pure-Rust crypto (more integration work, standard congestion control);
     relax the rule to allow `ring` and use iroh (most turnkey; also depends on n0 relays).
-* **D9. Discovery and the "soft central point" question (11, 10.5).**
+* **D9. Discovery and the "soft central point" question (11, 10.5; review L8).**
   * Recommend: invites + mDNS + peer exchange + Mainline DHT records, and no servers of ours.
   * Accepting the public BitTorrent DHT (and its well-known bootstrap hosts) is the user's call. So is
     whether symmetric-NAT users may use an optional community relay.
+  * Committers also depend on rustup and crates.io unless the toolchain is mirrored and dependencies are
+    vendored (13.2).
   * Alternatives: our own bootstrap or relay servers (reliable, but a soft central point); invites and LAN
     only (purest, worst UX).
 * **D10. Root of authority (12).**
-  * Recommend: the world creator's key is genesis owner and can add co-owners; optional k-of-n owner
+  * Recommend: the world creator's key is the genesis owner and can add co-owners; optional k-of-n owner
     threshold for ACL changes.
-  * Alternatives: mandatory multi-owner threshold; a fully democratic majority of present members.
+  * Alternatives: a mandatory multi-owner threshold; a fully democratic majority of present members.
 * **D11. Who compiles game logic (13.2).**
-  * Recommend: the committer compiles and peers run the shared wasm (sandboxed), with background
-    reproducibility checks by peers that have the toolchain.
-  * Alternative: every peer compiles from source (strongest trust; every machine needs the Rust toolchain
-    and pays compile time).
-* **D12. WASM runtime (13.3).**
-  * Recommend: wasmi (pure Rust; deterministic profile, fuel and eager compilation verified).
-  * Alternative: wasmtime/Cranelift for speed. Its default build compiles C; whether a pure-Rust
-    configuration exists needs an audit.
+  * Recommend: the committer compiles and peers run the shared wasm (sandboxed), identified by its
+    canonical hash, with background reproducibility checks. Vendored dependencies; no build scripts or
+    proc macros in logic crates except the SDK's.
+  * Question: mirror the pinned toolchain (no rustup host for committers), or accept rustup as a soft
+    central point?
+  * Alternative: every peer compiles from source (strongest trust; every machine needs the toolchain).
+* **D12. Logic runtime (13.3; priorities 1-2).**
+  * Recommend: **wasmtime with Cranelift, fuel and NaN canonicalization, on Windows first.** It runs logic
+    4x faster than wasmi and physics in wasm 4.5x faster [V iteration-benchmark]. Keep wasmi as the
+    reference and the fallback for JIT-banned platforms.
+  * **Question for the user:** wasmtime's build script compiles one C file (`helpers.c`) on Linux and
+    macOS [I, from its build.rs]. Accept it as a gray area, patch it out, or keep wasmi on those
+    platforms?
+  * Alternatives:
+    * wasmi only (100% Rust everywhere, 7x native; 8 crates);
+    * Winch (3x native; compiles as fast as wasmi);
+    * Cranelift without NaN canonicalization (1.4x native; NaN bits must never reach hashed state).
 * **D13. Shader language (14).**
   * Recommend: WGSL (naga-native, pure-Rust validation, structured diagnostics).
   * Alternatives: HLSL via DXC (non-Rust DLL, no naga frontend); GLSL via naga; rust-gpu (Rust shaders,
     heavier toolchain).
-* **D14. SCM conflict rules and merge seats (15.3, 15.4, 13.6).**
-  * Recommend:
-    * conflict = same parent and overlapping paths, with non-overlapping commits auto-merged
-      deterministically;
-    * the 10 s seat clock starts when the seat reaches the front of the queue;
-    * non-seat commits during an active seat are rejected with `seat_held_by` and queued;
-    * fuel exhaustion auto-reverts the module to the last good commit.
-  * Alternatives: strict linear history (any concurrent commit rejects); the seat clock starts at
-    rejection; non-seat commits wait instead of rejecting.
+* **D14a. Merge granularity (15.3; review H1).**
+  * Recommend: the module is the merge unit. Commits to different modules combine without recompiling; the
+    same module conflicts.
+  * Alternative: the later author rebases, recompiles and resubmits for every conflict (strict linear
+    history).
+* **D14b. Merge seat scope and clock (15.4; review H2).**
+  * Recommend: seats are scoped to the conflicting modules and paths, the 10 s starts at the front of the
+    scope's queue, and a `seat_held_by` refusal gets no seat.
+  * Alternatives: a global seat (the phase-1 design); the 10 s counted from the rejection.
+* **D14c. Commits that hit an active seat (15.4).**
+  * Recommend: reject with `seat_held_by` and let the author retry.
+  * Alternative: hold them and apply them in order when the seat ends (less retry noise, more hidden
+    queueing).
+* **D14d. Fuel exhaustion (13.6; review M6).**
+  * Recommend: disable the module at that frame, as rollback state; reverting it is an ordinary commit.
+  * Alternative: automatic revert to the last good commit (it made the SCM head depend on sim state).
 * **D15. ECS (16.1).**
   * Recommend: our own sim store (deterministic columns, WASM-defined components, memcpy snapshots).
   * Alternative: bevy_ecs for everything, adding stable-ID mapping and reflection-based snapshots.
@@ -1405,14 +2751,19 @@ Each entry gives a recommendation and its alternatives. Section references point
   * Recommend: BLAKE3 in `pure` mode.
   * Alternative: SHA-256 (RustCrypto), slower but ubiquitous.
 * **D17. Missing artifact at activation (15.5, 16.7).**
-  * Recommend: a peer lacking a sim-relevant artifact at its activation frame pauses its sim, still
-    receiving inputs, and catches up via fast-forward once it has the bytes. Others are unaffected.
-  * Alternative: delay activation until all present members acknowledge (one slow peer delays everyone).
-* **D18. VR targets and hand model (18).**
+  * Recommend: a peer that lacks a sim-relevant artifact at its activation frame pauses its sim. It keeps
+    receiving entries and catches up once it has the bytes. Others are unaffected.
+  * Alternative: delay activation until every member acknowledges the artifact (one slow peer delays
+    everyone).
+* **D18a. VR runtimes (18.1, 18.2).**
   * Recommend: SteamVR and Meta/Oculus PC runtimes first, through OpenXR on Vulkan; Windows first, Linux
     (Monado/SteamVR) second.
-  * Hands enter the sim only when engaged (proximity or grab); non-engaged hands do not collide.
-  * Alternatives: D3D12 interop; always-physical hands (constant input stream, more rollback load).
+  * Alternative: D3D12 interop on Windows.
+* **D18b. Hand model (18.4; review M2).**
+  * Recommend: hands enter the sim only when engaged. Engagement uses a swept, velocity-scaled test;
+    non-engaged hands do not collide.
+  * Alternative: always-physical hands (a constant input stream per hand, rollback load as in the ball pit,
+    7.5).
 * **D19. Resonite import: legal and sourcing (19).**
   * Questions for the user:
     * Is parsing Resonite's native package format acceptable under Resonite's ToS and EULA?
@@ -1420,88 +2771,266 @@ Each entry gives a recommendation and its alternatives. Section references point
       from exported files only?
     * Are users responsible for third-party avatar licenses (e.g. purchased models) when avatars are
       redistributed P2P to other peers?
-  * Recommend: clean-room parsing of user-exported files, prefer the standard-format export path (glTF) if
-    it preserves skinning, and show users a license notice on import.
+    * Does "wear the avatar" in v1 include 3-point IK, which VR needs to wear one at all (review L9)?
+  * Recommend: clean-room parsing of user-exported files; prefer the standard-format export path (glTF) if
+    it preserves skinning; show a license notice on import; include basic 3-point IK.
 * **D20. MVP platforms.**
   * Recommend: Windows x64 desktop and PC VR first; Linux x64 second; macOS flat-screen only (no OpenXR
     runtime) and later.
-  * Alternatives: Linux-first; include macOS in the MVP.
-* **D21. Trust model for MVP sessions (8.6, 9.4).**
-  * Recommend: trusted or invite-only sessions for the MVP, with cheating detection and owner eviction.
-    Public sessions with strangers come later.
-  * Alternative: design for adversarial public sessions from day one (more protocol work and stricter input
-    validation up front).
-* **D22. Phase order and first milestone (22.2).**
-  * Recommend: phases 2→6 as listed, with the MCP server built from phase 2.
-  * Alternatives: pull VR (phase 5) earlier if VR is the headline; pull live editing (phase 4) before real
-    networking (phase 3) if the AI-authoring loop matters most.
+  * Alternatives: Linux first; include macOS in the MVP.
+* **D21. Trust model for MVP sessions (8.2, 8.5, 9.3).**
+  * Recommend: trusted or invite-only sessions for the MVP. The protocol already bounds backdating, proves
+    equivocation and evicts by majority; it does not prevent every cheat. Public sessions with strangers
+    come later.
+  * Alternative: design for adversarial public sessions from day one (stricter input validation, attested
+    clocks, more protocol work up front).
+* **D22. Phase order and first milestone (23.2).**
+  * Recommend: phases 2→6 as listed in 23.2.
+    * The MCP server is built from phase 2.
+    * Region-scoped rollback moves to phase 3 (D2).
+    * Two worlds with the settled handoff come in phase 3; portal rendering in phase 3, after the
+      renderer; VR straddling in phase 5.
+  * Alternatives: pull VR earlier if VR is the headline; pull live editing before real networking if the
+    AI-authoring loop matters most.
 * **D23. MVP session size (10.1).**
-  * Recommend: up to 8 peers, full mesh.
-  * Alternative: 16-32 with relay or gossip forwarding (more protocol work in phase 3).
-* **D24. Coordinator interpretation to confirm.** "Dynamically loaded system components are acceptable" is
-  the coordinator's reading of the 100%-Rust rule, not yet confirmed by the user. D1 asks for that
-  confirmation explicitly.
+  * Recommend: up to 8 members, full mesh. Acks grow linearly with members (7.6).
+  * Alternative: 16-32 members with relay or gossip forwarding (more protocol work in phase 3).
+* **D24.** Merged into D1.
 
 * **D25. Harness integration path (21.1).**
-  * Recommend: structured adapters as the default (Claude Code `stream-json`, Codex `exec --json` /
-    `app-server`, ACP for Gemini and others), rendered as a chat UI, with a PTY terminal as universal
-    fallback.
-  * Alternatives: PTY-only (simplest, works with any CLI, but no structured events and unsafe to share);
-    SDK-based hosts (Claude Agent SDK is TypeScript/Python, so it would need a non-Rust sidecar process).
+  * Recommend:
+    * structured adapters by default: Claude Code `stream-json`, Codex `exec --json` or `app-server`, and
+      ACP for Gemini CLI and others, rendered as a chat UI;
+    * a PTY terminal as the owner-only fallback;
+    * launch profiles pinned per harness version. After a harness update, unlocking stays off until the
+      profile is re-verified (21.9). This costs ease of use.
+  * Alternatives:
+    * PTY only: simplest, but no structured events, and never shareable;
+    * SDK-based hosts: the Claude Agent SDK is TypeScript or Python, so it needs a non-Rust sidecar process.
+* **D25a. Tool profile of the owner's own panel session (21.3).**
+  * Recommend: the **restricted** profile by default: file tools in the materialized workspace plus the
+    engine MCP server, with no shell and no web. The owner can switch to the full profile in the approval
+    layer.
+  * Alternative: the full profile by default. More capable, but injected repository text could then run
+    commands as the owner.
 * **D26. Panel visibility to other peers (21.4).**
   * Recommend: private by default. Others see the panel, its owner, an "agent working" indicator and the
     signed edits it produces. The owner may share the rendered transcript with chosen peers.
-  * Alternatives: visible to the whole session by default (more social, leaks prompts and code); never
+  * Alternatives: visible to the whole session by default (more social; leaks prompts and code); never
     shareable.
-* **D27. Unlocked-panel defaults and guest-mode sandbox (21.5). These are risky defaults.**
-  * Recommend:
-    * panels start **Locked**;
-    * Friends or Anyone is an explicit per-panel opt-in;
-    * guests get a separate guest-mode harness session with no shell, file-write, web or network tools;
-    * the engine MCP server is the only tool server, with a throwaway workspace and OS containment;
-    * spend caps per guest and per panel (Claude Code `--max-budget-usd`, engine turn caps for others);
-    * owner approval for commits from guest prompts;
-    * PTY panels cannot be unlocked.
-  * Alternatives: let guests share the owner's normal harness session and tools (convenient, exposes the
-    owner's files and account); no unlocking at all.
+* **D27a. Default access level (21.5).**
+  * Recommend: panels start **Locked**. Friends or Anyone is an explicit opt-in per panel.
+  * Alternative: Friends by default (easier sharing, more exposure).
+* **D27b. Sessions per guest (21.5; review R13-H3).**
+  * Recommend: one restricted session, one MCP token and one key per guest. Guests never share a
+    conversation, and rights bind to the token.
+  * Alternative: one shared guest session. Cheaper, but it allows cross-guest injection and misattribution.
+* **D27c. OS identity of restricted sessions (21.5; reviews R13-H1, H2).**
+  * Recommend: a per-panel AppContainer on Windows (no admin rights needed).
+  * Alternative: a dedicated low-privilege local user. It needs admin rights once, and it is simpler for
+    harnesses that dislike AppContainer.
+* **D27d. Credentials of restricted sessions (21.4, 21.5).**
+  * Recommend: a **guest-only API key** that the owner creates in a provider workspace or project with a
+    hard spend limit. Restricted sessions never use the owner's login or subscription.
+  * Alternative: none. Running guests on the owner's login is excluded by containment and by D34.
+* **D27e. Adapter-side caps (21.5; review R13-M1).**
+  * Recommend: per turn at most 30 tool calls and 8,000 output tokens; per guest at most 20 turns an hour;
+    plus a per-panel total.
+  * Alternative: provider-side limits only (simpler; a single long turn can burn the budget before it
+    stops).
+* **D27f. Commits from guest sessions (21.5).**
+  * Recommend: they always wait for the owner's approval in the approval layer.
+  * Alternative: guests within their roles commit freely. Faster, but the owner's agent writes code it
+    never reviewed.
+* **D27g. Which harnesses may be unlocked (21.5, 21.9).**
+  * Recommend: each harness only after its own verification gates pass (Claude Code first). Codex and
+    Gemini CLI stay owner-only until their containment is proven. PTY panels are never unlockable.
+  * Alternative: unlock any structured harness with best-effort flags. Rejected, because Codex's read-only
+    sandbox does not stop reads of the owner's credential file.
+* **D27h. Guest transcript retention (21.5).**
+  * Recommend: keep a guest's transcript in that guest's session directory so the session can resume, and
+    delete it on revocation unless the owner keeps it for audit.
+  * Alternative: never persist guest transcripts (`--no-session-persistence`). Each visit starts fresh.
 * **D28. Authority of guest-driven edits (21.5, 12).**
-  * Recommend: effective rights = owner ∩ guest ∩ guest-mode scope; commits record agent, owner and
-    requesting guest.
-  * Alternative: the panel acts with the owner's full authority (a friend could do anything the owner
-    can).
+  * Recommend: effective rights = owner ∩ guest ∩ guest-mode scope. Commits record the session key, the
+    owner and the requesting guest.
+  * Alternative: the panel acts with the owner's full authority, so a friend could do anything the owner
+    can.
+* **D28a. Agent-originated commits in shared worlds (17.4; review M4).**
+  * Recommend: `confirm` by default where more than one user holds owner or builder: each agent commit
+    waits for its delegating user's confirmation. `confirm-batch` and `auto` are explicit choices.
+    * This costs iteration speed (priority 2) only at commit time. `logic.check` and `logic.test_in_fork`
+      need no confirmation.
+  * Alternative: `auto` everywhere (fastest; any prompt injection that reaches a committing agent ships to
+    every peer).
 * **D29. Friend identity without a server (21.5).**
   * Recommend: local friend lists of Ed25519 keys, added in-session, by invite ticket or by fingerprint/QR,
-    synced across the owner's devices as signed records; optional link to a mail-hub person identity.
+    and synced across the owner's devices as signed records; optionally linked to a mail-hub person
+    identity.
   * Alternative: friends defined only through a mail hub's directory (convenient, but depends on a hub).
-* **D30. Panel connection policy default and timeouts (21.6).**
+* **D30. Default connection policy and timeouts (21.6; review R13-C2).**
   * Recommend: new panels default to **ask user** (60 s timeout); **ask agent** is an explicit opt-in;
     switching to *deny all* drops existing connections; idle TTL 30 min.
+  * **Stated risk:** people click "accept". Under this design, accepting admits text into a contained inbox
+    session, never into the owner's private session (D30a). That makes a careless accept cheap.
   * Alternatives: default *deny all* (safest, more friction); default *allow all* (frictionless, invites
-    spam and prompt injection).
-* **D31. Meaning of "adjacent" for panel connections (21.6).**
-  * Recommend: session membership defines who may request. Spatial proximity is a discovery filter only,
-    because positions are attacker-controlled.
-  * Alternatives: require spatial proximity as well (e.g. within 5 m) for requests, or only for *allow
-    all* to apply; or proximity alone.
+    spam).
+* **D30a. Where inbound panel and hub messages go (21.6, 21.7; review R13-C2).**
+  * Recommend: one contained inbox session per connection or correspondent. Messages reach the private
+    session only when the owner forwards them one at a time; auto-forward is off by default.
+  * Alternative: deliver into the private session with provenance labels. That is the phase-1 design, and
+    it lets any connected agent prompt-inject a full-tool session.
+* **D30b. Capability ceiling for connections (21.6).**
+  * Recommend: **text only** by default. Above it, in order: structured JSON, asset references, world
+    actions. No connection is ever granted more than the owner's ceiling.
+  * Alternative: structured JSON by default (richer agent-to-agent protocols, more parser attack
+    surface).
+* **D31. Meaning of "adjacent" for panel connections (21.6, 22.9).**
+  * Recommend: membership of the same world session defines who may request. Spatial proximity is a
+    discovery filter only, because positions are attacker-controlled. Under R14, a connection belongs to
+    the world it was made in.
+  * Alternatives: require spatial proximity as well (e.g. within 5 m), either for every request or only for
+    *allow all* to apply; or proximity alone.
 * **D32. Mail-hub integration (21.7).**
   * Questions for the user:
-    * May the engine implement a client for Orgtree's hub protocol (license, permission, and the
-      protocol's stability are unverified)?
-    * Should the player's hub identity be a separate hub person identity (recommended) or derived from the
+    * May the engine implement a client for Orgtree's hub protocol? Its license, permission and stability
+      are unverified.
+    * Should the player's hub identity be a separate hub person identity (recommended), or derived from the
       engine key?
     * Should hub use be limited to private networks or a TLS proxy, since the hub has no TLS of its own?
-  * Recommend: agents never see the hub secret and use it only through engine MCP tools, with owner
-    approval for first contact with each recipient.
+  * Recommend: agents never see the hub secret and reach hubs only through engine MCP tools. First contact
+    with each recipient needs the owner's approval.
 * **D33. Voice input (21.2).**
   * Recommend: OS speech recognition on Windows for the MVP (an OS boundary).
   * Alternatives: local Whisper-class models on a pure-Rust ML runtime (100% Rust, heavy); no voice in the
     MVP.
-* **D34. Spend and provider-terms responsibility (21.4, 21.5).**
-  * Recommend: harness credentials stay in the harness's own configuration and are never read or relayed
-    by the engine. The owner is shown per-guest usage and caps before unlocking a panel.
-  * Alternative: none that keeps credentials local; pooled or relayed credentials are excluded by R13.
-* **D35. e4mc-style addressing and relays (10.7).**
-  * Recommend: human-readable session codes resolved via Mainline DHT plus PAKE; volunteer relays that
-    anyone can run, forwarding only end-to-end-encrypted traffic, chosen per peer.
-  * Alternatives: our own relay and DNS domain like e4mc (simplest, but a central point); iroh with
+* **D34. Spend and provider terms (21.4, 21.5; review R13-M1).**
+  * **Question for the user:** may a player let other people use AI capacity that is billed to the player?
+    Consumer subscriptions (Claude Pro or Max, ChatGPT plans) generally cover personal use. We have not
+    verified whether any provider's terms allow sharing them with guests. Through API keys, guests'
+    usage is the key owner's responsibility under the API terms.
+  * Recommend:
+    * guests use only a guest-only API key with a provider-side hard limit (D27d);
+    * never the owner's subscription;
+    * the owner sees per-guest usage and the remaining budget before unlocking and while unlocked.
+* **D35. Volunteer relays (10.7; review R13-L2).**
+  * Recommend: relays that anyone can run, forwarding only end-to-end-encrypted traffic.
+    * **Discovery:** relays publish signed records in the Mainline DHT. Friends and session members also
+      recommend relays through peer exchange.
+    * **Choice:** each peer picks relays by its own policy, preferring relays its friends run.
+  * **Stated exposure:** a relay sees who talks to whom (keys and IP addresses), message timing and sizes,
+    and it can drop traffic selectively. It cannot read or forge traffic.
+  * Alternatives: our own relays and DNS domain, like e4mc (simplest, but a central point); iroh with
     self-hosted relays (needs a `ring` exception, D8).
+* **D35a. Session codes (10.7, 11; review R13-M3).**
+  * Recommend: four words plus a check word. The public two-word nameplate is a DHT rendezvous; the secret
+    two-word password is used only inside a PAKE with the host, and nothing derived from it is ever
+    published. With a friend in the session, it shrinks to three words and nothing is published.
+  * Alternative: three words plus a check word, hashed into a DHT key. Shorter, but anyone watching the
+    DHT can break the code offline in minutes.
+* **D35b. What a code's host announces (10.7).**
+  * Recommend: a relay address, so DHT observers do not learn the host's IP address.
+  * Alternative: the host's own address. It works without any relay, and exposes the host's IP while the
+    code is live.
+
+* **D36. Finality and membership (6.4, 10.8; reviews C1, C2, H3).**
+  * Recommend:
+    * frames are confirmed from signed acks (unanimous holding of the current epoch's members);
+    * membership changes by strict-majority view changes;
+    * a 2 s speculation limit, after which members pause;
+    * entries identified by hash, with equivocation proofs and eviction.
+  * Alternatives:
+    * confirm with a majority of acks instead of all (faster when one member lags, but a lagging member's
+      entries could then arrive for a confirmed frame and must be refused or re-stamped);
+    * timer-based finality (the phase-1 design, rejected: it forks honest peers).
+* **D37. Same-frame tie-break and member ids (8.3; ruling 09:32Z; review L7).**
+  * Recommend: a per-frame random permutation, `tie_rank(epoch seed, frame, member id)`. Member ids are
+    assigned in admission order by the membership log; the seed comes from the session or epoch genesis.
+    Every member wins about 1/n of ties [V ties: 41/50/59 of 150].
+  * Alternatives:
+    * a deterministic rotation of join order (fully predictable a frame ahead; equally fair over time);
+    * the hash of (frame, public key) with no session seed (a key can be ground for chosen frames);
+    * the lowest id wins (a permanent winner; rejected).
+* **D38. Claim rules (8.4; review M3).**
+  * Recommend:
+    * plain impulses claim once and never renew;
+    * held grabs renew while held;
+    * a 10-frame cooldown after a claim lapses;
+    * world logic never claims;
+    * MCP agents are rate-limited at intake.
+    * No cap on how long a player may hold an object.
+  * Alternatives: cap continuous holds (e.g. 60 s), which stops agents parking objects but surprises
+    players carrying things; no cooldown, which lets a machine-speed toucher monopolize an object.
+* **D39. Reading of R3: what may cross the network (7.7; review L9).**
+  * Recommend: R3's "only when a player interacts" applies to **sim state**. Acks, check hashes, clock
+    pings, presentation streams (avatar poses, panel views) and panel or hub messages also flow; none of
+    them carries sim state.
+  * Alternative: a stricter reading with no continuous presentation streams. Remote avatars would then
+    freeze between interactions.
+* **D40. Scope of the carried state (7.3; ruling 09:30Z).**
+  * Recommend: the touched bodies' exact state, plus a digest of their contact island; a mismatch triggers
+    a scoped state transfer.
+  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 52 bytes per island body;
+    a resting pile is one large island).
+* **D41. Continuous perturbations: hands in a ball pit (7.5; the main question).**
+  * Recommend: a continuous interaction is a **perturbation source**. Its pose streams as small entries
+    every frame; the touched objects are simulated, never streamed. Measured: about 15 kB/s for both
+    directions, against 1 MB/s for naive state streaming, at a CPU cost of about 2.8 ms of re-simulation
+    per frame on the receiver [V ballpit].
+  * Question: add **input delay** to hand streams (4 frames cut the receiver's rollbacks from 59/s to
+    2.7/s, but the author's balls then react 67 ms late), per world or never?
+  * Alternatives: stream quantized island state (≈0.47 MB/s, and not bit-exact unless the author snaps its
+    own copy too); stream exact state (≈1 MB/s).
+* **D42. Backdating bound (8.2; review H5).**
+  * Recommend: published horizons are binding, and the effective frame is bounded by the lower median of
+    the other members' arrival frames, minus a 15-frame (250 ms) late allowance. A peer whose entries reach
+    the others late, for whatever reason, takes effect late.
+  * Alternatives: a smaller allowance (tighter bound; honest high-latency peers get re-stamped more often);
+    no bound (trust stamps; MVP-only).
+* **D43. What others see of a player who attends their world from elsewhere (22.1).**
+  * Recommend: an "elsewhere" avatar: dimmed, with a badge naming the world where the player is embodied,
+    with mirrored head and hand motion at a low rate, and with voice only when the player routes it there.
+    By default voice goes to the embodied world only.
+  * Alternatives:
+    * an away marker, as in Resonite (quieter, less presence);
+    * the avatar driven by the player's own AI agent (an AI-forward option, but people may mistake the
+      agent for the person);
+    * hidden.
+* **D44. Portal rendering technique, and what non-members see (22.4).**
+  * Recommend: stencil portals with per-eye cameras in VR, at most two live portals per frame and recursion
+    depth 1, with render-to-texture for distant portals. Members of A who are not in B see a portal effect
+    only.
+  * Alternatives:
+    * render-to-texture everywhere (simpler; costs memory and sharpness);
+    * a low-rate preview image of B streamed by members of both worlds (presentation only; it shows B to
+      people B never admitted, so B's owners would have to allow it).
+* **D45. Cross-world transfer mode (22.6).**
+  * Recommend: **settled handoff.** Relay only facts the other world has confirmed. The object appears
+    for B's other members about one confirmation round after it crossed (about 0.15-0.2 s on 50 ms links
+    [V r14]), and the carrier hides the gap. It never needs a correction.
+  * Alternative: **optimistic arrival.** B shows the object at once, marked provisional and held
+    exclusively by the carrier, and rescinds it if A's departure is undone. About 0.15 s sooner for
+    observers, at the cost of rare visible rescinds and transient effects in B.
+* **D46. How a world trusts a relayed record (22.7).**
+  * Recommend for the MVP (trusted sessions, D21): the signature of the member who relays it.
+  * Alternative for public worlds: k-of-n signatures of the source world's members over the confirmed
+    record (a light-client proof). Each world then needs the other's member keys, and records grow.
+* **D47. Physics at portals (22.4).**
+  * Recommend: no cross-world physics. A clearance zone around each aperture keeps colliders away, and
+    straddling objects are drawn twice. Each world stays independent.
+  * Alternative: couple the two sims near the aperture (cloned colliders, as in the game Portal). Worlds
+    would stop being independent, a peer in only one world could not simulate it, and the R14 isolation
+    rule breaks.
+* **D48. Logic components on carried objects (22.8).**
+  * Recommend: they travel as inert data and regain behaviour in any world that runs their module. Shared
+    schemas allow interoperation. Running foreign code needs the destination's ACL opt-in.
+  * Alternative: carry and run the object's module wherever it goes. Richer, but every world would then run
+    code its own builders never committed.
+* **D49. Background worlds (22.3).**
+  * Recommend:
+    * at most 4 attending worlds and 8 loaded worlds per client, with a configurable memory budget;
+    * background worlds advance in bursts of at most 250 ms;
+    * a world is parked after 2 minutes unseen and unused.
+    * Throttling never affects other members [V r14 throttle].
+  * Alternatives: no limits (memory and CPU grow with every world opened); a hard limit of one attending
+    world (Resonite-like, which falls short of R14's "actively joined to several").

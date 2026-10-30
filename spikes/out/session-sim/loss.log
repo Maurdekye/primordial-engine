@@ -1,0 +1,8 @@
+RESULT loss acceptance, uncontended checks: 27/27 equal at that instant and 27/27 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 36/37 equal to the author's copy at that instant, 36/37 equal to the author's final history
+  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 122; equal to the author's final history: false
+  m1 world 1: rollbacks 9 max depth 16 resim frames 48 (20.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 769 frame 773
+  m2 world 1: rollbacks 9 max depth 15 resim frames 61 (22.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 769 frame 774
+  m3 world 1: rollbacks 12 max depth 3 resim frames 40 (16.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 conf 769 frame 773
+  bytes: entries 43 msgs 4300 B (avg 100 B), acks 2280 msgs 184720 B, dropped 232
+RESULT loss world 1: frames 0..700 digests m1=eb64716d53886595 m2=eb64716d53886595 m3=eb64716d53886595 | offline replay eb64716d53886595 | ALL EQUAL
