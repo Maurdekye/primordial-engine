@@ -120,7 +120,17 @@ The conclusions:
 * **`rel-fast` fits.** The same edit takes about 0.5 s. So committed modules should be built with a pinned `rel-fast`-like profile, the same one the author's own loop uses.
 * **Joining:** cold builds take 2.4 s for the 6.4k-line module and 19.4 s for physics_in_wasm.
 
-This PC's timings were not taken: the user was in VR, and builds ran at idle priority.
+**On this PC** (noisy: idle priority, through the lock):
+* the edit costs 2.31-3.42 s with release and 0.42-0.49 s with `rel-fast`;
+* cold builds take 3.2 s and 14.9 s.
+
+The data is in `spikes/out/p2-7/build-times-desktop.txt`.
+
+**At run time, under wasmi** (medians of 3, noisy; `spikes/out/p2-7/runtime-wasmi-desktop.txt`):
+* **logic_mono:** release and `rel-fast` are equal within noise: 0.52 vs 0.51 ms per tick at 1,000 entities, and 7.2 vs 7.5 ms at 10,000.
+* **physics_in_wasm:** `rel-fast` takes 7.19 ms/frame, against 7.10 for opt 3 with LTO and 8.06 for today's opt-s guest profile.
+
+The cost of `rel-fast` is size: 623 KB against 585 KB and 461 KB, and a wasmi compile of 16.9 ms against 11.3 ms and 8.7 ms.
 
 ## Changes
 
