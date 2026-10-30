@@ -1,3 +1,3 @@
-images: 13 snapshots, digest b5dc824fbd65fcd0 -> spikes\out\vdw\images-off-win-debug.txt
-build: debug profile, target x86_64, contact recycling: upstream fixed
+images: 13 snapshots, digest b5dc824fbd65fcd0 -> spikes/out/vdw/images-off-win-debug.txt
+build: debug profile, target x86_64, contact recycling: upstream fixed (--upstream)
 RESULT: PASS

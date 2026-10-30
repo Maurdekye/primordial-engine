@@ -4,7 +4,7 @@ RESULT c2 before (phase-1 rule): repair a<-x' Err(Duplicate), b<-x Err(Duplicate
   event [w1 m1 f60 c48] member 9 evicted by majority vote (epoch 1); its entries from seq 1 are void
   event [w1 m2 f61 c48] member 9 evicted by majority vote (epoch 1); its entries from seq 1 are void
   event [w1 m9 f61 c48] member 9 evicted by majority vote (epoch 1); its entries from seq 1 are void
-  m1 world 1: rollbacks 8 max depth 9 resim frames 32 (12.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 1 checks ok 18 bad 0 conf 471 frame 473
-  m2 world 1: rollbacks 8 max depth 8 resim frames 28 (11.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 1 checks ok 18 bad 0 conf 469 frame 474
-  m9 world 1: rollbacks 2 max depth 11 resim frames 14 (6.4 ms) overwrites 0 paused frames 294 violations 0 equivocations 0 checks ok 4 bad 0 conf 59 frame 179
-RESULT c2 after (honest members 1,2) world 1: frames 0..450 digests m1=866944464816eb58 m2=866944464816eb58 | offline replay 866944464816eb58 | ALL EQUAL
+  m1 world 1: rollbacks 8 max depth 9 resim frames 32 (17.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 1 checks ok 18 bad 0 conf 471 frame 473
+  m2 world 1: rollbacks 8 max depth 8 resim frames 28 (14.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 1 checks ok 18 bad 0 conf 469 frame 474
+  m9 world 1: rollbacks 2 max depth 11 resim frames 14 (7.4 ms) overwrites 0 paused frames 294 violations 0 equivocations 0 checks ok 4 bad 0 conf 59 frame 179
+RESULT c2 after (honest members 1,2) world 1: frames 0..450 digests m1=70fcaec32e3c69d2 m2=70fcaec32e3c69d2 | offline replay 70fcaec32e3c69d2 | ALL EQUAL

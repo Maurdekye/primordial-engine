@@ -18,14 +18,15 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
 
 | File | Change |
 | --- | --- |
-| `src/recycle_scale.rs` (new) | `ContactRecycleScaling` parameters, `RecycleLengthCombine`, `RecyclePairInput`, the `ContactRecycleRadiusFn` hook and the default formula |
+| `src/recycle_scale.rs` (new) | `ContactRecycleScaling` parameters, `RecycleLengthCombine` (HarmonicMean by default), `RecyclePairInput`, the `ContactRecycleRadiusFn` hook and the default formula |
 | `src/lib.rs` | `pub mod recycle_scale` |
-| `src/types/world.rs` | `WorldDef::contact_recycle_scaling`, disabled by default |
+| `src/types/world.rs` | `WorldDef::contact_recycle_scaling`, disabled by default (upstream behavior; Primordial Engine worlds turn it on in `pe_sim_core::engine_world_def`) |
 | `src/world/mod.rs` | `World::contact_recycle_scaling` and `World::contact_recycle_radius_fcn` |
 | `src/world/api.rs` | `world_set/get_contact_recycle_scaling` and `world_set_contact_recycle_radius_fn` |
 | `src/contact/collide.rs` | When scaling is on, `collide_task` computes a per-pair tolerance inside the recycle branch. When it is off, the upstream path runs unchanged |
 | `src/recording/snapshot/pods.rs` | World-config flag bit `0x20` plus 13 bytes of parameters, written only when scaling is on |
-| `src/recycle_scale_tests.rs` (new) | Tests for the formula, the hook, the 1 cm ledge regression and the snapshot round trip |
+| `src/recycle_scale_tests.rs` (new) | Tests for the formula, the hook, the 1 cm ledge regression, and the snapshot and recording round trips |
+| `Cargo.toml` | Fork metadata; see the header comment |
 
 ## Invariants
 
@@ -34,5 +35,7 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
   suite. See `docs/vdw-simulation.md`.
 * The radius hook is a plain `fn` pointer. It is not snapshotted, the same as the other Box3D
   callbacks. The parameters are snapshotted.
-* The recording/replay system (`recording::session`) does not capture the scaling parameters. A
-  replayed recording runs with the parameters of its `WorldDef`.
+* Recordings replay the scaling parameters of the recorded world, because a replay is seeded
+  from a frame-0 world snapshot and keyframes are snapshots too (test
+  `recording_replays_scaling_from_world_def`). A `world_set_contact_recycle_scaling` call made
+  during a recording is not captured as an op.

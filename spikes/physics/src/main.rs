@@ -1,17 +1,21 @@
 //! Phase-1 spike (a): box3d-rust determinism, and spike (b): rollback snapshot/restore.
 //!
 //! Subcommands:
-//!   goldens                      run the four Box3D C-reference determinism scenes, compare to goldens
+//!   goldens                      the four Box3D determinism scenes vs engine goldens (C goldens with --upstream)
 //!   trace <frames> <out-file>    pile scene + scripted interactions, write per-frame hashes
 //!   rollback                     snapshot/restore + late-input rollback tests, with timings
 //!   bench                        step / snapshot / restore cost at several body counts
 //!   vdw-bench [frames] [out.jsonl]  A/B of fixed vs scale-dependent contact recycling (vdw_bench.rs)
-//!   vdw-perf [frames] [repeats] [out.jsonl]  timing-focused A/B on an 864-box pile
+//!   vdw-perf [frames] [repeats] [out.jsonl] [scene]  timing A/B on an 864-box pile
+//!                                (scene bigpile, or bigpile-awake with sleeping off)
 //!   images <out-file>             FNV-64 of the pile's snapshot image every 50 frames
 //!
-//! Global flag `--vdw` turns on the fork's scale-dependent contact recycling (default
-//! parameters) for every world the subcommand creates; without it every world is upstream.
-//! `--no-recycle` (goldens only) sets the recycle distance to 0, as a no-approximation reference.
+//! Every world the subcommand creates uses the engine world definition
+//! (`pe_sim_core::engine_world_def`: scale-dependent contact recycling on, user ruling
+//! 2026-10-30). Global flag `--upstream` uses Box3D's own `default_world_def` instead (fixed
+//! recycle distance), which is what the C goldens apply to. `--vdw` is accepted and means the
+//! default. `--no-recycle` (goldens only) sets the recycle distance to 0, as a
+//! no-approximation reference.
 //!
 //! Exit code is non-zero if any check fails.
 
@@ -24,7 +28,6 @@ use box3d_rust::determinism::{
     update_falling_ragdolls, update_mesh_drop, update_query_spawn, update_wave_pile,
 };
 use box3d_rust::math_functions::POS_ZERO;
-use box3d_rust::recycle_scale::ContactRecycleScaling;
 use box3d_rust::types::{default_world_def, WorldDef};
 use box3d_rust::world::World;
 use pe_sim_core::*;
@@ -33,20 +36,18 @@ mod vdw_bench;
 
 const SEED: u64 = 0x5052_494D_4F52_4449; // "PRIMORDI"
 
-static VDW: AtomicBool = AtomicBool::new(false);
+static UPSTREAM: AtomicBool = AtomicBool::new(false);
 static NO_RECYCLE: AtomicBool = AtomicBool::new(false);
 
+/// True unless `--upstream`: worlds use scale-dependent contact recycling.
 fn vdw_on() -> bool {
-    VDW.load(Ordering::Relaxed)
+    !UPSTREAM.load(Ordering::Relaxed)
 }
 
-/// World definition for every world this binary creates: upstream, or `--vdw`.
+/// World definition for every world this binary creates: the engine's, or upstream's with
+/// `--upstream`.
 fn world_def() -> WorldDef {
-    let mut def = default_world_def();
-    if vdw_on() {
-        def.contact_recycle_scaling = ContactRecycleScaling::enabled();
-    }
-    def
+    if vdw_on() { engine_world_def() } else { default_world_def() }
 }
 
 /// Goldens world: `--no-recycle` additionally disables contact recycling (reference point only).
@@ -64,10 +65,10 @@ fn pile_scene(side: usize, layers: usize) -> Scene {
 
 fn main() {
     let all_args: Vec<String> = std::env::args().collect();
-    VDW.store(all_args.iter().any(|a| a == "--vdw"), Ordering::Relaxed);
+    UPSTREAM.store(all_args.iter().any(|a| a == "--upstream"), Ordering::Relaxed);
     NO_RECYCLE.store(all_args.iter().any(|a| a == "--no-recycle"), Ordering::Relaxed);
     let args: Vec<String> =
-        all_args.into_iter().filter(|a| a != "--vdw" && a != "--no-recycle").collect();
+        all_args.into_iter().filter(|a| !matches!(a.as_str(), "--vdw" | "--upstream" | "--no-recycle")).collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or("help");
     let ok = match cmd {
         "goldens" => goldens(),
@@ -85,11 +86,12 @@ fn main() {
         "vdw-perf" => {
             let frames: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1200);
             let repeats: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5);
-            vdw_bench::perf(frames, repeats, args.get(4).map(String::as_str))
+            let scene = args.get(5).map(String::as_str).unwrap_or("bigpile");
+            vdw_bench::perf(frames, repeats, args.get(4).map(String::as_str), scene)
         }
         "images" => images(args.get(2).map(String::as_str).unwrap_or("images.txt")),
         _ => {
-            eprintln!("usage: pe-spike-physics [--vdw] goldens | trace <frames> <out> | rollback | bench | vdw-bench [frames] [out] | vdw-perf [frames] [repeats] [out] | images <out>");
+            eprintln!("usage: pe-spike-physics [--upstream] [--no-recycle] goldens | trace <frames> <out> | rollback | bench | vdw-bench [frames] [out] | vdw-perf [frames] [repeats] [out] [bigpile|bigpile-awake] | images <out>");
             false
         }
     };
@@ -97,7 +99,13 @@ fn main() {
         "build: {} profile, target {}, contact recycling: {}",
         profile(),
         std::env::consts::ARCH,
-        if vdw_on() { "scale-dependent (--vdw)" } else { "upstream fixed" }
+        if NO_RECYCLE.load(Ordering::Relaxed) {
+            "none (--no-recycle, distance 0)"
+        } else if vdw_on() {
+            "scale-dependent (engine default)"
+        } else {
+            "upstream fixed (--upstream)"
+        }
     );
     if !ok {
         println!("RESULT: FAIL");
@@ -116,23 +124,46 @@ fn check(label: &str, pass: bool, detail: String) -> bool {
 }
 
 // ---------------------------------------------------------------------------------------------
-// (a) C-reference goldens. Values from Box3D's test/test_determinism.c, float build, as carried
-// in box3d-rust 0.5.0's determinism_tests.rs.
+// (a) Goldens. C goldens from Box3D's test/test_determinism.c, float build, as carried in
+// box3d-rust 0.5.0's determinism_tests.rs; engine goldens recorded with engine_world_def.
 // ---------------------------------------------------------------------------------------------
+
+/// One goldens scene's outcome.
+#[derive(Clone, Copy, PartialEq)]
+struct Golden {
+    sleep_step: i32,
+    hash: u32,
+    query: Option<(i32, u32)>,
+}
+
+impl std::fmt::Display for Golden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sleepStep={} hash=0x{:08X}", self.sleep_step, self.hash)?;
+        if let Some((hits, qh)) = self.query {
+            write!(f, " hits={hits} queryHash=0x{qh:08X}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Compare one scene with its golden: Box3D's C golden with `--upstream`, the engine golden
+/// otherwise (recorded 2026-10-30 with `engine_world_def`, HarmonicMean). `--no-recycle` has no
+/// golden and only prints the values.
+fn check_golden(scene: &str, got: Golden, c: Golden, engine: Golden, t: std::time::Duration) -> bool {
+    if NO_RECYCLE.load(Ordering::Relaxed) {
+        println!("[INFO] {scene}: N/A (no golden for --no-recycle): {got} in {t:?}");
+        true
+    } else if vdw_on() {
+        check(&format!("{scene} vs engine golden"), got == engine, format!("{got} (engine: {engine}) in {t:?}"))
+    } else {
+        check(&format!("{scene} vs C golden"), got == c, format!("{got} (C: {c}) in {t:?}"))
+    }
+}
 
 fn goldens() -> bool {
     let mut all = true;
     let dt = 1.0 / 60.0;
-    // With --vdw the C goldens do not apply (the feature changes contact timing by design);
-    // the values are printed so debug and release outputs can be compared line by line.
-    let check = |label: &str, pass: bool, detail: String| -> bool {
-        if vdw_on() || NO_RECYCLE.load(Ordering::Relaxed) {
-            println!("[INFO] {label} (--vdw/--no-recycle, C golden n/a; matches C: {pass}): {detail}");
-            true
-        } else {
-            check(label, pass, detail)
-        }
-    };
+    let g = |sleep_step, hash| Golden { sleep_step, hash, query: None };
 
     {
         let t = Instant::now();
@@ -144,11 +175,8 @@ fn goldens() -> bool {
                 break;
             }
         }
-        all &= check(
-            "falling ragdolls vs C golden",
-            d.sleep_step == 291 && d.hash == 0xFF4C_605B,
-            format!("sleepStep={} hash=0x{:08X} (C: 291, 0xFF4C605B) in {:?}", d.sleep_step, d.hash, t.elapsed()),
-        );
+        let got = g(d.sleep_step, d.hash);
+        all &= check_golden("falling ragdolls", got, g(291, 0xFF4C_605B), g(358, 0xB1EB_47AE), t.elapsed());
     }
     {
         let t = Instant::now();
@@ -162,11 +190,8 @@ fn goldens() -> bool {
             world.step(dt, 4);
             done = update_wave_pile(&world, &mut d);
         }
-        all &= check(
-            "wave pile vs C golden",
-            d.sleep_step == 272 && d.hash == 0x266F_83B0,
-            format!("sleepStep={} hash=0x{:08X} (C: 272, 0x266F83B0) in {:?}", d.sleep_step, d.hash, t.elapsed()),
-        );
+        let got = g(d.sleep_step, d.hash);
+        all &= check_golden("wave pile", got, g(272, 0x266F_83B0), g(307, 0x0809_EA96), t.elapsed());
     }
     {
         let t = Instant::now();
@@ -180,13 +205,14 @@ fn goldens() -> bool {
             world.step(dt, 4);
             done = update_query_spawn(&mut world, &mut d);
         }
-        all &= check(
-            "query spawn vs C golden",
-            d.sleep_step == 242 && d.hash == 0xF3AD_9BA6 && d.query_hit_count == 59 && d.query_hash == 0xE327_1F3D,
-            format!(
-                "sleepStep={} hash=0x{:08X} hits={} queryHash=0x{:08X} (C: 242, 0xF3AD9BA6, 59, 0xE3271F3D) in {:?}",
-                d.sleep_step, d.hash, d.query_hit_count, d.query_hash, t.elapsed()
-            ),
+        let q = |sleep_step, hash, hits, qh| Golden { sleep_step, hash, query: Some((hits, qh)) };
+        let got = q(d.sleep_step, d.hash, d.query_hit_count, d.query_hash);
+        all &= check_golden(
+            "query spawn",
+            got,
+            q(242, 0xF3AD_9BA6, 59, 0xE327_1F3D),
+            q(242, 0x9EA3_A8B9, 59, 0xE327_1F3D),
+            t.elapsed(),
         );
     }
     {
@@ -201,11 +227,8 @@ fn goldens() -> bool {
             world.step(dt, 4);
             done = update_mesh_drop(&world, &mut d);
         }
-        all &= check(
-            "mesh drop vs C golden",
-            d.sleep_step == 226 && d.hash == 0xD2FF_069D,
-            format!("sleepStep={} hash=0x{:08X} (C: 226, 0xD2FF069D) in {:?}", d.sleep_step, d.hash, t.elapsed()),
-        );
+        let got = g(d.sleep_step, d.hash);
+        all &= check_golden("mesh drop", got, g(226, 0xD2FF_069D), g(220, 0xCE3B_7A62), t.elapsed());
     }
     all
 }
