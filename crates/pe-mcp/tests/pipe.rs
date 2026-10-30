@@ -104,13 +104,19 @@ async fn socket_is_private() {
     assert_eq!(std::fs::metadata(&ep.path).unwrap().permissions().mode() & 0o777, 0o600);
 }
 
+/// The binary under test. `PE_MCP_EXE` overrides the compile-time path, for test binaries built on
+/// Windows and run under WSL.
+fn exe() -> String {
+    std::env::var("PE_MCP_EXE").unwrap_or_else(|_| env!("CARGO_BIN_EXE_pe-mcp").to_string())
+}
+
 /// `pe-mcp serve --pipe -- pe-mcp bridge`: the engine launches the "harness" (here the bridge
 /// itself), whose stdio we drive as an MCP client.
 #[tokio::test]
 async fn serve_launches_bridge_end_to_end() {
-    let exe = env!("CARGO_BIN_EXE_pe-mcp");
-    let mut child = tokio::process::Command::new(exe)
-        .args(["serve", "--pipe", "--principal", "harness", "--", exe, "bridge"])
+    let exe = exe();
+    let mut child = tokio::process::Command::new(&exe)
+        .args(["serve", "--pipe", "--principal", "harness", "--", &exe, "bridge"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -129,7 +135,7 @@ async fn serve_launches_bridge_end_to_end() {
 
 #[tokio::test]
 async fn bridge_without_environment_fails() {
-    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_pe-mcp"))
+    let out = tokio::process::Command::new(exe())
         .arg("bridge")
         .env_remove("PE_MCP_PIPE")
         .env_remove("PE_MCP_TOKEN")

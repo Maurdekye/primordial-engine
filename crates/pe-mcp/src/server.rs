@@ -43,6 +43,31 @@ pub struct PeerServer {
     engine: EngineHandle,
     auth: Auth,
     tool_router: ToolRouter<Self>,
+    /// The advertised tool list, with schemas cleaned once.
+    tools: Arc<Vec<Tool>>,
+}
+
+/// schemars marks integers with formats such as `uint32`, which are not JSON Schema formats;
+/// validators in clients warn about each one. The `minimum` bounds stay.
+fn clean_schema(v: &mut serde_json::Value) {
+    const NUMERIC: [&str; 12] = ["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "int", "uint", "float", "double"];
+    match v {
+        serde_json::Value::Object(m) => {
+            if m.get("format").and_then(|f| f.as_str()).is_some_and(|f| NUMERIC.contains(&f)) {
+                m.remove("format");
+            }
+            m.values_mut().for_each(clean_schema);
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(clean_schema),
+        _ => {}
+    }
+}
+
+fn clean_object(o: &JsonObject) -> Arc<JsonObject> {
+    let mut v = serde_json::Value::Object(o.clone());
+    clean_schema(&mut v);
+    let serde_json::Value::Object(m) = v else { unreachable!() };
+    Arc::new(m)
 }
 
 fn tool_err(e: ToolError) -> CallToolResult {
@@ -53,18 +78,29 @@ fn tool_err(e: ToolError) -> CallToolResult {
 /// literal return type, not through an alias.
 type Out<T> = Result<Json<T>, CallToolResult>;
 
-/// The scope each tool needs.
+/// The scope each tool needs. Fails closed: a tool missing here needs `control`.
 pub fn scope_of(tool: &str) -> Scope {
     match tool {
+        "session_info" | "session_members" | "session_sync_status" | "world_get_state" | "world_get_object" | "world_hashes"
+        | "world_interaction_status" => Scope::Read,
         "world_propose_interaction" => Scope::Interact,
-        "world_step" | "scenario_load" | "scenario_fault" | "scenario_check" => Scope::Control,
-        _ => Scope::Read,
+        _ => Scope::Control,
     }
 }
 
 impl PeerServer {
     pub fn new(engine: EngineHandle, auth: Auth) -> Self {
-        PeerServer { engine, auth, tool_router: Self::tool_router() }
+        let tool_router = Self::tool_router();
+        let tools = tool_router
+            .list_all()
+            .into_iter()
+            .map(|mut t| {
+                t.input_schema = clean_object(&t.input_schema);
+                t.output_schema = t.output_schema.as_deref().map(clean_object);
+                t
+            })
+            .collect();
+        PeerServer { engine, auth, tool_router, tools: Arc::new(tools) }
     }
 
     fn principal(&self, ctx: &RequestContext<RoleServer>) -> Result<Principal, ToolError> {
@@ -89,7 +125,7 @@ impl PeerServer {
         let need = scope_of(tool);
         if !p.has(need) {
             return Err(tool_err(
-                ToolError::new(ErrorCode::Forbidden, format!("{tool} needs scope {need:?}, which this token lacks"))
+                ToolError::new(ErrorCode::Forbidden, format!("{tool} needs scope {}, which this token lacks", need.as_str()))
                     .with_details(serde_json::json!({ "need": need, "have": p.scopes })),
             ));
         }
@@ -207,7 +243,7 @@ impl ServerHandler for PeerServer {
 
     async fn list_tools(&self, _request: Option<PaginatedRequestParams>, ctx: RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
         let p = self.principal(&ctx).map_err(|e| ErrorData::invalid_request(e.message, None))?;
-        let tools = self.tool_router.list_all().into_iter().filter(|t| p.has(scope_of(&t.name))).collect();
+        let tools = self.tools.iter().filter(|t| p.has(scope_of(&t.name))).cloned().collect();
         let mut r = ListToolsResult::with_all_items(tools);
         // The list depends on the caller's token.
         if ctx.protocol_version().is_some_and(|v| v >= ProtocolVersion::V_2026_07_28) {
