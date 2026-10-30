@@ -1,0 +1,16 @@
+# The phase-1 pile set-up (session-sim main.rs `pile_peers`): world 1 starts at 100 ms; each
+# peer's clock is skewed by (id % 3 - 1) * 1.5 ms.
+
+[peer.1]
+skew_us = 0
+[peer.2]
+skew_us = 1500
+[peer.3]
+skew_us = -1500
+[peer.9]
+skew_us = -1500
+
+[world.1]
+members = [1, 2, 3]
+scene = { pile = { side = 8, layers = 4 } }
+epoch_ms = 100

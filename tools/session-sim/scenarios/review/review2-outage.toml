@@ -1,0 +1,34 @@
+description = """
+Round-2 review: honest members, and member 2's acks to member 3 lost for 6.5 s. Before, late \
+reports expired and the members forked. Now member 3 fetches member 2's acks from member 1."""
+include = ["../common/review.toml"]
+end_ms = 12000
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[fault]]
+msg = "touch"
+from = 1
+to = [2, 3]
+stamp = 60
+delay_ms = 600
+
+[[fault]]
+msg = "ack"
+from = 2
+to = 3
+after_ms = 1000
+before_ms = 7500
+drop = true
+
+[[report]]
+kind = "touches"
+author = 1
+at = [1, 2, 3]
+text = "member 1's touch at m{m}"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "outage (honest members, 6.5 s one-way ack outage)"

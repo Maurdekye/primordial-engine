@@ -1,0 +1,32 @@
+description = """
+Round-2 review: member 9 signs a second version of an entry after it was confirmed. Before, \
+both versions were voided, a rollback went below the confirmed frame, and a member panicked. \
+Now the stable version stands."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 9]
+
+[world.1.plan]
+9 = [{ at = 50, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[byzantine]]
+kind = "equivocate"
+member = 9
+entry = "first_touch"
+when = { conf_above = { at = 1, frame = 200 } }
+touch = { obj = 10, impulse = [6.0, 0.0, 0.0] }
+to = [1, 2]
+say = "  t={t_ms} ms: m1 conf {conf@1}; 9's touch (frame {x.stamp}) confirmed at m1: {x.confirmed@1}, at m2: {x.confirmed@2} -> 9 now signs a second version of it"
+
+[[report]]
+kind = "touches"
+author = 9
+at = [1]
+text = "9's touches at m{m}"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2]
+label = "lateequiv (second version of a confirmed entry)"

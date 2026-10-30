@@ -1,0 +1,38 @@
+description = """
+Backdating (review H5). Part 1: member 3 backdates touches by 20 frames but publishes honest \
+horizons, a chain-local violation. Part 2: it also lags its published horizon by 30 frames to \
+open a window; every such ack breaks the horizon-slack rule and is void for every member, so no \
+window opens, and member 3 blocks confirmation until the others demote it (review R3-9)."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 11000
+
+[world.1]
+scene = { pile = { side = 8, layers = 2 } }
+
+[world.1.plan]
+3 = [
+    { at = 200, backdated = { obj = 50, impulse = [0.0, 6.0, 0.0], back = 20 } },
+    { at = 320, backdated = { obj = 50, impulse = [0.0, 6.0, 0.0], back = 20 } },
+    { at = 440, backdated = { obj = 50, impulse = [0.0, 6.0, 0.0], back = 20 } },
+]
+
+[net]
+seed = 13
+link = { delay_ms = 30, jitter_ms = 10 }
+
+[[part]]
+report = [
+    { kind = "entries", at = 1, author = 3, prefix = "part 1: member 3" },
+    { kind = "stats" },
+    { kind = "evicted", at = 1, label = "backdate part 1" },
+    { kind = "check_world", frames = 600, label = "backdate part 1", skip_evicted_at = 1 },
+]
+
+[[part]]
+byzantine = [{ kind = "lag_horizon", member = 3, frames = 30 }]
+report = [
+    { kind = "entries", at = 1, author = 3, prefix = "part 2: member 3" },
+    { kind = "stats" },
+    { kind = "evicted", at = 1, label = "backdate part 2" },
+    { kind = "check_world", frames = 600, label = "backdate part 2", skip_evicted_at = 1 },
+]

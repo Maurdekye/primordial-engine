@@ -1,0 +1,23 @@
+description = """
+Fault kinds (P2-9): capped links. Every directed link is capped at 64 kbit/s (4 kB burst, \
+500 ms queue, tail drop), and member 3's uplink to member 1 at 12 kbit/s, below what one \
+member's acks and entries need at 60 Hz without the R18 congestion controller."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 10000
+
+[net]
+seed = 35
+link = { delay_ms = 30, jitter_ms = 10 }
+cap = { kbps = 64 }
+caps = [{ from = 3, to = 1, kbps = 12 }]
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "traffic"
+
+[[report]]
+kind = "check_world"
+frames = 550
+label = "fault-capped"
