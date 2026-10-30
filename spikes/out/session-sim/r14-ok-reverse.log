@@ -10,10 +10,10 @@
   m1 world B: object 40 live copies 1; escrow []; arrivals ["T8565819263280187428:Accepted { obj: 75, frame: 140 }"]
   m3 world B: object 40 live copies 1; escrow []; arrivals ["T8565819263280187428:Accepted { obj: 75, frame: 140 }"]
 RESULT r14 ok (reverse order): object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (3.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (22.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 2 max depth 8 resim frames 11 (2.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (12.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 2 max depth 8 resim frames 11 (2.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 ok A world 1: frames 0..500 digests m1=638be46e9f5ee3fb m2=638be46e9f5ee3fb | offline replay 638be46e9f5ee3fb | ALL EQUAL
 RESULT r14 ok B world 2: frames 0..400 digests m1=957f54e0eef1f336 m3=957f54e0eef1f336 | offline replay 957f54e0eef1f336 | ALL EQUAL
 RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.9 after (member 1 not throttled from t=3 s)
