@@ -1,0 +1,46 @@
+# Primordial Engine fork of box3d-rust 0.5.0 (crates.io, upstream git f2ca61e39b65). It ports
+# Box3D C efca0c1 (per its CHANGELOG; the README's 3fc20f5 is stale, see FORK.md). Vendored
+# verbatim from the published crate, then patched; see FORK.md for every change. The package
+# keeps its upstream name so the workspace can redirect `box3d-rust = "=0.5.0"` here with
+# `[patch.crates-io]`.
+# Upstream manifest preserved as Cargo.upstream.toml (not read by cargo).
+
+[package]
+name = "box3d-rust"
+version = "0.5.0"
+edition = "2021"
+rust-version = "1.77"
+authors = ["Lars Brubaker <larsbrubaker@matterhackers.com>"]
+description = "Pure Rust port of the Box3D 3D physics engine (Primordial Engine fork)"
+license = "MIT"
+repository = "https://github.com/larsbrubaker/box3d-rust"
+publish = false
+autobenches = false
+
+[lib]
+name = "box3d_rust"
+path = "src/lib.rs"
+
+[features]
+# Mirrors BOX3D_DOUBLE_PRECISION: double precision world positions for large worlds.
+double-precision = []
+
+[dependencies]
+
+# Port-idiomatic style: allow Clippy lints that conflict with faithful C-shaped code.
+[lints.clippy]
+needless_range_loop = "allow"
+int_plus_one = "allow"
+excessive_precision = "allow"
+approx_constant = "allow"
+too_many_arguments = "allow"
+manual_range_contains = "allow"
+field_reassign_with_default = "allow"
+needless_late_init = "allow"
+if_same_then_else = "allow"
+collapsible_if = "allow"
+assertions_on_constants = "allow"
+reserve_after_initialization = "allow"
+unnecessary_unwrap = "allow"
+mem_replace_with_default = "allow"
+len_zero = "allow"

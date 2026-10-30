@@ -1,0 +1,6 @@
+[PASS] falling ragdolls vs engine golden: sleepStep=358 hash=0xB1EB47AE (engine: sleepStep=358 hash=0xB1EB47AE) in 50.7213ms
+[PASS] wave pile vs engine golden: sleepStep=307 hash=0x0809EA96 (engine: sleepStep=307 hash=0x0809EA96) in 32.0297ms
+[PASS] query spawn vs engine golden: sleepStep=242 hash=0x9EA3A8B9 hits=59 queryHash=0xE3271F3D (engine: sleepStep=242 hash=0x9EA3A8B9 hits=59 queryHash=0xE3271F3D) in 3.2354ms
+[PASS] mesh drop vs engine golden: sleepStep=220 hash=0xCE3B7A62 (engine: sleepStep=220 hash=0xCE3B7A62) in 81.0821ms
+build: release profile, target x86_64, contact recycling: scale-dependent (engine default)
+RESULT: PASS
