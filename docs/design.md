@@ -3453,27 +3453,69 @@ persists until a verdict arrives.
     * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
       entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
       hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
-      verdict was confirmed in A, 0.65 s after the departure [V r14 ok, chain]. A world can export only an object whose way in
-      it can prove.
+      verdict was confirmed in A, 0.65 s after the departure [V r14 ok, chain]. A world can export only
+      an object whose way in it can prove.
+    * **Pinning (review P25-2).** B's copy depends on A's commit certificate.
+      * A dishonest A that withholds it, or an honest A whose members all leave within the window
+        before they attest (about 60 ms after the verdict is confirmed, measured above), can stop the
+        object from ever leaving B.
+      * That is griefing, not duplication: the object stays live and usable in B, and A gains nothing
+        it did not already have.
+    * **Rejected: a hop made of A's departure certificate plus B's accepted verdict** (review P25-2;
+      @coordinator-opus, 20:33Z).
+      * It would end the pinning. But a dishonest B could then certify a refusal to A (A refunds) and an
+        acceptance in its own hop, and every later world would accept the object: refund and keep would
+        become a double spend that is only detected, where today it is refused [V r14 forge].
+      * Both forms cannot be offered side by side, because an attacker always picks the weaker one.
     * **Last exits.** Each world keeps, per global id, whether the object is here (live or in escrow) or
-      which transfer last took it away (never pruned: about 48 bytes per object that ever left, in the spike's layout). An arrival
-      of an object that is here is `RejectedLiveId`. An arrival whose chain skips this world's last exit
-      is `RejectedFork`, and two exports by one world of the same incoming hop are kept as a fork proof
-      against that world's majority.
+      which transfer last took it away. That record is never pruned: in the spike's layout it is about
+      48 bytes per object that ever left, plus the certified export that brought the object in, which
+      it keeps as fork evidence (about 0.2 KB with two signers). An arrival of an object that is here
+      is `RejectedLiveId`. An arrival whose chain skips this world's last exit
+      is `RejectedFork`. Two exports by one world of the same incoming hop are kept as a fork proof
+      against that world's majority (review P25-3):
+      * the proof carries both certificates, so any third party can check it [V r14 forge, r14
+        doublespend: "verifies for a third party: true"; unit test];
+      * it is recorded only once the frame that found it is confirmed, so every replica holds it from
+        the same confirmed state, and a speculative frame later rolled back leaves none.
+    * **Costs per frame (review P25-4).** Each object's chain hash is cached with its chain. Commit facts
+      are queued once, when their frame is confirmed, and attested once; nothing rescans the table.
     * **Why not a world prefix.** The reviewer of round 3 proposed that a global id's prefix must equal
       the source world. Objects travel on (A to B to C), so the chain binds the id to its birth world
       instead.
     * **What remains: double spends by a holder** [V `r14 doublespend`]. A dishonest-majority world can
       export an object it legitimately received a second time, into a world that has not seen the object
-      since. A:52 went A to W to B; W then exported it into A, citing its genuine hop in, and A accepted it.
-      That left two copies, in A and B. When the copies meet (here, B's return of A:52 into A), the
-      receiving world holds a transferable fork proof: two exports by W's majority of one incoming hop.
+      since. That includes the world it got the object from: A:52 went A to W to B; W then exported it
+      into A, citing its genuine hop in, and A accepted it. That left two copies, in A and B.
+      * When the copies meet (here, B's return of A:52 into A), the receiving world holds a transferable
+        fork proof: two exports by W's majority of one incoming hop.
+      * If the copies never meet, nobody ever holds a proof.
       **Detect only (user, D79, 20:07Z):** the fork proof is the defence, and the cheating world can then
       be cut off (removed from route lists). A per-object registry that orders every hop, for example at
       the birth world, was considered and rejected under D79, not even as an opt-in: it costs one extra
-      relay round per hop, and objects freeze when their birth world is unreachable [I]. So a dishonest
-      majority can lose, keep or double-spend only objects that passed through it, and cannot touch any
+      relay round per hop, and objects freeze when their birth world is unreachable [I].
+    * **The guarantee: no double identity** (review P25-1). A dishonest majority can lose, keep or
+      double-spend only objects that passed through it, and cannot give a second live identity to any
       other object.
+      * **Provenance does not vouch for content.** An object's kind, state and carried data are signed
+        by each holder's majority alone. W can export A's common object as a rare kind under its genuine
+        id, which W's own logic could not tell from legitimate crafting.
+      * **Provenance does not vouch for new births.** A world's own births (its genesis, and in
+        production its `Born` facts) are its majority's word.
+      * **Chains may pass through unlisted worlds.** `check_chain` accepts hops through worlds on no
+        route list, because identity is unaffected. But W can then also pass along objects "born" in a
+        world D that it alone controls.
+      * So a partner world's objects, and their content, are only as trustworthy as the worlds they came
+        through.
+      * **The policy hook** (`ImportPolicy`, a stub: the spike's worlds accept anything; refusals are
+        `RejectedPolicy`). A destination can restrict:
+        * which birth worlds it accepts objects from;
+        * which worlds a chain may pass through. Its own route list is a natural default for untrusted
+          partners;
+        * which kinds it accepts from each source world.
+
+        Production adds per-kind content checks, run by the destination's logic on arrival (22.8,
+        22.9) [I].
     * **Chain size.** Each hop is a certificate of the source's epoch majority. With Ed25519 that is about
       64 bytes per signer, about 0.65 KB per hop for a 16-member world, so a chain grows linearly with
       hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
