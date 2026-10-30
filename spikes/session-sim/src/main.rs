@@ -865,8 +865,13 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if ok { "CONSERVED in the honest worlds" } else { "NOT CONSERVED in the honest worlds" }
         );
         for (m, w) in [(1, 1), (1, 2)] {
-            for p in &sim.replica(m, w).sim.fork_proofs {
-                println!("RESULT r14 {variant}: world {w} holds a fork proof against world {}: it exported {:#x} twice from its entry {} (transfers {} and {})", p.world, p.global, p.via, p.a, p.b);
+            let r = &sim.replica(m, w).sim;
+            for p in r.fork_proofs.values() {
+                // P25-3: the proof carries both certificates, so a third party checks it on its own.
+                println!(
+                    "RESULT r14 {variant}: world {w} holds a fork proof against world {}: it exported {:#x} twice from its entry {} (transfers {} and {}); verifies for a third party: {}",
+                    p.world, p.global, p.via, p.a.transfer(), p.b.transfer(), p.verify(&r.epochs)
+                );
             }
         }
         print_stats(&sim, 6);
