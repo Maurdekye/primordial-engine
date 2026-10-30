@@ -27,6 +27,9 @@ struct Book {
 
 pub struct Engine {
     backend: Option<Box<dyn DrivenPeer>>,
+    /// Whether the backend is the simulator. Kept apart from `backend`, which is None after a panic:
+    /// a faulted live peer must still refuse `scenario_load` (review of 358cfb7, finding 3).
+    simulated: bool,
     faulted: Option<String>,
     /// Per principal name, so a rotated token for the same principal keeps its tickets.
     books: BTreeMap<String, Book>,
@@ -46,8 +49,9 @@ fn status_of(ticket: u64, entry: u64, s: EntryStatus) -> InteractionStatus {
 }
 
 impl Engine {
-    pub fn new(backend: Box<dyn DrivenPeer>) -> Engine {
-        Engine { backend: Some(backend), faulted: None, books: BTreeMap::new() }
+    pub fn new(mut backend: Box<dyn DrivenPeer>) -> Engine {
+        let simulated = backend.scenario().is_some();
+        Engine { backend: Some(backend), simulated, faulted: None, books: BTreeMap::new() }
     }
 
     pub fn with_default_scenario() -> Engine {
@@ -260,6 +264,11 @@ impl Engine {
         Ok(self.peer()?.hashes(p.from, p.to))
     }
 
+    /// Every object, for the `primordial://world/state` resource (no page limit).
+    pub fn state_all(&self) -> ToolResult<WorldState> {
+        Ok(self.peer()?.state(0, u32::MAX))
+    }
+
     pub fn members(&self) -> ToolResult<Members> {
         Ok(self.peer()?.member_info())
     }
@@ -270,7 +279,7 @@ impl Engine {
 
     /// Replace the session. Allowed while faulted (it is the way out).
     pub fn load(&mut self, who: &Principal, p: &LoadParams) -> ToolResult<SessionInfo> {
-        if self.backend.as_mut().is_some_and(|b| b.scenario().is_none()) {
+        if !self.simulated {
             return Err(ToolError::new(ErrorCode::NoScenarioControl, "this peer is live, not the simulator"));
         }
         let s = SimSession::load(p)?;

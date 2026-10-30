@@ -36,6 +36,10 @@ async fn tools_list_follows_scopes() {
     let mut r: Vec<String> = read.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
     r.sort();
     assert_eq!(r, READ_TOOLS);
+    let actor = client_as(&e, "actor", &[Scope::Interact]).await;
+    let mut a: Vec<String> = actor.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
+    a.sort();
+    assert_eq!(a, ["world_interaction_status", "world_propose_interaction"]);
     let none = client_as(&e, "nobody", &[]).await;
     assert!(none.list_all_tools().await.unwrap().is_empty());
     // Every tool has an input schema, an output schema and a description.
@@ -59,11 +63,12 @@ async fn forbidden_without_scope() {
         err(&read, t, json!({ "fault": "heal" }), "forbidden").await;
     }
     let actor = client_as(&e, "actor", &[Scope::Interact]).await;
-    for t in READ_TOOLS {
+    for t in READ_TOOLS.iter().filter(|t| **t != "world_interaction_status") {
         err(&actor, t, json!({ "object": 0, "ticket": 1, "from": 0, "to": 1 }), "forbidden").await;
     }
-    // Interact alone may propose.
-    ok(&actor, "world_propose_interaction", json!({ "object": 0, "action": "touch", "impulse": [0, 1, 0] })).await;
+    // Interact alone may propose, and read its own tickets.
+    let p = ok(&actor, "world_propose_interaction", json!({ "object": 0, "action": "touch", "impulse": [0, 1, 0] })).await;
+    ok(&actor, "world_interaction_status", json!({ "ticket": p["ticket"] })).await;
 }
 
 #[tokio::test]
@@ -180,11 +185,17 @@ async fn hands_in_the_ball_pit() {
     let x = err(&c, "world_propose_interaction", json!({ "object": hand, "action": "touch", "impulse": [0, 1, 0] }), "invalid_argument").await;
     assert_eq!(x["field"], "action");
     err(&c, "world_propose_interaction", json!({ "object": hand, "action": "hand", "target_mm": [0, 200_000, 0] }), "invalid_argument").await;
+    // Member 2's hand is not ours to move (review of 358cfb7, finding 1).
+    let before = ok(&c, "world_get_object", json!({ "object": hand + 1 })).await;
+    let x = err(&c, "world_propose_interaction", json!({ "object": hand + 1, "action": "hand", "target_mm": [0, 400, 0] }), "not_owner").await;
+    assert_eq!((x["details"]["owner"].clone(), x["details"]["yours"].clone()), (json!(2), json!(hand)));
     ok(&c, "world_propose_interaction", json!({ "object": hand, "action": "hand", "target_mm": [0, 400, 0] })).await;
     let r = step(&c, 500).await;
     assert_eq!(r["changed"][0]["state"], "accepted", "{r}");
     let y = ok(&c, "world_get_object", json!({ "object": hand })).await["position"][1].as_f64().unwrap();
     assert!((y - 0.4).abs() < 0.01, "hand at y={y}");
+    let after = ok(&c, "world_get_object", json!({ "object": hand + 1 })).await;
+    assert_eq!(before["position"], after["position"], "member 2's hand did not move");
     ok(&c, "world_propose_interaction", json!({ "object": hand, "action": "hand", "target_mm": [0, 400, 0], "active": false })).await;
 }
 
@@ -466,6 +477,19 @@ async fn resources_list_and_read() {
     let none = client_as(&e, "nobody", &[Scope::Interact]).await;
     assert!(none.list_all_resources().await.unwrap().is_empty());
     assert!(none.read_resource(ReadResourceRequestParams::new("primordial://world/state")).await.is_err());
+}
+
+#[tokio::test]
+async fn world_state_resource_holds_every_object() {
+    // Review of 358cfb7, finding 2: the resource was cut at 256 objects.
+    let e = engine();
+    let c = client(&e).await;
+    ok(&c, "scenario_load", json!({ "scene": "ballpit", "size": 500, "members": 2 })).await;
+    let r = c.read_resource(ReadResourceRequestParams::new("primordial://world/state")).await.unwrap();
+    let rmcp::model::ResourceContents::TextResourceContents { text, .. } = &r.contents[0] else { panic!() };
+    let v: Value = serde_json::from_str(text).unwrap();
+    assert_eq!((v["object_count"].clone(), v["objects"].as_array().unwrap().len()), (json!(502), 502));
+    assert!(v.get("next_offset").is_none());
 }
 
 /// `schema/tools.json` is the documented schema; it must match what the server advertises.

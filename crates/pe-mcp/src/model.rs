@@ -61,6 +61,8 @@ pub enum ErrorCode {
     Forbidden,
     /// Too many of this principal's interactions are still unresolved.
     RateLimited,
+    /// The object belongs to another member (a ball-pit hand is moved only by its own member).
+    NotOwner,
     /// The driven peer cannot author right now: it is paused at its speculation limit or behind
     /// its clock. Step the clock and retry.
     NotReady,

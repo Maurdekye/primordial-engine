@@ -21,7 +21,12 @@ means verified by `crates/pe-mcp`'s tests and the recorded Claude Code runs in `
     `ERR unauthorized` and closes. The token is re-checked on every call, so revocation and expiry act on
     open connections.
   * The token reaches the harness only through its environment (`PE_MCP_TOKEN`), which harness MCP configs
-    can reference (`${PE_MCP_TOKEN}`).
+    can reference (`${PE_MCP_TOKEN}`). Every subprocess the harness starts (its shell tool, for example)
+    inherits it, and so can reach the peer with the harness's scopes. Launch profiles (`pe-harness`) should
+    remove it from tool subprocesses where the harness allows, and give a harness no more scopes than it
+    needs [I].
+  * No re-issue yet: a harness idle past the token's TTL (1 h by default) loses the server until it is
+    launched again. Re-issue on resume belongs to `pe-harness` [I].
 * **HTTP specifics** [V pe-mcp]: the server runs stateless (no `Mcp-Session-Id`), so authority comes from
   each request's token alone. Tests cover a foreign `Host`, a suffix-attack `Host`, a second `Host`
   header, a refused and an allowed `Origin`, preflight, the absence of CORS headers, a token that is
@@ -38,17 +43,21 @@ means verified by `crates/pe-mcp`'s tests and the recorded Claude Code runs in `
   `session_members`, `session_sync_status`, `scenario_load`, `scenario_fault`, `scenario_check`, and the
   resources `primordial://world/state`, `primordial://session/members` and `primordial://session/sync`.
   The full schemas are in `crates/pe-mcp/schema/tools.json`.
-* **Phase-2 scopes** (the token decides them): `read`, `interact` (propose) and `control` (`world_step` and
+* **Phase-2 scopes** (the token decides them): `read`, `interact` (propose, and read its own tickets) and `control` (`world_step` and
   `scenario_*`, simulator only: a live peer's clock is real time). `tools/list` shows only what the
   token's scopes allow. The session kinds of the table below map onto scope sets when panels arrive.
 * **Errors:** a tool error carries `{code, message, field?, details?}`. The codes are `invalid_argument`,
-  `unknown_object`, `unknown_ticket`, `forbidden`, `rate_limited`, `not_ready`, `peer_crashed`,
+  `unknown_object`, `unknown_ticket`, `forbidden`, `not_owner`, `rate_limited`, `not_ready`, `peer_crashed`,
   `no_scenario_control`, `session_faulted` and `internal`. An unknown tool or a malformed request is a
   JSON-RPC error.
 * **Interaction tickets:** proposing returns a ticket. Its status is `pending`, `accepted`, `rejected`
   (with reason, such as `claimed` with its holder and end frame) or `void`, plus `final` once the stamp is
   confirmed. Before that, a rollback can still change it. At most 64 unresolved interactions per principal
   (`rate_limited`) is the first per-session rate limit of 17.4.
+* **A hand is its member's alone:** proposing a `hand` move for another member's hand returns
+  `not_owner` [V pe-mcp]. sim-core's `Payload::Hand` does not check the author, so today a peer that
+  bypasses pe-mcp could still author one. **pe-session must reject a `Hand` entry whose object is not the
+  author's hand**, as every peer's validation, not only the authoring peer's.
 * **Ordering:** the peer runs MCP calls one at a time, in arrival order. Calls a client sends in parallel
   have no defined order between them [I].
 

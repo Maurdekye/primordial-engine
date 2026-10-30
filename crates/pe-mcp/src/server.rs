@@ -78,6 +78,12 @@ fn tool_err(e: ToolError) -> CallToolResult {
 /// literal return type, not through an alias.
 type Out<T> = Result<Json<T>, CallToolResult>;
 
+/// Whether `p` may call `tool`. `world_interaction_status` reads only the caller's own tickets, so
+/// `interact` suffices for it as well as `read`.
+pub fn allowed(p: &Principal, tool: &str) -> bool {
+    p.has(scope_of(tool)) || (tool == "world_interaction_status" && p.has(Scope::Interact))
+}
+
 /// The scope each tool needs. Fails closed: a tool missing here needs `control`.
 pub fn scope_of(tool: &str) -> Scope {
     match tool {
@@ -124,7 +130,7 @@ impl PeerServer {
     fn require(&self, ctx: &RequestContext<RoleServer>, tool: &str) -> Result<Principal, CallToolResult> {
         let p = self.principal(ctx).map_err(tool_err)?;
         let need = scope_of(tool);
-        if !p.has(need) {
+        if !allowed(&p, tool) {
             return Err(tool_err(
                 ToolError::new(ErrorCode::Forbidden, format!("{tool} needs scope {}, which this token lacks", need.as_str()))
                     .with_details(serde_json::json!({ "need": need, "have": p.scopes })),
@@ -244,7 +250,7 @@ impl ServerHandler for PeerServer {
 
     async fn list_tools(&self, _request: Option<PaginatedRequestParams>, ctx: RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
         let p = self.principal(&ctx).map_err(|e| ErrorData::invalid_request(e.message, None))?;
-        let tools = self.tools.iter().filter(|t| p.has(scope_of(&t.name))).cloned().collect();
+        let tools = self.tools.iter().filter(|t| allowed(&p, &t.name)).cloned().collect();
         let mut r = ListToolsResult::with_all_items(tools);
         // The list depends on the caller's token.
         if ctx.protocol_version().is_some_and(|v| v >= ProtocolVersion::V_2026_07_28) {
@@ -280,7 +286,7 @@ impl ServerHandler for PeerServer {
         let uri = request.uri.clone();
         let value: Result<serde_json::Value, ToolError> = match uri.as_str() {
             "primordial://world/state" => {
-                self.engine.call(|e| e.state(&m::GetStateParams { offset: None, limit: Some(256) }).map(|s| serde_json::to_value(s).unwrap())).await
+                self.engine.call(|e| e.state_all().map(|s| serde_json::to_value(s).unwrap())).await
             }
             "primordial://session/members" => self.engine.call(|e| e.members().map(|s| serde_json::to_value(s).unwrap())).await,
             "primordial://session/sync" => self.engine.call(|e| e.sync().map(|s| serde_json::to_value(s).unwrap())).await,

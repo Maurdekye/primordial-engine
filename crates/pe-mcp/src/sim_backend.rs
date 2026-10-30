@@ -44,6 +44,8 @@ pub struct SimSession {
     /// Partition: member -> group. Shared with the network filter.
     partition: Rc<RefCell<BTreeMap<MemberId, usize>>>,
     faults: Vec<String>,
+    /// Ball pit: the index of member 1's hand; member m's hand is `hand_base + m - 1`.
+    hand_base: Option<u32>,
 }
 
 fn range<T: PartialOrd + Copy + std::fmt::Display>(field: &str, v: Option<T>, default: T, lo: T, hi: T) -> ToolResult<T> {
@@ -119,7 +121,11 @@ impl SimSession {
         let label = format!(
             "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} touches/s; window {window}; seed {seed:x}"
         );
-        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new() })
+        let hand_base = match scene {
+            SceneKind::BallPit { balls, .. } => Some(balls as u32),
+            SceneKind::Pile { .. } => None,
+        };
+        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new(), hand_base })
     }
 
     fn replica(&self) -> &WorldSim {
@@ -245,6 +251,16 @@ impl DrivenPeer for SimSession {
                 (false, true) => return Err(ToolError::arg("action", format!("object {object} is a kinematic hand: use action \"hand\""))),
                 (true, false) => return Err(ToolError::arg("action", format!("object {object} is not a hand ({})", kind_name(o.kind)))),
                 _ => {}
+            }
+            // A hand is its member's alone. sim-core's Payload::Hand does not check the author, so the
+            // peer must (review of 358cfb7, finding 1).
+            if is_hand {
+                let base = self.hand_base.expect("hands exist only in the ball pit");
+                let (owner, mine) = (object - base + 1, base + self.me - 1);
+                if owner != self.me {
+                    return Err(ToolError::new(ErrorCode::NotOwner, format!("object {object} is member {owner}'s hand; yours is object {mine}"))
+                        .with_details(serde_json::json!({ "owner": owner, "yours": mine })));
+                }
             }
             if !s.caught_up() || s.frame < s.now {
                 return Err(ToolError::new(
