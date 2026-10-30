@@ -3564,8 +3564,11 @@ persists until a verdict arrives.
     * **Chains.** Each `Arrive` carries the hops from the object's birth into its source world, and the
       source's departure certificate covers the chain's hash, so a relayer can neither strip nor swap it.
       The destination checks every hop against the epoch certificates of the world that signed it,
-      whether or not that world is on its own route list (P2-4 supplies them; the spike uses a static
-      stub). A to B to C to A works [V r14 chain: three hops, conserved, all equal in both orders].
+      whether or not that world is on its own route list. Each hop carries its source's certificates up
+      to the epoch that signed it, and that epoch must be the one active at the hop's commit frame
+      (P25-5, 10.8) [V r14 chain-epoch: a hop signed after its source removed a member checks at a world
+      that does not route to the source; provenance unit tests]. A to B to C to A works [V r14 chain:
+      three hops, conserved, all equal in both orders].
     * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
       entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
       hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
@@ -3637,13 +3640,16 @@ persists until a verdict arrives.
       hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
       its own last exit (it checked the earlier ones on the way in) [I].
     * **Long-range forgery.** Members of an old epoch who have since left can still sign facts for that
-      epoch. Binding a fact's frame to the epoch active at that frame (P2-4's `from_frame`) stops a later
-      epoch backdating, but not an old majority that colludes. This is the long-range attack of
-      proof-of-stake systems [I].
-  * **Member lists change** (review R3-8b). In the spike they are fixed at startup, so an evicted member
-    would still count toward the other world's majority. Production keys certificates to a membership
-    epoch, and each membership change is certified by the previous epoch's majority, so another world can
-    follow it [I].
+      epoch. Binding a fact's frame to the epoch active at that frame (the signed boundary of 10.8, an
+      epoch certificate's `from_frame`) stops a later epoch backdating, but not an old majority that
+      colludes, nor a carrier that omits the later epoch's certificate. This is the long-range attack of
+      proof-of-stake systems [I; the unit test shows both].
+  * **Member lists change** (review R3-8b). Since P2-4 a world's members change only by decided epochs,
+    each with a certificate that the previous epoch's quorum signed, and another world follows them from
+    the world's genesis [V P25-5]. One check still uses the member list fixed at startup: a
+    destination checks the departure certificate in an `Arrive` against its route list's members of
+    the source, so a member the source has since removed still counts there [S session.rs]. The
+    `Arrive` should carry the source's epoch certificates, as hops do [I].
 
 ### 22.8 What crosses: avatars, components, code
 
