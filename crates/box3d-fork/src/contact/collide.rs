@@ -1,6 +1,6 @@
 // Narrow-phase collide pass and contact state machine from physics_world.c.
 //
-// Serial path only (worker_count == 1).
+// Primordial Engine fork (D2): the per-contact pass runs in blocks on the world's workers.
 //
 // SPDX-FileCopyrightText: 2025 Erin Catto
 // SPDX-License-Identifier: MIT
