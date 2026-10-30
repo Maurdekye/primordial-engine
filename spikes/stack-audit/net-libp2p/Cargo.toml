@@ -1,0 +1,11 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-net-libp2p"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+libp2p = { version = "0.57", features = ["tokio", "quic", "noise", "yamux", "tcp", "kad", "mdns", "identify", "relay", "dcutr", "autonat", "gossipsub", "macros", "ed25519"] }

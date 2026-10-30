@@ -1,0 +1,13 @@
+# Dependency-audit probe (never built). snow without its `std` feature, which force-enables ring.
+[package]
+name = "audit-net-snow-nostd"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+snow = { version = "0.10", default-features = false, features = ["default-resolver-crypto"] }
+ed25519-dalek = "3"
+x25519-dalek = "3"

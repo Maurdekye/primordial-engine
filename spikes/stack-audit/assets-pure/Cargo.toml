@@ -1,0 +1,17 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-assets-pure"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+gltf = "1.4"
+bson = "3"
+lz4_flex = "0.14"
+lzma-rs = "0.3"
+brotli = "9"
+ruzstd = "0.9"

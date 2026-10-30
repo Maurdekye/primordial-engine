@@ -1,0 +1,12 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-net-rustls-graviola"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "logging", "tls12"] }
+rustls-graviola = "0.4"
