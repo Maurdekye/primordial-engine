@@ -41,7 +41,8 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `common/` | - | includes only (not run) |
 
 The first 30 are the phase-1 suite of `scripts/run_session_sim.sh`; their logs are identical to the
-committed ones. The `faults/` logs are new in P2-9.
+committed ones. The `faults/` logs are new in P2-9. All 35 are identical on Windows and on Linux
+(WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`, `regress-linux.txt`.
 
 ## File format
 
@@ -187,6 +188,5 @@ Templates (`say`, `line`) substitute the following:
   forking proposal and approval entries. They also need a log-only scene, and possibly a join
   message. These get ported to files when P2-4 lands.
 - **`pe-session` (P2-3).** The driver moves to it when it exists.
-- **Linux.** Windows is verified. The same command has not yet been run on a Linux host.
 - **Not ported:** the spike's exploratory subcommands that are not in the suite (`snap`,
   `observer`, `capped`).
