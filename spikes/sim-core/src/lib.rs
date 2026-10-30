@@ -333,6 +333,29 @@ impl RollbackSim {
         self.ring.front().map(|s| s.frame).unwrap_or(self.state.frame)
     }
 
+    /// Every interaction known for frames `from..=to`.
+    pub fn inputs_in(&self, from: u64, to: u64) -> Vec<Interaction> {
+        self.inputs.range(from..=to).flat_map(|(_, v)| v.iter().copied()).collect()
+    }
+
+    /// Order-independent digest of the interactions known for one frame. Two peers whose
+    /// state hashes differ at frame f but whose input digests also differ there are missing
+    /// each other's interactions (fixable by exchanging inputs + rollback); equal digests with
+    /// different state hashes mean true nondeterminism (needs a state transfer).
+    pub fn input_digest(&self, frame: u64) -> u64 {
+        let mut v: Vec<Interaction> = self.inputs.get(&frame).cloned().unwrap_or_default();
+        v.sort_by_key(|i| (i.peer, i.seq));
+        fnv_u64s(v.iter().flat_map(|i| {
+            [
+                i.frame,
+                ((i.peer as u64) << 32) | i.seq as u64,
+                i.body as u64,
+                ((i.impulse[0].to_bits() as u64) << 32) | i.impulse[1].to_bits() as u64,
+                i.impulse[2].to_bits() as u64,
+            ]
+        }))
+    }
+
     /// Record an interaction. Returns Ok(true) if it is for a frame already simulated
     /// (a rollback is scheduled for the next `advance_to`).
     pub fn add_input(&mut self, i: Interaction) -> Result<bool, InputError> {
