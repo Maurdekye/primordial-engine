@@ -1,8 +1,14 @@
 # 25. Massive worlds: hierarchical chunks, f64 coordinates and regions (R16)
 
-Status: ready to merge as section 25, numbered after the architect's 24. The region and group model (25.5)
-was reviewed by @engine-architect against the round-2 protocol. The protocol is designed, not built; every
-measured number is tagged.
+Status: ready to merge as section 25, numbered after the architect's 24. Revised after @design-reviewer's
+review of 45d4940 (R16-1 to R16-7):
+* the world log is off the per-frame path (neighbour bound);
+* support and awake closure;
+* membership frozen at confirmation;
+* corrected labels.
+
+The region and group model (25.5) follows the round-2 protocol (design 10.8). It is designed, not built.
+Every measured number is tagged.
 Author: @world-chunks. Branch `chunks/r16`. Measurements: [r16-chunks-results.md](r16-chunks-results.md).
 Tags as in the rest of the design: **[V]** measured by the spike in `spikes/chunks`, **[S]** read in
 source, **[I]** inferred or proposed.
@@ -35,26 +41,35 @@ length units, per world or per region.
 * **Hierarchical levels.** A level-`L` cell is `1024 * 2^L` m wide and corner-aligned, so cells nest
   exactly. Every object is filed at the level whose cell matches its relevance distance (OWO files objects
   in chunks about 8 times their size; we use the relevance ratio).
-* **Relevance decides what is simulated.** An object is simulated when some player is within `rho * r` of
-  it (`rho` = 32 by default, a slider), it is not tiny relative to that player (`r >= h / 64`, `h` = player
-  height), and it is inside the reach cap. Everything else is dormant: frozen exactly, costing memory only.
+* **Relevance decides what is simulated.** An object is simulated when:
+  * some player is within `rho * r` of it (`rho` = 32 by default, a slider), it is not tiny relative to that
+    player (`r >= h / 64`, `h` = player height), and it is inside the reach cap;
+  * or it is awake, woken, or supporting something that is simulated.
+
+  Everything else is dormant: frozen exactly, costing memory only.
 * **Regions.** The simulated part of the world splits into regions, each its own box3d world with its own
   origin, length unit, keyframes, log and group of peers. A late entry rolls back one region, not the
   world. Peers simulate only the regions they are in.
-* **Two-tier log.** A world log every member holds (membership, ACL, SCM, chunk-level anchors), and one
-  log per region held by that region's group. Region topology is a function of the confirmed world log;
-  region state is a function of dormant records plus the region log. No decision depends on local arrival
-  time (the NEW-1 lesson).
+* **Two-tier log.** A world log every member holds (membership, ACL, SCM), off every region's per-frame
+  path, and one log per region held by that region's group. That log carries the members' anchors.
+  * Regions depend on each other only through a speed-bounded **neighbour bound**, so a stalled member far
+    away never stalls a region [C: modelled].
+  * Region state is a function of dormant records plus the region log.
+  * No decision depends on local arrival time (the NEW-1 lesson).
+  * Membership-dependent values are evaluated at the entry's frame and frozen at confirmation (the NEW-2
+    lesson).
 * **Arbitrary scale** uses per-region length units (ruling 14:20Z): a region simulates in units of its
-  players' scale, so box3d sees the same numbers at every scale [V: an 8-cube tower gives the same world hash
-  from 0.1 mm to 10 km].
+  players' scale (`2^round(log2 s)`), so box3d always sees sizes near 1 unit. [V: a mixed-size stack (s/20 to
+  2s) is stable from 0.1 mm to 10 km in region units; unscaled it fails below 1 cm.]
 * **Headline measurements** (details in 25.8-25.11 and the results doc):
   * box3d `double-precision` costs 2-10% of step time and 1-2% of image size [V];
   * with a region-local origin, physics 100,000 km out behaves as at the origin [V];
   * a late entry rolls back one region: 0.7 ms instead of 10.5 ms for the 16-player world [V];
-  * spread-out players cost each other nothing: 0.12 ms per tick and 1.5 MB per player at 2 or 256 players,
-    against 310 ms and 368 MB unchunked at 256 [V];
-  * the hashed multi-level grid beats the octrees on every measured axis [V];
+  * spread-out players cost each other nothing: 0.12 ms per tick and 1.5 MB per player at 2 or 256 players
+    [V], against about 300 ms (282-635 ms across runs) and 368 MB unchunked at 256 [C, from measured
+    region costs];
+  * the hashed multi-level grid beats both octrees on query time, build time and memory, and matches them on
+    update time [V];
   * box3d-rust ran validation loops in release builds, and creating N bodies cost O(N^2); fixed in
     `box3d-fork` (e1164ff) [V].
 
@@ -94,134 +109,190 @@ length units, per world or per region.
   layout may differ between peers and is never snapshotted or rolled back [V: identical results after
   building in shuffled order].
 
-## 25.4 What is simulated: relevance, reach cap, wake and freeze
+## 25.4 What is simulated: relevance, support, wake and freeze
 
-An object `o` is **active** at a relevance pass (every `P` = 8 frames, a deterministic cadence) when any of
-these holds; otherwise it is **dormant**:
+An object `o` is **active** at a relevance pass when any of these rules holds; otherwise it is **dormant**.
+Passes run every `P` = 8 frames, a deterministic cadence. (Rules revised after review R16-2.)
 
-1. **Relevant to an anchor:** for some member anchor `a` (position `p`, height `h`, predicted over the next
-   pass), `r_o >= h / 64` and `|p - o| <= min(rho * r_o, reach_cap(h))`. `reach_cap` = 2 km x `h / 1.7 m`
-   by default.
-2. **Woken:** within the swept bounds of an awake active body that is no more than 16 times larger
-   (`r_o >= r_body / 16`). Things you push, throw or knock over wake what they hit.
-3. **Coasting** (optional, off for the MVP): it was active and is still awake, for at most `T_keep` after
-   it stopped being relevant.
+1. **Relevant to an anchor.** For some member anchor `a` (position `p`, height `h`, predicted over the
+   next pass), `r_o >= h / 64` and `|p - o| <= min(rho * r_o, reach_cap(h))`. By default
+   `reach_cap` = 2 km x `h / 1.7 m`.
+2. **Awake stays active.** An active body that is awake stays active until it falls asleep, unless it is
+   beyond the hard reach (2 x `reach_cap`) of every anchor. A coin knocked off a table lands; it does not
+   freeze in mid-air.
+3. **Woken.** An object inside the swept bounds of an awake active body no more than 16 times larger
+   (`r_o >= r_body / 16`) becomes active. Things you push, throw or knock over wake what they hit.
+4. **Support closure, one hop.** A dormant object whose bounds touch a body that is active by rule 1, 2 or
+   3 is included, however small it is. The included object does not pull in its own neighbours. So the
+   stones under a relevant crate are simulated and carry it, without waking the whole stone bed.
 
-* **Dormant means frozen exactly:** position, rotation and velocities are kept bit for bit in a dormant
-  record (about 100 bytes, against about 1.9 KB per body in a box3d image [V]). Time does not pass for
-  dormant objects. When something becomes active again it continues from that exact state, which is
-  canonical because every peer froze it at the same frame.
-* **Logic catch-up:** logic modules get `on_wake(chunk, frames_elapsed)`, a deterministic closed-form
-  hook (crops grow, timers expire). Physics is never fast-forwarded.
-* **Unmodified content is not stored at all.** World content comes from the SCM (committed chunk files)
-  or from deterministic procedural generation per `(generator hash, cell)`. Only objects that changed
-  carry a dormant record.
-* **Why size-based:** with OWO-style whole-chunk activation, everything within 1 km is simulated: in the
-  streaming test's content that is about 2.5e7 objects [C]. With relevance it is 330-640 bodies, of which
-  1-80 are awake [V].
+Measured [V], `closure` scene: a 0.9 m crate on a bed of 3 cm stones and a coin knocked off a table, with
+the player walking in from 20 m.
 
-## 25.5 Regions and groups (who simulates what) [I; the prototype measures costs, not the protocol]
+| Rule set | Crate | Stones left inside the crate | Coin | Bodies active (max) |
+|---|---|---|---|---|
+| Rule 1 + wake only (as of 45d4940) | falls 6 cm through the dormant stones to the ground | 81 | frozen in mid-air at 0.94 m | 49 |
+| Rules 1-4 | rests on the stones (settles 2 cm as they shift) | 0 | lands on the floor | 134 |
 
-This replaces "every peer simulates the whole world" (2, 6) for large worlds. With one region it reduces
-to today's design.
+* **Dormant means frozen exactly.** Position, rotation and velocities are kept bit for bit in a dormant
+  record: about 100 bytes, against about 1.9 KB per body in a box3d image [V]. Time does not pass for
+  dormant objects. When something becomes active again it continues from that exact state. That state is
+  canonical, because every peer froze it at the same frame by the same rules.
+* **Logic catch-up.** Logic modules get `on_wake(chunk, frames_elapsed)`, a deterministic closed-form hook
+  (crops grow, timers expire). Physics is never fast-forwarded.
+* **Unmodified content is not stored at all.** World content comes from the SCM (committed chunk files) or
+  from deterministic procedural generation per `(generator hash, cell)`. Only objects that changed carry
+  a dormant record.
+* **Why size-based.** With OWO-style whole-chunk activation, everything within 1 km is simulated: about
+  2.5e7 objects in the streaming test's content [C]. With relevance it is 330-640 bodies, of which 1-80 are
+  awake [V].
+
+## 25.5 Regions and groups (who simulates what) [I; the prototype measures costs and a model of the dependency rule, not the protocol]
+
+For large worlds, this replaces "every peer simulates the whole world" (2, 6). With one region it reduces
+to today's design. Revised after review R16-1 and R16-3: the world log is no longer on any region's
+per-frame path.
 
 ### 25.5.1 Two tiers of log
 
 | | World log | Region log (one per region) |
 |---|---|---|
 | Held and acked by | every member | the region's group |
-| Carries | membership and view changes, ACL, SCM commits, **anchor-chunk declarations**, frozen-chunk record hashes, cross-region messages | perturbations of objects in the region (touches, hand and body streams, component writes), fine anchor positions, horizons, check hashes, `Synced` declarations |
-| Rate | about 1 entry per player per 10-60 s plus commits | as today's session log, per region |
-| Confirmation | every member (compact acks, slow cadence: every 0.5 s) | the region's synced group members |
+| Carries | session membership, ACL, SCM commits, frozen-chunk record hashes, a region directory (informational), cross-region messages | perturbations of objects in the region (touches, hand and body streams, component writes); the members' **anchors**; horizons; check hashes; `Synced` declarations; `NeighbourRef` entries |
+| On a region's per-frame path? | **No.** Its facts enter a region as relayed confirmed facts at the relay entry's frame, as in R14. A world-log stall delays ACL and SCM effects, never simulation. | yes, for that region only |
+| Confirmation | every member, compact acks, slow cadence | the region's synced group members |
 
-Both follow the round-2 protocol (@engine-architect, branch `round2-fixes`): acks, votes, horizons and
-check hashes are entries in each member's hash chain, and each log has its own chains, stability,
-confirmed frame, epoch and ack cadence. Two rules from it shape this section:
-* **A decision in one log may depend on another log only through a confirmed fact of that log,**
-  referenced explicitly (like R14's relays). There is no reading of another log's unconfirmed state.
-* **One chain per member per log,** so an equivocation proof is per chain. An eviction from a region
-  propagates to the world log as a world-log view change.
+Both logs follow the round-2 protocol (design 10.8, @engine-architect): acks, votes, horizons and check
+hashes are entries in each member's hash chain. Each log has its own chains, stability, confirmed frame,
+epoch and ack cadence.
+* A log depends on another log only through a confirmed fact of that log, referenced explicitly. No log
+  reads another log's unconfirmed state.
+* There is one chain per member per log. An eviction from a region propagates to the world log as a
+  world-log view change.
 
-### 25.5.2 Anchors and the region set
+### 25.5.2 Anchors, footprints and the neighbour bound
 
-* Each member has an **anchor**: the position and scale that drive activation (its avatar root).
-* **Coarse anchor (world log):** `Anchor{member, chunk, scale_exp}`, authored when the anchor nears a
-  chunk boundary (with hysteresis), about once per 10-60 s while walking. It **takes effect at
-  `stamp + Lambda`**. `Lambda` is derived from the measured world-log confirmation lag plus a margin: with
-  0.5 s compact acks that lag is about 2 ack rounds plus latency, 1-1.2 s [I, @engine-architect], so the
-  default is 2 s (120 frames). Region topology at frame `f` is therefore a function of the world log's
-  confirmed prefix.
-* **Footprint:** the level-0 chunks within `ceil(reach_cap / 1024) + 1` of the anchor chunk, at the
-  level of the member's scale band.
-* **Regions** are the connected components (26-connectivity) of the union of footprints, per scale band
-  (25.6). `Group(R, f)` = members whose footprint intersects region `R` at `f`.
-* **Fine anchor (region log):** the anchor's exact quantized position, streamed at 4-10 Hz while moving
-  (or every 0.5 m). Relevance inside the region (25.4) uses it, so it is in-sim, deterministic data.
-* **Cross-log rule.** A region member simulates frame `f` only when it holds the world log confirmed
-  through `f - Lambda`. During a world-log outage the region therefore stalls, like at the speculation
-  limit, rather than speculating on unconfirmed world-log state. Each region log carries a periodic
-  `WorldRef{world_confirmed_frame, prefix_hash}` entry, so a member that read a different world-log
-  prefix is detected like any other divergence.
-* The footprint margin (one chunk beyond `reach_cap`) and the fine anchor's look-ahead cover travel
-  during `Lambda`. A member faster than about 500 m/s (one chunk per 2 s) declares anchors further
-  ahead along its velocity.
+* **Anchor.** Each member has one: the position and scale that drive activation (its avatar root).
+* **Home region.** Each member belongs to exactly one region's group, its home region. Its anchor entries
+  live in that region's log:
+  * a coarse `Anchor{chunk, scale_exp}` when it nears a chunk boundary (with hysteresis), taking effect at
+    `stamp + Lambda` (default 15 frames, a few times the region log's measured 4-5 frame confirmation lag;
+    the anchor is confirmed before it changes the footprint, so topology is fixed by confirmed data);
+  * the fine quantized position at 4-10 Hz while it moves.
+  Region topology and relevance are therefore in-region, deterministic data.
+* **Speed bound.** A footprint moves at most `v_max` (default 100 m/s, a world setting). Faster travel
+  declares a larger footprint margin along its velocity, or uses a portal-style transfer (22). This bound
+  is what lets distant regions ignore each other.
+* **Footprint.** The level-0 chunks within `ceil(reach_cap / 1024) + 1` of the anchor chunk, at the
+  member's scale band. A region's footprint is the union over its members. Regions keep at least
+  `D_merge` (default 3 km, more than two footprint radii) between their footprints, or they merge
+  (25.5.4).
+* **Neighbour bound (the cross-region dependency).** Region `R` may simulate frame `f` only while, for
+  every other region `q`, `known_conf_q + slack(R, q) >= f`, where:
+  * `known_conf_q` is the newest confirmed frame of `q` that `R` holds, together with `q`'s confirmed
+    footprint at that frame;
+  * `slack(R, q) = (distance between the footprints - D_merge) / v_max`.
 
-### 25.5.3 Joining a group, and confirmation
+  Members obtain `known_conf_q` directly from `q`'s members, as a confirmed prefix with its proof (stable
+  chain entries), and record it in `R`'s log as `NeighbourRef{q, frame, footprint, proof}`. A region 10 km
+  away has 70 s of slack, so `R` needs to hear from it about once a minute. A region on the far side of
+  the map imposes no bound in practice. The world log is not consulted.
+* **Liveness, modelled [C].** Rule-level simulation (`liveness`): 64 or 256 members, alone or in groups of
+  8, one member's acks stalled 0.5-3 s, eviction after `W` + 0.2 s.
 
-* Joining is a **per-region view change**. A member counts for `R`'s stability and confirmation only from
-  the admission frame after its `Synced{R, frame}` entry. Before that it is **pending**: it receives `R`'s
-  log, and its entries into `R` stamped before admission are void, a chain-local rule every holder
-  applies identically.
-* To sync it needs `R`'s state at a confirmed frame:
-  * a **region state transfer** from any synced member (box3d image + tables + logic sync state,
-    compressed; about 0.9 MB per 1,000 bodies with lz4 [V]), verified against the check hash the group
+  | Rule | Unrelated regions that lost frames | Worst loss per region |
+  |---|---|---|
+  | World log on the path (45d4940) | **all** (63 of 63, 255 of 255, 31 of 31) for stalls of 1 s or more | 5 / 65 / 77 frames for 1 / 2 / 3 s stalls |
+  | Neighbour bound, regions 3.5-4 km apart | **none** | 0 |
+  | Neighbour bound, regions 3.2 km apart (2 s of slack) | the 2 nearest | 7 / 19 frames for 2 / 3 s stalls |
+
+  A stalled member therefore slows only its own region (bounded by the speculation limit and eviction)
+  and neighbours closer than `v_max x` (stall time). This is the property R16's addendum asks for.
+
+### 25.5.3 Joining, leaving and confirmation
+
+* **Joining is a per-region view change.**
+  * A member counts for `R`'s stability and confirmation only from the admission frame after its
+    `Synced{R, frame}` entry.
+  * Before that it is **pending**: it receives `R`'s log, and its entries into `R` stamped before admission
+    are void. This rule is chain-local, so every holder applies it identically.
+  * A late joiner, a warp or a respawn joins `R` directly; nothing waits on the world log.
+* **To sync, a joiner needs `R`'s state at a confirmed frame.** It gets it in one of two ways:
+  * a **region state transfer** from any synced member: box3d image + tables + logic sync state,
+    compressed, about 0.9 MB per 1,000 bodies with lz4 [V], verified against the check hash the group
     published in `R`'s log;
-  * or, if nobody simulated `R`'s chunks since they froze, it builds `R` itself from dormant records:
-    procedural content, SCM content, and frozen-chunk records fetched by the hash the world log holds.
-* **Confirmation of region frame `f`:** every synced member of `Group(R, f)` has published a horizon of at
-  least `f` in `R`'s log and holds every `R` entry up to `f`. Members outside the group never affect it.
-* **Leaving** mirrors joining: when a member's footprint stops intersecting `R` (an anchor entry,
-  `Lambda`-led), the cut is the prefix all remaining group members hold, effective after the leaver's
-  last valid horizon. It never touches confirmed frames.
+  * if nobody has simulated `R`'s chunks since they froze, it builds `R` itself from dormant records:
+    procedural content, SCM content, and frozen-chunk records fetched by their hash.
+* **Confirmation of region frame `f`.** Every synced member of `Group(R, f)` has published a horizon of at
+  least `f` in `R`'s log, and holds every `R` entry up to `f`. Members outside the group never affect it.
+* **Leaving mirrors joining.** The cut is the prefix all remaining group members hold, effective after the
+  leaver's last valid horizon. It never touches confirmed frames.
+* **Membership-dependent computations are evaluated at the entry's frame and frozen at confirmation**
+  (the NEW-2 lesson, review R16-3). Every quantity that depends on who is in the group uses
+  `Group(R, f_entry)`, the group at the frame of the entry or decision it concerns:
+  * the stability set;
+  * vote and eviction thresholds;
+  * any median or late-report rule that survives round 2.
+
+  A membership change takes effect only at a frame after `R`'s confirmed frame, and never re-evaluates a
+  confirmed entry. **Required protocol test:** a member leaves `R` while one of its entries is still
+  unconfirmed, and a member joins while a vote is open. Every member must reach the same verdicts, and
+  no confirmed frame may change.
 
 ### 25.5.4 Merge and split
 
-* **Merge.** Two regions whose footprints connect at frame `f_m` merge at `f_m`. `f_m` is known `Lambda`
-  frames in advance, from confirmed world-log anchors. Each member prefetches the other region's state
-  and log, simulates it as an extra region up to `f_m`, and posts `Synced` for it. At `f_m` the box3d
-  worlds merge deterministically: bodies of the higher-id region are recreated in the other world in
-  ObjectId order with their exact state (0.7-0.9 us per body with the validation fix, 57-61 us without [V]). From `f_m` the merged log
-  continues under the usual total order. A member not yet synced to both parts is pending in the merged
-  region: liveness suffers for that member only, never correctness.
-* **Split.** When the footprint union disconnects, the region splits at a deterministic frame, but only
-  after the gap has persisted for `T_split` (default 10 s), so walking along a boundary does not thrash.
-  Bodies are partitioned by chunk. Each member already holds the whole region, so nothing is transferred.
-* **Rollback across a merge or split** restores the pre-event keyframes of every part, re-simulates them,
-  and redoes the event at the same frame. This needs no new rule under D50: each part keeps its own base
-  (the newest image at or before its confirmed frame) until the event frame is confirmed, so a keyframe at
-  or before the event always exists. During the transition a peer holds both parts' bases plus the
-  merged world's window, about base(A) + base(B) + 4 merged images at the default setting.
-* **The D50 memory/CPU knob applies per box3d world**, so per region; a peer's budget is the sum.
+* **Merge.**
+  * `R` and `q` merge at the first frame `f_m` at which their footprints, computed from both regions'
+    confirmed anchors, come within `D_merge`.
+  * As they approach, `slack(R, q)` shrinks, and the neighbour bound makes each region wait for the
+    other's confirmed state. By `f_m`, both hold both histories through `f_m - Lambda`, enough to know both
+    footprints at `f_m`, so both compute the same `f_m`.
+  * Members prefetch the other region's state and log during the approach, simulate it as an extra region
+    up to `f_m`, and post `Synced` for it.
+  * At `f_m` the box3d worlds merge deterministically. Bodies of the higher-id region are recreated in the
+    other world in ObjectId order with their exact state: 0.7-0.9 us per body with the validation fix,
+    57-61 us without [V].
+  * The merge is **deterministic but not physics-neutral** (review R16-4): recreating a body drops its
+    contact manifolds, warm-start impulses and island state. The footprint margin keeps the seam in
+    dormant chunks, so the bodies recreated at a merge are mostly asleep, far from any player.
+  * A member not yet synced to both parts is pending in the merged region. Only that member's liveness
+    suffers, never correctness.
+* **Split.**
+  * When a region's footprint disconnects and the gap has persisted for `T_split` (default 10 s), the
+    region splits at a deterministic frame.
+  * Bodies are partitioned by chunk. Every member already holds the whole region, so nothing is
+    transferred.
+* **Rollback across a merge or split.**
+  * It restores the pre-event keyframes of every part, re-simulates them, and redoes the event at the same
+    frame.
+  * Under D50 this needs no new rule. Each part keeps its own base until the event frame is confirmed, so
+    a keyframe at or before the event always exists.
+  * During the transition a peer holds both bases plus the merged window: about base(A) + base(B) +
+    4 merged images.
+* **The D50 memory/CPU knob applies per box3d world**, so per region. A peer's budget is the sum.
 
 ### 25.5.5 Perturbations across region boundaries
 
-* Regions never touch: by construction there is at least one dormant chunk between two regions of the same
-  band. Physics therefore never crosses a region boundary.
-* An entry targets objects by ObjectId and is routed to the region holding the object at the entry's
-  effective frame (topology is canonical, 25.5.2). A member may perturb only regions it is synced in;
-  anything else is refused identically on every peer.
-* A body leaving its region's footprint (thrown far) freezes where it crosses into dormant chunks
-  (25.4 rule 3 can delay that). It continues when its chunk becomes active again.
-* Carried state (7.3) stays per object, now with `f64` positions: 64 bytes instead of 52.
-* Check hashes and divergence repair (9) are per region; repair is a region state transfer.
+* **Regions never touch.** By construction, at least `D_merge` of dormant chunks separates two regions of
+  the same band, so physics never crosses a region boundary.
+* **Routing.** An entry targets objects by ObjectId and goes to the region holding the object at the
+  entry's frame. A member may perturb only regions it is synced in; anything else is refused identically
+  on every peer.
+* **Bodies leaving a footprint.** A body thrown out of its region's footprint keeps simulating while it is
+  awake (25.4 rule 2) inside the hard reach. It freezes when it sleeps or leaves the hard reach, and
+  continues when its chunk becomes active again.
+* **Carried state** (7.3) stays per object, now with `f64` positions: 64 bytes instead of 52.
+* **Check hashes and divergence repair** (9) are per region. Repair is a region state transfer.
 
 ### 25.5.6 What this costs and saves (measured in 25.10)
 
 * **CPU per peer** scales with the bodies in the peer's own regions, not with the session size.
 * **Memory per peer:** keyframes for its regions only (the D50 slider applies to the sum).
-* **Bandwidth per peer:** region traffic scales with the group size; world-log traffic grows with the
-  member count (anchors plus compact acks), which needs compact or gossiped world acks past about 64
-  members.
+* **Bandwidth per peer:** region traffic scales with the group size. World-log traffic grows with the
+  member count (membership, ACL, SCM and acks; anchors moved to region logs), and needs compact or gossiped
+  acks past about 64 members.
+* **Liveness:** a stalled member slows only its own region and neighbours within `v_max` x (stall time)
+  [C, 25.5.2].
 * **Clustered players gain nothing:** when everyone stands in one place, it is one region and the cost is
   today's.
 
@@ -292,13 +363,12 @@ Full tables, method and the load caveat are in [r16-chunks-results.md](r16-chunk
 | f32 absolute coordinates | a 1.3 m/s walker drifts 383 m per hour at 100 km and cannot move beyond 524 km; a ball stops rolling at 1,000 km; a tower never sleeps at 1,000 km and leans 0.39 m at 10,000 km [V] |
 | f64 absolute coordinates | precise (tower within 1e-6 m at 100,000 km), but box3d's f32 AABBs inflate the broadphase: 542 → 2,562 contacts and 2.4x the step at 10,000 km; 32,142 contacts and 23x at 100,000 km [V] |
 | Region-local origin (chunk centre) | behaves and costs as at the origin at every distance, in both builds [V] |
-| Translation invariance | f64 with a region-local origin reproduced a chaotic pile to 1e-12 m in all 7 placements; f32 diverged by metres for any shift, including 512 m. So f64 makes region rebases and merges physics-neutral [V] |
-| Arbitrary scale | per-region length units: the same world hash from 0.1 mm to 10 km. Unscaled box3d: the tower hovers at 0.1-1 mm and collapses at 1 cm [V] |
+| Translation invariance | f64 with a region-local origin reproduced a chaotic pile to 1e-12 m in all 7 placements; f32 diverged by metres for any shift, including 512 m. So f64 makes region **rebases** physics-neutral [V]. **Merges** recreate bodies and are deterministic but not neutral (25.5.4) |
+| Arbitrary scale | **The design's rule:** units `2^round(log2 s)` (box3d sees 0.78-1.28 units), with a mixed-size scene (cubes 2s down to s/4, balls s/10 and s/20). Stable at every scale from 0.1 mm to 10 km: small-ball penetration 0.06-0.09% of the radius, sleeps at frame 32-34. Unscaled: unstable at 0.1-1 mm; 7% penetration at 1 cm [V, `scale-mixed`]. The earlier "same hash" result used unit = s exactly, so box3d saw the identical scene; that only checks determinism (review R16-7) |
 | Coordinate drift, chunk + f64 | 3 nm per hour of walking at any distance up to 1e6 light-years [V] |
 
 **Choice:** box3d `double-precision` **on**, with region-local origins, which are needed anyway. It costs
-2-10% of step time and buys translation-invariant rebases and merges plus precision margin inside large
-regions. f32 with region origins is the cheaper alternative (D53).
+2-10% of step time, and buys translation-invariant rebases plus precision margin inside large regions. f32 with region origins is the cheaper alternative (D53).
 
 ## 25.9 Measured: spatial index
 
@@ -309,7 +379,9 @@ regions. f32 with region origins is the cheaper alternative (D53).
 | **Hashed multi-level grid** (BTreeMap / HashMap) | **34 / 25 us** | **77 / 79 MB** | **250 / 155 ns** | **69 / 77 ms** |
 
 On the extreme-scale workload (radii 1 um to 1,000 km, 10,000 km apart), the grid also wins: 179 us per
-query vs 236 / 312 us, 69 MB vs 131 / 201 MB. The tree reaches 28 levels deep; the grid has 40 occupied levels,
+query vs 236 / 312 us, 69 MB vs 131 / 201 MB. Update cost is a near tie with the loose octree. In the
+reviewer's rerun, the loose octree was marginally faster on human-scale updates (453 vs 487 ns), within
+noise. The tree reaches 28 levels deep; the grid has 40 occupied levels,
 each reached by one hash lookup. All four return identical, brute-force-checked results, including when built
 in shuffled insertion order [V]. Recommendation: the hashed grid, with `BTreeMap` storage for free ordered
 iteration (D58).
@@ -327,7 +399,7 @@ iteration (D58).
   | 2 | 0.12 ms/tick, 1.5 MB | 1.9 ms, 3.0 MB | 1.9 ms, 3.0 MB |
   | 16 | 0.12 ms, 1.5 MB | 6.8 ms, 11.6 MB | 12.6 ms, 23 MB |
   | 64 | 0.12 ms, 1.5 MB | 6.8 ms, 11.6 MB | 67 ms, 92 MB |
-  | 256 | 0.12 ms, 1.5 MB | 6.8 ms, 11.6 MB | 310 ms, 368 MB |
+  | 256 | 0.12 ms, 1.5 MB | 6.8 ms, 11.6 MB | about 300 ms [C] (282-635 ms across runs), 368 MB |
 
   CPU per 16.7 ms tick and memory per player [V region costs, C combination]. Every player keeps a ball pit
   busy with a hand.
@@ -337,18 +409,20 @@ iteration (D58).
     216 kB/s at 64 and **3.3 MB/s at 256**; with compact 100 B acks, 6 / 26 / 106 kB/s.
 * **Conclusion:** spread-out players are independent. The remaining O(N) cost is the world log, which needs
   compact (or gossiped) acks beyond about 64 members. Clustered players are not helped by regions: 256 engaged
-  players in one place would need 310 ms per tick and 51 MB/s each, so a region needs a cap on engaged
+  players in one place would need about 300 ms per tick [C] and 51 MB/s each [C], so a region needs a cap on engaged
   members (D57).
 
 ## 25.11 Measured: streaming
 
 A player crossing generated content for 20 s at 1.5, 15, 150 and 1,500 m/s (f64 with the validation fix):
 * 330-640 active bodies, out of about 25 million objects within 1 km;
-* frame total (step plus streaming) 0.10-0.18 ms mean, p99 under 1 ms, worst frame 5.5 ms at 1,500 m/s;
+* frame total (step plus streaming) 0.10-0.18 ms mean in my run. The reviewer's rerun on a loaded machine
+  gave 0.15-0.54 ms. The p99 and worst-frame tails did **not** reproduce under load (p99 1.3-6.5 ms, worst
+  4-65 ms), so they are not quoted until a quiet-machine rerun;
 * up to 816 bodies created and 816 destroyed per second;
 * generation 0.2-3 ms per second; relevance queries under 1 ms per second.
 
-Without the validation fix, the worst frame is 8.3 ms. The f32 build had to rebase the region every 4 km (0.85
+The f32 build had to rebase the region every 4 km (0.85
 ms each); the f64 build never did. A dormant record is 101 B per body, against 0.7-2 KB in a box3d image [V].
 
 ## 25.12 Decisions for the user
@@ -357,21 +431,24 @@ Numbered after the architect's D52; to be renumbered at merge.
 
 * **D53. Coordinates and box3d precision (25.2, 25.8).**
   * Recommend: canonical `i64` 1,024 m chunk + `f64` offset; box3d `double-precision` on; region-local
-    origins. Costs 2-10% of step time [V]; makes rebases and merges physics-neutral and keeps precision
+    origins. Costs 2-10% of step time [V]; makes rebases physics-neutral (merges stay deterministic) and keeps precision
     everywhere.
   * Alternative: box3d f32 with region-local origins and rebasing every few km. 2-10% cheaper, but every
     rebase or merge perturbs chaotic scenes, deterministically but visibly. This supersedes D3's "keep
     double-precision off".
 * **D54. What is simulated (25.4).**
   * Recommend: size-based relevance, `|p - o| <= 32 r`, `r >= h/64`, reach cap 2 km x scale, on the memory/CPU
-    slider. Dormant objects freeze exactly; logic catches up through `on_wake`; physics is never
-    fast-forwarded.
-  * Alternatives: OWO-style whole-chunk activation (about 25 million objects within 1 km in the test content);
-    or coasting awake bodies for `T_keep` after interest leaves (smoother at the edge, more CPU, computed lazily
-    by the next visitor).
+    slider. Awake bodies stay active until asleep; one-hop support closure. Dormant objects freeze exactly;
+    logic catches up through `on_wake`; physics is never fast-forwarded.
+  * Alternative: OWO-style whole-chunk activation, about 25 million objects within 1 km in the test
+    content.
 * **D55. Regions and groups (25.5).**
-  * Recommend: the two-tier log, with `Lambda` derived from measured world-log confirmation (about 2 s). Build it
-    in phase 3 together with region-scoped rollback (6.6). Phase 2 stays one region per world.
+  * Recommend: the two-tier log, with anchors in region logs and the speed-bounded neighbour bound (`v_max`
+    100 m/s, `D_merge` 3 km), so a stalled member slows only nearby regions [C]. Build it in phase 3 together
+    with region-scoped rollback (6.6), after the round-2 protocol is reviewed. Phase 2 stays one region per
+    world.
+  * The cost of the speed bound: travel faster than `v_max` needs a declared travel footprint or a
+    portal-style transfer.
   * Alternative: keep "every peer simulates everything" (about 16 players at most in one place, measured
     above).
 * **D56. Scale (25.6).**

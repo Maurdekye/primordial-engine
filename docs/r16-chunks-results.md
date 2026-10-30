@@ -137,8 +137,10 @@ largest deviation from the origin run:
 * **f64 is translation-invariant in practice; f32 is not.** The pile is chaotic. In f64 with a region-local
   origin, it reproduced the origin run to within 1e-12 m in all 7 placements, with the same contact count. In
   f32 any translation, including a pure 512 m shift, sent the pile down a different but equally valid path
-  (metres apart after 10 s). So with f64, rebasing a region origin or merging two regions with different
-  origins does not perturb the physics; with f32 it does, deterministically but visibly in chaotic scenes.
+  (metres apart after 10 s). So with f64, rebasing a region origin does not perturb the physics; with f32
+  it does, deterministically but visibly in chaotic scenes. A region **merge** is different: it recreates
+  bodies, which drops contacts and warm starts. It is deterministic but not neutral (review R16-4); this
+  was not measured.
 
 ## 5. Arbitrary scale: per-region length units [V]
 
@@ -159,9 +161,24 @@ An 8-cube tower of edge s on a slab, 600 frames. Variants:
 | 1 m | stands (frame 49) | identical | identical | identical |
 | 10 m - 10 km | stands | identical to 1 m | stands, sleeps sooner | stands; 1 sub-step, real time runs slower |
 
-* **Per-region length units give bit-identical physics at every scale from 0.1 mm to 10 km** (the same world
-  hash as 1 m) in both builds. This is ruling 14:20Z's "length units", obtained per region without the
-  process-global `set_length_units_per_meter`.
+* **What the "hash identical" column shows** (review R16-7): with unit = s exactly, box3d sees the identical
+  1-unit scene at every scale. The identical hash therefore only shows determinism, not that the units rule
+  works.
+* **The real test (`scale-mixed`)** uses the design's rule, unit = `2^round(log2 s)`, so box3d sees 0.78-1.28
+  units. The scene mixes sizes: a stack of cubes with edges 2s, s, s/2 and s/4, a ball of radius s/20 on top,
+  and 8 balls of radius s/10 on the ground. With invariant gravity, 600 frames:
+
+  | s | unscaled | unit = 2^round(log2 s) |
+  |---|---|---|
+  | 0.1 mm, 1 mm | **unstable** (the stack does not stay put) | stable; small-ball penetration 0.09 / 0.07% of the radius; sleeps at frame 32 / 34 |
+  | 1 cm | stable, but small balls sink **7%** of their radius | stable, 0.06%, frame 32 |
+  | 10 cm | stable, 0.7% | stable, 0.09%, frame 32 |
+  | 1 m | stable, 0.07%, frame 32 | identical (unit = 1) |
+  | 10 m - 10 km | stable | stable, 0.06-0.09%, frame 32-33 |
+
+  So per-region length units with power-of-two quantization keep box3d in its tuned range at every scale
+  from 0.1 mm to 10 km, with mixed sizes from s/20 to 2s in one region. This is ruling 14:20Z's "length
+  units", obtained per region without the process-global `set_length_units_per_meter`.
 * The unscaled failures match @vdw-physics's finding (absolute 5 mm slop, 2 cm speculative distance).
 * **Real gravity at small scale is the invariant system run faster:** sub-steps grow as `1/sqrt(s)`, so CPU for
   awake bodies grows about 3x at 10 cm, 10x at 1 cm and 32x at 1 mm [C: sub-step count; box3d cost is linear in
@@ -198,8 +215,9 @@ Workloads:
 Queries return 182 (human) and 401 (extreme) objects on average.
 
 **Recommendation: the hashed multi-level grid.**
-* It is the fastest on every operation except one cell (the loose octree's extreme-scale update is within 25%),
-  and uses 2.4-4.2 times less memory.
+* It is the fastest on query and build, and uses 2.4-4.2 times less memory.
+* Update cost is a near tie. In the reviewer's rerun the loose octree was marginally faster on human-scale
+  updates (453 vs 487 ns), and it was within 25% on the extreme workload here.
 * It has no depth: a 1 um object is one hash lookup away, not 28 tree levels.
 * A query reads 27 cells per occupied level, independent of scale.
 
@@ -252,7 +270,7 @@ measured image. Build `f64-nv` (the recommended configuration):
 | 16 / 64 / 256 | groups of 8 | 1,008 | 6.8 ms | 11.6 MB |
 | 16 | clustered = unchunked | 2,016 | 12.6 ms | 23 MB |
 | 64 | clustered = unchunked | 8,064 | 67 ms | 92 MB |
-| 256 | clustered = unchunked | 32,256 | 310 ms | 368 MB |
+| 256 | clustered = unchunked | 32,256 | about 300 ms [C] (282-635 ms across runs) | 368 MB |
 
 Unpatched `f64` for comparison: 0.14 ms spread; 588 ms (f32) for 256 unchunked.
 
@@ -282,7 +300,8 @@ Unpatched `f64` for comparison: 0.14 ms spread; 588 ms (f32) for 256 unchunked.
 | 256, clustered or unchunked | 51 MB/s | — | 3.3 MB/s | — |
 
 * **Spread players cost each other almost nothing:** per-player CPU and memory are flat from 2 to 256
-  players, about 2,500 times less CPU than unchunked at 256.
+  players: about 2,500 times less CPU than unchunked at 256, using the computed unchunked figure.
+  Compute only: liveness coupling through the logs is modelled separately in section 13.
 * **What still grows with N is the world log.** With today's ack format (one 25 B line per member) it reaches
   3.3 MB/s per player at 256. Compact acks keep it at about 100 kB/s; gossip would keep it near constant [I].
   The world log needs compact acks beyond about 64 members.
@@ -297,7 +316,9 @@ A player crosses procedurally generated content for 20 s.
 * **Relevance:** `|p - o| <= 24 r`, evaluated every 8 frames with look-ahead.
 * **Player:** at 1 m height up to 15 m/s, at 40 m height for 150 and 1,500 m/s.
 
-Steady state, after 2 s (`f64-nv`, then `f64` unpatched):
+Steady state, after 2 s (`f64-nv`, then `f64` unpatched). **The p99 and max columns did not reproduce on a
+loaded machine.** The reviewer measured p99 of 1.3-6.5 ms and max of 4-65 ms, and means within about 2x.
+Treat the tails as unverified until a quiet-machine rerun:
 
 | Speed | Active bodies, mean / max | Frame total, mean / p99 / max | Bodies created + destroyed per s | Generation | Query |
 |---|---|---|---|---|---|
@@ -344,7 +365,22 @@ the per-tier rates in 26.2.
 | | distance + frustum + budget | **0.07-0.09 ms** | 8 k | 152 | 0 | 0 | **29 kB/s** |
 
 * In typical crowds, culling saves 8 to 15 times the CPU, 7 to 15 times the skinned vertices, and 6 to 11
-  times the pose bandwidth.
+  times the pose bandwidth **against no culling**.
+* Against a **frustum-only** baseline (review R17-3; rerun at low priority, so absolute CPU is higher):
+
+  | Crowd | Frustum only | R17 tiers | Gain |
+  |---|---|---|---|
+  | 64 in 100 m | 2.9 ms | 1.4 ms | 2x |
+  | Packed | 16.4 ms | 8.6 ms | 1.9x |
+  | 200 m | 15.6 ms | 3.2 ms | 4.9x |
+  | Mixed scales | 16.1 ms | 5.1 ms | 3.2x |
+  | 2 km | 12.3 ms | 0.19 ms | 65x |
+
+* **The sim is untouched [V]:** with a real region of 4 ball pits and hand colliders, a culling pass taking
+  `&World` every frame, under three policies (no pass, culling off, full culling), left the 300-frame hash
+  digest identical: `7418e4f8aeb60229`.
+* **Upload for an avatar every viewer sees at T0** [C]: 179 kB/s to 15 viewers, 750 kB/s to 63, and
+  3.0 MB/s to 255. Hence the relay fan-out in 26.3.
 * In the packed crowd the budget does the work: 5.3 times.
 * In a spread crowd almost everything is an impostor.
 * Mixed scales behave as intended: giants are kept in detail from further away and tiny players are culled
@@ -354,10 +390,57 @@ the per-tier rates in 26.2.
 ## 11. What was not measured
 
 * The two-tier log, groups, merge/split protocol and region state transfer are designed (25.5), not built.
-  The per-player bandwidth is a calculation from the design's measured encodings.
-* Wake propagation (25.4 rule 2) and the mixed-scale one-way proxies (25.6) are not prototyped.
+  They also depend on the round-2 protocol, which is still under review.
+  * The per-player bandwidth is a calculation from the design's measured encodings.
+  * Section 13 models the dependency rule, not the protocol.
+* Wake propagation (25.4 rule 3) and the mixed-scale one-way proxies (25.6) are not prototyped.
+* Section 12 tests support closure and awake-stays-active in one scene only.
+* The quiet-machine rerun of the streaming tails is pending; the user's PC is in use for VR.
 * GPU cost of avatars: no renderer exists yet.
 * Real-gravity CPU at small scale is inferred from the sub-step count. The tower sleeps too fast to time it
   awake.
 * Cross-machine determinism of the f64 build: the goldens exist in box3d-rust [S], but they were not run on a
   second machine here.
+
+## 12. Support closure and awake bodies (review R16-2) [V]
+
+**Scene (`closure`):**
+* a 0.9 m crate just placed on a bed of 144 stones of 3 cm, each relevant only within 0.96 m;
+* a 1.5 cm coin knocked off a 1 m table at 1 m/s;
+* the player's anchor waits 20 m away, then walks in at 4 m/s and stops beside the crate.
+
+| Rules | Crate (rests at y = 0.51) | Stones inside the crate at the end | Coin | Bodies active (max) |
+|---|---|---|---|---|
+| Relevance + wake only (as of 45d4940) | falls to 0.45: the dormant stones are not in the world | **81** (the stones activate inside it later and overlap silently) | **frozen in mid-air at 0.94 m** | 49 |
+| + awake stays active until asleep, + one-hop support closure | stays at 0.49-0.51 (the stones shift 2 cm under it) | 0 | lands on the floor (y = 0.015) | 134 |
+
+Closure costs bodies (134 vs 49 here), because the stones under a relevant crate are simulated. Being
+one-hop, it does not pull in the rest of the bed.
+
+## 13. Liveness: does one stalled member slow distant regions? (review R16-1) [C, rule-level model]
+
+`pe-spike-chunks liveness` simulates the two dependency rules frame by frame. Inputs:
+* 60 Hz;
+* region confirmation lag 5 frames [V, 6.4];
+* world-log confirmation lag 66 frames [I, @engine-architect];
+* speculation limit 120 frames;
+* eviction 132 frames after a member's acks stop;
+* `v_max` 100 m/s and `D_merge` 3 km;
+* 50 ms to learn a neighbour's confirmed frame.
+
+One member stops acking for S seconds. The table counts frames that **unrelated** regions (not containing
+that member) cannot simulate on time:
+
+| Members, layout | Region spacing | Stall | World log on the path (45d4940) | Neighbour bound (revised) |
+|---|---|---|---|---|
+| 64 or 256, alone or in groups of 8 | 3.5 or 4 km | 0.5 s | 0 | 0 |
+| same | same | 1 s | every region loses 5 frames | 0 |
+| same | same | 2 s | every region loses 65 frames | 0 |
+| same | same | 3 s | every region loses 77 frames | 0 |
+| same | 3.2 km (2 s of slack) | 2 s / 3 s | every region loses 65 / 77 frames | the 2 nearest lose 7 / 19 frames |
+
+For 3 s stalls with 256 members alone, that is 19,635 region-frames lost under the old rule and none under
+the new one. Raw output: `spikes/out/chunks/liveness.log`.
+
+This is a model of the rules, with the protocol's lags as inputs. It shows the property, not an
+implementation of it.

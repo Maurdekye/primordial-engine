@@ -1,7 +1,8 @@
 //! R17: built-in avatar and avatar-feature culling, measured on a synthetic crowd.
 //!
-//! Culling is a per-viewer presentation decision. It reads sim state and never writes it: the
-//! presentation pass below takes `&World` only, so it cannot perturb the simulation by construction.
+//! Culling is a per-viewer presentation decision. It reads sim state and never writes it:
+//! `sim_isolation` drives the culling pass from a real region's box3d world through `&World` only (the
+//! borrow checker forbids writes) and checks that the region's per-frame hashes are unchanged.
 //! Avatar parts that do touch the sim (engaged hand colliders, an optional body collider, the activation
 //! anchor, held objects) are not part of the culled avatar at all: they are perturbation sources in the
 //! region log (7.2, 18.4, 25.5) and every region member simulates them regardless of what it renders.
@@ -252,6 +253,7 @@ fn run_case(model: &Model, c: &Crowd, policy: &str, frames: u64) -> Load {
         tiers[i] = match policy {
             "none" => 0,
             "distance" => tier(c.height[i], dist, true),
+            "frustum" => if in_view { 0 } else { 4 },
             "distance+frustum" => tier(c.height[i], dist, in_view),
             _ => tier(c.height[i], dist, in_view),
         };
@@ -288,7 +290,7 @@ pub fn run() {
     println!("== avatars (R17): per-viewer culling on a synthetic crowd ==");
     let model = Model::new();
     for (n, half, scales) in [(64usize, 50.0, false), (256, 15.0, false), (256, 100.0, false), (256, 100.0, true), (256, 1000.0, false)] {
-        for policy in ["none", "distance", "distance+frustum", "distance+frustum+budget"] {
+        for policy in ["none", "frustum", "distance", "distance+frustum", "distance+frustum+budget"] {
             let frames = if policy == "none" { 20 } else { 60 };
             let l = run_case(&model, &crowd(n, half, scales), policy, frames);
             println!(
@@ -302,5 +304,51 @@ pub fn run() {
                 l.tiers
             );
         }
+    }
+}
+
+
+/// Review R17-1: run a real region (4 ball pits with sweeping hands, the sim-relevant hand colliders)
+/// and, every frame, a culling and presentation pass whose avatars stand at the hands. The pass gets
+/// `&World` only. The region's per-frame hashes must be identical with no pass, with culling off and
+/// with full culling.
+pub fn sim_isolation() {
+    use box3d_rust::body::body_get_position;
+    use box3d_rust::recording::hash_world_state;
+    use box3d_rust::world::World;
+    let model = Model::new();
+    let pass = |world: &World, r: &crate::players::Region, policy: &str, f: u64, states: &mut Vec<AvatarState>| -> f32 {
+        let viewer = [0.0f64, 1.6, 0.0];
+        let mut acc = 0.0;
+        for (i, pit) in r.pits.iter().enumerate() {
+            let p = pe_spike_chunks::phys::pos_f64(body_get_position(world, pit.hand));
+            let d = ((p[0] - viewer[0]).powi(2) + (p[2] - viewer[2]).powi(2)).sqrt();
+            let t = if policy == "none" { 0 } else { tier(1.7, d, p[0] > viewer[0]) };
+            acc += present(&model, &mut states[i], t, f, i as u64);
+        }
+        acc
+    };
+    let mut digests = Vec::new();
+    for policy in ["no-pass", "none", "distance+frustum"] {
+        let mut r = crate::players::Region::new(4, 6.0, 0);
+        let mut states = vec![AvatarState::new(); 4];
+        let mut h = 0xcbf29ce484222325u64;
+        let mut sink = 0.0;
+        for f in 0..300u64 {
+            r.step();
+            if policy != "no-pass" {
+                sink += pass(&r.world, &r, policy, f, &mut states);
+            }
+            h = (h ^ hash_world_state(&r.world)).wrapping_mul(0x100000001b3);
+        }
+        std::hint::black_box(sink);
+        digests.push((policy, h));
+    }
+    let same = digests.iter().all(|d| d.1 == digests[0].1);
+    println!("RESULT avatars-sim-isolation digests={:?} identical={same}", digests.iter().map(|d| format!("{}:{:016x}", d.0, d.1)).collect::<Vec<_>>());
+    // Review R17-2: worst-case upload for one avatar that every other member sees at T0.
+    for viewers in [15usize, 63, 255] {
+        let up = viewers as f64 * POSE[0].0 * (POSE[0].1 + 52.0 / 8.0);
+        println!("RESULT avatars-upload viewers_at_T0={viewers} upload_kBps={:.0} (computed)", up / 1e3);
     }
 }

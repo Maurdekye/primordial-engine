@@ -2,6 +2,8 @@
 //! Build twice: default (box3d f32 positions) and `--features f64` (box3d double-precision).
 
 mod avatars;
+mod closure;
+mod liveness;
 mod physbench;
 mod players;
 mod precision;
@@ -15,9 +17,15 @@ fn main() {
         "precision" => precision::run(),
         "cost" => physbench::cost(),
         "ab" => physbench::ab(),
-        "avatars" => avatars::run(),
+        "avatars" => {
+            avatars::run();
+            avatars::sim_isolation();
+        }
+        "closure" => closure::run_all(),
+        "liveness" => liveness::run_all(),
         "far" => physbench::far(),
         "scale" => physbench::scale(),
+        "scale-mixed" => physbench::scale_mixed(),
         "spatial" => spatialbench::run(),
         "regions" => players::regions(),
         "players" => players::players(),

@@ -1,0 +1,20 @@
+pe-spike-chunks scale-mixed (box3d positions: f32)
+== scale, mixed sizes, unit = 2^round(log2 s) (f32) ==
+RESULT scale-mixed mode=f32 s=1e-4 variant=unscaled unit=1e0 box3d_size_of_s=0.000 stable=false small_ball_max_penetration_rel=0.0000 stack_drift_rel=0.0000 stack_sleep_frame=133
+RESULT scale-mixed mode=f32 s=1e-4 variant=unit=2^round(log2 s) unit=1.220703125e-4 box3d_size_of_s=0.819 stable=true small_ball_max_penetration_rel=0.0009 stack_drift_rel=0.0005 stack_sleep_frame=32
+RESULT scale-mixed mode=f32 s=1e-3 variant=unscaled unit=1e0 box3d_size_of_s=0.001 stable=false small_ball_max_penetration_rel=0.0000 stack_drift_rel=0.0000 stack_sleep_frame=94
+RESULT scale-mixed mode=f32 s=1e-3 variant=unit=2^round(log2 s) unit=9.765625e-4 box3d_size_of_s=1.024 stable=true small_ball_max_penetration_rel=0.0007 stack_drift_rel=0.0003 stack_sleep_frame=34
+RESULT scale-mixed mode=f32 s=1e-2 variant=unscaled unit=1e0 box3d_size_of_s=0.010 stable=true small_ball_max_penetration_rel=0.0704 stack_drift_rel=0.0123 stack_sleep_frame=48
+RESULT scale-mixed mode=f32 s=1e-2 variant=unit=2^round(log2 s) unit=7.8125e-3 box3d_size_of_s=1.280 stable=true small_ball_max_penetration_rel=0.0006 stack_drift_rel=0.0005 stack_sleep_frame=32
+RESULT scale-mixed mode=f32 s=1e-1 variant=unscaled unit=1e0 box3d_size_of_s=0.100 stable=true small_ball_max_penetration_rel=0.0070 stack_drift_rel=0.0017 stack_sleep_frame=37
+RESULT scale-mixed mode=f32 s=1e-1 variant=unit=2^round(log2 s) unit=1.25e-1 box3d_size_of_s=0.800 stable=true small_ball_max_penetration_rel=0.0009 stack_drift_rel=0.0005 stack_sleep_frame=32
+RESULT scale-mixed mode=f32 s=1e0 variant=unscaled unit=1e0 box3d_size_of_s=1.000 stable=true small_ball_max_penetration_rel=0.0007 stack_drift_rel=0.0005 stack_sleep_frame=32
+RESULT scale-mixed mode=f32 s=1e0 variant=unit=2^round(log2 s) unit=1e0 box3d_size_of_s=1.000 stable=true small_ball_max_penetration_rel=0.0007 stack_drift_rel=0.0005 stack_sleep_frame=32
+RESULT scale-mixed mode=f32 s=1e1 variant=unscaled unit=1e0 box3d_size_of_s=10.000 stable=true small_ball_max_penetration_rel=0.0001 stack_drift_rel=0.0001 stack_sleep_frame=35
+RESULT scale-mixed mode=f32 s=1e1 variant=unit=2^round(log2 s) unit=8e0 box3d_size_of_s=1.250 stable=true small_ball_max_penetration_rel=0.0006 stack_drift_rel=0.0005 stack_sleep_frame=33
+RESULT scale-mixed mode=f32 s=1e2 variant=unscaled unit=1e0 box3d_size_of_s=100.000 stable=true small_ball_max_penetration_rel=0.0000 stack_drift_rel=0.0000 stack_sleep_frame=30
+RESULT scale-mixed mode=f32 s=1e2 variant=unit=2^round(log2 s) unit=1.28e2 box3d_size_of_s=0.781 stable=true small_ball_max_penetration_rel=0.0009 stack_drift_rel=0.0003 stack_sleep_frame=33
+RESULT scale-mixed mode=f32 s=1e3 variant=unscaled unit=1e0 box3d_size_of_s=1000.000 stable=true small_ball_max_penetration_rel=0.0000 stack_drift_rel=0.0000 stack_sleep_frame=30
+RESULT scale-mixed mode=f32 s=1e3 variant=unit=2^round(log2 s) unit=1.024e3 box3d_size_of_s=0.977 stable=true small_ball_max_penetration_rel=0.0007 stack_drift_rel=0.0005 stack_sleep_frame=32
+RESULT scale-mixed mode=f32 s=1e4 variant=unscaled unit=1e0 box3d_size_of_s=10000.000 stable=true small_ball_max_penetration_rel=0.0000 stack_drift_rel=0.0000 stack_sleep_frame=30
+RESULT scale-mixed mode=f32 s=1e4 variant=unit=2^round(log2 s) unit=8.192e3 box3d_size_of_s=1.221 stable=true small_ball_max_penetration_rel=0.0006 stack_drift_rel=0.0005 stack_sleep_frame=32

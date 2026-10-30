@@ -7,6 +7,8 @@
 #            copy of the crate; skipped when unset)
 # Output: spikes/out/chunks/*.log
 set -euo pipefail
+# Machine-load rule (2026-10-30): run this at low priority with capped jobs, e.g. from Git Bash:
+#   CARGO_BUILD_JOBS=4 cmd //c start "" //low //b //wait bash scripts/run_chunks_bench.sh
 cd "$(dirname "$0")/../spikes/chunks"
 OUT=../out/chunks
 mkdir -p "$OUT"
@@ -36,8 +38,11 @@ for round in 1 2 3 4 5 6 7 8; do
 done
 run far far
 run scale scale
+run scale-mixed scale-mixed
 run regions regions
 run players players
 run streaming streaming
 ./target/release/pe-spike-chunks spatial | tee "$OUT/spatial.log"
 ./target/release/pe-spike-chunks avatars | tee "$OUT/avatars.log"
+./target/release/pe-spike-chunks closure | tee "$OUT/closure.log"
+./target/release/pe-spike-chunks liveness | tee "$OUT/liveness.log"

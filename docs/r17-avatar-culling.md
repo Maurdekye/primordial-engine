@@ -1,6 +1,6 @@
 # 26. Built-in avatar and avatar-feature culling (R17)
 
-Status: draft. Author: @world-chunks. Branch `chunks/r16`. Measurements in 26.6 come from
+Status: revised after @design-reviewer's review of 45d4940 (R17-1 to R17-3). Author: @world-chunks. Branch `chunks/r16`. Measurements in 26.6 come from
 `spikes/chunks` (`pe-spike-chunks avatars`); logs are in `spikes/out/chunks/avatars.log`.
 Tags: **[V]** measured here, **[S]** read in source, **[I]** inferred or proposed.
 
@@ -25,8 +25,13 @@ per viewer, for whole avatars and for each feature class.
   | Held or worn objects | ordinary sim objects with a claim (8.4) | never; their meshes are presentation and may be culled |
   | Avatar logic that writes sim state | a sim module, committed to the world (13), not an avatar feature | never |
 * **Enforced structurally:** presentation modules cannot write sim components (7.4), and the culling pass
-  reads the sim through a shared reference only (the prototype's presentation pass takes `&World`). A culled
+  reads the sim only through a shared reference (`&World`), so the compiler forbids writes. A culled
   avatar's hands still push balls on every peer.
+* **Checked [V]** (`avatars-sim-isolation`):
+  * Setup: a real region of 4 ball pits with sweeping hand colliders ran 300 frames, with a culling and
+    presentation pass every frame whose avatars stand at the hands.
+  * The region's per-frame hash digest was identical (`7418e4f8aeb60229`) with no pass, with culling off,
+    and with full culling.
 
 ## 26.2 Tiers per viewer
 
@@ -61,8 +66,13 @@ uses for simulation relevance, so a giant is detailed from far away and a tiny p
 * Avatars beyond the viewer's regions are known only through world-log anchors (chunk level). They are
   drawn as T3 impostors at their anchor chunk when large enough to see, or not at all.
 * **Pose streams follow the tiers.** A viewer subscribes to a remote avatar's pose stream at its tier's
-  rate (a presentation subscription, not a log). Bandwidth then scales with what you can see, not with
-  the session size.
+  rate (a presentation subscription, not a log). Received bandwidth then scales with what you can see,
+  not with the session size.
+* **Upload is the sum of everyone's subscriptions** (review R17-2). An avatar that everyone sees at T0
+  (a stage performer, a giant) uploads 179 kB/s to 15 viewers, 750 kB/s to 63, and 3.0 MB/s to 255 [C].
+  * The sender serves at most 16 full-rate subscribers directly (configurable).
+  * Further viewers get the stream relayed through subscribers, chosen by a deterministic fan-out tree.
+  * Pose streams are presentation data, so a relay adds latency but no correctness risk.
 
 ## 26.4 Determinism
 
@@ -94,16 +104,26 @@ The viewer stands at the centre with a 110° field of view. GPU work is not time
 skinned vertices, draws, lights and particles are reported as proxies. Pose bandwidth uses the per-tier rates
 in 26.2. Full table: [r16-chunks-results.md](r16-chunks-results.md) section 10.
 
-| Crowd (256 avatars unless noted) | CPU per frame, none → culled | Skinned vertices | Pose stream received |
-|---|---|---|---|
-| 64 in 100 x 100 m | 8.9 → **1.1 ms** [V] | 1.28 M → 166 k [C] | 762 → **119 kB/s** [C] |
-| 30 x 30 m, packed | 34.9 → **6.6 ms** (the budget does most of it) [V] | 5.12 M → 912 k | 3.0 MB/s → **657 kB/s** |
-| 200 x 200 m | 38 → **2.6-3.1 ms** [V] | 5.12 M → 342 k | 3.0 MB/s → **277 kB/s** |
-| 200 x 200 m, 10% tiny and 10% giant | 47 → **3.9-4.5 ms** [V] | 5.12 M → 470 k | 3.0 MB/s → **344 kB/s** |
-| 2 x 2 km | 38 → **0.07-0.09 ms** [V] | 5.12 M → 8 k | 3.0 MB/s → **29 kB/s** |
+Two baselines (review R17-3):
+* **none:** every avatar at full detail;
+* **frustum only:** full detail inside the view, nothing outside it, which is what any engine does by default.
 
-* Typical crowds: 8 to 15 times less CPU, 7 to 15 times fewer skinned vertices, 6 to 11 times less pose
-  bandwidth. Lights are capped at 8.
+The second run executed at low process priority (the machine-load rule), so its CPU figures are higher and
+noisier.
+
+| Crowd (256 avatars unless noted) | CPU per frame: none / frustum only / R17 tiers | Skinned vertices: frustum only → R17 | Pose stream received: frustum only → R17 |
+|---|---|---|---|
+| 64 in 100 x 100 m | 8.9-11.3 / 2.9 / **1.1-1.4 ms** [V] | 340 k → 166 k [C] | 203 → **119 kB/s** [C] |
+| 30 x 30 m, packed | 35-45 / 16.4 / **6.6-8.6 ms** [V] | 1.80 M → 912 k | 1,072 → **657 kB/s** |
+| 200 x 200 m | 38-47 / 15.6 / **2.6-3.2 ms** [V] | 1.80 M → 342 k | 1,072 → **277 kB/s** |
+| 200 x 200 m, 10% tiny and 10% giant | 47-54 / 16.1 / **3.9-5.1 ms** [V] | 1.66 M → 470 k | 989 → **344 kB/s** |
+| 2 x 2 km | 38-51 / 12.3 / **0.07-0.19 ms** [V] | 1.14 M → 8 k | 679 → **29 kB/s** |
+
+* **Against frustum-only culling**, the R17 tiers save about 2 times the CPU in dense or small crowds and
+  about 5 times in a 200 m crowd. Against no culling at all, they save 8 to 15 times.
+* In the 200 m crowd the distance tiers do the work; the budget adds nothing there. In the packed crowd
+  the budget matters.
+* Lights are capped at 8.
 * The angular-size rule handles scale without special cases: giants stay detailed further out, tiny players
   drop sooner.
 * Single-run CPU numbers vary by about ±20% under the machine's load.
