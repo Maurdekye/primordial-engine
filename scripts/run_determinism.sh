@@ -18,7 +18,7 @@ same() { if cmp -s "$1" "$2"; then check ok "$3"; else check bad "$3"; fi; }
 
 echo "== build"
 cargo build --release -q -p pe-spike-physics -p pe-spike-session-sim -p pe-spike-p2p \
-  -p pe-spike-wasm-hotswap -p pe-spike-mcp-stub || exit 1
+  -p pe-spike-wasm-hotswap -p pe-mcp || exit 1
 if has physics; then cargo build -q -p pe-spike-physics || exit 1; fi
 
 if has physics; then
@@ -74,11 +74,12 @@ if has wasm; then
 fi
 
 if has mcp; then
-  echo "== MCP stub"
-  ./target/release/pe-spike-mcp-stub < spikes/mcp-stub/session.jsonl > spikes/out/mcp-session.out.jsonl 2> $O/mcp-stub.err
+  echo "== MCP server (pe-mcp, embedded stdio bench)"
+  # Requests are answered concurrently; sorting the lines (by id) makes the file comparable across runs.
+  ./target/release/pe-mcp stdio < crates/pe-mcp/session.jsonl 2> $O/mcp.err | sort > spikes/out/mcp-session.out.jsonl
   n=$(grep -c '"jsonrpc"' spikes/out/mcp-session.out.jsonl)
   [ "$n" = 10 ] && r=ok || r=bad
-  check $r "MCP stub: $n of 10 responses"
+  check $r "pe-mcp: $n of 10 responses"
 fi
 
 if has session; then
