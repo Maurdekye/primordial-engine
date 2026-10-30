@@ -357,7 +357,7 @@ fn backdate() {
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 13), peers, 11_000_000);
         sim.run();
         let r = sim.replica(1, 1);
-        for e in r.sim.all_entries().into_iter().filter(|e| e.member == 3) {
+        for e in r.sim.all_entries().into_iter().filter(|e| e.member == 3 && matches!(e.payload, Payload::Touch { .. })) {
             println!(
                 "  part {part}: member 3 entry stamped {} -> effective {:?} (void: {})",
                 e.stamp,

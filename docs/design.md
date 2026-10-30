@@ -51,7 +51,7 @@ against this list. Where the order changed an answer, the text says so. Examples
 7. Perturbations: state + canonical frame (R3, R6)
 8. "Soonest wins" without a central authority (R5)
 9. Sync checks and divergence repair (R6)
-10. P2P topology, transport and the session log (R1)
+10. P2P topology, transport and the session log (R1; 10.9 recovery when the network degrades, R18)
 11. Peer discovery (R9)
 12. Authority model (R1, R7, R8)
 13. Live game logic in Rust (R7, 100%-Rust clarification)
@@ -169,17 +169,18 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Sim tick | 60 Hz (16.7 ms), or 90 Hz for VR-heavy worlds (D4) | — |
 | Sim-thread work per tick, per world, including rollback | ≤ 8 ms; anything beyond that is amortized over the next ticks (6.5) | — |
 | Physics step per world | ≤ 1 ms at the MVP body budget, about 500 awake bodies (D2) | 0.36 ms at 256 bodies, 1.5-1.9 ms at 1,024 [V b6]; 0.35 ms for the 500-ball pit [V session-sim] |
-| Typical rollback depth | one-way latency + ack interval: 4-8 frames | max 4 at 60 ms ± 20 ms, 9-14 with loss [V session-sim, p2p-v2] |
-| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls | 2.76 ms at 60 Hz [V ballpit]; 0.27 ms with the opt-in 4-frame input delay (default 0, D41) |
-| Confirmation (finality) | ≤ 150 ms on 30-60 ms links | 4-5 frames (67-83 ms) at 50 ms ± 15 ms [V session-sim r14] |
+| Typical rollback depth | one-way latency + ack interval: 4-8 frames | max 4 at 60 ms ± 20 ms, 9-14 with loss [V session-sim, p2p-v2]; deeper for a late receiver, which now pays for its own lateness (8.2): 38 frames after a 600 ms delay [V session-sim outage] |
+| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls, 60 Hz, 2 members, ≤ 60 ms one-way | 289-298 re-simulated frames/s ≈ 2.6-2.8 ms per frame at 60 Hz [V ballpit, work counts × 0.35 ms per step]. **Over budget** at 90 Hz (597 frames/s, about 3.7 ms per 11.1 ms frame) and at 100 ms one-way (6-8 ms of total sim CPU per frame) [V ballpit-90hz, observer-100] (review NEW-15); budgeted per latency band, with p99 ticks (6.8). 0.27 ms with the opt-in 4-frame input delay (default 0, D41) |
+| Confirmation (finality) | ≤ 200 ms on 30-60 ms links | 8.5 frames (142 ms) at 50 ms ± 15 ms [V session-sim r14, round 2; 4.2 frames in 3d0f98a, before stable-data confirmation] |
 | Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3 |
 | Game logic per tick, per world | ≤ 1 ms | 6.4 ms in wasmi, 1.6 ms in wasmtime/Cranelift, 0.9 ms native at 10k entities [V iteration-benchmark 4.1] |
-| **Logic edit to first frame in a live session** (one-function edit) | **≤ 0.5 s** on the author's peer at up to ~10k LOC; ≤ 1.5 s at 45k LOC | 0.45 s at 6.4k LOC, 1.2 s at 45k LOC (`rel-fast` profile) [V iteration-benchmark 3.1, 3.2] |
+| **Logic edit, local build and swap** (one-function edit) | ≤ 0.5 s at up to ~10k LOC; ≤ 1.5 s at 45k LOC | 0.42-0.45 s at 6.4k LOC, 1.2-1.3 s at 45k (`rel-fast`, wasmi, idle machine) [V iteration-benchmark; reviewer rerun]. 0.58 s with 8 busy processes, 0.83-1.01 s with 14 (D12-4) |
+| **Logic edit to every peer in a live session** | ≤ 1.2 s | ≈ 1.05 s: build and swap 0.45 + confirmation 0.1 + activation lead 0.5 [V components; I total] (D12-4) |
 | Commit visible to every peer | confirmation + activation lead ≈ 0.1 s + 0.5 s | 15.2 |
 | Shader edit to visible | ≤ 100 ms locally (naga validation is milliseconds [I]) + the same commit path | 14 |
-| Hot swap at a frame | ≤ 10 ms | 6 ms in wasmi, 29 ms with Cranelift's JIT [V iteration-benchmark 3.1] |
+| Hot swap at a frame | ≤ 10 ms on the sim thread | 6 ms in wasmi; Cranelift 27-35 ms, so it compiles off-thread during the activation lead (13.3) [V iteration-benchmark, reviewer] |
 | Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6 |
-| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s | 14.7 kB/s both directions [V ballpit] |
+| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s), 18.8 kB/s per message [V r18 capped, ballpit]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
 | Head motion to photon (VR) | < 20 ms | 18.5 |
 
 ---
@@ -249,9 +250,11 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 5. All inputs that enter the sim are quantized to exact f32 bit patterns at the boundary (VR poses: 18.4).
 6. NaN never enters the sim. Host boundaries reject non-finite values [V d1 host checks]. WASM NaN payloads
    are canonicalized by wasmi's `deterministic` feature [S wasmi_core `value.rs`].
-7. Every peer in a session runs a bit-identical engine build. Admission checks the engine build ID, and
-   Box3D snapshot images carry a layout hash [S port `snapshot/mod.rs`]. The toolchain is pinned in
-   `rust-toolchain.toml`.
+7. Every peer in a session runs the same engine version with the same sim-relevant configuration, verified
+   by the CI determinism matrix (rule 8). Binaries differ by OS, so "bit-identical build" was unsatisfiable
+   (review D12-1). Admission checks the engine version, and Box3D snapshot images carry a layout hash
+   [S port `snapshot/mod.rs`]. The engine's toolchain pin is engine metadata, never a `rust-toolchain.toml`
+   in a world repo (15.6, review NEW-8).
 8. A CI determinism matrix (Windows x64, Linux x64, Linux arm64, macOS arm64; debug and release; native and
    wasm32) compares golden traces on every change. It also catches regressions in box3d-rust updates.
 9. **NaN and the FP environment (review L2).** A debug assertion checks every body's state is finite after
@@ -293,8 +296,8 @@ The port has a `double-precision` feature, which maps to `BOX3D_DOUBLE_PRECISION
   * a peer compares its present with the median horizon of the other members, corrected for measured
     one-way latency;
   * it slews its clock by up to 1% towards that median, whether it runs ahead or behind;
-  * a peer that stays behind the majority by more than the late allowance has its entries re-stamped
-    later anyway (8.2), so running behind wins nothing.
+  * a peer that runs behind gains nothing: its published horizons bind it (8.2), and if it stalls
+    confirmation it is demoted to spectator (10.9).
 * **Rendering** runs at display rate: monitor vsync, or `xrWaitFrame` at 90-120 Hz in VR (review M2):
   * Sim objects are drawn at the **predicted display time**. The newest published state is extrapolated
     with its velocities by the elapsed fraction of a frame, then error-smoothed (next bullet). Pure
@@ -354,30 +357,44 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 * Byte-delta compression of images was measured and does not help (6.8). Sync-state-only guest snapshots
   (7.4) remain planned.
 
-### 6.4 Confirmed frame and the speculation limit (review C1)
+### 6.4 Confirmed frame and the speculation limit (reviews C1, NEW-1, NEW-2)
 
 * **Phase 1 was wrong here.** Whether an input was "too late" depended on when it reached each peer, so two
   honest peers could disagree and fork for good [V review C1 repro: an input for frame 50 admitted at frame
   169 and refused at frame 171].
-* **Now every admission and finality decision is a function of signed, broadcast data, never of local
-  arrival time:**
-  * each member's periodic **ack** states its *horizon* (it will author nothing stamped at or before it)
-    and the entries it holds (10.8);
-  * frame *f* is **confirmed** once every member has published a horizon ≥ *f* and holds every entry that
-    could be stamped at or before *f*, with identical ids;
-  * an entry stamped at or before the confirmed frame can only be a duplicate or a provable protocol
-    violation, and every member refuses it identically;
-  * an entry stamped after the confirmed frame is always admitted, and the peer rolls back if it has
-    already simulated that frame.
-* **Rollback only reaches unconfirmed frames.** Confirmed frames are final: they are never rolled back,
-  SCM commits and ACL entries take effect only at confirmed frames (12.2, 15.2), and R14 relays only
-  confirmed facts (22.6).
+* **3d0f98a was still wrong, in a subtler way** (review round 2, NEW-1). It computed the confirmed frame
+  and admission verdicts from acks: signed, but point-to-point messages that nobody compared. A member that
+  sent different acks to different peers forked them. So did a 6.5 s one-way ack outage among honest members.
+  [V reviewer repros `ackfork` and `outage`, both forked before the fix]
+* **Now every input to a decision is an entry in its author's hash chain** (10.8). That covers
+  perturbations, acks (horizon, holdings, check hash) and votes. Two different versions of one chain
+  position are a transferable proof of equivocation (9.3).
+* **Confirmation uses stable data only.**
+  * A chain entry is *stable* once every member's chain references it with the same id.
+  * Frame *f* is **confirmed** once, for every member, a stable prefix of its chain declares a horizon of at
+    least *f*. A horizon is a promise to author nothing stamped at or before it.
+  * Any two members that confirm *f* used the same entries (Wuu and Bernstein's 2-D time table, over signed
+    hash chains; 10.8).
+* **No admission decision depends on the confirmed frame.** Validity is chain-local (8.2). The confirmed
+  frame only drives finality (SCM, ACL and R14 relays act on confirmed facts) and trimming.
+* **Confirmed frames are final, and the code asserts it** (NEW-2).
+  * An equivocation found after confirmation keeps the stable version (9.3).
+  * An eviction never changes an effective frame, because nothing is ever re-stamped (8.2).
+  * Reaching a rollback below the confirmed frame aborts with "protocol invariant violated" instead of
+    rolling back. No scenario reaches it [V session-sim, 26 scenarios].
 * **Speculation limit W = 120 frames (2 s, D4).** A member whose present runs W frames ahead of the
-  confirmed frame stops advancing its sim (it keeps networking) until confirmation catches up. Persistent
-  stalls trigger a membership change (10.8).
-* **Measured** [V session-sim c1]: the reviewer's scenario rerun on the new protocol. Member 3's link was congested for about 2 s, so its frame-50 entry reached the other two members at about their frames 169 and 171. No member refused it. Both had seen it about 2 s late, so the arrival bound (8.2) moved it to frame 153 deterministically. All three 700-frame histories were bit-identical and equal to an offline replay of the final log; 50 of 50 check frames matched. The two waiting members paused 6-9 frames at the speculation limit; the congested member rolled back once, 118 frames. Before: the same input forked the peers for good.
-* **Typical confirmation lag** on 30-60 ms links: 4-5 frames (67-83 ms) behind the present on 50 ms ± 15 ms links, with acks every two frames [V session-sim r14: member 2's average lag was 5.0 and 3.9 frames in two windows].
-* Decision: **D36** (finality and membership).
+  confirmed frame stops advancing its sim. It keeps networking until confirmation catches up. Persistent
+  stalls lead to a view change (10.8) and, for a member that is the cause, demotion (10.9).
+* **Measured** [V session-sim c1]: the reviewer's congestion scenario on the round-2 protocol.
+  * Member 3's frame-50 entry reached the others about 2 s late.
+  * It kept its frame: nothing is re-stamped (user rule 14:31Z). The two waiting members rolled back
+    116 frames (about 80-86 ms of re-simulation each) and paused 18 frames at the limit.
+  * All three 700-frame histories were bit-identical and equal to an offline replay of the final log.
+* **Confirmation lag** on 50 ms ± 15 ms links with 1% loss, acks every two frames: **8.5 frames
+  (142 ms)** [V session-sim r14]. It was 4.2 frames in 3d0f98a.
+  * The extra ack round is the price of deciding only from data every member is known to hold. It costs
+    finality latency, not responsiveness: rollback depth and local reaction do not change.
+* Decisions: **D36** (finality and membership), **D54** (stable-data confirmation).
 
 ### 6.5 Re-simulation budget (review M1)
 
@@ -610,8 +627,9 @@ against the final confirmed history over the sweep.
   * Proposal [I]: smooth corrections below about 5 cm over 50 ms, glide larger ones over 100 ms, and snap
     above about 0.5 m.
 * **The hand rule is a world rule, not a local option.**
-  * At 100 ms with 2% loss, some lost hand entries were fetched more than 15 frames late and re-stamped
-    (8.2), which left a few confirmed frames without an entry.
+  * At 100 ms with 2% loss, measured on 442286f before round 2 removed re-stamping, some lost hand
+    entries were fetched more than 15 frames late and re-stamped, which left a few confirmed frames without
+    an entry. Under round 2 the same happens by design whenever the author thins its hand stream (10.9).
   * The rule then shaped confirmed history: hold and dead reckoning produced different end states, each
     identical across members [V observer-100].
   * Decision **D52**.
@@ -733,7 +751,25 @@ every player, perfectly synced, and optimized for CPU and memory.
 * **Overwrites can erase late indirect effects.** An earlier-stamped entry that arrives late and pushed the
   touched object indirectly loses its effect on that object at *f*. The carried state wins, identically on
   every peer. Claims (8.4) prevent the direct case.
-* **Re-stamped entries drop their carried state** (8.2), because it describes a different frame.
+* **Nothing is re-stamped** (8.2), so every entry's carried state describes the frame it lands on, and is
+  always applied.
+* **A lossy session's outcome depends on network timing. This is deterministic given the log, but the log
+  itself depends on timing** (reported by @design-reviewer with vdW on, user note 14:49Z).
+  * The carried state is the author's *speculative* result: what the author's sim computed when it acted,
+    with whatever entries had reached it by then.
+  * So whether an earlier remote entry arrived before the author acted changes the bits it carries, and
+    with them the final history. In the reviewer's runs the UDP `loss10` and `fault` final digests varied
+    from run to run, while both peers and the offline replay always agreed.
+  * This is the user's rule working as intended: *an author never sees its own interaction corrected.* The
+    object the author touched ends where the author saw it end, on every peer. What varies with timing is
+    whose view other objects follow when two players' effects meet.
+* **"Contended" should mean causally connected, not "the same object"** [I, proposal].
+  * With vdW on, uncontended acceptance at the instant in `diverged` dropped from 23/23 to 21/23. Both
+    misses were object 5 at frame 333: its author had not yet seen another member's touch on object 77,
+    whose effect reached object 5 through the pile.
+  * Final-history acceptance stayed 23/23 [V @vdw-physics, b8f130c].
+  * The acceptance metric should therefore count as contended any check whose object shared a contact
+    island with another member's touch in the previous 10 frames.
 
 ### 7.4 Logic and component state: what is synchronized, what stays local
 
@@ -824,22 +860,42 @@ Whether that reading is right is **D39**.
 An entry's canonical frame is the frame its author stamps it with: the author's present when it acted. Its
 own effect is applied locally at once, so the author sees no added delay.
 
-### 8.2 Effective frame: bounding backdating (review H5)
+### 8.2 Effective frame: an entry takes effect at its stamp (reviews H5, NEW-1; user rule 14:31Z)
 
-The phase-1 defence ("stamps may not precede the author's own sent-at frame by more than 2 frames")
-constrained nothing, because both numbers came from the author. Two constraints replace it:
-1. **Published horizons are commitments.** Every ack publishes a horizon. An entry stamped at or before a
-   horizon that its author already published is a provable violation (two signed messages), and every
-   member voids it [V session-sim backdate part 1].
-2. **The majority's arrival bounds the stamp.** Members report entries that reached them more than the late
-   allowance L (default 15 frames, 250 ms) after their stamp. The **effective frame** is
-   `max(stamp, k-th smallest arrival frame among the other members - L)`, with k a majority. It is a
-   deterministic function of signed reports, and final once the frame is confirmed
-   [V session-sim backdate part 2].
+**The rule: an entry's effective frame is its stamp. Nothing is ever re-stamped.**
+* 3d0f98a moved late entries to "the lower median of the other members' arrival frames, minus a 15-frame
+  allowance". That rewrote authors' own past.
+  * At 300 ms one-way, the engager rolled its own history back 107 times, up to 76 frames deep, and its pit
+    visibly snapped (@ballpit-viz, viz-2).
+  * The late reports it depended on were per-receiver ack contents, which forked members (NEW-1), and they
+    grew without bound under congestion (viz-3).
+* **User rule (14:31Z): an author never sees its own interaction corrected. Lateness is paid by the late
+  receiver**, through a deeper rollback or a bounded catch-up.
 
-**Result:** a cheater gains at most about L minus its real latency, and only by publishing late horizons,
-which delays confirmation for everyone and is visible. This bounds cheating; it does not prevent it. MVP
-sessions are trust-based (D21). The allowance is **D42**.
+**What still bounds backdating:** two chain-local rules. Every member that holds the author's chain applies
+them identically, so they can never fork anyone.
+1. **Published horizons are binding.** An entry stamped at or before a horizon that its author declared
+   earlier in its own chain is void for every member [V session-sim backdate part 1: three entries stamped
+   20 frames back were void everywhere].
+2. **A horizon may not lag its own ack.** An ack whose horizon is more than `horizon_slack` frames
+   (default 2) behind the ack's own stamp is void.
+   * So a member cannot hold a backdating window open by publishing stale horizons.
+   * Trying only stops confirmation: every member voids all such acks, and confirmation stalls until a
+     view change removes that member [V session-sim backdate part 2: all 318 acks void for every member,
+     with no window opened].
+
+**What a cheater can still do:**
+* backdate within one ack interval plus the slack, about 4 frames (67 ms) at the defaults;
+* claim a present that lags the true one. That looks exactly like a slow link: it is accountable (others
+  see the member's stamps consistently trail their own clocks) but not provable.
+
+Accordingly, the residual H5 risk is smaller than before (about 4 frames instead of about L = 15), not zero.
+A cheater can still pick, within that window, a frame where `tie_rank` favours it (8.3). MVP sessions are
+trusted or invite-only (D21).
+
+**Beyond any hard bound:** a member whose entries or acks persistently arrive more than half the
+speculation limit late stalls everyone's confirmation. It is demoted to a spectator by a view change rather
+than allowed to rewrite others' history (10.9). The decision is **D42**, revised.
 
 ### 8.3 Total order and the tie-break (user ruling 09:32Z)
 
@@ -877,42 +933,81 @@ sessions are trust-based (D21). The allowance is **D42**.
 
 * **Every frame:** Box3D body transforms and velocities, plus every engine table (claims, objects, escrow,
   arrivals) and the frame number. This is cheap and used for local diagnostics.
-* **At check frames:** the **full world image plus tables** (review H4), i.e. everything that rolls back,
-  including contacts, warm-start impulses and sleep timers. At 256 bodies this costs a save, about
-  0.25 ms [V b6].
+* **At check frames:** the **full world image plus tables** (review H4): everything that rolls back,
+  including contacts, warm-start impulses and sleep timers.
+  * The image is made canonical before hashing: it is restored into a scratch world and serialized again
+    (review NEW-7).
+  * Without that step, a world that rolled back across a destroy and one that stepped straight through it
+    held identical physics but different image bytes. The `r14-throttle` run then reported 24 false
+    mismatches.
+  * The round trip costs one restore plus one save per check frame (every 30 frames) [V session-sim
+    r14-throttle: 18 ok / 0 bad in world A, 15 ok / 0 bad in world B].
 * **Objects:** the per-object state hashes that carried state (7.3) is compared against.
 
 ### 9.2 Cadence
 
 * **On every interaction:** the carried state is compared with, and if needed applied over, the
   receiver's own result (7.3).
-* **Periodic:** every 30 frames, but only at **confirmed** frames. There, every member holds the same
-  entries by construction, so any mismatch is true nondeterminism, never a missing entry (review H4).
-  Every session-sim scenario and every UDP run: 0 mismatches at confirmed frames (e.g. 52/52 per member in the state-frame and loss runs) [V].
+* **Periodic:** every 30 frames, but only at **confirmed** frames that this member has finished simulating
+  with the complete log. A member with a re-simulation pending never compares (viz-1).
+  * There, every member holds the same entries by construction, so any mismatch is true nondeterminism,
+    never a missing entry (review H4).
+  * The check hash travels inside the author's ack entry, so a member that shows different hashes to
+    different peers is equivocating (NEW-1).
+  * Measured: 0 mismatches in every session-sim scenario, including `r14-throttle`. `run_session_sim.sh`
+    now fails on any bad check [V]. Every UDP run: 24 ok, 0 bad [V p2p-v2].
 
 ### 9.3 Repair
 
-* **Missing entry (the common case):** acks list what each member holds. A member that lacks an entry sees
-  the gap at the next ack and fetches it, before the frame can be confirmed. Then it rolls back to the
-  entry's canonical frame. That frame *is* "the earliest frame at which a player interfered with the
-  object" (R6), so no hash-range search is needed.
-  * [V session-sim diverged: member 2 missed member 3's frame-300 entry; it fetched the entry by gap detection, the histories ended bit-identical, and member 1's later touch on the same object had already pulled that object onto the shared world line through its carried state]
-* **Equivocation (review C2):**
-  * entry identity is the hash of the entry; each member's entries form a hash chain;
-  * two signed entries with the same (member, seq) are a transferable proof;
-  * both are voided, and a strict-majority vote evicts the member;
-  * [V session-sim c2: member 9 sent different seq-1 entries to members 1 and 2. Both saw the disagreement in each other's acks, fetched the other version, voided both and evicted member 9 by majority vote about 10 frames after the frame-50 entry. Their 450-frame histories were identical and equal to an offline replay. Before: first-seen-wins left them diverged for good].
-* **Same entries, different state (true nondeterminism):** never observed in any spike. With 3 or more
-  members, the majority state at the confirmed frame wins and minority members take a state transfer.
-  With exactly 2 there is no majority: both members re-simulate from the last agreed confirmed frame, and
-  if they still differ, both pause and report. No member's state is privileged (review M7, D6).
+* **Missing entry (the common case).**
+  * Each ack entry lists the head that its author holds of every other chain. An entry that arrives past a
+    hole in its author's chain shows the hole directly.
+  * Either way the member fetches the missing seqs, from the author or from whoever holds them, before the
+    frame can be confirmed. Then it rolls back to the entry's canonical frame.
+  * That frame *is* "the earliest frame at which a player interfered with the object" (R6), so no
+    hash-range search is needed.
+  * [V session-sim diverged and loss (10% loss on every link): all histories bit-identical and equal to an
+    offline replay. V p2p-v2 fault: the dropped entry's hole was seen 2 frames later and fetched.]
+* **Equivocation (reviews C2, NEW-1, NEW-2).** Two signed versions of one (member, seq) are a transferable
+  proof.
+  * Every member that holds the proof:
+    1. **freezes** what it will ever reference of that chain;
+    2. publishes a **vote** entry naming its frozen head;
+    3. broadcasts both versions.
+  * **Before eviction is decided**, every entry from the disputed seq on is withdrawn, except those that
+    are already **stable**: held identically by every member, and so possibly confirmed somewhere.
+  * **Eviction** is decided once every remaining member has voted (a strict majority of the epoch).
+    * The **cut** is the longest common prefix of the voters' frozen heads.
+    * Entries after the cut are void. The evicted member stops counting from the frame after its last valid
+      horizon.
+    * Any stable entry is inside the cut, so no confirmed frame ever changes. This is virtual synchrony's
+      flush, decided from chain data alone.
+  * Measured on the reviewer's repros, ported to session-sim [V]:
+    * `ackfork`: member 9 showed member 2 a different chain. Both honest members found the conflict,
+      evicted 9 with a cut before its touch, and agreed. Before, they forked.
+    * `lateequiv`: a second version of an already-confirmed entry. The stable version stood, 9 was evicted
+      (cut at seq 103, from frame 206), and nobody panicked. Before, every honest member crashed.
+    * `evict`: after an eviction, a late entry kept its frame (60) on every member. Before, a member crashed.
+    * c2 equivocation before confirmation: as in 3d0f98a, both members ended equal and equal to the replay.
+  * Decision: **D55**.
+* **Same entries, different state (true nondeterminism):** never observed in any spike.
+  * With 3 or more members, the majority state at the confirmed frame wins and minority members take a
+    state transfer.
+  * With exactly 2 there is no majority. Both re-simulate from the last agreed confirmed frame; if they
+    still differ, both pause and report.
+  * No member's state is privileged (review M7, D6).
 
 ### 9.4 Reliability
 
-* Acks are periodic, so a lost ack is superseded by the next one.
-* Fetches retry while a gap persists.
-* Check hashes are sent once a check frame is confirmed and evaluated once per (frame, member).
-* Under 10% loss: 52 of 52 check frames compared per member pair, and every history converged [V session-sim loss]. The phase-1 spike completed only 28 and 27 of 31 checks at 10% loss.
+* Acks are chain entries, so a lost ack is a hole that gets fetched like any other entry. A member
+  therefore never misses another's horizon or check hash.
+  * The 3d0f98a ack repeated late reports only until stamp + 2W, which forked members after a 6.5 s
+    outage (NEW-1). Under the round-2 protocol, members 2 and 3 both rolled back 38 frames to the late
+    entry, and all three histories matched the replay [V session-sim outage].
+* Fetches are rate-limited per (holder, author) and retried while a hole persists.
+* Under 10% loss: all three histories bit-identical, 51 of 51 acceptance checks equal to the author's final
+  history [V session-sim loss]. Over UDP with 10% loss: both peers equal, 24 ok / 0 bad checks
+  [V p2p-v2 loss10].
 
 ### 9.5 State transfer (late join, minority repair, long-parked worlds) [I]
 
@@ -976,8 +1071,8 @@ if our bulk transport proves weak.
   loopback with 10-60 ms of injected one-way jitter.
 * **Clocks are monotonic** (review L6). The offset is slewed, never stepped.
 * **RTT is measured by the receiver, from its own send and receive times** (review H5). The remote's
-  reported receive time is used only for the offset, never to excuse lateness: arrival-based re-stamping
-  (8.2) uses the receivers' own clocks.
+  reported receive time is used only for the offset, never to excuse lateness. Since round 2 nothing is
+  re-stamped (8.2): clocks only place an author's entries at its own present.
 * Continuous re-estimation, and a median across peers [I].
 
 ### 10.5 NAT traversal without a central server [I]
@@ -1113,34 +1208,141 @@ if our bulk transport proves weak.
 self-hostable relays. The recommendation stands (D8): build that model on UDP + Noise in 100% Rust, add
 session codes and volunteer relays (D35), and reconsider iroh only if the user allows `ring`.
 
-### 10.8 Session log, confirmation and membership epochs (reviews C1, C2, H3)
+### 10.8 Session log, confirmation and membership epochs (reviews C1, C2, H3, NEW-1, NEW-2)
 
-* **The session log** is the set of every member's signed entries: perturbations (7.2), commits (15), ACL
-  entries (12) and membership changes.
-* **Acks.** Every member sends a signed ack to all members every two frames. Each ack carries:
-  * the member's **horizon**: it will author nothing stamped at or before that frame;
-  * per author, the highest contiguous sequence number held and that entry's id;
-  * the member's late-arrival reports (8.2).
-* **The confirmed frame** is computed from acks alone, so every member that holds the same acks computes
-  the same value. Frame *f* is confirmed once:
-  * every member's horizon is at least *f*;
-  * every member holds, with identical ids, each author's entries up to the sequence number that author
-    had declared when it published a horizon of at least *f*.
-* **Gap detection and fetch:** an ack that shows another member holding entries this member lacks makes
-  it fetch them, from the acker or the author [V session-sim].
-* **Disagreeing ids block confirmation** until resolved. They mean equivocation (9.3) or a forged chain.
-* **Membership epochs:** the member list changes only through a **view change** signed by a strict majority
-  of the current epoch. Examples: admitting a joiner, removing a member that has blocked confirmation past
-  the speculation limit, or evicting an equivocator.
-  * A view change names the frame it takes effect at and, for each removed member, the last entry of it
-    that stays valid.
-  * Because a strict majority is required, at most one side of any partition can change membership or
-    confirm (review H3).
-  * Spike: eviction by majority vote after an equivocation proof [V session-sim c2]. Proposal-based view
-    changes with cutoffs and joins are [I].
-* **What the old 2 s timers become:**
-  * SCM finality and ACL ordering (12.2, 15.2) use confirmation, typically within about 70-80 ms (4-5 frames) on 50 ms links [V session-sim r14];
-  * the rollback window becomes the speculation limit (6.4).
+**Model.**
+* Each member's signed, hash-chained log is like a Secure Scuttlebutt feed. Together the chains form the
+  hash graph of Byzantine Eventual Consistency (Kleppmann and Howard 2020).
+* Stability is Wuu and Bernstein's 2-D time table (1984): an entry is known to all once every member's row
+  covers it. Here the rows are signed chain entries, so a member that shows two rows has equivocated.
+* Eviction follows virtual synchrony's view change (Birman): survivors agree on a cut of the evicted
+  member's messages.
+* A general view change (a silent member, a join) needs agreement under partial synchrony. That is a
+  PBFT-style view change or Raft's joint consensus [I].
+
+**Chains.**
+* Every member's entries form a hash chain: each entry names its predecessor's id, and an entry's id is the
+  hash of its bytes.
+* Kinds of entry:
+  * perturbations (7.2), commits (15) and ACL entries (12);
+  * **acks:** horizon, the head held of every other chain, and the newest confirmed check hash;
+  * **votes**, R14 **attestations** (22.6), and membership changes.
+* In production every entry is signed (Ed25519, 10.3). A signature over a chain head authenticates the
+  whole prefix through the hash links. So a datagram needs only one signature, on its newest entry
+  [I, wire cost 10.9].
+
+**Validity is chain-local.** Every holder of an author's chain applies the same rules (8.2):
+* an entry stamped at or before a horizon declared earlier in the chain is void;
+* an ack whose horizon lags its stamp by more than the slack is void.
+
+No validity rule depends on when or whether a message reached a particular member.
+
+**Speculation is not blocked by holes.** A member applies an entry as soon as it arrives. The verdict on it
+is fixed once the author's chain is contiguous up to it.
+
+**Stability and confirmation.**
+* A seq of a member's chain is **stable** once every member's newest reference to that chain covers it with
+  the same id.
+* The **confirmed frame** is the minimum over members of (the horizon declared in that member's stable
+  prefix + 1).
+* Only finality and trimming use the confirmed frame (6.4). Rollback below it is asserted impossible.
+* [V session-sim: 26 scenarios, every one bit-identical to its offline replay, 0 false checks;
+  V p2p-v2 over UDP: latency60, loss10, fault]
+
+**Gap detection and fetch:** from acks' heads, and from holes in chains (9.3).
+
+**Membership epochs.**
+* The member list changes only through a view change, which needs a strict majority of the current epoch.
+  So at most one side of a partition can change membership or confirm (review H3).
+* **Eviction of an equivocator** is decided from chain data alone (9.3): votes, frozen heads, the cut, and
+  the frame from which the member no longer counts [V session-sim c2, ackfork, lateequiv, evict].
+* **General view changes** (a silent member, a join, demotion to spectator, 10.9) [I]:
+  * A proposal names the frame it takes effect at, which is after every signer's confirmed frame.
+  * For each removed member it names the cut: the prefix every remaining member holds.
+  * Each member signs at most one proposal per epoch round.
+  * Confirmed frames never change, because the cut contains every entry that could be stable.
+
+**Per region (R16) [I].**
+* Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
+  and epochs. Its members are the peers that simulate that region.
+* Logs interact only through proof-carrying references to facts the other log has already confirmed, as in
+  R14 (22.6). There is no shared clock, and no log reads another's unconfirmed state.
+
+**What the old 2 s timers became:**
+* SCM finality and ACL ordering (12.2, 15.2) wait for confirmation: about 140 ms (8.5 frames) on 50 ms
+  links [V session-sim r14];
+* the rollback window became the speculation limit (6.4).
+
+### 10.9 Recovery when the network degrades (R18)
+
+User requirement 18 (14:29Z): when the network degrades, the engine must detect it and recover. It must
+not stay collapsed, and it must not visibly replay old input. In @ballpit-viz's matrix, the 64 kbit/s cell
+showed the failure under 3d0f98a: bufferbloat, re-stamping, both peers stalled at the speculation limit,
+and the engager's hand replayed after the gesture had ended.
+
+**What changed:**
+1. **No re-stamping** (8.2). A late entry lands at its own frame. Nobody's past is rewritten and no hand
+   replays: a stall can delay what a receiver sees, but never re-orders the author's input.
+2. **One datagram per tick per peer** (viz-4).
+   * Everything a member sends a peer in one tick goes in one batch, and acks are sent on frame ticks so
+     they ride with the frame's entries.
+   * The 500-ball pit's uplink fell from 77 to 65 kbit/s, with the hand author sending every frame
+     [V r18 capped].
+3. **Congestion control** on each member's uplink.
+   * **Signal:** this member's own queue delay. The spike reads the bottleneck queue directly. Production
+     estimates it from the one-way delay gradient of ack timestamps, as WebRTC's GCC does [I].
+   * **Response:** four levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
+     (after 300 ms below 10 ms).
+     * Each level thins the hand stream to one entry every 1/2/3/4 frames, and acks to one every 2/3/4/6
+       frames.
+     * A thinned hand entry carries a `span`: its target is reached over that many frames, and dead
+       reckoning (6.10) covers the gaps.
+     * Every peer, the author included, applies the same entries, so the author's own physics stays exact
+       and is never corrected.
+   * Adaptation happens when entries are authored, never by dropping queued entries: chain entries cannot
+     be dropped.
+4. **Bounded queues:** the controller keeps the uplink queue near its 40 ms trigger. The router queue
+   (500 ms in the matrix) is only reached under a cap the stream cannot fit even at the coarsest level.
+5. **Leaving a stall.**
+   * A member that fell behind re-simulates in the background, at up to 8 ms per tick (6.5), and draws
+     only its present. The catch-up is never shown as a replay.
+   * Render-only smoothing (6.10) blends the jump.
+   * Its own new input is stamped at its present, never in the past.
+6. **Demotion beyond the hard bound** [I]:
+   * A member whose acks or entries keep confirmation stalled past half the speculation limit, three times
+     within 10 s, is demoted to **spectator** by a view change (10.8).
+   * A spectator keeps receiving the log and rendering, but stops counting for confirmation, and its new
+     input is refused.
+   * It rejoins as a member with a state transfer at a confirmed frame (9.5) once its link holds.
+   * Demotion is the only case in which an author's input is undone: its entries after the cut, which no
+     other member holds. Others' histories are never rewritten.
+7. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
+   None was observed.
+
+**Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
+500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18]:
+
+| Cap | Transport | Uplink m1→m2 | Max queue | Stalled frames (m1 / m2) | Max confirmation lag | Back to real time after the gesture | End state |
+|---|---|---|---|---|---|---|---|
+| 256 kbit/s | any | 65-78 kbit/s | 0 ms | 0 / 0 | 9-10 frames | at once | all equal |
+| 64 kbit/s | per message (3d0f98a transport) | 77 kbit/s | 274 ms | 0 / 0 | 26 frames | 515 ms | equal |
+| 64 kbit/s | batched | 65 kbit/s | 0 ms | 0 / 0 | 9 frames | at once | equal |
+| 48 kbit/s | per message | 244 kbit/s offered (repairs pile on) | 499 ms, 4,324 drops | 236 / 254 | 340 frames | never in the run | not converged |
+| 48 kbit/s | batched | 65 kbit/s | 498 ms, 55 drops | 117 / 119 | 184 frames | never in the run | equal |
+| 48 kbit/s | **batched + adaptive** | 57 kbit/s | **54 ms**, 0 drops | **0 / 0** | 14 frames | **at once** | equal |
+| 32 kbit/s | **batched + adaptive** (levels 1-3 used) | 41 kbit/s | **94 ms**, 0 drops | **0 / 0** | 16 frames | **at once** | equal |
+
+* In every run the author never rolled back and none of its entries moved. The engager's view was never
+  corrected.
+* Without adaptation the stream collapses once the cap is below what it needs: repairs add load, queues
+  fill, members stall at the speculation limit, and they do not recover while the gesture lasts.
+* With adaptation the same caps keep queues under 100 ms and the session in real time, at the cost of a
+  coarser remote hand (the observer's error grows with the stride, 6.10).
+* **Wire cost of signatures [I]:** with one Ed25519 signature per datagram, on its newest entry, add 64 B
+  per datagram. That is about 3.8 kB/s per peer at 60 datagrams/s, unless signatures ride only on acks
+  (about 1.9 kB/s).
+* Decisions: **D53** (recovery policy), **D56** (controller defaults).
+
 
 ---
 
@@ -1276,8 +1478,9 @@ AI or human edits Rust source (MCP: logic.write / logic.check / logic.test_in_fo
   repository, with a `Cargo.lock`. Committers and reproducibility checkers then need no crates.io access.
   * Build-time code (`build.rs`, proc-macro crates) runs native code on whoever compiles. It is refused in
     logic crates, except for the engine SDK's own macros, which ship with the toolchain.
-  * The toolchain itself is pinned (`rust-toolchain.toml`). Mirroring it so committers need no rustup host
-    is **D11**.
+  * The toolchain itself is pinned by the engine and invoked by absolute path (15.6; review NEW-8), never
+    through a `rust-toolchain.toml` or `.cargo/` that cargo or rustup would load from the workspace.
+    Mirroring it so committers need no rustup host is **D11**.
 
 ### 13.3 Runtime: weighed for speed under the determinism constraint (D12)
 
@@ -1296,18 +1499,35 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
   * one final digest across all 12 configs and two processes;
   * fuel identical across instances and processes in every eager config;
   * wasmi's lazy mode reproduced the phase-1 fuel nondeterminism.
-* **Fuel counts differ between runtimes,** so every member of a session must run the same runtime and
-  version. Admission already pins the engine build (4.3 rule 7).
-* **Under the priorities** (optimization first), Cranelift with fuel and NaN canonicalization runs logic
-  about 4x faster than wasmi, and physics in wasm about 4.5x faster. That is the difference between 6.4 ms
-  and 1.6 ms of a 16.7 ms frame. It costs:
-  * about 25-30 ms of extra JIT per hot swap (170 ms at 45k LOC);
-  * 82 crates instead of 8;
-  * on Linux and macOS, one C file that wasmtime's build script compiles today. That breaches the
-    100%-Rust ruling until it is patched or ruled acceptable (D1, D12).
-* **Recommendation: Cranelift + fuel + NaN canonicalization on Windows as soon as logic cost matters,
-  with wasmi kept as the reference and fallback.** The fallback covers platforms that ban JIT and any
-  Linux build the user has not cleared. D12 asks the user.
+* **Fuel counts differ between runtimes, so a session cannot mix runtimes** (review D12-1).
+  * Every member must run the same runtime and version.
+  * With a fixed fuel budget, wasmi traps where Cranelift and Winch finish, and Cranelift traps where Winch
+    finishes [V reviewer fuelprobe].
+  * 3d0f98a's "Cranelift on Windows, wasmi on Linux and macOS" therefore splits cross-OS sessions. That
+    trades priority 5 (accessibility) and R1's reach for priority 1. It is withdrawn.
+* **4.3 rule 7 restated:** "the same engine version and the same sim-relevant configuration, verified by
+  the CI determinism matrix", not "bit-identical binaries", which differ by OS anyway.
+* **wasmtime compiles C on Linux and macOS, whatever the features** (D12-2). Its build script compiles
+  `helpers.c` whenever its runtime is built with `std`, and both compilers need `std` [V reviewer: the
+  musl cross-check fails looking for a C compiler].
+  * Ways out:
+    * a maintained one-line `[patch]` of build.rs, plus Rust definitions of the weak `__unw_*` symbols
+      [I];
+    * a `no_std` custom-platform build with a platform layer written in Rust [I].
+  * The 100%-Rust audit also needs to flag inline `asm!` (D12-3).
+* **The benchmark flattered the guest** (D12-6).
+  * The guest had no generics and every system function was `#[inline(never)]`. Without those
+    annotations, the Cranelift compile went from 27 to 70 ms, and the Cranelift loop to 0.52 s.
+  * On the `rel-fast` wasm the pipeline actually commits, wasmi runs logic at 9.8x native and Cranelift at
+    2.1x [V reviewer]. Budgets use these numbers.
+* **Hot swap** (D12-5). Cranelift takes 27-35 ms at 6.4k LOC and 131 ms at 45k LOC, against the 10 ms
+  budget.
+  * So the swap compiles off the sim thread, during the activation lead (15.2), and caches by canonical
+    hash. A peer that rolls back across an activation frame reuses the cache.
+  * Alternative: swap in Winch first (4-5 ms; 23 ms at 45k LOC) and tier up to Cranelift in the
+    background.
+* **Recommendation, a user decision (D12): wasmi everywhere now; Cranelift everywhere once the patch exists
+  and a fuel-exhaustion test passes on all three OSes.** Never a per-OS split.
 * **NaN canonicalization** doubles the cost of float-heavy code on Cranelift (physics in wasm: 4.7x vs
   2.4x). Dropping it is safe only if guests never observe NaN bits, or if every peer is x86-64. Physics
   stays native in the engine (13.8), so the logic penalty is small: 1.7x vs 1.4x.
@@ -1523,6 +1743,25 @@ code, so a builder cannot make another player's harness run them (21.3).
   whatever the commit's age.
 * World authors who want to brief AI agents write `agent-guide.md` (any non-reserved name works). The
   engine serves it over MCP as world-authored, untrusted content (17.2). No harness auto-loads it.
+* **Toolchain configuration is reserved too** (review NEW-8). Cargo and rustup obey configuration in any
+  ancestor directory: the reviewer verified a `rust-toolchain.toml` `path=` and a `.cargo/config.toml`
+  alias. Therefore:
+  * the directory name `.cargo` and the file names `rust-toolchain` and `rust-toolchain.toml` are reserved
+    at any depth;
+  * the engine runs `cargo` and `rustc` by absolute, pinned path, with `RUSTUP_TOOLCHAIN` pinned,
+    `CARGO_HOME` set to an engine-owned directory, and `--config` overrides that empty
+    `build.rustc-wrapper`, `target.*.linker` and `target.*.runner`;
+  * compilation runs under the restricted identity (21.4);
+  * the world's toolchain pin is world-format metadata the engine reads, never a file that cargo or rustup
+    auto-load (this corrects 13.2's reference to a `rust-toolchain.toml` in the world repo).
+* **Allowlist, not only a denylist** (review NEW-19) [I].
+  * A materialized workspace contains only world-format paths and extensions: `.rs`, `.wgsl`, `.toml`
+    (manifest names only), `.md`, the asset formats of 16.7, and the world metadata files.
+  * The reserved list above is kept as a second check.
+  * Every command the engine spawns uses an absolute path. On Windows the engine sets
+    `NoDefaultCurrentDirectoryInExePath=1`, so a `git.exe` or `pe-app.cmd` in a workspace is never picked up.
+* **Name collisions** (review NEW-25): a tree whose sibling names collide after normalization (`A.rs` and
+  `a.rs`; `x` and `x.`) is invalid, so how it materializes cannot depend on write order.
 * **Not covered:** build-time code. `build.rs`, proc-macro crates and `[build-dependencies]` run native
   code on whoever compiles. That needs its own rule under 13.2 and D11 (see review finding L8).
 
@@ -2554,6 +2793,48 @@ Spike-report item 9 becomes nine gates. Unlocking for harness H ships when H's o
 | 9h MCP transport | 17.1 rules hold | The named pipe rejects other identities. If HTTP is enabled: a DNS-rebinding test with a foreign `Host` or `Origin` is refused, the server binds to loopback only, and a stale token is refused |
 | 9i Version pin | Profiles fail closed on drift | A changed `--help` or an unknown version disables unlocking for that harness |
 
+### 21.10 Round-2 containment fixes (reviews NEW-9 to NEW-11, NEW-14, NEW-16, NEW-18, NEW-20, NEW-24) [I]
+
+These rules supersede any conflicting text in 21.3-21.9.
+* **The private (owner) session sends nothing without approval** (NEW-9).
+  * Every outgoing action from it (`panel.send`, `hub.send`, `panel.connect`) goes through the approval
+    layer, which shows the exact payload.
+  * Auto-forward is removed.
+  * A forward goes only into a restricted-profile turn, never into the full profile.
+  * The private session reads builder-written repo text only as quoted, untrusted content.
+  * Until all of this holds, 21.4's claim that the injection-to-exfiltration ("worm") path is cut does
+    not hold.
+* **The workspace is re-scanned before every launch** (NEW-10).
+  * The 15.6 matcher (allowlist plus reserved names) runs over the whole workspace, not just its ancestors.
+  * The engine answers the harness's permission prompts itself and refuses any write to a reserved path.
+  * An agent therefore cannot plant `.gemini/settings.json`, `.codex/config.toml`, `AGENTS.md` or
+    `CLAUDE.md` for its next launch.
+* **The fail-closed launch check names exact plugins** (NEW-11).
+  * It allowlists the exact `@builtin` plugin names of each pinned harness version: today
+    `cc-plugin-agents-md` and `cc-plugin-plugin-authoring` under `--bare --restricted --tools ""`
+    [V reviewer]. Any other plugin kills the launch.
+  * It launches with `--include-hook-events` and fails on any hook event.
+  * Gate 9a plants canary `CLAUDE.md` and `AGENTS.md` files and fails if either is loaded.
+* **Ancestor check** (NEW-18): it names the exact files each harness loads from ancestor directories, and
+  exempts each harness's own configuration home. A blanket "no `.claude` in any ancestor" check would
+  refuse every launch on a machine that has the harness installed.
+* **One decider per request** (NEW-14). An "ask agent" decision for a panel runs in a fresh session per
+  requester, seeing only that requester's purpose text, so one requester cannot steer the decision for
+  others.
+* **Strangers do not spawn sessions** (NEW-16).
+  * Hub mail from non-contacts lands in the manual inbox. Contacts' mail spawns at most two concurrent
+    inbox sessions.
+  * Containment on Linux uses a separate uid or a mount namespace plus Landlock. A user namespace alone
+    still shows `/home/owner`.
+  * macOS containment (an App Sandbox profile) is an unmet gate before macOS ships (D20).
+* **Codex gate 9b** (NEW-20) allowlists features. These default-on features are turned off: `view_image`,
+  `code_mode_host`, `in_app_browser`, browser use, `skill_mcp_dependency_install`, `remote_plugin`,
+  `tool_suggest` and web search. The gate checks the tool list actually observed at init.
+* **Revocation** (NEW-24).
+  * On Windows, a guest process is put in a job object at creation (`CREATE_SUSPENDED` plus assignment, or
+    `PROC_THREAD_ATTRIBUTE_JOB_LIST`), with `KILL_ON_JOB_CLOSE` and no breakaway.
+  * `GuestRevoked` refuses actions stamped *after* frame F, because F is already confirmed.
+
 ---
 
 ## 22. Several worlds at once, and portals (R14)
@@ -2693,42 +2974,64 @@ Three separate things are true of a player and a world:
 Hitches that remain possible: B's state transfer not finished (the portal shows "connecting" and stays
 closed to you until it is), a shader that was not pre-compiled, or a missing asset.
 
-### 22.6 Carrying objects across: the settled handoff
+### 22.6 Carrying objects across: the settled handoff with proofs (reviews NEW-3 to NEW-6)
 
 Two worlds have different members and unrelated frame timelines. A transfer is therefore a two-phase
-handoff, stamped at frame **fA** in A and **fB** in B, in which **each world only ever hears confirmed facts
-about the other.** It follows the escrow pattern of IBC token transfers (Cosmos ICS-20: escrow at the
-source, mint at the destination after a finality proof, refund on error or timeout) [S, the ICS-20
-specification]. We add fast ack-based confirmation and full object state.
+handoff, stamped at frame **fA** in A and **fB** in B, in which **each world acts only on the other's
+confirmed facts, and only with proof.**
+* It follows IBC token transfers (Cosmos ICS-20): escrow at the source, mint at the destination on a
+  light-client proof, refund on a proven rejection or timeout [S, the ICS-20 specification].
+* We add fast ack-based confirmation and full object state.
+* 3d0f98a relayed without proofs. Any member could then lose, duplicate or mint the object, and squat a
+  transfer id (NEW-3 to NEW-5).
 
-1. **Depart (in A, at fA).** The carrier authors `Depart{transfer, object, destination, deadline}`.
-   * A's sim validates it at fA: the object is live, the carrier holds its claim (or it is unclaimed), the
-     carrier has the export right in A's ACL, and the object is not already departing.
-   * If valid, the object leaves A's physics. A records an **escrow** entry: the object record (its state
-     at fA, components, asset references, logic data), the destination, a deadline in B's frames, and the
-     status Pending. If invalid, the escrow records DepartRejected.
-2. **Relay after A confirms fA.** Confirmation means every member of A holds every entry up to fA (6.4).
-   Then the carrier, or any member of both worlds, authors `Arrive{transfer, record, proof}` in B at B's
-   present frame fB.
-3. **Arrive (in B, at fB).** B's sim validates it: the import right in B's ACL, B's body budget, the
-   deadline, the arrival portal open, the component policy (22.8), and no duplicate transfer id.
-   * If valid, the object is created in B with a new local id and the same global id: Accepted.
-   * Otherwise: Rejected.
-4. **Relay back after B confirms fB:** a member of both worlds authors `Verdict{transfer, accepted}` in A.
-5. **Resolve (in A):** an accepted verdict commits the escrow and drops the record. A rejected verdict
-   *returns* the object: it is recreated in A at its departure pose.
-6. **Timeout:** B refuses an `Arrive` stamped after its deadline. If B's confirmed history passes the
-   deadline without the arrival, a member of both worlds relays "not arrived" with proof, and A returns
-   the object.
+1. **Depart (in A, at fA).** The carrier authors `Depart{object, destination, deadline}`.
+   * The **transfer id is derived**, as hash(A, the Depart's entry id), so nobody can choose or squat it
+     (NEW-5).
+   * A's sim validates the departure: the object is live; the carrier holds its claim, or it is unclaimed;
+     the carrier has the export right in A's ACL; the object is not already departing.
+   * If valid, the object leaves A's physics into **escrow**, with its record, destination and deadline.
+2. **A attests.** Each member of A whose replica has confirmed the departure publishes, as an entry in A's
+   log, its **signature over the fact** "A confirmed departure *d* of this record to world B".
+3. **Relay (anyone).** Once a strict majority of A's members have signed, anyone holding the signatures
+   authors `Arrive{transfer, record, departure, certificate}` in B.
+   * Because the proof is self-certifying, relaying needs no trusted carrier (NEW-6).
+4. **Arrive (in B, at fB).** B's sim first checks that the transfer id matches the departure and that the
+   certificate holds signatures from a strict majority of A's members (D46). If not, the entry does nothing
+   (NEW-4).
+   * Then B validates as before: the import right in B's ACL, B's body budget, the deadline, the arrival
+     portal open, the component policy (22.8), and no duplicate transfer id.
+   * The object is created with a new local id and the same global id (Accepted), or Rejected.
+5. **B attests** its confirmed verdict in the same way. A `Verdict{transfer, accepted, certificate}`, with
+   a strict majority of B's signatures, can be relayed into A by anyone.
+   * A applies only a verdict whose certificate covers exactly that outcome (NEW-3).
+6. **Resolve (in A).** Accepted commits the escrow. Rejected returns the object at its departure pose.
+7. **Timeout [I].**
+   * B refuses an `Arrive` stamped after the deadline.
+   * When B's confirmed history passes the deadline without the arrival, B's members attest "not
+     received", and that certified rejection returns the object in A.
+   * Without a certificate, A never refunds on a timer alone. B may have accepted, and refunding would
+     duplicate the object.
 
 * **Held objects** arrive attached to the carrier's hand in B (the grip offset is in the record).
   **Thrown objects** appear at B's portal with their velocity mapped through the portal transform.
 * **Latency:** other members of B see the object about one confirmation round after it crossed.
-  Spike, 50 ms ± 15 ms links with 1% loss: departure authored at 2,766 ms; confirmed in A and the arrival authored in B at 2,915 ms (+149 ms); the arrival confirmed in B at 3,041 ms; the verdict confirmed in A at 3,180 ms [V session-sim r14 ok]. Other members of B saw the object about 0.2 s after the crossing. The carrier hides the gap with a presentation-only copy in its hand.
-* **Why settled rather than optimistic:** rollbacks only change unconfirmed frames, and only confirmed facts
-  are relayed. So neither world ever acts on the other's speculation, and no correction is ever needed.
-  The optimistic alternative (D45) shows the object in B before A confirms, at the cost of rare rescinds
-  and visible corrections.
+  * Spike, 50 ms ± 15 ms links with 1% loss [V session-sim r14 ok, round 2]:
+    * departure authored at 2,766 ms;
+    * certificate complete and arrival authored at 2,964 ms (+198 ms);
+    * verdict authored at 3,197 ms;
+    * verdict confirmed in A at 3,354 ms.
+  * That is slower than 3d0f98a (+149 ms to the arrival), by the stability round (6.4) and the attestation
+    round.
+  * The carrier hides the gap with a presentation-only copy in its hand.
+* **Measured attacks** [V session-sim `r14 forge`]. Every one of these did nothing (`RejectedNoProof`) and
+  the object stayed conserved, with every replica equal to its offline replay:
+  * a member of B minting A's object without a departure;
+  * a member of B squatting the real transfer id before the relay;
+  * a member of A committing the escrow with no certificate;
+  * the carrier claiming a rejection while presenting B's genuine signatures over the acceptance.
+* **Why settled rather than optimistic:** only confirmed, certified facts cross, so neither world ever acts
+  on the other's speculation, and no correction is ever needed. The optimistic alternative is D45.
 
 ### 22.7 Consistency across worlds
 
@@ -2743,16 +3046,17 @@ persists until a verdict arrives.
 | B rolls back past fB before confirming it; the arrival stays valid | The object is recreated identically in the re-simulation |
 | B rolls back past fB and the arrival becomes invalid (an earlier portal close, the budget, or an ACL change) | B's confirmed verdict is "rejected". The verdict is relayed and the object returns in A [V r14 reject: B rolled back 10 frames past fB; the arrival was rejected; the verdict returned the object to A] |
 | Either world rolls back past a confirmed frame | Cannot happen. Confirmed frames never roll back; a partition's minority side only loses frames it never confirmed (10.8) |
-| The carrier crashes mid-transfer | The escrow keeps the record. Any member of both worlds can relay later, and the deadline plus proof of non-arrival returns the object. If nobody is in both worlds, the object waits in escrow, not lost |
+| The carrier crashes mid-transfer | The escrow keeps the record. The certificates are self-certifying, so any member of both worlds can relay them [I: the spike's carrier is still the only relayer]. A crashed member that blocks either world's confirmation is removed by a view change (10.8). If nobody is in both worlds, the object waits in escrow: two worlds with no common member have no channel at all, and refunding without B's certified "not received" could duplicate it (two generals) |
 
 * **Sync checks:** the escrow and arrival tables are part of each world's hashed state (9). Members of
   both worlds also compare A's record hash with B's arrival record.
 * **Soonest wins:** at fA the departure competes with other interactions on the object in canonical order
   (8). Two departures of one object towards two worlds: the first in canonical order wins and the second is
   rejected. In B, the arrival is ordered like any entry.
-* **Trust:** B's members cannot see A. They accept the relayed record on the signature of the member who
-  relays it (trusted sessions, the MVP), or on k-of-n signatures of A's members over the confirmed record,
-  a light-client proof (D46).
+* **Trust (D46):** a relayed fact counts only with a certificate: signatures by a strict majority of the
+  other world's members over exactly that fact. In the spike these are keyed hashes that stand in for
+  Ed25519 signatures, and each world knows the other's member list from configuration [V session-sim
+  r14 forge]. A single member, including the carrier, can no longer mint, lose or duplicate an object.
 
 ### 22.8 What crosses: avatars, components, code
 
@@ -2799,11 +3103,14 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 
 | Variant | What it exercises | Outcome | Conservation | Replicas vs offline replay |
 |---|---|---|---|---|
-| ok | Plain handoff | Committed in A, accepted in B; done 0.41 s after departure | 1 live copy (B), 0 pending | all equal, both worlds |
+| ok | Plain handoff | Committed in A, accepted in B; done 0.59 s after departure (round 2 adds the stability round and certificates; 0.41 s in 3d0f98a) | 1 live copy (B), 0 pending | all equal, both worlds |
 | abort | Member 2's earlier grab reaches member 1 150 ms late: A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 live copy (A) | all equal |
 | reject | Member 3 closes B's portal at a frame member 1 hears of 150 ms late: B rolls back 10 frames past fB | Arrival rejected; verdict returns the object to A | 1 live copy (A) | all equal |
 | throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
+| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance | Every forged entry `RejectedNoProof` | 1 live copy (B), 0 pending | all equal |
 | ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | digests identical to forward |
+
+These runs have live carriers. With a crashed carrier and nobody else in both worlds, the object waits in escrow (22.7), so 3d0f98a's "nothing in limbo" held only for the scripted runs (review NEW-6).
 
 ### 22.11 What this adds elsewhere
 
@@ -2970,17 +3277,24 @@ entry says so.
   * Question: mirror the pinned toolchain (no rustup host for committers), or accept rustup as a soft
     central point?
   * Alternative: every peer compiles from source (strongest trust; every machine needs the toolchain).
-* **D12. Logic runtime (13.3; priorities 1-2).**
-  * Recommend: **wasmtime with Cranelift, fuel and NaN canonicalization, on Windows first.** It runs logic
-    4x faster than wasmi and physics in wasm 4.5x faster [V iteration-benchmark]. Keep wasmi as the
-    reference and the fallback for JIT-banned platforms.
-  * **Question for the user:** wasmtime's build script compiles one C file (`helpers.c`) on Linux and
-    macOS [I, from its build.rs]. Accept it as a gray area, patch it out, or keep wasmi on those
-    platforms?
-  * Alternatives:
-    * wasmi only (100% Rust everywhere, 7x native; 8 crates);
-    * Winch (3x native; compiles as fast as wasmi);
-    * Cranelift without NaN canonicalization (1.4x native; NaN bits must never reach hashed state).
+* **D12. Logic runtime (13.3; priorities 1-2; reviews D12-1 to D12-7).**
+  * **A session cannot mix runtimes:** fuel exhaustion differs between them. So the choice applies to every
+    OS at once. Options:
+    1. **wasmi everywhere (recommended now):** 100% Rust on every OS, cross-OS sessions work, 8 crates.
+       Logic runs at about 7-10x native, the 10 ms hot swap holds, and logic at 10k entities costs
+       6.4-8.8 ms.
+    2. **Cranelift everywhere (recommended later)**, once a maintained `[patch]` removes wasmtime's
+       `helpers.c` and a fuel-exhaustion test passes on Windows, Linux and macOS.
+       * Logic runs at 1.7-2.1x native.
+       * The hot swap compiles off-thread during the activation lead.
+       * 82 crates, plus the patch to maintain.
+    3. **Runtime-independent fuel:** insert fuel counters into the module at commit time, so exhaustion
+       depends only on the module bytes, then pick the fastest runtime per OS [I]. NaN handling must match
+       too.
+    4. **A user exception for wasmtime's C on Linux and macOS:** Cranelift everywhere today. This breaches
+       the 100%-Rust ruling there.
+  * **Question for the user:** 1 now and 2 when ready, 3, or 4?
+
 * **D13. Shader language (14).**
   * Recommend: WGSL (naga-native, pure-Rust validation, structured diagnostics).
   * Alternatives: HLSL via DXC (non-Rust DLL, no naga frontend); GLSL via naga; rust-gpu (Rust shaders,
@@ -3089,7 +3403,9 @@ entry says so.
 * **D27d. Credentials of restricted sessions (21.4, 21.5).**
   * Recommend: a **guest-only API key** that the owner creates in a provider workspace or project with a
     hard spend limit. Restricted sessions never use the owner's login or subscription.
-  * Alternative: none. Running guests on the owner's login is excluded by containment and by D34.
+  * Alternative: a guest brings their own harness and key, joining as a guest participant instead of
+    running on the owner's machine (D34 asks which the user prefers; review NEW-25). Running guests on the
+    owner's login stays excluded by containment.
 * **D27e. Adapter-side caps (21.5; review R13-M1).**
   * Recommend: per turn at most 30 tool calls and 8,000 output tokens; per guest at most 20 turns an hour;
     plus a per-panel total.
@@ -3198,7 +3514,8 @@ entry says so.
     * entries identified by hash, with equivocation proofs and eviction.
   * Alternatives:
     * confirm with a majority of acks instead of all (faster when one member lags, but a lagging member's
-      entries could then arrive for a confirmed frame and must be refused or re-stamped);
+      entries could then arrive for a confirmed frame and would have to be refused, undoing its author's
+      input);
     * timer-based finality (the phase-1 design, rejected: it forks honest peers).
 * **D37. Same-frame tie-break and member ids (8.3; ruling 09:32Z; review L7).**
   * Recommend: a per-frame random permutation, `tie_rank(epoch seed, frame, member id)`. Member ids are
@@ -3239,12 +3556,18 @@ entry says so.
     Observers are served by dead reckoning instead (D52).
   * Alternatives: stream quantized island state (≈0.47 MB/s, and not bit-exact unless the author snaps its
     own copy too); stream exact state (≈1 MB/s).
-* **D42. Backdating bound (8.2; review H5).**
-  * Recommend: published horizons are binding, and the effective frame is bounded by the lower median of
-    the other members' arrival frames, minus a 15-frame (250 ms) late allowance. A peer whose entries reach
-    the others late, for whatever reason, takes effect late.
-  * Alternatives: a smaller allowance (tighter bound; honest high-latency peers get re-stamped more often);
-    no bound (trust stamps; MVP-only).
+* **D42. Lateness and backdating (8.2; review H5; user rule 14:31Z).**
+  * Settled by the user: nothing is re-stamped, and an author never sees its own interaction corrected.
+    Lateness is paid by the late receiver.
+  * Recommend for the parameters:
+    * a horizon slack of 2 frames, which bounds backdating to about 4 frames;
+    * demotion to spectator (10.9) for a member that stalls confirmation past W/2 three times within 10 s.
+  * Alternatives:
+    * a larger slack: more tolerant of bursty acks, but a wider backdating window;
+    * no demotion: a persistently late member stalls everyone at the speculation limit;
+    * an arrival-median bound computed from chain references: deterministic, but it couples effective
+      frames to membership and again rewrites authors' history at high latency (viz-2).
+
 * **D43. What others see of a player who attends their world from elsewhere (22.1).**
   * Recommend: an "elsewhere" avatar: dimmed, with a badge naming the world where the player is embodied,
     with mirrored head and hand motion at a low rate, and with voice only when the player routes it there.
@@ -3269,10 +3592,16 @@ entry says so.
   * Alternative: **optimistic arrival.** B shows the object at once, marked provisional and held
     exclusively by the carrier, and rescinds it if A's departure is undone. About 0.15 s sooner for
     observers, at the cost of rare visible rescinds and transient effects in B.
-* **D46. How a world trusts a relayed record (22.7).**
-  * Recommend for the MVP (trusted sessions, D21): the signature of the member who relays it.
-  * Alternative for public worlds: k-of-n signatures of the source world's members over the confirmed
-    record (a light-client proof). Each world then needs the other's member keys, and records grow.
+* **D46. How a world trusts a relayed fact (22.6, 22.7; reviews NEW-3, NEW-4).**
+  * Recommend for every session: a certificate of signatures by a strict majority of the source (or
+    destination) world's members over exactly that fact, published as attestations in that world's log. A
+    relaying member's signature alone let any member mint, lose or duplicate an object.
+  * Cost: one attestation entry per member per transfer step, and each world must know the other's member
+    keys.
+  * Alternatives:
+    * k-of-n with k below a majority: faster, but a colluding minority can mint;
+    * a trusted carrier: MVP-only, and conservation then holds only if the carrier is honest.
+
 * **D47. Physics at portals (22.4).**
   * Recommend: no cross-world physics. A clearance zone around each aperture keeps colliders away, and
     straddling objects are drawn twice. Each world stays independent.
@@ -3323,3 +3652,41 @@ entry says so.
     * longer coasting or curvature extrapolation: smaller error for smooth motion, larger overshoot when
       the hand stops;
     * per-world tuning of the cap and the frame count.
+* **D53. Remote and late input under congestion (10.9; R18).** Settled by the user: recover, never replay.
+  * Recommend:
+    * per-tick batching, on by default;
+    * the four-level controller, with hand strides 1/2/3/4 and acks every 2/3/4/6 frames;
+    * demotion to spectator beyond W/2 (D42);
+    * a background catch-up budget of 8 ms per tick.
+  * Alternatives:
+    * fixed rates: collapse below the stream's need [V r18 capped];
+    * receiver-side frame dropping: no effect on a sender's queue.
+* **D54. Confirmation from stable data (6.4, 10.8; reviews NEW-1, NEW-2).**
+  * Recommend: an entry counts once every member's chain references it. This is provably convergent, and
+    honest outages and two-faced members cannot fork anyone. It costs one more ack round of finality
+    (8.5 frames instead of 4.2) [V].
+  * Alternatives:
+    * BFT quorum certificates (2f+1 of 3f+1): no wait for a silent member, at the price of a supermajority
+      model and larger messages;
+    * gossiped acks with conflict proofs, deciding on first receipt: faster, but a decision made before a
+      conflict surfaces would have to be undone.
+* **D55. Eviction cut (9.3, 10.8; review NEW-2).**
+  * Recommend: an equivocator is evicted once every remaining member has voted. Its cut is the longest
+    common prefix of the voters' frozen heads, so no confirmed frame ever changes [V].
+  * With 5 or more members, a silent voter blocks the cut, so the general view change takes over
+    (PBFT-style; [I]).
+  * Alternative: evict on a bare strict majority, with the cut chosen by a leader: faster, but it needs
+    the general view-change protocol now.
+* **D56. R18 defaults (10.9).** The controller thresholds:
+  * up above 40 ms of uplink queue, at most every 100 ms;
+  * down after 300 ms below 10 ms.
+
+  Production measures the queue by delay gradient, as GCC does [I]. These defaults kept a 32-64 kbit/s cap
+  real-time with queues under 100 ms [V].
+  * Alternative: loss-based control (as in TCP Reno). It reacts only after the router queue is already
+    full, the 500 ms bufferbloat this replaces.
+* **D57. Logic-state snapshots (7.4; review NEW-17).**
+  * Recommend: snapshot all of guest linear memory, with dirty-page diffs, and hash all of it at check
+    frames. State hidden outside the declared arena then fails fast and identically on every peer.
+  * Alternative: the declared arena only, plus zeroing all other memory after every tick. This is cheaper,
+    but static and thread-local state silently breaks rollback if zeroing is ever skipped.

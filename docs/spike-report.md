@@ -18,6 +18,7 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | ball pit | A hand sweeping through 500 balls, without per-ball state streaming? | **Yes [V]** (5d). About 15 kB/s for everything in both directions, against 1 MB/s one way for naive state streaming. The receiver re-simulates 2.8 ms per frame. The end state is bit-identical |
 | r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject and throttle variants; each world equals its offline replay; identical when worlds and peers are processed in reverse order |
 | history | Can a peer keep only the perturbation history? Which snapshots, at what memory and CPU? | **Almost [V]** (5f). One base image at or before the confirmed frame is unavoidable; the rest is a cache that never changes results (62 runs, 13 policies, one end hash per scene). Window(4) matches the best CPU with 8.3 MB instead of 47.5 MB under a 116-frame confirmation stall. Partial restores through the API are not bit-exact. Remote-hand dead reckoning cuts the observer's error about 4-18x |
+| round 2 | Do the round-2 Criticals and Highs hold fixed, and do capped links recover? | **Yes [V]** (5g). The reviewer's four repros pass (no fork, no panic); proofless R14 relays do nothing; batching plus the congestion controller keep 32-64 kbit/s caps real-time. Finality lag rose from 4.2 to 8.5 frames |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
 | d | Hot-swap Rust→WASM game logic mid-sim, deterministic across peers? | **Yes [V],** with wasmi in eager-compilation mode. The default lazy mode makes fuel nondeterministic [V]. Box3D itself compiled to WASM matches native [V] |
@@ -311,6 +312,51 @@ Design 6.7-6.11. Logs: `spikes/out/perturbation-history/`.
 * **Regression:** the default settings (Every(4), hold) reproduce 3d0f98a's ball-pit end hash
   `47bb8c7274b143d3` and digest `1a9f1fb5fce6acc6`.
 
+### 5g. Round 2: chain-entry protocol, R14 proofs, recovery under caps [V]
+
+Design 6.4, 8.2, 9.3, 10.8-10.9 and 22.6; review-response.md, round 2. Logs: `spikes/out/session-sim/`,
+`spikes/out/p2p-v2/` and `spikes/out/r18/`.
+
+* **Protocol.** Acks, votes and attestations are chain entries. Confirmation comes from stable data. Nothing
+  is re-stamped.
+* **Suite.** `scripts/run_session_sim.sh` runs 26 scenarios. Every replica is bit-identical to its offline
+  replay, with no panic and 0 bad checks, and the script now fails otherwise.
+* **The reviewer's repros:**
+
+  | Repro | 3d0f98a | Round 2 |
+  |---|---|---|
+  | `ackfork`: member 9 shows member 2 a different chain | honest members forked | conflict proven, 9 evicted (cut 1), touch void at both, equal |
+  | `outage`: 6.5 s one-way ack outage, honest members | forked | equal; members 2 and 3 rolled back 38 frames |
+  | `lateequiv`: second version of a confirmed entry | every honest member panicked | stable version kept, 9 evicted (cut 103, from frame 206), equal |
+  | `evict`: eviction after a 600 ms-late entry | a member panicked | the entry stays at frame 60 everywhere; equal |
+
+* **Other scenarios:**
+  * `c1`: the 2 s-late entry keeps frame 50; members 1 and 2 roll back 116 frames; equal.
+  * `backdate`: three entries backdated 20 frames are void everywhere. Lagging horizons void all 318 of
+    member 3's acks: no window opens, and confirmation stalls.
+  * Uncontended acceptance: 22/22, 37/37 (10% loss) and 26/26 (diverged), both at the instant and against
+    the author's final history.
+* **Confirmation lag:** 8.5 frames at 50 ms ± 15 ms (4.2 in 3d0f98a).
+* **UDP** (`scripts/run-p2p.sh`):
+  * latency60: equal, acceptance 7/7 and 6/6;
+  * loss10: equal, 24 ok / 0 bad checks, acceptance 3/3 and 15/15;
+  * fault: hole seen at frame 202, fetched, equal.
+* **R14 proofs** (`r14 forge`). Each of these is `RejectedNoProof`, and the object is conserved:
+  * a member of B mints the object;
+  * a member of B squats the transfer id;
+  * a member of A commits the escrow without B's certificate;
+  * the carrier claims a rejection with B's signatures over the acceptance.
+
+  The ok, abort, reject and throttle runs conserve the object as before. Canonical check hashes give
+  `r14-throttle` 18/0 and 15/0 (was 42/24).
+* **R18 under caps** (`scripts/run_r18.sh`; ball pit, 50 ms one-way, token bucket with a 500 ms queue):
+  * per-tick batching cuts the hand author's uplink from 77 to 65 kbit/s;
+  * the adaptive controller keeps 64, 48 and 32 kbit/s caps real-time: 0 stalled frames, 0 drops, queues
+    at most 94 ms;
+  * without it, 48 and 32 kbit/s collapse: up to 5,210 drops and hundreds of stalled frames, and the
+    members never catch up within the run;
+  * in every run the author never rolls back.
+
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
 ### 6.1 Commands
@@ -586,6 +632,7 @@ cargo build --workspace && cargo build --workspace --release
 bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"   # also loss10, fault (5b)
 bash scripts/run_session_sim.sh                     # every session, ball-pit and R14 scenario (5c-5e)
 bash scripts/run_perturbation_history.sh            # re-sim vs depth, partial restore, snapshot knob, observer (5f)
+bash scripts/run_r18.sh                             # ball pit through 256/64/48/32 kbit/s caps (5g)
 python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm
 # iteration benchmark: see docs/iteration-benchmark.md section 8
 ./target/release/pe-spike-wasm-hotswap
