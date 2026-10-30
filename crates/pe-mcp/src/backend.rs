@@ -70,6 +70,9 @@ pub trait DrivenPeer {
     fn sync(&self) -> SyncStatus;
     /// The simulator's extra controls; None for a live peer.
     fn scenario(&mut self) -> Option<&mut dyn ScenarioControl>;
+    /// A live peer's housekeeping (network, clock), called by the engine thread between MCP calls
+    /// (`EngineHandle::spawn_ticking`). The simulator needs none: its time moves only in `advance_ms`.
+    fn tick(&mut self) {}
 }
 
 /// Test-bench controls only the simulator has (they reach into other members and the network).
