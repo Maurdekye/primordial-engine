@@ -25,6 +25,14 @@ pub enum Scope {
 impl Scope {
     pub const ALL: [Scope; 3] = [Scope::Read, Scope::Interact, Scope::Control];
 
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Read => "read",
+            Scope::Interact => "interact",
+            Scope::Control => "control",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Scope> {
         match s {
             "read" => Some(Scope::Read),
