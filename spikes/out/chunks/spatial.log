@@ -1,0 +1,13 @@
+pe-spike-chunks spatial (box3d positions: f32)
+== spatial: workload human-surface (200000 objects, 64 queries, 20000 movers/frame) ==
+RESULT spatial workload=human-surface structure=octree/chunk-rooted build_ms=192.5 mem_MB=182.8 query_us=94.0 nodes_per_query=1592 tested_per_query=567 results_per_query=181.8 update_ns=721 depth_or_levels=14
+RESULT spatial workload=human-surface structure=loose-octree/chunk-rooted build_ms=163.5 mem_MB=321.3 query_us=194.6 nodes_per_query=2110 tested_per_query=219 results_per_query=181.8 update_ns=442 depth_or_levels=14
+RESULT spatial workload=human-surface structure=hashed-grid/btree build_ms=92.8 mem_MB=77.1 query_us=43.4 nodes_per_query=459 tested_per_query=741 results_per_query=181.8 update_ns=365 depth_or_levels=17
+RESULT spatial workload=human-surface structure=hashed-grid/hashmap build_ms=87.3 mem_MB=78.5 query_us=29.2 nodes_per_query=459 tested_per_query=741 results_per_query=181.8 update_ns=266 depth_or_levels=17
+RESULT spatial-determinism workload=human-surface shuffled_insert_same_results=true
+== spatial: workload extreme-scale (200000 objects, 64 queries, 20000 movers/frame) ==
+RESULT spatial workload=extreme-scale structure=octree/chunk-rooted build_ms=219.8 mem_MB=131.3 query_us=310.8 nodes_per_query=1070 tested_per_query=6837 results_per_query=401.4 update_ns=767 depth_or_levels=28
+RESULT spatial workload=extreme-scale structure=loose-octree/chunk-rooted build_ms=140.6 mem_MB=200.5 query_us=405.7 nodes_per_query=1657 tested_per_query=6710 results_per_query=401.4 update_ns=371 depth_or_levels=28
+RESULT spatial workload=extreme-scale structure=hashed-grid/btree build_ms=92.6 mem_MB=69.4 query_us=211.8 nodes_per_query=709 tested_per_query=7038 results_per_query=401.4 update_ns=287 depth_or_levels=40
+RESULT spatial workload=extreme-scale structure=hashed-grid/hashmap build_ms=85.8 mem_MB=70.9 query_us=203.9 nodes_per_query=709 tested_per_query=7038 results_per_query=401.4 update_ns=238 depth_or_levels=40
+RESULT spatial-determinism workload=extreme-scale shuffled_insert_same_results=true

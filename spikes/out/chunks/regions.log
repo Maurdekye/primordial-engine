@@ -1,0 +1,28 @@
+### build f32
+pe-spike-chunks regions (box3d positions: f32)
+== regions vs flat world (f32) ==
+RESULT regions mode=f32 players=16 bodies_total=2016 step_flat_ms=1.057 step_regions_serial_ms=1.131 step_regions_parallel_wall_ms=0.240 rollback6_flat_ms=11.159 rollback6_one_region_ms=0.606 image_flat_bytes=4622567 image_regions_sum_bytes=4724760
+RESULT region-merge mode=f32 bodies_moved=125 ms=1.378 us_per_body=11.02
+RESULT region-merge mode=f32 bodies_moved=1000 ms=56.546 us_per_body=56.55
+RESULT region-determinism mode=f32 forward_eq_reverse=true forward_eq_parallel=true rollback_resim_eq_straight=true final_digest=23d1a1b558a9a21d
+### build f64
+pe-spike-chunks regions (box3d positions: f64)
+== regions vs flat world (f64) ==
+RESULT regions mode=f64 players=16 bodies_total=2016 step_flat_ms=1.197 step_regions_serial_ms=1.233 step_regions_parallel_wall_ms=0.233 rollback6_flat_ms=13.029 rollback6_one_region_ms=0.656 image_flat_bytes=4700095 image_regions_sum_bytes=4801276
+RESULT region-merge mode=f64 bodies_moved=125 ms=0.984 us_per_body=7.88
+RESULT region-merge mode=f64 bodies_moved=1000 ms=60.632 us_per_body=60.63
+RESULT region-determinism mode=f64 forward_eq_reverse=true forward_eq_parallel=true rollback_resim_eq_straight=true final_digest=91f16f96995a6161
+### build f32-nv
+pe-spike-chunks regions (box3d positions: f32)
+== regions vs flat world (f32) ==
+RESULT regions mode=f32 players=16 bodies_total=2016 step_flat_ms=0.777 step_regions_serial_ms=0.912 step_regions_parallel_wall_ms=0.177 rollback6_flat_ms=8.600 rollback6_one_region_ms=0.545 image_flat_bytes=4622567 image_regions_sum_bytes=4724760
+RESULT region-merge mode=f32 bodies_moved=125 ms=0.058 us_per_body=0.47
+RESULT region-merge mode=f32 bodies_moved=1000 ms=0.692 us_per_body=0.69
+RESULT region-determinism mode=f32 forward_eq_reverse=true forward_eq_parallel=true rollback_resim_eq_straight=true final_digest=23d1a1b558a9a21d
+### build f64-nv
+pe-spike-chunks regions (box3d positions: f64)
+== regions vs flat world (f64) ==
+RESULT regions mode=f64 players=16 bodies_total=2016 step_flat_ms=0.864 step_regions_serial_ms=1.075 step_regions_parallel_wall_ms=0.225 rollback6_flat_ms=10.546 rollback6_one_region_ms=0.681 image_flat_bytes=4700095 image_regions_sum_bytes=4801276
+RESULT region-merge mode=f64 bodies_moved=125 ms=0.084 us_per_body=0.67
+RESULT region-merge mode=f64 bodies_moved=1000 ms=0.893 us_per_body=0.89
+RESULT region-determinism mode=f64 forward_eq_reverse=true forward_eq_parallel=true rollback_resim_eq_straight=true final_digest=91f16f96995a6161

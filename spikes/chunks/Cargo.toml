@@ -1,0 +1,21 @@
+[package]
+name = "pe-spike-chunks"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "R16 spike: hierarchical chunks, f64 coordinates, regions, scale bands, spatial-index study"
+
+# Standalone (excluded from the root workspace) so the `f64` feature, which turns on
+# box3d-rust's `double-precision`, never unifies into the other spikes' builds.
+[workspace]
+
+[features]
+f64 = ["box3d-rust/double-precision"]
+
+[dependencies]
+box3d-rust = "=0.5.0"
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["safe-encode", "safe-decode", "std"] }
+
+[profile.release]
+debug = false
