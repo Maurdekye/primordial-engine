@@ -41,7 +41,7 @@ DISTRO=${PE_WSL_DISTRO:-Ubuntu-24.04}
 WDIR=${PE_WSL_DIR:-pe-matrix}
 NSSH=${PE_LAPTOP_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=15 -p <port> -i $HOME/.ssh/<key> <user>@<laptop address>}
 NDIR=${PE_LAPTOP_DIR:-C:/Users/<user>/pe-matrix}
-TC=${PE_RUSTC:-$(grep -oP '^channel = "\K[^"]+' rust-toolchain.toml)}
+TC=${PE_RUSTC:-$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)}
 GB='"C:\Program Files\Git\bin\bash.exe"'   # <laptop>'s ssh shell is cmd.exe; Git Bash runs the job
 M=spikes/out/matrix
 REV=$(git rev-parse HEAD)
