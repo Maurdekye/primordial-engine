@@ -24,6 +24,8 @@ path = "src/lib.rs"
 [features]
 # Mirrors BOX3D_DOUBLE_PRECISION: double precision world positions for large worlds.
 double-precision = []
+# Primordial Engine fork: fill world::Profile with wall-clock stage timings (native only).
+stage-profile = []
 
 [dependencies]
 

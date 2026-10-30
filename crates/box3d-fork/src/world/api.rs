@@ -765,6 +765,9 @@ pub fn world_set_worker_count(world: &mut World, count: i32) {
     // resize and zero the per-worker scratch arrays.
     world.task_contexts = vec![TaskContext::default(); world.worker_count as usize];
     world.sensor_task_contexts = vec![SensorTaskContext::default(); world.worker_count as usize];
+    // Primordial Engine fork: own the worker threads (None for 1 worker or no thread support).
+    world.worker_pool = crate::worker_pool::WorkerPool::new(world.worker_count as usize)
+        .map(std::sync::Arc::new);
 }
 
 /// Get the stored worker count. (b3World_GetWorkerCount)

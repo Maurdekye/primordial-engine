@@ -9,3 +9,7 @@ description = "Phase-1 spikes (a) Box3D determinism and (b) rollback snapshot/re
 [dependencies]
 box3d-rust.workspace = true
 pe-sim-core.workspace = true
+
+[features]
+# Fill world::Profile with stage timings (par-bench breakdown).
+stage-profile = ["box3d-rust/stage-profile"]

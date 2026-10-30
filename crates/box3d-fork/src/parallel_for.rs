@@ -58,3 +58,13 @@ pub(crate) fn parallel_for(
         callback(start, end, worker_index);
     }
 }
+
+/// The `(start, end)` blocks [`parallel_for`] would visit, in order. Primordial Engine fork
+/// (D2): lets a caller hand the same blocks to worker threads.
+pub(crate) fn block_ranges(worker_count: i32, item_count: i32, min_range: i32) -> Vec<(i32, i32)> {
+    let mut blocks = Vec::new();
+    parallel_for(worker_count, item_count, min_range, |start, end, _| {
+        blocks.push((start, end))
+    });
+    blocks
+}
