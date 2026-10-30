@@ -6,7 +6,7 @@
 //! * Every conversion uses only `+ - * /` by powers of two, `floor` and integer shifts, so it is
 //!   exact or IEEE-rounded identically on every machine (design 4.3 rule 3). No `log2`.
 //! * Range: +-2^63 chunks * 1024 m = +-2^73 m (about 1 million light-years). Resolution inside a
-//!   chunk: one ulp of `f64` at 1024, 2^-42 m (about 2.3e-13 m), anywhere in that range.
+//!   chunk: one ulp of `f64` just below 1024, 2^-43 m (about 1.1e-13 m), anywhere in that range.
 
 /// log2 of the level-0 chunk width in metres.
 pub const CHUNK_EXP: i32 = 10;
