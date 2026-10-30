@@ -1,0 +1,1600 @@
+[
+  {
+    "name": "scenario_check",
+    "description": "Oracle check over the confirmed prefix: every live member's state hashes against the driven peer's, and the driven peer's against an offline replay of its final log. Reports the first divergence.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Divergence": {
+          "properties": {
+            "frame": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "member": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reference": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "frame",
+            "member"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "crashed_members": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "first_divergence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Divergence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frames": {
+          "description": "Frames 0..frames were compared: the lowest confirmed frame among live members.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "live_members": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "replay_equal": {
+          "description": "The driven peer's hashes equal an offline replay of its final log.",
+          "type": "boolean"
+        },
+        "replicas_equal": {
+          "description": "Every live member's hashes equal the driven peer's for every compared frame.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "frames",
+        "live_members",
+        "crashed_members",
+        "replicas_equal",
+        "replay_equal"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "scenario_fault",
+    "description": "Inject a fault into the simulated session: crash a member (permanent), set a link's delay/jitter/loss, partition members into groups, or heal the partition.",
+    "inputSchema": {
+      "$defs": {
+        "FaultKind": {
+          "oneOf": [
+            {
+              "const": "crash",
+              "description": "The member stops receiving, ticking and sending, for good.",
+              "type": "string"
+            },
+            {
+              "const": "link",
+              "description": "Set the link between `from` and `to` (both directions unless `one_way`).",
+              "type": "string"
+            },
+            {
+              "const": "partition",
+              "description": "Drop every datagram between members of different `groups`.",
+              "type": "string"
+            },
+            {
+              "const": "heal",
+              "description": "Remove the partition (crashes are permanent; links stay as set).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "delay_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fault": {
+          "$ref": "#/$defs/FaultKind"
+        },
+        "from": {
+          "default": null,
+          "description": "link: the two ends.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "groups": {
+          "default": null,
+          "description": "partition: disjoint groups covering some members; a member in no group is alone.",
+          "items": {
+            "items": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "jitter_ms": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "loss_pct": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "member": {
+          "default": null,
+          "description": "crash: the member.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "one_way": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "to": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fault"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "active": {
+          "description": "Every fault in force.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "applied": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "applied",
+        "active"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "scenario_load",
+    "description": "Start a fresh simulated session (replacing the current one, tickets included): members, the member you drive, scene, link delay/jitter/loss, background touches by the other members, speculation window, seed. Same parameters and seed give the same run.",
+    "inputSchema": {
+      "$defs": {
+        "SceneChoice": {
+          "oneOf": [
+            {
+              "const": "pile",
+              "description": "A pile of boxes, spheres and capsules: size x size x 2 objects.",
+              "type": "string"
+            },
+            {
+              "const": "ballpit",
+              "description": "A walled pit of small balls plus one kinematic hand per member; `size` = ball count.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "background_touches_per_s": {
+          "default": null,
+          "description": "Touches per second each other member makes on random objects, 0..=30 (default 0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "delay_ms": {
+          "default": null,
+          "description": "One-way link delay, 0..=1000 ms (default 20).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "jitter_ms": {
+          "default": null,
+          "description": "Link jitter, 0..=500 ms (default 0).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "loss_pct": {
+          "default": null,
+          "description": "Datagram loss, 0..=50 percent (default 0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "me": {
+          "default": null,
+          "description": "The member the agent drives (default 1).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "members": {
+          "default": null,
+          "description": "Session members, 2..=8 (default 4). Members are numbered 1..=members.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scene": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneChoice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Default pile."
+        },
+        "seed": {
+          "default": null,
+          "description": "Session seed (default fixed): the same parameters and seed give the same run.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "default": null,
+          "description": "pile: side length 1..=8 (default 4); ballpit: balls 1..=500 (default 100).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "window": {
+          "default": null,
+          "description": "Speculation limit in frames, 30..=600 (default 120).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Scope": {
+          "description": "What a token may do (design 17.2 scopes, narrowed to phase 2).",
+          "oneOf": [
+            {
+              "const": "read",
+              "description": "Read state, hashes, membership and sync status.",
+              "type": "string"
+            },
+            {
+              "const": "interact",
+              "description": "Propose interactions as the driven peer's member.",
+              "type": "string"
+            },
+            {
+              "const": "control",
+              "description": "Test-bench control: advance the clock, load scenarios, inject faults, run the oracle check.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "backend": {
+          "description": "What implements the peer: \"session-sim\" (the phase-1 simulator) until P2-3 lands.",
+          "type": "string"
+        },
+        "conf": {
+          "description": "Every frame below this is confirmed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dt_ms": {
+          "description": "Frame duration in milliseconds.",
+          "format": "double",
+          "type": "number"
+        },
+        "faulted": {
+          "description": "Set once the session has stopped on an internal error.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frame": {
+          "description": "The driven peer's simulated frame.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "me": {
+          "description": "The member id the driven peer authors as.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "members": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "object_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "principal": {
+          "description": "The principal this token maps to (design 17.1).",
+          "type": "string"
+        },
+        "scenario": {
+          "description": "Human-readable scenario label.",
+          "type": "string"
+        },
+        "scene": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "$ref": "#/$defs/Scope"
+          },
+          "type": "array"
+        },
+        "time_ms": {
+          "description": "Virtual time since the session started, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "world": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scenario",
+        "backend",
+        "principal",
+        "scopes",
+        "me",
+        "world",
+        "members",
+        "scene",
+        "object_count",
+        "dt_ms",
+        "time_ms",
+        "frame",
+        "conf"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_info",
+    "description": "Who you are (principal, scopes, the member you drive) and the session: scenario, members, scene, clock, frame and confirmed frame.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Scope": {
+          "description": "What a token may do (design 17.2 scopes, narrowed to phase 2).",
+          "oneOf": [
+            {
+              "const": "read",
+              "description": "Read state, hashes, membership and sync status.",
+              "type": "string"
+            },
+            {
+              "const": "interact",
+              "description": "Propose interactions as the driven peer's member.",
+              "type": "string"
+            },
+            {
+              "const": "control",
+              "description": "Test-bench control: advance the clock, load scenarios, inject faults, run the oracle check.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "backend": {
+          "description": "What implements the peer: \"session-sim\" (the phase-1 simulator) until P2-3 lands.",
+          "type": "string"
+        },
+        "conf": {
+          "description": "Every frame below this is confirmed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dt_ms": {
+          "description": "Frame duration in milliseconds.",
+          "format": "double",
+          "type": "number"
+        },
+        "faulted": {
+          "description": "Set once the session has stopped on an internal error.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frame": {
+          "description": "The driven peer's simulated frame.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "me": {
+          "description": "The member id the driven peer authors as.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "members": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "object_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "principal": {
+          "description": "The principal this token maps to (design 17.1).",
+          "type": "string"
+        },
+        "scenario": {
+          "description": "Human-readable scenario label.",
+          "type": "string"
+        },
+        "scene": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "$ref": "#/$defs/Scope"
+          },
+          "type": "array"
+        },
+        "time_ms": {
+          "description": "Virtual time since the session started, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "world": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scenario",
+        "backend",
+        "principal",
+        "scopes",
+        "me",
+        "world",
+        "members",
+        "scene",
+        "object_count",
+        "dt_ms",
+        "time_ms",
+        "frame",
+        "conf"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_members",
+    "description": "Membership as the driven peer sees it: members, evictions (cut seq, from frame), epoch, and vote counters.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Eviction": {
+          "properties": {
+            "cut_seq": {
+              "description": "The member's entries above this seq were cut.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "from_frame": {
+              "description": "The first frame the member no longer counts for.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cut_seq",
+            "from_frame"
+          ],
+          "type": "object"
+        },
+        "MemberInfo": {
+          "properties": {
+            "evicted": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Eviction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "me": {
+              "type": "boolean"
+            },
+            "member": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "member",
+            "me"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "demotions": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "equivocations": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lying_votes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "me": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/MemberInfo"
+          },
+          "type": "array"
+        },
+        "suspicions": {
+          "description": "Members this peer presumed crashed and voted to remove.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "withdrawn_votes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "me",
+        "epoch",
+        "members",
+        "suspicions",
+        "demotions",
+        "withdrawn_votes",
+        "equivocations",
+        "lying_votes"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_sync_status",
+    "description": "Sync health of the driven peer: frame, clock, confirmed frame, speculation and its limit, paused, check hashes matched/mismatched, rollback counters.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "FrameHash": {
+          "properties": {
+            "frame": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "frame",
+            "hash"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "caught_up": {
+          "type": "boolean"
+        },
+        "checks_bad": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "checks_ok": {
+          "description": "Check hashes that matched / differed from other members' (a mismatch means divergence).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "conf": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frame": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "latest_check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FrameHash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_rollback_depth": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nonfinite": {
+          "description": "Check frames at which some body held a non-finite value.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "now": {
+          "description": "The peer's clock frame (its present).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "paused_frames": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resim_frames": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rollbacks": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "speculation": {
+          "description": "now - conf: how far the peer speculates past the confirmed frame.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window": {
+          "description": "The speculation limit, in frames.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "frame",
+        "now",
+        "conf",
+        "speculation",
+        "window",
+        "paused",
+        "caught_up",
+        "checks_ok",
+        "checks_bad",
+        "rollbacks",
+        "max_rollback_depth",
+        "resim_frames",
+        "paused_frames",
+        "nonfinite"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "world_get_object",
+    "description": "One object's full state: global id, kind, position, rotation, velocities, exact-state hash and claim.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "object": {
+          "description": "Object index (see world_get_state).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "object"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ClaimInfo": {
+          "properties": {
+            "member": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "object": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "until_frame": {
+              "description": "The claim holds for frames below this one.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object",
+            "member",
+            "until_frame"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "angular_velocity": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaimInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "global_id": {
+          "description": "Session-wide id: the birth world in the high 32 bits.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "box, sphere, capsule, ball or hand. Hands are kinematic and move only by `hand` interactions.",
+          "type": "string"
+        },
+        "linear_velocity": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "object": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "rotation": {
+          "description": "Unit quaternion, [x, y, z, w].",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        "state_hash": {
+          "description": "Hash of the object's exact bit state.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "object",
+        "global_id",
+        "kind",
+        "position",
+        "rotation",
+        "linear_velocity",
+        "angular_velocity",
+        "state_hash"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "world_get_state",
+    "description": "The driven peer's world: frame, confirmed frame, state hash, a page of objects (position, velocity) and the claims in force.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "limit": {
+          "default": null,
+          "description": "How many objects to list, 0..=256 (default 16).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "default": null,
+          "description": "First object index to list (default 0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ClaimInfo": {
+          "properties": {
+            "member": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "object": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "until_frame": {
+              "description": "The claim holds for frames below this one.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object",
+            "member",
+            "until_frame"
+          ],
+          "type": "object"
+        },
+        "ObjectSummary": {
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "linear_velocity": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "object": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "position": {
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "object",
+            "kind",
+            "position",
+            "linear_velocity"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/ClaimInfo"
+          },
+          "type": "array"
+        },
+        "conf": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frame": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "next_offset": {
+          "description": "Pass as `offset` to read the next page.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "object_count": {
+          "description": "Number of object slots, live or gone.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/ObjectSummary"
+          },
+          "type": "array"
+        },
+        "state_hash": {
+          "description": "Hash of the state after the newest simulated frame (absent before the first frame).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "frame",
+        "conf",
+        "object_count",
+        "objects",
+        "claims"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "world_hashes",
+    "description": "State hashes after each frame in [from, to) (at most 600 frames), plus the canonical check hashes compared with other members.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "from": {
+          "description": "First frame (inclusive).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "description": "Last frame (exclusive); at most 600 frames per call.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "FrameHash": {
+          "properties": {
+            "frame": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "frame",
+            "hash"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "checks": {
+          "description": "Canonical full-state check hashes in the range (compared with other members' acks).",
+          "items": {
+            "$ref": "#/$defs/FrameHash"
+          },
+          "type": "array"
+        },
+        "conf": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames": {
+          "description": "State hash after each simulated frame in the range.",
+          "items": {
+            "$ref": "#/$defs/FrameHash"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "conf",
+        "frames",
+        "checks"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "world_interaction_status",
+    "description": "The current verdict on one of your interactions: pending, accepted, rejected (with reason) or void; `final` once its frame is confirmed.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "ticket": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ticket"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "InteractionState": {
+          "oneOf": [
+            {
+              "enum": [
+                "accepted",
+                "rejected"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "pending",
+              "description": "Its frame has not been simulated yet.",
+              "type": "string"
+            },
+            {
+              "const": "void",
+              "description": "Withdrawn: the entry broke a chain rule or was cut by an eviction.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "by_member": {
+          "description": "For rejected because claimed: the claim holder.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "entry": {
+          "type": "string"
+        },
+        "final": {
+          "description": "True once the stamp is confirmed: the state can no longer change. Before that a rollback\ncan still turn an acceptance into a rejection or the reverse.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "For rejected: claimed, cooldown, gone, duplicate, portal_closed, no_proof, ...",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/InteractionState"
+        },
+        "ticket": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "until_frame": {
+          "description": "For claimed or cooldown rejections: when the obstacle ends.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ticket",
+        "entry",
+        "stamp",
+        "state",
+        "final"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "world_propose_interaction",
+    "description": "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes). Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.",
+    "inputSchema": {
+      "$defs": {
+        "InteractionAction": {
+          "oneOf": [
+            {
+              "const": "touch",
+              "description": "One impulse; claims the object once (other members' touches are refused while it holds).",
+              "type": "string"
+            },
+            {
+              "const": "grab",
+              "description": "An impulse that is a held grab: renews the claim.",
+              "type": "string"
+            },
+            {
+              "const": "hand",
+              "description": "Move one of the kinematic hands (ball-pit scenes) to `target_mm`.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/InteractionAction"
+        },
+        "active": {
+          "default": null,
+          "description": "hand: false parks the hand (default true).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "impulse": {
+          "default": null,
+          "description": "touch and grab: impulse in N*s, three finite numbers, magnitude at most 100.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "object": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target_mm": {
+          "default": null,
+          "description": "hand: target position in millimetres, each within +-100000.",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "object",
+        "action"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "entry": {
+          "description": "The signed entry's id.",
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stamp": {
+          "description": "The canonical frame the entry is stamped with.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ticket": {
+          "description": "Pass to world_interaction_status.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ticket",
+        "entry",
+        "stamp",
+        "seq",
+        "note"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "world_step",
+    "description": "Advance the session's virtual clock by `ms` milliseconds (1..=10000) or `frames` frames (1..=600). Every member ticks, the network delivers, the driven peer rolls back as needed. Reports the new frame and confirmed frame, rollbacks, your interactions whose state changed, and protocol events.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "frames": {
+          "default": null,
+          "description": "Advance by this many frames, 1..=600.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ms": {
+          "default": null,
+          "description": "Advance virtual time by this many milliseconds, 1..=10000. Give exactly one of ms, frames.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "InteractionState": {
+          "oneOf": [
+            {
+              "enum": [
+                "accepted",
+                "rejected"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "pending",
+              "description": "Its frame has not been simulated yet.",
+              "type": "string"
+            },
+            {
+              "const": "void",
+              "description": "Withdrawn: the entry broke a chain rule or was cut by an eviction.",
+              "type": "string"
+            }
+          ]
+        },
+        "InteractionStatus": {
+          "properties": {
+            "by_member": {
+              "description": "For rejected because claimed: the claim holder.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "entry": {
+              "type": "string"
+            },
+            "final": {
+              "description": "True once the stamp is confirmed: the state can no longer change. Before that a rollback\ncan still turn an acceptance into a rejection or the reverse.",
+              "type": "boolean"
+            },
+            "reason": {
+              "description": "For rejected: claimed, cooldown, gone, duplicate, portal_closed, no_proof, ...",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stamp": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/$defs/InteractionState"
+            },
+            "ticket": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "until_frame": {
+              "description": "For claimed or cooldown rejections: when the obstacle ends.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "ticket",
+            "entry",
+            "stamp",
+            "state",
+            "final"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "changed": {
+          "description": "This principal's interactions whose status changed during the step.",
+          "items": {
+            "$ref": "#/$defs/InteractionStatus"
+          },
+          "type": "array"
+        },
+        "conf": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "events": {
+          "description": "Protocol events the driven peer logged (votes, evictions, check results), newest last, at\nmost 50.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "frame": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from_frame": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paused": {
+          "description": "The driven peer stopped at its speculation limit (frame - conf reached the window).",
+          "type": "boolean"
+        },
+        "resim_frames": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rollbacks": {
+          "description": "Rollbacks and re-simulated frames on the driven peer during this step.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_frame",
+        "frame",
+        "conf",
+        "time_ms",
+        "rollbacks",
+        "resim_frames",
+        "paused",
+        "changed",
+        "events"
+      ],
+      "type": "object"
+    }
+  }
+]
