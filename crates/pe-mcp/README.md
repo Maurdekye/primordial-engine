@@ -133,7 +133,7 @@ peer-authored text.
 ## Status
 
 * Windows: built and tested; Claude Code drove it over the pipe and over HTTP (`spikes/out/mcp/`).
-* Linux: the same 44 tests pass as static musl binaries built on Windows and run in WSL2 Ubuntu-24.04
+* Linux: the tests pass (44 at 5a1568c; 46 at 5ff2117 in the glibc run) as static musl binaries built on Windows and run in WSL2 Ubuntu-24.04
   (`run-linux-tests.sh build`, then `run`; log in `spikes/out/mcp/tests-linux-wsl.log`). That run covers the
   Unix socket and `serve --pipe -- pe-mcp bridge` end to end. They also pass in a native glibc build inside
   WSL (`run-linux-tests.sh glibc`; log in `spikes/out/mcp/tests-linux-glibc.log`). Claude Code was not run on
