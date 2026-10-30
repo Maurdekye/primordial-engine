@@ -19,8 +19,8 @@
 //!
 //! What remains [I]: a dishonest-majority world can still double-spend an object it legitimately
 //! received, into a world that has not seen the object since (both exports cite the same incoming
-//! hop, and are a transferable equivocation proof against that world). Only a per-object registry
-//! that orders every hop prevents that.
+//! hop, and are a transferable equivocation proof against that world). User ruling D79: detect
+//! only, by those fork proofs; a per-object registry ordering every hop was rejected.
 
 use std::collections::BTreeMap;
 
