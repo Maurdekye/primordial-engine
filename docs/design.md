@@ -1700,8 +1700,23 @@ from its source.
       peer would have to agree on [I].
     * **Joining with a physics-sized module** costs about 20 s of building per module.
 
-    This PC's numbers were not taken: the user was in VR, so builds ran at idle priority with capped
-    jobs.
+    **On this PC** (Ryzen 7 9700X, through the lock at idle priority, so noisy; spikes/out/p2-7/build-times-desktop.txt) [V], the same edit costs:
+    * 2.31-3.42 s with release;
+    * 0.42-0.49 s with `rel-fast`.
+
+    Cold builds take 3.2 s for the 6.4k-line module and 14.9 s for physics_in_wasm.
+
+    **What dropping LTO costs at run time** (wasmi, medians of 3, this PC, noisy; spikes/out/p2-7/runtime-wasmi-desktop.txt) [V]:
+    * **logic_mono:** release and `rel-fast` are equal within noise. A tick takes 0.52 vs 0.51 ms at 1,000 entities, and 7.2 vs 7.5 ms at 10,000.
+    * **physics_in_wasm:**
+
+      | Profile | Run time | Module | wasmi compile |
+      |---|---|---|---|
+      | `rel-fast`-like | 7.19 ms/frame | 623 KB | 16.9 ms |
+      | opt 3 with LTO | 7.10 ms/frame | 585 KB | 11.3 ms |
+      | today's guest profile (opt s, LTO) | 8.06 ms/frame | 461 KB | 8.7 ms |
+
+    So `rel-fast` loses about 1% of run time against opt 3 with LTO, and is about 11% faster than today's opt-s guest profile. Its cost is size: about 35% more bytes, and double the wasmi compile time, which happens during the activation lead, off the sim thread (13.3) [I].
   * **joining** a world means building every module it runs before activating them: seconds to minutes,
     by code size [I]. Each peer caches builds by source hash, so returning to a world rebuilds only what
     changed.
