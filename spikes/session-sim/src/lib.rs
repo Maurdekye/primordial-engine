@@ -501,7 +501,10 @@ impl Sim {
             }
             // Simulate once per new clock frame (coalesces all late arrivals of a frame into one
             // rollback: option (c)); background worlds advance in periodic bursts.
-            let throttled = r.throttle_us.is_some_and(|p| now >= r.throttle_from_us && now < r.last_burst_us + p);
+            // A background world catches up before its member authors anything that carries state
+            // (design 22.3 rule 2): a due action forces a burst.
+            let due = r.plan.get(&clock_frame).is_some_and(|v| v.iter().any(|a| !matches!(a, Action::Hand { .. })));
+            let throttled = !due && r.throttle_us.is_some_and(|p| now >= r.throttle_from_us && now < r.last_burst_us + p);
             let mut new_frame = false;
             if !throttled && (clock_frame != r.last_frame_seen || !r.sim.caught_up()) {
                 new_frame = clock_frame != r.last_frame_seen;
@@ -638,9 +641,11 @@ impl Sim {
                     // Relay only with B's certificate over the verdict (review NEW-3).
                     let Some(cert) = dst.cert(fact_verdict(j.dst, j.transfer, accepted)) else { continue };
                     let src = self.peers[pi].worlds.get_mut(&j.src).unwrap();
+                    // State-free: stamped at the present even if this replica lags (design 22.3).
+                    let sim_at = src.sim.frame;
                     let e = src.sim.author(Payload::Verdict { transfer: j.transfer, accepted, cert }, None);
                     j.log.push(format!(
-                        "t={}ms arrival confirmed in world {} (frame {f}, accepted={accepted}); verdict authored in world {} at frame {}",
+                        "t={}ms arrival confirmed in world {} (frame {f}, accepted={accepted}); verdict authored in world {} at frame {} (its sim there at frame {sim_at})",
                         now / 1000, j.dst, j.src, e.stamp
                     ));
                     j.accepted = Some(accepted);

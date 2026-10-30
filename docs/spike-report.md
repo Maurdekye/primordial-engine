@@ -276,10 +276,10 @@ entry is in flight, and they converge when it lands.
 
 | Variant | What it exercises | Outcome | Live copies at the end (A + B), pending escrow |
 |---|---|---|---|
-| ok | Plain handoff | Committed. Departure authored at 2,766 ms; confirmed in A, arrival authored in B at 2,915 ms; arrival confirmed in B at 3,041 ms; verdict confirmed in A at 3,180 ms | 0 + 1, 0 |
+| ok | Plain handoff; member 1 also touches object 25 in A at frame 260 | Committed. Departure authored at 2,766 ms; certified arrival authored in B at 2,964 ms; arrival confirmed in B and verdict authored at 3,197 ms; verdict confirmed in A at 3,354 ms (round 2) | 0 + 1, 0 |
 | abort | Member 2's earlier grab reaches member 1 150 ms late; A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 + 0, 0 |
 | reject | Member 3 closes B's portal, and member 1 hears of it 150 ms late; B rolls back 10 frames past fB | Arrival rejected; the verdict returns the object to A | 1 + 0, 0 |
-| throttle | Member 1's replica of A advances only once per 250 ms from t = 3 s | As ok; both worlds' digests equal the ok run's; member 2's confirmation lag in A unchanged (3.9 frames) | 0 + 1, 0 |
+| throttle | Member 1's replica of A advances only once per 250 ms from t = 3 s, and member 1 keeps authoring in A | As ok; both worlds' digests equal the ok run's. The Verdict went out at frame 185 while the throttled sim stood at 175, at the ok run's time; the touch at frame 260 kept its stamp after a catch-up burst. Member 2's confirmation lag in A is unchanged (8.5 frames before t = 3 s, 8.6 after). Member 1's check hashes reach the log 10.2 frames after their check frame (10.0 unthrottled) (review NEW-12) | 0 + 1, 0 |
 | ok, abort, reject in reverse order | Worlds created B first, peers processed in reverse | Digests identical to the forward runs | as forward |
 
 In every variant, every replica of each world equals the others and an offline replay of that world's
@@ -320,7 +320,7 @@ Design 6.4, 8.2, 9.3, 10.8-10.9 and 22.6; review-response.md, round 2. Logs: `sp
 
 * **Protocol.** Acks, votes and attestations are chain entries. Confirmation comes from stable data. Nothing
   is re-stamped.
-* **Suite.** `scripts/run_session_sim.sh` runs 26 scenarios. Every replica is bit-identical to its offline
+* **Suite.** `scripts/run_session_sim.sh` runs 25 scenarios. Every replica is bit-identical to its offline
   replay, with no panic and 0 bad checks, and the script now fails otherwise.
 * **The reviewer's repros:**
 
@@ -348,7 +348,8 @@ Design 6.4, 8.2, 9.3, 10.8-10.9 and 22.6; review-response.md, round 2. Logs: `sp
   * a member of A commits the escrow without B's certificate;
   * the carrier claims a rejection with B's signatures over the acceptance.
 
-  The ok, abort, reject and throttle runs conserve the object as before. Canonical check hashes give
+  A correctly certified record with a NaN position is `RejectedInvalid` (review NEW-21). The ok, abort,
+  reject and throttle runs conserve the object as before. Canonical check hashes give
   `r14-throttle` 18/0 and 15/0 (was 42/24).
 * **R18 under caps** (`scripts/run_r18.sh`; ball pit, 50 ms one-way, token bucket with a 500 ms queue):
   * per-tick batching cuts the hand author's uplink from 77 to 65 kbit/s;

@@ -82,7 +82,7 @@ it [I].
 **Summary:**
 * **All 4 Criticals are fixed, with spike evidence.** The reviewer's four repros now run as session-sim
   scenarios, and `scripts/run_session_sim.sh` fails on any fork, panic or false check. It passes:
-  * 26 scenarios, every replica bit-identical to its offline replay, 0 false checks;
+  * 25 scenarios, every replica bit-identical to its offline replay, 0 false checks;
   * a `r14 forge` scenario, in which every proofless relay does nothing.
 * **Of 8 Highs:**
   * fixed with evidence: NEW-5, NEW-7;
@@ -183,3 +183,19 @@ it [I].
 * **An eviction's cut may need versions fetched after the votes,** so the eviction is retried when they
   arrive.
 * **Batching saves little unless acks share the frame's datagram.**
+
+## Round 2 follow-ups (branch `round2-followups`)
+
+These are the deferred items that needed no new subsystem, done while round 3 runs. The branch sits on
+top of R15 (d948898).
+
+| ID | Status | How | Evidence |
+|---|---|---|---|
+| L2 | **Fixed** | Every build checks at each check frame that all body states are finite (one pass), counts failures and names the first bad object. The suite fails on any (4.3 rule 9) | [V session-sim: 0 in every scenario] |
+| D12-3 | **Fixed** | `audit_native.py` flags Rust files with `asm!`, `global_asm!` or `naked_asm!` (a text scan, inspected by hand). 20.2 lists the packages: wasmtime's unwinder, `cranelift-native`, the icache-coherence crate, `sha2`, and `rustix` on Linux. wasmi's `libm` uses `sqrtss`/`sqrtsd` and runtime-detected `vfmadd`, all exactly rounded, so the path taken cannot change a result | [V `spikes/out/audit-inline-asm.md`; S libm source] |
+| D12-7 | **Fixed in part** | 13.6 now states that only fuel may stop a module at a frame: epoch interruption is timer-driven, so it is only a backstop outside the session. The ARM NaN probe and a cross-runtime equality assertion still go with the CI matrix | [I] |
+| NEW-12 | **Fixed** | The throttle scenario now measures what the reviewer asked for. 22.3 separates state-free entries (stamped at the present, no simulation needed) from entries that carry state (one catch-up burst first). The harness forces that burst. Results, throttled against unthrottled: identical relay timeline (2,766 / 2,964 / 3,197 / 3,354 ms), with the Verdict authored at frame 185 while the throttled sim stood at 175; the throttled member's touch kept its stamp (frame 260); its check hashes arrived 10.2 frames after their check frame against 10.0; and A's digest is identical | [V session-sim r14 ok, r14 throttle] |
+| NEW-21 | **Fixed in part** | B validates every arriving record: all values finite, rotation norm within 1%, speed at most 200 m/s and spin at most 2,000 rad/s, otherwise `RejectedInvalid` (22.6). ACL, budget, deadline, component policy, several relayers, placement at the portal and global-id references remain for the R14 implementation | [V r14 forge: a certified record with a NaN position is `RejectedInvalid`; conserved; ALL EQUAL] |
+| NEW-22 | **Fixed in design** | 22.8 and D48: foreign modules are pinned by canonical hash; carried bytes are untrusted input, size-capped by the engine before logic sees them and validated by B's module; a record that does not parse stays inert | [I] |
+| NEW-13 | **Still deferred** | It needs R16's measured per-region costs, which merge with `chunks/r16` | — |
+| NEW-23 | **Fixed** (remaining stale numbers) | 15.2 cited 70-80 ms confirmation, and 6.3 and 22.3 cited a 4-5-frame lag; both now use the round-2 figure of 8.5 frames (about 140 ms). The confirmation term in the priorities list, 2.1, 15.2 and 15.4 is now 0.14 s. The suite runs 25 scenarios, not 26 | [V session-sim r14] |

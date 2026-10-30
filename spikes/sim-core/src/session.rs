@@ -325,6 +325,10 @@ pub fn tie_rank(seed: u64, frame: u64, member: MemberId) -> u64 {
 
 // ---- R14 proofs (reviews NEW-3..NEW-6) -------------------------------------------------------------
 
+/// Largest linear speed (m/s) and spin (rad/s) an arriving object may carry (review NEW-21).
+pub const MAX_ARRIVAL_SPEED: f32 = 200.0;
+pub const MAX_ARRIVAL_SPIN: f32 = 2000.0;
+
 /// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
 pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
     splitmix64(((src_world as u64) << 40) ^ depart)
@@ -544,6 +548,8 @@ pub struct Stats {
     pub equivocations: u64,
     pub checks_ok: u64,
     pub checks_bad: u64,
+    /// Check frames at which some body held a non-finite position, rotation or velocity (review L2).
+    pub nonfinite: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -625,6 +631,8 @@ pub enum Outcome {
     RejectedDuplicate,
     /// R14: a relay without a valid certificate from the other world (reviews NEW-3, NEW-4).
     RejectedNoProof,
+    /// R14: a certified record that is not a valid body state (review NEW-21).
+    RejectedInvalid,
 }
 
 pub struct WorldSim {
@@ -1532,6 +1540,22 @@ impl WorldSim {
                 if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact_departed(src, *depart, record, self.world_id), cert) {
                     return Outcome::RejectedNoProof;
                 }
+                // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
+                // majority in the source world). Refuse non-finite or absurd states.
+                let st = record.state;
+                let finite = st.0.iter().all(|&b| (b >> 23) & 0xFF != 0xFF);
+                let (q, v, w) = (st.rot(), st.lin(), st.ang());
+                let qn = q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z + q.s * q.s;
+                let sane = finite
+                    && (0.99..=1.01).contains(&qn)
+                    && v.x * v.x + v.y * v.y + v.z * v.z <= MAX_ARRIVAL_SPEED * MAX_ARRIVAL_SPEED
+                    && w.x * w.x + w.y * w.y + w.z * w.z <= MAX_ARRIVAL_SPIN * MAX_ARRIVAL_SPIN;
+                if !sane {
+                    if !self.t.arrivals.contains_key(transfer) {
+                        self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f });
+                    }
+                    return Outcome::RejectedInvalid;
+                }
                 if self.t.arrivals.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
                 }
@@ -1669,6 +1693,17 @@ impl WorldSim {
             if f % self.cfg.check_every == 0 {
                 let h = self.image_hash();
                 self.check_hashes.insert(f, h);
+                // Review L2: a release-build finite check at every check frame. NaN payload bits differ
+                // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
+                let bad = self.t.objs.iter().flatten().find(|o| {
+                    let st = BodyState::read(&self.world, o.body);
+                    st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
+                });
+                if let Some(o) = bad {
+                    self.stats.nonfinite += 1;
+                    let g = o.global;
+                    self.ev(format!("NON-FINITE body state at frame {f} (object global id {g:#x})"));
+                }
             }
             if self.track {
                 let p: Vec<[f32; 3]> = self

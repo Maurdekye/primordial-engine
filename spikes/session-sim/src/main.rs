@@ -110,9 +110,9 @@ fn print_stats(sim: &Sim, w: WorldId) {
         if let Some(r) = p.worlds.get(&w) {
             let s = r.sim.stats;
             println!(
-                "  m{} world {w}: rollbacks {} max depth {} resim frames {} ({:.1} ms) overwrites {} paused frames {} violations {} equivocations {} checks ok {} bad {} conf {} frame {}",
+                "  m{} world {w}: rollbacks {} max depth {} resim frames {} ({:.1} ms) overwrites {} paused frames {} violations {} equivocations {} checks ok {} bad {} nonfinite {} conf {} frame {}",
                 p.id, s.rollbacks, s.max_depth, s.resim_frames, s.resim_us as f64 / 1000.0, s.overwrites, s.paused_frames,
-                s.entries_rejected_violation, s.equivocations, s.checks_ok, s.checks_bad, r.sim.conf, r.sim.frame
+                s.entries_rejected_violation, s.equivocations, s.checks_ok, s.checks_bad, s.nonfinite, r.sim.conf, r.sim.frame
             );
         }
     }
@@ -385,8 +385,13 @@ fn r14(variant: &str, reverse: bool) {
     // slightly earlier grab can still win the object.
     let mut p1_a: Vec<(u64, Action)> = if variant == "abort" { vec![] } else { (0..12).map(|k| grab(100 + 5 * k)).collect() };
     p1_a.push((160, Action::Carry { transfer: 7, obj: 40, dest: 2 }));
-    // Member 1 authors nothing in A after crossing, so "throttle" and "ok" have identical logs and
-    // must produce identical histories.
+    // After crossing, member 1 authors in A only the relay's Verdict (state-free, stamped at the
+    // present) and, in "ok" and "throttle", one touch at frame 260 (it carries state, so a
+    // throttled replica catches up first: design 22.3 rule 2). So "throttle" and "ok" have
+    // identical logs and must produce identical histories (review NEW-12).
+    if variant == "ok" || variant == "throttle" {
+        p1_a.push((260, touch(25, 0.0, 5.0, 0.0)));
+    }
     let mut p2_a: Vec<(u64, Action)> = vec![(140, touch(33, 2.0, 4.0, 0.0)), (175, touch(60, 0.0, 6.0, 1.0)), (230, touch(12, 0.0, 5.0, 0.0))];
     if variant == "abort" {
         // Member 2 grabbed object 40 at frame 155 and keeps holding it. Its entries reach member 1
@@ -469,6 +474,24 @@ fn r14(variant: &str, reverse: bool) {
                     send_all(&mut sim, 2, 3, &e);
                 }
             }
+            if t == 2_700_000 {
+                // NEW-21: a certified but invalid record (a bug, or a compromised majority, in A): the
+                // signatures are genuine A signatures over a record with a NaN position.
+                let mut st = BodyState([0; 13]);
+                st.0[0] = f32::NAN.to_bits();
+                st.0[6] = 1.0f32.to_bits();
+                let record = ObjRecord { global: (1u64 << 32) | 41, kind: 1, state: st, src_world: 1, src_frame: 150 };
+                let fake = 0x0BAD_0BAD;
+                let fact = fact_departed(1, fake, &record, 2);
+                let cert: Vec<(MemberId, u64)> = [1u32, 2].iter().map(|&m| (m, member_sig(1, m, fact))).collect();
+                let i = pidx(&sim, 1);
+                let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
+                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, cert },
+                    None,
+                );
+                forged.push((2, 1, e.id(), "a certified record with a NaN position (a bug or a compromised majority in A)"));
+                send_all(&mut sim, 2, 1, &e);
+            }
             if t == 3_000_000 {
                 if let Some((transfer, _)) = esc {
                     // NEW-3 (loss): member 2 (only in A) commits the escrow with a proofless verdict.
@@ -545,6 +568,36 @@ fn r14(variant: &str, reverse: bool) {
             avg(&before),
             avg(&after),
             if variant == "throttle" { "throttled to one burst per 250 ms" } else { "not throttled" }
+        );
+        // Review NEW-12: the background member's own entries, and how late its check hashes come.
+        let a2 = &sim.replica(2, 1).sim;
+        for e in a2.all_entries() {
+            if let (1, Payload::Touch { obj: 25, .. }) = (e.member, &e.payload) {
+                println!(
+                    "RESULT r14 {variant}: member 1's touch in A after t=3 s: stamp {}, outcome at member 2 {:?}",
+                    e.stamp,
+                    a2.outcomes.get(&e.id()).map(|x| x.1)
+                );
+            }
+        }
+        let delays = |m: MemberId| -> Vec<u64> {
+            let mut first: BTreeMap<u64, u64> = BTreeMap::new();
+            for e in a2.all_entries() {
+                if let Payload::Ack { check: Some((f, _)), .. } = e.payload {
+                    if e.member == m && f >= 180 {
+                        let s = first.entry(f).or_insert(e.stamp);
+                        *s = (*s).min(e.stamp);
+                    }
+                }
+            }
+            first.iter().map(|(f, s)| s - f).collect()
+        };
+        let (d1, d2) = (delays(1), delays(2));
+        let fmt = |v: &Vec<u64>| format!("avg {:.1}, max {} over {} check frames", avg(v), v.iter().max().unwrap_or(&0), v.len());
+        println!(
+            "RESULT r14 {variant}: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 {}; member 2 {}",
+            fmt(&d1),
+            fmt(&d2)
         );
     }
 }
