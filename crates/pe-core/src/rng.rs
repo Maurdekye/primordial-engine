@@ -59,7 +59,7 @@ impl Rng {
     }
 
     pub fn next_u64(&mut self) -> u64 {
-        self.pos += 1;
+        self.pos = self.pos.wrapping_add(1);
         mix64(self.key.wrapping_add(self.pos.wrapping_mul(GAMMA)))
     }
 
@@ -77,9 +77,17 @@ impl Rng {
         (self.next_u64() >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
     }
 
-    /// Uniform in [lo, hi). `lo + (hi - lo) * u`, so the same bits everywhere.
+    /// Uniform in [lo, hi) for finite `lo < hi`: `lo + (hi - lo) * u`, so the same bits everywhere. When
+    /// rounding would give `hi`, it returns the largest value below `hi` (review P21-11).
     pub fn range_f32(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + (hi - lo) * self.next_f32()
+        let v = lo + (hi - lo) * self.next_f32();
+        if v < hi {
+            v
+        } else {
+            let b = hi.to_bits();
+            let below = if hi > 0.0 { b - 1 } else if hi == 0.0 { 0x8000_0001 } else { b + 1 };
+            f32::from_bits(below).max(lo)
+        }
     }
 
     /// Uniform integer in [0, n), unbiased (Lemire's multiply-and-reject). `n` must be > 0.
@@ -121,6 +129,9 @@ mod tests {
             let f = c.next_f32();
             assert!((0.0..1.0).contains(&f));
             assert!(c.below(10) < 10);
+            // A range whose width rounds the top draws up to hi.
+            let r = c.range_f32(1.0e8, 1.0e8 + 8.0);
+            assert!((1.0e8..1.0e8 + 8.0).contains(&r), "{r}");
         }
     }
 }

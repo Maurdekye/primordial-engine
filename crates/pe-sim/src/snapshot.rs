@@ -18,6 +18,7 @@ use pe_core::{Error, Frame, ObjectId};
 
 use crate::column::Column;
 use crate::hierarchy::Node;
+use crate::transform::Transform;
 use crate::registry::{ComponentId, Registry};
 use crate::store::SimStore;
 
@@ -168,6 +169,9 @@ impl Snapshot {
             return Err(Error::Corrupt("bad magic"));
         }
         let frame = Frame(r.u64()?);
+        if frame.0 > 1 << 62 {
+            return Err(Error::Corrupt("frame beyond 2^62"));
+        }
         let seed = r.u64()?;
         let objects = r.ids()?;
         if !strictly_sorted(&objects) || objects.iter().any(|o| o.is_none()) {
@@ -201,7 +205,7 @@ impl Snapshot {
             if columns.last().is_some_and(|c| c.id >= id) {
                 return Err(Error::Corrupt("columns not sorted"));
             }
-            let len = r.u64()? as usize;
+            let len = r.len()?;
             let ids = r.ids_n(len)?;
             if len == 0 || !strictly_sorted(&ids) || ids.iter().any(|i| objects.binary_search(i).is_err()) {
                 return Err(Error::Corrupt("column ids not sorted, empty, or not live objects"));
@@ -225,7 +229,18 @@ impl Snapshot {
             return Err(Error::Corrupt("objects without hierarchy nodes"));
         }
         if let Some(n) = nodes {
-            check_forest(&n.col.ids, bytemuck::cast_slice(n.col.bytes()))?;
+            let node_rows: &[Node] = bytemuck::cast_slice(n.col.bytes());
+            check_forest(&n.col.ids, node_rows)?;
+            // Transforms within their limits, with the frame rule (review P21-2).
+            if let Some(tc) = columns.iter().find(|c| c.id == ComponentId::TRANSFORM) {
+                let ts: &[Transform] = bytemuck::cast_slice(tc.col.bytes());
+                let has_frame = frames(&n.col.ids, node_rows, &tc.col.ids);
+                for (i, t) in ts.iter().enumerate() {
+                    if let Err(field) = t.validate(has_frame[i]) {
+                        return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: tc.col.ids[i], field: field.to_string() });
+                    }
+                }
+            }
         }
         Ok(Snapshot { frame, seed, objects: Arc::new(objects), counters: Arc::new(counters), columns })
     }
@@ -277,18 +292,43 @@ fn check_forest(ids: &[ObjectId], nodes: &[Node]) -> Result<(), Error> {
             return bad("hierarchy root with siblings");
         }
     }
-    // No cycles: from every object, the parent chain reaches a root within n steps.
-    for i in 0..ids.len() {
-        let (mut at, mut steps) = (nodes[i].parent, 0usize);
-        while let Some(p) = at.some() {
-            steps += 1;
-            if steps > ids.len() {
-                return bad("hierarchy cycle");
-            }
-            at = nodes[idx(p).unwrap()].parent;
+    // No cycles, in O(n) (review P21-1): every non-root is in exactly one child list, so a walk down from
+    // the roots visits each reachable object once. Objects it does not reach sit on a cycle.
+    let mut reached = 0usize;
+    let mut stack: Vec<usize> = (0..ids.len()).filter(|&i| nodes[i].parent.is_none()).collect();
+    while let Some(i) = stack.pop() {
+        reached += 1;
+        let mut at = nodes[i].first_child;
+        while let Some(c) = at.some() {
+            let ci = idx(c).unwrap();
+            stack.push(ci);
+            at = nodes[ci].next_sibling;
         }
     }
+    if reached != ids.len() {
+        return bad("hierarchy cycle");
+    }
     Ok(())
+}
+
+/// For each object in `transformed` (sorted), whether it has a transformed ancestor. O(n log n), on a
+/// forest that passed `check_forest`.
+fn frames(ids: &[ObjectId], nodes: &[Node], transformed: &[ObjectId]) -> Vec<bool> {
+    let idx = |id: ObjectId| ids.binary_search(&id).unwrap();
+    let has_t: Vec<bool> = ids.iter().map(|i| transformed.binary_search(i).is_ok()).collect();
+    // Depth-first from the roots, carrying "an ancestor has a Transform".
+    let mut framed = vec![false; ids.len()];
+    let mut stack: Vec<(usize, bool)> = (0..ids.len()).filter(|&i| nodes[i].parent.is_none()).map(|i| (i, false)).collect();
+    while let Some((i, above)) = stack.pop() {
+        framed[i] = above;
+        let mut at = nodes[i].first_child;
+        while let Some(c) = at.some() {
+            let ci = idx(c);
+            stack.push((ci, above || has_t[i]));
+            at = nodes[ci].next_sibling;
+        }
+    }
+    transformed.iter().map(|t| framed[idx(*t)]).collect()
 }
 
 fn strictly_sorted(ids: &[ObjectId]) -> bool {
@@ -316,13 +356,19 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
 
+    /// A length: refused if it does not fit `usize`, so 32- and 64-bit peers accept the same bytes
+    /// (review P21-9).
+    fn len(&mut self) -> Result<usize, Error> {
+        usize::try_from(self.u64()?).map_err(|_| Error::Corrupt("length beyond usize"))
+    }
+
     fn ids_n(&mut self, n: usize) -> Result<Vec<ObjectId>, Error> {
         let raw = self.take(n.checked_mul(8).ok_or(Error::Corrupt("size overflow"))?)?;
         Ok(raw.as_chunks::<8>().0.iter().map(|c| bytemuck::pod_read_unaligned::<ObjectId>(c)).collect())
     }
 
     fn ids(&mut self) -> Result<Vec<ObjectId>, Error> {
-        let n = self.u64()? as usize;
+        let n = self.len()?;
         self.ids_n(n)
     }
 }

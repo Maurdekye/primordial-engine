@@ -128,6 +128,10 @@ impl SimStore {
 
     /// Moves `child` under `parent` at position `index` among its children (`None` or past the end:
     /// last), or makes it a root (`parent = None`). Refuses a move that would create a cycle.
+    ///
+    /// World transforms stay where they are (review P21-6): the child's `Transform`, or if it has none the
+    /// transformed objects below it, are rewritten for their new frame. A move whose rewritten transforms
+    /// would break the limits of [`crate::transform`] is refused, and nothing changes.
     pub fn set_parent(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
         if !self.exists(child) {
             return Err(Error::UnknownObject(child));
@@ -140,7 +144,18 @@ impl SimStore {
                 return Err(Error::Cycle { child, parent: p });
             }
         }
+        // Only a change of frame moves world transforms; the same frame composes to the same result.
+        let new_frame = parent.and_then(|p| self.frame_or_self(p));
+        let rewritten = if new_frame == self.frame_of(child) {
+            Vec::new()
+        } else {
+            let moved = if self.has::<crate::Transform>(child) { vec![child] } else { self.frame_children(child) };
+            self.relocalize(&moved, new_frame)?
+        };
         self.unlink(child);
+        for (o, t) in rewritten {
+            self.put_row(ComponentId::TRANSFORM, o, bytemuck::bytes_of(&t));
+        }
         let Some(p) = parent else { return Ok(()) };
         // The sibling to insert before, if any.
         let before = index.and_then(|i| self.children(p).nth(i));

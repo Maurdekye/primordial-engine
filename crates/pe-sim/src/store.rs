@@ -6,6 +6,7 @@ use pe_core::{Error, Frame, MemberId, ObjectId};
 use crate::column::Column;
 use crate::hierarchy::Node;
 use crate::registry::{Component, ComponentDesc, ComponentId, Registry};
+use crate::transform::Transform;
 
 /// The sim state of one world (design 16, 6.1): its frame, its objects, the next object counter of every
 /// creator, and one sorted column per component.
@@ -162,6 +163,18 @@ impl SimStore {
         }
     }
 
+    /// Removes a row without checks.
+    pub(crate) fn drop_row(&mut self, c: ComponentId, id: ObjectId) -> bool {
+        let Some(col) = self.columns.get_mut(&c) else { return false };
+        match col.find(id) {
+            Ok(i) => {
+                col.remove(i);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     pub(crate) fn row(&self, c: ComponentId, id: ObjectId) -> Option<&[u8]> {
         let col = self.columns.get(&c)?;
         col.find(id).ok().map(|i| col.row(i))
@@ -174,7 +187,9 @@ impl SimStore {
     }
 
     /// Inserts or overwrites a component row given as raw little-endian bytes (logic modules, MCP, state
-    /// transfer). Validated: the object exists, the size matches and the values are legal.
+    /// transfer). Validated: the object exists, the size matches and the values are legal. A `Transform` is
+    /// also checked against its limits and rebased (see [`crate::transform`]); if the object had none, the
+    /// transformed objects below it keep their world transforms.
     pub fn insert_raw(&mut self, c: ComponentId, id: ObjectId, row: &[u8]) -> Result<(), Error> {
         if c == ComponentId::NODE {
             return Err(Error::Reserved { component: c.0 });
@@ -189,6 +204,9 @@ impl SimStore {
         if !self.exists(id) {
             return Err(Error::UnknownObject(id));
         }
+        if c == ComponentId::TRANSFORM {
+            return self.insert_transform(id, bytemuck::pod_read_unaligned::<Transform>(row));
+        }
         self.put_row(c, id, row);
         Ok(())
     }
@@ -197,20 +215,17 @@ impl SimStore {
         self.row(c, id)
     }
 
-    /// Removes a component row. Returns whether there was one.
+    /// Removes a component row. Returns whether there was one. Removing a `Transform` keeps the world
+    /// transforms of the transformed objects below it.
     pub fn remove_raw(&mut self, c: ComponentId, id: ObjectId) -> Result<bool, Error> {
         if c == ComponentId::NODE {
             return Err(Error::Reserved { component: c.0 });
         }
         self.desc(c)?;
-        let Some(col) = self.columns.get_mut(&c) else { return Ok(false) };
-        match col.find(id) {
-            Ok(i) => {
-                col.remove(i);
-                Ok(true)
-            }
-            Err(_) => Ok(false),
+        if c == ComponentId::TRANSFORM {
+            return self.remove_transform(id);
         }
+        Ok(self.drop_row(c, id))
     }
 
     /// Inserts or overwrites a typed component (validated, like [`SimStore::insert_raw`]).
@@ -271,8 +286,8 @@ impl SimStore {
         self.columns.get(&c).map_or(0, Column::len)
     }
 
-    /// Checks every row of every column for NaN, infinities and bad bools (4.3 rules 6 and 9). Returns the
-    /// first offender in (component, object) order.
+    /// Checks every row of every column for NaN, infinities and bad bools, and every `Transform` against its
+    /// limits (4.3 rules 6 and 9). Returns the first offender in (component, object) order.
     pub fn check_values(&self) -> Result<(), Error> {
         for (&c, col) in &self.columns {
             let desc = self.desc(c)?;
@@ -282,6 +297,18 @@ impl SimStore {
                 }
             }
         }
+        for (id, t) in self.iter::<Transform>() {
+            if let Err(field) = t.validate(self.frame_of(id).is_some()) {
+                return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: id, field: field.to_string() });
+            }
+        }
         Ok(())
+    }
+
+    /// [`SimStore::check_values`], then [`SimStore::state_hash`]. Sync checks use this (review P21-5): a NaN
+    /// is a deterministic error on every peer, never a hash of platform-specific NaN bits.
+    pub fn checked_state_hash(&self) -> Result<u64, Error> {
+        self.check_values()?;
+        Ok(self.state_hash())
     }
 }
