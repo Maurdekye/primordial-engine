@@ -1,0 +1,682 @@
+//! Body lifecycle and SetMassData tests ported from
+//! box3d-cpp-reference/test/test_body.c, including shape-driven mass tests.
+
+use crate::body::{
+    body_apply_mass_from_shapes, body_flags, body_get_angular_velocity, body_get_inverse_mass,
+    body_get_linear_velocity, body_get_local_center, body_get_local_rotational_inertia,
+    body_get_mass, body_get_mass_data, body_get_world_center,
+    body_get_world_inverse_rotational_inertia, body_is_valid, body_set_angular_velocity,
+    body_set_linear_velocity, body_set_mass_data, body_sim, create_body, destroy_body,
+};
+use crate::body::{body_get_max_extent, body_get_max_extent_origin, body_get_min_extent};
+use crate::geometry::{Capsule, MassData, Sphere};
+use crate::hull::make_cube_hull;
+use crate::math_functions::{
+    make_quat_from_axis_angle, Matrix3, Pos, Vec3, MAT3_ZERO, PI, VEC3_AXIS_Z, VEC3_ZERO,
+};
+use crate::mesh::{create_mesh, destroy_mesh, MeshDef};
+use crate::shape::{
+    create_capsule_shape, create_hull_shape, create_mesh_shape, create_sphere_shape,
+};
+use crate::solver_set::{AWAKE_SET, STATIC_SET};
+use crate::types::{default_body_def, default_shape_def, default_world_def, BodyType};
+use crate::world::World;
+
+fn diag_inertia() -> Matrix3 {
+    Matrix3 {
+        cx: Vec3 {
+            x: 2.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        cy: Vec3 {
+            x: 0.0,
+            y: 4.0,
+            z: 0.0,
+        },
+        cz: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 8.0,
+        },
+    }
+}
+
+#[test]
+fn create_destroy_static_and_dynamic() {
+    let mut world = World::new(&default_world_def());
+
+    let mut static_def = default_body_def();
+    static_def.type_ = BodyType::Static;
+    static_def.position = Pos {
+        x: 1.0 as _,
+        y: 2.0 as _,
+        z: 3.0 as _,
+    };
+    let static_id = create_body(&mut world, &static_def);
+    assert!(body_is_valid(&world, static_id));
+    assert_eq!(
+        world.bodies[static_id.index1 as usize - 1].set_index,
+        STATIC_SET
+    );
+    assert_eq!(world.bodies[static_id.index1 as usize - 1].island_id, -1);
+
+    let mut dyn_def = default_body_def();
+    dyn_def.type_ = BodyType::Dynamic;
+    dyn_def.linear_velocity = Vec3 {
+        x: 0.5,
+        y: 0.0,
+        z: -0.25,
+    };
+    let dyn_id = create_body(&mut world, &dyn_def);
+    assert!(body_is_valid(&world, dyn_id));
+    let dyn_body = &world.bodies[dyn_id.index1 as usize - 1];
+    assert_eq!(dyn_body.set_index, AWAKE_SET);
+    assert!(dyn_body.island_id >= 0);
+    assert_eq!(
+        world.solver_sets[AWAKE_SET as usize].body_states[dyn_body.local_index as usize]
+            .linear_velocity,
+        dyn_def.linear_velocity
+    );
+
+    destroy_body(&mut world, dyn_id);
+    assert!(!body_is_valid(&world, dyn_id));
+
+    destroy_body(&mut world, static_id);
+    assert!(!body_is_valid(&world, static_id));
+
+    // Id recycle: next create reuses the freed slot with a new generation.
+    let recycled = create_body(&mut world, &static_def);
+    assert!(body_is_valid(&world, recycled));
+    assert_eq!(recycled.index1, static_id.index1);
+    assert_ne!(recycled.generation, static_id.generation);
+    assert!(!body_is_valid(&world, static_id));
+}
+
+#[test]
+fn set_mass_data_round_trip() {
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    body_def.position = Pos {
+        x: 5.0 as _,
+        y: -3.0 as _,
+        z: 2.0 as _,
+    };
+    let body_id = create_body(&mut world, &body_def);
+
+    let center = Vec3 {
+        x: 0.1,
+        y: 0.2,
+        z: 0.3,
+    };
+    let mass_data = MassData {
+        mass: 3.0,
+        center,
+        inertia: diag_inertia(),
+    };
+    body_set_mass_data(&mut world, body_id, mass_data);
+
+    assert!((body_get_mass(&world, body_id) - 3.0).abs() < 1e-6);
+    assert!((body_get_inverse_mass(&world, body_id) - 1.0 / 3.0).abs() < 1e-6);
+
+    let md = body_get_mass_data(&world, body_id);
+    assert!((md.mass - 3.0).abs() < 1e-6);
+    assert!((md.center.x - center.x).abs() < 1e-6);
+    assert!((md.center.y - center.y).abs() < 1e-6);
+    assert!((md.center.z - center.z).abs() < 1e-6);
+    assert!((md.inertia.cx.x - 2.0).abs() < 1e-6);
+    assert!((md.inertia.cy.y - 4.0).abs() < 1e-6);
+    assert!((md.inertia.cz.z - 8.0).abs() < 1e-6);
+
+    let local_center = body_get_local_center(&world, body_id);
+    assert!((local_center.x - center.x).abs() < 1e-6);
+    assert!((local_center.y - center.y).abs() < 1e-6);
+    assert!((local_center.z - center.z).abs() < 1e-6);
+
+    let local_inertia = body_get_local_rotational_inertia(&world, body_id);
+    assert!((local_inertia.cx.x - 2.0).abs() < 1e-6);
+    assert!((local_inertia.cy.y - 4.0).abs() < 1e-6);
+    assert!((local_inertia.cz.z - 8.0).abs() < 1e-6);
+
+    let inv_world = body_get_world_inverse_rotational_inertia(&world, body_id);
+    assert!((inv_world.cx.x - 0.5).abs() < 1e-5);
+    assert!((inv_world.cy.y - 0.25).abs() < 1e-5);
+    assert!((inv_world.cz.z - 0.125).abs() < 1e-5);
+    assert!(inv_world.cy.x.abs() < 1e-5);
+    assert!(inv_world.cz.x.abs() < 1e-5);
+    assert!(inv_world.cx.y.abs() < 1e-5);
+    assert!(inv_world.cz.y.abs() < 1e-5);
+    assert!(inv_world.cx.z.abs() < 1e-5);
+    assert!(inv_world.cy.z.abs() < 1e-5);
+
+    let world_center = body_get_world_center(&world, body_id);
+    assert!(((world_center.x as f32) - (5.0 + center.x)).abs() < 1e-5);
+    assert!(((world_center.y as f32) - (-3.0 + center.y)).abs() < 1e-5);
+    assert!(((world_center.z as f32) - (2.0 + center.z)).abs() < 1e-5);
+}
+
+#[test]
+fn set_mass_data_world_inertia_rotated() {
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    body_def.rotation = make_quat_from_axis_angle(VEC3_AXIS_Z, 0.5 * PI);
+    let body_id = create_body(&mut world, &body_def);
+
+    let mass_data = MassData {
+        mass: 1.0,
+        center: VEC3_ZERO,
+        inertia: diag_inertia(),
+    };
+    body_set_mass_data(&mut world, body_id, mass_data);
+
+    let local_inertia = body_get_local_rotational_inertia(&world, body_id);
+    assert!((local_inertia.cx.x - 2.0).abs() < 1e-6);
+    assert!((local_inertia.cy.y - 4.0).abs() < 1e-6);
+    assert!((local_inertia.cz.z - 8.0).abs() < 1e-6);
+
+    let inv_world = body_get_world_inverse_rotational_inertia(&world, body_id);
+    assert!((inv_world.cx.x - 0.25).abs() < 1e-4);
+    assert!((inv_world.cy.y - 0.5).abs() < 1e-4);
+    assert!((inv_world.cz.z - 0.125).abs() < 1e-4);
+    assert!(inv_world.cy.x.abs() < 1e-4);
+    assert!(inv_world.cz.x.abs() < 1e-4);
+    assert!(inv_world.cx.y.abs() < 1e-4);
+    assert!(inv_world.cz.y.abs() < 1e-4);
+    assert!(inv_world.cx.z.abs() < 1e-4);
+    assert!(inv_world.cy.z.abs() < 1e-4);
+}
+
+#[test]
+fn set_mass_data_fixed_rotation() {
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    body_def.motion_locks.angular_x = true;
+    body_def.motion_locks.angular_y = true;
+    body_def.motion_locks.angular_z = true;
+    let body_id = create_body(&mut world, &body_def);
+
+    let mass_data = MassData {
+        mass: 5.0,
+        center: VEC3_ZERO,
+        inertia: diag_inertia(),
+    };
+    body_set_mass_data(&mut world, body_id, mass_data);
+
+    assert!((body_get_mass(&world, body_id) - 5.0).abs() < 1e-6);
+    assert!((body_get_inverse_mass(&world, body_id) - 0.2).abs() < 1e-6);
+
+    let local_inertia = body_get_local_rotational_inertia(&world, body_id);
+    assert!(local_inertia.cx.x.abs() < 1e-6);
+    assert!(local_inertia.cy.y.abs() < 1e-6);
+    assert!(local_inertia.cz.z.abs() < 1e-6);
+
+    let inv_world = body_get_world_inverse_rotational_inertia(&world, body_id);
+    assert!(inv_world.cx.x.abs() < 1e-6);
+    assert!(inv_world.cy.y.abs() < 1e-6);
+    assert!(inv_world.cz.z.abs() < 1e-6);
+
+    let md = body_get_mass_data(&world, body_id);
+    assert!(md.inertia.cx.x.abs() < 1e-6);
+    assert!(md.inertia.cy.y.abs() < 1e-6);
+    assert!(md.inertia.cz.z.abs() < 1e-6);
+
+    let flags = world.bodies[body_id.index1 as usize - 1].flags;
+    assert_eq!(
+        flags & body_flags::FIXED_ROTATION,
+        body_flags::FIXED_ROTATION
+    );
+}
+
+#[test]
+fn set_mass_data_zero_mass() {
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    let body_id = create_body(&mut world, &body_def);
+
+    let mass_data = MassData {
+        mass: 0.0,
+        center: VEC3_ZERO,
+        inertia: MAT3_ZERO,
+    };
+    body_set_mass_data(&mut world, body_id, mass_data);
+
+    assert!(body_get_inverse_mass(&world, body_id).abs() < 1e-6);
+
+    let local_inertia = body_get_local_rotational_inertia(&world, body_id);
+    assert!(local_inertia.cx.x.abs() < 1e-6);
+    assert!(local_inertia.cy.y.abs() < 1e-6);
+    assert!(local_inertia.cz.z.abs() < 1e-6);
+
+    let inv_world = body_get_world_inverse_rotational_inertia(&world, body_id);
+    assert!(inv_world.cx.x.abs() < 1e-6);
+    assert!(inv_world.cy.y.abs() < 1e-6);
+    assert!(inv_world.cz.z.abs() < 1e-6);
+}
+
+#[test]
+fn set_mass_data_consistent_velocity() {
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    body_def.position = Pos {
+        x: 7.0 as _,
+        y: 1.0 as _,
+        z: -4.0 as _,
+    };
+    let body_id = create_body(&mut world, &body_def);
+
+    let omega = Vec3 {
+        x: 1.0,
+        y: 2.0,
+        z: 4.0,
+    };
+    body_set_linear_velocity(
+        &mut world,
+        body_id,
+        Vec3 {
+            x: 1.0,
+            y: -2.0,
+            z: 3.0,
+        },
+    );
+    body_set_angular_velocity(&mut world, body_id, omega);
+
+    let center = Vec3 {
+        x: 0.5,
+        y: 0.25,
+        z: 0.125,
+    };
+    let mass_data = MassData {
+        mass: 3.0,
+        center,
+        inertia: diag_inertia(),
+    };
+    body_set_mass_data(&mut world, body_id, mass_data);
+
+    // omega x center = (-0.75, 1.875, -0.75)
+    let v = body_get_linear_velocity(&world, body_id);
+    assert!((v.x - (1.0 - 0.75)).abs() < 1e-6);
+    assert!((v.y - (-2.0 + 1.875)).abs() < 1e-6);
+    assert!((v.z - (3.0 - 0.75)).abs() < 1e-6);
+
+    let w = body_get_angular_velocity(&world, body_id);
+    assert!((w.x - omega.x).abs() < 1e-6);
+    assert!((w.y - omega.y).abs() < 1e-6);
+    assert!((w.z - omega.z).abs() < 1e-6);
+}
+
+/// Helper matching C `SphereBodyMass`.
+fn sphere_body_mass(centers: &[Vec3], radius: f32, density: f32) -> MassData {
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    let body_id = create_body(&mut world, &body_def);
+
+    let mut shape_def = default_shape_def();
+    shape_def.density = density;
+
+    for center in centers {
+        let sphere = Sphere {
+            center: *center,
+            radius,
+        };
+        create_sphere_shape(&mut world, body_id, &shape_def, &sphere);
+    }
+
+    body_apply_mass_from_shapes(&mut world, body_id);
+    body_get_mass_data(&world, body_id)
+}
+
+/// One sphere far from the body origin. (FarSingleSphereMass)
+#[test]
+fn far_single_sphere_mass() {
+    let radius = 0.5f32;
+    let density = 1.0f32;
+    let center = Vec3 {
+        x: 100.0,
+        y: -50.0,
+        z: 75.0,
+    };
+    let md = sphere_body_mass(&[center], radius, density);
+
+    let mass = density * (4.0 / 3.0) * PI * radius * radius * radius;
+    let central = 0.4 * mass * radius * radius;
+
+    assert!((md.mass - mass).abs() < 1e-4);
+
+    assert!((md.center.x - center.x).abs() < 1e-3);
+    assert!((md.center.y - center.y).abs() < 1e-3);
+    assert!((md.center.z - center.z).abs() < 1e-3);
+
+    assert!((md.inertia.cx.x - central).abs() < 1e-3);
+    assert!((md.inertia.cy.y - central).abs() < 1e-3);
+    assert!((md.inertia.cz.z - central).abs() < 1e-3);
+
+    assert!(md.inertia.cy.x.abs() < 1e-3);
+    assert!(md.inertia.cz.x.abs() < 1e-3);
+    assert!(md.inertia.cz.y.abs() < 1e-3);
+}
+
+/// Eight equal spheres on the corners of a far cube. (FarCubeSphereMass)
+#[test]
+fn far_cube_sphere_mass() {
+    let radius = 0.5f32;
+    let density = 1.0f32;
+    let h = 1.0f32;
+    let p = Vec3 {
+        x: 100.0,
+        y: 100.0,
+        z: 100.0,
+    };
+
+    let mut centers = Vec::new();
+    for sx in [-1i32, 1] {
+        for sy in [-1i32, 1] {
+            for sz in [-1i32, 1] {
+                centers.push(Vec3 {
+                    x: p.x + sx as f32 * h,
+                    y: p.y + sy as f32 * h,
+                    z: p.z + sz as f32 * h,
+                });
+            }
+        }
+    }
+
+    let md = sphere_body_mass(&centers, radius, density);
+
+    let mass = density * (4.0 / 3.0) * PI * radius * radius * radius;
+    let total_mass = 8.0 * mass;
+    let diag = 8.0 * 0.4 * mass * radius * radius + 16.0 * mass * h * h;
+
+    assert!((md.mass - total_mass).abs() < 1e-3);
+
+    assert!((md.center.x - p.x).abs() < 1e-2);
+    assert!((md.center.y - p.y).abs() < 1e-2);
+    assert!((md.center.z - p.z).abs() < 1e-2);
+
+    assert!((md.inertia.cx.x - diag).abs() < 1e-2);
+    assert!((md.inertia.cy.y - diag).abs() < 1e-2);
+    assert!((md.inertia.cz.z - diag).abs() < 1e-2);
+
+    assert!(md.inertia.cy.x.abs() < 1e-2);
+    assert!(md.inertia.cz.x.abs() < 1e-2);
+    assert!(md.inertia.cz.y.abs() < 1e-2);
+}
+
+/// Deferred mass update tracks dirty flag and extents. (DeferredMassExtents)
+#[test]
+fn deferred_mass_extents() {
+    use crate::constants::huge;
+
+    let mut world = World::new(&default_world_def());
+
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+
+    let mut shape_def = default_shape_def();
+    shape_def.density = 1.0;
+    shape_def.update_body_mass = false;
+
+    let sphere = Sphere {
+        center: VEC3_ZERO,
+        radius: 0.5,
+    };
+
+    let apply_id = create_body(&mut world, &body_def);
+    create_sphere_shape(&mut world, apply_id, &shape_def, &sphere);
+
+    {
+        let body = &world.bodies[apply_id.index1 as usize - 1];
+        assert!((body.flags & body_flags::DIRTY_MASS) != 0);
+        let sim = body_sim(&world, apply_id);
+        assert_eq!(sim.min_extent, huge());
+    }
+
+    body_apply_mass_from_shapes(&mut world, apply_id);
+    {
+        let body = &world.bodies[apply_id.index1 as usize - 1];
+        assert_eq!(body.flags & body_flags::DIRTY_MASS, 0);
+        let sim = body_sim(&world, apply_id);
+        assert!(sim.min_extent < huge());
+    }
+
+    let mass_id = create_body(&mut world, &body_def);
+    create_sphere_shape(&mut world, mass_id, &shape_def, &sphere);
+
+    {
+        let body = &world.bodies[mass_id.index1 as usize - 1];
+        assert!((body.flags & body_flags::DIRTY_MASS) != 0);
+    }
+
+    let inertia = Matrix3 {
+        cx: Vec3 {
+            x: 0.2,
+            y: 0.0,
+            z: 0.0,
+        },
+        cy: Vec3 {
+            x: 0.0,
+            y: 0.2,
+            z: 0.0,
+        },
+        cz: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.2,
+        },
+    };
+    let mass_data = MassData {
+        mass: 2.0,
+        center: VEC3_ZERO,
+        inertia,
+    };
+    body_set_mass_data(&mut world, mass_id, mass_data);
+
+    {
+        let body = &world.bodies[mass_id.index1 as usize - 1];
+        assert_eq!(body.flags & body_flags::DIRTY_MASS, 0);
+        let sim = body_sim(&world, mass_id);
+        assert!(sim.min_extent < huge());
+    }
+}
+
+#[test]
+fn damping_gravity_and_sleep_threshold() {
+    use crate::body::{
+        body_get_angular_damping, body_get_gravity_scale, body_get_linear_damping,
+        body_get_sleep_threshold, body_set_angular_damping, body_set_gravity_scale,
+        body_set_linear_damping, body_set_sleep_threshold,
+    };
+
+    let mut world = World::new(&default_world_def());
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Dynamic;
+    let body_id = create_body(&mut world, &body_def);
+
+    body_set_linear_damping(&mut world, body_id, 0.25);
+    body_set_angular_damping(&mut world, body_id, 0.5);
+    body_set_gravity_scale(&mut world, body_id, 2.0);
+    body_set_sleep_threshold(&mut world, body_id, 0.1);
+
+    assert_eq!(body_get_linear_damping(&world, body_id), 0.25);
+    assert_eq!(body_get_angular_damping(&world, body_id), 0.5);
+    assert_eq!(body_get_gravity_scale(&world, body_id), 2.0);
+    assert_eq!(body_get_sleep_threshold(&world, body_id), 0.1);
+}
+
+fn ensure_small(value: f32, tolerance: f32) {
+    assert!(
+        !(value < -tolerance || tolerance < value),
+        "|{value}| > tolerance {tolerance}"
+    );
+}
+
+// Extents bound the shapes about the center of mass, per axis. An offset shape must count its
+// offset, not just its own size.
+#[test]
+fn shape_extents() {
+    let mut world = World::new(&default_world_def());
+
+    let mut shape_def = default_shape_def();
+    shape_def.density = 1.0;
+
+    // Kinematic bodies measure from the body origin
+    let mut body_def = default_body_def();
+    body_def.type_ = BodyType::Kinematic;
+
+    let capsule_id = create_body(&mut world, &body_def);
+    let capsule = Capsule {
+        center1: Vec3::new(-2.0, 0.0, 0.0),
+        center2: Vec3::new(-1.0, 0.0, 0.0),
+        radius: 0.2,
+    };
+    create_capsule_shape(&mut world, capsule_id, &shape_def, &capsule);
+
+    let max_extent = body_get_max_extent(&world, capsule_id);
+    ensure_small(max_extent.x - 2.2, 1e-5);
+    ensure_small(max_extent.y - 0.2, 1e-5);
+    ensure_small(max_extent.z - 0.2, 1e-5);
+    ensure_small(body_get_min_extent(&world, capsule_id) - 0.2, 1e-5);
+
+    let sphere_id = create_body(&mut world, &body_def);
+    let sphere = Sphere {
+        center: Vec3::new(1.0, 2.0, 3.0),
+        radius: 0.5,
+    };
+    create_sphere_shape(&mut world, sphere_id, &shape_def, &sphere);
+
+    let max_extent = body_get_max_extent(&world, sphere_id);
+    ensure_small(max_extent.x - 1.5, 1e-5);
+    ensure_small(max_extent.y - 2.5, 1e-5);
+    ensure_small(max_extent.z - 3.5, 1e-5);
+    ensure_small(body_get_min_extent(&world, sphere_id) - 0.5, 1e-5);
+
+    // Dynamic bodies measure from the center of mass. A light sphere hung off a cube pulls the
+    // center toward it, so the far side of the sphere is the widest point.
+    body_def.type_ = BodyType::Dynamic;
+    let cube_id = create_body(&mut world, &body_def);
+    let cube = make_cube_hull(0.5);
+    create_hull_shape(&mut world, cube_id, &shape_def, &cube.base);
+    let offset_sphere = Sphere {
+        center: Vec3::new(1.0, 0.0, 0.0),
+        radius: 0.2,
+    };
+    create_sphere_shape(&mut world, cube_id, &shape_def, &offset_sphere);
+
+    let local_center = body_get_local_center(&world, cube_id);
+    assert!(0.0 < local_center.x && local_center.x < 0.5);
+
+    let max_extent = body_get_max_extent(&world, cube_id);
+    ensure_small(max_extent.x - (1.2 - local_center.x), 1e-5);
+    ensure_small(max_extent.y - 0.5, 1e-5);
+    ensure_small(max_extent.z - 0.5, 1e-5);
+    ensure_small(body_get_min_extent(&world, cube_id) - 0.2, 1e-5);
+
+    let origin_extent = body_get_max_extent_origin(&world, cube_id);
+    ensure_small(origin_extent.x - 1.2, 1e-5);
+    ensure_small(origin_extent.y - 0.5, 1e-5);
+    ensure_small(origin_extent.z - 0.5, 1e-5);
+
+    // A mesh has no mass, so the sphere alone places the center at x = 1 and the far edge of the
+    // mesh at x = -3 is four units out.
+    let vertices = vec![
+        Vec3::new(-3.0, 0.0, -1.0),
+        Vec3::new(-2.0, 0.0, 1.0),
+        Vec3::new(-1.0, 0.0, -1.0),
+        Vec3::new(1.0, 0.0, -1.0),
+        Vec3::new(2.0, 0.0, 1.0),
+        Vec3::new(3.0, 0.0, -1.0),
+    ];
+    let indices = vec![0, 1, 2, 3, 4, 5];
+    let mesh_def = MeshDef {
+        vertices,
+        stride: core::mem::size_of::<Vec3>(),
+        indices,
+        ..Default::default()
+    };
+    let mesh = create_mesh(&mesh_def, None).expect("mesh");
+
+    let mesh_id = create_body(&mut world, &body_def);
+    create_sphere_shape(&mut world, mesh_id, &shape_def, &offset_sphere);
+    create_mesh_shape(
+        &mut world,
+        mesh_id,
+        &shape_def,
+        &mesh,
+        Vec3::new(1.0, 1.0, 1.0),
+    );
+
+    let local_center = body_get_local_center(&world, mesh_id);
+    ensure_small(local_center.x - 1.0, 1e-5);
+
+    let max_extent = body_get_max_extent(&world, mesh_id);
+    ensure_small(max_extent.x - 4.0, 1e-4);
+    ensure_small(max_extent.y - 0.2, 1e-4);
+    ensure_small(max_extent.z - 1.0, 1e-4);
+    ensure_small(body_get_min_extent(&world, mesh_id) - 0.2, 1e-5);
+
+    drop(world);
+    destroy_mesh(mesh);
+}
+
+/// b3ShouldBodiesCollide: pairs without a dynamic body never collide, and a joint with
+/// `collide_connected == false` blocks its two bodies.
+#[test]
+fn should_bodies_collide_rules() {
+    use crate::body::{get_body_full_id, should_bodies_collide};
+    use crate::joint::create_weld_joint;
+    use crate::types::default_weld_joint_def;
+
+    let mut world = World::new(&default_world_def());
+
+    let make = |world: &mut World, type_: BodyType, x: f32| {
+        let mut body_def = default_body_def();
+        body_def.type_ = type_;
+        body_def.position.x = x as _;
+        create_body(world, &body_def)
+    };
+
+    let static_id = make(&mut world, BodyType::Static, 0.0);
+    let kinematic_a = make(&mut world, BodyType::Kinematic, 2.0);
+    let kinematic_b = make(&mut world, BodyType::Kinematic, 4.0);
+    let dynamic_a = make(&mut world, BodyType::Dynamic, 6.0);
+    let dynamic_b = make(&mut world, BodyType::Dynamic, 8.0);
+    let dynamic_c = make(&mut world, BodyType::Dynamic, 10.0);
+
+    let mut joint_def = default_weld_joint_def();
+    joint_def.base.body_id_a = dynamic_a;
+    joint_def.base.body_id_b = dynamic_b;
+    joint_def.base.collide_connected = false;
+    create_weld_joint(&mut world, &joint_def);
+
+    let id = |b| get_body_full_id(&world, b);
+
+    assert!(!should_bodies_collide(
+        &world,
+        id(static_id),
+        id(kinematic_a)
+    ));
+    assert!(!should_bodies_collide(
+        &world,
+        id(kinematic_a),
+        id(kinematic_b)
+    ));
+    assert!(should_bodies_collide(&world, id(dynamic_c), id(static_id)));
+    assert!(should_bodies_collide(
+        &world,
+        id(dynamic_c),
+        id(kinematic_a)
+    ));
+    assert!(should_bodies_collide(&world, id(dynamic_a), id(dynamic_c)));
+    assert!(!should_bodies_collide(&world, id(dynamic_a), id(dynamic_b)));
+}

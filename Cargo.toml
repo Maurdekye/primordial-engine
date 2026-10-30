@@ -7,6 +7,7 @@ members = [
     "spikes/wasm-hotswap",
     "spikes/mcp-stub",
     "spikes/session-sim",
+    "crates/box3d-fork",
 ]
 # Guest game-logic crates build for wasm32-unknown-unknown separately.
 exclude = ["spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench"]
@@ -19,6 +20,11 @@ publish = false
 [workspace.dependencies]
 box3d-rust = "=0.5.0"
 pe-sim-core = { path = "spikes/sim-core" }
+
+# Our fork of box3d-rust 0.5.0 (MIT): the scale-dependent contact-recycling radius
+# ("van der Waals simulation"). Toggle-off is bit-identical to the published crate.
+[patch.crates-io]
+box3d-rust = { path = "crates/box3d-fork" }
 
 [profile.release]
 debug = false
