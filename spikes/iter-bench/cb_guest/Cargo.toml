@@ -1,0 +1,18 @@
+# R15 callback-overhead guest: per-contact hooks a world could override. Own workspace.
+# Build: cargo build --release --target wasm32-unknown-unknown (from this directory)
+[package]
+name = "cb_guest"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

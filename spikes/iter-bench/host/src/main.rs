@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 use rt::{Guest, HostState, Runtime};
 
+mod callback;
+
 const SEED: u64 = 0x5052_494D_4F52_4449;
 const ALL: u32 = 63;
 
@@ -299,6 +301,7 @@ fn main() {
         Some("matrix") => matrix(&args[1], &args[2..]),
         Some("systems") => systems(&args[1], &args[2..]),
         Some("physics") => physics(&args[1], &args[2..]),
+        Some("callback") => callback::run(&read(&args[1])),
         Some("serve") => serve(&args[1], &args[2], args.get(3).map_or(2000, |s| s.parse().unwrap())),
         _ => {
             eprintln!("usage: iter-host matrix|systems|physics|serve <wasm> <runtime>...");
