@@ -62,7 +62,7 @@ const DEPTHS: [u64; 9] = [1, 2, 4, 8, 15, 30, 45, 60, 120];
 fn resim_vs_depth() -> bool {
     println!("RESULT re-sim from one base image: restore + N steps (median of 5), Box3D 4 substeps at 60 Hz, single thread");
     for (side, layers) in [(8usize, 4usize), (16, 4)] {
-        for (label, at) in [("active (base at frame 60, pile collapsing)", 60u64), ("late (base at frame 900; this pile never sleeps)", 900)] {
+        for (label, at) in [("active (base at frame 60, pile collapsing)", 60u64), ("late (base at frame 900)", 900)] {
             let (mut w, objs) = build_scene(SceneKind::Pile { side, layers }, 0);
             let n = objs.len();
             step(&mut w, at);
@@ -93,14 +93,18 @@ fn resim_vs_depth() -> bool {
                 assert!(end_hash.is_none_or(|e| e == h), "re-sim from the same image must be bit-exact");
                 end_hash = Some(h);
             }
+            // Whether the pile stays awake through the deepest re-simulation decides how deep
+            // re-simulations scale (a sleeping island costs almost nothing).
+            let awake_end = world_get_awake_body_count(&w);
             let r = median(restore);
             let row: Vec<String> = DEPTHS.iter().zip(cum).map(|(d, v)| format!("{d}:{:.1}", r + median(v))).collect();
             println!(
-                "RESULT   {n:4} bodies {label}: awake {awake}, image {:.2} MB, save {:.2} ms, restore {:.2} ms | depth:ms {}",
+                "RESULT   {n:4} bodies {label}: awake {awake}, image {:.2} MB, save {:.2} ms, restore {:.2} ms | depth:ms {} | awake after {} frames {awake_end}",
                 img.len() as f64 / 1_048_576.0,
                 median(saves),
                 r,
-                row.join(" ")
+                row.join(" "),
+                DEPTHS[DEPTHS.len() - 1]
             );
         }
     }

@@ -9,6 +9,7 @@ members = [
     "spikes/session-sim",
     "crates/box3d-fork",
     "spikes/ballpit-viz",
+    "spikes/physics-in-wasm",
 ]
 # Guest game-logic crates build for wasm32-unknown-unknown separately.
 exclude = ["spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
@@ -29,3 +30,12 @@ box3d-rust = { path = "crates/box3d-fork" }
 
 [profile.release]
 debug = false
+
+# The wasm guest profile (the logic guests' own workspace uses the same settings), for
+# physics_in_wasm: cargo build -p physics_in_wasm --target wasm32-unknown-unknown --profile wasm-guest
+[profile.wasm-guest]
+inherits = "release"
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
