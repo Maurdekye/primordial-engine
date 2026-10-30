@@ -277,6 +277,8 @@ mod large_world_tests;
 
 #[cfg(test)]
 mod determinism_tests;
+#[cfg(test)]
+mod parallel_tests;
 
 #[cfg(test)]
 mod restitution_tests;

@@ -43,6 +43,8 @@ impl Stages for SerialStages {
 }
 
 const EXIT: u32 = u32::MAX;
+/// Claim-word tag between stages; matches no stage.
+const CLOSED: u32 = u32::MAX - 1;
 
 /// Shared state of one parallel solve.
 pub(crate) struct StageSync {
@@ -164,15 +166,21 @@ impl Stages for ParallelStages<'_> {
         assert!(item_count < u32::MAX as usize);
         let sync = self.sync;
         let seq = self.next_seq.get();
-        assert!(seq != EXIT);
+        assert!(seq < CLOSED);
         self.next_seq.set(seq + 1);
 
+        // Close the previous stage's claim word before touching the parameters. A worker that
+        // saw the previous stage may still load these parameters; the Release stores below
+        // order them after this one, so a worker that sees any new parameter also sees the
+        // closed claim word and cannot claim "leftover" items of the old stage against the new
+        // item count (that race hung a 4-worker run).
+        sync.claim.store((CLOSED as u64) << 32, Ordering::Release);
         let block_ref: &StageBlock<'_> = block;
         sync.block
-            .store(&block_ref as *const &StageBlock<'_> as *mut (), Ordering::Relaxed);
-        sync.item_count.store(item_count, Ordering::Relaxed);
-        sync.block_size.store(block_size, Ordering::Relaxed);
-        sync.done.store(0, Ordering::Relaxed);
+            .store(&block_ref as *const &StageBlock<'_> as *mut (), Ordering::Release);
+        sync.item_count.store(item_count, Ordering::Release);
+        sync.block_size.store(block_size, Ordering::Release);
+        sync.done.store(0, Ordering::Release);
         sync.claim.store((seq as u64) << 32, Ordering::Release);
         sync.seq.store(seq, Ordering::Release);
 
@@ -186,21 +194,23 @@ mod tests {
     use super::*;
     use crate::worker_pool::WorkerPool;
 
-    /// Thousands of back-to-back stages of varying size: every item of every stage runs
-    /// exactly once, under that stage (a stale worker never runs a block of a later stage).
+    /// Tens of thousands of back-to-back stages, alternating small and large: every item of
+    /// every stage runs exactly once, under that stage. Small-then-large is the pattern where a
+    /// worker still on the small stage could read the large stage's item count and claim the
+    /// "leftover" items under the old tag (fixed by closing the claim word first).
     #[test]
     fn every_item_once_per_stage() {
-        for workers in [2usize, 4, 16] {
+        for workers in [2usize, 4, 8, 16] {
             let pool = WorkerPool::new(workers).expect("threads");
             let sync = StageSync::new();
-            let stage_count = 3000usize;
+            let stage_count = 20_000usize;
             let counts: Vec<AtomicUsize> = (0..stage_count).map(|_| AtomicUsize::new(0)).collect();
             let wrong = AtomicUsize::new(0);
             pool.run(&|worker| {
                 if worker == 0 {
                     let stages = ParallelStages::new(&sync);
                     for stage in 0..stage_count {
-                        let n = (stage * 37) % 500;
+                        let n = if stage % 2 == 0 { stage % 37 + 2 } else { 300 + stage % 211 };
                         let hits: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
                         stages.run(n, 1 + stage % 9, &|items, _| {
                             for i in items {
