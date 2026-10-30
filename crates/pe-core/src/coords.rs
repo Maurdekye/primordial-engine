@@ -77,8 +77,9 @@ impl WorldPos {
     /// chunk.
     ///
     /// Never panics (review P21-2): a chunk index beyond [`CHUNK_LIMIT`] saturates there, with the offset
-    /// clamped to that chunk's edge. A non-finite offset is treated as 0. Both are deterministic, and the
-    /// sim crates' input validation keeps real positions far from either case.
+    /// clamped to that chunk's edge. A non-finite offset is treated as 0. Both are deterministic. The sim
+    /// crates' limits keep stored root positions clear of saturation, but deep chains of maximal scales and
+    /// offsets can still saturate a derived world position.
     pub fn normalize(&mut self) {
         for a in 0..3 {
             if !self.local[a].is_finite() {
@@ -89,7 +90,8 @@ impl WorldPos {
             if k != 0.0 {
                 self.local[a] -= k * CHUNK;
                 // |k| < 2^1014; clamping it to +-2^63 first keeps the sum exact in i128.
-                c += k.clamp(-9.223_372_036_854_775_808e18, 9.223_372_036_854_775_808e18) as i128;
+                const TWO_63: f64 = (1u64 << 63) as f64;
+                c += k.clamp(-TWO_63, TWO_63) as i128;
             }
             if self.local[a] >= CHUNK {
                 self.local[a] -= CHUNK;
