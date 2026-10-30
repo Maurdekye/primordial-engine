@@ -151,7 +151,7 @@ pub fn colluders() {
                     f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0), kick };
                     forged_vote.set(f.id());
                     for to in [1, 2, 3] {
-                        sim.net.send(1, 8, to, &Msg::Entry(f.clone()));
+                        sim.net.send(1, 8, to, &Msg::Entry(test_sign(1, f.clone())));
                     }
                     println!("  t={} ms: 8 sends members 1, 2 and 3 a forged vote against {target} with frozen head (0, 0)", sim.net.now_us / 1000);
                     forged = true;
@@ -203,7 +203,7 @@ pub fn badproposer() {
                 f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
                 forged.set(f.id());
                 for &to in &fooled {
-                    sim.net.send(1, p0, to, &Msg::Entry(f.clone()));
+                    sim.net.send(1, p0, to, &Msg::Entry(test_sign(1, f.clone())));
                 }
                 println!(
                     "  t={} ms: {p0} proposes removing {:?} to the others and a reset to {fooled:?}",

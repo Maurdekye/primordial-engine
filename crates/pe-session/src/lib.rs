@@ -11,6 +11,7 @@
 
 pub mod provenance;
 pub mod session;
+pub mod sign;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
