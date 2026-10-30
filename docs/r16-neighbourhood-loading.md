@@ -1,6 +1,7 @@
 # R16: loading the region you are in and nearby regions
 
-Author: @world-chunks. Design note, not built and not yet reviewed. It answers the user's ruling of
+Author: @world-chunks. Design note, not built. The safety model covers provisional arrival (section 2);
+not yet reviewed. It answers the user's ruling of
 2026-10-30 18:42Z on D60: "players should load the region theyre in and nearby regions". It builds on
 design.md section 25 (merged at 7a7c26e) and uses the measurements in
 [r16-chunks-results.md](r16-chunks-results.md).
@@ -90,8 +91,8 @@ Every distance below scales with the player's band unit `u` (25.6). At human sca
   The new region takes effect **at its stamp `s0`**, and the arriving player simulates from `s0`.
 * **Its frames confirm only once the world log has confirmed the creation as valid**, in world-log order
   against the directory and the pending creations, exactly as now (M1, with the Q1 buffer).
-  * World-log lag is about 1.1 s [C: `S_create` minus the 8.9 s stall budget, 25.5.2], under the 2 s
-    speculation limit, so the player never pauses unless the world log itself stalls.
+  * World-log lag is about 1.1 s (66 frames) [C, modelled below], under the 2 s speculation limit, so the
+    player pauses only if the world log itself stalls for more than about 1 s (below).
   * No confirmed frame is ever undone.
 * **If the creation turns out invalid**, it becomes a join of the nearest region as today. The arriving
   player's speculative first second is dropped, and the player continues as a joiner of that region.
@@ -136,17 +137,37 @@ it needs the safety model extended and a review before it is offered.
 
 ### Safety status
 
-Provisional arrival is **[I], not modelled.** The argument:
-* other regions' view of the new region is unchanged: it enters their known set at `s0 + S_create`, with
-  a footprint fixed until then;
-* the new region's view of them is the existing one, through the start condition;
-* validity is decided by the same world-log rule.
+**Modelled [C]** (`pe-spike-chunks safety`, results doc section 14): a new rule set, `provisional`,
+implements this section on the two-region line model. The model checks the rules, not the protocol or
+2D/3D footprints.
 
-Before D60 adopts it, `pe-spike-chunks safety` should gain two cases, run under the machine-load rule:
-* an arrival at the closest valid gap that walks and scales up inside its first `S_create`;
-* two arrivals 5 km apart, 10 frames apart, with the world log stalled 8 s.
+* **Provisional arrival: 0 late of 38 cases**, the same as the revised rules. That covers the 33 earlier
+  cases and 5 new arrival cases:
+  * an arrival at the closest valid gap that steps twice and scales up +9 chunks inside its first
+    `S_create` while R walks toward it, with and without an 8 s world-log stall;
+  * two arrivals 10 frames apart with the world log stalled 8 s: 5 km apart (the second becomes a join),
+    and at the closest valid gap walking toward each other;
+  * the same two arrivals each scaling up 4 km at once toward the other, before either knows the other.
+* **The growth freeze is load-bearing only for concurrent arrivals.** The control without it,
+  `provisional-no-freeze`, is late in exactly one case: the concurrent 4 km scale-ups merge at frame 660,
+  50 frames after the second arrival. With the freeze, both growths wait until `s0 + S_create`, are
+  clocked, and merge safely at frame 3,699.
+  * Toward a region it already knows, an arrival's growth is clocked at about 10 s per km anyway, so it
+    cannot approach before that region knows it.
+* **Time until the arrival is confirmed valid**:
 
-Then a pass by @chunks-reviewer.
+  | World-log state | Frames after the stamp | Seconds |
+  |---|---|---|
+  | No stall | 66 | 1.1 s |
+  | 5 s stall | 200 | 3.3 s |
+  | 8 s stall | 430-440 | 7.2-7.3 s |
+  | 12 s stall | 620 | 10.3 s |
+
+  Past the 2 s speculation limit, the arriving player pauses until then: about 5.2 s in an 8 s stall. The
+  current rule waits `S_create` (10 s) in every case. A world-log stall over about 9 s stalls every
+  region anyway (25.5.2).
+
+Still needed: a review by @chunks-reviewer.
 
 ## 3. Cost of holding neighbours
 
@@ -250,8 +271,8 @@ neighbour, rollbacks included. It also couples confirmation (section 4).
   Not recommended.
 * The old (b), a shorter `S_create`, and (c), arrivals tied to their previous region, are dropped: (a)
   removes the wait without their costs.
-* Evidence: the wait and the loading costs are [V] or [C] (sections 1-3). The safety of provisional arrival
-  is [I] until the two cases in section 2 are modelled and reviewed.
+* Evidence: the wait and the loading costs are [V] or [C] (sections 1-3). Provisional arrival is modelled
+  [C]: 0 late of 38 cases, and the control without its growth freeze is late in 1. It is not yet reviewed.
 
 ### D61
 
