@@ -17,7 +17,7 @@ run loss loss
 run ties ties
 run claims claims
 run backdate backdate
-for v in ok abort reject throttle; do run r14-$v r14 $v; done
+for v in ok abort reject throttle forge; do run r14-$v r14 $v; done
 for v in ok abort reject; do run r14-$v-reverse r14 $v --reverse; done
 run ballpit-60hz ballpit
 run ballpit-60hz-noloss ballpit --loss 0

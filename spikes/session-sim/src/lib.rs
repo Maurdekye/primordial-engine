@@ -245,7 +245,19 @@ fn broadcast(net: &mut Net, w: WorldId, from: MemberId, members: &[MemberId], m:
 }
 
 impl Sim {
-    pub fn new(net: Net, peers: Vec<Peer>, end_us: u64) -> Self {
+    pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
+        // R14 trust config (D46): every replica knows every world's member list.
+        let mut worlds: BTreeMap<WorldId, Vec<MemberId>> = BTreeMap::new();
+        for p in &peers {
+            for (w, r) in &p.worlds {
+                worlds.entry(*w).or_insert_with(|| r.sim.members.iter().copied().collect());
+            }
+        }
+        for p in &mut peers {
+            for r in p.worlds.values_mut() {
+                r.sim.peers_of = worlds.clone();
+            }
+        }
         Sim { net, peers, acceptance: Vec::new(), end_us, reverse_order: false }
     }
 
@@ -344,9 +356,10 @@ impl Sim {
                                 Action::Backdated { obj, impulse, back } => {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
-                                Action::Carry { transfer, obj, dest } => {
-                                    let e = r.sim.author(Payload::Depart { transfer, obj, deadline: u64::MAX }, None);
+                                Action::Carry { obj, dest, .. } => {
+                                    let e = r.sim.author(Payload::Depart { obj, dest, deadline: u64::MAX }, None);
                                     let id = e.id();
+                                    let transfer = transfer_id(w, id);
                                     new_jobs.push(Job {
                                         transfer,
                                         src: w,
@@ -373,6 +386,9 @@ impl Sim {
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
             }
+            for e in r.sim.attest_due() {
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+            }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
                 if dest != pid {
                     self.net.send(w, pid, dest, &f);
@@ -398,11 +414,13 @@ impl Sim {
                     let esc = src.t.escrow.get(&j.transfer).copied();
                     match esc {
                         Some(Escrow { status: EscrowStatus::Pending, record: Some(rec), .. }) => {
+                            // Relay only with A's certificate (review NEW-4).
+                            let Some(cert) = src.cert(fact_departed(j.src, j.depart, &rec, j.dst)) else { continue };
                             let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
                             if !dst.sim.caught_up() || dst.sim.frame < dst.sim.now {
                                 continue;
                             }
-                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec }, None);
+                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, cert }, None);
                             j.log.push(format!(
                                 "t={}ms depart confirmed in world {} (frame {f}); arrive authored in world {} at frame {}",
                                 now / 1000, j.src, j.dst, e.stamp
@@ -426,8 +444,10 @@ impl Sim {
                         continue;
                     }
                     let accepted = matches!(dst.t.arrivals.get(&j.transfer), Some(Arrival::Accepted { .. }));
+                    // Relay only with B's certificate over the verdict (review NEW-3).
+                    let Some(cert) = dst.cert(fact_verdict(j.dst, j.transfer, accepted)) else { continue };
                     let src = self.peers[pi].worlds.get_mut(&j.src).unwrap();
-                    let e = src.sim.author(Payload::Verdict { transfer: j.transfer, accepted }, None);
+                    let e = src.sim.author(Payload::Verdict { transfer: j.transfer, accepted, cert }, None);
                     j.log.push(format!(
                         "t={}ms arrival confirmed in world {} (frame {f}, accepted={accepted}); verdict authored in world {} at frame {}",
                         now / 1000, j.dst, j.src, e.stamp

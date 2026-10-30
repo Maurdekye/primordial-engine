@@ -1,0 +1,21 @@
+RESULT   forged by m3 in world 2: member 3 mints object 40 into B (no departure; signs as itself) -> Some(RejectedNoProof)
+RESULT   forged by m3 in world 2: member 3 squats the real transfer id with a proofless Arrive -> Some(RejectedNoProof)
+RESULT   forged by m2 in world 1: member 2 commits the escrow with a proofless Verdict -> Some(RejectedNoProof)
+RESULT   forged by m1 in world 1: the carrier claims a rejection with B's signatures over the acceptance -> Some(RejectedNoProof)
+  carrier: t=2766ms depart authored in world 1 at frame 160
+  carrier: t=2972ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 141
+  carrier: t=3179ms arrival confirmed in world 2 (frame 141, accepted=true); verdict authored in world 1 at frame 184
+  carrier: t=3325ms verdict confirmed in world 1; transfer 1915210267660769567 resolved
+  carrier: phase Done accepted Some(true)
+  carrier: depart entry final outcome at A frame 160: Accepted
+  m1 world A: object 40 live copies 0; escrow ["T1915210267660769567:Committed"]; arrivals []
+  m2 world A: object 40 live copies 0; escrow ["T1915210267660769567:Committed"]; arrivals []
+  m1 world B: object 40 live copies 1; escrow []; arrivals ["T1915210267660769567:Accepted { obj: 75, frame: 141 }"]
+  m3 world B: object 40 live copies 1; escrow []; arrivals ["T1915210267660769567:Accepted { obj: 75, frame: 141 }"]
+RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+  m1 world 1: rollbacks 4 max depth 4 resim frames 19 (3.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 conf 524 frame 534
+  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (10.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 conf 526 frame 533
+  m1 world 2: rollbacks 4 max depth 3 resim frames 12 (1.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 conf 434 frame 442
+  m3 world 2: rollbacks 1 max depth 3 resim frames 4 (0.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 conf 434 frame 442
+RESULT r14 forge A world 1: frames 0..500 digests m1=9026a3582bb5af4e m2=9026a3582bb5af4e | offline replay 9026a3582bb5af4e | ALL EQUAL
+RESULT r14 forge B world 2: frames 0..400 digests m1=64a126c868daa084 m3=64a126c868daa084 | offline replay 64a126c868daa084 | ALL EQUAL
