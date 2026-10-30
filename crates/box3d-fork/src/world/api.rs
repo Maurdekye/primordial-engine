@@ -1,0 +1,789 @@
+//! The b3World_* public API from physics_world.c: validity, events, enable
+//! flags, tuning setters, counters, callbacks, explosions, and the static-tree
+//! rebuild. World queries (overlap/cast) live in query.rs.
+//!
+//! SPDX-FileCopyrightText: 2025 Erin Catto
+//! SPDX-License-Identifier: MIT
+
+use super::{
+    default_friction_callback, default_restitution_callback, CustomFilterFcn, PreSolveFcn, Profile,
+    TaskContext, World,
+};
+use crate::body::{get_body_transform_quick, wake_body};
+use crate::constants::{GRAPH_COLOR_COUNT, MAX_WORKERS};
+use crate::distance::{make_proxy, shape_distance, DistanceInput, SimplexCache};
+use crate::events::{BodyMoveEvent, ContactEvents, JointEvent, SensorEvents};
+use crate::math_functions::{
+    aabb_union, add, clamp_float, clamp_int, cross, inv_transform_world_point, is_valid_float,
+    is_valid_position, length_squared, max_int, mul_add, mul_mv, mul_sv, normalize, offset_aabb,
+    rotate_vector, sub, Aabb, Pos, Vec3, TRANSFORM_IDENTITY, VEC3_ZERO,
+};
+use crate::sensor::SensorTaskContext;
+use crate::shape::{get_shape_centroid, get_shape_projected_area, make_shape_proxy};
+use crate::solver_set::{wake_solver_set, AWAKE_SET, FIRST_SLEEPING_SET};
+use crate::types::{
+    BodyType, Capacity, Counters, ExplosionDef, FrictionCallback, RestitutionCallback,
+    BODY_TYPE_COUNT,
+};
+
+/// World id validity. (b3World_IsValid)
+///
+/// C validates the id against the global world registry; the registry-less
+/// Rust port owns the `World`, so a reachable world is valid unless it has
+/// been torn down.
+pub fn world_is_valid(world: &World) -> bool {
+    world.in_use
+}
+
+/// Get the body events for the current time step. The event data is transient.
+/// Do not store a reference to this data. (b3World_GetBodyEvents)
+pub fn world_get_body_events(world: &World) -> &[BodyMoveEvent] {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return &[];
+    }
+
+    &world.body_move_events
+}
+
+/// Get sensor events for the current time step. The event data is transient.
+/// Do not store a reference to this data. (b3World_GetSensorEvents)
+pub fn world_get_sensor_events(world: &World) -> SensorEvents<'_> {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return SensorEvents {
+            begin_events: &[],
+            end_events: &[],
+        };
+    }
+
+    // Careful to use previous buffer
+    let end_event_array_index = 1 - world.end_event_array_index;
+
+    SensorEvents {
+        begin_events: &world.sensor_begin_events,
+        end_events: &world.sensor_end_events[end_event_array_index as usize],
+    }
+}
+
+/// Get contact events for this current time step. The event data is transient.
+/// Do not store a reference to this data. (b3World_GetContactEvents)
+pub fn world_get_contact_events(world: &World) -> ContactEvents<'_> {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return ContactEvents {
+            begin_events: &[],
+            end_events: &[],
+            hit_events: &[],
+        };
+    }
+
+    // Careful to use previous buffer
+    let end_event_array_index = 1 - world.end_event_array_index;
+
+    ContactEvents {
+        begin_events: &world.contact_begin_events,
+        end_events: &world.contact_end_events[end_event_array_index as usize],
+        hit_events: &world.contact_hit_events,
+    }
+}
+
+/// Get the joint events for the current time step. The event data is
+/// transient. Do not store a reference to this data. (b3World_GetJointEvents)
+pub fn world_get_joint_events(world: &World) -> &[JointEvent] {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return &[];
+    }
+
+    &world.joint_events
+}
+
+/// Enable/disable sleep. (b3World_EnableSleeping)
+pub fn world_enable_sleeping(world: &mut World, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    if flag == world.enable_sleep {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_enable_sleeping(wid, flag);
+    });
+
+    world.enable_sleep = flag;
+
+    if !flag {
+        let set_count = world.solver_sets.len() as i32;
+        for i in FIRST_SLEEPING_SET..set_count {
+            if !world.solver_sets[i as usize].body_sims.is_empty() {
+                wake_solver_set(world, i);
+            }
+        }
+    }
+}
+
+/// Is sleeping enabled? (b3World_IsSleepingEnabled)
+pub fn world_is_sleeping_enabled(world: &World) -> bool {
+    world.enable_sleep
+}
+
+/// Enable/disable constraint warm starting. (b3World_EnableWarmStarting)
+pub fn world_enable_warm_starting(world: &mut World, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_enable_warm_starting(wid, flag);
+    });
+
+    world.enable_warm_starting = flag;
+}
+
+/// Is constraint warm starting enabled? (b3World_IsWarmStartingEnabled)
+pub fn world_is_warm_starting_enabled(world: &World) -> bool {
+    world.enable_warm_starting
+}
+
+/// Enable the SSE2 fallback even when AVX2 is present. This is for testing.
+/// Normally you should use the CMake build settings to disable AVX2.
+/// The port only has the 4 wide scalar path, so the width stays 4 either way.
+/// (b3World_EnableSSE2Fallback)
+pub fn world_enable_sse2_fallback(world: &mut World, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    world.simd_width = if flag {
+        4
+    } else {
+        crate::simd_scalar::get_simd_width()
+    };
+}
+
+/// Get the number of awake bodies. (b3World_GetAwakeBodyCount)
+pub fn world_get_awake_body_count(world: &World) -> i32 {
+    world.solver_sets[AWAKE_SET as usize].body_sims.len() as i32
+}
+
+/// Enable/disable continuous collision. (b3World_EnableContinuous)
+pub fn world_enable_continuous(world: &mut World, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_enable_continuous(wid, flag);
+    });
+
+    world.enable_continuous = flag;
+}
+
+/// Is continuous collision enabled? (b3World_IsContinuousEnabled)
+pub fn world_is_continuous_enabled(world: &World) -> bool {
+    world.enable_continuous
+}
+
+/// Enable/disable speculative contacts. (b3World_EnableSpeculative)
+pub fn world_enable_speculative(world: &mut World, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_enable_speculative(wid, flag);
+    });
+
+    world.enable_speculative = flag;
+}
+
+/// Is speculative contact enabled?
+pub fn world_is_speculative_enabled(world: &World) -> bool {
+    world.enable_speculative
+}
+
+/// Adjust the restitution threshold. (b3World_SetRestitutionThreshold)
+pub fn world_set_restitution_threshold(world: &mut World, value: f32) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_restitution_threshold(wid, value);
+    });
+
+    world.restitution_threshold = clamp_float(value, 0.0, f32::MAX);
+}
+
+/// Get the restitution speed threshold. (b3World_GetRestitutionThreshold)
+pub fn world_get_restitution_threshold(world: &World) -> f32 {
+    world.restitution_threshold
+}
+
+/// Set the number of iterations used by the restitution solver. Clamped to
+/// [`crate::constants::MAX_RESTITUTION_ITERATIONS`]. (b3World_SetRestitutionIterations)
+pub fn world_set_restitution_iterations(world: &mut World, iterations: i32) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    let iterations = crate::math_functions::clamp_int(
+        iterations,
+        0,
+        crate::constants::MAX_RESTITUTION_ITERATIONS,
+    );
+    if iterations == world.restitution_iterations {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_restitution_iterations(wid, iterations);
+    });
+
+    world.restitution_iterations = iterations;
+}
+
+/// Get the number of iterations used by the restitution solver.
+/// (b3World_GetRestitutionIterations)
+pub fn world_get_restitution_iterations(world: &World) -> i32 {
+    world.restitution_iterations
+}
+
+/// Enable restitution propagation. (b3World_EnableRestitutionPropagation)
+pub fn world_enable_restitution_propagation(world: &mut World, flag: bool) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    if flag == world.enable_restitution_propagation {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_enable_restitution_propagation(wid, flag);
+    });
+
+    world.enable_restitution_propagation = flag;
+}
+
+/// Is restitution propagation enabled? (b3World_IsRestitutionPropagationEnabled)
+pub fn world_is_restitution_propagation_enabled(world: &World) -> bool {
+    world.enable_restitution_propagation
+}
+
+/// Adjust the hit event threshold. (b3World_SetHitEventThreshold)
+pub fn world_set_hit_event_threshold(world: &mut World, value: f32) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_hit_event_threshold(wid, value);
+    });
+
+    world.hit_event_threshold = clamp_float(value, 0.0, f32::MAX);
+}
+
+/// Get the hit event speed threshold. (b3World_GetHitEventThreshold)
+pub fn world_get_hit_event_threshold(world: &World) -> f32 {
+    world.hit_event_threshold
+}
+
+/// Adjust contact tuning parameters. (b3World_SetContactTuning)
+pub fn world_set_contact_tuning(
+    world: &mut World,
+    hertz: f32,
+    damping_ratio: f32,
+    contact_speed: f32,
+) {
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_contact_tuning(wid, hertz, damping_ratio, contact_speed);
+    });
+
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    world.contact_hertz = clamp_float(hertz, 0.0, f32::MAX);
+    world.contact_damping_ratio = clamp_float(damping_ratio, 0.0, f32::MAX);
+    world.contact_speed = clamp_float(contact_speed, 0.0, f32::MAX);
+}
+
+/// Set the contact recycle distance. (b3World_SetContactRecycleDistance)
+pub fn world_set_contact_recycle_distance(world: &mut World, recycle_distance: f32) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_contact_recycle_distance(wid, recycle_distance);
+    });
+
+    world.contact_recycle_distance = clamp_float(recycle_distance, 0.0, f32::MAX);
+}
+
+/// Get the contact recycle distance. (b3World_GetContactRecycleDistance)
+pub fn world_get_contact_recycle_distance(world: &World) -> f32 {
+    world.contact_recycle_distance
+}
+
+/// Set the maximum linear speed. (b3World_SetMaximumLinearSpeed)
+pub fn world_set_maximum_linear_speed(world: &mut World, maximum_linear_speed: f32) {
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_maximum_linear_speed(wid, maximum_linear_speed);
+    });
+
+    debug_assert!(is_valid_float(maximum_linear_speed) && maximum_linear_speed > 0.0);
+
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    world.max_linear_speed = maximum_linear_speed;
+}
+
+/// Get the maximum linear speed. (b3World_GetMaximumLinearSpeed)
+pub fn world_get_maximum_linear_speed(world: &World) -> f32 {
+    world.max_linear_speed
+}
+
+/// Set the tolerance for gyroscopic torque. [0, 1]
+/// Modifying this only affects new bodies or bodies that get their mass updated.
+/// (b3World_SetIsotropicInertiaTolerance)
+pub fn world_set_isotropic_inertia_tolerance(world: &mut World, tolerance: f32) {
+    debug_assert!(is_valid_float(tolerance));
+
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_isotropic_inertia_tolerance(wid, tolerance);
+    });
+
+    world.isotropic_inertia_tolerance = clamp_float(tolerance, 0.0, 1.0);
+}
+
+/// Get the tolerance for gyroscopic torque. [0, 1]
+/// (b3World_GetIsotropicInertiaTolerance)
+pub fn world_get_isotropic_inertia_tolerance(world: &World) -> f32 {
+    world.isotropic_inertia_tolerance
+}
+
+/// Get the current world performance profile. (b3World_GetProfile)
+pub fn world_get_profile(world: &World) -> Profile {
+    world.profile
+}
+
+/// Get world counters and sizes. (b3World_GetCounters)
+pub fn world_get_counters(world: &World) -> Counters {
+    let mut s = Counters {
+        body_count: world.body_id_pool.id_count(),
+        shape_count: world.shape_id_pool.id_count(),
+        contact_count: world.contact_id_pool.id_count(),
+        joint_count: world.joint_id_pool.id_count(),
+        island_count: world.island_id_pool.id_count(),
+        sat_call_count: world.sat_call_count,
+        sat_cache_hit_count: world.sat_cache_hit_count,
+        manifold_counts: world.manifold_counts,
+        ..Default::default()
+    };
+
+    let static_tree = &world.broad_phase.trees[BodyType::Static as usize];
+    s.static_tree_height = static_tree.height();
+
+    let dynamic_tree = &world.broad_phase.trees[BodyType::Dynamic as usize];
+    let kinematic_tree = &world.broad_phase.trees[BodyType::Kinematic as usize];
+    s.tree_height = max_int(dynamic_tree.height(), kinematic_tree.height());
+
+    // stack_used, byte_count, arena_capacity, and task_count stay zero.
+
+    for i in 0..world.worker_count as usize {
+        s.recycled_contact_count += world.task_contexts[i].recycled_contact_count;
+        s.distance_iterations = max_int(
+            s.distance_iterations,
+            world.task_contexts[i].distance_iterations,
+        );
+        s.push_back_iterations = max_int(
+            s.push_back_iterations,
+            world.task_contexts[i].push_back_iterations,
+        );
+        s.root_iterations = max_int(s.root_iterations, world.task_contexts[i].root_iterations);
+    }
+
+    for i in 0..GRAPH_COLOR_COUNT as usize {
+        let color = &world.constraint_graph.colors[i];
+        let color_contact_count = (color.convex_contacts.len() + color.contacts.len()) as i32;
+        s.color_counts[i] = color_contact_count + color.joint_sims.len() as i32;
+        s.awake_contact_count += color_contact_count;
+    }
+    s.awake_contact_count += world.solver_sets[AWAKE_SET as usize].contact_indices.len() as i32;
+
+    s
+}
+
+/// Get the maximum capacity the world has reached. (b3World_GetMaxCapacity)
+pub fn world_get_max_capacity(world: &World) -> Capacity {
+    world.max_capacity
+}
+
+/// Set the user data pointer. (b3World_SetUserData)
+pub fn world_set_user_data(world: &mut World, user_data: u64) {
+    world.user_data = user_data;
+}
+
+/// Get the user data pointer. (b3World_GetUserData)
+pub fn world_get_user_data(world: &World) -> u64 {
+    world.user_data
+}
+
+/// Register the friction callback. Passing `None` restores the default.
+/// (b3World_SetFrictionCallback)
+pub fn world_set_friction_callback(world: &mut World, callback: Option<FrictionCallback>) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    world.friction_callback = Some(callback.unwrap_or(default_friction_callback));
+}
+
+/// Register the restitution callback. Passing `None` restores the default.
+/// (b3World_SetRestitutionCallback)
+pub fn world_set_restitution_callback(world: &mut World, callback: Option<RestitutionCallback>) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    world.restitution_callback = Some(callback.unwrap_or(default_restitution_callback));
+}
+
+/// Register the custom filter callback. (b3World_SetCustomFilterCallback)
+pub fn world_set_custom_filter_callback(
+    world: &mut World,
+    fcn: Option<CustomFilterFcn>,
+    context: u64,
+) {
+    world.custom_filter_fcn = fcn;
+    world.custom_filter_context = context;
+}
+
+/// Register the pre-solve callback. (b3World_SetPreSolveCallback)
+pub fn world_set_pre_solve_callback(world: &mut World, fcn: Option<PreSolveFcn>, context: u64) {
+    world.pre_solve_fcn = fcn;
+    world.pre_solve_context = context;
+}
+
+/// Set the gravity vector. (b3World_SetGravity)
+pub fn world_set_gravity(world: &mut World, gravity: Vec3) {
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_set_gravity(wid, gravity);
+    });
+    world.gravity = gravity;
+}
+
+/// Get the gravity vector. (b3World_GetGravity)
+pub fn world_get_gravity(world: &World) -> Vec3 {
+    world.gravity
+}
+
+/// Rebuild the static broad-phase tree. Internal testing hook; upstream removed it from the
+/// public API. (b3World_RebuildStaticTree)
+pub(crate) fn world_rebuild_static_tree(world: &mut World) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_rebuild_static_tree(wid);
+    });
+
+    world.broad_phase.trees[BodyType::Static as usize].rebuild(true);
+}
+
+/// Apply a radial explosion. (b3World_Explode + static ExplosionCallback)
+pub fn world_explode(world: &mut World, explosion_def: &ExplosionDef) {
+    crate::recording::capture::rec(world, |rec, wid| {
+        rec.write_world_explode(wid, *explosion_def);
+    });
+
+    let mask_bits = explosion_def.mask_bits;
+    let position = explosion_def.position;
+    let radius = explosion_def.radius;
+    let falloff = explosion_def.falloff;
+    let impulse_per_area = explosion_def.impulse_per_area;
+
+    debug_assert!(is_valid_position(position));
+    debug_assert!(is_valid_float(radius) && radius >= 0.0);
+    debug_assert!(is_valid_float(falloff) && falloff >= 0.0);
+    debug_assert!(is_valid_float(impulse_per_area));
+
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    // Locked due to waking
+    world.locked = true;
+
+    let extent = radius + falloff;
+    let local_box = Aabb {
+        lower_bound: Vec3 {
+            x: -extent,
+            y: -extent,
+            z: -extent,
+        },
+        upper_bound: Vec3 {
+            x: extent,
+            y: extent,
+            z: extent,
+        },
+    };
+    let aabb = offset_aabb(local_box, position);
+
+    // C applies impulses inside the tree traversal, but waking needs &mut World
+    // while the tree is borrowed. Collect candidate shape ids first, then apply.
+    let mut shape_ids: Vec<i32> = Vec::new();
+    world.broad_phase.trees[BodyType::Dynamic as usize].query(
+        aabb,
+        mask_bits,
+        false,
+        |_, user_data| {
+            shape_ids.push(user_data as i32);
+            true
+        },
+    );
+
+    for shape_id in shape_ids {
+        explode_shape(world, shape_id, position, radius, falloff, impulse_per_area);
+    }
+
+    world.locked = false;
+}
+
+/// Apply the explosion impulse to one candidate shape. (static ExplosionCallback)
+fn explode_shape(
+    world: &mut World,
+    shape_id: i32,
+    position: Pos,
+    radius: f32,
+    falloff: f32,
+    impulse_per_area: f32,
+) {
+    let shape = &world.shapes[shape_id as usize];
+    if shape.explosion_scale == 0.0 {
+        return;
+    }
+
+    let body_id = shape.body_id;
+    let body = &world.bodies[body_id as usize];
+    debug_assert!(body.type_ == BodyType::Dynamic);
+
+    let xf = get_body_transform_quick(world, body);
+
+    // Re-center the explosion into the shape local frame
+    let local_position = inv_transform_world_point(xf, position);
+
+    let input = DistanceInput {
+        proxy_a: make_shape_proxy(shape),
+        proxy_b: make_proxy(&[local_position], 0.0),
+        transform: TRANSFORM_IDENTITY,
+        use_radii: true,
+    };
+
+    let mut cache = SimplexCache::default();
+    let output = shape_distance(&input, &mut cache, None);
+
+    if output.distance > radius + falloff {
+        return;
+    }
+
+    // Snapshot shape-derived values before waking (wake may reshuffle sims).
+    let mut closest_point = output.point_a;
+    if output.distance == 0.0 {
+        closest_point = get_shape_centroid(shape);
+    }
+
+    let mut direction = sub(closest_point, local_position);
+    if length_squared(direction) > 100.0 * f32::EPSILON * f32::EPSILON {
+        direction = normalize(direction);
+    } else {
+        direction = Vec3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+    }
+
+    let area = get_shape_projected_area(shape, direction);
+    let mut scale = 1.0;
+    if output.distance > radius && falloff > 0.0 {
+        scale = clamp_float((radius + falloff - output.distance) / falloff, 0.0, 1.0);
+    }
+
+    let magnitude = impulse_per_area * area * scale * shape.explosion_scale;
+    let impulse = mul_sv(magnitude, rotate_vector(xf.q, direction));
+    let closest_for_torque = closest_point;
+    let direction_q = xf.q;
+
+    wake_body(world, body_id);
+
+    let body = &world.bodies[body_id as usize];
+    if body.set_index != AWAKE_SET {
+        return;
+    }
+
+    let local_index = body.local_index;
+    let set = &mut world.solver_sets[AWAKE_SET as usize];
+    // Copy inv_mass / local_center / inv_inertia before mutably borrowing body_states.
+    let (inv_mass, local_center, inv_inertia_world) = {
+        let body_sim = &set.body_sims[local_index as usize];
+        (
+            body_sim.inv_mass,
+            body_sim.local_center,
+            body_sim.inv_inertia_world,
+        )
+    };
+    let state = &mut set.body_states[local_index as usize];
+    state.linear_velocity = mul_add(state.linear_velocity, inv_mass, impulse);
+
+    // Lever arm from the center of mass to the closest point, rotated to world
+    let r = rotate_vector(direction_q, sub(closest_for_torque, local_center));
+    state.angular_velocity = add(
+        state.angular_velocity,
+        mul_mv(inv_inertia_world, cross(r, impulse)),
+    );
+}
+
+/// Union of broad-phase tree root bounds. (b3World_GetBounds)
+pub fn world_get_bounds(world: &World) -> Aabb {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return Aabb {
+            lower_bound: VEC3_ZERO,
+            upper_bound: VEC3_ZERO,
+        };
+    }
+
+    let mut world_bounds = Aabb {
+        lower_bound: VEC3_ZERO,
+        upper_bound: VEC3_ZERO,
+    };
+    let mut have_bounds = false;
+
+    for i in 0..BODY_TYPE_COUNT {
+        let tree = &world.broad_phase.trees[i];
+        if tree.proxy_count() == 0 {
+            continue;
+        }
+
+        let bounds = tree.root_bounds();
+        if have_bounds {
+            world_bounds = aabb_union(world_bounds, bounds);
+        } else {
+            world_bounds = bounds;
+            have_bounds = true;
+        }
+    }
+
+    world_bounds
+}
+
+/// Set the stored worker count. Clamped to `[1, MAX_WORKERS]`. The serial port
+/// does not spawn threads but still resizes task contexts like C.
+/// (b3World_SetWorkerCount)
+pub fn world_set_worker_count(world: &mut World, count: i32) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    if count == world.worker_count {
+        return;
+    }
+
+    world.worker_count = clamp_int(count, 1, MAX_WORKERS);
+    // Serial equivalent of b3DestroyWorkerContexts + b3CreateWorkerContexts:
+    // resize and zero the per-worker scratch arrays.
+    world.task_contexts = vec![TaskContext::default(); world.worker_count as usize];
+    world.sensor_task_contexts = vec![SensorTaskContext::default(); world.worker_count as usize];
+}
+
+/// Get the stored worker count. (b3World_GetWorkerCount)
+pub fn world_get_worker_count(world: &World) -> i32 {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return 0;
+    }
+    world.worker_count
+}
+
+/// Begin capturing mutations into `recording`, which the world owns until
+/// [`world_stop_recording`] returns it. If a session is already active the
+/// new recording is dropped. (b3World_StartRecording)
+pub fn world_start_recording(world: &mut World, recording: crate::recording::Recording) {
+    debug_assert!(world.recording.is_none());
+    if world.recording.is_some() {
+        return;
+    }
+    crate::recording::start_recording(world, recording);
+}
+
+/// Finalize the active recording and return it, or `None` if no session was
+/// active. (b3World_StopRecording)
+pub fn world_stop_recording(world: &mut World) -> Option<crate::recording::Recording> {
+    crate::recording::stop_recording(world)
+}
+
+/// Destroy a world, consuming it. Any active recording is finalized first (bounds,
+/// `DestroyWorld` op, trailing registry, header backpatch) and returned to the caller, who
+/// owns it just as C's user owns the recording buffer. Returns `None` if no session was
+/// active. (b3DestroyWorld)
+///
+/// Every live shape's allocations are then released as in C: hull-database references are
+/// dropped and host debug-shape handles go through `destroy_debug_shape`. The remaining
+/// C teardown (arrays, pools, allocators, scheduler) is handled by Rust ownership when the
+/// `World` is dropped here. Simply dropping a `World` without calling this discards an active
+/// recording unfinalized and does not fire `destroy_debug_shape`.
+pub fn destroy_world(mut world: World) -> Option<crate::recording::Recording> {
+    destroy_world_in_place(&mut world)
+}
+
+/// The body of [`destroy_world`] for owners that cannot give up the `World` value (the replay
+/// player holds its world inline and tears it down from `Drop`). The world must not be used
+/// afterwards except to drop or replace it. (b3DestroyWorld)
+pub(crate) fn destroy_world_in_place(world: &mut World) -> Option<crate::recording::Recording> {
+    world.locked = true;
+
+    // Detach any recording before teardown. The user owns and frees the recording buffer.
+    let recording = crate::recording::stop_recording(world);
+
+    for i in 0..world.shapes.len() {
+        if world.shapes[i].id != crate::core::NULL_INDEX {
+            crate::shape::lifecycle::destroy_shape_allocations(world, i as i32);
+        }
+    }
+
+    // Destroying every shape above released all hull references, so the database is empty.
+    debug_assert!(world.hull_database.is_empty());
+
+    recording
+}

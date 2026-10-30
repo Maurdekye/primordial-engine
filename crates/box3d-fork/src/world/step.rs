@@ -1,0 +1,168 @@
+// b3World_Step from physics_world.c, split out of world/mod.rs to keep
+// modules focused.
+//
+// SPDX-FileCopyrightText: 2025 Erin Catto
+// SPDX-License-Identifier: MIT
+
+use crate::world::{Profile, World};
+
+impl World {
+    /// Advance the world simulation by one time step. (b3World_Step)
+    ///
+    /// Simulate a world for one time step. This performs collision detection, integration, and
+    /// constraint solution.
+    /// A time step of zero runs the broad-phase and collision, but skips the solver. So you can
+    /// still get contact and sensor events.
+    /// - `time_step`: the amount of time to simulate, this should be a fixed number. Usually 1/60.
+    /// - `sub_step_count`: the number of sub-steps, increasing the sub-step count can increase
+    ///   accuracy. Usually 4.
+    pub fn step(&mut self, time_step: f32, sub_step_count: i32) {
+        use crate::broad_phase::update_broad_phase_pairs;
+        use crate::math_functions::{is_valid_float, max_int, min_float};
+        use crate::solver::{make_soft, solve, StepContext};
+
+        debug_assert!(is_valid_float(time_step) && time_step >= 0.0);
+        debug_assert!(!self.locked);
+        if self.locked {
+            return;
+        }
+
+        crate::recording::capture::rec(self, |rec, wid| {
+            rec.write_step(wid, time_step, sub_step_count);
+        });
+
+        self.locked = true;
+
+        self.body_move_events.clear();
+        self.sensor_begin_events.clear();
+        self.contact_begin_events.clear();
+        self.contact_hit_events.clear();
+        self.joint_events.clear();
+        self.profile = Profile::default();
+
+        {
+            let c = &mut self.max_capacity;
+            c.static_shape_count = max_int(
+                c.static_shape_count,
+                self.broad_phase.trees[crate::types::BodyType::Static as usize].proxy_count(),
+            );
+            c.dynamic_shape_count = max_int(
+                c.dynamic_shape_count,
+                self.broad_phase.trees[crate::types::BodyType::Dynamic as usize].proxy_count(),
+            );
+            let static_body_count = self.solver_sets[crate::solver_set::STATIC_SET as usize]
+                .body_sims
+                .len() as i32;
+            c.static_body_count = max_int(c.static_body_count, static_body_count);
+            let total_body_count = self.body_id_pool.id_count();
+            c.dynamic_body_count =
+                max_int(c.dynamic_body_count, total_body_count - static_body_count);
+            c.contact_count = max_int(c.contact_count, self.contact_id_pool.id_count());
+        }
+
+        update_broad_phase_pairs(self);
+
+        let sub_steps = max_int(1, sub_step_count);
+        let mut context = StepContext {
+            dt: time_step,
+            sub_step_count: sub_steps,
+            ..StepContext::default()
+        };
+
+        if time_step > 0.0 {
+            context.inv_dt = 1.0 / time_step;
+            context.h = time_step / sub_steps as f32;
+            context.inv_h = sub_steps as f32 * context.inv_dt;
+        } else {
+            context.inv_dt = 0.0;
+            context.h = 0.0;
+            context.inv_h = 0.0;
+        }
+
+        self.inv_dt = context.inv_dt;
+        self.inv_h = context.inv_h;
+
+        // Hertz values get reduced for large time steps
+        let contact_hertz = min_float(self.contact_hertz, 0.125 * context.inv_h);
+        context.contact_softness = make_soft(contact_hertz, self.contact_damping_ratio, context.h);
+        context.static_softness = make_soft(
+            2.0 * contact_hertz,
+            0.5 * self.contact_damping_ratio,
+            context.h,
+        );
+        context.max_linear_velocity = self.max_linear_speed;
+        context.contact_speed = self.contact_speed;
+        context.enable_warm_starting = self.enable_warm_starting;
+
+        crate::contact::collide(self, time_step);
+
+        // C finishes the user tree task (and validates the trees) inside b3Solve, right
+        // before body finalization, which is skipped when the step is zero or nothing is
+        // awake. The serial
+        // port rebuilds the trees inline in update_broad_phase_pairs, so this flag stands
+        // in for `world->userTreeTask` still being outstanding after b3Solve.
+        // With C's default serial scheduler (b3DefaultAddTaskFcn runs the task inline and
+        // returns NULL) `userTreeTask` is NULL, so C never reaches this validation; the Rust
+        // check mirrors C running with a scheduler that actually enqueues the tree task.
+        let awake_set_empty = self.solver_sets[crate::solver_set::AWAKE_SET as usize]
+            .body_sims
+            .is_empty();
+        let solve_finishes_tree_task = time_step > 0.0 && !awake_set_empty;
+        let tree_task_pending = !solve_finishes_tree_task;
+
+        if time_step > 0.0 {
+            solve(self, &context);
+        }
+
+        // Finish the tree task in case b3Solve didn't finish it
+        if tree_task_pending {
+            self.broad_phase.validate_no_moved();
+        }
+
+        // Update sensors (after solve; C physics_world.c runs b3OverlapSensors here)
+        crate::sensor::overlap_sensors(self);
+
+        self.step_index = self.step_index.wrapping_add(1);
+        self.validate_solver_sets();
+
+        // Swap end event array buffers
+        self.end_event_array_index = 1 - self.end_event_array_index;
+        self.sensor_end_events[self.end_event_array_index as usize].clear();
+        self.contact_end_events[self.end_event_array_index as usize].clear();
+        self.locked = false;
+
+        if self.recording.is_some() {
+            use crate::math_functions::aabb_union;
+            use crate::recording::hash::hash_world_state;
+            use crate::recording::session::world_public_id;
+            use crate::types::BODY_TYPE_COUNT;
+
+            let hash = hash_world_state(self);
+            let wid = world_public_id(self);
+            crate::recording::with_recording(self, |rec| {
+                rec.write_state_hash(wid, hash);
+            });
+
+            let mut world_bounds = crate::math_functions::Aabb::default();
+            let mut have_bounds = false;
+            for i in 0..BODY_TYPE_COUNT {
+                let tree = &self.broad_phase.trees[i];
+                if tree.proxy_count() == 0 {
+                    continue;
+                }
+                let bounds = tree.root_bounds();
+                world_bounds = if have_bounds {
+                    aabb_union(world_bounds, bounds)
+                } else {
+                    bounds
+                };
+                have_bounds = true;
+            }
+            if have_bounds {
+                crate::recording::with_recording(self, |rec| {
+                    rec.accumulate_bounds(world_bounds);
+                });
+            }
+        }
+    }
+}
