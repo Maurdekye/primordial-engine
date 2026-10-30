@@ -1,0 +1,18 @@
+[package]
+name = "pe-session-sim"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Session simulator as a test tool (design 23.4, P2-9): scenario files, fault injection, regression command"
+
+[[bin]]
+name = "pe-session-sim"
+path = "src/main.rs"
+
+[dependencies]
+pe-sim-core.workspace = true
+# The spike's in-process simulator (Net, Sim, Peer), driven unchanged until P2-3's pe-session lands.
+spike = { package = "pe-spike-session-sim", path = "../../spikes/session-sim" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

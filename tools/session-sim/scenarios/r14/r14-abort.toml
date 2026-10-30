@@ -1,0 +1,49 @@
+description = """
+R14 abort: the carrier grabs and carries in one motion (no earlier hold), and member 2's \
+slightly earlier grab at frame 155 wins object 40. Member 2's entries reach member 1 150 ms late \
+(inside the 250 ms late allowance, so they keep their frames), after member 1 already departed \
+speculatively at frame 160: A rolls back past the departure, which is undone."""
+include = ["../common/r14.toml"]
+
+[world.1.plan]
+1 = [
+    { at = 160, carry = { transfer = 7, obj = 40, dest = 2 } },
+]
+2 = [
+    { at = 140, touch = { obj = 33, impulse = [2.0, 4.0, 0.0] } },
+    { at = 175, touch = { obj = 60, impulse = [0.0, 6.0, 1.0] } },
+    { at = 230, touch = { obj = 12, impulse = [0.0, 5.0, 0.0] } },
+    { at = 155, every = 5, count = 14, touch = { obj = 40, impulse = [0.0, 0.3, 0.0], grab = true } },
+]
+
+[[fault]]
+msg = "entry"
+world = 1
+from = 2
+to = 1
+before_ms = 4000
+delay_ms = 150
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "abort"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 abort A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 abort B"
