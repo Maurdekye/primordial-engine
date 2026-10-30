@@ -1,0 +1,30 @@
+description = """
+Round-3 review (R3-2): honest member 3 goes silent at t = 3 s (everything to and from it is \
+lost). The others vote it out as presumed crashed, and confirmation resumes."""
+include = ["../common/review.toml"]
+end_ms = 15000
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[fault]]
+involves = 3
+after_ms = 3000
+drop = true
+
+[[report]]
+kind = "membership"
+honest = [1, 2]
+label = "crashstall"
+
+[[report]]
+kind = "line"
+text = "RESULT crashstall: member 3 silent from t=3 s; at t=15 s m1 conf {conf@1} (frame {frame@1}), member 3 still a member: {member@1:3}"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2]
+label = "crashstall (member 3 silent from t=3 s)"

@@ -1,0 +1,37 @@
+description = "As r14-chain, with the simulator ticking peers in reverse order (order independence)."
+include = ["r14-chain.toml"]
+
+[sim]
+reverse_order = true
+
+[[report]]
+kind = "r14_chain_jobs"
+[[report]]
+kind = "r14_chain_outcomes"
+[[report]]
+kind = "r14_chain_conservation"
+label = "r14 chain (reverse order)"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "stats"
+world = 3
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 chain A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 chain B"
+[[report]]
+kind = "check_world"
+world = 3
+frames = 480
+label = "r14 chain C"

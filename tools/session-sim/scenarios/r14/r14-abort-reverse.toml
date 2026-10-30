@@ -1,0 +1,29 @@
+description = "As r14-abort, with the simulator ticking peers in reverse order (order independence)."
+include = ["r14-abort.toml"]
+
+[sim]
+reverse_order = true
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "abort (reverse order)"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 abort A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 abort B"

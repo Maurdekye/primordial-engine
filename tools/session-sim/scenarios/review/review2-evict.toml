@@ -1,0 +1,39 @@
+description = """
+Round-2 review: member 1's touch reaches members 3 and 9 600 ms late, then 9 equivocates and is \
+evicted. Before, the eviction re-stamped a confirmed entry and crashed a member. Now nothing moves."""
+include = ["../common/review.toml"]
+end_ms = 10000
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+9 = [{ at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+msg = "touch"
+from = 1
+to = [3, 9]
+stamp = 60
+delay_ms = 600
+
+[[byzantine]]
+kind = "equivocate"
+member = 9
+entry = "first_touch"
+when = "exists"
+touch = { obj = 33, impulse = [0.0, 0.0, 3.0] }
+to = [1, 2, 3]
+say = "  t={t_ms} ms: before 9 equivocates: member 1's touch at m2: {touches@2:1}"
+
+[[report]]
+kind = "touches"
+author = 1
+at = [1, 2, 3]
+text = "member 1's touch at m{m}"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "evict (late entry, then an eviction)"
