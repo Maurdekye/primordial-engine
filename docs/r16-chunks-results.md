@@ -446,35 +446,58 @@ One member stops acking for S seconds (10 s stands in for gone for good). The ta
 For 10 s stalls with 256 members alone, that is 44,115 region-frames lost under the old rule and none under
 the new one. Raw output: `spikes/out/chunks/liveness.log`.
 
-## 14. Safety: late merges under footprint steps (review N1) [C, rule-level model]
+## 14. Safety: late merges under footprint steps, two-sided approach and concurrent creation (reviews N1, M1) [C, rule-level model]
 
-`pe-spike-chunks safety` models two regions on a line. A **late merge** is a merge frame that region R had
-already simulated past when it first learned the event causing it. That would need a rollback, possibly
-below R's confirmed frame, which design 6.4 forbids.
+`pe-spike-chunks safety` models two regions on a line. Both may grow toward each other, and both are
+checked. A **late merge** is a merge frame that a region had already simulated past when it first held
+every fact that fixes it. That would need a rollback, possibly below its confirmed frame, which design 6.4
+forbids.
 
-The revised rules (25.5.2) are:
-* the growth clock: footprint growth reaches outsiders no faster than `v_max`;
-* the envelope from every anchor *stamped* up to the known confirmed frame;
-* pull on demand;
-* region creation through the world log, with `S_create` = 10 s and a minimum distance.
+Three rule sets:
+* **2a228c6.**
+* **05d3cc0:** the growth clock, envelopes by stamp, creation at `stamp + Lambda` checked against the
+  confirmed directory.
+* **Revised:**
+  * creation takes effect at `stamp + S_create`;
+  * creation is validated in world-log order against pending creations too;
+  * the directory's knowledge of a region comes from its `RegionHead`, posted every 5 s.
 
-| Case | 2a228c6 | Revised |
-|---|---|---|
-| Chunk step toward R during a stall in q (4 km gap) | **late**: merge 360, R had simulated to 434 | safe; merge at 975 |
-| Chunk step, no stall | safe | safe |
-| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late**: merge 1,030, R at 3,599 | safe; merge at 9,632 |
-| Scale x8, pull every 60 s or on demand | safe | safe |
-| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe (R stalls 2,411 frames: pull on demand is needed) |
-| Joiner, pull every 60 s or on demand | safe | safe |
-| Walker at `v_max` toward R over 12 chunks, q stalls on the way (12 km gap) | safe | safe; merge 615 frames later |
-| Region created 4.5 km from R, then walks toward it | **late**: R never learns of q | safe |
-| Region created 3.5 km from R | **late** | refused: the newcomer joins R |
-| Created 4.5 km away, world log stalled 5 s | **late** | safe |
-| Created 4.5 km away, world log stalled 12 s | **late** | safe; R loses 185 frames |
+| Case | 2a228c6 | 05d3cc0 | Revised |
+|---|---|---|---|
+| Chunk step toward R during a stall in q (4 km gap) | **late** | safe | safe |
+| Chunk step, no stall | safe | safe | safe |
+| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late** | safe | safe |
+| Scale x8, pull every 60 s or on demand | safe | safe | safe |
+| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe (R stalls 2,411 frames) | safe (same) |
+| Joiner, pull every 60 s or on demand | safe | safe | safe |
+| Walker at `v_max` toward R over 12 chunks, q stalls on the way | safe | safe | safe |
+| Region created 4.5 km from R, then walks toward it | **late** | safe | safe |
+| Region created 3.5 km from R | **late** | joins R | joins R |
+| Created 4.5 km away and walks, world log stalled 5 s | **late** | safe | safe |
+| Created 4.5 km away and walks, world log stalled 12 s | **late** | safe (R loses 185 frames) | safe (same) |
+| Both walk toward each other, q created at the closest allowed gap, `v_max` 100 m/s, `S_create` 10 s | **late** | safe | safe |
+| The same, world log stalled 8 s | **late** | safe | safe |
+| Both walk, `v_max` 200 m/s | **late** | safe | safe |
+| Both walk, `v_max` 200 m/s, world log stalled 8 s | **late** | **late** (merge 954) | safe (merge 1,262) |
+| Both walk, `S_create` 20 s, world log stalled 8 s | **late** | safe | safe |
+| Two regions created at the same spawn point 10 frames apart | **late** | **late** (merge 640, both) | the second joins the first |
 
-**Result: 7 of 11 cases were late under 2a228c6, and 0 of 11 under the revised rules.**
+**Late merges: 13 of 17 under 2a228c6, 2 of 17 under 05d3cc0, 0 of 17 revised.**
 
-This is a model of the rules on a line, not of the protocol or of 2D or 3D footprints.
+The two 05d3cc0 failures match @chunks-reviewer's `safety2_model.py`. This is a model of the rules on a
+line, not of the protocol or of 2D/3D footprints.
+
+**World-log stall budget** (`liveness-gate` rows, review M4). Setup: the region-directory gate is on, one
+member is silent for 15 s, footprints are 4 km apart. Frames lost by unrelated regions, against how fast the
+world log evicts or demotes that member:
+
+| Members | 3.8 s | 4 s | 8 s | 12 s |
+|---|---|---|---|---|
+| 64 alone | 0 | 0 | 0 | **every region, up to 188 frames** |
+| 256 alone | 0 | 0 | 0 | **every region, up to 188 frames** |
+| 256 in groups of 8 | 0 | 0 | 0 | **every region, up to 185 frames** |
+
+Budget: world-log eviction or demotion within `S_create` minus the world-log lag (about 8.9 s).
 
 ## 15. Support closure on heaps and thrown objects (review N7) [V]
 
