@@ -446,46 +446,64 @@ One member stops acking for S seconds (10 s stands in for gone for good). The ta
 For 10 s stalls with 256 members alone, that is 44,115 region-frames lost under the old rule and none under
 the new one. Raw output: `spikes/out/chunks/liveness.log`.
 
-## 14. Safety: late merges under footprint steps, two-sided approach and concurrent creation (reviews N1, M1) [C, rule-level model]
+## 14. Safety: late merges and late reads under footprint steps, two-sided approach, creation and scale bands (reviews N1, M1, P1, P2) [C, rule-level model]
 
 `pe-spike-chunks safety` models two regions on a line. Both may grow toward each other, and both are
 checked. A **late merge** is a merge frame that a region had already simulated past when it first held
 every fact that fixes it. That would need a rollback, possibly below its confirmed frame, which design 6.4
-forbids.
+forbids. In the cross-band cases the event is the first frame from which a human region must read a giant's
+region (their footprints overlap, margin 0); only the reader is checked.
 
-Three rule sets:
+Rule sets:
 * **2a228c6.**
 * **05d3cc0:** the growth clock, envelopes by stamp, creation at `stamp + Lambda` checked against the
   confirmed directory.
-* **Revised:**
-  * creation takes effect at `stamp + S_create`;
-  * creation is validated in world-log order against pending creations too;
-  * the directory's knowledge of a region comes from its `RegionHead`, posted every 5 s.
+* **e10c905:**
+  * creation at `stamp + S_create`, validated in world-log order against pending creations;
+  * `J` = the reduction of the gap to a known region's possible footprint. Once that footprint reaches
+    the region, the step is instant (review P2);
+  * no bound between bands (review P1).
+* **Revised** (design 25.5.2, 25.6):
+  * `J` = 0 only if every added point is at least `D_merge` from every known possible footprint over
+    `T_h` = 60 s; otherwise it is the full extension;
+  * the horizon gate `f <= known_conf_q + T_h`;
+  * the start condition for created regions;
+  * the cross-band bound and reader start at margin 0.
+  * The column "revised" below includes the start condition. Without it, one case is late.
 
-| Case | 2a228c6 | 05d3cc0 | Revised |
-|---|---|---|---|
-| Chunk step toward R during a stall in q (4 km gap) | **late** | safe | safe |
-| Chunk step, no stall | safe | safe | safe |
-| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late** | safe | safe |
-| Scale x8, pull every 60 s or on demand | safe | safe | safe |
-| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe (R stalls 2,411 frames) | safe (same) |
-| Joiner, pull every 60 s or on demand | safe | safe | safe |
-| Walker at `v_max` toward R over 12 chunks, q stalls on the way | safe | safe | safe |
-| Region created 4.5 km from R, then walks toward it | **late** | safe | safe |
-| Region created 3.5 km from R | **late** | joins R | joins R |
-| Created 4.5 km away and walks, world log stalled 5 s | **late** | safe | safe |
-| Created 4.5 km away and walks, world log stalled 12 s | **late** | safe (R loses 185 frames) | safe (same) |
-| Both walk toward each other, q created at the closest allowed gap, `v_max` 100 m/s, `S_create` 10 s | **late** | safe | safe |
-| The same, world log stalled 8 s | **late** | safe | safe |
-| Both walk, `v_max` 200 m/s | **late** | safe | safe |
-| Both walk, `v_max` 200 m/s, world log stalled 8 s | **late** | **late** (merge 954) | safe (merge 1,262) |
-| Both walk, `S_create` 20 s, world log stalled 8 s | **late** | safe | safe |
-| Two regions created at the same spawn point 10 frames apart | **late** | **late** (merge 640, both) | the second joins the first |
+| Case | 2a228c6 | 05d3cc0 | e10c905 | Revised |
+|---|---|---|---|---|
+| Chunk step toward R, no stall (4 km gap) | safe | safe | safe | safe |
+| Chunk step toward R during a stall in q (4 km gap) | **late** (merge 360) | safe (merge 975) | **late** (merge 360: the step was instant, review P2) | safe (merge 975) |
+| Chunk step toward R during a stall in R, R fixed or walking toward q (4 km gap) | safe | safe | safe | safe |
+| Chunk step while R walks toward q, a stall in q or in R (8 km gap) | safe | safe | safe | safe |
+| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late** (merge 1,030) | safe (merge 9,632) | **late** (merge 3,418) | safe (R pauses 11 frames at the horizon gate) |
+| Scale x8, pull every 60 s or on demand | safe | safe | safe | safe |
+| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe | **late** | safe (R pauses 2,411 frames) |
+| Joiner, pull every 60 s or on demand | safe | safe | safe | safe |
+| Walker at `v_max` toward R over 12 chunks, q stalls on the way (12 km gap) | safe | safe | safe | safe (2 steps instant) |
+| Chunk step every 5 s from 20 km toward R, q stalls early or late | safe | safe | safe | safe (10 of 19 steps instant) |
+| Region created 4.5 km from R, then walks toward it; also with the world log stalled 5 s or 12 s | **late** | joins R | joins R | joins R (R loses 185 frames at 12 s) |
+| Region created 3.5 km from R | **late** | joins R | joins R | joins R |
+| Both walk toward each other, q created at the closest allowed gap: `v_max` 100 or 200 m/s, `S_create` 10 or 20 s, with and without an 8 s world-log stall (5 cases) | **late** | safe, except **late** at 200 m/s with the stall (merge 954) | safe | safe |
+| Two regions created at the same spawn point 10 frames apart | **late** | **late** (both regions) | the second joins the first | the second joins the first |
+| R (two members, never evicted) grows 3 km at once toward a region being created 4.6 km away, before its log records the creation, then stalls 30 s | **late** | safe | **late** | safe, by the start condition (**late** without it) |
+| Giant region walks toward a human region from 1,000 km at its `v_max`, L stalls on the way | n/a | n/a | safe | safe |
+| Giant scales up x8 (+14 of its 131 km chunks) 1,500 km away, L stalled | n/a | n/a | **late** (read from 430) | safe (read from 9,032) |
+| Giant steps one 131 km chunk onto a human region 100 km away, L stalled | n/a | n/a | **late** | safe |
+| Two-member giant region walks toward a human region, L stalled 30 s and never evicted | n/a | n/a | **late** | safe (R pauses 196 frames) |
 
-**Late merges: 13 of 17 under 2a228c6, 2 of 17 under 05d3cc0, 0 of 17 revised.**
-
-The two 05d3cc0 failures match @chunks-reviewer's `safety2_model.py`. This is a model of the rules on a
-line, not of the protocol or of 2D/3D footprints.
+* **28 cases of steps toward a neighbour, two-sided growth, creation and cross-band reads. Late: 14 of 24
+  under 2a228c6, 2 of 24 under 05d3cc0, 7 of 28 under e10c905, 0 of 28 under the revised rules** (1 of 28
+  without the start condition). The cross-band rows do not apply before e10c905.
+* The 05d3cc0 cases reproduce @chunks-reviewer's `safety2_model.py`. The e10c905 failures are reviews P1
+  and P2.
+* **28 cases. Late: 14 of 24 under 2a228c6, 2 of 24 under 05d3cc0, 7 of 28 under e10c905, 0 of 28
+  revised** (1 of 28 without the start condition). The cross-band rows do not apply before e10c905.
+* The 05d3cc0 failures match @chunks-reviewer's `safety2_model.py`. This is a model of the rules on a line,
+  not of the protocol or of 2D/3D footprints.
+* The `liveness` model has no horizon gate. It cannot bind there, because every modelled stall ends
+  within 15 s, well under `T_h` (60 s) [I].
 
 **World-log stall budget** (`liveness-gate` rows, review M4). Setup: the region-directory gate is on, one
 member is silent for 15 s, footprints are 4 km apart. Frames lost by unrelated regions, against how fast the
@@ -498,6 +516,9 @@ world log evicts or demotes that member:
 | 256 in groups of 8 | 0 | 0 | 0 | **every region, up to 185 frames** |
 
 Budget: world-log eviction or demotion within `S_create` minus the world-log lag (about 8.9 s).
+
+@engine-architect's round-3 view change (design 10.8, cecda4b) evicts one silent member in about 3.1-3.3 s
+in their crash runs [V, theirs], inside the budget. It does not yet handle two members silent at once [I].
 
 ## 15. Support closure on heaps and thrown objects (review N7) [V]
 
