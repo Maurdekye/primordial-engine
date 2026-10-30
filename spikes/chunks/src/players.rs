@@ -349,6 +349,21 @@ pub fn players() {
             let mem = 5.0 * c.image as f64;
             let (region_rx, world_rx_full) = bandwidth(g, total, false);
             let (_, world_rx_compact) = bandwidth(g, total, true);
+            if layout == "spread" {
+                // Today's design (no regions): every peer simulates every player's pit in one
+                // world, whatever the layout, so its cost is the clustered region's.
+                let a = costs[&total];
+                let cpu_flat = a.step_ms + a.save_ms / 4.0 + a.rollback5_ms;
+                let (rx, wrx) = bandwidth(total, total, false);
+                println!(
+                    "RESULT players mode={} players={total} layout=any-unchunked region_members={total} sim_bodies_per_player={} cpu_ms_per_tick={cpu_flat:.3} mem_MB={:.2} rx_region_kBps={:.1} rx_world_kBps_fullmesh_acks={:.1} rx_world_kBps_compact_acks=-",
+                    mode(),
+                    a.bodies,
+                    5.0 * a.image as f64 / 1e6,
+                    rx / 1e3,
+                    wrx / 1e3
+                );
+            }
             println!(
                 "RESULT players mode={} players={total} layout={layout} region_members={g} sim_bodies_per_player={} cpu_ms_per_tick={cpu:.3} mem_MB={:.2} rx_region_kBps={:.1} rx_world_kBps_fullmesh_acks={:.1} rx_world_kBps_compact_acks={:.1}",
                 mode(),
