@@ -1,0 +1,8 @@
+commit c3e75c71c0c5c457a3966d68852ca4033431365c
+working tree changes: 0
+rustc 1.99.0 (b940084d7 2026-09-28)
+host: x86_64-pc-windows-msvc
+LLVM version: 23.1.1
+   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-core)
+   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
+    Finished `release` profile [optimized] target(s) in 1.37s
