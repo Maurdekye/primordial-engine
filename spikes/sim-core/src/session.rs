@@ -37,7 +37,9 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
-pub use crate::provenance::{birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochCerts, ForkProof, Hop, Seen, StaticEpochs};
+pub use crate::provenance::{
+    birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen, StaticEpochs,
+};
 
 pub type MemberId = u32;
 pub type EntryId = u64;
@@ -367,6 +369,12 @@ pub const MAX_ARRIVAL_SPIN: f32 = 2000.0;
 /// Furthest deadline, in frames after its arrival, that a destination accepts (round 3, low):
 /// it bounds how long a transfer stays open and its id must be kept. World config in production.
 pub const MAX_DEADLINE_FRAMES: u64 = 3600;
+
+/// P25-3: the source's certified departure carried by an `Arrive`, as one export of a fork proof.
+/// The spike's certificates have no epochs yet (P2-4): epoch 0.
+fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, u64)]) -> Export {
+    Export::Departed { src, epoch: 0, depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
+}
 
 /// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
 pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
@@ -720,6 +728,8 @@ pub enum Outcome {
     RejectedFork,
     /// P2-5: the object arrived here and the departure lacks its certified hop in.
     RejectedUnsettled,
+    /// P25-1: this world's import policy refuses the object's birth world, chain or kind.
+    RejectedPolicy,
 }
 
 /// One member's eviction vote, as read from its chain (review R3-1).
@@ -761,8 +771,17 @@ pub struct WorldSim {
     pub provenance: bool,
     /// Number of objects this world was born with: its birth records.
     pub genesis_objects: u64,
-    /// P2-5: double spends this world has proof of (diagnostic; not part of the state).
-    pub fork_proofs: BTreeSet<ForkProof>,
+    /// P25-1: what this world accepts beyond identity (birth worlds, chain worlds, kinds).
+    pub import_policy: ImportPolicy,
+    /// P25-3: double spends this world holds transferable proof of, from confirmed frames only
+    /// (keyed by world, global id, entry and the two transfers). Not part of the state.
+    pub fork_proofs: BTreeMap<(u32, u64, u64, u64, u64), ForkProof>,
+    /// Cross-world effects of each simulated frame, kept outside the rollback state: a re-simulation
+    /// of the frame replaces them, and they are acted on only once the frame is confirmed (P25-3,
+    /// P25-4): (commit facts to attest, fork proofs found).
+    frame_effects: BTreeMap<u64, (Vec<u64>, Vec<ForkProof>)>,
+    /// Confirmed commit facts not yet attested (P25-4: each attested once).
+    commits_due: Vec<u64>,
     attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
@@ -881,7 +900,10 @@ impl WorldSim {
             epochs: StaticEpochs::default(),
             provenance: true,
             genesis_objects,
-            fork_proofs: BTreeSet::new(),
+            import_policy: ImportPolicy::default(),
+            fork_proofs: BTreeMap::new(),
+            frame_effects: BTreeMap::new(),
+            commits_due: Vec::new(),
             attested: BTreeSet::new(),
             known: members.iter().copied().collect(),
             entries: BTreeMap::new(),
@@ -1720,14 +1742,10 @@ impl WorldSim {
                 }
             }
         }
-        // P2-5: a committed transfer is the hop the destination's next departure needs.
-        for (g, s) in &self.t.seen {
-            if let Seen::Left { transfer, dest, via, frame, .. } = s {
-                if *frame < self.conf {
-                    facts.push(fact_committed(self.world_id, *transfer, *g, *dest, *via));
-                }
-            }
-        }
+        // P2-5: a committed transfer is the hop the destination's next departure needs. P25-4: each
+        // commit is queued once, when its frame is confirmed.
+        self.confirm_effects();
+        facts.append(&mut self.commits_due);
         for (t, a) in &self.t.arrivals {
             let (frame, accepted) = match a {
                 Arrival::Accepted { frame, .. } => (*frame, true),
@@ -1771,12 +1789,38 @@ impl WorldSim {
 
     // ---- P2-5 provenance ---------------------------------------------------------------------------
 
+    /// Act on the cross-world effects of frames that are now confirmed and simulated in their final
+    /// form: queue their commit facts for attestation, and keep their fork proofs.
+    fn confirm_effects(&mut self) {
+        if self.dirty_from.is_some() {
+            return;
+        }
+        let upto = self.conf.min(self.frame);
+        while let Some(e) = self.frame_effects.first_entry() {
+            if *e.key() >= upto {
+                break;
+            }
+            let (commits, forks) = e.remove();
+            self.commits_due.extend(commits);
+            for p in forks {
+                let k = p.key();
+                if !self.fork_proofs.contains_key(&k) {
+                    self.ev(format!(
+                        "P2-5 fork proof: world {} exported global id {:#x} twice from its entry {}: transfers {} and {}",
+                        k.0, k.1, k.2, k.3, k.4
+                    ));
+                    self.fork_proofs.insert(k, p);
+                }
+            }
+        }
+    }
+
     /// What this world knows of global id `g`. An object born here that has no entry yet is here,
     /// with an empty chain.
     pub fn seen_of(&self, g: u64) -> Option<Seen> {
         self.t.seen.get(&g).cloned().or_else(|| {
             (birth_world(g) == self.world_id && (g & 0xFFFF_FFFF) < self.genesis_objects)
-                .then(|| Seen::Here { via: 0, from: self.world_id, from_via: 0, chain: Vec::new(), settled: true })
+                .then(|| Seen::Here { via: 0, from: self.world_id, from_via: 0, chain: Vec::new(), chash: chain_hash(&[]), settled: true, entry: None })
         })
     }
 
@@ -1831,7 +1875,16 @@ impl WorldSim {
         self.t.objs.get(obj as usize).copied().flatten()
     }
 
-    fn apply(&mut self, id: EntryId, e: &Entry, f: u64, hands_set: &mut BTreeSet<u32>, carry: &mut Vec<(u32, BodyState)>) -> Outcome {
+    #[allow(clippy::too_many_arguments)]
+    fn apply(
+        &mut self,
+        id: EntryId,
+        e: &Entry,
+        f: u64,
+        hands_set: &mut BTreeSet<u32>,
+        carry: &mut Vec<(u32, BodyState)>,
+        record_effects: bool,
+    ) -> Outcome {
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
@@ -1922,14 +1975,15 @@ impl WorldSim {
                     let here = self.seen_of(o.global);
                     match here.clone() {
                         Some(Seen::Here { settled: true, via: v, .. }) => via = v,
-                        Some(Seen::Here { settled: false, via: v, from, from_via, mut chain }) => {
+                        Some(Seen::Here { settled: false, via: v, from, from_via, mut chain, entry, .. }) => {
                             let Some(h) = hop.as_ref().filter(|h| self.hop_in_ok(o.global, here.as_ref().unwrap(), h)) else {
                                 self.t.escrow.insert(*transfer, gone);
                                 return Outcome::RejectedUnsettled;
                             };
                             chain.push(h.clone());
                             via = v;
-                            self.t.seen.insert(o.global, Seen::Here { via, from, from_via, chain, settled: true });
+                            let chash = chain_hash(&chain);
+                            self.t.seen.insert(o.global, Seen::Here { via, from, from_via, chain, chash, settled: true, entry });
                         }
                         _ => {
                             self.t.escrow.insert(*transfer, gone);
@@ -1949,7 +2003,8 @@ impl WorldSim {
                 let src = record.src_world;
                 // Reviews R3-4, R3-5: only a world on the agreed route list can vouch for an object.
                 let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
-                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chain_hash(chain));
+                let chash = chain_hash(chain);
+                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chash);
                 if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
@@ -1982,10 +2037,16 @@ impl WorldSim {
                         self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                         return Outcome::RejectedNoProvenance;
                     }
+                    // P25-1: identity is proven; content and birth are the policy's call.
+                    if !self.import_policy.allows(record.global, src, record.kind, chain) {
+                        self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
+                        return Outcome::RejectedPolicy;
+                    }
                     let known = self.seen_of(record.global);
-                    if let Some(p) = known.as_ref().and_then(|k| fork_proof(k, record.global, chain, src, record.via, *transfer)) {
-                        if self.fork_proofs.insert(p) {
-                            self.ev(format!("P2-5 fork proof: world {} exported global id {:#x} twice from its entry {}: transfers {} and {}", p.world, p.global, p.via, p.a, p.b));
+                    let arrival = arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert);
+                    if let Some(p) = known.as_ref().and_then(|k| fork_proof(k, record.global, chain, &arrival)) {
+                        if record_effects {
+                            self.frame_effects.entry(f).or_default().1.push(p);
                         }
                     }
                     match known {
@@ -2024,7 +2085,8 @@ impl WorldSim {
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });
-                let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), settled: false };
+                let entry = Some(Box::new(arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert)));
+                let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), chash, settled: false, entry };
                 self.t.seen.insert(record.global, here);
                 self.watched.insert(obj);
                 Outcome::Accepted
@@ -2040,11 +2102,14 @@ impl WorldSim {
                 }
                 if *accepted {
                     let rec = esc.record.expect("pending escrow holds its record");
-                    let (from, from_via) = match self.seen_of(rec.global) {
-                        Some(Seen::Here { from, from_via, .. }) => (from, from_via),
-                        _ => (self.world_id, 0),
+                    let (from, from_via, entry) = match self.seen_of(rec.global) {
+                        Some(Seen::Here { from, from_via, entry, .. }) => (from, from_via, entry),
+                        _ => (self.world_id, 0, None),
                     };
-                    self.t.seen.insert(rec.global, Seen::Left { transfer: *transfer, dest: esc.dest, via: rec.via, frame: f, from, from_via });
+                    self.t.seen.insert(rec.global, Seen::Left { transfer: *transfer, dest: esc.dest, via: rec.via, frame: f, from, from_via, entry });
+                    if record_effects {
+                        self.frame_effects.entry(f).or_default().0.push(fact_committed(self.world_id, *transfer, rec.global, esc.dest, rec.via));
+                    }
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Committed, record: None, ..esc });
                 } else {
                     let rec = esc.record.expect("pending escrow holds its record");
@@ -2080,6 +2145,10 @@ impl WorldSim {
     /// Step one frame: keyframe, entries in canonical order, hands, Box3D step, carried states.
     fn step_frame(&mut self, record: bool) {
         let f = self.frame;
+        if record {
+            // A re-simulation of this frame replaces its cross-world effects (P25-3, P25-4).
+            self.frame_effects.remove(&f);
+        }
         if record && self.wants_keyframe(f) {
             let k = self.save();
             self.ring.insert(f, k);
@@ -2098,7 +2167,7 @@ impl WorldSim {
         let mut hands_set = BTreeSet::new();
         let mut carry = Vec::new();
         for (id, e) in self.frame_entries(f) {
-            let o = self.apply(id, &e, f, &mut hands_set, &mut carry);
+            let o = self.apply(id, &e, f, &mut hands_set, &mut carry, record);
             if record {
                 self.outcomes.insert(id, (f, o));
             }
@@ -2341,6 +2410,7 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
     s.peers_of = like.peers_of.clone();
     s.epochs = like.epochs.clone();
     s.provenance = like.provenance;
+    s.import_policy = like.import_policy.clone();
     s.run_log(log, frames)
 }
 
