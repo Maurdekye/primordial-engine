@@ -15,7 +15,7 @@ only), with results **bit-identical at every thread count and across machines**.
   4 goldens, the 600-frame trace, the snapshot-image bytes and rollback T1-T5, in both engine
   and upstream modes, are byte-identical to the committed single-thread outputs at 1, 2, 3, 4,
   8, 16 and 32 threads (the debug build too, at 1-16 threads), and wasm32 still gives the
-  native digest. 561 + 2 crate tests pass, including new ones that change the worker count
+  native digest. 564 + 2 crate tests pass, including new ones that change the worker count
   partway through a run.
 * **Speed [V, desktop clean window]:** at 8 threads a step costs 2.27 ms at 4,000 awake bodies
   (9.14 ms on 1 thread, 4.0x), 1.08 ms at 2,000 (2.6x), 0.65 ms at 1,000 (2.4x) and 0.33 ms
@@ -138,6 +138,19 @@ rustc 1.99.0 from a fresh target directory.
    code hung 1 of 3 runs of the stage stress test; the hardened test
    (`every_item_once_per_stage`: 20,000 alternating small and large stages at 2/4/8/16
    workers) passes.
+
+### 5.4 Review of 73eaedc (@chunks-reviewer) and what changed
+
+| Finding | Fix |
+|---|---|
+| P1, required: a panic in a helper's stage block hung the step (its items never reached `done`) | `StageSync::work` runs each block under `catch_unwind`, always counts its items, and sets a flag; worker 0 re-raises the panic when the stage ends. Test `panic_in_a_stage_block_is_re_raised` (worker 0 and helper cases) [V] |
+| P2, required: the floating-point control register on every worker (4.3 rule 9) | Each helper adopts the **calling thread's** register (MXCSR on x86 with the sticky flags masked, FPCR on aarch64) at the start of every job. Parallel then equals serial even if the caller's register is not the canonical one; the engine's rule-9 check (`pe_core::fpenv::check_and_reset`, on the sim thread each tick) keeps the caller canonical, so every worker is canonical too. Resetting helpers to the canonical value instead would make a non-canonical caller's blocks round differently from its helpers'. Test `helpers_use_the_callers_fp_control` (flush-to-zero, denormals-are-zero, round-down) [V] |
+| Non-blocking: a snapshot taken at frame N, restored at frame M | Test `snapshot_restores_across_worker_counts`: saved at 60 with 1 worker, restored into a 4-worker world that ran on to 100 and into a fresh 3-worker world; both continue like the 1-worker run [V] |
+| Non-blocking: `$exe` unquoted in `check_par_determinism.sh` | Quoted |
+| Non-blocking: `rb6/f` read like a per-frame value | The par-bench column is now `rb+6`, "restore + 6 frames, ms per rollback" |
+| Non-blocking: `wait_until` never sleeps | Kept: it waits only inside a solve, between stages (finding 7.1); idle pools sleep |
+
+After the fixes: crate tests 564 + 2 pass, and the release matrix (goldens, trace, images, rollback, both modes) is identical at 1/2/3/4/8/16/32 threads on the desktop [V].
 
 ## 6. Performance
 
