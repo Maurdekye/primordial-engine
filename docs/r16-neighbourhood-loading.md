@@ -1,7 +1,7 @@
 # R16: loading the region you are in and nearby regions
 
-Author: @world-chunks. Design note, not built. The safety model covers provisional arrival (section 2);
-not yet reviewed. It answers the user's ruling of
+Author: @world-chunks. Design note, not built. The safety model covers provisional arrival (section 2).
+Revised after @chunks-reviewer's review of e5596ff (S1-S5). It answers the user's ruling of
 2026-10-30 18:42Z on D60: "players should load the region theyre in and nearby regions". It builds on
 design.md section 25 (merged at 7a7c26e) and uses the measurements in
 [r16-chunks-results.md](r16-chunks-results.md).
@@ -102,27 +102,48 @@ Every distance below scales with the player's band unit `u` (25.6). At human sca
   * Experience: objects the player moved in the first second snap back, and the surroundings follow the
     growth clock of the joined region (below). Spawn regions remain useful at busy arrival points (portals,
     spawn points), because there two arrivals are ordinary joins and never conflict.
-* **For `S_create` after `s0`, the new region's footprint does not grow.** Its growth clock starts at
+* **For `S_create` after `s0`, the new region's footprint does not grow, whatever the cause** (review
+  S2): a step, a scale-up, a band change, or another player joining it. Its growth clock starts at
   `s0 + S_create`, the frame from which every other region holds it in the directory.
   * Why: other regions do not count it before then. The creation buffer covers their growth toward its
     initial footprint, not toward a footprint that is also growing.
+  * A joiner's footprint beyond the frozen one waits too: a party arriving through the same portal joins
+    at once, and the area around a member who lands further out wakes at `s0 + S_create`.
   * Experience: the player moves freely within at least 3 km in the first 10 s. A scale-up in that window
     keeps its avatar change, but the footprint growth waits until 10 s have passed: up to 10 s added to the
     D61 ramp, only in that window.
+* **Joins into a provisional region are provisional too** (review S2). They are speculative until the
+  creation is valid. If the creation is discarded, each joiner is resolved exactly as the creator is.
 * **Nothing leaves the region until its creation is confirmed valid:** no `Frozen` checkpoints, no
   `RegionHead`, no cross-region messages and no world-log facts that depend on its state. Nobody else
   follows a region that is not yet in the directory.
+* **Objects carried in** (review probe 1). A player who warps out of region A holding objects hands them
+  off in A's log. The handoff names the `RegionCreated` entry, not the new region. Its target is resolved
+  in world-log order to the creation's outcome: the new region if valid, otherwise the region it joins.
+* **"Pending creations" in M1 means pending valid ones.** A creation already decided invalid in world-log
+  order does not block a later one. World-log order decides the earlier creation first, so every peer
+  agrees.
+* **Readers in a smaller band** (review S1). A human region under a provisional giant region treats the
+  giant's footprint as in effect only from `s0 + S_create`. So it reads the giant from
+  `max(first overlap, s0 + S_create)`, and the directory gate guarantees it knows the giant by then.
+  * The giant still simulates its own band from `s0`, because a larger band never reads its readers.
+  * Cost: a newly arrived giant's bodies touch human-band objects only after 10 s, as under the current
+    rule.
+  * Creation validity is checked within a band only. Across bands the margin is 0 (25.6), so a giant may
+    arrive directly over human regions; this reader rule is what makes that safe.
 
 ### What stays and what changes
 
 | Rule | With provisional arrival |
 |---|---|
 | `S_create` (10 s) and the directory gate: every region simulates `f` only with the directory confirmed through `f - S_create` | **Stays.** It is the world-log stall budget for every region (about 8.9 s), and it no longer costs any player a wait. D60(b), a shorter `S_create`, loses its purpose |
-| M1: creation validated in world-log order against pending creations; too close becomes a join | **Stays.** It now decides whether a provisional region becomes real |
+| M1: creation validated in world-log order against pending creations; too close becomes a join | **Stays**, with "pending" meaning pending valid. It now decides whether a provisional region becomes real |
 | Q1: `G_inst` in the creation buffer and in possible footprints | **Stays, unchanged** |
 | Start condition (hold every reachable region's prefix through `f0 - 1`) | **Stays**, with `f0 = s0`. The pull takes about 0.2 s [C], during which the region simulates speculatively |
 | Effect frame of a created region | `s0 + S_create` becomes **`s0`**, with confirmation gated on validity |
-| Growth of a created region | **New:** frozen until `s0 + S_create` |
+| Growth of a created region | **New:** every footprint growth, joins included, frozen until `s0 + S_create` |
+| A smaller band reading a created region (25.6) | **New:** reads from `max(first overlap, s0 + S_create)`, so it is unchanged in effect |
+| Creation validity across bands | Stated: none; margin 0, made safe by the reader rule |
 
 ### Arrival close to an existing region (an existing cost, not changed here)
 
@@ -135,25 +156,55 @@ within the follow radius, which confirm it in about 0.15 s instead of 10 s. It c
 separate region at any gap above about `D_merge`. That changes the creation buffer's safety argument, so
 it needs the safety model extended and a review before it is offered.
 
+### Why it is safe (review of e5596ff)
+
+**Equivalence argument [I]**, within a band. Suppose that for `[s0, s0 + S_create)`:
+1. the provisional region's footprint does not grow;
+2. nothing derived from its state leaves it.
+
+Then every other region sees exactly what it sees under the current rules: a region whose footprint
+appears in the directory and takes effect at `s0 + S_create`.
+* The creation buffer keeps every other region's possible footprint at least `D_merge` from the frozen
+  footprint until `s0 + S_create`, so no merge can fall in that window.
+* From `s0 + S_create` the existing argument (25.5.2) applies unchanged.
+* The region's own early frames are a private speculation. Gating their confirmation on validity means a
+  discard undoes only unconfirmed frames.
+
+The rules above are what make 1 and 2 hold: the growth freeze covers joins, nothing leaves before
+validity, and readers in a smaller band read from `s0 + S_create` (a reader is the one way state leaves
+a region, across bands).
+
 ### Safety status
 
-**Modelled [C]** (`pe-spike-chunks safety`, results doc section 14): a new rule set, `provisional`,
-implements this section on the two-region line model. The model checks the rules, not the protocol or
-2D/3D footprints.
+**Modelled [C]** (`pe-spike-chunks safety`, results doc section 14): the `provisional` rule set implements
+this section on the two-region line model. The model checks the rules, not the protocol or 2D/3D
+footprints.
 
-* **Provisional arrival: 0 late of 38 cases**, the same as the revised rules. That covers the 33 earlier
-  cases and 5 new arrival cases:
+* **Provisional arrival: 0 late of 44 cases**, the same as the revised rules. Its merge and read frames
+  equal the revised ones in every row, as the equivalence argument predicts. The 44 cases are the 33
+  earlier ones and 11 added for this note:
   * an arrival at the closest valid gap that steps twice and scales up +9 chunks inside its first
     `S_create` while R walks toward it, with and without an 8 s world-log stall;
   * two arrivals 10 frames apart with the world log stalled 8 s: 5 km apart (the second becomes a join),
     and at the closest valid gap walking toward each other;
-  * the same two arrivals each scaling up 4 km at once toward the other, before either knows the other.
-* **The growth freeze is load-bearing only for concurrent arrivals.** The control without it,
-  `provisional-no-freeze`, is late in exactly one case: the concurrent 4 km scale-ups merge at frame 660,
-  50 frames after the second arrival. With the freeze, both growths wait until `s0 + S_create`, are
-  clocked, and merge safely at frame 3,699.
-  * Toward a region it already knows, an arrival's growth is clocked at about 10 s per km anyway, so it
-    cannot approach before that region knows it.
+  * the same two arrivals each scaling up 4 km at once toward the other, before either knows the other;
+  * from the review: R grows 4 km at once toward an arrival at frames `s0` + 5, 100, 500 (with an 8 s
+    world-log stall) and 590, then walks toward it;
+  * from the review: a giant arriving over a human region, and one arriving 50 km away and walking toward
+    it.
+* **Both known sets.** Every case runs with relays (a created region is known once the world log confirms
+  it) and with only the guaranteed known set (the directory through `s - S_create`). The late counts are
+  the same: 0 of 44 under both. Without relays, 3 of R's 4 km growths become instant and merge earlier,
+  still safe.
+* **Each control fails exactly its own case:**
+  * `provisional-no-freeze` (growth not frozen) is late on the concurrent 4 km scale-ups: merge at frame
+    660, 50 frames after the second arrival. With the freeze, both growths wait until `s0 + S_create`,
+    are clocked, and merge at frame 3,699.
+  * `provisional-reader-at-s0` (readers read a provisional giant from `s0`) is late on the giant arriving
+    over a human region: read from frame 600, after the human region had confirmed about 57 frames
+    without it. With the reader rule it reads from frame 1,200, as under the current rules.
+  * Toward a region it already knows, an arrival's growth is clocked at about 10 s per km anyway. So the
+    freeze matters only for concurrent arrivals.
 * **Time until the arrival is confirmed valid**:
 
   | World-log state | Frames after the stamp | Seconds |
@@ -166,8 +217,6 @@ implements this section on the two-region line model. The model checks the rules
   Past the 2 s speculation limit, the arriving player pauses until then: about 5.2 s in an 8 s stall. The
   current rule waits `S_create` (10 s) in every case. A world-log stall over about 9 s stalls every
   region anyway (25.5.2).
-
-Still needed: a review by @chunks-reviewer.
 
 ## 3. Cost of holding neighbours
 
@@ -202,8 +251,13 @@ serves presentation and merge readiness.
     entries alone, about 45 kB/s for a group of 8 [I].
   * At 90 Hz (the D4 ruling) entries and overhead are 1.5x.
 * **Upload** for the followed region's members: each follower subscribes to every member's stream, so
-  each follower adds about 7-12 kB/s per member [C]. Past a few followers, streams are relayed through a
-  fan-out tree as for pose streams (26.3).
+  each follower adds about 7-12 kB/s per member [C]. Eight followers add 56-96 kB/s, as much as a
+  member's own region traffic in a group of 8. Rule (review S3) [I]:
+  * a member's region traffic (its entries and acks) is strictly prioritised over follower traffic;
+  * follower streams are droppable and never back-pressure the region;
+  * each member caps the upload it spends serving followers (on the D50 slider, for example 32 kB/s).
+    Past the cap, followers are served through a fan-out relay among themselves (26.3), or take one
+    member's confirmation summary.
 * **Typical neighbourhoods** [C]:
   * Regions stay at least 3 km apart and a human footprint is at least 7 km wide, so at most about 6-8
     other regions fit within 8 km.
@@ -218,8 +272,14 @@ serves presentation and merge readiness.
 * **What following buys:**
   * merges with no state-transfer hitch, because the follower already holds the region;
   * live motion of large things (vehicles, collapsing buildings, giants) beyond your own footprint;
-  * a neighbour bound that stays fresh: `known_conf_q` is about 0.15 s old instead of up to 60 s, so the
-    horizon gate and on-demand pulls stop binding for followed regions.
+  * cheap, fresh `NeighbourRef`s (review S4). The neighbour bound must be the same for every member of a
+    region, so it reads only `NeighbourRef` entries in the region's own log (25.5.2, 25.5.8), never a
+    member's local follow state. Following makes posting them nearly free: the proof is already held.
+    * Proposed rate [I]: one `NeighbourRef` per followed region every 2 s, and on demand when the bound
+      comes within 2 s of the present. That is one entry per 120 frames per neighbour, against the
+      60 s pull today, so the horizon gate and most on-demand pulls stop binding.
+  * The follower judges the followed region's confirmation from its stable chain data and proofs
+    (25.5.8), not from raw acks.
 
   Small objects in a neighbour's region are below your relevance threshold anyway: at 5 km only objects
   with a radius of about 160 m or more pass `rho` = 32.
@@ -231,13 +291,16 @@ neighbour, rollbacks included. It also couples confirmation (section 4).
 
 ## 4. Coupling: does holding neighbours re-couple spread-out players?
 
-* **Followers: no.** A follower publishes no acks, horizons or votes in the followed region's log.
+* **Followers: no protocol coupling; bandwidth isolated by priority [I].** A follower publishes no acks,
+  horizons or votes in the followed region's log.
   * The followed region's confirmation is computed only from its own group (25.5.3), so a stalled or slow
     follower changes nothing there.
   * A stall in the followed region freezes only the follower's *view* of it. The follower's own region was
     already bound by the neighbour bound, which is unchanged.
   * The stall model's result stands: a stalled member costs regions whose footprints are 3.5 km or more
     away 0 frames [C, 25.5.2 liveness].
+  * Followers do load the followed members' upload (section 3(b)). Strict priority for region traffic and
+    a per-member cap keep that from slowing the followed region's own confirmation (review S3).
 * **Full members: yes, in two ways.**
   * **Co-confirmation spreads.** If every player co-confirms its 3 x 3 neighbourhood, a tile's
     confirmation waits on every player within one tile of it. A chain of players two tiles apart forms one
@@ -258,8 +321,11 @@ neighbour, rollbacks included. It also couples confirmation (section 4).
 
 * **(a) recommended:** regions as now, plus **provisional arrival**, **following** and **content
   preloading**.
-  * Physics starts at once wherever you arrive.
-  * For the first 10 s, your simulated area (at least 3 km around you) does not grow.
+  * Physics starts at once wherever you arrive. If the world log is stalled, it pauses after 2 s until
+    the log confirms your arrival (about 5 s in an 8 s stall).
+  * For the first 10 s, your simulated area (at least 3 km around you) does not grow. That includes
+    friends joining you: the area around a friend who lands further out wakes after those 10 s.
+  * A giant arriving over smaller players acts on their objects after 10 s, as now.
   * Rarely, another arrival or a region within about 8 km in the same second turns your arrival into a
     join of that region. Your first second of changes is then undone, and distant surroundings catch up
     at 100 m/s.
@@ -272,7 +338,8 @@ neighbour, rollbacks included. It also couples confirmation (section 4).
 * The old (b), a shorter `S_create`, and (c), arrivals tied to their previous region, are dropped: (a)
   removes the wait without their costs.
 * Evidence: the wait and the loading costs are [V] or [C] (sections 1-3). Provisional arrival is modelled
-  [C]: 0 late of 38 cases, and the control without its growth freeze is late in 1. It is not yet reviewed.
+  [C]: 0 late of 44 cases with either known set, and each of the two controls is late in exactly its own
+  case. It was reviewed once (e5596ff, sent back on S1-S5).
 
 ### D61
 
@@ -283,9 +350,13 @@ neighbour, rollbacks included. It also couples confirmation (section 4).
 
 ### Elsewhere, if adopted
 
-* design.md 25.5.2: the creation and start-condition text, the effect frame `s0`, frozen growth until
-  `s0 + S_create`, and confirmation gated on validity.
-* 25.5.4: replace "prefetch during the approach" with following within the follow radius.
+* design.md 25.5.2: the creation and start-condition text, the effect frame `s0`, frozen growth (joins
+  included) until `s0 + S_create`, confirmation gated on validity, "pending valid", the handoff rule, and
+  no creation validity across bands.
+* 25.6: readers read a provisional region from `max(first overlap, s0 + S_create)`.
+* 25.5.4: replace "prefetch during the approach" with following within the follow radius, with the
+  upload priority rule and the `NeighbourRef` rate.
+* The safety table in 25.5.2: add the Provisional column and the 11 new rows from the results doc.
 * 25.12: replace the D60 options with the text above.
 * 26.3: a followed region's avatars are drawn from its entries (their sim parts at full rate). Only
   presentation-only pose detail still needs a pose stream.
