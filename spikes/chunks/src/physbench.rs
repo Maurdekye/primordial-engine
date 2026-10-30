@@ -323,3 +323,71 @@ pub fn scale() {
         }
     }
 }
+
+
+/// Review R16-7: the per-region unit as the design specifies it (`u = 2^round(log2 s)`, so box3d sees
+/// sizes of 0.7-1.4 units, not exactly 1) and mixed sizes in one region: a 4-cube stack of edges
+/// 2s, s, s/2, s/4, a ball of radius s/20 on top, and 8 balls of radius s/10 on the ground.
+/// Reports stability, not hash identity.
+fn run_mixed(s: f64, unit: f64) -> (bool, f64, f64, Option<usize>) {
+    let k = s / unit;
+    let mut w = new_world(&world_def(unit, 10.0, true));
+    static_box(&mut w, [0.0, -0.5 * k, 0.0], [(20.0 * k) as f32, (0.5 * k) as f32, (20.0 * k) as f32]);
+    let mut bodies = Vec::new();
+    let mut y = 0.0;
+    for e in [2.0, 1.0, 0.5, 0.25] {
+        let h = 0.5 * e * k;
+        let mut b = BodyInit::at([0.0, y + h + 0.001 * k, 0.0]);
+        b.sleep_threshold = (0.05 * k) as f32;
+        bodies.push((make_body(&mut w, &b, Shape::Cube(h as f32)), y + h));
+        y += 2.0 * h + 0.001 * k;
+    }
+    let mut top = BodyInit::at([0.0, y + 0.05 * k, 0.0]);
+    top.sleep_threshold = (0.05 * k) as f32;
+    bodies.push((make_body(&mut w, &top, Shape::Ball((0.05 * k) as f32)), y + 0.05 * k));
+    let mut small = Vec::new();
+    for i in 0..8 {
+        let a = i as f64 * 0.785;
+        let mut b = BodyInit::at([3.0 * k * (a * 0.5).cos(), 0.1 * k, 3.0 * k * (a * 0.5).sin()]);
+        b.sleep_threshold = (0.05 * k) as f32;
+        small.push(make_body(&mut w, &b, Shape::Ball((0.1 * k) as f32)));
+    }
+    let mut sleep = None;
+    let mut pen: f64 = 0.0;
+    for f in 0..600 {
+        w.step(DT, SUBSTEPS);
+        for &b in &small {
+            pen = pen.max((0.1 * k - pos_f64(body_get_position(&w, b))[1]) / (0.1 * k));
+        }
+        if sleep.is_none() && bodies.iter().all(|&(b, _)| !body_is_awake(&w, b)) {
+            sleep = Some(f + 1);
+        }
+    }
+    let mut drift: f64 = 0.0;
+    let mut ok = true;
+    for &(b, y0) in &bodies {
+        let p = pos_f64(body_get_position(&w, b));
+        drift = drift.max((p[0] * p[0] + p[2] * p[2]).sqrt() / k);
+        ok &= (p[1] - y0).abs() < 0.1 * k;
+    }
+    (ok && drift < 0.1, pen, drift, sleep)
+}
+
+pub fn scale_mixed() {
+    println!("== scale, mixed sizes, unit = 2^round(log2 s) ({}) ==", mode());
+    let sizes: [f64; 9] = [1.0e-4, 1.0e-3, 1.0e-2, 0.1, 1.0, 10.0, 100.0, 1000.0, 1.0e4];
+    for s in sizes {
+        // round(log2 s) from the bit pattern: ceil_log2(s / sqrt 2).
+        let e = pe_spike_chunks::coords::ceil_log2(s / std::f64::consts::SQRT_2);
+        let unit = pe_spike_chunks::coords::pow2(e);
+        for (name, u) in [("unscaled", 1.0), ("unit=2^round(log2 s)", unit)] {
+            let (ok, pen, drift, sleep) = run_mixed(s, u);
+            println!(
+                "RESULT scale-mixed mode={} s={s:e} variant={name} unit={u:e} box3d_size_of_s={:.3} stable={ok} small_ball_max_penetration_rel={pen:.4} stack_drift_rel={drift:.4} stack_sleep_frame={}",
+                mode(),
+                s / u,
+                sleep.map(|f| f.to_string()).unwrap_or("-".into())
+            );
+        }
+    }
+}
