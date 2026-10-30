@@ -19,6 +19,11 @@ pub struct Link {
 
 /// Wire overhead per datagram (IP/UDP/AEAD/session), as in the ball-pit wire estimate.
 pub const DATAGRAM_OVERHEAD: u64 = 52;
+/// Largest datagram payload a batch may fill (review R3-9).
+pub const MTU: usize = 1200;
+/// A member answers a fetch only while its uplink to the requester holds less than this; the
+/// requester asks again later, with backoff (review R3-9).
+pub const REPAIR_MAX_BACKLOG_US: u64 = 100_000;
 
 /// Bandwidth cap for one directed link (ported unchanged from @ballpit-viz, 2996d39): a token
 /// bucket feeding a FIFO queue. Tokens refill at `rate_bps` bits/s up to `burst_bytes`; a datagram
@@ -208,12 +213,31 @@ impl Net {
         }
     }
 
-    /// End of tick: one datagram per (world, sender, receiver).
+    /// End of tick: everything one member sends one peer, in datagrams of at most `MTU` bytes.
+    /// Review R3-9: unsplit, a tick's repairs became one multi-kilobyte datagram, which a full
+    /// router queue dropped whole.
     pub fn flush(&mut self) {
-        for ((w, from, to), mut v) in std::mem::take(&mut self.outbox) {
-            let m = if v.len() == 1 { v.pop().unwrap() } else { Msg::Batch(v) };
-            self.send(w, from, to, &m);
+        for ((w, from, to), v) in std::mem::take(&mut self.outbox) {
+            let mut cur: Vec<Msg> = Vec::new();
+            let mut size = 0;
+            for m in v {
+                let n = encode_msg(&m).len();
+                if !cur.is_empty() && size + n > MTU {
+                    self.send_batch(w, from, to, std::mem::take(&mut cur));
+                    size = 0;
+                }
+                size += n;
+                cur.push(m);
+            }
+            if !cur.is_empty() {
+                self.send_batch(w, from, to, cur);
+            }
         }
+    }
+
+    fn send_batch(&mut self, w: WorldId, from: MemberId, to: MemberId, mut v: Vec<Msg>) {
+        let m = if v.len() == 1 { v.pop().unwrap() } else { Msg::Batch(v) };
+        self.send(w, from, to, &m);
     }
 
     /// Messages due now: (to, world, from, msg).
@@ -290,7 +314,7 @@ pub struct Replica {
     calm_since: u64,
     hand_last: BTreeMap<u32, u64>,
     /// Time spent at each congestion level (ms), and the highest level reached.
-    pub level_ms: [u64; 4],
+    pub level_ms: [u64; 6],
     /// Remote state-carrying entries awaiting the acceptance check: (entry, author, obj).
     pub pending_accept: Vec<(EntryId, MemberId, u32)>,
 }
@@ -367,7 +391,7 @@ impl Peer {
                 level_t: 0,
                 calm_since: 0,
                 hand_last: BTreeMap::new(),
-                level_ms: [0; 4],
+                level_ms: [0; 6],
                 pending_accept: Vec::new(),
             },
         );
@@ -390,8 +414,11 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
 }
 
 /// R18: hand-entry stride and ack interval (frames) at each congestion level.
-pub const HAND_STRIDE: [u64; 4] = [1, 2, 3, 4];
-pub const ACK_FRAMES: [u64; 4] = [2, 3, 4, 6];
+/// Congestion levels (R18): frames between hand entries, and between acks. Review R3-9 added
+/// levels 4 and 5 for links of about 8-16 kbit/s, and aligns both to the same frame ticks, so a
+/// hand entry and an ack share one datagram.
+pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
+pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
 
 impl Sim {
     pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
@@ -463,6 +490,11 @@ impl Sim {
                     }
                 }
                 Msg::Fetch { author, from: a, to: b } => {
+                    // Review R3-9: repairs yield to the queue. Answering into a full uplink only
+                    // makes the queue, and the requester's next round trip, longer.
+                    if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US {
+                        continue;
+                    }
                     for e in r.sim.on_fetch(author, a, b) {
                         self.net.post(w, to, from, &e);
                     }
@@ -509,7 +541,7 @@ impl Sim {
                 // reads the bottleneck directly; production estimates it from the one-way delay
                 // gradient of acks, as WebRTC's GCC does). Up fast, down slowly.
                 let b = members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
-                if b > 40_000 && now >= r.level_t + 100_000 && r.level < 3 {
+                if b > 40_000 && now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
                     r.level += 1;
                     r.level_t = now;
                 }
@@ -555,7 +587,9 @@ impl Sim {
                             }
                             if let Action::Hand { obj, active: true, .. } = a {
                                 let k = if r.adapt { HAND_STRIDE[r.level] } else { 1 };
-                                if r.hand_last.get(&obj).is_some_and(|&l| clock_frame < l + k) {
+                                // On frame ticks that are multiples of k, so the entry shares the
+                                // ack's datagram (review R3-9).
+                                if clock_frame % k != 0 || r.hand_last.get(&obj).is_some_and(|&l| clock_frame < l + k) {
                                     continue;
                                 }
                                 r.hand_last.insert(obj, clock_frame);

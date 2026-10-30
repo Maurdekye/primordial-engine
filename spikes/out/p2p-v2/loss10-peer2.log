@@ -1,730 +1,688 @@
 [peer 2 t=  0.000s f=   0] bound 127.0.0.1:40002 -> 127.0.0.1:40001 (delay 40 ms, jitter 60 ms, loss 10%, drop_stamp None)
-[peer 2 t=  0.730s f=   0] session start received; clock offset estimate 49353 us
-[peer 2 t=  1.243s f=   5] remote entry for frame 0 arrived 5 frames late -> rollback
-[peer 2 t=  1.281s f=   8] gap or conflict detected -> fetching Fetch { author: 1, from: 2, to: 2 }
-[peer 2 t=  1.281s f=   8] remote entry for frame 4 arrived 4 frames late -> rollback
-[peer 2 t=  1.345s f=  11] gap or conflict detected -> fetching Fetch { author: 1, from: 2, to: 3 }
-[peer 2 t=  1.345s f=  11] remote entry for frame 6 arrived 5 frames late -> rollback
-[peer 2 t=  1.360s f=  12] remote entry for frame 8 arrived 4 frames late -> rollback
-[peer 2 t=  1.374s f=  13] remote entry for frame 10 arrived 3 frames late -> rollback
-[peer 2 t=  1.403s f=  15] remote entry for frame 12 arrived 3 frames late -> rollback
-[peer 2 t=  1.440s f=  17] remote entry for frame 2 arrived 15 frames late -> rollback
-[peer 2 t=  1.455s f=  18] remote entry for frame 14 arrived 4 frames late -> rollback
-[peer 2 t=  1.476s f=  19] fetch request for member 2 seq 5..=5: replying with 1 entries
-[peer 2 t=  1.480s f=  20] remote entry for frame 16 arrived 4 frames late -> rollback
-[peer 2 t=  1.515s f=  22] remote entry for frame 18 arrived 4 frames late -> rollback
-[peer 2 t=  1.518s f=  22] remote entry for frame 4 arrived 18 frames late -> rollback
-[peer 2 t=  1.558s f=  24] remote entry for frame 20 arrived 4 frames late -> rollback
-[peer 2 t=  1.566s f=  25] remote entry for frame 22 arrived 3 frames late -> rollback
-[peer 2 t=  1.570s f=  25] fetch request for member 2 seq 5..=8: replying with 4 entries
-[peer 2 t=  1.631s f=  29] remote entry for frame 24 arrived 5 frames late -> rollback
-[peer 2 t=  1.714s f=  34] gap or conflict detected -> fetching Fetch { author: 1, from: 14, to: 14 }
-[peer 2 t=  1.714s f=  34] remote entry for frame 28 arrived 6 frames late -> rollback
-[peer 2 t=  1.843s f=  41] gap or conflict detected -> fetching Fetch { author: 1, from: 14, to: 16 }
-[peer 2 t=  1.843s f=  41] remote entry for frame 33 arrived 8 frames late -> rollback
-[peer 2 t=  1.843s f=  41] remote entry for frame 30 arrived 11 frames late -> rollback
-[peer 2 t=  1.843s f=  41] fetch request for member 2 seq 13..=14: replying with 2 entries
-[peer 2 t=  1.843s f=  41] remote entry for frame 35 arrived 6 frames late -> rollback
-[peer 2 t=  1.918s f=  46] gap or conflict detected -> fetching Fetch { author: 1, from: 14, to: 18 }
-[peer 2 t=  1.918s f=  46] remote entry for frame 41 arrived 5 frames late -> rollback
-[peer 2 t=  1.927s f=  46] remote entry for frame 43 arrived 3 frames late -> rollback
-[peer 2 t=  1.933s f=  47] remote entry for frame 26 arrived 21 frames late -> rollback
-[peer 2 t=  1.935s f=  47] fetch request for member 2 seq 13..=15: replying with 3 entries
-[peer 2 t=  1.947s f=  47] fetch request for member 2 seq 13..=20: replying with 8 entries
-[peer 2 t=  1.956s f=  48] remote entry for frame 45 arrived 3 frames late -> rollback
-[peer 2 t=  1.976s f=  49] remote entry for frame 28 arrived 21 frames late -> rollback
-[peer 2 t=  1.979s f=  49] remote entry for frame 30 arrived 19 frames late -> rollback
-[peer 2 t=  2.015s f=  52] remote entry for frame 47 arrived 5 frames late -> rollback
-[peer 2 t=  2.021s f=  52] remote entry for frame 26 arrived 26 frames late -> rollback
-[peer 2 t=  2.024s f=  52] remote entry for frame 28 arrived 24 frames late -> rollback
-[peer 2 t=  2.029s f=  52] remote entry for frame 30 arrived 22 frames late -> rollback
-[peer 2 t=  2.031s f=  53] remote entry for frame 35 arrived 18 frames late -> rollback
-[peer 2 t=  2.039s f=  53] remote entry for frame 26 arrived 27 frames late -> rollback
-[peer 2 t=  2.054s f=  54] remote entry for frame 33 arrived 21 frames late -> rollback
-[peer 2 t=  2.062s f=  54] remote entry for frame 49 arrived 5 frames late -> rollback
-[peer 2 t=  2.104s f=  57] remote entry for frame 52 arrived 5 frames late -> rollback
-[peer 2 t=  2.116s f=  58] remote entry for frame 54 arrived 4 frames late -> rollback
-[peer 2 t=  2.196s f=  62] gap or conflict detected -> fetching Fetch { author: 1, from: 26, to: 28 }
-[peer 2 t=  2.196s f=  62] remote entry for frame 60 arrived 2 frames late -> rollback
-[peer 2 t=  2.202s f=  63] remote entry for frame 58 arrived 5 frames late -> rollback
-[peer 2 t=  2.243s f=  65] remote entry for frame 60 arrived 5 frames late -> rollback
-[peer 2 t=  2.257s f=  66] gap or conflict detected -> fetching Fetch { author: 1, from: 26, to: 29 }
-[peer 2 t=  2.257s f=  66] remote entry for frame 62 arrived 4 frames late -> rollback
-[peer 2 t=  2.275s f=  67] remote entry for frame 64 arrived 3 frames late -> rollback
-[peer 2 t=  2.292s f=  68] remote entry for frame 66 arrived 2 frames late -> rollback
-[peer 2 t=  2.336s f=  71] remote entry for frame 58 arrived 13 frames late -> rollback
-[peer 2 t=  2.348s f=  72] remote entry for frame 60 arrived 12 frames late -> rollback
-[peer 2 t=  2.356s f=  72] gap or conflict detected -> fetching Fetch { author: 1, from: 26, to: 32 }
-[peer 2 t=  2.356s f=  72] remote entry for frame 68 arrived 4 frames late -> rollback
-[peer 2 t=  2.373s f=  73] remote entry for frame 58 arrived 15 frames late -> rollback
-[peer 2 t=  2.376s f=  73] remote entry for frame 60 arrived 13 frames late -> rollback
-[peer 2 t=  2.379s f=  73] remote entry for frame 56 arrived 17 frames late -> rollback
-[peer 2 t=  2.389s f=  74] remote entry for frame 70 arrived 4 frames late -> rollback
-[peer 2 t=  2.392s f=  74] remote entry for frame 56 arrived 18 frames late -> rollback
-[peer 2 t=  2.428s f=  76] gap or conflict detected -> fetching Fetch { author: 1, from: 35, to: 35 }
-[peer 2 t=  2.428s f=  76] remote entry for frame 74 arrived 2 frames late -> rollback
-[peer 2 t=  2.442s f=  77] remote entry for frame 72 arrived 5 frames late -> rollback
-[peer 2 t=  2.461s f=  78] remote entry for frame 76 arrived 2 frames late -> rollback
-[peer 2 t=  2.478s f=  79] remote entry for frame 62 arrived 17 frames late -> rollback
-[peer 2 t=  2.481s f=  80] remote entry for frame 60 arrived 20 frames late -> rollback
-[peer 2 t=  2.496s f=  80] remote entry for frame 58 arrived 22 frames late -> rollback
-[peer 2 t=  2.502s f=  81] remote entry for frame 56 arrived 25 frames late -> rollback
-[peer 2 t=  2.506s f=  81] remote entry for frame 66 arrived 15 frames late -> rollback
-[peer 2 t=  2.506s f=  81] remote entry for frame 78 arrived 3 frames late -> rollback
-[peer 2 t=  2.514s f=  82] remote entry for frame 64 arrived 18 frames late -> rollback
-[peer 2 t=  2.514s f=  82] remote entry for frame 60 arrived 22 frames late -> rollback
-[peer 2 t=  2.568s f=  85] remote entry for frame 80 arrived 5 frames late -> rollback
-[peer 2 t=  2.568s f=  85] remote entry for frame 72 arrived 13 frames late -> rollback
-[peer 2 t=  2.581s f=  86] fetch request for member 2 seq 38..=38: replying with 1 entries
-[peer 2 t=  2.604s f=  87] remote entry for frame 82 arrived 5 frames late -> rollback
-[peer 2 t=  2.640s f=  89] remote entry for frame 84 arrived 5 frames late -> rollback
-[peer 2 t=  2.646s f=  89] remote entry for frame 86 arrived 3 frames late -> rollback
-[peer 2 t=  2.684s f=  92] remote entry for frame 88 arrived 4 frames late -> rollback
-[peer 2 t=  2.746s f=  95] remote entry for frame 90 arrived 5 frames late -> rollback
-[peer 2 t=  2.765s f=  97] gap or conflict detected -> fetching Fetch { author: 1, from: 45, to: 45 }
-[peer 2 t=  2.765s f=  97] remote entry for frame 94 arrived 3 frames late -> rollback
-[peer 2 t=  2.831s f= 101] gap or conflict detected -> fetching Fetch { author: 1, from: 45, to: 46 }
-[peer 2 t=  2.831s f= 101] remote entry for frame 96 arrived 5 frames late -> rollback
-[peer 2 t=  2.862s f= 102] remote entry for frame 99 arrived 3 frames late -> rollback
-[peer 2 t=  2.884s f= 104] remote entry for frame 101 arrived 3 frames late -> rollback
-[peer 2 t=  2.892s f= 104] remote entry for frame 92 arrived 12 frames late -> rollback
-[peer 2 t=  2.916s f= 106] remote entry for frame 103 arrived 3 frames late -> rollback
-[peer 2 t=  2.961s f= 108] remote entry for frame 105 arrived 3 frames late -> rollback
-[peer 2 t=  2.987s f= 110] remote entry for frame 94 arrived 16 frames late -> rollback
-[peer 2 t=  3.002s f= 111] remote entry for frame 92 arrived 19 frames late -> rollback
-[peer 2 t=  3.010s f= 111] remote entry for frame 107 arrived 4 frames late -> rollback
-[peer 2 t=  3.010s f= 111] remote entry for frame 109 arrived 2 frames late -> rollback
-[peer 2 t=  3.053s f= 114] fetch request for member 2 seq 53..=53: replying with 1 entries
-[peer 2 t=  3.094s f= 116] gap or conflict detected -> fetching Fetch { author: 1, from: 54, to: 54 }
-[peer 2 t=  3.254s f= 116] remote entry for frame 113 arrived 3 frames late -> rollback
-[peer 2 t=  3.254s f= 116] gap or conflict detected -> fetching Fetch { author: 1, from: 54, to: 55 }
-[peer 2 t=  3.254s f= 116] remote entry for frame 115 arrived 1 frames late -> rollback
-[peer 2 t=  3.254s f= 116] fetch request for member 2 seq 53..=55: replying with 3 entries
-[peer 2 t=  3.287s f= 128] remote entry for frame 125 arrived 3 frames late -> rollback
-[peer 2 t=  3.300s f= 129] remote entry for frame 123 arrived 6 frames late -> rollback
-[peer 2 t=  3.315s f= 130] gap or conflict detected -> fetching Fetch { author: 1, from: 54, to: 62 }
-[peer 2 t=  3.315s f= 130] remote entry for frame 126 arrived 4 frames late -> rollback
-[peer 2 t=  3.328s f= 130] remote entry for frame 127 arrived 3 frames late -> rollback
-[peer 2 t=  3.386s f= 134] remote entry for frame 113 arrived 21 frames late -> rollback
-[peer 2 t=  3.392s f= 134] gap or conflict detected -> fetching Fetch { author: 1, from: 54, to: 64 }
-[peer 2 t=  3.392s f= 134] remote entry for frame 129 arrived 5 frames late -> rollback
-[peer 2 t=  3.406s f= 135] remote entry for frame 131 arrived 4 frames late -> rollback
-[peer 2 t=  3.414s f= 136] remote entry for frame 111 arrived 25 frames late -> rollback
-[peer 2 t=  3.414s f= 136] fetch request for member 2 seq 58..=58: replying with 1 entries
-[peer 2 t=  3.432s f= 137] remote entry for frame 111 arrived 26 frames late -> rollback
-[peer 2 t=  3.436s f= 137] remote entry for frame 119 arrived 18 frames late -> rollback
-[peer 2 t=  3.437s f= 137] remote entry for frame 111 arrived 26 frames late -> rollback
-[peer 2 t=  3.439s f= 137] remote entry for frame 121 arrived 16 frames late -> rollback
-[peer 2 t=  3.448s f= 138] remote entry for frame 120 arrived 18 frames late -> rollback
-[peer 2 t=  3.465s f= 139] remote entry for frame 117 arrived 22 frames late -> rollback
-[peer 2 t=  3.467s f= 139] remote entry for frame 123 arrived 16 frames late -> rollback
-[peer 2 t=  3.467s f= 139] remote entry for frame 125 arrived 14 frames late -> rollback
-[peer 2 t=  3.469s f= 139] fetch request for member 2 seq 58..=61: replying with 4 entries
-[peer 2 t=  3.472s f= 139] remote entry for frame 133 arrived 6 frames late -> rollback
-[peer 2 t=  3.475s f= 139] remote entry for frame 115 arrived 24 frames late -> rollback
-[peer 2 t=  3.484s f= 140] gap or conflict detected -> fetching Fetch { author: 1, from: 68, to: 68 }
-[peer 2 t=  3.484s f= 140] remote entry for frame 137 arrived 3 frames late -> rollback
-[peer 2 t=  3.490s f= 140] remote entry for frame 135 arrived 5 frames late -> rollback
-[peer 2 t=  3.528s f= 142] remote entry for frame 119 arrived 23 frames late -> rollback
-[peer 2 t=  3.531s f= 143] remote entry for frame 120 arrived 23 frames late -> rollback
-[peer 2 t=  3.533s f= 143] remote entry for frame 115 arrived 28 frames late -> rollback
-[peer 2 t=  3.537s f= 143] remote entry for frame 127 arrived 16 frames late -> rollback
-[peer 2 t=  3.537s f= 143] remote entry for frame 111 arrived 32 frames late -> rollback
-[peer 2 t=  3.537s f= 143] remote entry for frame 113 arrived 30 frames late -> rollback
-[peer 2 t=  3.542s f= 143] remote entry for frame 126 arrived 17 frames late -> rollback
-[peer 2 t=  3.545s f= 143] remote entry for frame 123 arrived 20 frames late -> rollback
-[peer 2 t=  3.549s f= 144] remote entry for frame 125 arrived 19 frames late -> rollback
-[peer 2 t=  3.556s f= 144] remote entry for frame 117 arrived 27 frames late -> rollback
-[peer 2 t=  3.556s f= 144] remote entry for frame 140 arrived 4 frames late -> rollback
-[peer 2 t=  3.571s f= 145] remote entry for frame 142 arrived 3 frames late -> rollback
-[peer 2 t=  3.572s f= 145] remote entry for frame 121 arrived 24 frames late -> rollback
-[peer 2 t=  3.593s f= 146] remote entry for frame 144 arrived 2 frames late -> rollback
-[peer 2 t=  3.638s f= 149] fetch request for member 2 seq 66..=66: replying with 1 entries
-[peer 2 t=  3.721s f= 154] gap or conflict detected -> fetching Fetch { author: 1, from: 73, to: 74 }
-[peer 2 t=  3.721s f= 154] remote entry for frame 150 arrived 4 frames late -> rollback
-[peer 2 t=  3.752s f= 156] remote entry for frame 152 arrived 4 frames late -> rollback
-[peer 2 t=  3.789s f= 158] gap or conflict detected -> fetching Fetch { author: 1, from: 73, to: 76 }
-[peer 2 t=  3.789s f= 158] remote entry for frame 154 arrived 4 frames late -> rollback
-[peer 2 t=  3.833s f= 161] remote entry for frame 156 arrived 5 frames late -> rollback
-[peer 2 t=  3.850s f= 162] gap or conflict detected -> fetching Fetch { author: 1, from: 73, to: 73 }
-[peer 2 t=  3.850s f= 162] remote entry for frame 148 arrived 14 frames late -> rollback
-[peer 2 t=  3.871s f= 163] remote entry for frame 146 arrived 17 frames late -> rollback
-[peer 2 t=  3.881s f= 164] remote entry for frame 158 arrived 6 frames late -> rollback
-[peer 2 t=  3.882s f= 164] remote entry for frame 160 arrived 4 frames late -> rollback
-[peer 2 t=  3.912s f= 165] remote entry for frame 152 arrived 13 frames late -> rollback
-[peer 2 t=  3.920s f= 166] remote entry for frame 150 arrived 16 frames late -> rollback
-[peer 2 t=  3.931s f= 167] remote entry for frame 146 arrived 21 frames late -> rollback
-[peer 2 t=  3.936s f= 167] gap or conflict detected -> fetching Fetch { author: 1, from: 81, to: 81 }
-[peer 2 t=  3.936s f= 167] remote entry for frame 164 arrived 3 frames late -> rollback
-[peer 2 t=  3.939s f= 167] remote entry for frame 148 arrived 19 frames late -> rollback
-[peer 2 t=  3.940s f= 167] remote entry for frame 162 arrived 5 frames late -> rollback
-[peer 2 t=  3.969s f= 169] remote entry for frame 166 arrived 3 frames late -> rollback
-[peer 2 t=  4.009s f= 171] remote entry for frame 168 arrived 3 frames late -> rollback
-[peer 2 t=  4.021s f= 172] remote entry for frame 146 arrived 26 frames late -> rollback
-[peer 2 t=  4.042s f= 173] fetch request for member 2 seq 77..=77: replying with 1 entries
-[peer 2 t=  4.046s f= 173] remote entry for frame 170 arrived 3 frames late -> rollback
-[peer 2 t=  4.067s f= 175] remote entry for frame 172 arrived 3 frames late -> rollback
-[peer 2 t=  4.110s f= 177] remote entry for frame 162 arrived 15 frames late -> rollback
-[peer 2 t=  4.111s f= 177] fetch request for member 2 seq 77..=80: replying with 4 entries
-[peer 2 t=  4.134s f= 179] remote entry for frame 174 arrived 5 frames late -> rollback
-[peer 2 t=  4.167s f= 181] fetch request for member 2 seq 77..=81: replying with 5 entries
-[peer 2 t=  4.187s f= 182] remote entry for frame 176 arrived 6 frames late -> rollback
-[peer 2 t=  4.213s f= 183] remote entry for frame 179 arrived 4 frames late -> rollback
-[peer 2 t=  4.238s f= 185] gap or conflict detected -> fetching Fetch { author: 1, from: 90, to: 90 }
-[peer 2 t=  4.238s f= 185] remote entry for frame 183 arrived 2 frames late -> rollback
-[peer 2 t=  4.262s f= 186] remote entry for frame 181 arrived 5 frames late -> rollback
-[peer 2 t=  4.271s f= 187] fetch request for member 2 seq 84..=84: replying with 1 entries
-[peer 2 t=  4.294s f= 188] remote entry for frame 185 arrived 3 frames late -> rollback
-[peer 2 t=  4.323s f= 190] remote entry for frame 187 arrived 3 frames late -> rollback
-[peer 2 t=  4.355s f= 192] remote entry for frame 189 arrived 3 frames late -> rollback
-[peer 2 t=  4.378s f= 193] remote entry for frame 181 arrived 12 frames late -> rollback
-[peer 2 t=  4.390s f= 194] remote entry for frame 191 arrived 3 frames late -> rollback
-[peer 2 t=  4.410s f= 195] remote entry for frame 193 arrived 2 frames late -> rollback
-[peer 2 t=  4.473s f= 199] remote entry for frame 195 arrived 4 frames late -> rollback
-[peer 2 t=  4.636s f= 199] remote entry for frame 197 arrived 2 frames late -> rollback
-[peer 2 t=  4.636s f= 199] fetch request for member 2 seq 91..=91: replying with 1 entries
-[peer 2 t=  4.698s f= 213] gap or conflict detected -> fetching Fetch { author: 1, from: 102, to: 103 }
-[peer 2 t=  4.698s f= 213] remote entry for frame 209 arrived 4 frames late -> rollback
-[peer 2 t=  4.700s f= 213] remote entry for frame 207 arrived 6 frames late -> rollback
-[peer 2 t=  4.752s f= 216] remote entry for frame 212 arrived 4 frames late -> rollback
-[peer 2 t=  4.773s f= 217] gap or conflict detected -> fetching Fetch { author: 1, from: 102, to: 105 }
-[peer 2 t=  4.773s f= 217] remote entry for frame 214 arrived 3 frames late -> rollback
-[peer 2 t=  4.801s f= 219] remote entry for frame 216 arrived 3 frames late -> rollback
-[peer 2 t=  4.830s f= 220] remote entry for frame 218 arrived 2 frames late -> rollback
-[peer 2 t=  4.879s f= 223] gap or conflict detected -> fetching Fetch { author: 1, from: 102, to: 108 }
-[peer 2 t=  4.879s f= 223] remote entry for frame 220 arrived 3 frames late -> rollback
-[peer 2 t=  4.899s f= 225] remote entry for frame 222 arrived 3 frames late -> rollback
-[peer 2 t=  4.920s f= 226] remote entry for frame 212 arrived 14 frames late -> rollback
-[peer 2 t=  4.934s f= 227] remote entry for frame 207 arrived 20 frames late -> rollback
-[peer 2 t=  4.948s f= 228] fetch request for member 2 seq 97..=100: replying with 4 entries
-[peer 2 t=  4.954s f= 228] remote entry for frame 205 arrived 23 frames late -> rollback
-[peer 2 t=  4.972s f= 229] remote entry for frame 205 arrived 24 frames late -> rollback
-[peer 2 t=  4.982s f= 230] remote entry for frame 218 arrived 12 frames late -> rollback
-[peer 2 t=  4.982s f= 230] remote entry for frame 224 arrived 6 frames late -> rollback
-[peer 2 t=  4.994s f= 230] remote entry for frame 207 arrived 23 frames late -> rollback
-[peer 2 t=  4.998s f= 231] remote entry for frame 212 arrived 19 frames late -> rollback
-[peer 2 t=  5.004s f= 231] remote entry for frame 209 arrived 22 frames late -> rollback
-[peer 2 t=  5.004s f= 231] remote entry for frame 216 arrived 15 frames late -> rollback
-[peer 2 t=  5.008s f= 231] gap or conflict detected -> fetching Fetch { author: 1, from: 112, to: 112 }
-[peer 2 t=  5.008s f= 231] remote entry for frame 228 arrived 3 frames late -> rollback
-[peer 2 t=  5.008s f= 231] remote entry for frame 214 arrived 17 frames late -> rollback
-[peer 2 t=  5.034s f= 233] fetch request for member 2 seq 97..=101: replying with 5 entries
-[peer 2 t=  5.051s f= 234] remote entry for frame 230 arrived 4 frames late -> rollback
-[peer 2 t=  5.087s f= 236] gap or conflict detected -> fetching Fetch { author: 1, from: 112, to: 114 }
-[peer 2 t=  5.087s f= 236] remote entry for frame 232 arrived 4 frames late -> rollback
-[peer 2 t=  5.108s f= 237] remote entry for frame 234 arrived 3 frames late -> rollback
-[peer 2 t=  5.131s f= 239] fetch request for member 2 seq 103..=104: replying with 2 entries
-[peer 2 t=  5.207s f= 243] gap or conflict detected -> fetching Fetch { author: 1, from: 112, to: 117 }
-[peer 2 t=  5.207s f= 243] remote entry for frame 238 arrived 5 frames late -> rollback
-[peer 2 t=  5.221s f= 244] remote entry for frame 240 arrived 4 frames late -> rollback
-[peer 2 t=  5.225s f= 244] remote entry for frame 228 arrived 16 frames late -> rollback
-[peer 2 t=  5.232s f= 245] fetch request for member 2 seq 103..=107: replying with 5 entries
-[peer 2 t=  5.273s f= 247] remote entry for frame 230 arrived 17 frames late -> rollback
-[peer 2 t=  5.281s f= 248] gap or conflict detected -> fetching Fetch { author: 1, from: 112, to: 120 }
-[peer 2 t=  5.281s f= 248] remote entry for frame 244 arrived 4 frames late -> rollback
-[peer 2 t=  5.286s f= 248] fetch request for member 2 seq 103..=109: replying with 7 entries
-[peer 2 t=  5.289s f= 248] remote entry for frame 242 arrived 6 frames late -> rollback
-[peer 2 t=  5.320s f= 250] remote entry for frame 246 arrived 4 frames late -> rollback
-[peer 2 t=  5.327s f= 250] remote entry for frame 228 arrived 22 frames late -> rollback
-[peer 2 t=  5.327s f= 250] remote entry for frame 232 arrived 18 frames late -> rollback
-[peer 2 t=  5.333s f= 251] remote entry for frame 226 arrived 25 frames late -> rollback
-[peer 2 t=  5.350s f= 252] remote entry for frame 230 arrived 22 frames late -> rollback
-[peer 2 t=  5.354s f= 252] remote entry for frame 234 arrived 18 frames late -> rollback
-[peer 2 t=  5.363s f= 252] gap or conflict detected -> fetching Fetch { author: 1, from: 117, to: 122 }
-[peer 2 t=  5.363s f= 252] remote entry for frame 248 arrived 4 frames late -> rollback
-[peer 2 t=  5.369s f= 253] remote entry for frame 236 arrived 17 frames late -> rollback
-[peer 2 t=  5.402s f= 255] remote entry for frame 242 arrived 13 frames late -> rollback
-[peer 2 t=  5.408s f= 255] remote entry for frame 234 arrived 21 frames late -> rollback
-[peer 2 t=  5.416s f= 256] remote entry for frame 236 arrived 20 frames late -> rollback
-[peer 2 t=  5.416s f= 256] remote entry for frame 250 arrived 6 frames late -> rollback
-[peer 2 t=  5.428s f= 256] remote entry for frame 232 arrived 24 frames late -> rollback
-[peer 2 t=  5.435s f= 257] remote entry for frame 226 arrived 31 frames late -> rollback
-[peer 2 t=  5.438s f= 257] remote entry for frame 230 arrived 27 frames late -> rollback
-[peer 2 t=  5.450s f= 258] remote entry for frame 252 arrived 6 frames late -> rollback
-[peer 2 t=  5.453s f= 258] fetch request for member 2 seq 114..=114: replying with 1 entries
-[peer 2 t=  5.474s f= 259] remote entry for frame 255 arrived 4 frames late -> rollback
-[peer 2 t=  5.475s f= 259] remote entry for frame 257 arrived 2 frames late -> rollback
-[peer 2 t=  5.517s f= 262] remote entry for frame 259 arrived 3 frames late -> rollback
-[peer 2 t=  5.528s f= 262] fetch request for member 2 seq 116..=116: replying with 1 entries
-[peer 2 t=  5.546s f= 263] remote entry for frame 260 arrived 3 frames late -> rollback
-[peer 2 t=  5.578s f= 265] gap or conflict detected -> fetching Fetch { author: 1, from: 130, to: 130 }
-[peer 2 t=  5.578s f= 265] remote entry for frame 263 arrived 2 frames late -> rollback
-[peer 2 t=  5.590s f= 266] fetch request for member 2 seq 118..=118: replying with 1 entries
-[peer 2 t=  5.629s f= 268] remote entry for frame 265 arrived 3 frames late -> rollback
-[peer 2 t=  5.644s f= 269] gap or conflict detected -> fetching Fetch { author: 1, from: 130, to: 132 }
-[peer 2 t=  5.644s f= 269] remote entry for frame 267 arrived 2 frames late -> rollback
-[peer 2 t=  5.652s f= 270] fetch request for member 2 seq 118..=119: replying with 2 entries
-[peer 2 t=  5.728s f= 274] remote entry for frame 261 arrived 13 frames late -> rollback
-[peer 2 t=  5.750s f= 276] gap or conflict detected -> fetching Fetch { author: 1, from: 134, to: 135 }
-[peer 2 t=  5.751s f= 276] remote entry for frame 273 arrived 3 frames late -> rollback
-[peer 2 t=  5.794s f= 278] remote entry for frame 265 arrived 13 frames late -> rollback
-[peer 2 t=  5.802s f= 279] remote entry for frame 261 arrived 18 frames late -> rollback
-[peer 2 t=  5.803s f= 279] remote entry for frame 263 arrived 16 frames late -> rollback
-[peer 2 t=  5.803s f= 279] remote entry for frame 275 arrived 4 frames late -> rollback
-[peer 2 t=  5.817s f= 280] gap or conflict detected -> fetching Fetch { author: 1, from: 134, to: 137 }
-[peer 2 t=  5.817s f= 280] remote entry for frame 277 arrived 3 frames late -> rollback
-[peer 2 t=  5.987s f= 290] gap or conflict detected -> fetching Fetch { author: 1, from: 134, to: 138 }
-[peer 2 t=  5.988s f= 290] remote entry for frame 279 arrived 11 frames late -> rollback
-[peer 2 t=  6.045s f= 293] fetch request for member 2 seq 127..=127: replying with 1 entries
-[peer 2 t=  6.045s f= 293] remote entry for frame 271 arrived 22 frames late -> rollback
-[peer 2 t=  6.045s f= 293] fetch request for member 2 seq 127..=128: replying with 2 entries
-[peer 2 t=  6.046s f= 293] remote entry for frame 290 arrived 3 frames late -> rollback
-[peer 2 t=  6.050s f= 294] remote entry for frame 273 arrived 21 frames late -> rollback
-[peer 2 t=  6.050s f= 294] remote entry for frame 269 arrived 25 frames late -> rollback
-[peer 2 t=  6.064s f= 295] remote entry for frame 275 arrived 20 frames late -> rollback
-[peer 2 t=  6.070s f= 295] remote entry for frame 271 arrived 24 frames late -> rollback
-[peer 2 t=  6.117s f= 298] gap or conflict detected -> fetching Fetch { author: 1, from: 140, to: 141 }
-[peer 2 t=  6.117s f= 298] remote entry for frame 292 arrived 6 frames late -> rollback
-[peer 2 t=  6.141s f= 299] remote entry for frame 294 arrived 5 frames late -> rollback
-[peer 2 t=  6.154s f= 300] remote entry for frame 296 arrived 4 frames late -> rollback
-[peer 2 t=  6.241s f= 305] gap or conflict detected -> fetching Fetch { author: 1, from: 140, to: 145 }
-[peer 2 t=  6.241s f= 305] remote entry for frame 300 arrived 5 frames late -> rollback
-[peer 2 t=  6.270s f= 307] remote entry for frame 304 arrived 3 frames late -> rollback
-[peer 2 t=  6.273s f= 307] remote entry for frame 302 arrived 5 frames late -> rollback
-[peer 2 t=  6.312s f= 309] gap or conflict detected -> fetching Fetch { author: 1, from: 140, to: 149 }
-[peer 2 t=  6.312s f= 309] remote entry for frame 306 arrived 3 frames late -> rollback
-[peer 2 t=  6.317s f= 310] remote entry for frame 305 arrived 5 frames late -> rollback
-[peer 2 t=  6.325s f= 310] fetch request for member 2 seq 139..=139: replying with 1 entries
-[peer 2 t=  6.378s f= 313] gap or conflict detected -> fetching Fetch { author: 1, from: 140, to: 150 }
-[peer 2 t=  6.378s f= 313] remote entry for frame 308 arrived 5 frames late -> rollback
-[peer 2 t=  6.378s f= 313] remote entry for frame 310 arrived 3 frames late -> rollback
-[peer 2 t=  6.380s f= 313] fetch request for member 2 seq 142..=142: replying with 1 entries
-[peer 2 t=  6.410s f= 315] remote entry for frame 290 arrived 25 frames late -> rollback
-[peer 2 t=  6.410s f= 315] remote entry for frame 294 arrived 21 frames late -> rollback
-[peer 2 t=  6.420s f= 316] remote entry for frame 302 arrived 14 frames late -> rollback
-[peer 2 t=  6.423s f= 316] remote entry for frame 300 arrived 16 frames late -> rollback
-[peer 2 t=  6.423s f= 316] remote entry for frame 312 arrived 4 frames late -> rollback
-[peer 2 t=  6.431s f= 317] remote entry for frame 292 arrived 25 frames late -> rollback
-[peer 2 t=  6.435s f= 317] remote entry for frame 305 arrived 12 frames late -> rollback
-[peer 2 t=  6.438s f= 317] remote entry for frame 296 arrived 21 frames late -> rollback
-[peer 2 t=  6.446s f= 317] remote entry for frame 304 arrived 13 frames late -> rollback
-[peer 2 t=  6.454s f= 318] gap or conflict detected -> fetching Fetch { author: 1, from: 140, to: 153 }
-[peer 2 t=  6.454s f= 318] remote entry for frame 314 arrived 4 frames late -> rollback
-[peer 2 t=  6.490s f= 320] remote entry for frame 316 arrived 4 frames late -> rollback
-[peer 2 t=  6.498s f= 321] remote entry for frame 292 arrived 29 frames late -> rollback
-[peer 2 t=  6.503s f= 321] remote entry for frame 318 arrived 3 frames late -> rollback
-[peer 2 t=  6.507s f= 321] remote entry for frame 306 arrived 15 frames late -> rollback
-[peer 2 t=  6.520s f= 322] remote entry for frame 304 arrived 18 frames late -> rollback
-[peer 2 t=  6.526s f= 322] remote entry for frame 305 arrived 17 frames late -> rollback
-[peer 2 t=  6.527s f= 322] remote entry for frame 296 arrived 26 frames late -> rollback
-[peer 2 t=  6.528s f= 322] remote entry for frame 300 arrived 22 frames late -> rollback
-[peer 2 t=  6.528s f= 322] remote entry for frame 281 arrived 41 frames late -> rollback
-[peer 2 t=  6.535s f= 323] remote entry for frame 294 arrived 29 frames late -> rollback
-[peer 2 t=  6.536s f= 323] remote entry for frame 298 arrived 25 frames late -> rollback
-[peer 2 t=  6.554s f= 324] remote entry for frame 281 arrived 43 frames late -> rollback
-[peer 2 t=  6.554s f= 324] remote entry for frame 294 arrived 30 frames late -> rollback
-[peer 2 t=  6.554s f= 324] remote entry for frame 308 arrived 16 frames late -> rollback
-[peer 2 t=  6.560s f= 324] remote entry for frame 310 arrived 14 frames late -> rollback
-[peer 2 t=  6.573s f= 325] remote entry for frame 306 arrived 19 frames late -> rollback
-[peer 2 t=  6.573s f= 325] remote entry for frame 292 arrived 33 frames late -> rollback
-[peer 2 t=  6.576s f= 325] remote entry for frame 298 arrived 27 frames late -> rollback
-[peer 2 t=  6.579s f= 325] remote entry for frame 302 arrived 23 frames late -> rollback
-[peer 2 t=  6.579s f= 325] remote entry for frame 300 arrived 25 frames late -> rollback
-[peer 2 t=  6.581s f= 326] remote entry for frame 312 arrived 14 frames late -> rollback
-[peer 2 t=  6.587s f= 326] remote entry for frame 296 arrived 30 frames late -> rollback
-[peer 2 t=  6.587s f= 326] gap or conflict detected -> fetching Fetch { author: 1, from: 157, to: 157 }
-[peer 2 t=  6.587s f= 326] remote entry for frame 323 arrived 3 frames late -> rollback
-[peer 2 t=  6.593s f= 326] remote entry for frame 304 arrived 22 frames late -> rollback
-[peer 2 t=  6.604s f= 327] remote entry for frame 325 arrived 2 frames late -> rollback
-[peer 2 t=  6.610s f= 327] remote entry for frame 290 arrived 37 frames late -> rollback
-[peer 2 t=  6.692s f= 332] gap or conflict detected -> fetching Fetch { author: 1, from: 157, to: 160 }
-[peer 2 t=  6.692s f= 332] remote entry for frame 329 arrived 3 frames late -> rollback
-[peer 2 t=  6.729s f= 334] remote entry for frame 320 arrived 14 frames late -> rollback
-[peer 2 t=  6.736s f= 335] fetch request for member 2 seq 151..=151: replying with 1 entries
-[peer 2 t=  6.756s f= 336] gap or conflict detected -> fetching Fetch { author: 1, from: 160, to: 161 }
-[peer 2 t=  6.757s f= 336] remote entry for frame 331 arrived 5 frames late -> rollback
-[peer 2 t=  6.821s f= 340] gap or conflict detected -> fetching Fetch { author: 1, from: 160, to: 163 }
-[peer 2 t=  6.821s f= 340] remote entry for frame 335 arrived 5 frames late -> rollback
-[peer 2 t=  6.854s f= 342] remote entry for frame 339 arrived 3 frames late -> rollback
-[peer 2 t=  6.863s f= 342] remote entry for frame 337 arrived 5 frames late -> rollback
-[peer 2 t=  6.929s f= 346] gap or conflict detected -> fetching Fetch { author: 1, from: 160, to: 167 }
-[peer 2 t=  6.929s f= 346] remote entry for frame 343 arrived 3 frames late -> rollback
-[peer 2 t=  6.967s f= 349] remote entry for frame 327 arrived 22 frames late -> rollback
-[peer 2 t=  6.983s f= 350] gap or conflict detected -> fetching Fetch { author: 1, from: 163, to: 168 }
-[peer 2 t=  6.983s f= 350] remote entry for frame 345 arrived 5 frames late -> rollback
-[peer 2 t=  7.015s f= 352] remote entry for frame 329 arrived 23 frames late -> rollback
-[peer 2 t=  7.020s f= 352] remote entry for frame 333 arrived 19 frames late -> rollback
-[peer 2 t=  7.020s f= 352] remote entry for frame 331 arrived 21 frames late -> rollback
-[peer 2 t=  7.073s f= 355] gap or conflict detected -> fetching Fetch { author: 1, from: 167, to: 170 }
-[peer 2 t=  7.073s f= 355] remote entry for frame 349 arrived 6 frames late -> rollback
-[peer 2 t=  7.097s f= 356] remote entry for frame 351 arrived 5 frames late -> rollback
-[peer 2 t=  7.121s f= 358] remote entry for frame 335 arrived 23 frames late -> rollback
-[peer 2 t=  7.121s f= 358] remote entry for frame 355 arrived 3 frames late -> rollback
-[peer 2 t=  7.132s f= 359] remote entry for frame 341 arrived 18 frames late -> rollback
-[peer 2 t=  7.132s f= 359] gap or conflict detected -> fetching Fetch { author: 1, from: 170, to: 172 }
-[peer 2 t=  7.132s f= 359] remote entry for frame 353 arrived 6 frames late -> rollback
-[peer 2 t=  7.134s f= 359] remote entry for frame 337 arrived 22 frames late -> rollback
-[peer 2 t=  7.140s f= 359] remote entry for frame 339 arrived 20 frames late -> rollback
-[peer 2 t=  7.149s f= 360] remote entry for frame 343 arrived 17 frames late -> rollback
-[peer 2 t=  7.154s f= 360] remote entry for frame 333 arrived 27 frames late -> rollback
-[peer 2 t=  7.186s f= 362] remote entry for frame 358 arrived 4 frames late -> rollback
-[peer 2 t=  7.204s f= 362] gap or conflict detected -> fetching Fetch { author: 1, from: 170, to: 175 }
-[peer 2 t=  7.204s f= 362] remote entry for frame 360 arrived 2 frames late -> rollback
-[peer 2 t=  7.281s f= 368] gap or conflict detected -> fetching Fetch { author: 1, from: 170, to: 177 }
-[peer 2 t=  7.281s f= 368] remote entry for frame 364 arrived 4 frames late -> rollback
-[peer 2 t=  7.322s f= 370] remote entry for frame 366 arrived 4 frames late -> rollback
-[peer 2 t=  7.341s f= 371] remote entry for frame 353 arrived 18 frames late -> rollback
-[peer 2 t=  7.345s f= 371] gap or conflict detected -> fetching Fetch { author: 1, from: 170, to: 179 }
-[peer 2 t=  7.345s f= 371] remote entry for frame 368 arrived 3 frames late -> rollback
-[peer 2 t=  7.347s f= 371] remote entry for frame 349 arrived 22 frames late -> rollback
-[peer 2 t=  7.365s f= 373] remote entry for frame 370 arrived 3 frames late -> rollback
-[peer 2 t=  7.370s f= 373] remote entry for frame 358 arrived 15 frames late -> rollback
-[peer 2 t=  7.376s f= 373] remote entry for frame 347 arrived 26 frames late -> rollback
-[peer 2 t=  7.384s f= 374] remote entry for frame 347 arrived 27 frames late -> rollback
-[peer 2 t=  7.386s f= 374] remote entry for frame 355 arrived 19 frames late -> rollback
-[peer 2 t=  7.392s f= 374] remote entry for frame 351 arrived 23 frames late -> rollback
-[peer 2 t=  7.392s f= 374] remote entry for frame 355 arrived 19 frames late -> rollback
-[peer 2 t=  7.395s f= 374] remote entry for frame 358 arrived 16 frames late -> rollback
-[peer 2 t=  7.395s f= 374] remote entry for frame 351 arrived 23 frames late -> rollback
-[peer 2 t=  7.399s f= 375] remote entry for frame 349 arrived 26 frames late -> rollback
-[peer 2 t=  7.399s f= 375] remote entry for frame 353 arrived 22 frames late -> rollback
-[peer 2 t=  7.404s f= 375] remote entry for frame 362 arrived 13 frames late -> rollback
-[peer 2 t=  7.415s f= 376] fetch request for member 2 seq 169..=172: replying with 4 entries
-[peer 2 t=  7.425s f= 376] remote entry for frame 360 arrived 16 frames late -> rollback
-[peer 2 t=  7.444s f= 377] gap or conflict detected -> fetching Fetch { author: 1, from: 182, to: 182 }
-[peer 2 t=  7.444s f= 377] remote entry for frame 374 arrived 3 frames late -> rollback
-[peer 2 t=  7.449s f= 378] remote entry for frame 372 arrived 6 frames late -> rollback
-[peer 2 t=  7.454s f= 378] remote entry for frame 360 arrived 18 frames late -> rollback
-[peer 2 t=  7.465s f= 379] remote entry for frame 347 arrived 32 frames late -> rollback
-[peer 2 t=  7.468s f= 379] remote entry for frame 362 arrived 17 frames late -> rollback
-[peer 2 t=  7.469s f= 379] fetch request for member 2 seq 169..=174: replying with 6 entries
-[peer 2 t=  7.471s f= 379] remote entry for frame 353 arrived 26 frames late -> rollback
-[peer 2 t=  7.473s f= 379] remote entry for frame 355 arrived 24 frames late -> rollback
-[peer 2 t=  7.480s f= 380] remote entry for frame 358 arrived 22 frames late -> rollback
-[peer 2 t=  7.480s f= 380] remote entry for frame 364 arrived 16 frames late -> rollback
-[peer 2 t=  7.480s f= 380] remote entry for frame 351 arrived 29 frames late -> rollback
-[peer 2 t=  7.483s f= 380] remote entry for frame 366 arrived 14 frames late -> rollback
-[peer 2 t=  7.483s f= 380] remote entry for frame 349 arrived 31 frames late -> rollback
-[peer 2 t=  7.513s f= 381] remote entry for frame 376 arrived 5 frames late -> rollback
-[peer 2 t=  7.528s f= 382] remote entry for frame 378 arrived 4 frames late -> rollback
-[peer 2 t=  7.529s f= 382] remote entry for frame 380 arrived 2 frames late -> rollback
-[peer 2 t=  7.589s f= 386] fetch request for member 2 seq 169..=177: replying with 9 entries
-[peer 2 t=  7.596s f= 386] remote entry for frame 372 arrived 14 frames late -> rollback
-[peer 2 t=  7.603s f= 387] fetch request for member 2 seq 176..=178: replying with 3 entries
-[peer 2 t=  7.613s f= 387] gap or conflict detected -> fetching Fetch { author: 1, from: 187, to: 187 }
-[peer 2 t=  7.613s f= 387] remote entry for frame 384 arrived 3 frames late -> rollback
-[peer 2 t=  7.615s f= 388] remote entry for frame 382 arrived 6 frames late -> rollback
-[peer 2 t=  7.666s f= 391] remote entry for frame 386 arrived 5 frames late -> rollback
-[peer 2 t=  7.667s f= 391] remote entry for frame 388 arrived 3 frames late -> rollback
-[peer 2 t=  7.698s f= 393] fetch request for member 2 seq 176..=180: replying with 5 entries
-[peer 2 t=  7.748s f= 396] remote entry for frame 390 arrived 6 frames late -> rollback
-[peer 2 t=  7.800s f= 399] gap or conflict detected -> fetching Fetch { author: 1, from: 192, to: 192 }
-[peer 2 t=  7.800s f= 399] remote entry for frame 394 arrived 5 frames late -> rollback
-[peer 2 t=  7.805s f= 399] remote entry for frame 382 arrived 17 frames late -> rollback
-[peer 2 t=  7.855s f= 402] remote entry for frame 399 arrived 3 frames late -> rollback
-[peer 2 t=  7.871s f= 403] gap or conflict detected -> fetching Fetch { author: 1, from: 192, to: 196 }
-[peer 2 t=  7.871s f= 403] remote entry for frame 401 arrived 2 frames late -> rollback
-[peer 2 t=  7.902s f= 405] remote entry for frame 400 arrived 5 frames late -> rollback
-[peer 2 t=  7.915s f= 406] fetch request for member 2 seq 186..=186: replying with 1 entries
-[peer 2 t=  7.934s f= 407] remote entry for frame 392 arrived 15 frames late -> rollback
-[peer 2 t=  7.943s f= 407] fetch request for member 2 seq 186..=188: replying with 3 entries
-[peer 2 t=  7.944s f= 407] gap or conflict detected -> fetching Fetch { author: 1, from: 194, to: 197 }
-[peer 2 t=  7.944s f= 407] remote entry for frame 403 arrived 4 frames late -> rollback
-[peer 2 t=  7.962s f= 408] remote entry for frame 405 arrived 3 frames late -> rollback
-[peer 2 t=  7.974s f= 409] remote entry for frame 400 arrived 9 frames late -> rollback
-[peer 2 t=  7.981s f= 410] remote entry for frame 399 arrived 11 frames late -> rollback
-[peer 2 t=  7.991s f= 410] remote entry for frame 394 arrived 16 frames late -> rollback
-[peer 2 t=  7.997s f= 410] remote entry for frame 392 arrived 18 frames late -> rollback
-[peer 2 t=  8.009s f= 411] remote entry for frame 397 arrived 14 frames late -> rollback
-[peer 2 t=  8.026s f= 412] remote entry for frame 407 arrived 5 frames late -> rollback
-[peer 2 t=  8.029s f= 412] remote entry for frame 409 arrived 3 frames late -> rollback
-[peer 2 t=  8.069s f= 415] fetch request for member 2 seq 186..=190: replying with 5 entries
-[peer 2 t=  8.075s f= 415] remote entry for frame 399 arrived 16 frames late -> rollback
-[peer 2 t=  8.086s f= 416] remote entry for frame 411 arrived 5 frames late -> rollback
-[peer 2 t=  8.099s f= 417] remote entry for frame 400 arrived 17 frames late -> rollback
-[peer 2 t=  8.099s f= 417] remote entry for frame 397 arrived 20 frames late -> rollback
-[peer 2 t=  8.113s f= 417] remote entry for frame 413 arrived 4 frames late -> rollback
-[peer 2 t=  8.161s f= 420] remote entry for frame 415 arrived 5 frames late -> rollback
-[peer 2 t=  8.167s f= 421] remote entry for frame 417 arrived 4 frames late -> rollback
-[peer 2 t=  8.229s f= 424] remote entry for frame 419 arrived 5 frames late -> rollback
-[peer 2 t=  8.251s f= 426] remote entry for frame 421 arrived 5 frames late -> rollback
-[peer 2 t=  8.282s f= 428] remote entry for frame 423 arrived 5 frames late -> rollback
-[peer 2 t=  8.306s f= 429] remote entry for frame 425 arrived 4 frames late -> rollback
-[peer 2 t=  8.370s f= 433] gap or conflict detected -> fetching Fetch { author: 1, from: 210, to: 210 }
-[peer 2 t=  8.370s f= 433] remote entry for frame 429 arrived 4 frames late -> rollback
-[peer 2 t=  8.373s f= 433] remote entry for frame 427 arrived 6 frames late -> rollback
-[peer 2 t=  8.420s f= 436] remote entry for frame 431 arrived 5 frames late -> rollback
-[peer 2 t=  8.441s f= 437] remote entry for frame 434 arrived 3 frames late -> rollback
-[peer 2 t=  8.470s f= 439] fetch request for member 2 seq 203..=203: replying with 1 entries
-[peer 2 t=  8.496s f= 440] gap or conflict detected -> fetching Fetch { author: 1, from: 214, to: 214 }
-[peer 2 t=  8.496s f= 440] remote entry for frame 438 arrived 2 frames late -> rollback
-[peer 2 t=  8.519s f= 442] remote entry for frame 427 arrived 15 frames late -> rollback
-[peer 2 t=  8.545s f= 443] remote entry for frame 440 arrived 3 frames late -> rollback
-[peer 2 t=  8.677s f= 451] gap or conflict detected -> fetching Fetch { author: 1, from: 214, to: 216 }
-[peer 2 t=  8.677s f= 451] remote entry for frame 442 arrived 9 frames late -> rollback
-[peer 2 t=  8.677s f= 451] remote entry for frame 444 arrived 7 frames late -> rollback
-[peer 2 t=  8.723s f= 454] fetch request for member 2 seq 208..=208: replying with 1 entries
-[peer 2 t=  8.726s f= 454] fetch request for member 2 seq 208..=209: replying with 2 entries
-[peer 2 t=  8.747s f= 455] remote entry for frame 436 arrived 19 frames late -> rollback
-[peer 2 t=  8.757s f= 456] remote entry for frame 451 arrived 5 frames late -> rollback
-[peer 2 t=  8.786s f= 458] gap or conflict detected -> fetching Fetch { author: 1, from: 220, to: 220 }
-[peer 2 t=  8.786s f= 458] remote entry for frame 455 arrived 3 frames late -> rollback
-[peer 2 t=  8.786s f= 458] fetch request for member 2 seq 208..=213: replying with 6 entries
-[peer 2 t=  8.801s f= 459] remote entry for frame 453 arrived 6 frames late -> rollback
-[peer 2 t=  8.831s f= 461] fetch request for member 2 seq 211..=215: replying with 5 entries
-[peer 2 t=  8.842s f= 461] remote entry for frame 438 arrived 23 frames late -> rollback
-[peer 2 t=  8.842s f= 461] remote entry for frame 457 arrived 4 frames late -> rollback
-[peer 2 t=  8.842s f= 461] remote entry for frame 436 arrived 25 frames late -> rollback
-[peer 2 t=  8.851s f= 462] remote entry for frame 459 arrived 3 frames late -> rollback
-[peer 2 t=  8.875s f= 463] remote entry for frame 440 arrived 23 frames late -> rollback
-[peer 2 t=  8.898s f= 465] remote entry for frame 461 arrived 4 frames late -> rollback
-[peer 2 t=  8.917s f= 466] remote entry for frame 453 arrived 13 frames late -> rollback
-[peer 2 t=  8.924s f= 466] remote entry for frame 463 arrived 3 frames late -> rollback
-[peer 2 t=  8.944s f= 467] fetch request for member 2 seq 215..=217: replying with 3 entries
-[peer 2 t=  8.983s f= 470] remote entry for frame 465 arrived 5 frames late -> rollback
-[peer 2 t=  9.017s f= 472] fetch request for member 2 seq 217..=219: replying with 3 entries
-[peer 2 t=  9.031s f= 473] gap or conflict detected -> fetching Fetch { author: 1, from: 227, to: 227 }
-[peer 2 t=  9.031s f= 473] remote entry for frame 469 arrived 4 frames late -> rollback
-[peer 2 t=  9.100s f= 477] gap or conflict detected -> fetching Fetch { author: 1, from: 227, to: 228 }
-[peer 2 t=  9.100s f= 477] remote entry for frame 471 arrived 6 frames late -> rollback
-[peer 2 t=  9.108s f= 477] remote entry for frame 474 arrived 3 frames late -> rollback
-[peer 2 t=  9.161s f= 480] gap or conflict detected -> fetching Fetch { author: 1, from: 227, to: 230 }
-[peer 2 t=  9.161s f= 480] remote entry for frame 476 arrived 4 frames late -> rollback
-[peer 2 t=  9.167s f= 481] fetch request for member 2 seq 225..=225: replying with 1 entries
-[peer 2 t=  9.185s f= 482] remote entry for frame 467 arrived 15 frames late -> rollback
-[peer 2 t=  9.196s f= 482] remote entry for frame 478 arrived 4 frames late -> rollback
-[peer 2 t=  9.222s f= 484] remote entry for frame 469 arrived 15 frames late -> rollback
-[peer 2 t=  9.225s f= 484] remote entry for frame 467 arrived 17 frames late -> rollback
-[peer 2 t=  9.240s f= 485] gap or conflict detected -> fetching Fetch { author: 1, from: 233, to: 233 }
-[peer 2 t=  9.240s f= 485] remote entry for frame 482 arrived 3 frames late -> rollback
-[peer 2 t=  9.268s f= 487] remote entry for frame 484 arrived 3 frames late -> rollback
-[peer 2 t=  9.292s f= 488] remote entry for frame 486 arrived 2 frames late -> rollback
-[peer 2 t=  9.341s f= 491] fetch request for member 2 seq 230..=230: replying with 1 entries
-[peer 2 t=  9.377s f= 493] gap or conflict detected -> fetching Fetch { author: 1, from: 233, to: 237 }
-[peer 2 t=  9.377s f= 493] remote entry for frame 490 arrived 3 frames late -> rollback
-[peer 2 t=  9.399s f= 495] remote entry for frame 480 arrived 15 frames late -> rollback
-[peer 2 t=  9.447s f= 498] gap or conflict detected -> fetching Fetch { author: 1, from: 237, to: 238 }
-[peer 2 t=  9.447s f= 498] remote entry for frame 492 arrived 6 frames late -> rollback
-[peer 2 t=  9.462s f= 498] remote entry for frame 496 arrived 2 frames late -> rollback
-[peer 2 t=  9.476s f= 499] remote entry for frame 494 arrived 5 frames late -> rollback
-[peer 2 t=  9.520s f= 502] gap or conflict detected -> fetching Fetch { author: 1, from: 237, to: 241 }
-[peer 2 t=  9.520s f= 502] remote entry for frame 498 arrived 4 frames late -> rollback
-[peer 2 t=  9.551s f= 504] remote entry for frame 500 arrived 4 frames late -> rollback
-[peer 2 t=  9.556s f= 504] remote entry for frame 486 arrived 18 frames late -> rollback
-[peer 2 t=  9.556s f= 504] remote entry for frame 488 arrived 16 frames late -> rollback
-[peer 2 t=  9.565s f= 505] remote entry for frame 488 arrived 17 frames late -> rollback
-[peer 2 t=  9.565s f= 505] remote entry for frame 480 arrived 25 frames late -> rollback
-[peer 2 t=  9.565s f= 505] remote entry for frame 482 arrived 23 frames late -> rollback
-[peer 2 t=  9.576s f= 505] remote entry for frame 490 arrived 15 frames late -> rollback
-[peer 2 t=  9.588s f= 506] remote entry for frame 502 arrived 4 frames late -> rollback
-[peer 2 t=  9.625s f= 508] remote entry for frame 504 arrived 4 frames late -> rollback
-[peer 2 t=  9.668s f= 511] remote entry for frame 496 arrived 15 frames late -> rollback
-[peer 2 t=  9.671s f= 511] remote entry for frame 506 arrived 5 frames late -> rollback
-[peer 2 t=  9.693s f= 512] remote entry for frame 490 arrived 22 frames late -> rollback
-[peer 2 t=  9.695s f= 512] remote entry for frame 488 arrived 24 frames late -> rollback
-[peer 2 t=  9.701s f= 513] remote entry for frame 494 arrived 19 frames late -> rollback
-[peer 2 t=  9.701s f= 513] remote entry for frame 492 arrived 21 frames late -> rollback
-[peer 2 t=  9.752s f= 516] gap or conflict detected -> fetching Fetch { author: 1, from: 247, to: 247 }
-[peer 2 t=  9.752s f= 516] remote entry for frame 510 arrived 6 frames late -> rollback
-[peer 2 t=  9.760s f= 516] remote entry for frame 512 arrived 4 frames late -> rollback
-[peer 2 t=  9.791s f= 518] remote entry for frame 514 arrived 4 frames late -> rollback
-[peer 2 t=  9.849s f= 522] gap or conflict detected -> fetching Fetch { author: 1, from: 247, to: 250 }
-[peer 2 t=  9.850s f= 522] remote entry for frame 516 arrived 6 frames late -> rollback
-[peer 2 t=  9.882s f= 524] remote entry for frame 518 arrived 6 frames late -> rollback
-[peer 2 t=  9.907s f= 525] remote entry for frame 508 arrived 17 frames late -> rollback
-[peer 2 t=  9.946s f= 527] gap or conflict detected -> fetching Fetch { author: 1, from: 253, to: 253 }
-[peer 2 t=  9.951s f= 527] remote entry for frame 523 arrived 4 frames late -> rollback
-[peer 2 t=  9.955s f= 528] remote entry for frame 512 arrived 16 frames late -> rollback
-[peer 2 t=  9.958s f= 528] remote entry for frame 508 arrived 20 frames late -> rollback
-[peer 2 t=  9.958s f= 528] remote entry for frame 510 arrived 18 frames late -> rollback
-[peer 2 t=  9.992s f= 530] remote entry for frame 525 arrived 5 frames late -> rollback
-[peer 2 t= 10.002s f= 531] remote entry for frame 514 arrived 17 frames late -> rollback
-[peer 2 t= 10.006s f= 531] gap or conflict detected -> fetching Fetch { author: 1, from: 253, to: 256 }
-[peer 2 t= 10.006s f= 531] remote entry for frame 529 arrived 2 frames late -> rollback
-[peer 2 t= 10.016s f= 532] remote entry for frame 527 arrived 5 frames late -> rollback
-[peer 2 t= 10.022s f= 532] fetch request for member 2 seq 249..=250: replying with 2 entries
-[peer 2 t= 10.038s f= 533] remote entry for frame 531 arrived 2 frames late -> rollback
-[peer 2 t= 10.065s f= 535] remote entry for frame 520 arrived 15 frames late -> rollback
-[peer 2 t= 10.114s f= 538] remote entry for frame 533 arrived 5 frames late -> rollback
-[peer 2 t= 10.114s f= 538] remote entry for frame 523 arrived 15 frames late -> rollback
-[peer 2 t= 10.115s f= 538] remote entry for frame 520 arrived 18 frames late -> rollback
-[peer 2 t= 10.130s f= 538] remote entry for frame 525 arrived 13 frames late -> rollback
-[peer 2 t= 10.134s f= 539] remote entry for frame 527 arrived 12 frames late -> rollback
-[peer 2 t= 10.153s f= 540] fetch request for member 2 seq 249..=253: replying with 5 entries
-[peer 2 t= 10.161s f= 540] gap or conflict detected -> fetching Fetch { author: 1, from: 260, to: 260 }
-[peer 2 t= 10.161s f= 540] remote entry for frame 537 arrived 3 frames late -> rollback
-[peer 2 t= 10.213s f= 543] remote entry for frame 541 arrived 2 frames late -> rollback
-[peer 2 t= 10.229s f= 544] gap or conflict detected -> fetching Fetch { author: 1, from: 260, to: 261 }
-[peer 2 t= 10.229s f= 544] remote entry for frame 539 arrived 5 frames late -> rollback
-[peer 2 t= 10.273s f= 547] fetch request for member 2 seq 258..=258: replying with 1 entries
-[peer 2 t= 10.281s f= 548] remote entry for frame 543 arrived 5 frames late -> rollback
-[peer 2 t= 10.310s f= 549] remote entry for frame 535 arrived 14 frames late -> rollback
-[peer 2 t= 10.318s f= 550] remote entry for frame 545 arrived 5 frames late -> rollback
-[peer 2 t= 10.349s f= 552] remote entry for frame 547 arrived 5 frames late -> rollback
-[peer 2 t= 10.353s f= 552] remote entry for frame 549 arrived 3 frames late -> rollback
-[peer 2 t= 10.371s f= 553] remote entry for frame 535 arrived 18 frames late -> rollback
-[peer 2 t= 10.385s f= 554] remote entry for frame 537 arrived 17 frames late -> rollback
-[peer 2 t= 10.420s f= 556] remote entry for frame 551 arrived 5 frames late -> rollback
-[peer 2 t= 10.426s f= 556] remote entry for frame 553 arrived 3 frames late -> rollback
-[peer 2 t= 10.504s f= 561] remote entry for frame 555 arrived 6 frames late -> rollback
-[peer 2 t= 10.509s f= 561] remote entry for frame 557 arrived 4 frames late -> rollback
-[peer 2 t= 10.521s f= 562] fetch request for member 2 seq 263..=263: replying with 1 entries
-[peer 2 t= 10.582s f= 566] fetch request for member 2 seq 263..=265: replying with 3 entries
-[peer 2 t= 10.590s f= 566] gap or conflict detected -> fetching Fetch { author: 1, from: 272, to: 273 }
-[peer 2 t= 10.590s f= 566] remote entry for frame 563 arrived 3 frames late -> rollback
-[peer 2 t= 10.602s f= 567] fetch request for member 2 seq 263..=267: replying with 5 entries
-[peer 2 t= 10.604s f= 567] remote entry for frame 561 arrived 6 frames late -> rollback
-[peer 2 t= 10.619s f= 568] remote entry for frame 565 arrived 3 frames late -> rollback
-[peer 2 t= 10.657s f= 570] gap or conflict detected -> fetching Fetch { author: 1, from: 272, to: 275 }
-[peer 2 t= 10.658s f= 570] remote entry for frame 567 arrived 3 frames late -> rollback
-[peer 2 t= 10.695s f= 572] remote entry for frame 569 arrived 3 frames late -> rollback
-[peer 2 t= 10.708s f= 573] remote entry for frame 559 arrived 14 frames late -> rollback
-[peer 2 t= 10.728s f= 574] remote entry for frame 561 arrived 13 frames late -> rollback
-[peer 2 t= 10.739s f= 575] fetch request for member 2 seq 271..=271: replying with 1 entries
-[peer 2 t= 10.766s f= 577] remote entry for frame 571 arrived 6 frames late -> rollback
-[peer 2 t= 10.796s f= 578] remote entry for frame 561 arrived 17 frames late -> rollback
-[peer 2 t= 10.804s f= 579] fetch request for member 2 seq 273..=273: replying with 1 entries
-[peer 2 t= 10.814s f= 580] remote entry for frame 559 arrived 21 frames late -> rollback
-[peer 2 t= 10.815s f= 580] remote entry for frame 565 arrived 15 frames late -> rollback
-[peer 2 t= 10.833s f= 581] gap or conflict detected -> fetching Fetch { author: 1, from: 279, to: 279 }
-[peer 2 t= 10.833s f= 581] remote entry for frame 576 arrived 5 frames late -> rollback
-[peer 2 t= 10.839s f= 581] remote entry for frame 563 arrived 18 frames late -> rollback
-[peer 2 t= 10.874s f= 583] remote entry for frame 578 arrived 5 frames late -> rollback
-[peer 2 t= 10.891s f= 584] remote entry for frame 580 arrived 4 frames late -> rollback
-[peer 2 t= 10.926s f= 586] gap or conflict detected -> fetching Fetch { author: 1, from: 279, to: 283 }
-[peer 2 t= 10.926s f= 586] remote entry for frame 584 arrived 2 frames late -> rollback
-[peer 2 t= 10.946s f= 587] remote entry for frame 582 arrived 5 frames late -> rollback
-[peer 2 t= 10.971s f= 589] remote entry for frame 586 arrived 3 frames late -> rollback
-[peer 2 t= 11.000s f= 591] gap or conflict detected -> fetching Fetch { author: 1, from: 279, to: 285 }
-[peer 2 t= 11.000s f= 591] remote entry for frame 588 arrived 3 frames late -> rollback
-[peer 2 t= 11.048s f= 594] remote entry for frame 590 arrived 4 frames late -> rollback
-[peer 2 t= 11.067s f= 595] remote entry for frame 582 arrived 13 frames late -> rollback
-[peer 2 t= 11.067s f= 595] remote entry for frame 580 arrived 15 frames late -> rollback
-[peer 2 t= 11.088s f= 596] remote entry for frame 576 arrived 20 frames late -> rollback
-[peer 2 t= 11.100s f= 597] gap or conflict detected -> fetching Fetch { author: 1, from: 279, to: 287 }
-[peer 2 t= 11.100s f= 597] remote entry for frame 592 arrived 5 frames late -> rollback
-[peer 2 t= 11.100s f= 597] remote entry for frame 578 arrived 19 frames late -> rollback
-[peer 2 t= 11.117s f= 598] remote entry for frame 573 arrived 25 frames late -> rollback
-[peer 2 t= 11.129s f= 598] remote entry for frame 594 arrived 4 frames late -> rollback
-[peer 2 t= 11.129s f= 598] remote entry for frame 584 arrived 14 frames late -> rollback
-[peer 2 t= 11.133s f= 599] remote entry for frame 596 arrived 3 frames late -> rollback
-[peer 2 t= 11.141s f= 599] remote entry for frame 573 arrived 26 frames late -> rollback
-[peer 2 t= 11.163s f= 600] remote entry for frame 578 arrived 22 frames late -> rollback
-[peer 2 t= 11.173s f= 601] remote entry for frame 582 arrived 19 frames late -> rollback
-[peer 2 t= 11.173s f= 601] remote entry for frame 586 arrived 15 frames late -> rollback
-[peer 2 t= 11.176s f= 601] remote entry for frame 598 arrived 3 frames late -> rollback
-[peer 2 t= 11.176s f= 601] remote entry for frame 576 arrived 25 frames late -> rollback
-[peer 2 t= 11.227s f= 604] remote entry for frame 573 arrived 31 frames late -> rollback
-[peer 2 t= 11.228s f= 604] remote entry for frame 600 arrived 4 frames late -> rollback
-[peer 2 t= 11.228s f= 604] remote entry for frame 586 arrived 18 frames late -> rollback
-[peer 2 t= 11.232s f= 605] remote entry for frame 602 arrived 3 frames late -> rollback
-[peer 2 t= 11.249s f= 606] remote entry for frame 584 arrived 22 frames late -> rollback
-[peer 2 t= 11.252s f= 606] remote entry for frame 582 arrived 24 frames late -> rollback
-[peer 2 t= 11.260s f= 606] remote entry for frame 580 arrived 26 frames late -> rollback
-[peer 2 t= 11.268s f= 607] remote entry for frame 588 arrived 19 frames late -> rollback
-[peer 2 t= 11.268s f= 607] remote entry for frame 576 arrived 31 frames late -> rollback
-[peer 2 t= 11.273s f= 607] remote entry for frame 578 arrived 29 frames late -> rollback
-[peer 2 t= 11.278s f= 607] remote entry for frame 590 arrived 17 frames late -> rollback
-[peer 2 t= 11.299s f= 609] remote entry for frame 604 arrived 5 frames late -> rollback
-[peer 2 t= 11.335s f= 611] fetch request for member 2 seq 289..=289: replying with 1 entries
-[peer 2 t= 11.336s f= 611] gap or conflict detected -> fetching Fetch { author: 1, from: 295, to: 295 }
-[peer 2 t= 11.336s f= 611] remote entry for frame 608 arrived 3 frames late -> rollback
-[peer 2 t= 11.370s f= 613] remote entry for frame 610 arrived 3 frames late -> rollback
-[peer 2 t= 11.418s f= 616] fetch request for member 2 seq 289..=291: replying with 3 entries
-[peer 2 t= 11.450s f= 618] gap or conflict detected -> fetching Fetch { author: 1, from: 295, to: 297 }
-[peer 2 t= 11.450s f= 618] remote entry for frame 612 arrived 6 frames late -> rollback
-[peer 2 t= 11.473s f= 619] remote entry for frame 615 arrived 4 frames late -> rollback
-[peer 2 t= 11.474s f= 619] remote entry for frame 606 arrived 13 frames late -> rollback
-[peer 2 t= 11.513s f= 621] gap or conflict detected -> fetching Fetch { author: 1, from: 300, to: 300 }
-[peer 2 t= 11.513s f= 621] remote entry for frame 619 arrived 2 frames late -> rollback
-[peer 2 t= 11.521s f= 622] remote entry for frame 617 arrived 5 frames late -> rollback
-[peer 2 t= 11.529s f= 622] fetch request for member 2 seq 294..=294: replying with 1 entries
-[peer 2 t= 11.582s f= 626] remote entry for frame 621 arrived 5 frames late -> rollback
-[peer 2 t= 11.596s f= 626] remote entry for frame 623 arrived 3 frames late -> rollback
-[peer 2 t= 11.606s f= 627] remote entry for frame 610 arrived 17 frames late -> rollback
-[peer 2 t= 11.609s f= 627] remote entry for frame 606 arrived 21 frames late -> rollback
-[peer 2 t= 11.617s f= 628] remote entry for frame 608 arrived 20 frames late -> rollback
-[peer 2 t= 11.669s f= 631] remote entry for frame 617 arrived 14 frames late -> rollback
-[peer 2 t= 11.693s f= 632] gap or conflict detected -> fetching Fetch { author: 1, from: 304, to: 304 }
-[peer 2 t= 11.693s f= 632] remote entry for frame 627 arrived 5 frames late -> rollback
-[peer 2 t= 11.726s f= 634] remote entry for frame 629 arrived 5 frames late -> rollback
-[peer 2 t= 11.738s f= 635] fetch request for member 2 seq 297..=299: replying with 3 entries
-[peer 2 t= 11.746s f= 635] remote entry for frame 631 arrived 4 frames late -> rollback
-[peer 2 t= 11.781s f= 638] gap or conflict detected -> fetching Fetch { author: 1, from: 304, to: 307 }
-[peer 2 t= 11.781s f= 638] remote entry for frame 633 arrived 5 frames late -> rollback
-[peer 2 t= 11.805s f= 639] remote entry for frame 635 arrived 4 frames late -> rollback
-[peer 2 t= 11.820s f= 640] fetch request for member 2 seq 297..=303: replying with 7 entries
-[peer 2 t= 11.842s f= 641] gap or conflict detected -> fetching Fetch { author: 1, from: 304, to: 309 }
-[peer 2 t= 11.842s f= 641] remote entry for frame 637 arrived 4 frames late -> rollback
-[peer 2 t= 11.851s f= 642] remote entry for frame 625 arrived 17 frames late -> rollback
-[peer 2 t= 11.906s f= 645] gap or conflict detected -> fetching Fetch { author: 1, from: 311, to: 311 }
-[peer 2 t= 11.906s f= 645] remote entry for frame 641 arrived 4 frames late -> rollback
-[peer 2 t= 11.932s f= 646] fetch request for member 2 seq 302..=305: replying with 4 entries
-[peer 2 t= 11.933s f= 646] remote entry for frame 631 arrived 15 frames late -> rollback
-[peer 2 t= 11.933s f= 646] remote entry for frame 643 arrived 3 frames late -> rollback
-[peer 2 t= 11.939s f= 647] remote entry for frame 627 arrived 20 frames late -> rollback
-[peer 2 t= 11.956s f= 648] remote entry for frame 629 arrived 19 frames late -> rollback
-[peer 2 t= 11.980s f= 649] remote entry for frame 625 arrived 24 frames late -> rollback
-[peer 2 t= 11.984s f= 650] remote entry for frame 635 arrived 15 frames late -> rollback
-[peer 2 t= 11.996s f= 650] remote entry for frame 633 arrived 17 frames late -> rollback
-[peer 2 t= 12.000s f= 651] gap or conflict detected -> fetching Fetch { author: 1, from: 311, to: 313 }
-[peer 2 t= 12.000s f= 651] remote entry for frame 645 arrived 6 frames late -> rollback
-[peer 2 t= 12.011s f= 651] remote entry for frame 631 arrived 20 frames late -> rollback
-[peer 2 t= 12.026s f= 652] remote entry for frame 625 arrived 27 frames late -> rollback
-[peer 2 t= 12.041s f= 653] remote entry for frame 629 arrived 24 frames late -> rollback
-[peer 2 t= 12.064s f= 654] remote entry for frame 639 arrived 15 frames late -> rollback
-[peer 2 t= 12.073s f= 655] gap or conflict detected -> fetching Fetch { author: 1, from: 315, to: 315 }
-[peer 2 t= 12.073s f= 655] remote entry for frame 650 arrived 5 frames late -> rollback
-[peer 2 t= 12.114s f= 657] remote entry for frame 652 arrived 5 frames late -> rollback
-[peer 2 t= 12.124s f= 658] remote entry for frame 654 arrived 4 frames late -> rollback
-[peer 2 t= 12.157s f= 660] gap or conflict detected -> fetching Fetch { author: 1, from: 315, to: 318 }
-[peer 2 t= 12.158s f= 660] remote entry for frame 656 arrived 4 frames late -> rollback
-[peer 2 t= 12.158s f= 660] remote entry for frame 641 arrived 19 frames late -> rollback
-[peer 2 t= 12.162s f= 660] remote entry for frame 639 arrived 21 frames late -> rollback
-[peer 2 t= 12.177s f= 661] remote entry for frame 658 arrived 3 frames late -> rollback
-[peer 2 t= 12.183s f= 661] remote entry for frame 643 arrived 18 frames late -> rollback
-[peer 2 t= 12.236s f= 665] gap or conflict detected -> fetching Fetch { author: 1, from: 315, to: 320 }
-[peer 2 t= 12.236s f= 665] remote entry for frame 661 arrived 4 frames late -> rollback
-[peer 2 t= 12.244s f= 665] remote entry for frame 647 arrived 18 frames late -> rollback
-[peer 2 t= 12.281s f= 667] gap or conflict detected -> fetching Fetch { author: 1, from: 322, to: 322 }
-[peer 2 t= 12.281s f= 667] remote entry for frame 665 arrived 2 frames late -> rollback
-[peer 2 t= 12.291s f= 668] remote entry for frame 663 arrived 5 frames late -> rollback
-[peer 2 t= 12.297s f= 668] remote entry for frame 652 arrived 16 frames late -> rollback
-[peer 2 t= 12.310s f= 669] remote entry for frame 654 arrived 15 frames late -> rollback
-[peer 2 t= 12.327s f= 670] remote entry for frame 647 arrived 23 frames late -> rollback
-[peer 2 t= 12.327s f= 670] remote entry for frame 650 arrived 20 frames late -> rollback
-[peer 2 t= 12.327s f= 670] remote entry for frame 650 arrived 20 frames late -> rollback
-[peer 2 t= 12.358s f= 672] remote entry for frame 654 arrived 18 frames late -> rollback
-[peer 2 t= 12.368s f= 673] remote entry for frame 667 arrived 6 frames late -> rollback
-[peer 2 t= 12.372s f= 673] remote entry for frame 656 arrived 17 frames late -> rollback
-[peer 2 t= 12.372s f= 673] remote entry for frame 647 arrived 26 frames late -> rollback
-[peer 2 t= 12.378s f= 673] remote entry for frame 652 arrived 21 frames late -> rollback
-[peer 2 t= 12.390s f= 674] remote entry for frame 669 arrived 5 frames late -> rollback
-[peer 2 t= 12.430s f= 676] remote entry for frame 671 arrived 5 frames late -> rollback
-[peer 2 t= 12.439s f= 677] remote entry for frame 663 arrived 14 frames late -> rollback
-[peer 2 t= 12.439s f= 677] fetch request for member 2 seq 319..=319: replying with 1 entries
-[peer 2 t= 12.464s f= 678] gap or conflict detected -> fetching Fetch { author: 1, from: 327, to: 327 }
-[peer 2 t= 12.464s f= 678] remote entry for frame 675 arrived 3 frames late -> rollback
-[peer 2 t= 12.473s f= 679] remote entry for frame 673 arrived 6 frames late -> rollback
-[peer 2 t= 12.499s f= 680] remote entry for frame 678 arrived 2 frames late -> rollback
-[peer 2 t= 12.548s f= 684] fetch request for member 2 seq 322..=322: replying with 1 entries
-[peer 2 t= 12.573s f= 685] remote entry for frame 680 arrived 5 frames late -> rollback
-[peer 2 t= 12.573s f= 685] remote entry for frame 682 arrived 3 frames late -> rollback
-[peer 2 t= 12.609s f= 687] remote entry for frame 673 arrived 14 frames late -> rollback
-[peer 2 t= 12.630s f= 688] fetch request for member 2 seq 325..=325: replying with 1 entries
-[peer 2 t= 12.635s f= 689] remote entry for frame 684 arrived 5 frames late -> rollback
-[peer 2 t= 12.638s f= 689] remote entry for frame 686 arrived 3 frames late -> rollback
-[peer 2 t= 12.667s f= 691] remote entry for frame 688 arrived 3 frames late -> rollback
-[peer 2 t= 12.751s f= 696] remote entry for frame 690 arrived 6 frames late -> rollback
-[peer 2 t= 12.755s f= 696] remote entry for frame 692 arrived 4 frames late -> rollback
-[peer 2 t= 12.772s f= 697] remote entry for frame 694 arrived 3 frames late -> rollback
-[peer 2 t= 12.832s f= 701] remote entry for frame 697 arrived 4 frames late -> rollback
-[peer 2 t= 12.842s f= 701] remote entry for frame 699 arrived 2 frames late -> rollback
-[peer 2 t= 12.874s f= 703] remote entry for frame 701 arrived 2 frames late -> rollback
-[peer 2 t= 12.915s f= 706] remote entry for frame 703 arrived 3 frames late -> rollback
-[peer 2 t= 12.961s f= 708] remote entry for frame 705 arrived 3 frames late -> rollback
-[peer 2 t= 13.011s f= 711] remote entry for frame 707 arrived 4 frames late -> rollback
-[peer 2 t= 13.030s f= 712] remote entry for frame 709 arrived 3 frames late -> rollback
-[peer 2 t= 13.065s f= 715] remote entry for frame 711 arrived 4 frames late -> rollback
-[peer 2 t= 13.095s f= 716] remote entry for frame 713 arrived 3 frames late -> rollback
-[peer 2 t= 13.136s f= 719] remote entry for frame 715 arrived 4 frames late -> rollback
-[peer 2 t= 13.137s f= 719] fetch request for member 2 seq 340..=340: replying with 1 entries
-[peer 2 t= 13.158s f= 720] remote entry for frame 717 arrived 3 frames late -> rollback
-[peer 2 t= 13.182s f= 720] remote entry for frame 719 arrived 1 frames late -> rollback
-[peer 2 t= 13.215s f= 720] fetch request for member 2 seq 343..=343: replying with 1 entries
-[peer 2 t= 13.302s f= 720] gap or conflict detected -> fetching Fetch { author: 1, from: 350, to: 350 }
-[peer 2 t= 13.339s f= 720] fetch request for member 2 seq 345..=345: replying with 1 entries
-[peer 2 t= 13.371s f= 720] gap or conflict detected -> fetching Fetch { author: 1, from: 350, to: 352 }
-[peer 2 t= 13.426s f= 720] fetch request for member 2 seq 345..=348: replying with 4 entries
-[peer 2 t= 13.483s f= 720] fetch request for member 2 seq 350..=350: replying with 1 entries
-[peer 2 t= 14.260s f= 720] DONE frames 0..600: digest ed92e73633c1a219; offline replay of my final log ed92e73633c1a219 (EQUAL); rollbacks 5 (max depth 5, resimulated 25), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 643 dropped 66, bad signatures 0, forged entries 0
+[peer 2 t=  0.719s f=   0] session start received; clock offset estimate 66055 us
+[peer 2 t=  1.204s f=   5] remote entry for frame 0 arrived 5 frames late -> rollback
+[peer 2 t=  1.209s f=   5] remote entry for frame 2 arrived 3 frames late -> rollback
+[peer 2 t=  1.296s f=  11] remote entry for frame 4 arrived 7 frames late -> rollback
+[peer 2 t=  1.333s f=  13] gap or conflict detected -> fetching Fetch { author: 1, from: 4, to: 4 }
+[peer 2 t=  1.333s f=  13] remote entry for frame 8 arrived 5 frames late -> rollback
+[peer 2 t=  1.398s f=  17] gap or conflict detected -> fetching Fetch { author: 1, from: 4, to: 5 }
+[peer 2 t=  1.398s f=  17] remote entry for frame 10 arrived 7 frames late -> rollback
+[peer 2 t=  1.411s f=  17] remote entry for frame 12 arrived 5 frames late -> rollback
+[peer 2 t=  1.427s f=  18] remote entry for frame 14 arrived 4 frames late -> rollback
+[peer 2 t=  1.456s f=  20] remote entry for frame 16 arrived 4 frames late -> rollback
+[peer 2 t=  1.494s f=  22] fetch request for member 2 seq 6..=6: replying with 1 entries
+[peer 2 t=  1.495s f=  22] remote entry for frame 6 arrived 16 frames late -> rollback
+[peer 2 t=  1.501s f=  23] remote entry for frame 18 arrived 5 frames late -> rollback
+[peer 2 t=  1.517s f=  24] remote entry for frame 6 arrived 18 frames late -> rollback
+[peer 2 t=  1.543s f=  25] fetch request for member 2 seq 6..=9: replying with 4 entries
+[peer 2 t=  1.550s f=  26] remote entry for frame 20 arrived 6 frames late -> rollback
+[peer 2 t=  1.598s f=  29] remote entry for frame 22 arrived 7 frames late -> rollback
+[peer 2 t=  1.609s f=  29] remote entry for frame 24 arrived 5 frames late -> rollback
+[peer 2 t=  1.616s f=  30] remote entry for frame 26 arrived 4 frames late -> rollback
+[peer 2 t=  1.680s f=  34] remote entry for frame 28 arrived 6 frames late -> rollback
+[peer 2 t=  1.730s f=  37] remote entry for frame 30 arrived 7 frames late -> rollback
+[peer 2 t=  1.772s f=  39] fetch request for member 2 seq 13..=14: replying with 2 entries
+[peer 2 t=  1.793s f=  40] gap or conflict detected -> fetching Fetch { author: 1, from: 17, to: 17 }
+[peer 2 t=  1.794s f=  40] remote entry for frame 34 arrived 6 frames late -> rollback
+[peer 2 t=  1.817s f=  42] remote entry for frame 38 arrived 4 frames late -> rollback
+[peer 2 t=  1.821s f=  42] remote entry for frame 36 arrived 6 frames late -> rollback
+[peer 2 t=  1.904s f=  47] gap or conflict detected -> fetching Fetch { author: 1, from: 17, to: 20 }
+[peer 2 t=  1.904s f=  47] remote entry for frame 40 arrived 7 frames late -> rollback
+[peer 2 t=  1.914s f=  48] fetch request for member 2 seq 13..=19: replying with 7 entries
+[peer 2 t=  1.918s f=  48] remote entry for frame 42 arrived 6 frames late -> rollback
+[peer 2 t=  1.919s f=  48] remote entry for frame 44 arrived 4 frames late -> rollback
+[peer 2 t=  1.928s f=  48] remote entry for frame 32 arrived 16 frames late -> rollback
+[peer 2 t=  1.955s f=  50] remote entry for frame 46 arrived 4 frames late -> rollback
+[peer 2 t=  2.009s f=  53] fetch request for member 2 seq 22..=22: replying with 1 entries
+[peer 2 t=  2.021s f=  54] remote entry for frame 32 arrived 22 frames late -> rollback
+[peer 2 t=  2.021s f=  54] gap or conflict detected -> fetching Fetch { author: 1, from: 25, to: 25 }
+[peer 2 t=  2.021s f=  54] remote entry for frame 50 arrived 4 frames late -> rollback
+[peer 2 t=  2.027s f=  54] remote entry for frame 38 arrived 16 frames late -> rollback
+[peer 2 t=  2.039s f=  55] remote entry for frame 48 arrived 7 frames late -> rollback
+[peer 2 t=  2.039s f=  55] remote entry for frame 34 arrived 21 frames late -> rollback
+[peer 2 t=  2.051s f=  56] remote entry for frame 36 arrived 20 frames late -> rollback
+[peer 2 t=  2.064s f=  57] remote entry for frame 53 arrived 4 frames late -> rollback
+[peer 2 t=  2.101s f=  59] remote entry for frame 55 arrived 4 frames late -> rollback
+[peer 2 t=  2.123s f=  60] fetch request for member 2 seq 22..=25: replying with 4 entries
+[peer 2 t=  2.159s f=  62] remote entry for frame 48 arrived 14 frames late -> rollback
+[peer 2 t=  2.175s f=  63] remote entry for frame 57 arrived 6 frames late -> rollback
+[peer 2 t=  2.221s f=  66] gap or conflict detected -> fetching Fetch { author: 1, from: 30, to: 30 }
+[peer 2 t=  2.221s f=  66] remote entry for frame 60 arrived 6 frames late -> rollback
+[peer 2 t=  2.231s f=  66] remote entry for frame 63 arrived 3 frames late -> rollback
+[peer 2 t=  2.247s f=  68] remote entry for frame 61 arrived 7 frames late -> rollback
+[peer 2 t=  2.282s f=  70] fetch request for member 2 seq 31..=31: replying with 1 entries
+[peer 2 t=  2.294s f=  70] gap or conflict detected -> fetching Fetch { author: 1, from: 30, to: 33 }
+[peer 2 t=  2.294s f=  70] remote entry for frame 65 arrived 5 frames late -> rollback
+[peer 2 t=  2.328s f=  72] remote entry for frame 69 arrived 3 frames late -> rollback
+[peer 2 t=  2.374s f=  75] remote entry for frame 71 arrived 4 frames late -> rollback
+[peer 2 t=  2.393s f=  76] remote entry for frame 59 arrived 17 frames late -> rollback
+[peer 2 t=  2.414s f=  78] remote entry for frame 63 arrived 15 frames late -> rollback
+[peer 2 t=  2.421s f=  78] gap or conflict detected -> fetching Fetch { author: 1, from: 35, to: 37 }
+[peer 2 t=  2.421s f=  78] remote entry for frame 73 arrived 5 frames late -> rollback
+[peer 2 t=  2.432s f=  79] remote entry for frame 61 arrived 18 frames late -> rollback
+[peer 2 t=  2.440s f=  79] remote entry for frame 60 arrived 19 frames late -> rollback
+[peer 2 t=  2.445s f=  79] remote entry for frame 59 arrived 20 frames late -> rollback
+[peer 2 t=  2.470s f=  81] remote entry for frame 77 arrived 4 frames late -> rollback
+[peer 2 t=  2.497s f=  83] gap or conflict detected -> fetching Fetch { author: 1, from: 35, to: 40 }
+[peer 2 t=  2.497s f=  83] remote entry for frame 79 arrived 4 frames late -> rollback
+[peer 2 t=  2.526s f=  84] fetch request for member 2 seq 37..=37: replying with 1 entries
+[peer 2 t=  2.533s f=  85] remote entry for frame 81 arrived 4 frames late -> rollback
+[peer 2 t=  2.551s f=  86] remote entry for frame 71 arrived 15 frames late -> rollback
+[peer 2 t=  2.567s f=  87] remote entry for frame 69 arrived 18 frames late -> rollback
+[peer 2 t=  2.570s f=  87] remote entry for frame 83 arrived 4 frames late -> rollback
+[peer 2 t=  2.570s f=  87] remote entry for frame 67 arrived 20 frames late -> rollback
+[peer 2 t=  2.592s f=  88] fetch request for member 2 seq 37..=39: replying with 3 entries
+[peer 2 t=  2.614s f=  90] remote entry for frame 69 arrived 21 frames late -> rollback
+[peer 2 t=  2.619s f=  90] remote entry for frame 77 arrived 13 frames late -> rollback
+[peer 2 t=  2.632s f=  91] remote entry for frame 67 arrived 24 frames late -> rollback
+[peer 2 t=  2.638s f=  91] remote entry for frame 73 arrived 18 frames late -> rollback
+[peer 2 t=  2.641s f=  91] gap or conflict detected -> fetching Fetch { author: 1, from: 39, to: 43 }
+[peer 2 t=  2.641s f=  91] remote entry for frame 85 arrived 6 frames late -> rollback
+[peer 2 t=  2.641s f=  91] remote entry for frame 71 arrived 20 frames late -> rollback
+[peer 2 t=  2.644s f=  91] remote entry for frame 75 arrived 16 frames late -> rollback
+[peer 2 t=  2.677s f=  93] remote entry for frame 87 arrived 6 frames late -> rollback
+[peer 2 t=  2.683s f=  94] remote entry for frame 89 arrived 5 frames late -> rollback
+[peer 2 t=  2.721s f=  96] remote entry for frame 91 arrived 5 frames late -> rollback
+[peer 2 t=  2.748s f=  98] remote entry for frame 75 arrived 23 frames late -> rollback
+[peer 2 t=  2.759s f=  98] remote entry for frame 83 arrived 15 frames late -> rollback
+[peer 2 t=  2.760s f=  98] remote entry for frame 81 arrived 17 frames late -> rollback
+[peer 2 t=  2.771s f=  99] fetch request for member 2 seq 45..=45: replying with 1 entries
+[peer 2 t=  2.774s f=  99] remote entry for frame 79 arrived 20 frames late -> rollback
+[peer 2 t=  2.777s f=  99] remote entry for frame 77 arrived 22 frames late -> rollback
+[peer 2 t=  2.783s f= 100] gap or conflict detected -> fetching Fetch { author: 1, from: 48, to: 48 }
+[peer 2 t=  2.783s f= 100] remote entry for frame 96 arrived 4 frames late -> rollback
+[peer 2 t=  2.826s f= 102] remote entry for frame 98 arrived 4 frames late -> rollback
+[peer 2 t=  2.877s f= 105] fetch request for member 2 seq 49..=49: replying with 1 entries
+[peer 2 t=  2.882s f= 106] gap or conflict detected -> fetching Fetch { author: 1, from: 48, to: 50 }
+[peer 2 t=  2.882s f= 106] remote entry for frame 100 arrived 6 frames late -> rollback
+[peer 2 t=  2.901s f= 107] remote entry for frame 93 arrived 14 frames late -> rollback
+[peer 2 t=  2.910s f= 107] remote entry for frame 102 arrived 5 frames late -> rollback
+[peer 2 t=  2.935s f= 109] remote entry for frame 104 arrived 5 frames late -> rollback
+[peer 2 t=  2.960s f= 110] remote entry for frame 106 arrived 4 frames late -> rollback
+[peer 2 t=  2.980s f= 112] remote entry for frame 108 arrived 4 frames late -> rollback
+[peer 2 t=  3.002s f= 113] remote entry for frame 93 arrived 20 frames late -> rollback
+[peer 2 t=  3.046s f= 116] remote entry for frame 110 arrived 6 frames late -> rollback
+[peer 2 t=  3.052s f= 116] remote entry for frame 98 arrived 18 frames late -> rollback
+[peer 2 t=  3.054s f= 116] remote entry for frame 96 arrived 20 frames late -> rollback
+[peer 2 t=  3.087s f= 118] gap or conflict detected -> fetching Fetch { author: 1, from: 57, to: 57 }
+[peer 2 t=  3.087s f= 118] remote entry for frame 114 arrived 4 frames late -> rollback
+[peer 2 t=  3.098s f= 119] remote entry for frame 112 arrived 7 frames late -> rollback
+[peer 2 t=  3.132s f= 121] fetch request for member 2 seq 53..=56: replying with 4 entries
+[peer 2 t=  3.141s f= 121] remote entry for frame 116 arrived 5 frames late -> rollback
+[peer 2 t=  3.191s f= 124] gap or conflict detected -> fetching Fetch { author: 1, from: 60, to: 61 }
+[peer 2 t=  3.191s f= 124] remote entry for frame 120 arrived 4 frames late -> rollback
+[peer 2 t=  3.191s f= 124] remote entry for frame 118 arrived 6 frames late -> rollback
+[peer 2 t=  3.233s f= 127] remote entry for frame 120 arrived 7 frames late -> rollback
+[peer 2 t=  3.247s f= 128] remote entry for frame 122 arrived 6 frames late -> rollback
+[peer 2 t=  3.268s f= 129] fetch request for member 2 seq 53..=61: replying with 9 entries
+[peer 2 t=  3.274s f= 129] remote entry for frame 124 arrived 5 frames late -> rollback
+[peer 2 t=  3.297s f= 131] gap or conflict detected -> fetching Fetch { author: 1, from: 65, to: 65 }
+[peer 2 t=  3.297s f= 131] remote entry for frame 126 arrived 5 frames late -> rollback
+[peer 2 t=  3.330s f= 133] remote entry for frame 126 arrived 7 frames late -> rollback
+[peer 2 t=  3.402s f= 137] gap or conflict detected -> fetching Fetch { author: 1, from: 67, to: 67 }
+[peer 2 t=  3.402s f= 137] remote entry for frame 130 arrived 7 frames late -> rollback
+[peer 2 t=  3.419s f= 138] remote entry for frame 126 arrived 12 frames late -> rollback
+[peer 2 t=  3.431s f= 139] remote entry for frame 133 arrived 6 frames late -> rollback
+[peer 2 t=  3.448s f= 140] remote entry for frame 135 arrived 5 frames late -> rollback
+[peer 2 t=  3.448s f= 140] fetch request for member 2 seq 65..=67: replying with 3 entries
+[peer 2 t=  3.499s f= 143] gap or conflict detected -> fetching Fetch { author: 1, from: 67, to: 70 }
+[peer 2 t=  3.499s f= 143] remote entry for frame 137 arrived 6 frames late -> rollback
+[peer 2 t=  3.528s f= 144] remote entry for frame 141 arrived 3 frames late -> rollback
+[peer 2 t=  3.534s f= 145] remote entry for frame 139 arrived 6 frames late -> rollback
+[peer 2 t=  3.558s f= 146] remote entry for frame 128 arrived 18 frames late -> rollback
+[peer 2 t=  3.561s f= 146] remote entry for frame 143 arrived 3 frames late -> rollback
+[peer 2 t=  3.583s f= 148] fetch request for member 2 seq 65..=71: replying with 7 entries
+[peer 2 t=  3.617s f= 150] remote entry for frame 145 arrived 5 frames late -> rollback
+[peer 2 t=  3.626s f= 150] fetch request for member 2 seq 71..=72: replying with 2 entries
+[peer 2 t=  3.633s f= 151] remote entry for frame 130 arrived 21 frames late -> rollback
+[peer 2 t=  3.634s f= 151] remote entry for frame 133 arrived 18 frames late -> rollback
+[peer 2 t=  3.657s f= 152] remote entry for frame 147 arrived 5 frames late -> rollback
+[peer 2 t=  3.657s f= 152] remote entry for frame 128 arrived 24 frames late -> rollback
+[peer 2 t=  3.674s f= 153] remote entry for frame 135 arrived 18 frames late -> rollback
+[peer 2 t=  3.694s f= 154] remote entry for frame 149 arrived 5 frames late -> rollback
+[peer 2 t=  3.722s f= 156] remote entry for frame 151 arrived 5 frames late -> rollback
+[peer 2 t=  3.752s f= 158] remote entry for frame 153 arrived 5 frames late -> rollback
+[peer 2 t=  3.789s f= 160] fetch request for member 2 seq 78..=78: replying with 1 entries
+[peer 2 t=  3.802s f= 161] remote entry for frame 155 arrived 6 frames late -> rollback
+[peer 2 t=  3.802s f= 161] remote entry for frame 157 arrived 4 frames late -> rollback
+[peer 2 t=  3.848s f= 164] remote entry for frame 159 arrived 5 frames late -> rollback
+[peer 2 t=  3.963s f= 171] gap or conflict detected -> fetching Fetch { author: 1, from: 83, to: 84 }
+[peer 2 t=  3.963s f= 171] remote entry for frame 165 arrived 6 frames late -> rollback
+[peer 2 t=  3.979s f= 172] fetch request for member 2 seq 83..=83: replying with 1 entries
+[peer 2 t=  3.997s f= 173] remote entry for frame 167 arrived 6 frames late -> rollback
+[peer 2 t=  4.042s f= 175] gap or conflict detected -> fetching Fetch { author: 1, from: 83, to: 86 }
+[peer 2 t=  4.042s f= 175] remote entry for frame 169 arrived 6 frames late -> rollback
+[peer 2 t=  4.056s f= 176] remote entry for frame 171 arrived 5 frames late -> rollback
+[peer 2 t=  4.069s f= 177] remote entry for frame 173 arrived 4 frames late -> rollback
+[peer 2 t=  4.081s f= 178] fetch request for member 2 seq 83..=85: replying with 3 entries
+[peer 2 t=  4.100s f= 179] remote entry for frame 161 arrived 18 frames late -> rollback
+[peer 2 t=  4.125s f= 180] remote entry for frame 163 arrived 17 frames late -> rollback
+[peer 2 t=  4.136s f= 181] remote entry for frame 176 arrived 5 frames late -> rollback
+[peer 2 t=  4.155s f= 182] remote entry for frame 167 arrived 15 frames late -> rollback
+[peer 2 t=  4.155s f= 182] remote entry for frame 165 arrived 17 frames late -> rollback
+[peer 2 t=  4.161s f= 182] remote entry for frame 163 arrived 19 frames late -> rollback
+[peer 2 t=  4.168s f= 183] remote entry for frame 161 arrived 22 frames late -> rollback
+[peer 2 t=  4.180s f= 184] remote entry for frame 178 arrived 6 frames late -> rollback
+[peer 2 t=  4.189s f= 184] fetch request for member 2 seq 89..=89: replying with 1 entries
+[peer 2 t=  4.227s f= 186] gap or conflict detected -> fetching Fetch { author: 1, from: 92, to: 92 }
+[peer 2 t=  4.227s f= 186] remote entry for frame 182 arrived 4 frames late -> rollback
+[peer 2 t=  4.227s f= 186] remote entry for frame 180 arrived 6 frames late -> rollback
+[peer 2 t=  4.257s f= 188] remote entry for frame 184 arrived 4 frames late -> rollback
+[peer 2 t=  4.276s f= 189] remote entry for frame 186 arrived 3 frames late -> rollback
+[peer 2 t=  4.328s f= 192] remote entry for frame 188 arrived 4 frames late -> rollback
+[peer 2 t=  4.346s f= 194] fetch request for member 2 seq 89..=93: replying with 5 entries
+[peer 2 t=  4.348s f= 194] remote entry for frame 190 arrived 4 frames late -> rollback
+[peer 2 t=  4.372s f= 195] fetch request for member 2 seq 91..=95: replying with 5 entries
+[peer 2 t=  4.397s f= 197] remote entry for frame 180 arrived 17 frames late -> rollback
+[peer 2 t=  4.422s f= 198] remote entry for frame 192 arrived 6 frames late -> rollback
+[peer 2 t=  4.435s f= 199] fetch request for member 2 seq 91..=92: replying with 2 entries
+[peer 2 t=  4.467s f= 201] remote entry for frame 194 arrived 7 frames late -> rollback
+[peer 2 t=  4.472s f= 201] remote entry for frame 196 arrived 5 frames late -> rollback
+[peer 2 t=  4.501s f= 203] remote entry for frame 198 arrived 5 frames late -> rollback
+[peer 2 t=  4.525s f= 204] fetch request for member 2 seq 98..=99: replying with 2 entries
+[peer 2 t=  4.557s f= 206] remote entry for frame 200 arrived 6 frames late -> rollback
+[peer 2 t=  4.565s f= 207] remote entry for frame 202 arrived 5 frames late -> rollback
+[peer 2 t=  4.599s f= 209] remote entry for frame 204 arrived 5 frames late -> rollback
+[peer 2 t=  4.599s f= 209] fetch request for member 2 seq 98..=103: replying with 6 entries
+[peer 2 t=  4.650s f= 212] remote entry for frame 206 arrived 6 frames late -> rollback
+[peer 2 t=  4.682s f= 214] remote entry for frame 208 arrived 6 frames late -> rollback
+[peer 2 t=  4.733s f= 217] remote entry for frame 210 arrived 7 frames late -> rollback
+[peer 2 t=  4.733s f= 217] remote entry for frame 212 arrived 5 frames late -> rollback
+[peer 2 t=  4.753s f= 218] remote entry for frame 214 arrived 4 frames late -> rollback
+[peer 2 t=  4.803s f= 221] remote entry for frame 216 arrived 5 frames late -> rollback
+[peer 2 t=  4.870s f= 225] gap or conflict detected -> fetching Fetch { author: 1, from: 111, to: 111 }
+[peer 2 t=  4.870s f= 225] remote entry for frame 221 arrived 4 frames late -> rollback
+[peer 2 t=  4.872s f= 225] remote entry for frame 219 arrived 6 frames late -> rollback
+[peer 2 t=  4.927s f= 228] remote entry for frame 223 arrived 5 frames late -> rollback
+[peer 2 t=  4.955s f= 230] remote entry for frame 225 arrived 5 frames late -> rollback
+[peer 2 t=  4.974s f= 231] remote entry for frame 227 arrived 4 frames late -> rollback
+[peer 2 t=  4.974s f= 231] fetch request for member 2 seq 112..=114: replying with 3 entries
+[peer 2 t=  5.048s f= 236] remote entry for frame 219 arrived 17 frames late -> rollback
+[peer 2 t=  5.096s f= 237] gap or conflict detected -> fetching Fetch { author: 1, from: 116, to: 116 }
+[peer 2 t=  5.096s f= 237] remote entry for frame 233 arrived 4 frames late -> rollback
+[peer 2 t=  5.134s f= 241] fetch request for member 2 seq 112..=116: replying with 5 entries
+[peer 2 t=  5.187s f= 244] gap or conflict detected -> fetching Fetch { author: 1, from: 116, to: 117 }
+[peer 2 t=  5.187s f= 244] remote entry for frame 237 arrived 7 frames late -> rollback
+[peer 2 t=  5.212s f= 245] remote entry for frame 241 arrived 4 frames late -> rollback
+[peer 2 t=  5.252s f= 248] remote entry for frame 243 arrived 5 frames late -> rollback
+[peer 2 t=  5.267s f= 249] remote entry for frame 245 arrived 4 frames late -> rollback
+[peer 2 t=  5.272s f= 249] remote entry for frame 229 arrived 20 frames late -> rollback
+[peer 2 t=  5.320s f= 252] gap or conflict detected -> fetching Fetch { author: 1, from: 119, to: 122 }
+[peer 2 t=  5.320s f= 252] remote entry for frame 247 arrived 5 frames late -> rollback
+[peer 2 t=  5.350s f= 254] remote entry for frame 233 arrived 21 frames late -> rollback
+[peer 2 t=  5.356s f= 254] remote entry for frame 229 arrived 25 frames late -> rollback
+[peer 2 t=  5.373s f= 255] fetch request for member 2 seq 121..=123: replying with 3 entries
+[peer 2 t=  5.373s f= 255] remote entry for frame 249 arrived 6 frames late -> rollback
+[peer 2 t=  5.376s f= 255] remote entry for frame 251 arrived 4 frames late -> rollback
+[peer 2 t=  5.417s f= 258] gap or conflict detected -> fetching Fetch { author: 1, from: 119, to: 125 }
+[peer 2 t=  5.417s f= 258] remote entry for frame 253 arrived 5 frames late -> rollback
+[peer 2 t=  5.435s f= 259] remote entry for frame 239 arrived 20 frames late -> rollback
+[peer 2 t=  5.439s f= 259] remote entry for frame 241 arrived 18 frames late -> rollback
+[peer 2 t=  5.439s f= 259] remote entry for frame 243 arrived 16 frames late -> rollback
+[peer 2 t=  5.448s f= 260] remote entry for frame 255 arrived 5 frames late -> rollback
+[peer 2 t=  5.460s f= 260] remote entry for frame 245 arrived 15 frames late -> rollback
+[peer 2 t=  5.515s f= 264] remote entry for frame 258 arrived 6 frames late -> rollback
+[peer 2 t=  5.531s f= 265] gap or conflict detected -> fetching Fetch { author: 1, from: 129, to: 129 }
+[peer 2 t=  5.531s f= 265] remote entry for frame 260 arrived 5 frames late -> rollback
+[peer 2 t=  5.534s f= 265] remote entry for frame 241 arrived 24 frames late -> rollback
+[peer 2 t=  5.545s f= 265] remote entry for frame 249 arrived 16 frames late -> rollback
+[peer 2 t=  5.550s f= 266] remote entry for frame 260 arrived 6 frames late -> rollback
+[peer 2 t=  5.550s f= 266] fetch request for member 2 seq 128..=129: replying with 2 entries
+[peer 2 t=  5.566s f= 266] remote entry for frame 247 arrived 19 frames late -> rollback
+[peer 2 t=  5.566s f= 266] remote entry for frame 262 arrived 4 frames late -> rollback
+[peer 2 t=  5.579s f= 267] remote entry for frame 264 arrived 3 frames late -> rollback
+[peer 2 t=  5.582s f= 268] remote entry for frame 243 arrived 25 frames late -> rollback
+[peer 2 t=  5.585s f= 268] remote entry for frame 245 arrived 23 frames late -> rollback
+[peer 2 t=  5.610s f= 269] remote entry for frame 266 arrived 3 frames late -> rollback
+[peer 2 t=  5.634s f= 271] fetch request for member 2 seq 128..=130: replying with 3 entries
+[peer 2 t=  5.650s f= 272] remote entry for frame 260 arrived 12 frames late -> rollback
+[peer 2 t=  5.689s f= 274] remote entry for frame 268 arrived 6 frames late -> rollback
+[peer 2 t=  5.709s f= 275] remote entry for frame 270 arrived 5 frames late -> rollback
+[peer 2 t=  5.741s f= 277] fetch request for member 2 seq 132..=134: replying with 3 entries
+[peer 2 t=  5.770s f= 279] remote entry for frame 272 arrived 7 frames late -> rollback
+[peer 2 t=  5.833s f= 283] gap or conflict detected -> fetching Fetch { author: 1, from: 137, to: 137 }
+[peer 2 t=  5.833s f= 283] remote entry for frame 276 arrived 7 frames late -> rollback
+[peer 2 t=  5.834s f= 283] fetch request for member 2 seq 132..=136: replying with 5 entries
+[peer 2 t=  5.848s f= 284] remote entry for frame 278 arrived 6 frames late -> rollback
+[peer 2 t=  5.889s f= 286] remote entry for frame 280 arrived 6 frames late -> rollback
+[peer 2 t=  5.980s f= 292] gap or conflict detected -> fetching Fetch { author: 1, from: 137, to: 142 }
+[peer 2 t=  5.980s f= 292] remote entry for frame 287 arrived 5 frames late -> rollback
+[peer 2 t=  6.010s f= 293] remote entry for frame 274 arrived 19 frames late -> rollback
+[peer 2 t=  6.026s f= 294] gap or conflict detected -> fetching Fetch { author: 1, from: 141, to: 143 }
+[peer 2 t=  6.026s f= 294] remote entry for frame 289 arrived 5 frames late -> rollback
+[peer 2 t=  6.031s f= 295] fetch request for member 2 seq 143..=144: replying with 2 entries
+[peer 2 t=  6.068s f= 297] remote entry for frame 291 arrived 6 frames late -> rollback
+[peer 2 t=  6.105s f= 299] gap or conflict detected -> fetching Fetch { author: 1, from: 141, to: 146 }
+[peer 2 t=  6.105s f= 299] remote entry for frame 295 arrived 4 frames late -> rollback
+[peer 2 t=  6.110s f= 299] remote entry for frame 293 arrived 6 frames late -> rollback
+[peer 2 t=  6.144s f= 301] fetch request for member 2 seq 143..=146: replying with 4 entries
+[peer 2 t=  6.171s f= 303] remote entry for frame 283 arrived 20 frames late -> rollback
+[peer 2 t=  6.187s f= 304] remote entry for frame 287 arrived 17 frames late -> rollback
+[peer 2 t=  6.190s f= 304] remote entry for frame 285 arrived 19 frames late -> rollback
+[peer 2 t=  6.200s f= 305] gap or conflict detected -> fetching Fetch { author: 1, from: 148, to: 149 }
+[peer 2 t=  6.200s f= 305] remote entry for frame 301 arrived 4 frames late -> rollback
+[peer 2 t=  6.204s f= 305] remote entry for frame 299 arrived 6 frames late -> rollback
+[peer 2 t=  6.279s f= 310] gap or conflict detected -> fetching Fetch { author: 1, from: 148, to: 151 }
+[peer 2 t=  6.279s f= 310] remote entry for frame 305 arrived 5 frames late -> rollback
+[peer 2 t=  6.304s f= 311] fetch request for member 2 seq 151..=151: replying with 1 entries
+[peer 2 t=  6.337s f= 313] remote entry for frame 307 arrived 6 frames late -> rollback
+[peer 2 t=  6.371s f= 315] remote entry for frame 309 arrived 6 frames late -> rollback
+[peer 2 t=  6.397s f= 317] remote entry for frame 311 arrived 6 frames late -> rollback
+[peer 2 t=  6.400s f= 317] fetch request for member 2 seq 151..=153: replying with 3 entries
+[peer 2 t=  6.406s f= 317] gap or conflict detected -> fetching Fetch { author: 1, from: 148, to: 156 }
+[peer 2 t=  6.406s f= 317] remote entry for frame 313 arrived 4 frames late -> rollback
+[peer 2 t=  6.435s f= 319] remote entry for frame 303 arrived 16 frames late -> rollback
+[peer 2 t=  6.435s f= 319] remote entry for frame 299 arrived 20 frames late -> rollback
+[peer 2 t=  6.443s f= 319] remote entry for frame 301 arrived 18 frames late -> rollback
+[peer 2 t=  6.452s f= 320] fetch request for member 2 seq 153..=155: replying with 3 entries
+[peer 2 t=  6.455s f= 320] remote entry for frame 315 arrived 5 frames late -> rollback
+[peer 2 t=  6.550s f= 326] remote entry for frame 319 arrived 7 frames late -> rollback
+[peer 2 t=  6.555s f= 326] fetch request for member 2 seq 153..=157: replying with 5 entries
+[peer 2 t=  6.558s f= 326] remote entry for frame 311 arrived 15 frames late -> rollback
+[peer 2 t=  6.568s f= 327] remote entry for frame 297 arrived 30 frames late -> rollback
+[peer 2 t=  6.577s f= 327] gap or conflict detected -> fetching Fetch { author: 1, from: 153, to: 160 }
+[peer 2 t=  6.577s f= 327] remote entry for frame 322 arrived 5 frames late -> rollback
+[peer 2 t=  6.580s f= 328] remote entry for frame 305 arrived 23 frames late -> rollback
+[peer 2 t=  6.597s f= 329] remote entry for frame 309 arrived 20 frames late -> rollback
+[peer 2 t=  6.597s f= 329] remote entry for frame 307 arrived 22 frames late -> rollback
+[peer 2 t=  6.600s f= 329] remote entry for frame 301 arrived 28 frames late -> rollback
+[peer 2 t=  6.608s f= 329] remote entry for frame 299 arrived 30 frames late -> rollback
+[peer 2 t=  6.632s f= 331] remote entry for frame 324 arrived 7 frames late -> rollback
+[peer 2 t=  6.639s f= 331] fetch request for member 2 seq 161..=161: replying with 1 entries
+[peer 2 t=  6.653s f= 332] gap or conflict detected -> fetching Fetch { author: 1, from: 153, to: 162 }
+[peer 2 t=  6.654s f= 332] remote entry for frame 326 arrived 6 frames late -> rollback
+[peer 2 t=  6.690s f= 334] remote entry for frame 330 arrived 4 frames late -> rollback
+[peer 2 t=  6.690s f= 334] remote entry for frame 328 arrived 6 frames late -> rollback
+[peer 2 t=  6.700s f= 335] remote entry for frame 315 arrived 20 frames late -> rollback
+[peer 2 t=  6.700s f= 335] remote entry for frame 311 arrived 24 frames late -> rollback
+[peer 2 t=  6.700s f= 335] remote entry for frame 305 arrived 30 frames late -> rollback
+[peer 2 t=  6.720s f= 336] remote entry for frame 313 arrived 23 frames late -> rollback
+[peer 2 t=  6.720s f= 336] remote entry for frame 307 arrived 29 frames late -> rollback
+[peer 2 t=  6.727s f= 336] gap or conflict detected -> fetching Fetch { author: 1, from: 159, to: 165 }
+[peer 2 t=  6.727s f= 336] remote entry for frame 332 arrived 4 frames late -> rollback
+[peer 2 t=  6.727s f= 336] remote entry for frame 317 arrived 19 frames late -> rollback
+[peer 2 t=  6.752s f= 338] fetch request for member 2 seq 165..=165: replying with 1 entries
+[peer 2 t=  6.784s f= 340] remote entry for frame 334 arrived 6 frames late -> rollback
+[peer 2 t=  6.807s f= 341] remote entry for frame 336 arrived 5 frames late -> rollback
+[peer 2 t=  6.808s f= 341] remote entry for frame 313 arrived 28 frames late -> rollback
+[peer 2 t=  6.822s f= 342] remote entry for frame 305 arrived 37 frames late -> rollback
+[peer 2 t=  6.822s f= 342] remote entry for frame 307 arrived 35 frames late -> rollback
+[peer 2 t=  6.838s f= 343] remote entry for frame 317 arrived 26 frames late -> rollback
+[peer 2 t=  6.838s f= 343] remote entry for frame 322 arrived 21 frames late -> rollback
+[peer 2 t=  6.841s f= 343] remote entry for frame 309 arrived 34 frames late -> rollback
+[peer 2 t=  6.844s f= 343] remote entry for frame 338 arrived 5 frames late -> rollback
+[peer 2 t=  6.847s f= 344] remote entry for frame 315 arrived 29 frames late -> rollback
+[peer 2 t=  6.848s f= 344] remote entry for frame 319 arrived 25 frames late -> rollback
+[peer 2 t=  6.851s f= 344] remote entry for frame 322 arrived 22 frames late -> rollback
+[peer 2 t=  6.851s f= 344] remote entry for frame 328 arrived 16 frames late -> rollback
+[peer 2 t=  6.854s f= 344] remote entry for frame 317 arrived 27 frames late -> rollback
+[peer 2 t=  6.872s f= 345] remote entry for frame 326 arrived 19 frames late -> rollback
+[peer 2 t=  6.872s f= 345] fetch request for member 2 seq 169..=169: replying with 1 entries
+[peer 2 t=  6.884s f= 346] remote entry for frame 330 arrived 16 frames late -> rollback
+[peer 2 t=  6.884s f= 346] remote entry for frame 340 arrived 6 frames late -> rollback
+[peer 2 t=  6.899s f= 347] remote entry for frame 342 arrived 5 frames late -> rollback
+[peer 2 t=  6.906s f= 347] remote entry for frame 324 arrived 23 frames late -> rollback
+[peer 2 t=  6.936s f= 349] remote entry for frame 344 arrived 5 frames late -> rollback
+[peer 2 t=  6.957s f= 350] fetch request for member 2 seq 171..=171: replying with 1 entries
+[peer 2 t=  6.986s f= 352] remote entry for frame 346 arrived 6 frames late -> rollback
+[peer 2 t=  7.032s f= 355] gap or conflict detected -> fetching Fetch { author: 1, from: 174, to: 174 }
+[peer 2 t=  7.032s f= 355] remote entry for frame 350 arrived 5 frames late -> rollback
+[peer 2 t=  7.041s f= 355] fetch request for member 2 seq 171..=173: replying with 3 entries
+[peer 2 t=  7.054s f= 356] remote entry for frame 352 arrived 4 frames late -> rollback
+[peer 2 t=  7.109s f= 359] gap or conflict detected -> fetching Fetch { author: 1, from: 174, to: 176 }
+[peer 2 t=  7.109s f= 359] remote entry for frame 354 arrived 5 frames late -> rollback
+[peer 2 t=  7.136s f= 361] remote entry for frame 356 arrived 5 frames late -> rollback
+[peer 2 t=  7.151s f= 362] remote entry for frame 358 arrived 4 frames late -> rollback
+[peer 2 t=  7.243s f= 367] gap or conflict detected -> fetching Fetch { author: 1, from: 174, to: 180 }
+[peer 2 t=  7.243s f= 367] remote entry for frame 363 arrived 4 frames late -> rollback
+[peer 2 t=  7.251s f= 368] remote entry for frame 352 arrived 16 frames late -> rollback
+[peer 2 t=  7.281s f= 370] remote entry for frame 350 arrived 20 frames late -> rollback
+[peer 2 t=  7.286s f= 370] remote entry for frame 348 arrived 22 frames late -> rollback
+[peer 2 t=  7.308s f= 371] fetch request for member 2 seq 181..=181: replying with 1 entries
+[peer 2 t=  7.332s f= 373] gap or conflict detected -> fetching Fetch { author: 1, from: 180, to: 183 }
+[peer 2 t=  7.332s f= 373] remote entry for frame 369 arrived 4 frames late -> rollback
+[peer 2 t=  7.340s f= 373] remote entry for frame 367 arrived 6 frames late -> rollback
+[peer 2 t=  7.384s f= 376] remote entry for frame 352 arrived 24 frames late -> rollback
+[peer 2 t=  7.393s f= 376] remote entry for frame 348 arrived 28 frames late -> rollback
+[peer 2 t=  7.414s f= 378] remote entry for frame 350 arrived 28 frames late -> rollback
+[peer 2 t=  7.432s f= 379] remote entry for frame 354 arrived 25 frames late -> rollback
+[peer 2 t=  7.437s f= 379] remote entry for frame 358 arrived 21 frames late -> rollback
+[peer 2 t=  7.437s f= 379] remote entry for frame 356 arrived 23 frames late -> rollback
+[peer 2 t=  7.449s f= 380] gap or conflict detected -> fetching Fetch { author: 1, from: 180, to: 185 }
+[peer 2 t=  7.449s f= 380] remote entry for frame 373 arrived 7 frames late -> rollback
+[peer 2 t=  7.473s f= 381] remote entry for frame 365 arrived 16 frames late -> rollback
+[peer 2 t=  7.473s f= 381] remote entry for frame 375 arrived 6 frames late -> rollback
+[peer 2 t=  7.487s f= 382] remote entry for frame 367 arrived 15 frames late -> rollback
+[peer 2 t=  7.495s f= 382] remote entry for frame 377 arrived 5 frames late -> rollback
+[peer 2 t=  7.506s f= 383] remote entry for frame 363 arrived 20 frames late -> rollback
+[peer 2 t=  7.506s f= 383] remote entry for frame 360 arrived 23 frames late -> rollback
+[peer 2 t=  7.522s f= 384] gap or conflict detected -> fetching Fetch { author: 1, from: 185, to: 188 }
+[peer 2 t=  7.522s f= 384] remote entry for frame 379 arrived 5 frames late -> rollback
+[peer 2 t=  7.547s f= 386] fetch request for member 2 seq 189..=189: replying with 1 entries
+[peer 2 t=  7.574s f= 387] remote entry for frame 381 arrived 6 frames late -> rollback
+[peer 2 t=  7.599s f= 389] gap or conflict detected -> fetching Fetch { author: 1, from: 185, to: 191 }
+[peer 2 t=  7.600s f= 389] remote entry for frame 385 arrived 4 frames late -> rollback
+[peer 2 t=  7.600s f= 389] remote entry for frame 383 arrived 6 frames late -> rollback
+[peer 2 t=  7.650s f= 392] remote entry for frame 373 arrived 19 frames late -> rollback
+[peer 2 t=  7.654s f= 392] remote entry for frame 375 arrived 17 frames late -> rollback
+[peer 2 t=  7.654s f= 392] remote entry for frame 387 arrived 5 frames late -> rollback
+[peer 2 t=  7.702s f= 395] remote entry for frame 389 arrived 6 frames late -> rollback
+[peer 2 t=  7.708s f= 395] remote entry for frame 391 arrived 4 frames late -> rollback
+[peer 2 t=  7.726s f= 396] remote entry for frame 373 arrived 23 frames late -> rollback
+[peer 2 t=  7.733s f= 397] remote entry for frame 379 arrived 18 frames late -> rollback
+[peer 2 t=  7.742s f= 397] remote entry for frame 383 arrived 14 frames late -> rollback
+[peer 2 t=  7.753s f= 398] remote entry for frame 377 arrived 21 frames late -> rollback
+[peer 2 t=  7.766s f= 399] gap or conflict detected -> fetching Fetch { author: 1, from: 185, to: 195 }
+[peer 2 t=  7.767s f= 399] remote entry for frame 393 arrived 6 frames late -> rollback
+[peer 2 t=  7.771s f= 399] remote entry for frame 381 arrived 18 frames late -> rollback
+[peer 2 t=  7.777s f= 399] remote entry for frame 375 arrived 24 frames late -> rollback
+[peer 2 t=  7.780s f= 400] remote entry for frame 371 arrived 29 frames late -> rollback
+[peer 2 t=  7.795s f= 400] remote entry for frame 396 arrived 4 frames late -> rollback
+[peer 2 t=  7.837s f= 403] remote entry for frame 398 arrived 5 frames late -> rollback
+[peer 2 t=  7.857s f= 404] remote entry for frame 400 arrived 4 frames late -> rollback
+[peer 2 t=  7.867s f= 405] remote entry for frame 400 arrived 5 frames late -> rollback
+[peer 2 t=  7.902s f= 407] remote entry for frame 373 arrived 34 frames late -> rollback
+[peer 2 t=  7.902s f= 407] remote entry for frame 389 arrived 18 frames late -> rollback
+[peer 2 t=  7.906s f= 407] remote entry for frame 402 arrived 5 frames late -> rollback
+[peer 2 t=  7.909s f= 407] fetch request for member 2 seq 198..=198: replying with 1 entries
+[peer 2 t=  7.912s f= 408] remote entry for frame 377 arrived 31 frames late -> rollback
+[peer 2 t=  7.915s f= 408] remote entry for frame 391 arrived 17 frames late -> rollback
+[peer 2 t=  7.918s f= 408] remote entry for frame 383 arrived 25 frames late -> rollback
+[peer 2 t=  7.920s f= 408] remote entry for frame 385 arrived 23 frames late -> rollback
+[peer 2 t=  7.923s f= 408] remote entry for frame 375 arrived 33 frames late -> rollback
+[peer 2 t=  7.927s f= 408] remote entry for frame 387 arrived 21 frames late -> rollback
+[peer 2 t=  7.927s f= 408] remote entry for frame 381 arrived 27 frames late -> rollback
+[peer 2 t=  7.932s f= 409] remote entry for frame 379 arrived 30 frames late -> rollback
+[peer 2 t=  7.941s f= 409] remote entry for frame 371 arrived 38 frames late -> rollback
+[peer 2 t=  7.947s f= 410] remote entry for frame 404 arrived 6 frames late -> rollback
+[peer 2 t=  7.985s f= 412] remote entry for frame 406 arrived 6 frames late -> rollback
+[peer 2 t=  8.026s f= 414] remote entry for frame 408 arrived 6 frames late -> rollback
+[peer 2 t=  8.033s f= 415] fetch request for member 2 seq 203..=203: replying with 1 entries
+[peer 2 t=  8.044s f= 415] remote entry for frame 410 arrived 5 frames late -> rollback
+[peer 2 t=  8.090s f= 418] remote entry for frame 412 arrived 6 frames late -> rollback
+[peer 2 t=  8.108s f= 419] fetch request for member 2 seq 203..=205: replying with 3 entries
+[peer 2 t=  8.126s f= 420] gap or conflict detected -> fetching Fetch { author: 1, from: 207, to: 207 }
+[peer 2 t=  8.126s f= 420] remote entry for frame 416 arrived 4 frames late -> rollback
+[peer 2 t=  8.131s f= 421] remote entry for frame 414 arrived 7 frames late -> rollback
+[peer 2 t=  8.143s f= 421] remote entry for frame 418 arrived 3 frames late -> rollback
+[peer 2 t=  8.186s f= 424] fetch request for member 2 seq 207..=207: replying with 1 entries
+[peer 2 t=  8.206s f= 425] remote entry for frame 420 arrived 5 frames late -> rollback
+[peer 2 t=  8.227s f= 426] remote entry for frame 422 arrived 4 frames late -> rollback
+[peer 2 t=  8.267s f= 429] remote entry for frame 414 arrived 15 frames late -> rollback
+[peer 2 t=  8.298s f= 431] fetch request for member 2 seq 207..=209: replying with 3 entries
+[peer 2 t=  8.311s f= 431] gap or conflict detected -> fetching Fetch { author: 1, from: 212, to: 212 }
+[peer 2 t=  8.311s f= 431] remote entry for frame 426 arrived 5 frames late -> rollback
+[peer 2 t=  8.367s f= 435] remote entry for frame 430 arrived 5 frames late -> rollback
+[peer 2 t=  8.414s f= 438] gap or conflict detected -> fetching Fetch { author: 1, from: 212, to: 216 }
+[peer 2 t=  8.415s f= 438] remote entry for frame 434 arrived 4 frames late -> rollback
+[peer 2 t=  8.422s f= 438] fetch request for member 2 seq 207..=212: replying with 6 entries
+[peer 2 t=  8.434s f= 439] remote entry for frame 432 arrived 7 frames late -> rollback
+[peer 2 t=  8.456s f= 440] remote entry for frame 424 arrived 16 frames late -> rollback
+[peer 2 t=  8.461s f= 440] gap or conflict detected -> fetching Fetch { author: 1, from: 214, to: 217 }
+[peer 2 t=  8.461s f= 440] remote entry for frame 436 arrived 4 frames late -> rollback
+[peer 2 t=  8.487s f= 442] remote entry for frame 438 arrived 4 frames late -> rollback
+[peer 2 t=  8.538s f= 445] gap or conflict detected -> fetching Fetch { author: 1, from: 214, to: 219 }
+[peer 2 t=  8.538s f= 445] remote entry for frame 440 arrived 5 frames late -> rollback
+[peer 2 t=  8.556s f= 446] fetch request for member 2 seq 216..=217: replying with 2 entries
+[peer 2 t=  8.579s f= 448] remote entry for frame 442 arrived 6 frames late -> rollback
+[peer 2 t=  8.600s f= 449] remote entry for frame 430 arrived 19 frames late -> rollback
+[peer 2 t=  8.608s f= 449] remote entry for frame 428 arrived 21 frames late -> rollback
+[peer 2 t=  8.610s f= 449] remote entry for frame 434 arrived 15 frames late -> rollback
+[peer 2 t=  8.628s f= 450] remote entry for frame 444 arrived 6 frames late -> rollback
+[peer 2 t=  8.643s f= 451] remote entry for frame 432 arrived 19 frames late -> rollback
+[peer 2 t=  8.661s f= 452] fetch request for member 2 seq 216..=220: replying with 5 entries
+[peer 2 t=  8.661s f= 452] remote entry for frame 446 arrived 6 frames late -> rollback
+[peer 2 t=  8.683s f= 454] remote entry for frame 448 arrived 6 frames late -> rollback
+[peer 2 t=  8.683s f= 454] remote entry for frame 428 arrived 26 frames late -> rollback
+[peer 2 t=  8.708s f= 455] fetch request for member 2 seq 217..=222: replying with 6 entries
+[peer 2 t=  8.708s f= 455] remote entry for frame 430 arrived 25 frames late -> rollback
+[peer 2 t=  8.717s f= 456] remote entry for frame 434 arrived 22 frames late -> rollback
+[peer 2 t=  8.729s f= 457] remote entry for frame 436 arrived 21 frames late -> rollback
+[peer 2 t=  8.736s f= 457] remote entry for frame 450 arrived 7 frames late -> rollback
+[peer 2 t=  8.755s f= 458] remote entry for frame 452 arrived 6 frames late -> rollback
+[peer 2 t=  8.788s f= 460] remote entry for frame 454 arrived 6 frames late -> rollback
+[peer 2 t=  8.811s f= 461] remote entry for frame 456 arrived 5 frames late -> rollback
+[peer 2 t=  8.874s f= 465] gap or conflict detected -> fetching Fetch { author: 1, from: 229, to: 229 }
+[peer 2 t=  8.874s f= 465] remote entry for frame 461 arrived 4 frames late -> rollback
+[peer 2 t=  8.876s f= 465] remote entry for frame 459 arrived 6 frames late -> rollback
+[peer 2 t=  8.907s f= 467] fetch request for member 2 seq 228..=228: replying with 1 entries
+[peer 2 t=  8.913s f= 468] remote entry for frame 463 arrived 5 frames late -> rollback
+[peer 2 t=  8.974s f= 471] remote entry for frame 465 arrived 6 frames late -> rollback
+[peer 2 t=  9.002s f= 473] gap or conflict detected -> fetching Fetch { author: 1, from: 233, to: 233 }
+[peer 2 t=  9.002s f= 473] remote entry for frame 469 arrived 4 frames late -> rollback
+[peer 2 t=  9.030s f= 475] remote entry for frame 459 arrived 16 frames late -> rollback
+[peer 2 t=  9.051s f= 476] remote entry for frame 471 arrived 5 frames late -> rollback
+[peer 2 t=  9.088s f= 478] fetch request for member 2 seq 233..=233: replying with 1 entries
+[peer 2 t=  9.090s f= 478] gap or conflict detected -> fetching Fetch { author: 1, from: 233, to: 235 }
+[peer 2 t=  9.090s f= 478] remote entry for frame 473 arrived 5 frames late -> rollback
+[peer 2 t=  9.106s f= 479] remote entry for frame 475 arrived 4 frames late -> rollback
+[peer 2 t=  9.127s f= 480] remote entry for frame 467 arrived 13 frames late -> rollback
+[peer 2 t=  9.163s f= 483] remote entry for frame 477 arrived 6 frames late -> rollback
+[peer 2 t=  9.202s f= 485] remote entry for frame 469 arrived 16 frames late -> rollback
+[peer 2 t=  9.202s f= 485] remote entry for frame 479 arrived 6 frames late -> rollback
+[peer 2 t=  9.203s f= 485] remote entry for frame 467 arrived 18 frames late -> rollback
+[peer 2 t=  9.227s f= 486] remote entry for frame 471 arrived 15 frames late -> rollback
+[peer 2 t=  9.253s f= 488] remote entry for frame 481 arrived 7 frames late -> rollback
+[peer 2 t=  9.253s f= 488] remote entry for frame 483 arrived 5 frames late -> rollback
+[peer 2 t=  9.268s f= 489] fetch request for member 2 seq 240..=240: replying with 1 entries
+[peer 2 t=  9.308s f= 491] gap or conflict detected -> fetching Fetch { author: 1, from: 242, to: 242 }
+[peer 2 t=  9.308s f= 491] remote entry for frame 487 arrived 4 frames late -> rollback
+[peer 2 t=  9.320s f= 492] remote entry for frame 485 arrived 7 frames late -> rollback
+[peer 2 t=  9.338s f= 493] fetch request for member 2 seq 240..=242: replying with 3 entries
+[peer 2 t=  9.350s f= 494] remote entry for frame 489 arrived 5 frames late -> rollback
+[peer 2 t=  9.383s f= 496] remote entry for frame 491 arrived 5 frames late -> rollback
+[peer 2 t=  9.430s f= 499] remote entry for frame 485 arrived 14 frames late -> rollback
+[peer 2 t=  9.441s f= 499] remote entry for frame 493 arrived 6 frames late -> rollback
+[peer 2 t=  9.472s f= 501] remote entry for frame 495 arrived 6 frames late -> rollback
+[peer 2 t=  9.513s f= 504] gap or conflict detected -> fetching Fetch { author: 1, from: 248, to: 248 }
+[peer 2 t=  9.513s f= 504] remote entry for frame 500 arrived 4 frames late -> rollback
+[peer 2 t=  9.552s f= 506] remote entry for frame 502 arrived 4 frames late -> rollback
+[peer 2 t=  9.597s f= 509] gap or conflict detected -> fetching Fetch { author: 1, from: 248, to: 250 }
+[peer 2 t=  9.597s f= 509] remote entry for frame 504 arrived 5 frames late -> rollback
+[peer 2 t=  9.614s f= 510] fetch request for member 2 seq 249..=249: replying with 1 entries
+[peer 2 t=  9.650s f= 512] remote entry for frame 506 arrived 6 frames late -> rollback
+[peer 2 t=  9.669s f= 513] remote entry for frame 497 arrived 16 frames late -> rollback
+[peer 2 t=  9.687s f= 514] remote entry for frame 508 arrived 6 frames late -> rollback
+[peer 2 t=  9.695s f= 514] fetch request for member 2 seq 249..=252: replying with 4 entries
+[peer 2 t=  9.731s f= 517] remote entry for frame 502 arrived 15 frames late -> rollback
+[peer 2 t=  9.734s f= 517] remote entry for frame 500 arrived 17 frames late -> rollback
+[peer 2 t=  9.747s f= 518] gap or conflict detected -> fetching Fetch { author: 1, from: 254, to: 254 }
+[peer 2 t=  9.747s f= 518] remote entry for frame 512 arrived 6 frames late -> rollback
+[peer 2 t=  9.748s f= 518] remote entry for frame 497 arrived 21 frames late -> rollback
+[peer 2 t=  9.748s f= 518] remote entry for frame 514 arrived 4 frames late -> rollback
+[peer 2 t=  9.820s f= 522] gap or conflict detected -> fetching Fetch { author: 1, from: 254, to: 256 }
+[peer 2 t=  9.820s f= 522] remote entry for frame 516 arrived 6 frames late -> rollback
+[peer 2 t=  9.890s f= 526] remote entry for frame 520 arrived 6 frames late -> rollback
+[peer 2 t=  9.890s f= 526] remote entry for frame 510 arrived 16 frames late -> rollback
+[peer 2 t=  9.919s f= 528] remote entry for frame 510 arrived 18 frames late -> rollback
+[peer 2 t=  9.936s f= 529] gap or conflict detected -> fetching Fetch { author: 1, from: 258, to: 259 }
+[peer 2 t=  9.936s f= 529] remote entry for frame 522 arrived 7 frames late -> rollback
+[peer 2 t=  9.942s f= 529] remote entry for frame 512 arrived 17 frames late -> rollback
+[peer 2 t=  9.965s f= 531] remote entry for frame 524 arrived 7 frames late -> rollback
+[peer 2 t=  9.968s f= 531] remote entry for frame 514 arrived 17 frames late -> rollback
+[peer 2 t=  9.997s f= 533] gap or conflict detected -> fetching Fetch { author: 1, from: 258, to: 261 }
+[peer 2 t=  9.997s f= 533] remote entry for frame 526 arrived 7 frames late -> rollback
+[peer 2 t= 10.056s f= 536] remote entry for frame 530 arrived 6 frames late -> rollback
+[peer 2 t= 10.078s f= 537] remote entry for frame 518 arrived 19 frames late -> rollback
+[peer 2 t= 10.083s f= 538] fetch request for member 2 seq 264..=264: replying with 1 entries
+[peer 2 t= 10.098s f= 539] remote entry for frame 520 arrived 19 frames late -> rollback
+[peer 2 t= 10.098s f= 539] gap or conflict detected -> fetching Fetch { author: 1, from: 263, to: 264 }
+[peer 2 t= 10.098s f= 539] remote entry for frame 532 arrived 7 frames late -> rollback
+[peer 2 t= 10.110s f= 539] remote entry for frame 534 arrived 5 frames late -> rollback
+[peer 2 t= 10.148s f= 542] remote entry for frame 536 arrived 6 frames late -> rollback
+[peer 2 t= 10.155s f= 542] remote entry for frame 522 arrived 20 frames late -> rollback
+[peer 2 t= 10.158s f= 542] remote entry for frame 520 arrived 22 frames late -> rollback
+[peer 2 t= 10.158s f= 542] gap or conflict detected -> fetching Fetch { author: 1, from: 263, to: 267 }
+[peer 2 t= 10.158s f= 542] remote entry for frame 538 arrived 4 frames late -> rollback
+[peer 2 t= 10.161s f= 542] remote entry for frame 518 arrived 24 frames late -> rollback
+[peer 2 t= 10.165s f= 543] remote entry for frame 524 arrived 19 frames late -> rollback
+[peer 2 t= 10.175s f= 543] fetch request for member 2 seq 264..=265: replying with 2 entries
+[peer 2 t= 10.212s f= 546] remote entry for frame 540 arrived 6 frames late -> rollback
+[peer 2 t= 10.239s f= 547] remote entry for frame 530 arrived 17 frames late -> rollback
+[peer 2 t= 10.243s f= 547] remote entry for frame 542 arrived 5 frames late -> rollback
+[peer 2 t= 10.284s f= 550] remote entry for frame 534 arrived 16 frames late -> rollback
+[peer 2 t= 10.291s f= 550] remote entry for frame 536 arrived 14 frames late -> rollback
+[peer 2 t= 10.296s f= 551] remote entry for frame 530 arrived 21 frames late -> rollback
+[peer 2 t= 10.296s f= 551] remote entry for frame 528 arrived 23 frames late -> rollback
+[peer 2 t= 10.301s f= 551] gap or conflict detected -> fetching Fetch { author: 1, from: 271, to: 271 }
+[peer 2 t= 10.301s f= 551] remote entry for frame 546 arrived 5 frames late -> rollback
+[peer 2 t= 10.306s f= 551] remote entry for frame 544 arrived 7 frames late -> rollback
+[peer 2 t= 10.338s f= 553] remote entry for frame 549 arrived 4 frames late -> rollback
+[peer 2 t= 10.368s f= 555] remote entry for frame 551 arrived 4 frames late -> rollback
+[peer 2 t= 10.447s f= 560] remote entry for frame 553 arrived 7 frames late -> rollback
+[peer 2 t= 10.461s f= 560] gap or conflict detected -> fetching Fetch { author: 1, from: 276, to: 276 }
+[peer 2 t= 10.461s f= 560] remote entry for frame 557 arrived 3 frames late -> rollback
+[peer 2 t= 10.466s f= 561] remote entry for frame 544 arrived 17 frames late -> rollback
+[peer 2 t= 10.472s f= 561] remote entry for frame 555 arrived 6 frames late -> rollback
+[peer 2 t= 10.494s f= 562] remote entry for frame 559 arrived 3 frames late -> rollback
+[peer 2 t= 10.548s f= 566] remote entry for frame 561 arrived 5 frames late -> rollback
+[peer 2 t= 10.605s f= 569] remote entry for frame 563 arrived 6 frames late -> rollback
+[peer 2 t= 10.612s f= 570] remote entry for frame 555 arrived 15 frames late -> rollback
+[peer 2 t= 10.634s f= 571] gap or conflict detected -> fetching Fetch { author: 1, from: 281, to: 281 }
+[peer 2 t= 10.634s f= 571] remote entry for frame 567 arrived 4 frames late -> rollback
+[peer 2 t= 10.665s f= 573] remote entry for frame 569 arrived 4 frames late -> rollback
+[peer 2 t= 10.714s f= 576] gap or conflict detected -> fetching Fetch { author: 1, from: 281, to: 283 }
+[peer 2 t= 10.714s f= 576] remote entry for frame 571 arrived 5 frames late -> rollback
+[peer 2 t= 10.754s f= 578] remote entry for frame 573 arrived 5 frames late -> rollback
+[peer 2 t= 10.779s f= 580] remote entry for frame 565 arrived 15 frames late -> rollback
+[peer 2 t= 10.805s f= 581] gap or conflict detected -> fetching Fetch { author: 1, from: 286, to: 286 }
+[peer 2 t= 10.805s f= 581] remote entry for frame 577 arrived 4 frames late -> rollback
+[peer 2 t= 10.819s f= 582] remote entry for frame 575 arrived 7 frames late -> rollback
+[peer 2 t= 10.819s f= 582] remote entry for frame 567 arrived 15 frames late -> rollback
+[peer 2 t= 10.839s f= 583] remote entry for frame 565 arrived 18 frames late -> rollback
+[peer 2 t= 10.844s f= 583] remote entry for frame 569 arrived 14 frames late -> rollback
+[peer 2 t= 10.862s f= 584] fetch request for member 2 seq 286..=286: replying with 1 entries
+[peer 2 t= 10.873s f= 585] remote entry for frame 579 arrived 6 frames late -> rollback
+[peer 2 t= 10.910s f= 587] gap or conflict detected -> fetching Fetch { author: 1, from: 289, to: 289 }
+[peer 2 t= 10.910s f= 587] remote entry for frame 583 arrived 4 frames late -> rollback
+[peer 2 t= 10.928s f= 588] fetch request for member 2 seq 286..=289: replying with 4 entries
+[peer 2 t= 10.965s f= 591] remote entry for frame 585 arrived 6 frames late -> rollback
+[peer 2 t= 10.984s f= 592] remote entry for frame 575 arrived 17 frames late -> rollback
+[peer 2 t= 10.984s f= 592] gap or conflict detected -> fetching Fetch { author: 1, from: 289, to: 291 }
+[peer 2 t= 10.984s f= 592] remote entry for frame 587 arrived 5 frames late -> rollback
+[peer 2 t= 11.063s f= 597] remote entry for frame 590 arrived 7 frames late -> rollback
+[peer 2 t= 11.069s f= 597] remote entry for frame 592 arrived 5 frames late -> rollback
+[peer 2 t= 11.091s f= 598] remote entry for frame 581 arrived 17 frames late -> rollback
+[peer 2 t= 11.119s f= 600] remote entry for frame 594 arrived 6 frames late -> rollback
+[peer 2 t= 11.127s f= 600] remote entry for frame 585 arrived 15 frames late -> rollback
+[peer 2 t= 11.131s f= 601] remote entry for frame 583 arrived 18 frames late -> rollback
+[peer 2 t= 11.132s f= 601] remote entry for frame 581 arrived 20 frames late -> rollback
+[peer 2 t= 11.142s f= 601] fetch request for member 2 seq 292..=294: replying with 3 entries
+[peer 2 t= 11.165s f= 603] remote entry for frame 596 arrived 7 frames late -> rollback
+[peer 2 t= 11.171s f= 603] remote entry for frame 598 arrived 5 frames late -> rollback
+[peer 2 t= 11.220s f= 606] gap or conflict detected -> fetching Fetch { author: 1, from: 298, to: 298 }
+[peer 2 t= 11.220s f= 606] remote entry for frame 602 arrived 4 frames late -> rollback
+[peer 2 t= 11.223s f= 606] remote entry for frame 600 arrived 6 frames late -> rollback
+[peer 2 t= 11.287s f= 610] remote entry for frame 604 arrived 6 frames late -> rollback
+[peer 2 t= 11.315s f= 612] fetch request for member 2 seq 298..=299: replying with 2 entries
+[peer 2 t= 11.350s f= 614] remote entry for frame 600 arrived 14 frames late -> rollback
+[peer 2 t= 11.353s f= 614] gap or conflict detected -> fetching Fetch { author: 1, from: 301, to: 301 }
+[peer 2 t= 11.353s f= 614] remote entry for frame 608 arrived 6 frames late -> rollback
+[peer 2 t= 11.363s f= 615] remote entry for frame 610 arrived 5 frames late -> rollback
+[peer 2 t= 11.414s f= 618] gap or conflict detected -> fetching Fetch { author: 1, from: 301, to: 303 }
+[peer 2 t= 11.414s f= 618] remote entry for frame 612 arrived 6 frames late -> rollback
+[peer 2 t= 11.432s f= 619] fetch request for member 2 seq 298..=301: replying with 4 entries
+[peer 2 t= 11.462s f= 620] remote entry for frame 614 arrived 6 frames late -> rollback
+[peer 2 t= 11.502s f= 623] remote entry for frame 616 arrived 7 frames late -> rollback
+[peer 2 t= 11.517s f= 624] remote entry for frame 606 arrived 18 frames late -> rollback
+[peer 2 t= 11.517s f= 624] gap or conflict detected -> fetching Fetch { author: 1, from: 307, to: 307 }
+[peer 2 t= 11.517s f= 624] remote entry for frame 620 arrived 4 frames late -> rollback
+[peer 2 t= 11.538s f= 625] remote entry for frame 618 arrived 7 frames late -> rollback
+[peer 2 t= 11.542s f= 625] fetch request for member 2 seq 306..=307: replying with 2 entries
+[peer 2 t= 11.545s f= 625] remote entry for frame 608 arrived 17 frames late -> rollback
+[peer 2 t= 11.561s f= 626] remote entry for frame 610 arrived 16 frames late -> rollback
+[peer 2 t= 11.590s f= 628] remote entry for frame 622 arrived 6 frames late -> rollback
+[peer 2 t= 11.638s f= 631] remote entry for frame 624 arrived 7 frames late -> rollback
+[peer 2 t= 11.644s f= 631] fetch request for member 2 seq 306..=309: replying with 4 entries
+[peer 2 t= 11.657s f= 632] remote entry for frame 626 arrived 6 frames late -> rollback
+[peer 2 t= 11.657s f= 632] remote entry for frame 628 arrived 4 frames late -> rollback
+[peer 2 t= 11.660s f= 632] remote entry for frame 618 arrived 14 frames late -> rollback
+[peer 2 t= 11.722s f= 636] remote entry for frame 630 arrived 6 frames late -> rollback
+[peer 2 t= 11.737s f= 637] remote entry for frame 632 arrived 5 frames late -> rollback
+[peer 2 t= 11.803s f= 641] remote entry for frame 635 arrived 6 frames late -> rollback
+[peer 2 t= 11.817s f= 642] fetch request for member 2 seq 314..=314: replying with 1 entries
+[peer 2 t= 11.860s f= 644] gap or conflict detected -> fetching Fetch { author: 1, from: 316, to: 317 }
+[peer 2 t= 11.860s f= 644] remote entry for frame 641 arrived 3 frames late -> rollback
+[peer 2 t= 11.868s f= 645] remote entry for frame 639 arrived 6 frames late -> rollback
+[peer 2 t= 11.932s f= 649] gap or conflict detected -> fetching Fetch { author: 1, from: 316, to: 319 }
+[peer 2 t= 11.932s f= 649] remote entry for frame 645 arrived 4 frames late -> rollback
+[peer 2 t= 11.939s f= 649] remote entry for frame 643 arrived 6 frames late -> rollback
+[peer 2 t= 11.975s f= 651] remote entry for frame 647 arrived 4 frames late -> rollback
+[peer 2 t= 12.001s f= 653] remote entry for frame 637 arrived 16 frames late -> rollback
+[peer 2 t= 12.026s f= 654] remote entry for frame 649 arrived 5 frames late -> rollback
+[peer 2 t= 12.043s f= 655] remote entry for frame 639 arrived 16 frames late -> rollback
+[peer 2 t= 12.066s f= 657] remote entry for frame 643 arrived 14 frames late -> rollback
+[peer 2 t= 12.076s f= 657] remote entry for frame 651 arrived 6 frames late -> rollback
+[peer 2 t= 12.087s f= 658] remote entry for frame 641 arrived 17 frames late -> rollback
+[peer 2 t= 12.090s f= 658] remote entry for frame 639 arrived 19 frames late -> rollback
+[peer 2 t= 12.098s f= 659] remote entry for frame 637 arrived 22 frames late -> rollback
+[peer 2 t= 12.105s f= 659] remote entry for frame 653 arrived 6 frames late -> rollback
+[peer 2 t= 12.110s f= 659] fetch request for member 2 seq 324..=324: replying with 1 entries
+[peer 2 t= 12.150s f= 662] remote entry for frame 655 arrived 7 frames late -> rollback
+[peer 2 t= 12.164s f= 663] remote entry for frame 657 arrived 6 frames late -> rollback
+[peer 2 t= 12.225s f= 666] gap or conflict detected -> fetching Fetch { author: 1, from: 327, to: 327 }
+[peer 2 t= 12.225s f= 666] remote entry for frame 661 arrived 5 frames late -> rollback
+[peer 2 t= 12.239s f= 667] remote entry for frame 663 arrived 4 frames late -> rollback
+[peer 2 t= 12.270s f= 669] remote entry for frame 665 arrived 4 frames late -> rollback
+[peer 2 t= 12.344s f= 673] gap or conflict detected -> fetching Fetch { author: 1, from: 327, to: 331 }
+[peer 2 t= 12.344s f= 673] remote entry for frame 669 arrived 4 frames late -> rollback
+[peer 2 t= 12.351s f= 674] remote entry for frame 667 arrived 7 frames late -> rollback
+[peer 2 t= 12.397s f= 677] remote entry for frame 659 arrived 18 frames late -> rollback
+[peer 2 t= 12.405s f= 677] remote entry for frame 671 arrived 6 frames late -> rollback
+[peer 2 t= 12.454s f= 680] remote entry for frame 673 arrived 7 frames late -> rollback
+[peer 2 t= 12.468s f= 681] remote entry for frame 676 arrived 5 frames late -> rollback
+[peer 2 t= 12.471s f= 681] remote entry for frame 659 arrived 22 frames late -> rollback
+[peer 2 t= 12.492s f= 682] remote entry for frame 678 arrived 4 frames late -> rollback
+[peer 2 t= 12.494s f= 682] remote entry for frame 667 arrived 15 frames late -> rollback
+[peer 2 t= 12.497s f= 683] remote entry for frame 663 arrived 20 frames late -> rollback
+[peer 2 t= 12.503s f= 683] remote entry for frame 661 arrived 22 frames late -> rollback
+[peer 2 t= 12.506s f= 683] remote entry for frame 665 arrived 18 frames late -> rollback
+[peer 2 t= 12.615s f= 690] gap or conflict detected -> fetching Fetch { author: 1, from: 337, to: 338 }
+[peer 2 t= 12.616s f= 690] remote entry for frame 684 arrived 6 frames late -> rollback
+[peer 2 t= 12.636s f= 691] fetch request for member 2 seq 338..=338: replying with 1 entries
+[peer 2 t= 12.656s f= 692] remote entry for frame 686 arrived 6 frames late -> rollback
+[peer 2 t= 12.673s f= 693] remote entry for frame 688 arrived 5 frames late -> rollback
+[peer 2 t= 12.713s f= 696] gap or conflict detected -> fetching Fetch { author: 1, from: 337, to: 341 }
+[peer 2 t= 12.714s f= 696] remote entry for frame 690 arrived 6 frames late -> rollback
+[peer 2 t= 12.728s f= 696] fetch request for member 2 seq 341..=341: replying with 1 entries
+[peer 2 t= 12.735s f= 697] remote entry for frame 692 arrived 5 frames late -> rollback
+[peer 2 t= 12.748s f= 698] remote entry for frame 694 arrived 4 frames late -> rollback
+[peer 2 t= 12.767s f= 699] remote entry for frame 680 arrived 19 frames late -> rollback
+[peer 2 t= 12.772s f= 699] remote entry for frame 682 arrived 17 frames late -> rollback
+[peer 2 t= 12.828s f= 702] remote entry for frame 684 arrived 18 frames late -> rollback
+[peer 2 t= 12.830s f= 703] remote entry for frame 682 arrived 21 frames late -> rollback
+[peer 2 t= 12.833s f= 703] remote entry for frame 688 arrived 15 frames late -> rollback
+[peer 2 t= 12.834s f= 703] remote entry for frame 680 arrived 23 frames late -> rollback
+[peer 2 t= 12.850s f= 704] gap or conflict detected -> fetching Fetch { author: 1, from: 345, to: 345 }
+[peer 2 t= 12.850s f= 704] remote entry for frame 698 arrived 6 frames late -> rollback
+[peer 2 t= 12.862s f= 704] remote entry for frame 700 arrived 4 frames late -> rollback
+[peer 2 t= 12.864s f= 705] remote entry for frame 686 arrived 19 frames late -> rollback
+[peer 2 t= 12.932s f= 709] gap or conflict detected -> fetching Fetch { author: 1, from: 345, to: 347 }
+[peer 2 t= 12.932s f= 709] remote entry for frame 702 arrived 7 frames late -> rollback
+[peer 2 t= 12.953s f= 710] fetch request for member 2 seq 347..=347: replying with 1 entries
+[peer 2 t= 12.980s f= 712] remote entry for frame 696 arrived 16 frames late -> rollback
+[peer 2 t= 12.997s f= 713] gap or conflict detected -> fetching Fetch { author: 1, from: 349, to: 350 }
+[peer 2 t= 12.997s f= 713] remote entry for frame 708 arrived 5 frames late -> rollback
+[peer 2 t= 13.003s f= 713] remote entry for frame 706 arrived 7 frames late -> rollback
+[peer 2 t= 13.019s f= 714] remote entry for frame 710 arrived 4 frames late -> rollback
+[peer 2 t= 13.062s f= 717] remote entry for frame 700 arrived 17 frames late -> rollback
+[peer 2 t= 13.081s f= 718] remote entry for frame 698 arrived 20 frames late -> rollback
+[peer 2 t= 13.098s f= 719] gap or conflict detected -> fetching Fetch { author: 1, from: 349, to: 352 }
+[peer 2 t= 13.098s f= 719] remote entry for frame 712 arrived 7 frames late -> rollback
+[peer 2 t= 13.108s f= 719] remote entry for frame 714 arrived 5 frames late -> rollback
+[peer 2 t= 13.116s f= 720] remote entry for frame 706 arrived 14 frames late -> rollback
+[peer 2 t= 13.125s f= 720] remote entry for frame 704 arrived 16 frames late -> rollback
+[peer 2 t= 13.125s f= 720] remote entry for frame 717 arrived 3 frames late -> rollback
+[peer 2 t= 13.190s f= 720] remote entry for frame 719 arrived 1 frames late -> rollback
+[peer 2 t= 13.223s f= 720] remote entry for frame 710 arrived 10 frames late -> rollback
+[peer 2 t= 13.247s f= 720] remote entry for frame 706 arrived 14 frames late -> rollback
+[peer 2 t= 13.267s f= 720] remote entry for frame 704 arrived 16 frames late -> rollback
+[peer 2 t= 13.268s f= 720] remote entry for frame 708 arrived 12 frames late -> rollback
+[peer 2 t= 13.399s f= 720] gap or conflict detected -> fetching Fetch { author: 1, from: 362, to: 362 }
+[peer 2 t= 13.418s f= 720] fetch request for member 2 seq 361..=361: replying with 1 entries
+[peer 2 t= 13.539s f= 720] fetch request for member 2 seq 361..=363: replying with 3 entries
+[peer 2 t= 13.569s f= 720] gap or conflict detected -> fetching Fetch { author: 1, from: 366, to: 366 }
+[peer 2 t= 13.630s f= 720] gap or conflict detected -> fetching Fetch { author: 1, from: 366, to: 368 }
+[peer 2 t= 13.812s f= 720] gap or conflict detected -> fetching Fetch { author: 1, from: 374, to: 374 }
+[peer 2 t= 13.824s f= 720] fetch request for member 2 seq 373..=373: replying with 1 entries
+[peer 2 t= 14.282s f= 720] DONE frames 0..600: digest cd613a64b7088dbe; offline replay of my final log cd613a64b7088dbe (EQUAL); rollbacks 6 (max depth 7, resimulated 38), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 668 dropped 68, bad signatures 0, forged entries 0

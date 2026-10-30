@@ -353,7 +353,8 @@ fn backdate() {
     // Part 1: member 3 backdates by 20 frames but publishes honest horizons -> chain-local violation.
     // Part 2: member 3 also lags its published horizon by 30 frames to open a backdating window ->
     // every such ack breaks the horizon-slack rule and is void for every member, so no window
-    // opens; member 3 instead blocks confirmation (removal is a view change, design 10.8).
+    // opens; member 3 instead blocks confirmation until the others demote it (review R3-9: its
+    // horizon trails the present by more than half the speculation limit for 3 s, design 10.8).
     for (part, lag) in [(1, 0u64), (2, 30)] {
         let ids = [1, 2, 3];
         let cheats: Vec<(u64, Action)> = [200u64, 320, 440].iter().map(|&f| (f, Action::Backdated { obj: 50, impulse: [0.0, 6.0, 0.0], back: 20 })).collect();
@@ -371,8 +372,13 @@ fn backdate() {
             );
         }
         print_stats(&sim, 1);
-        let frames = sim.peers.iter().map(|p| p.worlds[&1].sim.frame).min().unwrap_or(0).min(600);
-        check_world(&sim, 1, frames, &format!("backdate part {part}"));
+        // A demoted member no longer counts: compare the members still in the session.
+        let gone: Vec<MemberId> = r.sim.members_evicted().keys().copied().collect();
+        if !gone.is_empty() {
+            println!("RESULT backdate part {part}: removed from the session (cut, from frame): {:?}", r.sim.members_evicted());
+        }
+        let frames = sim.peers.iter().filter(|p| !gone.contains(&p.id)).map(|p| p.worlds[&1].sim.frame).min().unwrap_or(0).min(600);
+        check_world_except(&sim, 1, frames, &format!("backdate part {part}"), &gone);
     }
 }
 
@@ -878,7 +884,14 @@ fn main() {
             get("--hands").map_or(1, |v| v.parse().unwrap()),
             get("--loss").map_or(2, |v| v.parse().unwrap()),
         ),
-        Some("capped") => r18::capped(get("--kbps").map_or(64, |v| v.parse().unwrap())),
+        Some("capped") => r18::capped(&r18::Opts {
+            kbps: get("--kbps").map_or(64, |v| v.parse().unwrap()),
+            members: get("--members").map_or(2, |v| v.parse().unwrap()),
+            shared: args.iter().any(|a| a == "--shared"),
+            end_s: get("--end").map_or(10, |v| v.parse().unwrap()),
+            slow: get("--slow").map(|v| (v.parse().unwrap(), get("--slow-kbps").map_or(8, |k| k.parse().unwrap()))),
+            step: get("--step-ms").map(|v| (v.parse().unwrap(), get("--step-kbps").map_or(16, |k| k.parse().unwrap()))),
+        }),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),
         Some("evict") => review2::evict(),
