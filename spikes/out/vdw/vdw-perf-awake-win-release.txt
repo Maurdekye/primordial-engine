@@ -1,0 +1,20 @@
+vdw-perf: bigpile-awake (864 boxes), 1200 frames, 5 interleaved repeats, median of per-run means
+ s (m) mode       step ms   awake ms  min awake     hit  contacts       final hash
+   0.1 off         1.0708     1.0708     1.0606    0.0%    2589.9 2001c0fd36ea9374
+   0.1 fixed       0.7213     0.7213     0.7158   99.1%    2617.3 55a0102af451d3dd
+   0.1 vdw         0.6952     0.6952     0.6800   98.6%    2642.1 abcbb247e5b3114d
+   0.1 vdw-hm      0.6826     0.6826     0.6764   98.6%    2642.1 1819ef1daccdb5a2
+     1 off         0.8601     0.8601     0.8556    0.0%    1546.3 b3dcda6bb0e1c49c
+     1 fixed       0.5843     0.5843     0.5788   95.7%    1498.5 b1ef2724decad992
+     1 vdw         0.5807     0.5807     0.5768   94.6%    1587.7 6522b23b7a338fac
+     1 vdw-hm      0.5859     0.5859     0.5844   94.9%    1583.8 d9fa8bf4dec63baf
+    10 off         0.7989     0.7989     0.7860    0.0%    1258.5 5491c6d849678c82
+    10 fixed       0.6022     0.6022     0.5992   76.1%    1216.9 2f19db68938c6a79
+    10 vdw         0.5824     0.5824     0.5682   82.6%    1214.2 ac72cdd141c0053e
+    10 vdw-hm      0.5700     0.5700     0.5641   83.7%    1212.5 da98f735f69060b4
+    30 off         0.7180     0.7180     0.7111    0.0%    1037.4 187bb3cfaacc3c4d
+    30 fixed       0.6197     0.6197     0.6156   49.6%    1053.1 6fbe7b8a43bb2c19
+    30 vdw         0.5553     0.5553     0.5539   68.2%    1030.6 9d6d27da8bde6f42
+    30 vdw-hm      0.5458     0.5458     0.5431   69.6%     994.7 54c400b17138c8bf
+build: release profile, target x86_64, contact recycling: scale-dependent (engine default)
+RESULT: PASS

@@ -15,7 +15,7 @@ use box3d_rust::hull::make_box_hull;
 use box3d_rust::id::ShapeId;
 use box3d_rust::math_functions::{Pos, Vec3};
 use box3d_rust::shape::{create_hull_shape, create_sphere_shape, shape_enable_pre_solve_events};
-use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType};
+use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::{
     world_get_awake_body_count, world_set_custom_filter_callback, world_set_friction_callback, world_set_pre_solve_callback,
     world_set_restitution_callback, World,
@@ -45,7 +45,7 @@ fn restitution(ra: f32, _ma: u64, rb: f32, _mb: u64) -> f32 {
 
 /// A pile of `n` boxes and balls (alternating) on the ground, with hooks enabled on every shape.
 fn pile(n: usize, hooks: bool) -> World {
-    let mut w = World::new(&default_world_def());
+    let mut w = World::new(&pe_sim_core::engine_world_def());
     let mut g = default_body_def();
     g.type_ = BodyType::Static;
     g.position = Pos { x: 0.0, y: -0.5, z: 0.0 };

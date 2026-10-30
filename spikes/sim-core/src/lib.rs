@@ -22,8 +22,9 @@ use box3d_rust::recording::{
     deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer,
     RegistrySlot,
 };
+use box3d_rust::recycle_scale::ContactRecycleScaling;
 use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
-use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType};
+use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType, WorldDef};
 use box3d_rust::world::World;
 
 /// Fixed simulation timestep (requirement 2). 60 Hz.
@@ -84,9 +85,25 @@ pub struct Scene {
     pub bodies: Vec<BodyId>,
 }
 
-/// Ground plus a mixed pile of boxes, spheres and capsules: `side * side * layers` bodies.
+/// The Primordial Engine world definition: Box3D defaults plus the fork's scale-dependent
+/// contact recycling ("van der Waals simulation"), on by default with the HarmonicMean combine
+/// (user ruling 2026-10-30). The fork crate's own `default_world_def` stays upstream.
+pub fn engine_world_def() -> WorldDef {
+    let mut def = default_world_def();
+    def.contact_recycle_scaling = ContactRecycleScaling::enabled();
+    def
+}
+
+/// Ground plus a mixed pile of boxes, spheres and capsules: `side * side * layers` bodies,
+/// in an [`engine_world_def`] world.
 pub fn build_pile_scene(side: usize, layers: usize) -> Scene {
-    let mut world = World::new(&default_world_def());
+    build_pile_scene_def(side, layers, &engine_world_def())
+}
+
+/// [`build_pile_scene`] with a caller-supplied world definition (e.g. upstream Box3D's
+/// `default_world_def`, for comparisons).
+pub fn build_pile_scene_def(side: usize, layers: usize, world_def: &WorldDef) -> Scene {
+    let mut world = World::new(world_def);
 
     let mut ground_def = default_body_def();
     ground_def.type_ = BodyType::Static;
@@ -267,7 +284,8 @@ impl Snapshotter {
         bodies: Vec<BodyId>,
         seed: u64,
     ) -> Option<GameState> {
-        let mut world = World::new(&default_world_def());
+        // The image carries the world config, recycling parameters included.
+        let mut world = World::new(&engine_world_def());
         if !deserialize_into_shell(&snap.world_image, &mut world, &mut self.slots) {
             return None;
         }

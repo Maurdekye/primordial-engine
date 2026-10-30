@@ -14,7 +14,7 @@ use box3d_rust::id::BodyId;
 use box3d_rust::math_functions::{Pos, Vec3};
 use box3d_rust::recording::{deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer, RegistrySlot};
 use box3d_rust::shape::create_hull_shape;
-use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType};
+use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::{world_get_awake_body_count, World};
 use pe_sim_core::session::{block_delta, build_scene, BodyState, SceneKind};
 use pe_sim_core::{DT, SUBSTEPS};
@@ -109,7 +109,7 @@ fn resim_vs_depth() -> bool {
 
 /// 64 separate 4-box stacks, 3 m apart, on one static ground: 64 islands that never touch.
 fn stacks() -> (World, Vec<BodyId>) {
-    let mut w = World::new(&default_world_def());
+    let mut w = World::new(&pe_sim_core::engine_world_def());
     let mut g = default_body_def();
     g.type_ = BodyType::Static;
     g.position = Pos { x: 0.0, y: -0.5, z: 0.0 };

@@ -33,7 +33,7 @@ use box3d_rust::recording::{
     RegistrySlot,
 };
 use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
-use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType};
+use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
@@ -455,7 +455,7 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             (s.world, objs)
         }
         SceneKind::BallPit { balls, hands } => {
-            let mut world = World::new(&default_world_def());
+            let mut world = World::new(&crate::engine_world_def());
             static_box(&mut world, Pos { x: 0.0, y: -0.5, z: 0.0 }, 2.0, 0.5, 2.0);
             let (w, h) = (1.2f32, 0.6f32);
             static_box(&mut world, Pos { x: w + 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
@@ -947,7 +947,7 @@ impl WorldSim {
         // Review NEW-7: after a destroy, a world that stepped continuously and one restored from a
         // keyframe hold the same physics but different image bytes. Hash the image of a scratch
         // world restored from this one instead, so both paths hash alike.
-        let scratch = self.scratch.get_or_insert_with(|| World::new(&default_world_def()));
+        let scratch = self.scratch.get_or_insert_with(|| World::new(&crate::engine_world_def()));
         assert!(deserialize_into_shell(&k.image, scratch, &mut self.slots), "canonical restore failed");
         let mut buf = RecBuffer::new();
         serialize_world(scratch, &mut buf, &mut self.registry);
