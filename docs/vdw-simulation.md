@@ -416,7 +416,15 @@ canonical hash `66633b43…`). Both are toggle-off values.
 **Docs citing toggle-off values.** These lines in documents I do not own now describe toggle
 off: `docs/spike-report.md` lines 95 and 318 (`7903109aab28ed9b` for a2 and d4), 207-209
 (`cd613a64b7088dbe`), and 345-347 (`589e97a7…`, `66633b43…`); `docs/design.md` line 1012
-(`66633b43…`), and line 468 (diverged 23/23, see below).
+(`66633b43…`), and line 468 (diverged 23/23, see below). *Fixed at integration (2026-10-30, branch
+`integration`): each now gives the engine default's value or is labelled upstream.*
+
+**At integration [V].** The integration branch merged this work with rounds 2 and 3 of the session
+protocol and re-ran the set (spike-report 5j). The physics records above reproduce byte for byte in
+release and debug. The session-sim digests in the table equal the "after" column for state-frame, loss,
+diverged, c2, ties, claims, backdate part 1, r14 abort (B) and the ball pit at 60 Hz, ahead4 and 2 hands.
+c1, backdate part 2, the other r14 runs and the 90 Hz ball pit differ: rounds 2 and 3 changed exactly
+those scenarios (their upstream digests changed too). Their current values are in the logs.
 
 **session-sim diverged: acceptance at that instant fell from 23/23 to 21/23 [V].** Final-history
 acceptance is still 23/23, and all three members and the offline replay agree. The two misses are
@@ -491,7 +499,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build -p pe-spike-physics --release --tar
 ./target/release/pe-spike-physics vdw-perf 1200 5 spikes/out/vdw/vdw-perf-awake-win-release.jsonl bigpile-awake
 cargo test -p box3d-rust --release && cargo test -p box3d-rust
 # digests that depend on the engine world definition (section 5.1)
-(cd spikes/wasm-guests && cargo build --release --target wasm32-unknown-unknown)
+bash scripts/build_wasm_guests.sh   # since integration; physics_in_wasm builds in the root workspace
 ./target/release/pe-spike-wasm-hotswap
 bash scripts/run_session_sim.sh
 bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"   # also loss10, fault: docs/spike-report.md

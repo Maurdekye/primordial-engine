@@ -1,0 +1,3 @@
+images: 13 snapshots, digest 9fa979e8af603190 -> spikes/out/integration/images-vdw-debug.txt
+build: debug profile, target x86_64, contact recycling: scale-dependent (engine default)
+RESULT: PASS

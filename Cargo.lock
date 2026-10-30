@@ -780,6 +780,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "physics_in_wasm"
+version = "0.0.1"
+dependencies = [
+ "pe-sim-core",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"

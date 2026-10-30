@@ -5,4 +5,4 @@ RESULT liar: m1 members {1, 2, 8} evicted {9: (104, 208)} conf 467 frame 473 pau
 RESULT liar: m2 members {1, 2, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
   m1: conf 467 frame 473 members {1, 2, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 39 bad 0
   m2: conf 467 frame 473 members {1, 2, 8} evicted {9: (104, 208)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 39 bad 0
-RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=b52942a27dfcf047 m2=b52942a27dfcf047 | offline replay b52942a27dfcf047 | ALL EQUAL, NO FALSE CHECKS ; checks ok 78 bad 0
+RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 78 bad 0

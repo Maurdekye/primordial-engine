@@ -3,10 +3,6 @@
 version = 4
 
 [[package]]
-name = "box3d-rust"
-version = "0.5.0"
-
-[[package]]
 name = "logic_runaway"
 version = "0.0.1"
 
@@ -17,17 +13,3 @@ version = "0.0.1"
 [[package]]
 name = "logic_v2"
 version = "0.0.1"
-
-[[package]]
-name = "pe-sim-core"
-version = "0.0.1"
-dependencies = [
- "box3d-rust",
-]
-
-[[package]]
-name = "physics_in_wasm"
-version = "0.0.1"
-dependencies = [
- "pe-sim-core",
-]
