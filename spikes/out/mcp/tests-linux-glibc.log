@@ -1,0 +1,170 @@
+# Native glibc build and test in WSL2 Ubuntu-24.04: Linux 6.6.87.2-microsoft-standard-WSL2 x86_64; rustc 1.99.1 (58cf8f9c3 2026-10-13); gcc 13.3.0; sources: git archive of HEAD 4ba1b3e into ~/pe-mcp-glibc, every file touched, fresh target dir; binary: ELF 64-bit PIE, dynamically linked (glibc); 2026-10-30T21:28:42Z. Command: bash crates/pe-mcp/run-linux-tests.sh glibc (through heavy.sh).
+# (the script's own header line was lost from this capture, as in tests-linux-wsl.log)
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded ident_case v1.0.1
+  Downloaded futures-macro v0.3.34
+  Downloaded futures-core v0.3.34
+
+running 5 tests
+test auth::tests::issue_authenticate_revoke ... ok
+test auth::tests::revoke_all_ends_the_session ... ok
+test auth::tests::secrets_are_distinct_and_redacted ... ok
+test auth::tests::wrong_malformed_and_other_tokens ... ok
+test auth::tests::idle_ttl_expires_and_use_refreshes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 9 tests
+test binds_loopback_only ... ok
+test foreign_host_is_refused ... ok
+test ipv6_loopback_when_available ... ok
+test preflight_gets_no_cors ... ok
+test origin_is_refused_unless_allowed ... ok
+test revoked_token_stops_working ... ok
+test scopes_come_from_the_token ... ok
+test token_is_required_and_checked ... ok
+test valid_request_is_served ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 7 tests
+test bridge_without_environment_fails ... ok
+test handshake_then_mcp_as_the_tokens_principal ... ok
+test revocation_takes_effect_on_an_open_connection ... ok
+test socket_is_private ... ok
+test serve_launches_bridge_end_to_end ... ok
+test wrong_or_malformed_handshake_is_refused ... ok
+test two_principals_share_one_peer ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 23 tests
+test claims_reject_contending_touches ... ok
+test driven_peer_crash ... ok
+test engine_panic_faults_the_session_until_reload ... ok
+test forbidden_without_scope ... ok
+test hands_in_the_ball_pit ... ok
+test interaction_status_errors_and_isolation ... ok
+test crash_pause_eviction_and_recovery ... ok
+test propose_touch_resolves_and_moves_the_object ... ok
+test propose_validates_arguments ... ok
+test rate_limit_on_unresolved_interactions ... ok
+test resources_list_and_read ... ok
+test same_scenario_same_run ... ok
+test scenario_fault_arguments ... ok
+test scenario_load_validates_and_resets ... ok
+test schema_file_is_current ... ok
+test session_info_reports_principal_and_session ... ok
+test tools_list_follows_scopes ... ok
+test unknown_tool_is_a_protocol_error ... ok
+test world_get_object_and_errors ... ok
+test world_get_state_pages_and_errors ... ok
+test world_hashes_range ... ok
+test partition_heal_and_slow_links_stay_consistent ... ok
+test world_step_arguments ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.62s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+   Compiling http v1.5.0
+   Compiling mio v1.2.4
+   Compiling tokio-macros v2.7.2
+   Compiling socket2 v0.6.5
+   Compiling tokio v1.54.1
+   Compiling futures-macro v0.3.34
+   Compiling http-body v1.1.0
+   Compiling futures-channel v0.3.34
+   Compiling zmij v1.0.23
+   Compiling slab v0.4.12
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling serde v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling serde_derive v1.0.229
+   Compiling strsim v0.11.1
+   Compiling httparse v1.10.1
+   Compiling ident_case v1.0.1
+   Compiling tower-service v0.3.3
+   Compiling darling_core v0.24.1
+   Compiling http-body-util v0.1.5
+   Compiling ref-cast v1.0.27
+   Compiling getrandom v0.4.3
+   Compiling rustversion v1.0.23
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.10.1
+   Compiling serde_json v1.0.154
+   Compiling darling_macro v0.24.1
+   Compiling ref-cast-impl v1.0.27
+   Compiling serde_derive_internals v0.30.0
+   Compiling syn v2.0.119
+   Compiling atomic-waker v1.1.2
+   Compiling tower-layer v0.3.3
+   Compiling once_cell v1.21.4
+   Compiling thiserror v2.0.21
+   Compiling httpdate v1.0.3
+   Compiling cpufeatures v0.3.1
+   Compiling smallvec v1.16.4
+   Compiling sync_wrapper v1.0.2
+   Compiling hyper v1.12.0
+   Compiling tracing-attributes v0.1.31
+   Compiling chacha20 v0.10.2
+   Compiling tracing-core v0.1.36
+   Compiling schemars_derive v1.2.3
+   Compiling chrono v0.4.45
+   Compiling darling v0.24.1
+   Compiling futures-executor v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling box3d-rust v0.5.0 (/home/<user>/pe-mcp-glibc/crates/box3d-fork)
+   Compiling dyn-clone v1.0.20
+   Compiling mime v0.3.17
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling rmcp v3.8.0
+   Compiling indexmap v2.14.2
+   Compiling axum-core v0.5.2
+   Compiling schemars v1.2.3
+   Compiling pe-sim-core v0.0.1 (/home/<user>/pe-mcp-glibc/spikes/sim-core)
+   Compiling futures v0.3.34
+   Compiling uuid v1.20.0
+   Compiling rand v0.10.3
+   Compiling rmcp-macros v3.8.0
+   Compiling tracing v0.1.44
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling sse-stream v0.2.6
+   Compiling tokio-util v0.7.19
+   Compiling tokio-stream v0.1.19
+   Compiling async-trait v0.1.92
+   Compiling percent-encoding v2.3.2
+   Compiling base64 v0.23.1
+   Compiling pastey v0.2.3
+   Compiling matchit v0.8.4
+   Compiling axum v0.8.4
+   Compiling pe-spike-session-sim v0.0.1 (/home/<user>/pe-mcp-glibc/spikes/session-sim)
+   Compiling subtle v2.6.1
+   Compiling pe-mcp v0.1.0 (/home/<user>/pe-mcp-glibc/crates/pe-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.98s
+     Running unittests src/lib.rs (target/debug/deps/pe_mcp-1832dc299b84c199)
+     Running unittests src/main.rs (target/debug/deps/pe_mcp-3604593b31d2abeb)
+     Running tests/http.rs (target/debug/deps/http-e5a749a6490b1ea6)
+     Running tests/pipe.rs (target/debug/deps/pipe-6cc29217e0d4542c)
+pe-mcp: pipe /run/user/1000/primordial-mcp-4579-4ebd42a9394d68095eeac4e8/mcp.sock
+     Running tests/tools.rs (target/debug/deps/tools-f9283820200a7aab)
+   Doc-tests pe_mcp
