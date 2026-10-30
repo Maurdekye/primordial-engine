@@ -1,0 +1,11 @@
+[package]
+name = "pe-spike-physics"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Phase-1 spikes (a) Box3D determinism and (b) rollback snapshot/restore"
+
+[dependencies]
+box3d-rust.workspace = true
+pe-sim-core.workspace = true
