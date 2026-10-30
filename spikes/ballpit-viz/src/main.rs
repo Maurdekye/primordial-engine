@@ -79,16 +79,16 @@ fn main() {
 
 fn write_csv(path: &str, r: &Recording, a: &Analysis) {
     let mut s = String::from(
-        "tick,t_s,peer,sim_frame,tx_Bps,rx_Bps,rollbacks_per_s,resim_ms_per_frame,queue_ms,queue_drops,lost,snapshot_bytes,keyframes,conf_lag,stalled,restamps,snaps,snaps_per_s,div_balls_gt_1cm,div_max_m,div_mean_m,hand_div_m\n",
+        "tick,t_s,peer,sim_frame,tx_Bps,rx_Bps,rollbacks_per_s,resim_ms_per_frame,queue_ms,queue_drops,lost,snapshot_bytes,keyframes,conf_lag,stalled,restamps,snaps,snaps_per_s,frozen,div_balls_gt_1cm,div_max_m,div_mean_m,hand_div_m\n",
     );
     for (peer, shots, ds) in [("engager", &r.eng, &a.eng), ("observer", &r.obs, &a.obs)] {
         for (sh, d) in shots.iter().zip(ds.iter()) {
             let m = sh.m;
             writeln!(
                 s,
-                "{},{:.4},{peer},{},{:.0},{:.0},{:.1},{:.3},{:.1},{},{},{},{},{},{},{},{},{:.0},{},{:.4},{:.5},{:.4}",
+                "{},{:.4},{peer},{},{:.0},{:.0},{:.1},{:.3},{:.1},{},{},{},{},{},{},{},{},{:.0},{},{},{:.4},{:.5},{:.4}",
                 sh.k, (sh.k * DT_US + EPOCH_US) as f64 / 1e6, sh.sim_frame, m.tx_bps, m.rx_bps, m.rollbacks_s, m.resim_ms, m.queue_ms, m.cap_drops, m.lost,
-                m.snapshot_bytes, m.snapshots, m.conf_lag, m.stalled as u8, m.restamps, d.snaps, d.snaps_s, d.div_count, d.div_max_m, d.div_mean_m, d.hand_div_m
+                m.snapshot_bytes, m.snapshots, m.conf_lag, m.stalled as u8, m.restamps, d.snaps, d.snaps_s, d.frozen, d.div_count, d.div_max_m, d.div_mean_m, d.hand_div_m
             )
             .unwrap();
         }
@@ -98,7 +98,7 @@ fn write_csv(path: &str, r: &Recording, a: &Analysis) {
 
 fn summary_table(recs: &[(Recording, Analysis)]) -> String {
     let mut t = String::from(
-        "| Cell | Engager hand lag behind controller | Observer hand lag | Engager rollbacks/s (sweep) | Observer rollbacks/s, re-sim ms/frame (sweep) | Engager tx (sweep) | Observer tx (sweep) | Max queue, queue drops | Peak snapshot memory | Balls >1 cm off at the observer: sweep mean / peak | Snapped ball-frames: engager / observer | Converged after gesture end | Final state |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+        "| Cell | Engager hand lag behind controller | Observer hand lag | Engager rollbacks/s (sweep) | Observer rollbacks/s, re-sim ms/frame (sweep) | Engager tx (sweep) | Observer tx (sweep) | Max queue, queue drops | Peak snapshot memory | Balls >1 cm off at the observer: sweep mean / peak | Snapped ball-frames: engager / observer | Frozen ball-ticks: engager / observer | Converged after gesture end | Final state |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
     );
     for (r, a) in recs {
         let s = &a.summary;
@@ -111,7 +111,7 @@ fn summary_table(recs: &[(Recording, Analysis)]) -> String {
         let lagms = |f: f64| format!("{f:.1} frames ({:.0} ms)", f * 1000.0 / HZ as f64);
         writeln!(
             t,
-            "| `{}` | {} | {} | {:.1} | {:.1}, {:.2} | {:.1} kB/s | {:.1} kB/s | {:.0} ms, {} | {:.1} MB | {:.1} / {} | {} / {} | {} | {} |",
+            "| `{}` | {} | {} | {:.1} | {:.1}, {:.2} | {:.1} kB/s | {:.1} kB/s | {:.0} ms, {} | {:.1} MB | {:.1} / {} | {} / {} | {} / {} | {} | {} |",
             r.cell.id,
             lagms(s.eng_hand_lag_frames),
             lagms(s.obs_hand_lag_frames),
@@ -127,6 +127,8 @@ fn summary_table(recs: &[(Recording, Analysis)]) -> String {
             s.max_div_count,
             s.eng_snaps,
             s.obs_snaps,
+            s.eng_frozen,
+            s.obs_frozen,
             conv,
             fin
         )
