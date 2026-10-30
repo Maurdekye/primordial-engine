@@ -1,4 +1,6 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-core)
+   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.33s
      Running unittests src\lib.rs (target\debug\deps\pe_core-d311829ef4486bcc.exe)
 
 running 17 tests
@@ -21,7 +23,7 @@ test ids::tests::object_id_order_matches_u64 ... ok
 test rng::tests::seek_and_streams ... ok
 test rng::tests::splitmix_matches_reference ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
 
      Running unittests src\lib.rs (target\debug\deps\pe_sim-f6212610250ef889.exe)
 
@@ -43,7 +45,7 @@ test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
 
      Running tests\store.rs (target\debug\deps\store-466851eba5fe027a.exe)
 

@@ -124,7 +124,7 @@ impl ComponentDesc {
             max_align = max_align.max(f.kind.align());
             at = f.end();
         }
-        if at % max_align != 0 {
+        if !at.is_multiple_of(max_align) {
             return bad(format!("row size {at} is not a multiple of its alignment {max_align}"));
         }
         let mut h = Hasher::new(0x5045_5343_4845_4D41); // "PESCHEMA"
