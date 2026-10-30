@@ -7,7 +7,10 @@ target triple, report:
     bindgen, pkg-config, vcpkg, system-deps),
   * how many C / C++ / assembly source files ship in the package,
   * its `links` key (declares a native library it links),
-  * whether it is a Windows import-library crate (prebuilt .lib stubs for OS DLLs).
+  * whether it is a Windows import-library crate (prebuilt .lib stubs for OS DLLs),
+  * how many of its Rust files use inline assembly (`asm!`, `global_asm!`, `naked_asm!`): Rust by the
+    ruling's wording, but listed as a gray area (review D12-3). A text scan: a hit may sit behind a
+    `cfg` for another target, so each one is inspected by hand.
 
 usage: python -I scripts/audit_native.py <crate-dir>... [--target TRIPLE]... [--md OUT.md]
 """
@@ -20,6 +23,7 @@ import sys
 NATIVE_BUILD = {"cc", "cmake", "nasm-rs", "cxx-build", "bindgen", "autotools"}
 SYSLIB_BUILD = {"pkg-config", "vcpkg", "system-deps"}
 SRC_EXT = {".c": "c", ".cc": "c++", ".cpp": "c++", ".cxx": "c++", ".S": "asm", ".s": "asm", ".asm": "asm"}
+ASM_MACROS = ("asm!(", "asm! (", "naked_asm!(")
 
 
 def count_native_sources(pkg_dir):
@@ -31,6 +35,24 @@ def count_native_sources(pkg_dir):
             if ext in SRC_EXT:
                 counts[SRC_EXT[ext]] = counts.get(SRC_EXT[ext], 0) + 1
     return counts
+
+
+def count_inline_asm(pkg_dir):
+    """Rust files that invoke an inline-assembly macro (asm!, global_asm!, naked_asm!)."""
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(pkg_dir):
+        dirnames[:] = [d for d in dirnames if d not in ("target", ".git", "tests", "benches", "examples")]
+        for fn in filenames:
+            if not fn.endswith(".rs"):
+                continue
+            try:
+                with open(os.path.join(dirpath, fn), encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            if any(m in text for m in ASM_MACROS):
+                n += 1
+    return n
 
 
 def built_set(crate_dir, triple):
@@ -85,6 +107,7 @@ def audit(crate_dir, triple):
         native = sorted(bdeps & NATIVE_BUILD)
         syslib = sorted(bdeps & SYSLIB_BUILD)
         srcs = count_native_sources(os.path.dirname(p["manifest_path"]))
+        asm = count_inline_asm(os.path.dirname(p["manifest_path"]))
         importlib = p["name"].startswith("windows_") and any(
             a in p["name"] for a in ("x86_64", "i686", "aarch64"))
         if native and srcs:
@@ -97,12 +120,14 @@ def audit(crate_dir, triple):
             cls = "links a system library"
         elif srcs:
             cls = "ships C/asm files but no native build helper (inspect)"
+        elif asm:
+            cls = "Rust with inline asm (gray area; inspect)"
         elif build_script:
             cls = "rust build.rs only"
         else:
             cls = "pure Rust"
         rows.append({"name": p["name"], "version": p["version"], "class": cls, "native": native,
-                     "syslib": syslib, "links": p.get("links"), "srcs": srcs})
+                     "syslib": syslib, "links": p.get("links"), "srcs": srcs, "asm": asm})
     return rows
 
 
@@ -134,13 +159,13 @@ def main():
             lines.append(f"**{t}**: {len(rows)} packages, {pure} pure Rust, {len(flagged)} flagged: **{verdict}**")
             lines.append("")
             if flagged:
-                lines.append("| package | class | native build deps | sys-lib deps | links | C/C++/asm files |")
-                lines.append("|---|---|---|---|---|---|")
+                lines.append("| package | class | native build deps | sys-lib deps | links | C/C++/asm files | Rust files with inline asm |")
+                lines.append("|---|---|---|---|---|---|---|")
                 for r in flagged:
-                    print(f"    {r['name']} {r['version']}: {r['class']} {r['native'] or ''} {r['syslib'] or ''} {r['links'] or ''} {r['srcs'] or ''}")
+                    print(f"    {r['name']} {r['version']}: {r['class']} {r['native'] or ''} {r['syslib'] or ''} {r['links'] or ''} {r['srcs'] or ''} {('inline-asm files: ' + str(r['asm'])) if r['asm'] else ''}")
                     lines.append(f"| {r['name']} {r['version']} | {r['class']} | {', '.join(r['native'])} | "
                                  f"{', '.join(r['syslib'])} | {r['links'] or ''} | "
-                                 f"{', '.join(f'{k}: {v}' for k, v in r['srcs'].items())} |")
+                                 f"{', '.join(f'{k}: {v}' for k, v in r['srcs'].items())} | {r['asm'] or ''} |")
                 lines.append("")
     if md:
         with open(md, "w", newline="\n", encoding="utf-8") as f:

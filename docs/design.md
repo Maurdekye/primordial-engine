@@ -18,7 +18,7 @@ Every trade-off in this document was decided in this order:
 Determinism, the 100%-Rust ruling and security are **constraints**, not priorities. They are never traded
 against this list. Where the order changed an answer, the text says so. Examples:
 * the logic runtime (13.3, D12);
-* confirmation-based finality, which makes commits final in about 0.1 s instead of 2 s (6.4, 15.2);
+* confirmation-based finality, which makes commits final in about 0.14 s instead of 2 s (6.4, 15.2);
 * the body budget (D2);
 * the ball pit's perturbation-source design (7.5);
 * `rel-fast` as the iteration build profile (13.7).
@@ -178,8 +178,8 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3 |
 | Game logic per tick, per world | ≤ 1 ms | 6.4 ms in wasmi, 1.6 ms in wasmtime/Cranelift, 0.9 ms native at 10k entities [V iteration-benchmark 4.1] |
 | **Logic edit, local build and swap** (one-function edit) | ≤ 0.5 s at up to ~10k LOC; ≤ 1.5 s at 45k LOC | 0.42-0.45 s at 6.4k LOC, 1.2-1.3 s at 45k (`rel-fast`, wasmi, idle machine) [V iteration-benchmark; reviewer rerun]. 0.58 s with 8 busy processes, 0.83-1.01 s with 14 (D12-4) |
-| **Logic edit to every peer in a live session** | ≤ 1.2 s | ≈ 1.05 s: build and swap 0.45 + confirmation 0.1 + activation lead 0.5 [V components; I total] (D12-4) |
-| Commit visible to every peer | confirmation + activation lead ≈ 0.1 s + 0.5 s | 15.2 |
+| **Logic edit to every peer in a live session** | ≤ 1.2 s | ≈ 1.1 s: build and swap 0.45 + confirmation 0.14 + activation lead 0.5 [V components; I total] (D12-4) |
+| Commit visible to every peer | confirmation + activation lead ≈ 0.14 s + 0.5 s | 15.2 |
 | Shader edit to visible | ≤ 100 ms locally (naga validation is milliseconds [I]) + the same commit path | 14 |
 | Hot swap at a frame | ≤ 10 ms on the sim thread | 6 ms in wasmi; Cranelift 27-35 ms, so it compiles off-thread during the activation lead (13.3) [V iteration-benchmark, reviewer] |
 | Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6 |
@@ -261,8 +261,10 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 8. A CI determinism matrix (Windows x64, Linux x64, Linux arm64, macOS arm64; debug and release; native and
    wasm32) compares golden traces on every change. It also catches regressions in box3d-rust updates.
 9. **NaN and the FP environment (review L2).** A debug assertion checks every body's state is finite after
-   each step. The sim thread checks MXCSR (FTZ/DAZ off) every tick and resets it, because native
-   libraries loaded in-process (OpenXR runtimes, audio drivers) can change it [I].
+   each step. Release builds check it at every check frame, one pass over body states, and report the
+   first non-finite object [V session-sim: the suite fails on any non-finite state, and none occurs].
+   The sim thread checks MXCSR (FTZ/DAZ off) every tick and resets it, because native libraries loaded
+   in-process (OpenXR runtimes, audio drivers) can change it [I].
 10. **No process-global sim state (R14).** box3d-rust's length unit is a process global; it stays at
     1.0 for every world. Its `human` sample module (a thread-local RNG) is never used in sim code. Logic
     runtimes compile eagerly (22.2) [S].
@@ -353,7 +355,7 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 * Keyframes are taken every K = 4 frames, and only between the **confirmed frame** (6.4) and the present.
   Rolling back restores the newest keyframe at or before the target frame and re-simulates the gap.
 * Re-simulation saves keyframes only at multiples of K, not every frame (review M1).
-* With confirmation 4-5 frames behind the present, a world holds about 3-4 keyframes: about
+* With confirmation about 8.5 frames behind the present (6.4), a world holds about 3-4 keyframes: about
   2-2.5 MB at 256 bodies and 7-10 MB at 1,024 [I, from the image sizes]. The old proposal held a fixed 2 s
   ring (about 72 MB at 1,024 bodies).
 * The speculation limit (6.4) caps the worst case at 120/K + 1 = 31 keyframes.
@@ -384,7 +386,7 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
   * An equivocation found after confirmation keeps the stable version (9.3).
   * An eviction never changes an effective frame, because nothing is ever re-stamped (8.2).
   * Reaching a rollback below the confirmed frame aborts with "protocol invariant violated" instead of
-    rolling back. No scenario reaches it [V session-sim, 26 scenarios].
+    rolling back. No scenario reaches it [V session-sim, 25 scenarios].
 * **Speculation limit W = 120 frames (2 s, D4).** A member whose present runs W frames ahead of the
   confirmed frame stops advancing its sim. It keeps networking until confirmation catches up. Persistent
   stalls lead to a view change (10.8) and, for a member that is the cause, demotion (10.9).
@@ -1249,7 +1251,7 @@ is fixed once the author's chain is contiguous up to it.
 * The **confirmed frame** is the minimum over members of (the horizon declared in that member's stable
   prefix + 1).
 * Only finality and trimming use the confirmed frame (6.4). Rollback below it is asserted impossible.
-* [V session-sim: 26 scenarios, every one bit-identical to its offline replay, 0 false checks;
+* [V session-sim: 25 scenarios, every one bit-identical to its offline replay, 0 false checks;
   V p2p-v2 over UDP: latency60, loss10, fault]
 
 **Gap detection and fetch:** from acks' heads, and from holes in chains (9.3).
@@ -1517,7 +1519,7 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
     * a maintained one-line `[patch]` of build.rs, plus Rust definitions of the weak `__unw_*` symbols
       [I];
     * a `no_std` custom-platform build with a platform layer written in Rust [I].
-  * The 100%-Rust audit also needs to flag inline `asm!` (D12-3).
+  * The 100%-Rust audit now flags inline `asm!` as well; 20.2 lists the packages that use it (D12-3).
 * **The benchmark flattered the guest** (D12-6).
   * The guest had no generics and every system function was `#[inline(never)]`. Without those
     annotations, the Cranelift compile went from 27 to 70 ms, and the Cranelift loop to 0.52 s.
@@ -1570,6 +1572,9 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
   rolls the sim back so the overrun never happens, the flag rolls back with it. Reverting the module is an
   ordinary, explicitly ordered commit by a human or an agent, never an automatic SCM action (D14d).
   A runaway module stops at the identical instruction on every peer [V d3].
+* **Only fuel may stop a module at a frame** (review D12-7). wasmtime's epoch interruption is driven by a
+  host timer, so where it fires differs between peers and between runs [I, from how it works]. It may
+  only serve as a backstop that kills a hung process outside the session, never as an input to a frame.
 * Memory limits through the runtime's resource limiter. Host functions validate every argument (ids,
   finite floats) [V d1].
 
@@ -1662,10 +1667,10 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
   frame, so every member computes the same head. This replaces the phase-1 rule ("final once older than 2 s,
   because no earlier commit can still arrive"). That rule was false under loss, stalls or partitions, and
   could give two peers two heads (review C1).
-  * Typical confirmation is about 70-80 ms on 50 ms links [V session-sim r14], against 2 s before
-    (priority 2).
+  * Typical confirmation is about 140 ms (8.5 frames) on 50 ms links [V session-sim r14, round 2], against
+    2 s before (priority 2).
 * **Activation frame = confirmation frame + lead** (at least 30 frames, so peers can fetch the artifact).
-  Edit to running for everyone is therefore build (0.45 s, 13.7) + confirmation (~0.1 s) + lead (0.5 s).
+  Edit to running for everyone is therefore build (0.45 s, 13.7) + confirmation (~0.14 s) + lead (0.5 s).
 * **Partitions:** only a side with a strict majority of the current membership epoch confirms anything
   (10.8). The minority's commits stay unconfirmed and are resubmitted after the heal. Nothing that ran as
   final is ever un-finalized (review H3).
@@ -1714,7 +1719,7 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
 * Seat timing is counted in confirmed frames, so every peer agrees on when a seat lapses.
 * The 10 s starts when the seat reaches the front of its scope's queue, not when it is granted
   (otherwise queued seats could lapse before their turn). Service time per seat is roughly build (0.5 s) +
-  confirmation (0.1 s) + lead (0.5 s), well inside 10 s, so queues drain. This is **D14b**.
+  confirmation (0.14 s) + lead (0.5 s), well inside 10 s, so queues drain. This is **D14b**.
 
 ### 15.5 Distribution [I]
 
@@ -2131,12 +2136,21 @@ section 7. **The spike workspace itself is 100% Rust (42 packages)** [V audit].
 
 * **Linux:** winit's Wayland path compiles a small C log shim (`wayland-backend` with system libwayland)
   [V audit; S its build.rs]. Avoidable by a pure-Rust Wayland backend or X11-only.
-* **Rust inline assembly** in pure-Rust crypto (`graviola`: 149 `asm!` blocks) [S]. Only relevant if
-  transport option B is chosen.
+* **Rust inline assembly.** It is Rust by the ruling's wording, but listed here (review D12-3).
+  `scripts/audit_native.py` now flags Rust files that use `asm!`, `global_asm!` or `naked_asm!` (a text
+  scan, inspected by hand) [V `spikes/out/audit-inline-asm.md`]. Packages that use it:
+  * `graviola`: 149 `asm!` blocks [S]. Only relevant if transport option B is chosen.
+  * In minimal wasmtime: `wasmtime-internal-unwinder` (4 files), `cranelift-native` (1),
+    `wasmtime-internal-jit-icache-coherence` (2) and `sha2` (4); on Linux also `rustix` (16).
+  * In wasmi (the D12 runtime): `libm` (4).
+    * On x86 it uses `sqrtss`/`sqrtsd` and a runtime-detected `vfmadd`, falling back to software FMA
+      [S, inspected].
+    * Both are exactly rounded under IEEE 754, so results do not depend on which path runs.
 * **Shader compiler:** DXC (C++ DLL) only if HLSL is chosen (14).
-* **wasmtime, if chosen for game logic (D12):** with default features off it compiles no C on Windows
-  [V iteration-benchmark 5]. On Linux and macOS its build script compiles `helpers.c` [I, from its
-  build.rs].
+* **wasmtime, if Cranelift is adopted later (D12):** with default features off it compiles no C on Windows
+  [V iteration-benchmark 5]. On Linux and macOS its build script compiles `helpers.c` whatever the
+  features [V reviewer round 2: the musl cross-check fails looking for a C compiler]. The user's 15:10Z
+  ruling (D12) keeps wasmi everywhere until a `[patch]` removes it and fuel tests pass on all three OSes.
 * **Crates that ship but do not compile C/asm files** (e.g. brotli-decompressor, qoi, rav1e without its
   `asm` feature) [V audit]. Harmless.
 
@@ -2906,19 +2920,35 @@ Three separate things are true of a player and a world:
 ### 22.3 Budgets and background throttling
 
 * **Throttling changes when a peer computes frames, never what they contain.** A world's state is a
-  function of its log, so computing frames later in bursts gives the same results. [V session-sim r14 throttle: from t = 3 s, member 1's replica of world A advanced only once per 250 ms. World A's 500-frame digest equalled the unthrottled run's.]
+  function of its log, so computing frames later in bursts gives the same results. [V session-sim r14
+  throttle: from t = 3 s, member 1's replica of world A advanced only once per 250 ms. Member 1 still
+  authored in A: a relay and a touch. A's 500-frame digest equalled the unthrottled run's (`89ba8fb8…`)
+  and the offline replay.]
 * **Confirmation depends on holding entries, not on simulating them.** An ack states what you hold
-  (10.8), so a background member never delays its world's confirmation. [V, same run: member 2's confirmation lag in world A averaged 3.9 frames whether member 1 was throttled or not.]
-* **Rules for a background member:**
-  1. It stamps entries (from panels or agents) at its present frame, not at its lagging sim frame.
-  2. There is no "too late" rule left to disagree on (C1 fix, 6.4), so lag cannot fork anything.
-  3. It answers fetches from its log, which needs no simulation.
-  4. It sends check hashes when its sim reaches confirmed check frames; late is fine.
-  5. It is never a state-transfer donor while it lags.
+  (10.8), and a background member keeps sending acks on schedule, so it never delays its world's
+  confirmation. [V, same run: member 2's confirmation lag in A averaged 8.5 frames before t = 3 s and 8.6
+  after, whether member 1 was throttled or not. This holds by construction, because acks do not wait for
+  the sim (review NEW-12).]
+* **Rules for a background member** (review NEW-12):
+  1. It stamps **state-free entries** at its present frame, not at its lagging sim frame: edits, commits,
+     ACL changes, R14 relays and acks. They need no simulation. [V, same run: member 1 authored A's
+     Verdict at frame 185 while its sim of A stood at frame 175. The frame and the time were those of the
+     unthrottled run, and the relay's timeline was identical: 2,766, 2,964, 3,197 and 3,354 ms.]
+  2. An entry that **carries state** (a touch, 7.3) needs the sim at its stamp frame. The member first
+     catches up in one burst, then authors at the present. The cost is that burst: up to 15 frames, about
+     5 ms at 256 bodies and 28 ms at 1,024 [I, from b6]. [V, same run: member 1's touch at frame 260 was
+     accepted with the same stamp as unthrottled.]
+  3. There is no "too late" rule left to disagree on (C1 fix, 6.4), so lag cannot fork anything.
+  4. It answers fetches from its log, which needs no simulation.
+  5. It sends check hashes when its sim reaches confirmed check frames; late is fine. Confirmation
+     already delays a check hash by about 8.5 frames, so 250 ms bursts add little. [V, same run: member
+     1's check hashes reached A's log on average 10.2 frames after their check frame (at most 13)
+     throttled, against 10.0 (at most 13) unthrottled.]
+  6. It is never a state-transfer donor while it lags.
 * **CPU priority:** embodied, then straddled or portal-visible, then attending, then background, then parked.
   Limits per client: **D49**.
 * **Memory:** the snapshot ring runs from the confirmed frame to the present (6.3). With confirmation
-  4-5 frames behind the present, a world keeps about 3-4 keyframes, not a 2 s ring. At 1,024
+  about 8.5 frames behind the present (6.4), a world keeps about 3-4 keyframes, not a 2 s ring. At 1,024
   bodies that is about 7-10 MB per world (2.4 MB per image [V b6]); the 120-frame speculation limit caps
   the worst case at 31 keyframes.
 * **Parked worlds** keep their log and latest confirmed keyframe. Resuming fast-forwards through the
@@ -3008,6 +3038,9 @@ confirmed facts, and only with proof.**
    (NEW-4).
    * Then B validates as before: the import right in B's ACL, B's body budget, the deadline, the arrival
      portal open, the component policy (22.8), and no duplicate transfer id.
+   * B also validates the record itself, because a certificate proves who said it, not that it is sane
+     (review NEW-21): every value finite, a unit rotation (norm within 1%), speed at most 200 m/s and spin
+     at most 2,000 rad/s. Otherwise the arrival is `RejectedInvalid`.
    * The object is created with a new local id and the same global id (Accepted), or Rejected.
 5. **B attests** its confirmed verdict in the same way. A `Verdict{transfer, accepted, certificate}`, with
    a strict majority of B's signatures, can be relayed into A by anyone.
@@ -3031,12 +3064,15 @@ confirmed facts, and only with proof.**
   * That is slower than 3d0f98a (+149 ms to the arrival), by the stability round (6.4) and the attestation
     round.
   * The carrier hides the gap with a presentation-only copy in its hand.
-* **Measured attacks** [V session-sim `r14 forge`]. Every one of these did nothing (`RejectedNoProof`) and
-  the object stayed conserved, with every replica equal to its offline replay:
-  * a member of B minting A's object without a departure;
-  * a member of B squatting the real transfer id before the relay;
-  * a member of A committing the escrow with no certificate;
-  * the carrier claiming a rejection while presenting B's genuine signatures over the acceptance.
+* **Measured attacks** [V session-sim `r14 forge`]. Every one of these did nothing and the object stayed
+  conserved, with every replica equal to its offline replay:
+  * a member of B minting A's object without a departure (`RejectedNoProof`);
+  * a member of B squatting the real transfer id before the relay (`RejectedNoProof`);
+  * a member of A committing the escrow with no certificate (`RejectedNoProof`);
+  * the carrier claiming a rejection while presenting B's genuine signatures over the acceptance
+    (`RejectedNoProof`);
+  * a correctly certified record with a NaN position, standing for a bug or a compromised majority in A
+    (`RejectedInvalid`).
 * **Why settled rather than optimistic:** only confirmed, certified facts cross, so neither world ever acts
   on the other's speculation, and no correction is ever needed. The optimistic alternative is D45.
 
@@ -3076,6 +3112,14 @@ persists until a verdict arrives.
   * shared schemas, a cross-world standard library, let worlds interoperate;
   * running a foreign module in B needs B's explicit ACL opt-in, because it is code B's builders did not
     commit.
+* **Carried data is untrusted input in B** (review NEW-22). Its bytes were made by A's logic, or by
+  whoever controls A, and B's module deserializes them.
+  * A foreign module is pinned by its canonical hash (13.2), never by name or version: B's opt-in names
+    exact hashes, and a component whose schema hash B has not pinned stays inert.
+  * The engine enforces size caps before any logic sees the bytes: per component and per object, set in
+    B's world config.
+  * B's module validates the data on arrival (`on_arrival`, 22.9). A record it cannot parse stays inert
+    instead of trapping, and every peer reaches the same verdict, because the bytes are in B's log.
 * **Assets** are fetched by hash from the carrier and other members of both worlds.
 
 ### 22.9 What game logic, MCP and panels see
@@ -3216,7 +3260,8 @@ entry says so.
     * the platform C runtimes that Rust itself links (20.1, review L1);
     * the Rust toolchain (rustc/LLVM) as a build tool for game logic.
     Target Linux as `linux-gnu` (dynamic glibc, OS-provided), not static musl.
-  * Also rule on the gray areas in 20.2: the Wayland C shim on Linux; Rust `asm!` in crypto crates;
+  * Also rule on the gray areas in 20.2: the Wayland C shim on Linux; Rust `asm!` in crypto crates, in
+    wasmtime and in wasmi's `libm`;
     wasmtime's `helpers.c` on Linux and macOS (D12); a DXC DLL if HLSL were chosen.
   * This entry also asks the user to confirm the coordinator's reading that "dynamically loaded system
     components are acceptable". It absorbs D24, which duplicated it.
@@ -3618,7 +3663,9 @@ entry says so.
     rule breaks.
 * **D48. Logic components on carried objects (22.8).**
   * Recommend: they travel as inert data and regain behaviour in any world that runs their module. Shared
-    schemas allow interoperation. Running foreign code needs the destination's ACL opt-in.
+    schemas allow interoperation. Running foreign code needs the destination's ACL opt-in, which pins
+    modules by canonical hash. Carried bytes are untrusted input: size-capped by the engine and validated
+    by the destination's module (review NEW-22).
   * Alternative: carry and run the object's module wherever it goes. Richer, but every world would then run
     code its own builders never committed.
 * **D49. Background worlds (22.3).**
