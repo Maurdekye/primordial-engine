@@ -23,7 +23,7 @@ use box3d_rust::recording::{
     RegistrySlot,
 };
 use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
-use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType};
+use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType, WorldDef};
 use box3d_rust::world::World;
 
 /// Fixed simulation timestep (requirement 2). 60 Hz.
@@ -86,7 +86,13 @@ pub struct Scene {
 
 /// Ground plus a mixed pile of boxes, spheres and capsules: `side * side * layers` bodies.
 pub fn build_pile_scene(side: usize, layers: usize) -> Scene {
-    let mut world = World::new(&default_world_def());
+    build_pile_scene_def(side, layers, &default_world_def())
+}
+
+/// [`build_pile_scene`] with a caller-supplied world definition (e.g. the fork's
+/// scale-dependent contact recycling toggled on).
+pub fn build_pile_scene_def(side: usize, layers: usize, world_def: &WorldDef) -> Scene {
+    let mut world = World::new(world_def);
 
     let mut ground_def = default_body_def();
     ground_def.type_ = BodyType::Static;

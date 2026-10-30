@@ -341,6 +341,45 @@ pub fn world_get_contact_recycle_distance(world: &World) -> f32 {
     world.contact_recycle_distance
 }
 
+/// Primordial Engine fork: set the scale-dependent recycling radius parameters.
+/// Lengths and the fraction are clamped to `[0, f32::MAX]`. Not captured by the recording
+/// system; it is carried by world snapshots when enabled. See [`crate::recycle_scale`].
+pub fn world_set_contact_recycle_scaling(
+    world: &mut World,
+    scaling: crate::recycle_scale::ContactRecycleScaling,
+) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+    debug_assert!(is_valid_float(scaling.length_fraction));
+    debug_assert!(is_valid_float(scaling.min_distance));
+    debug_assert!(is_valid_float(scaling.max_distance));
+    let mut s = scaling;
+    s.length_fraction = clamp_float(s.length_fraction, 0.0, f32::MAX);
+    s.min_distance = clamp_float(s.min_distance, 0.0, f32::MAX);
+    s.max_distance = clamp_float(s.max_distance, 0.0, f32::MAX);
+    world.contact_recycle_scaling = s;
+}
+
+/// Primordial Engine fork: get the scale-dependent recycling radius parameters.
+pub fn world_get_contact_recycle_scaling(world: &World) -> crate::recycle_scale::ContactRecycleScaling {
+    world.contact_recycle_scaling
+}
+
+/// Primordial Engine fork: replace (Some) or restore (None) the recycling radius formula.
+/// Only consulted while scaling is enabled. The function must be pure and deterministic.
+pub fn world_set_contact_recycle_radius_fn(
+    world: &mut World,
+    fcn: Option<crate::recycle_scale::ContactRecycleRadiusFn>,
+) {
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+    world.contact_recycle_radius_fcn = fcn;
+}
+
 /// Set the maximum linear speed. (b3World_SetMaximumLinearSpeed)
 pub fn world_set_maximum_linear_speed(world: &mut World, maximum_linear_speed: f32) {
     crate::recording::capture::rec(world, |rec, wid| {

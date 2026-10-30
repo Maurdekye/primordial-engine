@@ -5,10 +5,18 @@
 //!   trace <frames> <out-file>    pile scene + scripted interactions, write per-frame hashes
 //!   rollback                     snapshot/restore + late-input rollback tests, with timings
 //!   bench                        step / snapshot / restore cost at several body counts
+//!   vdw-bench [frames] [out.jsonl]  A/B of fixed vs scale-dependent contact recycling (vdw_bench.rs)
+//!   vdw-perf [frames] [repeats] [out.jsonl]  timing-focused A/B on an 864-box pile
+//!   images <out-file>             FNV-64 of the pile's snapshot image every 50 frames
+//!
+//! Global flag `--vdw` turns on the fork's scale-dependent contact recycling (default
+//! parameters) for every world the subcommand creates; without it every world is upstream.
+//! `--no-recycle` (goldens only) sets the recycle distance to 0, as a no-approximation reference.
 //!
 //! Exit code is non-zero if any check fails.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use box3d_rust::determinism::{
@@ -16,14 +24,50 @@ use box3d_rust::determinism::{
     update_falling_ragdolls, update_mesh_drop, update_query_spawn, update_wave_pile,
 };
 use box3d_rust::math_functions::POS_ZERO;
-use box3d_rust::types::default_world_def;
+use box3d_rust::recycle_scale::ContactRecycleScaling;
+use box3d_rust::types::{default_world_def, WorldDef};
 use box3d_rust::world::World;
 use pe_sim_core::*;
 
+mod vdw_bench;
+
 const SEED: u64 = 0x5052_494D_4F52_4449; // "PRIMORDI"
 
+static VDW: AtomicBool = AtomicBool::new(false);
+static NO_RECYCLE: AtomicBool = AtomicBool::new(false);
+
+fn vdw_on() -> bool {
+    VDW.load(Ordering::Relaxed)
+}
+
+/// World definition for every world this binary creates: upstream, or `--vdw`.
+fn world_def() -> WorldDef {
+    let mut def = default_world_def();
+    if vdw_on() {
+        def.contact_recycle_scaling = ContactRecycleScaling::enabled();
+    }
+    def
+}
+
+/// Goldens world: `--no-recycle` additionally disables contact recycling (reference point only).
+fn goldens_world() -> World {
+    let mut world = World::new(&world_def());
+    if NO_RECYCLE.load(Ordering::Relaxed) {
+        box3d_rust::world::world_set_contact_recycle_distance(&mut world, 0.0);
+    }
+    world
+}
+
+fn pile_scene(side: usize, layers: usize) -> Scene {
+    build_pile_scene_def(side, layers, &world_def())
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let all_args: Vec<String> = std::env::args().collect();
+    VDW.store(all_args.iter().any(|a| a == "--vdw"), Ordering::Relaxed);
+    NO_RECYCLE.store(all_args.iter().any(|a| a == "--no-recycle"), Ordering::Relaxed);
+    let args: Vec<String> =
+        all_args.into_iter().filter(|a| a != "--vdw" && a != "--no-recycle").collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or("help");
     let ok = match cmd {
         "goldens" => goldens(),
@@ -34,12 +78,27 @@ fn main() {
         }
         "rollback" => rollback(),
         "bench" => bench(),
+        "vdw-bench" => {
+            let frames: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(900);
+            vdw_bench::run(frames, args.get(3).map(String::as_str))
+        }
+        "vdw-perf" => {
+            let frames: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1200);
+            let repeats: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5);
+            vdw_bench::perf(frames, repeats, args.get(4).map(String::as_str))
+        }
+        "images" => images(args.get(2).map(String::as_str).unwrap_or("images.txt")),
         _ => {
-            eprintln!("usage: pe-spike-physics goldens | trace <frames> <out> | rollback | bench");
+            eprintln!("usage: pe-spike-physics [--vdw] goldens | trace <frames> <out> | rollback | bench | vdw-bench [frames] [out] | vdw-perf [frames] [repeats] [out] | images <out>");
             false
         }
     };
-    println!("build: {} profile, target {}", profile(), std::env::consts::ARCH);
+    println!(
+        "build: {} profile, target {}, contact recycling: {}",
+        profile(),
+        std::env::consts::ARCH,
+        if vdw_on() { "scale-dependent (--vdw)" } else { "upstream fixed" }
+    );
     if !ok {
         println!("RESULT: FAIL");
         std::process::exit(1);
@@ -64,10 +123,20 @@ fn check(label: &str, pass: bool, detail: String) -> bool {
 fn goldens() -> bool {
     let mut all = true;
     let dt = 1.0 / 60.0;
+    // With --vdw the C goldens do not apply (the feature changes contact timing by design);
+    // the values are printed so debug and release outputs can be compared line by line.
+    let check = |label: &str, pass: bool, detail: String| -> bool {
+        if vdw_on() || NO_RECYCLE.load(Ordering::Relaxed) {
+            println!("[INFO] {label} (--vdw/--no-recycle, C golden n/a; matches C: {pass}): {detail}");
+            true
+        } else {
+            check(label, pass, detail)
+        }
+    };
 
     {
         let t = Instant::now();
-        let mut world = World::new(&default_world_def());
+        let mut world = goldens_world();
         let mut d = create_falling_ragdolls(&mut world);
         for _ in 0..1000 {
             world.step(dt, 4);
@@ -83,7 +152,7 @@ fn goldens() -> bool {
     }
     {
         let t = Instant::now();
-        let mut world = World::new(&default_world_def());
+        let mut world = goldens_world();
         let mut d = create_wave_pile(&mut world);
         let mut done = false;
         for _ in 0..1000 {
@@ -101,7 +170,7 @@ fn goldens() -> bool {
     }
     {
         let t = Instant::now();
-        let mut world = World::new(&default_world_def());
+        let mut world = goldens_world();
         let mut d = create_query_spawn(&mut world);
         let mut done = false;
         for _ in 0..1000 {
@@ -122,7 +191,7 @@ fn goldens() -> bool {
     }
     {
         let t = Instant::now();
-        let mut world = World::new(&default_world_def());
+        let mut world = goldens_world();
         let mut d = create_mesh_drop(&mut world, POS_ZERO);
         let mut done = false;
         for _ in 0..1000 {
@@ -147,7 +216,7 @@ fn goldens() -> bool {
 
 fn reference_run(frames: u64) -> (Vec<u64>, Vec<u64>, GameState) {
     let inputs = scripted_inputs();
-    let mut gs = GameState::new(build_pile_scene(8, 4), SEED);
+    let mut gs = GameState::new(pile_scene(8, 4), SEED);
     let mut state_hashes = Vec::with_capacity(frames as usize);
     let mut world_hashes = Vec::with_capacity(frames as usize);
     while gs.frame < frames {
@@ -179,6 +248,37 @@ fn trace(frames: u64, out: &str) -> bool {
     true
 }
 
+/// Snapshot-image bytes check: FNV-64 of the serialized world every 50 frames of the reference
+/// run, plus its length. Toggle-off images must equal the unmodified crate's byte for byte.
+fn images(out: &str) -> bool {
+    let inputs = scripted_inputs();
+    let mut gs = GameState::new(pile_scene(8, 4), SEED);
+    let mut snapper = Snapshotter::new();
+    let mut f = std::fs::File::create(out).expect("create images file");
+    let mut all = Vec::new();
+    while gs.frame <= 600 {
+        if gs.frame % 50 == 0 {
+            let s = snapper.save(&gs);
+            let h = fnv_bytes(&s.world_image);
+            writeln!(f, "{} {} {h:016x}", gs.frame, s.world_image.len()).unwrap();
+            all.push(h);
+        }
+        let fr = gs.frame;
+        let now: Vec<Interaction> = inputs.iter().copied().filter(|i| i.frame == fr).collect();
+        gs.advance(&now);
+    }
+    println!("images: 13 snapshots, digest {:016x} -> {out}", fnv_u64s(all));
+    true
+}
+
+fn fnv_bytes(b: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h = (h ^ x as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 // ---------------------------------------------------------------------------------------------
 // (b) Rollback.
 // ---------------------------------------------------------------------------------------------
@@ -195,7 +295,7 @@ fn rollback() -> bool {
 
     // T1: snapshot at 300, step to 400, restore in place, step to 400 again.
     {
-        let mut gs = GameState::new(build_pile_scene(8, 4), SEED);
+        let mut gs = GameState::new(pile_scene(8, 4), SEED);
         let mut snapper = Snapshotter::new();
         let step_to = |gs: &mut GameState, end: u64| -> Vec<u64> {
             let mut hs = Vec::new();
@@ -228,7 +328,7 @@ fn rollback() -> bool {
     // T2: one interaction arrives 60 frames late -> single rollback of depth 60.
     {
         let late = inputs.iter().copied().find(|i| i.frame == 200).unwrap();
-        let mut sim = RollbackSim::new(GameState::new(build_pile_scene(8, 4), SEED), 120);
+        let mut sim = RollbackSim::new(GameState::new(pile_scene(8, 4), SEED), 120);
         for i in inputs.iter().filter(|i| i.frame != 200) {
             sim.add_input(*i).unwrap();
         }
@@ -258,7 +358,7 @@ fn rollback() -> bool {
 
     // T3: every interaction delivered with a pseudo-random 1..=45 frame delay (network-like).
     {
-        let mut sim = RollbackSim::new(GameState::new(build_pile_scene(8, 4), SEED), 120);
+        let mut sim = RollbackSim::new(GameState::new(pile_scene(8, 4), SEED), 120);
         let mut arrivals: Vec<(u64, Interaction)> = inputs
             .iter()
             .map(|i| (i.frame + 1 + splitmix64(i.frame ^ ((i.peer as u64) << 32)) % 45, *i))
@@ -294,7 +394,7 @@ fn rollback() -> bool {
 
     // T4: snapshot at 300 restored into a brand-new World (late-joiner path).
     {
-        let mut sim = RollbackSim::new(GameState::new(build_pile_scene(8, 4), SEED), 120);
+        let mut sim = RollbackSim::new(GameState::new(pile_scene(8, 4), SEED), 120);
         for i in &inputs {
             sim.add_input(*i).unwrap();
         }
@@ -322,7 +422,7 @@ fn rollback() -> bool {
 
     // T5: an interaction older than the rollback window is refused (needs resync instead).
     {
-        let mut sim = RollbackSim::new(GameState::new(build_pile_scene(8, 4), SEED), 120);
+        let mut sim = RollbackSim::new(GameState::new(pile_scene(8, 4), SEED), 120);
         sim.advance_to(400);
         let r = sim.add_input(Interaction { frame: 100, peer: 9, seq: 0, body: 1, impulse: [0.0, 1.0, 0.0] });
         all &= check(
@@ -334,7 +434,7 @@ fn rollback() -> bool {
 
     // Timings for snapshot / restore / step at 256 bodies.
     {
-        let mut gs = GameState::new(build_pile_scene(8, 4), SEED);
+        let mut gs = GameState::new(pile_scene(8, 4), SEED);
         let mut snapper = Snapshotter::new();
         for _ in 0..120 {
             gs.advance(&[]);
@@ -367,7 +467,7 @@ fn rollback() -> bool {
 fn bench() -> bool {
     for (side, layers) in [(8usize, 4usize), (16, 4), (16, 8)] {
         let count = side * side * layers;
-        let mut gs = GameState::new(build_pile_scene(side, layers), SEED);
+        let mut gs = GameState::new(pile_scene(side, layers), SEED);
         let mut snapper = Snapshotter::new();
         let frames = 300u64;
         let mut step_total = std::time::Duration::ZERO;

@@ -117,6 +117,10 @@ pub mod name_cache;
 mod parallel_for;
 pub mod rapidhash;
 pub mod recording;
+// Primordial Engine fork: scale-dependent contact-recycling radius. See FORK.md.
+pub mod recycle_scale;
+#[cfg(test)]
+mod recycle_scale_tests;
 pub mod sensor;
 pub mod shape;
 pub(crate) mod simd_scalar;

@@ -21,9 +21,10 @@ use crate::id::{ContactId, ShapeId};
 use crate::island::{link_contact, unlink_contact};
 use crate::math_functions::{
     abs, conjugate, distance_squared, dot, dot_quat, inv_mul_quat, inv_mul_world_transforms,
-    length_squared, make_matrix_from_quat, max, min_float, min_int, mul_mv, mul_quat, sub, sub_pos,
-    Vec3,
+    length_squared, make_matrix_from_quat, max, max_float, min_float, min_int, mul_mv, mul_quat,
+    sub, sub_pos, Vec3,
 };
+use crate::recycle_scale::{default_recycle_radius, RecyclePairInput};
 use crate::solver_set::{AWAKE_SET, STATIC_SET};
 use crate::world::World;
 
@@ -87,6 +88,11 @@ fn collide_task(world: &mut World, contact_indices: &[i32], worker_index: i32) {
     let recycle_distance = world.contact_recycle_distance;
     let speculative = speculative_distance();
     let recycle_distance_non_touching = min_float(recycle_distance, speculative);
+    // Primordial Engine fork: scale-dependent recycling radius (crate::recycle_scale).
+    let recycle_scaling = world.contact_recycle_scaling;
+    let recycle_radius_fcn = world
+        .contact_recycle_radius_fcn
+        .unwrap_or(default_recycle_radius);
 
     for &contact_index in contact_indices {
         debug_assert!((contact_index as usize) < world.contacts.len());
@@ -142,6 +148,26 @@ fn collide_task(world: &mut World, contact_indices: &[i32], worker_index: i32) {
             && (flags & contact_flags::RELATIVE_TRANSFORM_VALID) != 0
             && (flags & contact_flags::RECYCLE) != 0
         {
+            // Primordial Engine fork: with scaling enabled the tolerance is per pair; with it
+            // disabled this block is skipped and the upstream value above is used unchanged.
+            let recycle_tolerance = if recycle_scaling.enabled {
+                let input = RecyclePairInput {
+                    length_a: sim_a.min_extent,
+                    length_b: sim_b.min_extent,
+                    static_a: is_static_sim_index(encoded_a),
+                    static_b: is_static_sim_index(encoded_b),
+                    base_distance: recycle_distance,
+                };
+                // max_float also maps NaN to 0, which disables recycling for the pair.
+                let r = max_float(recycle_radius_fcn(&input, &recycle_scaling), 0.0);
+                if was_touching {
+                    r
+                } else {
+                    min_float(r, speculative)
+                }
+            } else {
+                recycle_tolerance
+            };
             let contact = &world.contacts[contact_index as usize];
             // The scalar part of b3InvMulQuat is just the quaternion dot product.
             // cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
