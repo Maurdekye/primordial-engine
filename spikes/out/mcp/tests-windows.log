@@ -1,10 +1,10 @@
    Compiling pe-mcp v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\mcp\crates\pe-mcp)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 32s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 14s
      Running unittests src\lib.rs (target\debug\deps\pe_mcp-811b60eeda840725.exe)
 
 running 5 tests
-test auth::tests::issue_authenticate_revoke ... ok
 test auth::tests::revoke_all_ends_the_session ... ok
+test auth::tests::issue_authenticate_revoke ... ok
 test auth::tests::secrets_are_distinct_and_redacted ... ok
 test auth::tests::wrong_malformed_and_other_tokens ... ok
 test auth::tests::idle_ttl_expires_and_use_refreshes ... ok
@@ -30,7 +30,14 @@ test scopes_come_from_the_token ... ok
 test token_is_required_and_checked ... ok
 test valid_request_is_served ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\live_guard.rs (target\debug\deps\live_guard-8676603b97455ea5.exe)
+
+running 1 test
+test live_peer_refuses_scenario_tools_before_and_after_a_fault ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests\pipe.rs (target\debug\deps\pipe-3ba8d98e5f0191b7.exe)
 
@@ -41,14 +48,14 @@ test handshake_then_mcp_as_the_tokens_principal ... ok
 test two_principals_share_one_peer ... ok
 test wrong_or_malformed_handshake_is_refused ... ok
 test bridge_without_environment_fails ... ok
-pe-mcp: pipe \\.\pipe\primordial-mcp-109820-a8164157610779533b59e86a
+pe-mcp: pipe \\.\pipe\primordial-mcp-69224-894fee3158fedfefedadcfcf
 test serve_launches_bridge_end_to_end ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
 
      Running tests\tools.rs (target\debug\deps\tools-f7a55e3b0f47a24b.exe)
 
-running 23 tests
+running 24 tests
 test driven_peer_crash ... ok
 test engine_panic_faults_the_session_until_reload ... ok
 test forbidden_without_scope ... ok
@@ -69,11 +76,12 @@ test unknown_tool_is_a_protocol_error ... ok
 test world_get_object_and_errors ... ok
 test world_get_state_pages_and_errors ... ok
 test world_hashes_range ... ok
+test world_state_resource_holds_every_object ... ok
 test same_scenario_same_run ... ok
 test world_step_arguments ... ok
 test partition_heal_and_slow_links_stay_consistent ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.16s
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.67s
 
    Doc-tests pe_mcp
 
