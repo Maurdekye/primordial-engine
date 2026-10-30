@@ -1,7 +1,8 @@
 description = """
 Fault kinds (P2-9): a permanent partition {1, 2} | {3} from 2 s. The majority side votes \
 member 3 out as silent (review R3-2) and goes on; members 1 and 2 must agree with each other and \
-with the offline replay, with no false checks."""
+with the offline replay, with no false checks. Member 3, alone on its side, must neither confirm \
+past the partition nor remove members 1 and 2."""
 include = ["../common/pile.toml", "../common/scripted.toml"]
 end_ms = 12000
 
@@ -18,6 +19,15 @@ drop = true
 kind = "membership"
 honest = [1, 2]
 label = "fault-partition-evict"
+
+# The minority side: member 3 alone cannot confirm past the partition (frame 114 at 2 s) nor
+# remove the majority.
+[[report]]
+kind = "expect"
+at = 3
+conf_max = 114
+members = [1, 2, 3]
+label = "fault-partition-evict (minority member 3)"
 
 [[report]]
 kind = "verdict"

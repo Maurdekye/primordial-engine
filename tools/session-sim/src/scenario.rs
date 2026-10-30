@@ -22,6 +22,10 @@ use toml::Value;
 pub struct Scenario {
     #[serde(default)]
     pub description: String,
+    /// Accept plan actions on objects the scene lacks (the protocol rejects them as gone). Only for
+    /// reproducing a spike scenario that did this; say why next to it.
+    #[serde(default)]
+    pub allow_missing_objects: bool,
     /// Last 1 ms step at or before this virtual time (`end_us` wins if both are given).
     pub end_ms: Option<u64>,
     pub end_us: Option<u64>,
@@ -458,6 +462,17 @@ pub enum Report {
     Verdict { honest: Vec<u32>, label: String },
     /// Membership, evictions, confirmation and paused frames per honest member.
     Membership { honest: Vec<u32>, label: String },
+    /// A condition on member `at`'s replica of `world`: confirmed frame within bounds and/or this
+    /// exact membership. Prints OK or FAIL.
+    Expect {
+        #[serde(default = "one")]
+        world: u32,
+        at: u32,
+        conf_max: Option<u64>,
+        conf_min: Option<u64>,
+        members: Option<Vec<u32>>,
+        label: String,
+    },
     /// One templated line (see report.rs).
     Line {
         #[serde(default = "one")]

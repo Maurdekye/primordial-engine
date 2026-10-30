@@ -40,25 +40,42 @@ pub fn discover(dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
     Ok(out)
 }
 
-/// Mask measured CPU timings, which vary run to run: any decimal number of milliseconds
-/// ("(88.8 ms)", "step avg 0.400 ms") and the ball pit's "(772 ms over the window)".
+/// The CPU timings the logs print, which vary run to run: the text before the number (`#` is any
+/// integer) and the text after it. Only these are masked, so a virtual-time decimal in a future
+/// log line is still compared (review of fffdcbc).
+const TIMINGS: &[(&str, &str)] = &[
+    ("resim frames # (", " ms) overwrites"), // stats: "resim frames 135 (88.8 ms) overwrites"
+    ("re-sim ", " ms per rendered sim frame"), // ball pit
+    ("rendered sim frame (", " ms over the window)"),
+    ("step avg ", " ms;"),
+];
+
+/// Mask the measured CPU timings in a log line (see [`TIMINGS`]).
 pub fn mask(line: &str) -> String {
-    let mut out = String::new();
-    let mut rest = line;
-    while let Some(i) = rest.find(" ms") {
-        let head = &rest[..i];
-        let start = head.rfind(|c: char| !(c.is_ascii_digit() || c == '.')).map_or(0, |j| j + 1);
-        let num = &head[start..];
-        let timed = !num.is_empty() && (num.contains('.') || rest[i..].starts_with(" ms over the window"));
-        out.push_str(if timed { &head[..start] } else { head });
-        if timed {
-            out.push('X');
+    let mut out = line.to_string();
+    for (pre, post) in TIMINGS {
+        let mut from = 0;
+        while let Some(i) = out[from..].find(post).map(|i| i + from) {
+            let start = out[..i].rfind(|c: char| !(c.is_ascii_digit() || c == '.')).map_or(0, |j| j + 1);
+            if start < i && ends_with_pattern(&out[..start], pre) {
+                out.replace_range(start..i, "X");
+                from = start + 1 + post.len();
+            } else {
+                from = i + post.len();
+            }
         }
-        out.push_str(" ms");
-        rest = &rest[i + 3..];
     }
-    out.push_str(rest);
     out
+}
+
+fn ends_with_pattern(head: &str, pre: &str) -> bool {
+    match pre.split_once('#') {
+        None => head.ends_with(pre),
+        Some((a, b)) => head.strip_suffix(b).is_some_and(|h| {
+            let n = h.trim_end_matches(|c: char| c.is_ascii_digit());
+            n.len() < h.len() && n.ends_with(a)
+        }),
+    }
 }
 
 /// What the old run script failed on: a fork, replay mismatch, panic, lost or duplicated
@@ -66,7 +83,7 @@ pub fn mask(line: &str) -> String {
 fn failures(log: &str) -> Vec<String> {
     let mut v = Vec::new();
     for l in log.lines() {
-        for w in ["MISMATCH", "DIFFER", "FAIL", "PANIC", "panicked", "NOT CONSERVED"] {
+        for w in ["MISMATCH", "DIFFER", "FAIL", "PANIC", "panicked", "NOT CONSERVED", "UNCONFIRMED"] {
             if l.contains(w) {
                 v.push(l.trim().to_string());
             }
@@ -151,6 +168,14 @@ pub fn regress(args: &[String]) -> i32 {
         }
     });
     let results = results.into_inner().unwrap();
+    // A committed log no scenario produces any more (only checked for a full run).
+    let orphans: Vec<String> = if only.is_none() {
+        fs::read_dir(&expected)
+            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "log")).filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).filter(|n| !results.contains_key(n)).collect())
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
     let (mut same, mut new, mut bad) = (0, 0, 0);
     for (name, (ok, text)) in &results {
         let want = fs::read_to_string(expected.join(format!("{name}.log"))).ok();
@@ -186,6 +211,10 @@ pub fn regress(args: &[String]) -> i32 {
         }
     }
     let secs = t0.elapsed().as_secs_f64();
+    for o in &orphans {
+        println!("== {o}: ORPHAN: committed log {} has no scenario", expected.join(format!("{o}.log")).display());
+    }
+    bad += orphans.len();
     if bad == 0 && (new == 0 || bless) {
         println!(
             "SUMMARY: {} scenarios, {same} identical to the committed logs{}; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states ({secs:.0} s)",
@@ -209,6 +238,8 @@ mod tests {
         assert_eq!(mask("re-sim 3.51 ms per rendered sim frame (772 ms over the window); step avg 0.400 ms;"), "re-sim X ms per rendered sim frame (X ms over the window); step avg X ms;");
         assert_eq!(mask("  t=2850 ms: 9's touch"), "  t=2850 ms: 9's touch");
         assert_eq!(mask("one burst per 250 ms)"), "one burst per 250 ms)");
+        assert_eq!(mask("mean lag 33.3 ms, resim frames 2 (1.5 ms) overwrites"), "mean lag 33.3 ms, resim frames 2 (X ms) overwrites");
+        assert_eq!(mask("  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0"), "  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (X ms) overwrites 0");
     }
 
     #[test]
