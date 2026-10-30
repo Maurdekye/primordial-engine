@@ -74,7 +74,7 @@ means verified by `crates/pe-mcp`'s tests and the recorded Claude Code runs in `
 
 ## 23.4 P2-8: status line
 
-* Built on branch `p2/mcp`: 44 tests pass on Windows and on Linux (WSL2: static musl binaries built on
+* Built on branch `p2/mcp`: 46 tests pass on Windows and on Linux (WSL2: static musl binaries built on
   Windows, and a native glibc build), and Claude Code drove a peer over the pipe and over HTTP on Windows.
   Not yet: Claude Code on Linux, resource subscriptions, and `schema.components`. **The P2-3 seam** is `crates/pe-mcp/src/backend.rs` (`DrivenPeer`, plus
   `ScenarioControl` for the simulator only). `pe-session` needs, per driven member: author an interaction

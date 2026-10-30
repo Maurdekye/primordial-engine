@@ -133,10 +133,12 @@ peer-authored text.
 ## Status
 
 * Windows: built and tested; Claude Code drove it over the pipe and over HTTP (`spikes/out/mcp/`).
-* Linux: the tests pass (44 at 5a1568c; 46 at 5ff2117 in the glibc run) as static musl binaries built on Windows and run in WSL2 Ubuntu-24.04
-  (`run-linux-tests.sh build`, then `run`; log in `spikes/out/mcp/tests-linux-wsl.log`). That run covers the
-  Unix socket and `serve --pipe -- pe-mcp bridge` end to end. They also pass in a native glibc build inside
-  WSL (`run-linux-tests.sh glibc`; log in `spikes/out/mcp/tests-linux-glibc.log`). Claude Code was not run on
-  Linux.
+* Linux, in WSL2 Ubuntu-24.04:
+  * A native glibc build (`run-linux-tests.sh glibc`): all 46 tests pass at 5ff2117
+    (`spikes/out/mcp/tests-linux-glibc.log`).
+  * Static musl binaries built on Windows (`run-linux-tests.sh build`, then `run`): the 44 tests of 5a1568c
+    pass (`spikes/out/mcp/tests-linux-wsl.log`).
+  * Both runs cover the Unix socket and `serve --pipe -- pe-mcp bridge` end to end. Claude Code was not run on
+    Linux.
 * Not yet: resource subscriptions (`primordial://world/state` with frame, commit and rejection events),
   `schema.components`, and the logic, shader, asset and panel tools (phases 3 and 4).
