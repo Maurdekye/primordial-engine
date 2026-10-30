@@ -135,11 +135,12 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
-            Payload::Vote { .. } | Payload::Unvote { .. } => "vote",
+            Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
             Payload::Attest { .. } => "attest",
             _ => "entry/transfer",
         },
-        Msg::Fetch { .. } => "fetch",
+        Msg::Fetch { .. } | Msg::FetchValue { .. } => "fetch",
+        Msg::Join { .. } => "join",
         Msg::Batch(_) => "batch",
     }
 }
@@ -501,7 +502,7 @@ impl Sim {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+            let members: Vec<MemberId> = r.sim.audience();
             match m {
                 Msg::Entry(e) => {
                     let carried = e.carried.map(|(o, _)| o);
@@ -533,6 +534,12 @@ impl Sim {
                         self.net.post(w, to, from, &e);
                     }
                 }
+                Msg::FetchValue { value } => {
+                    for e in r.sim.on_fetch_value(value) {
+                        self.net.post(w, to, from, &e);
+                    }
+                }
+                Msg::Join { member } => r.sim.on_join(member),
                 Msg::Batch(_) => {}
             }
         }
@@ -569,7 +576,7 @@ impl Sim {
             }
             let clock_frame = (clock - r.epoch_us) / r.dt_us;
             r.sim.now = clock_frame;
-            let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+            let members: Vec<MemberId> = r.sim.audience();
             if r.adapt {
                 // R18 congestion control. Signal: this member's own uplink queue delay (the spike
                 // reads the bottleneck directly; production estimates it from the one-way delay
@@ -681,8 +688,11 @@ impl Sim {
             for e in r.sim.attest_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
-            // Review R3-2: vote out members that have gone silent.
+            // Review R3-2: vote out members that have gone silent; P2-4: decide removals.
             for e in r.sim.suspects_due() {
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+            }
+            for e in r.sim.view_change_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
