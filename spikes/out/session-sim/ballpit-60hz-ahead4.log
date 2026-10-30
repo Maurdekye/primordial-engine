@@ -5,8 +5,8 @@ RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per fr
   sweep-window traffic ack: 282 messages, 20304 B payload (9554 B/s wire est.)
   sweep-window traffic entry/hand: 318 messages, 14310 B payload (8428 B/s wire est.)
   sweep-window traffic fetch: 45 messages, 585 B payload (799 B/s wire est.)
-RESULT   member 2 during the sweep: 1.9 rollbacks/s, 16.1 re-simulated frames/s, re-sim 0.29 ms per rendered sim frame (64 ms over the window); step avg 0.568 ms; max depth 8
+RESULT   member 2 during the sweep: 1.9 rollbacks/s, 16.1 re-simulated frames/s, re-sim 0.19 ms per rendered sim frame (41 ms over the window); step avg 0.396 ms; max depth 8
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 47bb8c7274b143d3 m2 47bb8c7274b143d3 -> IDENTICAL
   m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 7 max depth 8 resim frames 59 (64.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
+  m2 world 1: rollbacks 7 max depth 8 resim frames 59 (41.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=e684194ebc387d16 m2=e684194ebc387d16 | offline replay e684194ebc387d16 | ALL EQUAL

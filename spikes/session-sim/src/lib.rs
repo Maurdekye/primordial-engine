@@ -108,7 +108,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
-            Payload::Vote { .. } => "vote",
+            Payload::Vote { .. } | Payload::Unvote { .. } => "vote",
             Payload::Attest { .. } => "attest",
             _ => "entry/transfer",
         },
@@ -303,6 +303,8 @@ pub struct Peer {
     /// R14 genesis config of each world this peer joined: the worlds it trades objects with.
     /// Every member of a world holds the same list (reviews R3-4 to R3-6).
     pub routes: BTreeMap<WorldId, BTreeSet<WorldId>>,
+    /// A crashed peer neither receives, ticks nor sends (reviews R3-2, R3-7).
+    pub crashed: bool,
 }
 
 /// Result of one acceptance check (user ruling 09:31Z): after the receiver re-simulated to its
@@ -333,7 +335,7 @@ pub struct Sim {
 
 impl Peer {
     pub fn new(id: MemberId, skew_us: i64) -> Self {
-        Peer { id, skew_us, worlds: BTreeMap::new(), jobs: Vec::new(), routes: BTreeMap::new() }
+        Peer { id, skew_us, worlds: BTreeMap::new(), jobs: Vec::new(), routes: BTreeMap::new(), crashed: false }
     }
 
     /// R14: world `w` trades objects with the worlds `to` (its genesis route list).
@@ -434,6 +436,9 @@ impl Sim {
         for (to, w, from, m) in due {
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
+            if peer.crashed {
+                continue;
+            }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
             let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
             match m {
@@ -476,6 +481,9 @@ impl Sim {
     }
 
     fn tick_peer(&mut self, pi: usize, now: u64) {
+        if self.peers[pi].crashed {
+            return;
+        }
         let pid = self.peers[pi].id;
         let skew = self.peers[pi].skew_us;
         let wids: Vec<WorldId> = self.peers[pi].worlds.keys().copied().collect();
@@ -605,12 +613,40 @@ impl Sim {
             for e in r.sim.attest_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
+            // Review R3-2: vote out members that have gone silent.
+            for e in r.sim.suspects_due() {
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+            }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
                 if dest != pid {
                     self.net.post(w, pid, dest, &f);
                 }
             }
         }
+        // Reviews NEW-6, R3-7: certificates are self-certifying, so every member of both worlds
+        // relays a pending transfer it is not relaying yet; the carrier may have crashed. A second
+        // relay of the same transfer is refused as a duplicate, so this changes no outcome.
+        let p = &self.peers[pi];
+        let mut adopt = Vec::new();
+        for (src, rs) in &p.worlds {
+            for (t, esc) in &rs.sim.t.escrow {
+                let known = p.jobs.iter().chain(new_jobs.iter()).any(|j| j.transfer == *t);
+                if esc.status == EscrowStatus::Pending && p.worlds.contains_key(&esc.dest) && !known {
+                    adopt.push(Job {
+                        transfer: *t,
+                        src: *src,
+                        dst: esc.dest,
+                        depart: esc.depart,
+                        arrive: None,
+                        verdict: None,
+                        phase: JobPhase::WaitDepart,
+                        accepted: None,
+                        log: vec![format!("t={}ms relaying transfer {t} from world {src}, as a member of both worlds", now / 1000)],
+                    });
+                }
+            }
+        }
+        new_jobs.extend(adopt);
         self.peers[pi].jobs.extend(new_jobs);
         self.run_jobs(pi, now);
     }

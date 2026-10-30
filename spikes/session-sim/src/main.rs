@@ -4,7 +4,7 @@
 //!
 //! usage: pe-spike-session-sim <scenario> [options]
 //!   c1 | c2 | state-frame | diverged | loss | ties | claims | backdate
-//!   r14 [ok|abort|reject|throttle|forge|late] [--reverse]
+//!   r14 [ok|abort|reject|throttle|forge|late|crash] [--reverse]
 //!   ballpit [--hz 60|90] [--ahead N] [--hands 1|2] [--loss P]
 //!   snap [--balls N] [--stall]        snapshot-policy sweep (the memory/CPU knob, design 6.7)
 //!   ackfork | lateequiv | evict | outage   round-2 review repros (design 10.8)
@@ -65,9 +65,13 @@ fn scripted(member: MemberId) -> BTreeMap<u64, Vec<Action>> {
 
 /// Every replica of world `w` agrees with every other and with an offline replay of its final log.
 fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str) -> bool {
+    check_world_except(sim, w, frames, label, &[])
+}
+
+fn check_world_except(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[MemberId]) -> bool {
     let mut digests = Vec::new();
     let mut first: Option<&Replica> = None;
-    for p in &sim.peers {
+    for p in sim.peers.iter().filter(|p| !skip.contains(&p.id)) {
         if let Some(r) = p.worlds.get(&w) {
             digests.push((p.id, digest(&r.sim.hashes, frames)));
             first.get_or_insert(r);
@@ -407,15 +411,26 @@ fn r14(variant: &str, reverse: bool) {
         p3_b.push((134, Action::Portal { open: false }));
     }
     let mut peers = vec![Peer::new(1, 1200), Peer::new(2, -900), Peer::new(3, 400)];
+    // "crash" (reviews NEW-6, R3-7): member 4 is in both worlds too, so A and B have three members
+    // each and keep a majority when the carrier crashes.
+    let crash = variant == "crash";
+    let (a_members, b_members): (Vec<MemberId>, Vec<MemberId>) = if crash { (vec![1, 2, 4], vec![1, 3, 4]) } else { (vec![1, 2], vec![1, 3]) };
+    if crash {
+        peers.push(Peer::new(4, 300));
+    }
     let order: Vec<WorldId> = if reverse { vec![2, 1] } else { vec![1, 2] };
     for w in order {
         if w == 1 {
-            peers[0].join(1, &[1, 2], a_scene, a_cfg, 100_000, plan(&p1_a));
-            peers[1].join(1, &[1, 2], a_scene, a_cfg, 100_000, plan(&p2_a));
+            peers[0].join(1, &a_members, a_scene, a_cfg, 100_000, plan(&p1_a));
+            peers[1].join(1, &a_members, a_scene, a_cfg, 100_000, plan(&p2_a));
         } else {
-            peers[0].join(2, &[1, 3], b_scene, b_cfg, 150_000, BTreeMap::new());
-            peers[2].join(2, &[1, 3], b_scene, b_cfg, 150_000, plan(&p3_b));
+            peers[0].join(2, &b_members, b_scene, b_cfg, 150_000, BTreeMap::new());
+            peers[2].join(2, &b_members, b_scene, b_cfg, 150_000, plan(&p3_b));
         }
+    }
+    if crash {
+        peers[3].join(1, &a_members, a_scene, a_cfg, 100_000, BTreeMap::new());
+        peers[3].join(2, &b_members, b_scene, b_cfg, 150_000, BTreeMap::new());
     }
     if variant == "forge" {
         // Reviews R3-4, R3-5: one-member worlds that a single member controls, D (4, member 2) and
@@ -464,6 +479,9 @@ fn r14(variant: &str, reverse: bool) {
         }
     };
     while sim.net.now_us <= sim.end_us {
+        if crash && sim.net.now_us == 2_850_000 {
+            sim.peers[0].crashed = true;
+        }
         sim.step_ms();
         if variant == "forge" {
             let t = sim.net.now_us;
@@ -605,6 +623,27 @@ fn r14(variant: &str, reverse: bool) {
             println!("  carrier: depart entry final outcome at A frame {f}: {o:?}");
         }
     }
+    for p in sim.peers.iter().skip(1) {
+        for j in &p.jobs {
+            for l in &j.log {
+                println!("  relayer m{}: {l}", p.id);
+            }
+            println!("  relayer m{}: phase {:?} accepted {:?}", p.id, j.phase, j.accepted);
+        }
+    }
+    if crash {
+        for (w, at) in [(1, 2), (2, 3)] {
+            let r = &sim.replica(at, w).sim;
+            println!(
+                "RESULT r14 crash: world {w} at m{at}: members {:?} evicted {:?} conf {} frame {} paused frames {}",
+                r.members,
+                r.members_evicted(),
+                r.conf,
+                r.frame,
+                r.stats.paused_frames
+            );
+        }
+    }
     // Conservation: global id of object 40 in A.
     let gid = (1u64 << 32) | 40;
     for (w, label) in [(1, "A"), (2, "B")] {
@@ -636,8 +675,10 @@ fn r14(variant: &str, reverse: bool) {
     }
     print_stats(&sim, 1);
     print_stats(&sim, 2);
-    check_world(&sim, 1, 500, &format!("r14 {variant} A"));
-    check_world(&sim, 2, 400, &format!("r14 {variant} B"));
+    // The crashed carrier's own replicas are not compared.
+    let skip: &[MemberId] = if crash { &[1] } else { &[] };
+    check_world_except(&sim, 1, 500, &format!("r14 {variant} A"), skip);
+    check_world_except(&sim, 2, 400, &format!("r14 {variant} B"), skip);
     if variant == "throttle" || variant == "ok" {
         let before: Vec<u64> = lag_samples.iter().filter(|(t, _)| (1_500..3_000).contains(t)).map(|x| x.1).collect();
         let after: Vec<u64> = lag_samples.iter().filter(|(t, _)| (3_500..8_500).contains(t)).map(|x| x.1).collect();
@@ -847,6 +888,6 @@ fn main() {
         Some("crashstall") => review3::crashstall(),
         Some("snap") => history::snap(get("--balls").map_or(500, |v| v.parse().unwrap()), args.iter().any(|a| a == "--stall"), get("--reps").map_or(3, |v| v.parse().unwrap())),
         Some("observer") => history::observer(get("--delay").map_or(60, |v| v.parse().unwrap()), get("--hz").map_or(60, |v| v.parse().unwrap())),
-        _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle|forge|late] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),
+        _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle|forge|late|crash] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),
     }
 }
