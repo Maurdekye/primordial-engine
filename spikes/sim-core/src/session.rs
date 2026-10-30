@@ -332,6 +332,8 @@ pub struct Obj {
 const BALL_R: f32 = 0.06;
 pub const CLAIM_COOLDOWN: u64 = 10;
 const HAND_R: f32 = 0.09;
+/// Dead-reckoning speed cap for a hand without an entry (m/s).
+const HAND_COAST_VMAX: f32 = 3.0;
 
 fn add_shape(world: &mut World, body: BodyId, kind: u8) {
     let mut sd = default_shape_def();
@@ -467,6 +469,8 @@ pub struct Tables {
     pub escrow: BTreeMap<u64, Escrow>,
     pub arrivals: BTreeMap<u64, Arrival>,
     pub portal_open: bool,
+    /// Active hands: frames since the hand's last entry (dead reckoning, `SimConfig::hand_predict`).
+    pub hand_idle: BTreeMap<u32, u64>,
 }
 
 #[derive(Clone)]
@@ -483,6 +487,14 @@ pub struct Stats {
     pub resim_us: u64,
     pub step_us: u64,
     pub steps: u64,
+    /// Keyframe saves and restores (counts and time), the worst single `advance` call, and the
+    /// most image bytes the ring ever held.
+    pub saves: u64,
+    pub save_us: u64,
+    pub restore_us: u64,
+    pub max_advance_us: u64,
+    pub advance_us: u64,
+    pub max_ring_bytes: u64,
     pub overwrites: u64,
     pub paused_frames: u64,
     pub entries_rejected_violation: u64,
@@ -491,21 +503,70 @@ pub struct Stats {
     pub checks_bad: u64,
 }
 
+/// Which world images a member keeps between the base and its present (design 6.7). Purely local:
+/// images are a cache of states the log already determines, so no setting changes any result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapPolicy {
+    /// A keyframe at every multiple of `k` frames (the 3d0f98a behaviour with k = 4).
+    Every(u64),
+    /// Dense near the present (every `k` frames for the newest `4k`), then thinned so the spacing
+    /// grows with age: about two keyframes per doubling of age.
+    Log(u64),
+    /// The base (newest image at or before the confirmed frame) plus one candidate, saved at the
+    /// first multiple of `k` after the confirmed frame, that becomes the next base.
+    Base(u64),
+    /// The base plus keyframes every `k` frames for the newest `4k` frames only: a rollback
+    /// deeper than that re-simulates from the base.
+    Window(u64),
+}
+
+impl SnapPolicy {
+    pub fn label(&self) -> String {
+        match self {
+            SnapPolicy::Every(k) => format!("every{k}"),
+            SnapPolicy::Log(k) => format!("log{k}"),
+            SnapPolicy::Base(k) => format!("base{k}"),
+            SnapPolicy::Window(k) => format!("window{k}"),
+        }
+    }
+}
+
+/// Keyframe spacing kept at `age` frames behind the present under `SnapPolicy::Log(k)`.
+pub fn log_grid(k: u64, age: u64) -> u64 {
+    let r = age / k;
+    if r < 4 {
+        k
+    } else {
+        k << (62 - r.leading_zeros() as u64)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SimConfig {
     pub dt: f32,
     /// Speculation limit: a member stops advancing when `frame - conf` reaches this (frames).
     pub window: u64,
-    pub keyframe_every: u64,
+    pub snap: SnapPolicy,
     /// Backdating allowance in frames (review H5).
     pub late_allowance: u64,
     pub seed: u64,
     pub check_every: u64,
+    /// Remote-hand dead reckoning: an active hand with no entry for a frame keeps its last
+    /// commanded velocity for up to this many frames, then holds. 0 = hold at once.
+    pub hand_predict: u64,
 }
 
 impl Default for SimConfig {
     fn default() -> Self {
-        SimConfig { dt: 1.0 / 60.0, window: 120, keyframe_every: 4, late_allowance: 15, seed: 0x5052_494D_4F52_4449, check_every: 30 }
+        SimConfig {
+            dt: 1.0 / 60.0,
+            window: 120,
+            snap: SnapPolicy::Every(4),
+            late_allowance: 15,
+            seed: 0x5052_494D_4F52_4449,
+            check_every: 30,
+            hand_predict: 0,
+        }
     }
 }
 
@@ -570,8 +631,29 @@ pub struct WorldSim {
     /// (frame, obj) -> object state hash after that frame, for watched objects.
     pub obj_hist: BTreeMap<(u64, u32), u64>,
     dirty_from: Option<u64>,
+    /// The present a running re-simulation is heading for (keyframe thinning during re-sim).
+    resim_to: u64,
+    /// Record every object's position after each frame (observer measurements).
+    pub track: bool,
+    pub pos_hist: BTreeMap<u64, Vec<[f32; 3]>>,
     pub stats: Stats,
     pub events: Vec<String>,
+}
+
+/// Bytes needed to store `b` as a patch on `a`: every `block`-byte block of `b` that differs from
+/// the block at the same offset in `a` (8 bytes of offset each), plus any tail beyond `a`.
+pub fn block_delta(a: &[u8], b: &[u8], block: usize) -> u64 {
+    let n = a.len().min(b.len());
+    let mut bytes = 0u64;
+    let mut i = 0;
+    while i < n {
+        let e = (i + block).min(n);
+        if a[i..e] != b[i..e] {
+            bytes += (e - i) as u64 + 8;
+        }
+        i = e;
+    }
+    bytes + b.len().saturating_sub(n) as u64
 }
 
 pub fn now_us() -> u64 {
@@ -626,6 +708,9 @@ impl WorldSim {
             watched: BTreeSet::new(),
             obj_hist: BTreeMap::new(),
             dirty_from: None,
+            resim_to: 0,
+            track: false,
+            pos_hist: BTreeMap::new(),
             stats: Stats::default(),
             events: Vec::new(),
         }
@@ -638,24 +723,71 @@ impl WorldSim {
     // ---- snapshots -------------------------------------------------------------------------------
 
     fn save(&mut self) -> Keyframe {
+        let t0 = now_us();
         let mut buf = RecBuffer::new();
         serialize_world(&self.world, &mut buf, &mut self.registry);
         if self.registry.entries.len() != self.slot_count {
             self.slots = self.registry.to_slots();
             self.slot_count = self.registry.entries.len();
         }
+        self.stats.saves += 1;
+        self.stats.save_us += now_us() - t0;
         Keyframe { image: buf.data, t: self.t.clone() }
     }
 
     fn restore(&mut self, k: &Keyframe, frame: u64) {
+        let t0 = now_us();
         assert!(deserialize_into_shell(&k.image, &mut self.world, &mut self.slots), "restore failed");
         self.t = k.t.clone();
         self.frame = frame;
+        self.stats.restore_us += now_us() - t0;
+    }
+
+    /// Bytes of world image the ring holds now (the memory side of the snapshot knob).
+    pub fn ring_bytes(&self) -> u64 {
+        self.ring.values().map(|k| k.image.len() as u64).sum()
+    }
+
+    /// What the ring would hold as one full base image plus block deltas: (full bytes, bytes if
+    /// every later image were stored as a delta against the base, bytes if each were stored as a
+    /// delta against the previous image), with 64-byte blocks.
+    pub fn ring_delta_bytes(&self) -> (u64, u64, u64) {
+        let imgs: Vec<&[u8]> = self.ring.values().map(|k| k.image.as_slice()).collect();
+        let Some(base) = imgs.first() else { return (0, 0, 0) };
+        let full = imgs.iter().map(|i| i.len() as u64).sum();
+        let vs_base = base.len() as u64 + imgs[1..].iter().map(|i| block_delta(base, i, 64)).sum::<u64>();
+        let vs_prev = base.len() as u64 + imgs.windows(2).map(|w| block_delta(w[0], w[1], 64)).sum::<u64>();
+        (full, vs_base, vs_prev)
+    }
+
+    /// The memory/CPU knob (design 6.7): any value, any time. Takes effect at the next keyframe
+    /// decision and trim; never changes a result.
+    pub fn set_snap(&mut self, p: SnapPolicy) {
+        self.cfg.snap = p;
+    }
+
+    fn wants_keyframe(&self, f: u64) -> bool {
+        if self.ring.contains_key(&f) {
+            return false;
+        }
+        if self.ring.is_empty() {
+            return true;
+        }
+        match self.cfg.snap {
+            SnapPolicy::Every(k) => f % k == 0,
+            // During a re-simulation, skip images the thinning would drop on arrival.
+            SnapPolicy::Log(k) => f % k == 0 && f % log_grid(k, self.resim_to.max(self.frame) - f) == 0,
+            SnapPolicy::Base(k) => f % k == 0 && f > self.conf && self.ring.range(self.conf + 1..).next().is_none(),
+            SnapPolicy::Window(k) => f % k == 0 && self.resim_to.max(self.frame) - f < 4 * k,
+        }
     }
 
     /// Hash of the full world image plus tables: used at confirmed check frames (review H4).
     pub fn image_hash(&mut self) -> u64 {
+        // A check-hash serialization is not a keyframe: keep it out of the snapshot counters.
+        let (n, us) = (self.stats.saves, self.stats.save_us);
         let k = self.save();
+        (self.stats.saves, self.stats.save_us) = (n, us);
         fnv_bytes(&k.image) ^ self.tables_hash().rotate_left(17)
     }
 
@@ -682,6 +814,11 @@ impl WorldSim {
             }
         }
         v.push(self.t.portal_open as u64);
+        if self.cfg.hand_predict > 0 {
+            for (o, n) in &self.t.hand_idle {
+                v.extend([*o as u64, *n, 11]);
+            }
+        }
         fnv_u64s(v)
     }
 
@@ -1190,6 +1327,11 @@ impl WorldSim {
                 };
                 body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, self.cfg.dt, true);
                 hands_set.insert(*obj);
+                if *active {
+                    self.t.hand_idle.insert(*obj, 0);
+                } else {
+                    self.t.hand_idle.remove(obj);
+                }
                 Outcome::Accepted
             }
             Payload::Depart { transfer, obj, .. } => {
@@ -1266,9 +1408,10 @@ impl WorldSim {
     /// Step one frame: keyframe, entries in canonical order, hands, Box3D step, carried states.
     fn step_frame(&mut self, record: bool) {
         let f = self.frame;
-        if record && f % self.cfg.keyframe_every == 0 && !self.ring.contains_key(&f) {
+        if record && self.wants_keyframe(f) {
             let k = self.save();
             self.ring.insert(f, k);
+            self.stats.max_ring_bytes = self.stats.max_ring_bytes.max(self.ring_bytes());
         }
         let mut hands_set = BTreeSet::new();
         let mut carry = Vec::new();
@@ -1278,12 +1421,34 @@ impl WorldSim {
                 self.outcomes.insert(id, (f, o));
             }
         }
-        // Hands without a target this frame hold still (prediction = no motion).
+        // Hands without a target this frame hold still, or, with `hand_predict`, an active hand
+        // keeps its last commanded velocity for up to that many frames (dead reckoning). Both are
+        // deterministic rules of the sim: a speculative frame that lacks the author's entry
+        // predicts with them, and the entry's arrival replaces the prediction by rollback.
         let hands: Vec<(u32, Obj)> =
             self.t.objs.iter().enumerate().filter_map(|(i, o)| o.filter(|o| o.kind == 4).map(|o| (i as u32, o))).collect();
         for (i, o) in hands {
-            if !hands_set.contains(&i) {
+            if hands_set.contains(&i) {
+                continue;
+            }
+            let coast = match self.t.hand_idle.get_mut(&i) {
+                Some(n) if self.cfg.hand_predict > 0 => {
+                    *n += 1;
+                    *n <= self.cfg.hand_predict
+                }
+                _ => false,
+            };
+            if !coast {
                 body_set_linear_velocity(&mut self.world, o.body, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+            } else {
+                // Never coast faster than a hand moves: a jump (a teleport-like target) would
+                // otherwise be extrapolated as a 40 m/s flight.
+                let v = body_get_linear_velocity(&self.world, o.body);
+                let sp = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+                if sp > HAND_COAST_VMAX {
+                    let k = HAND_COAST_VMAX / sp;
+                    body_set_linear_velocity(&mut self.world, o.body, Vec3 { x: v.x * k, y: v.y * k, z: v.z * k });
+                }
             }
         }
         let t0 = now_us();
@@ -1324,14 +1489,36 @@ impl WorldSim {
                 let h = self.image_hash();
                 self.check_hashes.insert(f, h);
             }
+            if self.track {
+                let p: Vec<[f32; 3]> = self
+                    .t
+                    .objs
+                    .iter()
+                    .map(|o| o.map_or([f32::NAN; 3], |o| {
+                        let x = body_get_transform(&self.world, o.body).p;
+                        [x.x as f32, x.y as f32, x.z as f32]
+                    }))
+                    .collect();
+                self.pos_hist.insert(f, p);
+            }
         }
     }
 
     /// Roll back if needed, then simulate forward to `target` (exclusive) unless the speculation
     /// limit is reached. Returns the number of new frames stepped.
     pub fn advance(&mut self, target: u64) -> u64 {
+        let t_adv = now_us();
+        let n = self.advance_inner(target);
+        let us = now_us() - t_adv;
+        self.stats.advance_us += us;
+        self.stats.max_advance_us = self.stats.max_advance_us.max(us);
+        n
+    }
+
+    fn advance_inner(&mut self, target: u64) -> u64 {
         if let Some(from) = self.dirty_from.take() {
             let now = self.frame;
+            self.resim_to = now;
             let (&kf, _) = self.ring.range(..=from).next_back().expect("keyframe at or before rollback frame");
             let k = self.ring[&kf].clone();
             for f in self.ring.range(kf + 1..).map(|(f, _)| *f).collect::<Vec<_>>() {
@@ -1367,11 +1554,29 @@ impl WorldSim {
             return;
         }
         let fin = self.conf.min(self.frame);
-        if let Some((&kf, _)) = self.ring.range(..=fin).next_back() {
-            let drop: Vec<u64> = self.ring.range(..kf).map(|(f, _)| *f).collect();
-            for f in drop {
-                self.ring.remove(&f);
-            }
+        let base = match self.ring.range(..=fin).next_back() {
+            Some((&kf, _)) => kf,
+            None => return,
+        };
+        let now = self.frame;
+        let drop: Vec<u64> = self
+            .ring
+            .keys()
+            .copied()
+            .filter(|&f| {
+                f < base
+                    || (f > base
+                        && match self.cfg.snap {
+                            SnapPolicy::Every(k) => f % k != 0,
+                            SnapPolicy::Log(k) => f % log_grid(k, now - f) != 0,
+                            // Keep only the first candidate after the confirmed frame.
+                            SnapPolicy::Base(_) => self.ring.range(base + 1..f).next().is_some(),
+                            SnapPolicy::Window(k) => f % k != 0 || now - f >= 4 * k,
+                        })
+            })
+            .collect();
+        for f in drop {
+            self.ring.remove(&f);
         }
     }
 
