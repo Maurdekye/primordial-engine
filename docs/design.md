@@ -66,6 +66,9 @@ against this list. Where the order changed an answer, the text says so. Examples
 22. Several worlds at once, and portals (R14)
 23. Crate layout, phased build plan, risks
 24. Decisions needing the user
+25. (R16 massive worlds, merging from `chunks/r16`)
+26. (R17 avatar culling, merging from `chunks/r16`)
+27. Live-editable and replaceable physics (R15)
 
 ---
 
@@ -1526,8 +1529,9 @@ The phase-1 choice (wasmi) was made for determinism alone. Re-weighed with the p
     hash. A peer that rolls back across an activation frame reuses the cache.
   * Alternative: swap in Winch first (4-5 ms; 23 ms at 45k LOC) and tier up to Cranelift in the
     background.
-* **Recommendation, a user decision (D12): wasmi everywhere now; Cranelift everywhere once the patch exists
-  and a fuel-exhaustion test passes on all three OSes.** Never a per-OS split.
+* **Settled by the user (15:10Z, D12): wasmi everywhere now; Cranelift everywhere once the patch exists and a
+  fuel-exhaustion test passes on all three OSes.** Never a per-OS split. Guest physics (27) is costed
+  under wasmi accordingly.
 * **NaN canonicalization** doubles the cost of float-heavy code on Cranelift (physics in wasm: 4.7x vs
   2.4x). Dropping it is safe only if guests never observe NaN bits, or if every peer is x86-64. Physics
   stays native in the engine (13.8), so the logic penalty is small: 1.7x vs 1.4x.
@@ -3293,7 +3297,8 @@ entry says so.
        too.
     4. **A user exception for wasmtime's C on Linux and macOS:** Cranelift everywhere today. This breaches
        the 100%-Rust ruling there.
-  * **Question for the user:** 1 now and 2 when ready, 3, or 4?
+  * **Settled (user, 15:10Z): option 1 now, wasmi everywhere. Option 2, Cranelift everywhere, follows
+    once the `helpers.c` patch is in and the fuel-exhaustion test passes on Windows, Linux and macOS.**
 
 * **D13. Shader language (14).**
   * Recommend: WGSL (naga-native, pure-Rust validation, structured diagnostics).
@@ -3690,3 +3695,206 @@ entry says so.
     frames. State hidden outside the declared arena then fails fast and identically on every peer.
   * Alternative: the declared arena only, plus zeroing all other memory after every tick. This is cheaper,
     but static and thread-local state silently breaks rollback if zeroing is ever skipped.
+* **D68. Which physics layers ship, and when (27.2; R15).**
+  * Recommend:
+    * phase 3: layer-1 hooks and materials and mixing, on box3d-rust's existing callbacks;
+    * phase 4: contact modification, per-substep fields, and custom joints, shapes and integrators, in the
+      shared box3d fork;
+    * layer 3: engine-provided alternatives only;
+    * layer 4: allowed, with a body budget (D70).
+  * Alternatives:
+    * guest-authored subsystems (layer 3 in wasm): the boundary is crossed per pair or contact row, and a
+      broken solver stalls every player in the world;
+    * no layer 4: simpler, but it falls short of R15's "completely replace".
+* **D69. How hooks run (27.3, 27.5).**
+  * Recommend: batched per step, one guest call per hook kind with arrays in guest memory: about 1% of the
+    step even under wasmi [V parts]. This needs the fork's two-pass hook points; until then hooks run
+    one call per contact.
+  * Alternative: one call per contact. A simpler guest API, but 6-9% of the step under wasmi.
+* **D70. Budget for a replacement engine (27.5).**
+  * Recommend: a world running a guest engine declares an active-body cap, enforced by the engine: about
+    64 under wasmi and about 256 under Cranelift [I]. The world shows a warning, and new bodies are refused
+    once the cap is reached.
+  * Alternatives:
+    * no cap: the world's own peers pay, and slow peers stall confirmation;
+    * a CPU budget per tick, with deterministic fuel per frame instead of a body count: precise, but fuel
+      depends on the build (13.3).
+* **D71. Who may change physics (27.1).**
+  * Recommend: separate ACL rights, `physics.hooks` (layers 1-2) and `physics.replace` (layers 3-4), both
+    granted by the world owner. Changes are commits with an activation frame, and reverting is a new
+    commit.
+  * Alternatives:
+    * one `physics` right: simpler, but anyone allowed a one-way platform may also replace the engine;
+    * physics changes only between sessions: safer, but not live-editable as R15 asks.
+
+---
+
+## 27. Live-editable and replaceable physics (R15)
+
+User requirement 15 (13:43Z): players with authority can interact with, override, or completely replace
+parts of the physics engine, or all of it. Physics becomes live-editable, like game logic.
+
+Section numbers 25 and 26 are reserved for R16 and R17 (@world-chunks, branch `chunks/r16`), which merge
+before this section.
+
+### 27.1 Principles
+
+* **Physics changes are commits.**
+  * Every change to physics goes through the SCM (15) and takes effect at an **activation frame**
+    (15.2), exactly like logic: a hook module, a material table, a joint or shape definition, a
+    subsystem selection, or a whole replacement engine.
+  * Every peer applies the change at the same frame, so the simulation stays deterministic.
+  * Nothing about physics is configured outside the log.
+* **Authority.**
+  * World ACL rights gate each layer (12): `physics.hooks` for layers 1-2 and `physics.replace` for
+    layers 3-4.
+  * A grant applies from its own confirmed frame, like any ACL entry.
+* **Same sandbox as logic.**
+  * Guest code runs in the logic runtime (D12: wasmi now, Cranelift later), with fuel, NaN
+    canonicalization and no ambient imports.
+  * Its whole linear memory is rollback state (D57).
+* **Deterministic order.** box3d-rust steps single-threaded, so it calls hooks in a fixed order
+  [S box3d-rust 0.5: no thread use]. Batched hooks (27.3) make the order explicit: contacts in
+  constraint order.
+
+### 27.2 The layers
+
+| Layer | What a world can change | box3d-rust today [S 0.5.0] | Needs a fork for |
+|---|---|---|---|
+| **1. Interaction hooks** | Custom forces and fields; contact pair filters; per-contact enable/disable (one-way platforms, ghosts); friction and restitution mixing | Per-step forces through the body API; `world_set_custom_filter_callback` (needs the shape flag at creation); `world_set_pre_solve_callback` (enable or disable a contact, given its point and normal); `world_set_friction_callback` and `world_set_restitution_callback` (mix two values, given user material ids). All are plain `fn` pointers plus a `u64` context, so a guest is reached through a per-world registry | Per-**substep** forces and fields (stiff springs, magnetism, buoyancy); **contact modification**: changing a contact's normal, friction, restitution or target speed. Today only `tangent_velocity` exists, per material |
+| **2. Overrides** | Materials; custom joints; custom shapes; a per-body integrator (orbits, drag models, character controllers) | Surface materials with user ids, 8 joint types (distance, motor, parallel, prismatic, revolute, spherical, weld, wheel), and convex hulls, meshes, height fields and compounds. Composition covers much of this: joints from motors and forces, shapes from hulls | Guest-defined joints (a constraint row the solver iterates); guest-defined shapes (a support function or SDF the narrowphase calls); an integrator hook per body class |
+| **3. Subsystem replacement** | Broadphase, narrowphase, solver | none | Traits for each subsystem in the fork |
+| **4. Whole-engine replacement** | Swap Box3D for a guest physics module | — | Nothing in Box3D: a stable world/step/snapshot interface on the engine side (27.4) |
+
+**Recommendation (D68):**
+* **Layer 1, and the material and mixing part of layer 2, ship first,** on box3d-rust's existing hooks.
+* **Contact modification, per-substep forces, and custom joints, shapes and integrators go into a fork.**
+  @vdw-physics already maintains one for the vdW contact radius (`box3d-fork`, e1164ff and f71a233), so
+  R15's extension points join it as features, upstreamed where useful.
+* **Layer 3 offers only engine-provided alternatives,** chosen per world (for example a soft-step solver
+  or a GPU broadphase). No guest-authored subsystems: the boundary would be crossed per pair or per
+  contact row, and a broken solver can make a world unplayable for everyone in it.
+* **Layer 4 is allowed, with a body budget** (27.5).
+
+### 27.3 Where each layer runs
+
+* **Layers 1 and 2 hooks: wasm guest, batched per step in the fork.** Stock box3d-rust asks each
+  callback inline and needs the answer at once, so until the fork adds two-pass hook points, one guest
+  call per contact is the only option.
+  * Box3D's callbacks fill arrays in guest memory: contacts with shape ids, point, normal and depth, or
+    pairs of material ids.
+  * The engine then calls the guest once per hook kind per step, and reads the verdicts back.
+  * Per contact this costs 12 ns in wasmi and 4.7 ns in Cranelift, against 64 ns and 16 ns for one call
+    per contact (27.5).
+* **Fuel:** hooks get a fuel budget per step. On exhaustion every remaining verdict takes the hook's
+  declared default (for example "keep the contact"). That is identical on every peer, because fuel is
+  identical within one runtime (13.3).
+* **Isolation:** the guest receives only contact data and returns verdicts. It has no imports beyond
+  deterministic math, and cannot touch bodies directly. A force or field hook returns impulses that the
+  engine applies.
+* **Layer 3:** native code in the engine build, chosen per world through a world setting. It is part of the
+  engine version, so the determinism matrix covers it (4.3 rules 7-8).
+* **Layer 4:** a wasm guest that implements the engine's physics interface (27.4), in the same sandbox.
+  Its whole linear memory is its rollback state.
+
+### 27.4 Changing physics mid-session: commits, activation, rollback
+
+* **Activation.** A physics change commits like logic (15.2): confirmed, then active from activation frame
+  *A*. Frames before *A* use the old physics and frames from *A* use the new, on every peer, whenever they
+  are simulated or re-simulated.
+* **Rollback across *A*.** The hook or engine module set is rollback state, like logic modules (13.5).
+  Re-simulating from before *A* runs the old physics up to *A*, then switches.
+* **Hook state** (guest memory) is snapshotted with the world image (D57). A hook swap at *A* migrates
+  state the way a logic swap does (13.5).
+* **Whole-engine replacement (layer 4).** The engine interface is:
+  * `init_from(objects)`: build from the engine's object records (transform, velocities, shapes, materials,
+    joints), the same records R14 carries (22.6);
+  * `apply(entries)`, `step(dt)`;
+  * `save()`, `load(image)` and a canonical `hash()`;
+  * `query(...)` for rendering, MCP and logic;
+  * `export_objects()` for the switch back.
+
+  At *A* the old engine exports, and the new one is initialized from the export: deterministic, because
+  the export is a pure function of the state at *A*.
+* **Snapshots across *A*.** The snapshot ring may then hold images in both formats, each tagged with its
+  engine. The base stays at or before the confirmed frame (6.7). A rollback to before *A* restores an
+  old-engine image and redoes the switch. D50's knob applies unchanged.
+* **Failure.** A layer-4 engine that traps or runs out of fuel during a step fails identically everywhere.
+  The world falls back to the previous engine from the next frame, through `export_objects`. If export
+  itself fails, it falls back to the last confirmed state of the previous engine. Every peer does the
+  same [I].
+* **Undo.** Reverting the commit is a new commit with its own activation frame. Confirmed history is never
+  rewritten (10.8).
+
+### 27.5 Performance
+
+Timings in this subsection are noisy: the runs used low priority on a shared machine, as the machine-load
+rule requires. Counts are exact.
+
+**Per-hook call cost from native code into a guest, fuel on** [V `iter-host callback`,
+`spikes/out/r15/callback.jsonl`]:
+
+| Runtime | One call per contact (pre-solve) | One call per mix | Batched, per contact (host writes the record + guest loop) |
+|---|---|---|---|
+| native function | 1.3 ns | — | — |
+| **wasmi eager (D12, now)** | **64 ns** | 79 ns | **12 ns** |
+| wasmtime Cranelift + NaN canonicalization (D12, later) | 16 ns | 23 ns | 4.7 ns |
+| wasmtime Winch + NaN canonicalization | 21 ns | 26 ns | 5.8 ns |
+
+**How often Box3D calls the hooks**, on the phase-1 pile, which stays active [V `pe-spike-physics hooks`]:
+
+| Bodies | Pre-solve calls per step (avg / max) | Friction + restitution mixes per step |
+|---|---|---|
+| 256 | 141 / 247 | 281 |
+| 1,024 | 488 / 862 | 976 |
+
+**Cost of guest hooks per step** [V parts, I composition]. Each cell is calls/step × ns/call:
+
+| Bodies | wasmi, one call each | wasmi, batched | Cranelift, batched | Step itself |
+|---|---|---|---|---|
+| 256 | 31 µs avg, 38 µs max (9-11% of a 0.36 ms step) | 5 µs (1.4%) | 2 µs (0.6%) | 0.36 ms [V b6] |
+| 1,024 | 108 µs avg, 132 µs max (6-9%) | 18 µs (about 1%) | 7 µs (0.4%) | 1.5-1.9 ms [V b6] |
+
+* **Layer-1 and layer-2 hooks are cheap** when batched: about 1% of the step even under wasmi.
+  Batching needs the fork's two-pass hook points; on stock box3d-rust each contact is one call.
+* Per-contact calls cost up to 9% under wasmi. Batching is therefore the recommended model (D69).
+* Re-simulation multiplies hook cost exactly as it multiplies the step (6.8).
+
+**Whole engine in wasm (layer 4)**: Box3D itself compiled to wasm, on the phase-1 pile, where native takes
+0.31 ms/frame [V iteration-benchmark 4.5]:
+
+| Runtime | ms per frame | × native |
+|---|---|---|
+| **wasmi eager + fuel (D12, now)** | **6.6** | **21x** |
+| Cranelift + fuel + NaN canonicalization (D12, later) | 1.46-1.54 | 4.7-5.0x |
+| Cranelift + fuel, no NaN canonicalization | 0.75 | 2.4x |
+| Winch + fuel + NaN canonicalization | 1.96 | 6.3x |
+
+* Under the D12 ruling (wasmi now), a guest engine costs about 21x native. A 256-body world takes about
+  6.6 ms per frame, before any rollback, against the 8 ms per-tick budget (2.1).
+* With re-simulation at 60 ms one-way latency (about 5 re-simulated frames per frame, 6.10), only very
+  small guest worlds fit.
+* Hence the body budget for layer 4 (D70): about 64 active bodies under wasmi, and about 256 under
+  Cranelift [I, from the table plus 6.8's re-simulation load].
+* The coordinator's d4 figure (7 ms per frame interpreted, about 22x) is the same measurement as the wasmi
+  row. Cranelift is 4.4-8.8x faster than wasmi.
+
+### 27.6 What box3d-rust exposes, and what needs the fork
+
+* **Available today [S box3d-rust 0.5.0]:**
+  * pair filter, pre-solve (enable or disable a contact) and friction/restitution mixing callbacks;
+  * user material ids, passed to the mixers;
+  * 8 joint types, motors and forces through the body API.
+* **Plumbing caveat:** these are bare `fn` pointers with a `u64` context, not closures. The engine
+  registers one trampoline per hook kind, which finds the world's guest through that context. Box3D is
+  single-threaded per world, so the trampoline needs no locking.
+* **Missing; needs the fork:**
+  * contact modification (normal, friction, restitution, target velocity per contact);
+  * per-substep force and field hooks;
+  * a guest constraint row for custom joints;
+  * a support-function or SDF shape for custom shapes;
+  * an integrator hook per body class;
+  * subsystem traits for layer 3.
+* **The fork already exists for vdW** (`box3d-fork`, @vdw-physics). R15's extension points join it as
+  feature-gated additions. Each one keeps the determinism goldens and the snapshot layout hash (4.3),
+  and changes them only by a world-format version bump.
