@@ -19,6 +19,7 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject and throttle variants; each world equals its offline replay; identical when worlds and peers are processed in reverse order |
 | history | Can a peer keep only the perturbation history? Which snapshots, at what memory and CPU? | **Almost [V]** (5f). One base image at or before the confirmed frame is unavoidable; the rest is a cache that never changes results (62 runs, 13 policies, one end hash per scene). Window(4) matches the best CPU with 8.3 MB instead of 47.5 MB under a 116-frame confirmation stall. Partial restores through the API are not bit-exact. Remote-hand dead reckoning cuts the observer's error about 4-18x |
 | round 2 | Do the round-2 Criticals and Highs hold fixed, and do capped links recover? | **Yes [V]** (5g). The reviewer's four repros pass (no fork, no panic); proofless R14 relays do nothing; batching plus the congestion controller keep 32-64 kbit/s caps real-time. Finality lag rose from 4.2 to 8.5 frames |
+| r15 | What does it cost to run physics hooks or a whole physics engine as a wasm guest? | **Measured [V, noisy]** (5h). A per-contact hook call costs 64 ns in wasmi and 16 ns in Cranelift; batched, 12 and 4.7 ns. On an active 1,024-body pile, guest hooks cost 6-9% of the step one call at a time, about 1% batched. A whole engine in wasm costs 21x native under wasmi |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
 | d | Hot-swap Rust→WASM game logic mid-sim, deterministic across peers? | **Yes [V],** with wasmi in eager-compilation mode. The default lazy mode makes fuel nondeterministic [V]. Box3D itself compiled to WASM matches native [V] |
@@ -357,6 +358,30 @@ Design 6.4, 8.2, 9.3, 10.8-10.9 and 22.6; review-response.md, round 2. Logs: `sp
     members never catch up within the run;
   * in every run the author never rolls back.
 
+### 5h. R15: physics hooks from a wasm guest [V, timings noisy]
+
+Design 27.5. Logs: `spikes/out/r15/`. Runs used low priority on a shared machine, so timings are noisy;
+call counts are exact.
+
+* **Per-call cost from native code into a guest, fuel on** (`iter-host callback`, guest
+  `spikes/iter-bench/cb_guest`):
+
+  | Runtime | Per pre-solve call | Batched, per contact |
+  |---|---|---|
+  | wasmi | 64 ns | 12 ns |
+  | Cranelift + NaN canonicalization | 16 ns | 4.7 ns |
+  | Winch | 21 ns | 5.8 ns |
+  | native | 1.3 ns | — |
+
+* **Hook frequency on the active phase-1 pile** (`pe-spike-physics hooks`):
+  * 256 bodies: 141 pre-solve calls and 281 friction/restitution mixes per step;
+  * 1,024 bodies: 488 and 976.
+* **Composed cost:**
+  * one guest call per contact: 6-11% of the step under wasmi;
+  * batched (needs the fork): about 1% under wasmi.
+* Box3D itself in wasm: 21x native under wasmi and 4.7-5x under Cranelift with NaN canonicalization
+  (iteration-benchmark 4.5).
+
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
 ### 6.1 Commands
@@ -636,6 +661,7 @@ bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 
 bash scripts/run_session_sim.sh                     # every session, ball-pit and R14 scenario (5c-5e)
 bash scripts/run_perturbation_history.sh            # re-sim vs depth, partial restore, snapshot knob, observer (5f)
 bash scripts/run_r18.sh                             # ball pit through 256/64/48/32 kbit/s caps (5g)
+bash scripts/run_r15.sh                             # physics-hook call cost and frequency (5h); low priority
 python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm
 # iteration benchmark: see docs/iteration-benchmark.md section 8
 ./target/release/pe-spike-wasm-hotswap

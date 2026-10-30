@@ -6,6 +6,7 @@
 //!   rollback                     snapshot/restore + late-input rollback tests, with timings
 //!   bench                        step / snapshot / restore cost at several body counts
 //!   history                      perturbation-history study: re-sim vs depth, partial restore, image deltas
+//!   hooks                        R15: how often box3d-rust's hooks fire per step
 //!
 //! Exit code is non-zero if any check fails.
 
@@ -22,6 +23,7 @@ use box3d_rust::world::World;
 use pe_sim_core::*;
 
 mod history;
+mod hooks;
 
 const SEED: u64 = 0x5052_494D_4F52_4449; // "PRIMORDI"
 
@@ -38,6 +40,7 @@ fn main() {
         "rollback" => rollback(),
         "bench" => bench(),
         "history" => history::run(),
+        "hooks" => hooks::run(),
         _ => {
             eprintln!("usage: pe-spike-physics goldens | trace <frames> <out> | rollback | bench | history");
             false
