@@ -351,6 +351,10 @@ pub fn observer(delay_ms: u64, hz: u64) {
         let hand = 500usize;
         let dtf = 1.0 / hz as f32;
         let mut hand_err = Vec::new();
+        // Review PH-6: the error right after the two changes of motion, where dead reckoning
+        // overshoots: 0.25 s after the descent ends, and 0.25 s after the sweep ends.
+        let turns = [(f(2.33), f(2.58)), (f(5.33), f(5.58))];
+        let mut turn_err = Vec::new();
         let mut pops = Vec::new();
         let mut frame_pop_max = Vec::new();
         let mut visible_pops = 0u64;
@@ -366,6 +370,9 @@ pub fn observer(delay_ms: u64, hz: u64) {
             frames += 1;
             if (ha..hb).contains(&n) {
                 hand_err.push(dist(&shown[hand], &truth[hand]) * 1000.0);
+            }
+            if turns.iter().any(|(x, y)| (*x..*y).contains(&n)) {
+                turn_err.push(dist(&shown[hand], &truth[hand]) * 1000.0);
             }
             // The correction this tick applied to the frame shown last tick.
             let mut fmax = 0.0f32;
@@ -412,6 +419,12 @@ pub fn observer(delay_ms: u64, hz: u64) {
             hand_err.iter().sum::<f32>() / hand_err.len().max(1) as f32,
             pct(&mut hand_err.clone(), 95),
             pct(&mut hand_err, 100)
+        );
+        println!(
+            "RESULT     remote hand in the 0.25 s after each change of motion (review PH-6): mean {:.1} mm, p95 {:.1}, max {:.1}",
+            turn_err.iter().sum::<f32>() / turn_err.len().max(1) as f32,
+            pct(&mut turn_err.clone(), 95),
+            pct(&mut turn_err, 100)
         );
         println!(
             "RESULT     balls: corrections >1 mm {:.0}/s ({:.1} balls/frame), per-frame worst correction p50 {:.1} mm p99 {:.1} max {:.1}; balls off by >1 mm vs truth {:.1}/frame",
