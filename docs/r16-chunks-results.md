@@ -446,7 +446,7 @@ One member stops acking for S seconds (10 s stands in for gone for good). The ta
 For 10 s stalls with 256 members alone, that is 44,115 region-frames lost under the old rule and none under
 the new one. Raw output: `spikes/out/chunks/liveness.log`.
 
-## 14. Safety: late merges and late reads under footprint steps, two-sided approach, creation and scale bands (reviews N1, M1, P1, P2) [C, rule-level model]
+## 14. Safety: late merges and late reads under footprint steps, two-sided and concurrent growth, creation and scale bands (reviews N1, M1, P1, P2, Q1, Q2) [C, rule-level model]
 
 `pe-spike-chunks safety` models two regions on a line. Both may grow toward each other, and both are
 checked. A **late merge** is a merge frame that a region had already simulated past when it first held
@@ -454,56 +454,80 @@ every fact that fixes it. That would need a rollback, possibly below its confirm
 forbids. In the cross-band cases the event is the first frame from which a human region must read a giant's
 region (their footprints overlap, margin 0); only the reader is checked.
 
-Rule sets:
+Rule sets (design 25.5.2 and 25.6 give the revised rules in full):
 * **2a228c6.**
 * **05d3cc0:** the growth clock, envelopes by stamp, creation at `stamp + Lambda` checked against the
   confirmed directory.
 * **e10c905:**
   * creation at `stamp + S_create`, validated in world-log order against pending creations;
-  * `J` = the reduction of the gap to a known region's possible footprint. Once that footprint reaches
-    the region, the step is instant (review P2);
+  * `J` = the reduction of the gap to a known region's possible footprint (review P2);
   * no bound between bands (review P1).
-* **Revised** (design 25.5.2, 25.6):
-  * `J` = 0 only if every added point is at least `D_merge` from every known possible footprint over
-    `T_h` = 60 s; otherwise it is the full extension;
-  * the horizon gate `f <= known_conf_q + T_h`;
-  * the start condition for created regions;
-  * the cross-band bound and reader start at margin 0.
-  * The column "revised" below includes the start condition. Without it, one case is late.
+* **da3cd74:**
+  * `J` = 0 only if every added point is at least `D_merge` from every known possible footprint;
+  * the horizon gate, the start condition and the cross-band bound;
+  * known regions only from relays in the region's own log.
+* **Revised (reviews Q1, Q2):**
+  * instant growth capped at `G_inst` (4 chunks), at most one per `T_h`, and counted in every possible
+    footprint and in the creation buffer;
+  * the known set includes the world-log directory confirmed through `s - S_create`.
+  * "revised-no-start" is the same without the start condition (a control).
 
-| Case | 2a228c6 | 05d3cc0 | e10c905 | Revised |
-|---|---|---|---|---|
-| Chunk step toward R, no stall (4 km gap) | safe | safe | safe | safe |
-| Chunk step toward R during a stall in q (4 km gap) | **late** (merge 360) | safe (merge 975) | **late** (merge 360: the step was instant, review P2) | safe (merge 975) |
-| Chunk step toward R during a stall in R, R fixed or walking toward q (4 km gap) | safe | safe | safe | safe |
-| Chunk step while R walks toward q, a stall in q or in R (8 km gap) | safe | safe | safe | safe |
-| Scale x8 (+14 km), R pulls every 60 s only (10 km gap) | **late** (merge 1,030) | safe (merge 9,632) | **late** (merge 3,418) | safe (R pauses 11 frames at the horizon gate) |
-| Scale x8, pull every 60 s or on demand | safe | safe | safe | safe |
-| Joiner at q's near edge (+3 km), pull every 60 s only (5 km gap) | **late** | safe | **late** | safe (R pauses 2,411 frames) |
-| Joiner, pull every 60 s or on demand | safe | safe | safe | safe |
-| Walker at `v_max` toward R over 12 chunks, q stalls on the way (12 km gap) | safe | safe | safe | safe (2 steps instant) |
-| Chunk step every 5 s from 20 km toward R, q stalls early or late | safe | safe | safe | safe (10 of 19 steps instant) |
-| Region created 4.5 km from R, then walks toward it; also with the world log stalled 5 s or 12 s | **late** | joins R | joins R | joins R (R loses 185 frames at 12 s) |
-| Region created 3.5 km from R | **late** | joins R | joins R | joins R |
-| Both walk toward each other, q created at the closest allowed gap: `v_max` 100 or 200 m/s, `S_create` 10 or 20 s, with and without an 8 s world-log stall (5 cases) | **late** | safe, except **late** at 200 m/s with the stall (merge 954) | safe | safe |
-| Two regions created at the same spawn point 10 frames apart | **late** | **late** (both regions) | the second joins the first | the second joins the first |
-| R (two members, never evicted) grows 3 km at once toward a region being created 4.6 km away, before its log records the creation, then stalls 30 s | **late** | safe | **late** | safe, by the start condition (**late** without it) |
-| Giant region walks toward a human region from 1,000 km at its `v_max`, L stalls on the way | n/a | n/a | safe | safe |
-| Giant scales up x8 (+14 of its 131 km chunks) 1,500 km away, L stalled | n/a | n/a | **late** (read from 430) | safe (read from 9,032) |
-| Giant steps one 131 km chunk onto a human region 100 km away, L stalled | n/a | n/a | **late** | safe |
-| Two-member giant region walks toward a human region, L stalled 30 s and never evicted | n/a | n/a | **late** | safe (R pauses 196 frames) |
+| Case | 2a228c6 | 05d3cc0 | e10c905 | da3cd74 | **Revised** |
+|---|---|---|---|---|---|
+| Chunk step, no stall (gap 4 km) | safe (360) | safe (975) | safe (360) | safe (975) | safe (975) |
+| Chunk step toward R, q stall (gap 4 km) | **late** (360) | safe (975) | **late** (360) | safe (975) | safe (975) |
+| Chunk step toward R, R stall (gap 4 km) | safe (360) | safe (975) | safe (360) | safe (975) | safe (975) |
+| Chunk step toward R, R stall, R walks toward q (gap 4 km) | safe (30) | safe (645) | safe (30) | safe (645) | safe (645) |
+| Chunk step toward R, q stall, R walks toward q (gap 8 km) | safe (1,875) | safe (2,490) | safe (1,875) | safe (2,490) | safe (2,490) |
+| Chunk step toward R, R stall, R walks toward q (gap 8 km) | safe (1,875) | safe (2,490) | safe (1,875) | safe (2,490) | safe (2,490) |
+| Scale x8 (+14 km), pull every 60 s only (gap 10 km) | **late** (1,030) | safe (9,632) | **late** (2,418) | safe (9,632) | safe (9,632; R pauses 11 frames) |
+| Scale x8 (+14 km), pull every 60 s or on demand (gap 10 km) | **late** (1,030) | safe (9,632) | **late** (2,418) | safe (9,632) | safe (9,632) |
+| Joiner at q's near edge (+3 km), pull every 60 s only (gap 5 km) | **late** (1,030) | safe (2,874) | **late** (1,030) | safe (2,874) | safe (2,874; R pauses 2,411 frames) |
+| Joiner at q's near edge (+3 km), pull every 60 s or on demand (gap 5 km) | **late** (1,030) | safe (2,874) | **late** (1,030) | safe (2,874) | safe (2,874) |
+| Walker at v_max toward R, 12 chunk steps, q stall mid-way (gap 12 km) | safe (5,250) | safe (5,865) | safe (5,250) | safe (5,865) | safe (5,865) |
+| Chunk step every 5 s from 20 km toward R, q stall at frame 1500 | safe (5,030) | safe (10,685) | safe (7,610) | safe (7,535) | safe (10,370) |
+| Chunk step every 5 s from 20 km toward R, q stall at frame 4000 | safe (5,030) | safe (10,685) | safe (7,610) | safe (7,535) | safe (10,370) |
+| Region created 4.5 km from R, then walks toward it | **late** (1,945) | joins | joins | joins | joins |
+| Region created 3.5 km from R, then walks toward it | **late** (1,330) | joins | joins | joins | joins |
+| Region created 4.5 km from R and walks toward it, world log stalled 5 s | **late** (1,945) | joins | joins | joins | joins |
+| Region created 4.5 km from R and walks toward it, world log stalled 12 s | **late** (1,945) | joins | joins | joins | joins |
+| Both walk toward each other, q created at the closest allowed gap, v_max 100 m/s, S_create 10 s | **late** (645) | safe (1,260) | safe (1,231) | safe (1,846) | safe (3,076) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 100 m/s, S_create 10 s, world log stalled 8 s | **late** (645) | safe (1,260) | safe (1,231) | safe (1,846) | safe (3,076) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 200 m/s, S_create 10 s | **late** (646) | safe (954) | safe (1,200) | safe (1,262) | safe (2,494) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 200 m/s, S_create 10 s, world log stalled 8 s | **late** (646) | **late** (954) | safe (1,200) | safe (1,200) | safe (2,494) |
+| Both walk toward each other, q created at the closest allowed gap, v_max 100 m/s, S_create 20 s, world log stalled 8 s | **late** (1,246) | safe (1,861) | safe (1,831) | safe (2,446) | safe (3,676) |
+| Two regions created at the same spawn point, 10 frames apart | **late** (640) | **late** (640) | joins | joins | joins |
+| Two-member region grows instantly toward a region being created at the closest allowed gap, then stalls 30 s | **late** (650) | safe (2,494) | **late** (1,200) | safe (1,200) | safe |
+| Both scale up at once, +9 chunks each toward the other (gap 20.5 km) | **late** (1,035) | safe (6,565) | safe (6,565) | **late** (1,035) | safe (6,565) |
+| Both scale up at once, +9 chunks each toward the other (gap 20.5 km), R stalls | **late** (1,035) | safe (6,565) | safe (6,565) | **late** (1,035) | safe (6,565) |
+| Chained: q grows +4 chunks three times 5 frames apart while R scales up +9 chunks (gap 24 km), R stalls | **late** (1,040) | safe (8,404) | safe (8,404) | **late** (1,040) | safe (5,951) |
+| R scales up +8 chunks toward a new region after it exists but before R's log relays it, then stalls 30 s | **late** (1,330) | safe (6,246) | **late** (1,330) | **late** (1,330) | safe (6,246) |
+| Giant region walks toward a human region from 1,000 km at its v_max, L stalls on the way | n/a | n/a | safe (4,535) | safe (5,150) | safe (5,150) |
+| Giant scales up x8 (+14 of its 131 km chunks) 1,500 km from a human region, L stalled | n/a | n/a | **late** (430) | safe (9,032) | safe (6,574) |
+| Giant steps once onto a human region 100 km away, L stalled | n/a | n/a | **late** (430) | safe (1,045) | safe (1,045) |
+| Giant scales up +9 of its chunks to land 8 km from a human region that scales up +9 chunks at once, L stalled | n/a | n/a | **late** (1,030) | **late** (1,030) | safe (6,560) |
+| Two-member giant region walks toward a human region from 1,000 km, L stalled 30 s (never evicted) | n/a | n/a | **late** (4,535) | safe (5,150) | safe (5,150; R pauses 196 frames) |
 
-* **28 cases of steps toward a neighbour, two-sided growth, creation and cross-band reads. Late: 14 of 24
-  under 2a228c6, 2 of 24 under 05d3cc0, 7 of 28 under e10c905, 0 of 28 under the revised rules** (1 of 28
-  without the start condition). The cross-band rows do not apply before e10c905.
-* The 05d3cc0 cases reproduce @chunks-reviewer's `safety2_model.py`. The e10c905 failures are reviews P1
-  and P2.
-* **28 cases. Late: 14 of 24 under 2a228c6, 2 of 24 under 05d3cc0, 7 of 28 under e10c905, 0 of 28
-  revised** (1 of 28 without the start condition). The cross-band rows do not apply before e10c905.
-* The 05d3cc0 failures match @chunks-reviewer's `safety2_model.py`. This is a model of the rules on a line,
-  not of the protocol or of 2D/3D footprints.
-* The `liveness` model has no horizon gate. It cannot bind there, because every modelled stall ends
-  within 15 s, well under `T_h` (60 s) [I].
+Cells give the merge or read frame in brackets. "joins" means the creation became a join, so no second
+region exists.
+
+* **33 cases of steps toward a neighbour, two-sided and concurrent growth, creation and cross-band reads,
+  on a line. Late: 20 of 28 under 2a228c6, 2 of 28 under 05d3cc0,
+  11 of 33 under e10c905, 5 of 33 under da3cd74, 0 of 33
+  under the revised rules** (0 of 33 without the start condition). The cross-band rows
+  do not apply before e10c905.
+* The da3cd74 failures are reviews Q1 (two concurrent or chained instant growths, also across bands) and
+  Q2 (a region not yet relayed into the grower's log).
+* **Model fix in this round:** the on-demand pull used to trigger every frame, because it compared a bound
+  already clamped to the present. With that fixed, more 2a228c6 and e10c905 rows are late than before (for
+  example "scale x8 ... or on demand"). The 05d3cc0 and revised conclusions did not change.
+* The revised rules place created regions at their own closest allowed gap, which includes `G_inst`, and
+  the matching creation case grows R by the full cap.
+* The 05d3cc0 failures reproduce @chunks-reviewer's `safety2_model.py`, and the da3cd74 Q1 rows their
+  `concurrent_instant_model.py`.
+
+* The `liveness` model has no horizon gate. It cannot bind there, because every modelled stall ends within
+  15 s, well under `T_h` (60 s) [I].
 
 **World-log stall budget** (`liveness-gate` rows, review M4). Setup: the region-directory gate is on, one
 member is silent for 15 s, footprints are 4 km apart. Frames lost by unrelated regions, against how fast the
