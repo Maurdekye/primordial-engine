@@ -1165,6 +1165,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe-session-sim"
+version = "0.1.0"
+dependencies = [
+ "pe-session",
+]
+
+[[package]]
 name = "pe-sim"
 version = "0.1.0"
 dependencies = [
@@ -1199,7 +1206,6 @@ dependencies = [
 name = "pe-spike-session-sim"
 version = "0.0.1"
 dependencies = [
- "pe-session",
  "pe-sim-core",
 ]
 
