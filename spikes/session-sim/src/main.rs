@@ -16,6 +16,7 @@ mod history;
 mod r18;
 mod review2;
 mod review3;
+mod viewchange;
 
 use pe_session_sim::*;
 use pe_sim_core::session::*;
@@ -878,6 +879,18 @@ fn main() {
         Some("badvote") => review3::badvote(),
         Some("liar") => review3::liar(),
         Some("crashstall") => review3::crashstall(),
+        Some("twosilent") => viewchange::twosilent(),
+        Some("twosilent5") => viewchange::twosilent5(),
+        Some("withheld") => viewchange::withheld(),
+        Some("colluders") => viewchange::colluders(),
+        Some("badproposer") => viewchange::badproposer(),
+        Some("bridge") => viewchange::bridge(),
+        Some("join") => viewchange::join(),
+        Some("vcscale") => viewchange::vc_scale(
+            get("--members").map_or(64, |v| v.parse().unwrap()),
+            get("--silent").map_or(1, |v| v.parse().unwrap()),
+            !args.iter().any(|a| a == "--no-heads"),
+        ),
         Some("snap") => history::snap(get("--balls").map_or(500, |v| v.parse().unwrap()), args.iter().any(|a| a == "--stall"), get("--reps").map_or(3, |v| v.parse().unwrap())),
         Some("observer") => history::observer(get("--delay").map_or(60, |v| v.parse().unwrap()), get("--hz").map_or(60, |v| v.parse().unwrap())),
         _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle|forge|late|crash] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),
