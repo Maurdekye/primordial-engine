@@ -77,7 +77,7 @@ fn columns_stay_sorted() {
     }
     let (cids, rows) = s.column::<Velocity>();
     assert!(cids.windows(2).all(|w| w[0] < w[1]));
-    assert!(rows.iter().all(|v| v.v[0] as usize % 3 != 0));
+    assert!(rows.iter().all(|v| !(v.v[0] as usize).is_multiple_of(3)));
 }
 
 #[test]

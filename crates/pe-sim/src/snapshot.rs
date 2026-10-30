@@ -318,7 +318,7 @@ impl<'a> Reader<'a> {
 
     fn ids_n(&mut self, n: usize) -> Result<Vec<ObjectId>, Error> {
         let raw = self.take(n.checked_mul(8).ok_or(Error::Corrupt("size overflow"))?)?;
-        Ok(raw.chunks_exact(8).map(bytemuck::pod_read_unaligned::<ObjectId>).collect())
+        Ok(raw.as_chunks::<8>().0.iter().map(|c| bytemuck::pod_read_unaligned::<ObjectId>(c)).collect())
     }
 
     fn ids(&mut self) -> Result<Vec<ObjectId>, Error> {

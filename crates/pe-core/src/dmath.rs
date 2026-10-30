@@ -14,6 +14,9 @@
 //! never enter sim state (4.3 rule 6): callers validate at their boundaries. `asin`/`acos` clamp their
 //! input to [-1, 1], so rounding drift in a dot product does not produce NaN.
 
+// The constants are fdlibm's literals, kept digit for digit for traceability.
+#![allow(clippy::excessive_precision, clippy::approx_constant)]
+
 /// `round half away from zero` to an integer, without a library call.
 #[inline]
 fn round_i64(x: f64) -> i64 {
@@ -297,7 +300,7 @@ pub fn ln(x: f32) -> f32 {
 }
 
 pub fn log2(x: f32) -> f32 {
-    if !(x > 0.0) || x.is_infinite() {
+    if x.is_nan() || x <= 0.0 || x.is_infinite() {
         return ln(x);
     }
     (ln_f64(x as f64) * 1.44269504088896338700e+00) as f32
