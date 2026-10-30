@@ -17,6 +17,7 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | session | Do the review's fixes (C1, C2, H4, H5, M3) and the user's state+frame and tie-break rulings hold? | **Yes [V]** (5c). In-process, on a virtual clock: no fork in the C1 scenario; equivocation proved and the member evicted; 52/52 checks under 10% loss; uncontended acceptance 22/22, 23/23, 27/27; ties 41/50/59 of 150; backdating voided or bounded |
 | ball pit | A hand sweeping through 500 balls, without per-ball state streaming? | **Yes [V]** (5d). About 15 kB/s for everything in both directions, against 1 MB/s one way for naive state streaming. The receiver re-simulates 2.8 ms per frame. The end state is bit-identical |
 | r14 | Two worlds with different tick rates in one process, and an object handed between them? | **Yes [V]** (5e). Settled handoff; conserved in the ok, abort, reject and throttle variants; each world equals its offline replay; identical when worlds and peers are processed in reverse order |
+| history | Can a peer keep only the perturbation history? Which snapshots, at what memory and CPU? | **Almost [V]** (5f). One base image at or before the confirmed frame is unavoidable; the rest is a cache that never changes results (62 runs, 13 policies, one end hash per scene). Window(4) matches the best CPU with 8.3 MB instead of 47.5 MB under a 116-frame confirmation stall. Partial restores through the API are not bit-exact. Remote-hand dead reckoning cuts the observer's error about 4-18x |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
 | d | Hot-swap Rust→WASM game logic mid-sim, deterministic across peers? | **Yes [V],** with wasmi in eager-compilation mode. The default lazy mode makes fuel nondeterministic [V]. Box3D itself compiled to WASM matches native [V] |
@@ -281,6 +282,34 @@ entry is in flight, and they converge when it lands.
 
 In every variant, every replica of each world equals the others and an offline replay of that world's
 final log.
+
+### 5f. Perturbation history, the snapshot knob, and what observers see [V]
+
+Design 6.7-6.11. Logs: `spikes/out/perturbation-history/`.
+
+* **Re-simulation from one base image** (`pe-spike-physics history`; restore plus N steps, median of 5):
+  * 256 bodies: 0.8 / 2.0 / 6.4 / 26.4 / 50.8 ms at depths 1 / 4 / 15 / 60 / 120;
+  * 1,024 bodies: 3.3 / 7.9 / 25.8 / 98.9 / 189.7 ms.
+* **Partial restore through the API is not bit-exact:**
+  * every body's pose and velocity written back diverges at the first frame (2/256 equal after 30 frames,
+    244 mm);
+  * an isolated stack restored while 63 others sleep matched 0/4 (8.7 mm); the others 252/252.
+* **Image deltas (64-byte blocks)** save at most 6% on ball-pit rings, and nothing on an active pile.
+* **Snapshot policies on the protocol** (`pe-spike-session-sim snap [--balls 1024] [--stall]`; ball pit,
+  60 ± 10 ms, 2% loss):
+  * every policy and the moving knob end in the same hash per scene: `47bb8c7274b143d3` at 500 balls,
+    `bfe86c8ce148add8` at 1,024;
+  * maximum image memory under a 116-frame stall: Every(4) 47.5 MB, Log(4) 16.1 MB, Window(4) 8.3 MB,
+    base only 3.3 MB, at 284 re-simulated frames/s for the first three;
+  * base only: 2,138 re-simulated frames/s (16.4 ms per frame measured).
+* **Observer** (`pe-spike-session-sim observer --delay 30|60|100`): remote-hand error, mean / p95, hold →
+  dead reckoning:
+  * 30 ms: 23.5 / 32.6 → 1.3 / 2.0 mm;
+  * 60 ms: 79.6 / 125.5 → 15.2 / 17.0 mm;
+  * 100 ms: 149.4 / 197.3 → 41.5 / 37.0 mm.
+  * Balls visibly corrected per frame at 60 ms: 30.4 → 11.3.
+* **Regression:** the default settings (Every(4), hold) reproduce 3d0f98a's ball-pit end hash
+  `47bb8c7274b143d3` and digest `1a9f1fb5fce6acc6`.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
@@ -556,6 +585,7 @@ cargo build --workspace && cargo build --workspace --release
 ./target/release/pe-spike-physics trace 600 spikes/out/trace-win-release-1.txt
 bash scripts/run-p2p.sh latency60 "--delay-ms 60 --jitter-ms 20" "--delay-ms 60 --jitter-ms 20"   # also loss10, fault (5b)
 bash scripts/run_session_sim.sh                     # every session, ball-pit and R14 scenario (5c-5e)
+bash scripts/run_perturbation_history.sh            # re-sim vs depth, partial restore, snapshot knob, observer (5f)
 python -I scripts/wasm_canonical_hash.py spikes/wasm-guests/target/wasm32-unknown-unknown/release/*.wasm
 # iteration benchmark: see docs/iteration-benchmark.md section 8
 ./target/release/pe-spike-wasm-hotswap

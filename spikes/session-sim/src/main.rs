@@ -6,8 +6,12 @@
 //!   c1 | c2 | state-frame | diverged | loss | ties | claims | backdate
 //!   r14 [ok|abort|reject|throttle] [--reverse]
 //!   ballpit [--hz 60|90] [--ahead N] [--hands 1|2] [--loss P]
+//!   snap [--balls N] [--stall]        snapshot-policy sweep (the memory/CPU knob, design 6.7)
+//!   observer [--delay MS] [--hz H]    what an observer sees of a remote hand (design 6.9)
 
 use std::collections::BTreeMap;
+
+mod history;
 
 use pe_session_sim::*;
 use pe_sim_core::session::*;
@@ -619,6 +623,8 @@ fn main() {
             get("--hands").map_or(1, |v| v.parse().unwrap()),
             get("--loss").map_or(2, |v| v.parse().unwrap()),
         ),
+        Some("snap") => history::snap(get("--balls").map_or(500, |v| v.parse().unwrap()), args.iter().any(|a| a == "--stall"), get("--reps").map_or(3, |v| v.parse().unwrap())),
+        Some("observer") => history::observer(get("--delay").map_or(60, |v| v.parse().unwrap()), get("--hz").map_or(60, |v| v.parse().unwrap())),
         _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle] [--reverse]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),
     }
 }

@@ -1,0 +1,15 @@
+RESULT snap 1024 balls, 3 members, member 3's acks dropped 3.0-4.6 s (confirmation stalls), 60 Hz, 60+-10 ms, 2% loss; member 2 observes member 1's hand; window = the 3.66 s sweep; timings = fastest of 1
+RESULT   policy     | image MB held mean / max | images mean / max | CPU ms per frame (save / restore) | saves/s | worst tick ms (p99) | rollbacks/s | re-sim frames/s | max lag | end hash
+RESULT   every4     |  34.35 / 106.62 |   9.8 /  30 |  10.84 ( 1.09 /  1.23) |   49.5 |  28.63 (20.47) |  58.7 |  284.4 | 116 | bfe86c8ce148add8 all members equal
+RESULT     every4: ring as base + 64 B block deltas: full 33.60 MB -> vs base 36.54 MB (109%), vs previous 36.35 MB (108%)
+RESULT   log4       |  20.31 /  36.09 |   5.8 /  10 |  10.95 ( 1.10 /  1.17) |   49.5 |  30.32 (20.23) |  58.7 |  284.4 | 116 | bfe86c8ce148add8 all members equal
+RESULT     log4: ring as base + 64 B block deltas: full 19.88 MB -> vs base 21.39 MB (108%), vs previous 21.15 MB (106%)
+RESULT   base1      |   6.96 /   7.44 |   2.0 /   2 |  48.87 ( 0.25 /  1.19) |   10.9 | 157.07 (148.06) |  58.7 | 2138.0 | 116 | bfe86c8ce148add8 all members equal
+RESULT     base1: ring as base + 64 B block deltas: full 6.96 MB -> vs base 6.99 MB (100%), vs previous 6.99 MB (100%)
+RESULT   window4    |  14.85 /  18.56 |   4.2 /   5 |  10.75 ( 1.08 /  1.13) |   49.5 |  28.57 (20.87) |  58.7 |  284.4 | 116 | bfe86c8ce148add8 all members equal
+RESULT     window4: ring as base + 64 B block deltas: full 14.52 MB -> vs base 15.45 MB (106%), vs previous 15.21 MB (105%)
+RESULT   window8    |  12.21 /  18.09 |   3.5 /   5 |  13.41 ( 0.58 /  1.16) |   24.9 |  44.84 (29.28) |  58.7 |  401.4 | 116 | bfe86c8ce148add8 all members equal
+RESULT     window8: ring as base + 64 B block deltas: full 12.04 MB -> vs base 12.82 MB (106%), vs previous 12.80 MB (106%)
+RESULT   knob-moving |  21.57 / 128.98 |   6.1 /  36 |  21.80 ( 2.25 /  1.36) |   80.1 | 104.18 (82.42) |  58.7 |  560.1 | 116 | bfe86c8ce148add8 all members equal
+RESULT     knob-moving: ring as base + 64 B block deltas: full 23.24 MB -> vs base 25.03 MB (108%), vs previous 23.67 MB (102%)
+RESULT   end hash identical across all 6 runs: YES; deepest rollback 13 frames

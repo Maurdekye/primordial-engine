@@ -46,7 +46,8 @@ against this list. Where the order changed an answer, the text says so. Examples
 3. Resonite to Primordial mapping
 4. Determinism strategy (R3, R4)
 5. Fixed-timestep loop and render decoupling (R2, R10)
-6. Rollback (R3)
+6. Rollback (R3; 6.7-6.11: perturbation history, the snapshot knob, partial snapshots, what observers
+   see, what can and cannot be realtime)
 7. Perturbations: state + canonical frame (R3, R6)
 8. "Soonest wins" without a central authority (R5)
 9. Sync checks and divergence repair (R6)
@@ -169,7 +170,7 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Sim-thread work per tick, per world, including rollback | ≤ 8 ms; anything beyond that is amortized over the next ticks (6.5) | — |
 | Physics step per world | ≤ 1 ms at the MVP body budget, about 500 awake bodies (D2) | 0.36 ms at 256 bodies, 1.5-1.9 ms at 1,024 [V b6]; 0.35 ms for the 500-ball pit [V session-sim] |
 | Typical rollback depth | one-way latency + ack interval: 4-8 frames | max 4 at 60 ms ± 20 ms, 9-14 with loss [V session-sim, p2p-v2] |
-| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls | 2.76 ms at 60 Hz; 0.27 ms with 4 frames of input delay [V ballpit] |
+| Continuous perturbation (a hand in a ball pit) | ≤ 3 ms of re-simulation per frame at 500 balls | 2.76 ms at 60 Hz [V ballpit]; 0.27 ms with the opt-in 4-frame input delay (default 0, D41) |
 | Confirmation (finality) | ≤ 150 ms on 30-60 ms links | 4-5 frames (67-83 ms) at 50 ms ± 15 ms [V session-sim r14] |
 | Snapshot memory per world | ≈ 4 keyframes (2-10 MB) typical, 31 at most | 6.3 |
 | Game logic per tick, per world | ≤ 1 ms | 6.4 ms in wasmi, 1.6 ms in wasmtime/Cranelift, 0.9 ms native at 10k entities [V iteration-benchmark 4.1] |
@@ -341,6 +342,8 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 
 ### 6.3 Snapshot policy
 
+* **Revised by 6.7-6.8:** keep the base and a short window of recent keyframes under a local memory/CPU
+  knob (D50). The bullets below describe 3d0f98a's Every(4) policy, which is still the spike's default.
 * Keyframes are taken every K = 4 frames, and only between the **confirmed frame** (6.4) and the present.
   Rolling back restores the newest keyframe at or before the target frame and re-simulates the gap.
 * Re-simulation saves keyframes only at multiples of K, not every frame (review M1).
@@ -348,7 +351,8 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
   2-2.5 MB at 256 bodies and 7-10 MB at 1,024 [I, from the image sizes]. The old proposal held a fixed 2 s
   ring (about 72 MB at 1,024 bodies).
 * The speculation limit (6.4) caps the worst case at 120/K + 1 = 31 keyframes.
-* Later: per-page delta compression of images, and sync-state-only guest snapshots (7.4).
+* Byte-delta compression of images was measured and does not help (6.8). Sync-state-only guest snapshots
+  (7.4) remain planned.
 
 ### 6.4 Confirmed frame and the speculation limit (review C1)
 
@@ -406,6 +410,257 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
   but inside one session log.
 * Snapshots and rollbacks then become region-scoped: only regions touched by a late entry re-simulate.
 * Under the priorities this moves from phase 6 to phase 3 (23.2).
+
+### 6.7 Keeping only the perturbation history (user question 13:33Z)
+
+**Question:** can a peer keep only the history of perturbations instead of world snapshots?
+
+**Answer: almost [V].**
+* **The log is already the synchronized truth, and it is small.** A hand entry carries about 44 bytes of
+  payload per frame (7.5), so two hands over the whole 2 s speculation window come to about 11 kB.
+* **One full world image cannot be avoided.** Box3D, like any practical rigid-body engine, only steps
+  forward: nothing reconstructs frame *f* from frame *f + n*. Rolling back to *f* therefore means
+  restoring an image at or before *f* and re-simulating forward. No rollback can reach behind the
+  confirmed frame (6.4), so the floor is **one base image at or before the confirmed frame**:
+  * 0.5-0.6 MB for the 256-body pile and 1.9-2.3 MB at 1,024 bodies [V physics history];
+  * 1.6 MB for the 500-ball pit and 3.6-3.7 MB at 1,024 balls [V snap].
+
+  Contacts, broadphase trees and solver sets, more than body poses, make up most of an image (6.2).
+* **Everything between the base and the present is a cache.** It changes only how much re-simulation a
+  rollback costs, never the result. Measured: 62 runs of the ball pit, under 13 snapshot policies and a
+  setting moved every 7 frames, at 500 and 1,024 balls, with and without a confirmation stall. Every run of
+  the same scene ended in the same end-state hash (`47bb8c7274b143d3` at 500 balls, `bfe86c8ce148add8`
+  at 1,024) [V snap].
+
+**Re-simulating from the base** (restore plus N steps, collapsing pile, median of 5, one thread)
+[V physics history]:
+
+| Depth (frames) | 1 | 4 | 8 | 15 | 30 | 60 | 120 |
+|---|---|---|---|---|---|---|---|
+| 256 bodies | 0.8 ms | 2.0 | 3.6 | 6.4 | 12.4 | 26.4 | 50.8 |
+| 1,024 bodies | 3.3 ms | 7.9 | 14.2 | 25.8 | 51.0 | 98.9 | 189.7 |
+
+A tick at 60 Hz has 16.7 ms. **Base-only** fits only while confirmation keeps up, because every
+rollback then re-simulates the whole confirmation lag, not just the rollback depth.
+
+**Rollbacks stay shallow even when confirmation stalls** [V snap]:
+* How deep a rollback goes is set by how late entries arrive: one-way latency, the ack interval, and a
+  fetch round trip after a loss. The deepest measured was 14 frames, at 60 ± 10 ms with 2% loss.
+* In the stall runs a third member's acks were dropped for 1.6 s. Confirmation fell 116 frames behind,
+  but the deepest rollback was still 13 frames.
+* The images that do the work are therefore the few just behind the present. The base is insurance for
+  the rare deep rollback, such as an entry fetched late after two losses. Images in between are mostly
+  dead weight.
+
+### 6.8 Snapshot policies measured, and the memory/CPU knob
+
+**Policies.** All of them keep the base; the spike's `SnapPolicy` implements each one [V snap]:
+* `Every(k)`: an image every k frames from the base to the present. 3d0f98a used k = 4.
+* `Log(k)`: an image every k frames for the newest 4k frames, then thinned so that spacing grows with age
+  (about two images per doubling). Any rollback costs at most about 1.5x its depth.
+* `Window(k)`: an image every k frames for the newest 4k frames, nothing older except the base. A rollback
+  deeper than 4k frames re-simulates from the base.
+* `Base(k)`: the base plus one candidate image just after the confirmed frame, which becomes the next
+  base.
+
+**Setup.** One hand sweeps the ball pit while member 2 watches, over 60 ± 10 ms links with 2% loss at
+60 Hz, measured across the 3.66 s sweep. In the **stall** case a third member's acks are dropped for 1.6 s,
+so confirmation lags by up to 116 frames.
+
+**How CPU is reported.** CPU per frame is modelled: the deterministic work counts (re-simulated frames,
+saves and restores per second) times the per-operation costs measured in isolation. For the 500-ball pit
+those costs are: step 0.353 ms, save 0.52 ms, restore 0.37 ms. Measured timings (best of 2-3 runs, with
+other agents building on the same machine) rank the policies the same way, plus about 1 ms of protocol
+overhead.
+
+| Policy | Max MB held, 500 balls (steady / stall) | Max MB held, 1,024 balls (stall) | Re-sim frames/s (steady / stall) | Saves/s (steady / stall) | Modelled CPU ms per frame (steady / stall) |
+|---|---|---|---|---|---|
+| Every(1) | 25.6 / 183.7 | 412.4 | 209 / 196 | 210 / 198 | 3.77 / 3.58 |
+| Every(2) | 13.6 / 93.4 | 209.7 | 239 / 225 | 104 / 99 | 3.03 / 2.90 |
+| Every(4) (3d0f98a) | 8.2 / 47.5 | 106.6 | 298 / 284 | 51 / 50 | 2.91 / 2.82 |
+| Every(8) | 5.0 / 25.3 | 56.8 | 416 / 401 | 26 / 25 | 3.39 / 3.29 |
+| Every(16) | 3.3 / 12.6 | 28.3 | 661 / 646 | 14 / 12 | 4.72 / 4.62 |
+| Log(4) | 8.2 / 16.1 | 36.1 | 298 / 284 | 51 / 50 | 2.91 / 2.82 |
+| Log(8) | 5.0 / 12.8 | not run | 416 / 401 | 26 / 25 | 3.39 / 3.29 |
+| **Window(4)** | **8.2 / 8.3** | **18.6** | 298 / 284 | 51 / 50 | **2.91 / 2.82** |
+| Window(8) | 5.0 / 8.1 | 18.1 | 416 / 401 | 26 / 25 | 3.39 / 3.29 |
+| Base(1) | 3.3 / 3.3 | 7.4 | 416 / 2,138 | 27 / 11 | 3.40 / 13.39 |
+
+Measured CPU per frame for comparison (best runs): at 500 balls, Every(4) 3.84-4.04, Log(4) 3.84-3.97,
+Window(4) 3.84-4.00, and Base(1) 4.43 steady and 16.4 under the stall. At 1,024 balls under the stall:
+Every(4) 9.9-10.8, Window(4) 10.8, Base(1) 47.7-48.9.
+
+What the table shows:
+* **Dense images do not buy CPU.** A save costs about 1.5 steps here, so saving every frame costs more
+  than the re-simulation it saves. CPU is lowest at k = 2-4.
+* **Thinning is free.** Log(k) and Window(k) do exactly the same work as Every(k), because they drop only
+  images that no rollback used. Under the stall, Window(4) held 8.3 MB instead of 47.5 MB, and 18.6 MB
+  instead of 106.6 MB at 1,024 balls.
+* **Base-only is the memory floor, and cheap while confirmation keeps up** (+17% CPU). Under a stall,
+  every rollback re-simulates the whole lag: 2,138 frames/s, 13.4 ms per frame modelled, 16.4 ms measured,
+  and 48 ms at 1,024 balls. It needs a guard (below).
+* **Byte deltas do not help.** Storing ring images as 64-byte block deltas against the base, or against
+  the previous image, saved at most 6% on the ball-pit rings and usually nothing. On an active pile every
+  block changes, because contact arrays shift whenever a contact begins or ends. The best case, a
+  slow-moving 256-body pile, still needed 38-43% [V snap, physics history].
+* **The worst case does not depend on the policy.** A rollback all the way back to the confirmed frame
+  re-simulates the whole lag whatever is cached: up to 51 ms at 256 bodies and 190 ms at 1,024 when
+  W = 120. It can only be reduced by a smaller W, a smaller active world or region-scoped
+  re-simulation (6.6). The 8 ms per-tick cap (6.5) spreads it over several ticks.
+
+**The knob (proposal, D50).** "Snapshot memory" is one setting per peer, local and changeable at run time,
+with four positions:
+
+| Position | Policy | Max image memory (500 balls steady; stall 500 / 1,024 balls) | CPU against the best | Rollback depths covered without the base |
+|---|---|---|---|---|
+| Speed | Log(4) | 8.2; 16.1 / 36.1 MB | best | any depth, at ≤1.5x |
+| **Balanced (default)** | Window(4), adaptive depth [I] | 8.2; 8.3 / 18.6 MB | best | ≤ 16 frames (every measured rollback was ≤ 14) |
+| Lean | Window(8) | 5.0; 8.1 / 18.1 MB | +17% | ≤ 32 frames |
+| Minimum | Base(1) + stall guard [I] | 3.3; 3.3 / 7.4 MB | +17% steady; guarded under a stall | none |
+
+* **It never changes a result,** because images only cache states the log already determines.
+  * Verified [V snap knob-moving]: the knob cycled every 7 frames through Every(1) → Base(4) → Log(4) →
+    Window(4) → Every(8) → Base(1) while about 59 rollbacks a second were pending.
+  * The end hash matched every fixed-policy run, steady and stalled, at 500 and 1,024 balls.
+* **It may move at any rate.**
+  * The one invariant, which every position keeps, is that the base (the newest image at or before the
+    confirmed frame) is never dropped.
+  * Moving towards less memory drops images at the next trim, which waits until no re-simulation is
+    pending.
+  * Moving towards more memory affects only frames simulated afterwards: images of past frames cannot be
+    recreated without re-simulating them. It reaches full effect after at most one confirmation lag.
+  * In the knob-moving runs memory peaked at 57.6 MB (500 balls, stall) while Every(1) phases refilled the
+    ring.
+* **Adaptive window depth [I]:** track the 99.9th-percentile rollback depth over the last few seconds and
+  keep the window at max(4k, that depth + k). This is local, like the knob.
+* **Stall guard for Minimum [I]:** while confirmation lags more than twice the window, add Window(8) images
+  until it catches up. Otherwise one stall costs about 5x the CPU.
+* **Per chunk (R16) [I]:** the policy applies to each Box3D world. Once R16 splits a session into chunks or
+  regions, each keeps its own base and window, so an idle chunk holds only its base.
+
+### 6.9 Partial snapshots: not possible through box3d-rust's API [V physics history]
+
+The idea was to save only the perturbed islands, with their contacts and warm starts, and trust untouched,
+sleeping or isolated islands to re-derive themselves.
+
+* **Test 1: every body written back through the API.**
+  * Setup: in a 256-body pile, every body's pose and velocity was saved at one frame. They were written back
+    50 frames later into the same world, with `body_set_transform`, `body_set_linear_velocity` and
+    `body_set_angular_velocity`.
+  * Result: stepping diverged from the reference at the first frame. After 30 frames, 2 of 256 bodies were
+    bit-equal and the largest position error was 244 mm.
+  * Control: a full image restore of the same frame matched 256 of 256.
+* **Test 2: one isolated island, everything else asleep.**
+  * Setup: 64 separate 4-box stacks, all asleep. One stack got a different speculative push; the other 63
+    were checked to be unchanged and still asleep. That stack's 4 bodies were then restored through the
+    API, given the correct push, and run for 60 frames.
+  * Result: the restored stack matched 0 of 4 bodies (8.7 mm error); the other 252 bodies matched.
+* **Why it fails.** A world image also holds what the API cannot set:
+  * contact manifolds with their warm-start impulses;
+  * sleep timers and island membership;
+  * solver-set placement and constraint-graph colours;
+  * broadphase trees and fat AABBs;
+  * id pools.
+
+  These are the sections `serialize_world` writes [V]. Several are global (one tree, one colour graph,
+  one contact array) and their order decides iteration order, so even an island-scoped restore needs them
+  bit-exact.
+* **What it would take [I].**
+  * A fork of box3d-rust that snapshots per solver set (sleeping islands already live in solver sets of
+    their own) and shares unchanged sleeping-island bytes between images, copy-on-write. Image memory would
+    then grow with the awake set rather than the world.
+  * Region-scoped worlds (6.6, R16) give most of the same benefit without a fork: an untouched region is
+    never rolled back at all.
+  * Decision **D51**.
+
+### 6.10 What an observer sees of a remote hand
+
+An observer learns of a remote player's hand motion one network latency late. Three mechanisms bring what
+it sees as close to the truth, and as physically plausible, as possible. None of them makes the sim
+inexact.
+
+1. **Remote-hand dead reckoning, a world rule [V observer].** When a frame has no entry yet from an active
+   hand, the sim keeps the hand's last commanded velocity, capped at 3 m/s, for up to 6 frames, and then
+   holds it. The rule is part of the deterministic sim, so every peer applies it identically. On a
+   speculative frame it acts as a prediction, and the real entry replaces it by rollback when it arrives.
+   Before this change (3d0f98a), a hand without an entry stopped dead.
+2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
+   tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
+   not wait for confirmation.
+3. **Render-only correction smoothing [V observer, computed offline].** When a rollback moves an object that
+   has already been drawn, the renderer keeps drawing it where it was and drains the difference with a time
+   constant τ. Sim state is never touched.
+
+**Measured:** 500 balls at 60 Hz with 2% loss. Member 1 sweeps its hand and member 2 watches. Errors are
+against the final confirmed history over the sweep.
+
+| One-way latency | Remote hand error, mean / p95 (hold → dead reckoning) | Balls visibly corrected (>1 mm) per frame | Ball error p99, raw | Sim CPU per frame |
+|---|---|---|---|---|
+| 30 ± 5 ms | 23.5 / 32.6 → **1.3 / 2.0 mm** | 12.7 → **1.0** | 5.3 → **0.3 mm** | 3.0-3.9 ms |
+| 60 ± 10 ms | 79.6 / 125.5 → **15.2 / 17.0 mm** | 30.4 → **11.3** | 44.1 → **4.3 mm** | 4.4-6.1 ms |
+| 100 ± 16 ms | 149.4 / 197.3 → **41.5 / 37.0 mm** | 34.8 → **25.4** | 63.4 → **14.4 mm** | 6.1-8.1 ms |
+
+* **Dead reckoning cuts the observer's error by about 4-18x** for smooth hand motion, because the
+  speculative sim pushes balls roughly where the real hand is pushing them. Its limit is any change of
+  motion: a stop, a turn or a grab is seen one latency late, and the balls involved are corrected.
+* **Smoothing trades accuracy for continuity.**
+  * At 60 ms latency, τ = 50 ms raises the p99 ball error against the truth from 4.3 to 9.2 mm, and
+    τ = 100 ms to 14.0 mm. Corrections are shown late on purpose, but nothing jumps.
+  * Large corrections still show as fast glides: up to about 10-18 m/s for the rare 1 m correction.
+  * Proposal [I]: smooth corrections below about 5 cm over 50 ms, glide larger ones over 100 ms, and snap
+    above about 0.5 m.
+* **The hand rule is a world rule, not a local option.**
+  * At 100 ms with 2% loss, some lost hand entries were fetched more than 15 frames late and re-stamped
+    (8.2), which left a few confirmed frames without an entry.
+  * The rule then shaped confirmed history: hold and dead reckoning produced different end states, each
+    identical across members [V observer-100].
+  * Decision **D52**.
+* **Input delay stays an opt-in setting with a default of 0 (D41).** It spares the receiver rollbacks, but
+  delays the engager's own interactions by the same amount, against the requirement that every reaction
+  be immediate.
+
+### 6.11 What can and cannot be perfectly realtime
+
+For @user, the honest limits under the core goal: every reaction physically realtime and reactive for
+every player, perfectly synced, and optimized for CPU and memory.
+
+**What can be realtime:**
+* **Your own interactions, always.** Your hand and your pushes act on your sim at the present frame, with
+  no added input delay (D41 default 0). Local physics answers within the same frame.
+* **Perfect sync, always.** Every peer converges to a bit-identical state from the same log, and confirmed
+  frames are identical everywhere [V: every run in this study].
+* **Remote motion that continues smoothly.**
+  * With dead reckoning, a remote hand moving steadily is shown within 1.3 / 2.0 mm (mean / p95) at 30 ms
+    latency and 15 / 17 mm at 60 ms [V].
+  * The balls it pushes react in the observer's view without waiting for its packets.
+* **The balance of memory and CPU, chosen per device** without affecting anyone else (6.8).
+
+**What cannot be realtime (physics, not engineering):**
+* **Nobody sees another player's change of motion before its packet arrives.**
+  * A stop, a turn, a grab or a throw reaches you one one-way latency later: about 15-40 ms within a
+    region, and 75-150 ms across continents.
+  * Until it arrives your view is a prediction; when it does, whatever it touched is corrected.
+  * On 60 ms links, while a hand sweeps through 500 balls, about 11 balls per frame are visibly corrected,
+    typically by a few millimetres.
+* **Two players acting on one object at the same moment** each see their own action at once and the
+  combined result one latency later. Exact agreement on a contested contact cannot be immediate for both.
+* **CPU grows with latency × active bodies.**
+  * Each late entry re-simulates every awake body from the entry's frame.
+  * 500 swept balls cost about 3-4, 4-6 and 6-8 ms per frame at 30, 60 and 100 ms [V observer].
+  * 1,024 balls at 60 ms cost about 10-13 ms per frame, with 99th-percentile ticks of 21-29 ms, above the
+    16.7 ms frame [V snap-1024].
+  * The snapshot knob cannot change this. It removes only cached gaps, not the frames between a
+    perturbation and the present.
+  * What can help:
+    * region-scoped worlds (6.6, R16);
+    * island-scoped re-simulation in a box3d-rust fork (6.9, R15);
+    * multithreaded stepping (box3d-rust 0.5 uses no threads [V: no thread use in the crate]);
+    * opt-in input delay;
+    * fewer awake bodies.
+* **The deepest rollback is bounded only by the speculation limit.**
+  * An entry that arrives up to 2 s late (lost, then refetched after a lost fetch) re-simulates up to
+    120 frames: 51 ms at 256 bodies and 190 ms at 1,024.
+  * The work is spread over several ticks (6.5), and the view runs behind until it finishes.
 
 ---
 
@@ -538,7 +793,8 @@ release build [V session-sim ballpit].
   physics resolves both hands together, deterministically. Only exclusive grabs use the tie-break (8.3).
   Measured with two hands, one per peer, sweeping in opposite directions: end state identical, 21.6 kB/s, and the receiver's re-simulation cost about the same as with one hand [V].
 * **Input delay** (stamping hand targets a few frames ahead) removes most receiver rollbacks, but the
-  author's own balls then react late to its hand. Stamping hand targets 4 frames (67 ms) ahead cut the receiver's rollbacks from 59/s to 2.7/s, and its re-simulation from 2.76 to 0.27 ms per frame [V]. It is a per-world setting (D41).
+  author's own balls then react late to its hand. Stamping hand targets 4 frames (67 ms) ahead cut the receiver's rollbacks from 59/s to 2.7/s, and its re-simulation from 2.76 to 0.27 ms per frame [V]. It is an opt-in per-world setting with a default of 0 (D41): it delays the engager's own interactions by
+  the same amount. Observers are served by remote-hand dead reckoning instead (6.10).
 
 ### 7.6 Bandwidth per interaction
 
@@ -2605,7 +2861,8 @@ spikes/          phase-1 spikes (kept as regression tests)
 
 1. **Physics CPU budget.** The port is serial and scalar, and rollback multiplies step cost [V b2, b6, ball
    pit]. Mitigations: the 500-body budget (D2), coalesced rollbacks, keyframes, region-scoped rollback in
-   phase 3, input delay for continuous sources where acceptable (D41).
+   phase 3, remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), and opt-in input
+   delay (D41).
 2. **Unverified ARM and macOS determinism.** x86-64 is verified on two CPUs: the Ryzen 7 9700X desktop and an
    Intel i7-13620H laptop with no AVX-512 (review M5, run by @design-reviewer). Mitigation: a CI matrix with
    ARM in phase 2.
@@ -2977,8 +3234,9 @@ entry says so.
     every frame; the touched objects are simulated, never streamed. Measured: about 15 kB/s for both
     directions, against 1 MB/s for naive state streaming, at a CPU cost of about 2.8 ms of re-simulation
     per frame on the receiver [V ballpit].
-  * Question: add **input delay** to hand streams (4 frames cut the receiver's rollbacks from 59/s to
-    2.7/s, but the author's balls then react 67 ms late), per world or never?
+  * Settled (user, 13:36Z): **input delay** is an opt-in per-world setting with a default of 0. Four
+    frames cut the receiver's rollbacks from 59/s to 2.7/s, but the author's balls then react 67 ms late.
+    Observers are served by dead reckoning instead (D52).
   * Alternatives: stream quantized island state (≈0.47 MB/s, and not bit-exact unless the author snaps its
     own copy too); stream exact state (≈1 MB/s).
 * **D42. Backdating bound (8.2; review H5).**
@@ -3034,3 +3292,34 @@ entry says so.
     * Throttling never affects other members [V r14 throttle].
   * Alternatives: no limits (memory and CPU grow with every world opened); a hard limit of one attending
     world (Resonite-like, which falls short of R14's "actively joined to several").
+* **D50. Snapshot memory knob (6.7, 6.8; user question 13:33Z and the slider requirement).**
+  * Recommend: one local setting per peer, changeable at run time, with four positions:
+    * Speed: Log(4);
+    * **Balanced (the default): Window(4)** with an adaptive window depth;
+    * Lean: Window(8);
+    * Minimum: base only, with a stall guard.
+  * At the default, CPU equals the best measured policy and memory stays at about the base plus 4 images,
+    however far confirmation lags: 8.3 MB at 500 balls and 18.6 MB at 1,024 under a 116-frame stall,
+    against 47.5 and 106.6 MB for 3d0f98a's Every(4) [V snap].
+  * The knob never changes a result [V snap knob-moving].
+  * Alternatives:
+    * keep Every(4): the same CPU, up to 5.7x the memory under a stall;
+    * expose k and the window depth as two expert settings;
+    * a memory budget in MB from which the engine derives the policy.
+* **D51. Partial (per-island) snapshots (6.9).**
+  * Recommend: not now. The public API cannot restore an island bit-exactly [V]. Take the benefit from
+    region-scoped worlds first (6.6, R16), and decide on a box3d-rust fork with per-solver-set,
+    copy-on-write images together with R15's fork question.
+  * Alternative: fork now and snapshot per solver set. Image memory would then grow with the awake bodies,
+    at the cost of maintaining the fork through every Box3D update.
+* **D52. How the sim predicts a remote hand (6.10).**
+  * Recommend:
+    * Dead reckoning as the world rule for hand sources: keep the last commanded velocity, capped at
+      3 m/s, for up to 6 frames, then hold. It cuts the observer's error by about 4-18x [V observer].
+    * Plus render-only smoothing: τ = 50 ms below 5 cm, a glide of up to 100 ms above that, and a snap
+      above 0.5 m [I].
+  * Alternatives:
+    * hold (3d0f98a): about 4-18x larger observer error;
+    * longer coasting or curvature extrapolation: smaller error for smooth motion, larger overshoot when
+      the hand stops;
+    * per-world tuning of the cap and the frame count.
