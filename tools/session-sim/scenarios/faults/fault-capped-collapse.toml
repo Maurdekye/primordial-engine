@@ -1,6 +1,6 @@
 description = """
 Fault kinds (P2-9): every link capped at 16 kbit/s, below what the pile's acks need at 60 Hz, \
-with no congestion controller (R18 off). The queues overflow, confirmation stalls near frame 100 \
+with no congestion controller (R18 off). The queues overflow, confirmation stalls by frame 114 \
 of about 590 and the members pause at the speculation limit. Safety holds: the confirmed prefix \
 is equal on every replica and to the offline replay. fault-capped-r18 is the same link with the \
 controller on."""
