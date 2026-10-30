@@ -16,6 +16,7 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | mcp | Cheap MCP stub that reads world state? | **Yes [V]** (protocol subset, hand-written, not tested with a third-party client) |
 | audit | Can the stack be 100% Rust? | **Mostly [V].** Graphics, VR (loaded loader), ECS, MCP, WASM (wasmi), assets, discovery and a UDP+Noise transport audit clean. iroh, libp2p+QUIC, quinn's TLS, wasmtime default and blake3 default compile C/asm |
 | resonite | Parse one Resonite package/record header? | **Not reachable [V]:** no exported package or data-tree file exists on this machine (only a 2.5 GB LiteDB cache) |
+| R13 / e4mc research | Can harnesses be driven headlessly and wired to our MCP? How does e4mc work? | **Read, not run [S]:** structured modes and restriction flags confirmed in the installed Claude Code 2.1.292, Codex 0.160.0 and Gemini CLI help. e4mc relay routing read in its Rust source. iroh features read in its docs. Orgtree hub facts from its public docs (no hub contacted). Panel crates audit 100% Rust [V] |
 
 ## 2. Environment
 
@@ -273,6 +274,7 @@ python -I scripts/audit_native.py spikes/stack-audit/* --target x86_64-pc-window
 | assets-image-default | 94 / 94 | 100% Rust, but heavy | pulls rav1e (AV1 encoder); asm not built without its `asm`/nasm feature |
 | audio-cpal 0.18 | 17 / 8 | **100% Rust** | Linux: alsa-sys links system libasound |
 | discovery (mainline 8, mdns-sd 0.21, igd-next 0.18) | 98 / 97 | **100% Rust** | none |
+| agent-panels (portable-pty 0.9, alacritty_terminal 0.26, vt100 0.18, agent-client-protocol 3.6, cosmic-text 0.19) | 135 / 128 | **100% Rust** | Win: `windows_x86_64_msvc` import-lib stubs; nix, signal-hook, ttf-parser ship C files that are not built |
 
 Full tables: `spikes/out/audit-stack.md`, `spikes/out/audit-spikes.md`.
 
@@ -284,6 +286,34 @@ Full tables: `spikes/out/audit-stack.md`, `spikes/out/audit-spikes.md`.
   header could be parsed without exporting an avatar from Resonite first (needs the app and the user's
   account) [V].
 * Nothing from the user's Resonite data was copied into this repo.
+
+## 8b. R13 and e4mc research (read, not run) [S]
+
+* **Harness CLIs**, from `--help` of the installed versions:
+  * **Claude Code 2.1.292:** `-p`, `--input-format text|stream-json`, `--output-format text|json|stream-json`,
+    `--include-partial-messages`, `--mcp-config`, `--strict-mcp-config`, `--tools`, `--allowedTools`,
+    `--disallowedTools`, `--permission-mode`, `--max-budget-usd`, `--add-dir`, `--append-system-prompt`,
+    `--resume`.
+  * **Codex CLI 0.160.0:** `exec --json`, `--output-schema`, `-s/--sandbox`, `-a/--ask-for-approval`,
+    `-C/--cd`, `--ephemeral`, `-c key=value`, `mcp add`, and `app-server` (marked experimental, with
+    `generate-json-schema`).
+  * **Gemini CLI:** `--acp`, `-o stream-json`, `--allowed-mcp-server-names`.
+  * Claude Code and Gemini are installed as npm (Node.js) packages; `codex.exe` is a native PE32+ x86-64
+    executable.
+* **e4mc** (`vgskye/e4mc-quiclime`, branch `kity`, Rust):
+  * hosts connect outbound over QUIC (quinn + rustls, ALPN `quiclime`);
+  * domains are `<word>-<word>.<QUICLIME_BASE_DOMAIN>` from a 7,776-word list (`routing.rs`);
+  * vanilla TCP clients are routed by the Minecraft handshake's server address (`main.rs`);
+  * an iroh "Dialtone" ticket is served at `/.well-known/dialtone_ticket/{domain}`.
+* **iroh** (docs.rs): `EndpointId` is the Ed25519 public key; it connects via a relay, then hole-punches to
+  direct; relays forward traffic they cannot decrypt; n0 relays are the default; DNS-based address lookup.
+  The audit shows iroh is not 100% Rust (ring, blake3 C).
+* **Orgtree mail hub** (Orgtree glossary and public repo docs; no hub contacted or registered):
+  * HTTP; operator port 7370 with no login; relay-only door 7371 for authenticated client traffic; no TLS
+    of its own;
+  * person and org identities, with org addresses minted with an ownership secret;
+  * clients register, poll and transfer files with at-least-once custody.
+  * The wire format and authentication headers are not documented there [I].
 
 ## 9. Verified vs inferred ledger
 
@@ -313,6 +343,7 @@ Verified by reading [S]:
 * wayland-backend C shim.
 * graviola inline asm.
 * box3d-rust gaps: serial, scalar, pinned commit.
+* Harness CLI flags, e4mc relay routing, iroh features and the Orgtree hub facts listed in section 8b.
 
 Inferred [I] (design proposals, not yet tested):
 * Determinism on ARM and macOS (upstream and port claim it).
@@ -333,6 +364,9 @@ Inferred [I] (design proposals, not yet tested):
 * Resonite package and MeshX parsing beyond the documented bone-binding detail.
 * Realistic logic-crate compile times (1-5 s).
 * Cross-machine reproducible wasm builds.
+* All of R13's mechanics: panel hosting, guest-mode sandbox effectiveness, connection handshake, hub client
+  protocol.
+* Session codes with PAKE; volunteer relays.
 
 ## 10. Remaining risks and what phase 2 must verify
 
@@ -349,6 +383,10 @@ Inferred [I] (design proposals, not yet tested):
    MeshX, after the user rules on D19.
 8. **Upstream drift:** box3d-rust pins upstream `3fc20f5` while upstream is at `33626332`; re-run goldens
    on every bump.
+9. **R13:** drive Claude Code (`stream-json`) and Codex (`exec --json` / `app-server`) from a Rust adapter
+   against an rmcp engine server; prove the guest-mode restrictions actually block shell and file tools.
+10. **Mail hub:** with the user's go-ahead (design D32), read Orgtree's hub source and prototype a client
+    against a private test hub.
 
 ## 11. Reproduce everything
 

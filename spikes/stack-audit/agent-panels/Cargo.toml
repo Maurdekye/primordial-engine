@@ -1,0 +1,15 @@
+# Dependency-audit probe (never built). In-game agent harness panels (requirement 13).
+[package]
+name = "audit-agent-panels"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+portable-pty = "0.9"
+alacritty_terminal = "0.26"
+vt100 = "0.18"
+agent-client-protocol = "3.6"
+cosmic-text = "0.19"
