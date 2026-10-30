@@ -11,6 +11,7 @@
 //!   vdw-perf [frames] [repeats] [out.jsonl] [scene]  timing A/B on an 864-box pile
 //!                                (scene bigpile, or bigpile-awake with sleeping off)
 //!   images <out-file>             FNV-64 of the pile's snapshot image every 50 frames
+//!   par-bench [frames] [sizes] [threads]  D2: step cost and stage breakdown vs thread count
 //!
 //! Every world the subcommand creates uses the engine world definition
 //! (`pe_sim_core::engine_world_def`: scale-dependent contact recycling on, user ruling
@@ -18,11 +19,13 @@
 //! recycle distance), which is what the C goldens apply to. `--vdw` is accepted and means the
 //! default. `--no-recycle` (goldens only) sets the recycle distance to 0, as a
 //! no-approximation reference.
+//! `--threads=N` gives every world N worker threads (D2 parallel stepping); every result must be
+//! identical for any N.
 //!
 //! Exit code is non-zero if any check fails.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
 use box3d_rust::determinism::{
@@ -36,12 +39,15 @@ use pe_sim_core::*;
 
 mod history;
 mod hooks;
+mod par_bench;
 mod vdw_bench;
 
 const SEED: u64 = 0x5052_494D_4F52_4449; // "PRIMORDI"
 
 static UPSTREAM: AtomicBool = AtomicBool::new(false);
 static NO_RECYCLE: AtomicBool = AtomicBool::new(false);
+/// `--threads=N`: worker threads for every world (D2). Results must not depend on it.
+static THREADS: AtomicI32 = AtomicI32::new(1);
 
 /// True unless `--upstream`: worlds use scale-dependent contact recycling.
 fn vdw_on() -> bool {
@@ -51,7 +57,9 @@ fn vdw_on() -> bool {
 /// World definition for every world this binary creates: the engine's, or upstream's with
 /// `--upstream`.
 fn world_def() -> WorldDef {
-    if vdw_on() { engine_world_def() } else { default_world_def() }
+    let mut def = if vdw_on() { engine_world_def() } else { default_world_def() };
+    def.worker_count = THREADS.load(Ordering::Relaxed);
+    def
 }
 
 /// Goldens world: `--no-recycle` additionally disables contact recycling (reference point only).
@@ -63,6 +71,13 @@ fn goldens_world() -> World {
     world
 }
 
+/// [`world_def`] with an explicit worker count (D2 parallel stepping).
+fn world_def_threads(threads: i32) -> WorldDef {
+    let mut def = world_def();
+    def.worker_count = threads;
+    def
+}
+
 fn pile_scene(side: usize, layers: usize) -> Scene {
     build_pile_scene_def(side, layers, &world_def())
 }
@@ -71,8 +86,13 @@ fn main() {
     let all_args: Vec<String> = std::env::args().collect();
     UPSTREAM.store(all_args.iter().any(|a| a == "--upstream"), Ordering::Relaxed);
     NO_RECYCLE.store(all_args.iter().any(|a| a == "--no-recycle"), Ordering::Relaxed);
-    let args: Vec<String> =
-        all_args.into_iter().filter(|a| !matches!(a.as_str(), "--vdw" | "--upstream" | "--no-recycle")).collect();
+    if let Some(n) = all_args.iter().find_map(|a| a.strip_prefix("--threads=")) {
+        THREADS.store(n.parse().expect("--threads=N"), Ordering::Relaxed);
+    }
+    let args: Vec<String> = all_args
+        .into_iter()
+        .filter(|a| !matches!(a.as_str(), "--vdw" | "--upstream" | "--no-recycle") && !a.starts_with("--threads="))
+        .collect();
     let cmd = args.get(1).map(String::as_str).unwrap_or("help");
     let ok = match cmd {
         "goldens" => goldens(),
@@ -95,6 +115,13 @@ fn main() {
             let scene = args.get(5).map(String::as_str).unwrap_or("bigpile");
             vdw_bench::perf(frames, repeats, args.get(4).map(String::as_str), scene)
         }
+        "par-bench" => {
+            let frames: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(240);
+            let list = |i: usize, d: &str| -> Vec<String> { args.get(i).map(String::as_str).unwrap_or(d).split(',').map(String::from).collect() };
+            let sizes: Vec<usize> = list(3, "500,1000,2000,4000").iter().filter_map(|s| s.parse().ok()).collect();
+            let threads: Vec<i32> = list(4, "1").iter().filter_map(|s| s.parse().ok()).collect();
+            par_bench::run(frames, &sizes, &threads)
+        }
         "images" => images(args.get(2).map(String::as_str).unwrap_or("images.txt")),
         _ => {
             eprintln!("usage: pe-spike-physics [--upstream] [--no-recycle] goldens | trace <frames> <out> | rollback | bench | history | hooks | vdw-bench [frames] [out] | vdw-perf [frames] [repeats] [out] [bigpile|bigpile-awake] | images <out>");
@@ -102,7 +129,7 @@ fn main() {
         }
     };
     println!(
-        "build: {} profile, target {}, contact recycling: {}",
+        "build: {} profile, target {}, contact recycling: {}, worker threads: {}",
         profile(),
         std::env::consts::ARCH,
         if NO_RECYCLE.load(Ordering::Relaxed) {
@@ -111,7 +138,8 @@ fn main() {
             "scale-dependent (engine default)"
         } else {
             "upstream fixed (--upstream)"
-        }
+        },
+        THREADS.load(Ordering::Relaxed),
     );
     if !ok {
         println!("RESULT: FAIL");

@@ -30,7 +30,8 @@ use crate::mesh::{
     FLAT_EDGE3,
 };
 use crate::shape::{shape_flags, Shape, ShapeGeometry};
-use crate::world::World;
+use super::{CollideEnv, Contact};
+use crate::world::TaskContext;
 
 const CLUSTER_THRESHOLD: f32 = 0.996;
 const NORMAL_MATCH_TOLERANCE: f32 = 0.995;
@@ -74,10 +75,10 @@ fn ensure_simplex(cache: &mut ContactCache) -> &mut SimplexCache {
 }
 
 /// Compute mesh/height-field manifolds for a contact. (b3ComputeMeshManifolds)
-pub fn compute_mesh_manifolds(
-    world: &mut World,
-    worker_index: i32,
-    contact_id: i32,
+pub(crate) fn compute_mesh_manifolds(
+    env: &CollideEnv,
+    task: &mut TaskContext,
+    contact: &mut Contact,
     shape_a: &Shape,
     material_map: Option<&[u16]>,
     xf_a: WorldTransform,
@@ -89,13 +90,13 @@ pub fn compute_mesh_manifolds(
         shape_a.shape_type() == ShapeType::Mesh || shape_a.shape_type() == ShapeType::Height
     );
 
-    let aabb_b = world.shapes[shape_b.id as usize].aabb;
+    let aabb_b = env.shapes[shape_b.id as usize].aabb;
     {
-        let mesh = mesh_contact_mut(&mut world.contacts[contact_id as usize].geometry);
+        let mesh = mesh_contact_mut(&mut contact.geometry);
         refresh_cache(mesh, shape_a, xf_a, aabb_b);
     }
 
-    let triangle_count = match &world.contacts[contact_id as usize].geometry {
+    let triangle_count = match &contact.geometry {
         ContactGeometry::Mesh(m) => m.triangle_cache.len(),
         ContactGeometry::Convex(_) => 0,
     };
@@ -105,7 +106,7 @@ pub fn compute_mesh_manifolds(
     let linear_slop = linear_slop();
     let rest_offset = mesh_rest_offset();
     let enable_speculative =
-        (world.contacts[contact_id as usize].flags & contact_flags::ENABLE_SPECULATIVE_POINTS) != 0;
+        (contact.flags & contact_flags::ENABLE_SPECULATIVE_POINTS) != 0;
 
     let point_buffer_capacity = MAX_POINTS_PER_TRIANGLE * triangle_count;
     let mut point_buffer =
@@ -123,7 +124,7 @@ pub fn compute_mesh_manifolds(
     let mut found_vertices = FoundVertices::new();
 
     // Clone triangle cache for the collide loop (caches mutate SAT/simplex).
-    let mut triangle_caches = match &world.contacts[contact_id as usize].geometry {
+    let mut triangle_caches = match &contact.geometry {
         ContactGeometry::Mesh(m) => m.triangle_cache.clone(),
         ContactGeometry::Convex(_) => Vec::new(),
     };
@@ -201,8 +202,8 @@ pub fn compute_mesh_manifolds(
                     cache,
                     enable_speculative,
                 );
-                world.task_contexts[worker_index as usize].sat_call_count += 1;
-                world.task_contexts[worker_index as usize].sat_cache_hit_count += cache.hit as i32;
+                task.sat_call_count += 1;
+                task.sat_cache_hit_count += cache.hit as i32;
             }
             ShapeType::Sphere => {
                 let ShapeGeometry::Sphere(sphere) = geom_b else {
@@ -305,7 +306,7 @@ pub fn compute_mesh_manifolds(
     }
 
     // Write updated triangle caches back.
-    if let ContactGeometry::Mesh(mesh) = &mut world.contacts[contact_id as usize].geometry {
+    if let ContactGeometry::Mesh(mesh) = &mut contact.geometry {
         mesh.triangle_cache = triangle_caches;
     }
 
@@ -373,7 +374,7 @@ pub fn compute_mesh_manifolds(
     debug_assert!(accepted.len() <= triangle_count);
 
     if accepted.is_empty() {
-        world.contacts[contact_id as usize].manifolds.clear();
+        contact.manifolds.clear();
         return false;
     }
 
@@ -462,11 +463,11 @@ pub fn compute_mesh_manifolds(
         cluster.point_count = reduced;
     }
 
-    let old_manifolds = world.contacts[contact_id as usize].manifolds.clone();
+    let old_manifolds = contact.manifolds.clone();
     let old_manifold_count = old_manifolds.len() as i32;
 
     {
-        let contact = &mut world.contacts[contact_id as usize];
+        let contact = &mut *contact;
         if old_manifold_count != cluster_count as i32 {
             contact.manifolds = vec![Manifold::default(); cluster_count];
         } else {
@@ -510,7 +511,7 @@ pub fn compute_mesh_manifolds(
         };
 
         {
-            let manifold = &mut world.contacts[contact_id as usize].manifolds[i];
+            let manifold = &mut contact.manifolds[i];
             manifold.point_count = point_count;
             manifold.normal = cluster_normal;
 
@@ -542,7 +543,7 @@ pub fn compute_mesh_manifolds(
             // Match impulses by feature id + triangle index (claim with NULL_INDEX).
             let mut old_points = old_manifolds[mi as usize].points;
             let old_point_count = old_manifolds[mi as usize].point_count;
-            let manifold = &mut world.contacts[contact_id as usize].manifolds[i];
+            let manifold = &mut contact.manifolds[i];
             for j in 0..point_count {
                 let target = &mut manifold.points[j as usize];
                 for k in 0..old_point_count {
@@ -561,8 +562,8 @@ pub fn compute_mesh_manifolds(
     }
 
     apply_mesh_materials(
-        world,
-        contact_id,
+        env,
+        contact,
         shape_a,
         material_map,
         shape_b,
@@ -574,8 +575,8 @@ pub fn compute_mesh_manifolds(
 }
 
 fn apply_mesh_materials(
-    world: &mut World,
-    contact_id: i32,
+    env: &CollideEnv,
+    contact: &mut Contact,
     shape_a: &Shape,
     material_map: Option<&[u16]>,
     shape_b: &Shape,
@@ -586,11 +587,9 @@ fn apply_mesh_materials(
     let material_b = shape_b.get_material(0);
     let mut tangent_velocity_a = VEC3_ZERO;
 
-    let friction_cb = world
-        .friction_callback
+    let friction_cb = env.friction_callback
         .unwrap_or(crate::world::default_friction_callback);
-    let restitution_cb = world
-        .restitution_callback
+    let restitution_cb = env.restitution_callback
         .unwrap_or(crate::world::default_restitution_callback);
 
     if shape_a.material_count() > 0 {
@@ -598,11 +597,11 @@ fn apply_mesh_materials(
         let mut restitution = 0.0;
         let mut sample_count = 0.0;
 
-        let cluster_count = world.contacts[contact_id as usize].manifolds.len();
+        let cluster_count = contact.manifolds.len();
         for i in 0..cluster_count {
-            let point_count = world.contacts[contact_id as usize].manifolds[i].point_count;
+            let point_count = contact.manifolds[i].point_count;
             for j in 0..point_count {
-                let triangle_index = world.contacts[contact_id as usize].manifolds[i].points
+                let triangle_index = contact.manifolds[i].points
                     [j as usize]
                     .triangle_index;
 
@@ -642,14 +641,14 @@ fn apply_mesh_materials(
 
         if sample_count > 0.0 {
             let inv_count = 1.0 / sample_count;
-            let contact = &mut world.contacts[contact_id as usize];
+            let contact = &mut *contact;
             contact.friction = inv_count * friction;
             contact.restitution = inv_count * restitution;
             tangent_velocity_a = mul_sv(inv_count, tangent_velocity_a);
         }
     } else {
         let material_a = materials_a[0];
-        let contact = &mut world.contacts[contact_id as usize];
+        let contact = &mut *contact;
         contact.friction = friction_cb(
             material_a.friction,
             material_a.user_material_id,
@@ -674,7 +673,7 @@ fn apply_mesh_materials(
         _ => 0.0,
     };
 
-    let contact = &mut world.contacts[contact_id as usize];
+    let contact = &mut *contact;
     contact.rolling_resistance = material_b.rolling_resistance * radius_b;
 
     let tangent_velocity_b = rotate_vector(xf_b.q, material_b.tangent_velocity);
@@ -682,12 +681,12 @@ fn apply_mesh_materials(
 }
 
 /// Apply hit-event flags after mesh manifold compute. (contact.c mesh branch)
-pub fn apply_mesh_hit_flags(world: &mut World, contact_id: i32, shape_a: &Shape, shape_b: &Shape) {
+pub(crate) fn apply_mesh_hit_flags(contact: &mut Contact, shape_a: &Shape, shape_b: &Shape) {
     if (shape_a.flags & shape_flags::ENABLE_HIT_EVENTS) != 0
         || (shape_b.flags & shape_flags::ENABLE_HIT_EVENTS) != 0
     {
-        world.contacts[contact_id as usize].flags |= contact_flags::SIM_ENABLE_HIT_EVENT;
+        contact.flags |= contact_flags::SIM_ENABLE_HIT_EVENT;
     } else {
-        world.contacts[contact_id as usize].flags &= !contact_flags::SIM_ENABLE_HIT_EVENT;
+        contact.flags &= !contact_flags::SIM_ENABLE_HIT_EVENT;
     }
 }
