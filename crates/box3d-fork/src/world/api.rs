@@ -342,8 +342,9 @@ pub fn world_get_contact_recycle_distance(world: &World) -> f32 {
 }
 
 /// Primordial Engine fork: set the scale-dependent recycling radius parameters.
-/// Lengths and the fraction are clamped to `[0, f32::MAX]`. Not captured by the recording
-/// system; it is carried by world snapshots when enabled. See [`crate::recycle_scale`].
+/// Lengths and the fraction are clamped to `[0, f32::MAX]`. Carried by world snapshots when
+/// enabled, so recordings replay parameters set in the `WorldDef`; a call made during a
+/// recording is not captured as an op. See [`crate::recycle_scale`].
 pub fn world_set_contact_recycle_scaling(
     world: &mut World,
     scaling: crate::recycle_scale::ContactRecycleScaling,

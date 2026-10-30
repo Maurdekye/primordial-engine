@@ -35,7 +35,8 @@ use box3d_rust::recycle_scale::{ContactRecycleScaling, RecycleLengthCombine};
 use box3d_rust::shape::create_hull_shape;
 use box3d_rust::types::{default_body_def, default_shape_def, default_world_def, BodyType};
 use box3d_rust::world::{
-    world_get_awake_body_count, world_get_counters, world_set_contact_recycle_distance, World,
+    world_enable_sleeping, world_get_awake_body_count, world_get_counters,
+    world_set_contact_recycle_distance, World,
 };
 
 const SCALES: [f32; 6] = [0.001, 0.01, 0.1, 1.0, 10.0, 30.0];
@@ -65,10 +66,18 @@ struct Built {
     ledge_top: f32,
 }
 
+/// Bench modes. `vdw` is the Min combine and `vdw-hm` the HarmonicMean combine (the engine
+/// default since 2026-10-30); the names predate that ruling and are kept so the committed
+/// bench tables stay reproducible.
 fn mode_world(mode: &str) -> World {
     let mut def = default_world_def();
     match mode {
-        "vdw" => def.contact_recycle_scaling = ContactRecycleScaling::enabled(),
+        "vdw" => {
+            def.contact_recycle_scaling = ContactRecycleScaling {
+                combine: RecycleLengthCombine::Min,
+                ..ContactRecycleScaling::enabled()
+            }
+        }
         "vdw-hm" => {
             def.contact_recycle_scaling = ContactRecycleScaling {
                 combine: RecycleLengthCombine::HarmonicMean,
@@ -153,7 +162,7 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
                 }
             }
         }
-        "pile" | "bigpile" => {
+        "pile" | "bigpile" | "bigpile-awake" => {
             kind = Kind::Pile;
             let (nx, nz, layers) = if scene == "pile" { (12usize, 6usize, 3usize) } else { (18, 12, 4) };
             let pitch = 2.4 * s;
@@ -220,6 +229,10 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
             }
         }
         _ => unreachable!(),
+    }
+    if scene == "bigpile-awake" {
+        // Sleep off: every frame pays the full awake cost, so modes compare per awake frame.
+        world_enable_sleeping(&mut world, false);
     }
     Built { world, bodies, reference, kind, ledge_top }
 }
@@ -357,7 +370,7 @@ fn body_count(scene: &str) -> usize {
         "pyramid" => 55,
         "pile" => 216,
         "tower" => 48,
-        "bigpile" => 864,
+        "bigpile" | "bigpile-awake" => 864,
         _ => 8,
     }
 }
@@ -452,11 +465,11 @@ pub fn run(frames: u64, out: Option<&str>) -> bool {
 /// the machine (thermal, background load) hits every mode equally. Reports the median over
 /// repeats of the mean step time, the mean step time over frames with awake bodies, the recycle
 /// hit rate and the mean contact count. Physics is deterministic, so only timing varies.
-pub fn perf(frames: u64, repeats: usize, out: Option<&str>) -> bool {
+pub fn perf(frames: u64, repeats: usize, out: Option<&str>, scene: &str) -> bool {
     let scales = [0.1f32, 1.0, 10.0, 30.0];
     let mut ok = true;
     let mut jsonl = out.map(|p| std::fs::File::create(p).expect("create vdw-perf output"));
-    println!("vdw-perf: bigpile (864 boxes), {frames} frames, {repeats} interleaved repeats, median of per-run means");
+    println!("vdw-perf: {scene} (864 boxes), {frames} frames, {repeats} interleaved repeats, median of per-run means");
     println!(
         "{:>6} {:<7} {:>10} {:>10} {:>10} {:>7} {:>9} {:>16}",
         "s (m)", "mode", "step ms", "awake ms", "min awake", "hit", "contacts", "final hash"
@@ -465,7 +478,7 @@ pub fn perf(frames: u64, repeats: usize, out: Option<&str>) -> bool {
         let mut per_mode: Vec<Vec<RunResult>> = vec![Vec::new(); MODES.len()];
         for _ in 0..repeats {
             for (m, mode) in MODES.iter().enumerate() {
-                per_mode[m].push(run_one("bigpile", mode, s, frames, 0));
+                per_mode[m].push(run_one(scene, mode, s, frames, 0));
             }
         }
         for (m, mode) in MODES.iter().enumerate() {
@@ -497,7 +510,7 @@ pub fn perf(frames: u64, repeats: usize, out: Option<&str>) -> bool {
                 let all: Vec<String> = runs.iter().map(|r| format!("{:.6}", r.step_ms_awake)).collect();
                 writeln!(
                     f,
-                    "{{\"scene\":\"bigpile\",\"scale_m\":{s},\"mode\":\"{mode}\",\"frames\":{frames},\"bodies\":864,\"step_ms_median\":{step:.6},\"awake_ms_median\":{awake:.6},\"awake_ms_runs\":[{}],\"hit_rate\":{:.5},\"contacts_mean\":{:.2},\"sleep_s\":{},\"final_hash\":\"{h0:016x}\",\"deterministic_repeats\":{det}}}",
+                    "{{\"scene\":\"{scene}\",\"scale_m\":{s},\"mode\":\"{mode}\",\"frames\":{frames},\"bodies\":864,\"step_ms_median\":{step:.6},\"awake_ms_median\":{awake:.6},\"awake_ms_runs\":[{}],\"hit_rate\":{:.5},\"contacts_mean\":{:.2},\"sleep_s\":{},\"final_hash\":\"{h0:016x}\",\"deterministic_repeats\":{det}}}",
                     all.join(","),
                     r.hit_rate,
                     r.contacts_mean,

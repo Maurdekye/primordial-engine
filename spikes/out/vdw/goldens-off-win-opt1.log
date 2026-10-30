@@ -1,0 +1,6 @@
+[PASS] falling ragdolls vs C golden: sleepStep=291 hash=0xFF4C605B (C: sleepStep=291 hash=0xFF4C605B) in 60.8621ms
+[PASS] wave pile vs C golden: sleepStep=272 hash=0x266F83B0 (C: sleepStep=272 hash=0x266F83B0) in 54.1289ms
+[PASS] query spawn vs C golden: sleepStep=242 hash=0xF3AD9BA6 hits=59 queryHash=0xE3271F3D (C: sleepStep=242 hash=0xF3AD9BA6 hits=59 queryHash=0xE3271F3D) in 3.9344ms
+[PASS] mesh drop vs C golden: sleepStep=226 hash=0xD2FF069D (C: sleepStep=226 hash=0xD2FF069D) in 111.3516ms
+build: release profile, target x86_64, contact recycling: upstream fixed (--upstream)
+RESULT: PASS

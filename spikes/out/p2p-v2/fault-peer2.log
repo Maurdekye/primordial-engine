@@ -1,12 +1,12 @@
 [peer 2 t=  0.000s f=   0] bound 127.0.0.1:40002 -> 127.0.0.1:40001 (delay 30 ms, jitter 10 ms, loss 0%, drop_stamp Some(200))
-[peer 2 t=  0.475s f=   0] session start received; clock offset estimate 2834 us
-[peer 2 t=  1.976s f=  62] remote entry for frame 60 arrived 2 frames late -> rollback
-[peer 2 t=  2.976s f= 122] remote entry for frame 120 arrived 2 frames late -> rollback
-[peer 2 t=  3.076s f= 128] remote entry for frame 126 arrived 2 frames late -> rollback
-[peer 2 t=  4.268s f= 200] FAULT INJECTION: entry stamped 200 is never transmitted directly
-[peer 2 t=  4.352s f= 205] fetch request for member 2 seq 4..=4: replying with 1 entries
-[peer 2 t=  4.411s f= 208] fetch request for member 2 seq 4..=4: replying with 1 entries
-[peer 2 t=  5.305s f= 262] remote entry for frame 260 arrived 2 frames late -> rollback
-[peer 2 t=  6.060s f= 307] remote entry for frame 305 arrived 2 frames late -> rollback
-[peer 2 t=  7.634s f= 402] remote entry for frame 400 arrived 2 frames late -> rollback
-[peer 2 t= 13.737s f= 720] DONE frames 0..600: digest cd613a64b7088dbe; offline replay of my final log cd613a64b7088dbe (EQUAL); rollbacks 6 (max depth 2, resimulated 15), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 426 dropped 0, bad signatures 0, forged entries 0
+[peer 2 t=  0.463s f=   0] session start received; clock offset estimate 8126 us
+[peer 2 t=  1.971s f=  62] remote entry for frame 60 arrived 2 frames late -> rollback
+[peer 2 t=  2.973s f= 122] remote entry for frame 120 arrived 2 frames late -> rollback
+[peer 2 t=  3.074s f= 128] remote entry for frame 126 arrived 2 frames late -> rollback
+[peer 2 t=  4.265s f= 200] FAULT INJECTION: entry stamped 200 is never transmitted directly
+[peer 2 t=  4.367s f= 206] fetch request for member 2 seq 4..=4: replying with 1 entries
+[peer 2 t=  4.436s f= 210] fetch request for member 2 seq 4..=4: replying with 1 entries
+[peer 2 t=  5.302s f= 262] remote entry for frame 260 arrived 2 frames late -> rollback
+[peer 2 t=  6.055s f= 307] remote entry for frame 305 arrived 2 frames late -> rollback
+[peer 2 t=  7.632s f= 402] remote entry for frame 400 arrived 2 frames late -> rollback
+[peer 2 t= 13.716s f= 720] DONE frames 0..600: digest 66d3f4a12f8bdef2; offline replay of my final log 66d3f4a12f8bdef2 (EQUAL); rollbacks 6 (max depth 2, resimulated 15), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 426 dropped 0, bad signatures 0, forged entries 0

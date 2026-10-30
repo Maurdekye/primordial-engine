@@ -1,7 +1,8 @@
-# Primordial Engine fork of box3d-rust 0.5.0 (crates.io, upstream git f2ca61e39b65,
-# Box3D C reference pinned at 3fc20f5). Vendored verbatim from the published crate, then
-# patched; see FORK.md for every change. The package keeps its upstream name so the workspace
-# can redirect `box3d-rust = "=0.5.0"` here with `[patch.crates-io]`.
+# Primordial Engine fork of box3d-rust 0.5.0 (crates.io, upstream git f2ca61e39b65). It ports
+# Box3D C efca0c1 (per its CHANGELOG; the README's 3fc20f5 is stale, see FORK.md). Vendored
+# verbatim from the published crate, then patched; see FORK.md for every change. The package
+# keeps its upstream name so the workspace can redirect `box3d-rust = "=0.5.0"` here with
+# `[patch.crates-io]`.
 # Upstream manifest preserved as Cargo.upstream.toml (not read by cargo).
 
 [package]

@@ -5,8 +5,6 @@ version = 4
 [[package]]
 name = "box3d-rust"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5009acebe611b1a58d6e8e71f505101d65d7b1a9707939815078f32a5bbfd5cf"
 
 [[package]]
 name = "logic_runaway"

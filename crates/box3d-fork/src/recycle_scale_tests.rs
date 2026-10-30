@@ -24,12 +24,14 @@ fn formula_defaults() {
     assert_eq!(default_recycle_radius(&input(0.5, 123.0, false, true), &s), 0.1f32 * 0.5f32);
     assert_eq!(default_recycle_radius(&input(1.0e30, 0.5, true, false), &s), 0.1f32 * 0.5f32);
     // Min combine.
-    assert_eq!(default_recycle_radius(&input(0.5, 2.0, false, false), &s), 0.1f32 * 0.5f32);
+    let min = ContactRecycleScaling { combine: RecycleLengthCombine::Min, ..s };
+    assert_eq!(default_recycle_radius(&input(0.5, 2.0, false, false), &min), 0.1f32 * 0.5f32);
     // Clamps.
     assert_eq!(default_recycle_radius(&input(0.001, 1.0, false, false), &s), s.min_distance);
     assert_eq!(default_recycle_radius(&input(100.0, 50.0, false, false), &s), s.max_distance);
-    // Harmonic mean: 2ab/(a+b) of 0.5 and 2.0 = 0.8.
-    let hm = ContactRecycleScaling { combine: RecycleLengthCombine::HarmonicMean, ..s };
+    // Harmonic mean (the default): 2ab/(a+b) of 0.5 and 2.0 = 0.8.
+    assert_eq!(s.combine, RecycleLengthCombine::HarmonicMean);
+    let hm = s;
     assert_eq!(default_recycle_radius(&input(0.5, 2.0, false, false), &hm), 0.1f32 * (2.0 * 0.5 * 2.0 / 2.5));
     // Mis-ordered clamps resolve to max_distance.
     let bad = ContactRecycleScaling { min_distance: 1.0, max_distance: 0.2, ..s };
@@ -180,4 +182,63 @@ fn snapshot_carries_scaling_only_when_enabled() {
     world_set_contact_recycle_scaling(&mut shell, custom);
     assert!(deserialize_into_shell(&img_off, &mut shell, &mut slots_off));
     assert!(!world_get_contact_recycle_scaling(&shell).enabled);
+}
+
+/// Recordings seed replay from a frame-0 world snapshot (and keyframes are snapshots too), so a
+/// world created with scaling on replays with the same parameters. Only a mid-recording call to
+/// `world_set_contact_recycle_scaling` is not captured as an op.
+#[test]
+fn recording_replays_scaling_from_world_def() {
+    use crate::recording::{validate_replay, RecPlayer, Recording};
+    use crate::world::{world_start_recording, world_stop_recording};
+
+    let custom = ContactRecycleScaling {
+        enabled: true,
+        length_fraction: 0.2,
+        min_distance: 0.001,
+        max_distance: 0.4,
+        combine: RecycleLengthCombine::Min,
+    };
+    let run = |scaling: ContactRecycleScaling, record: bool| {
+        let s = 0.01f32;
+        let mut def = default_world_def();
+        def.contact_recycle_scaling = scaling;
+        let mut world = World::new(&def);
+        if record {
+            world_start_recording(&mut world, Recording::new(0));
+        }
+        let mut bd = default_body_def();
+        bd.type_ = BodyType::Static;
+        bd.position = Pos { x: -10.0 * s, y: s, z: 0.0 };
+        let g = create_body(&mut world, &bd);
+        create_hull_shape(&mut world, g, &default_shape_def(), &make_box_hull(10.0 * s, s, 10.0 * s).base);
+        let mut bd = default_body_def();
+        bd.type_ = BodyType::Dynamic;
+        bd.enable_sleep = false;
+        bd.position = Pos { x: -6.0 * s, y: 2.5 * s, z: 0.0 };
+        bd.linear_velocity = Vec3 { x: 2.0 * s, y: 0.0, z: 0.0 };
+        let b = create_body(&mut world, &bd);
+        let mut sd = default_shape_def();
+        sd.base_material.friction = 0.0;
+        create_hull_shape(&mut world, b, &sd, &make_box_hull(0.5 * s, 0.5 * s, 0.5 * s).base);
+        for _ in 0..240 {
+            world.step(1.0 / 60.0, 4);
+        }
+        let p = body_get_position(&world, b);
+        let rec = if record { world_stop_recording(&mut world) } else { None };
+        (p, b, rec)
+    };
+
+    let (p_scaled, b, rec) = run(custom, true);
+    let (p_fixed, _, _) = run(ContactRecycleScaling::disabled(), false);
+    // The parameters matter for this scene, so a replay that dropped them would land elsewhere.
+    assert_ne!(p_scaled.x, p_fixed.x);
+
+    let rec = rec.expect("recording active");
+    assert!(validate_replay(rec.data(), 1));
+    let mut player = RecPlayer::create(rec.data(), 1).expect("player");
+    assert_eq!(world_get_contact_recycle_scaling(player.world()), custom);
+    while player.step_frame() {}
+    let p_replay = body_get_position(player.world(), b);
+    assert_eq!((p_replay.x, p_replay.y, p_replay.z), (p_scaled.x, p_scaled.y, p_scaled.z));
 }

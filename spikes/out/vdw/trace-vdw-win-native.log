@@ -1,3 +1,3 @@
-trace: 600 frames, 256 bodies, release profile, 221.5961ms total (369.3 us/frame), digest a9041fec18d56c02, final world hash ac8b8d57afb35ecc -> spikes\out\vdw\trace-vdw-win-native.txt
-build: release profile, target x86_64, contact recycling: scale-dependent (--vdw)
+trace: 600 frames, 256 bodies, release profile, 208.4185ms total (347.4 us/frame), digest 80839f4a54133e13, final world hash f80fc458c3f6fffe -> spikes/out/vdw/trace-vdw-win-native.txt
+build: release profile, target x86_64, contact recycling: scale-dependent (engine default)
 RESULT: PASS

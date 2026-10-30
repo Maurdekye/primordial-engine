@@ -1,0 +1,3 @@
+images: 13 snapshots, digest 35af2efac5bfeb27 -> spikes/out/vdw/images-off-win-opt1.txt
+build: release profile, target x86_64, contact recycling: upstream fixed (--upstream)
+RESULT: PASS

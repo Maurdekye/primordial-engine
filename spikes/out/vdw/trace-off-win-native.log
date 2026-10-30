@@ -1,3 +1,3 @@
-trace: 600 frames, 256 bodies, release profile, 207.571ms total (346.0 us/frame), digest 7903109aab28ed9b, final world hash 969d4edf682d551c -> spikes\out\vdw\trace-off-win-native.txt
-build: release profile, target x86_64, contact recycling: upstream fixed
+trace: 600 frames, 256 bodies, release profile, 173.7844ms total (289.6 us/frame), digest 7903109aab28ed9b, final world hash 969d4edf682d551c -> spikes/out/vdw/trace-off-win-native.txt
+build: release profile, target x86_64, contact recycling: upstream fixed (--upstream)
 RESULT: PASS
