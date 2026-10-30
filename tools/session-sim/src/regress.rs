@@ -125,6 +125,21 @@ fn compare(got: &str, want: Option<&str>) -> Outcome {
     ))
 }
 
+/// Every `.log` under `dir`, as a path relative to it without the extension (`/`-separated).
+fn logs_under(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    entries.sort();
+    for p in entries {
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if p.is_dir() {
+            logs_under(&p, &format!("{prefix}{name}/"), out);
+        } else if let Some(stem) = name.strip_suffix(".log") {
+            out.push(format!("{prefix}{stem}"));
+        }
+    }
+}
+
 pub fn regress(args: &[String]) -> i32 {
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let scenarios = get("--scenarios").map(PathBuf::from).unwrap_or_else(default_scenarios);
@@ -168,18 +183,31 @@ pub fn regress(args: &[String]) -> i32 {
         }
     });
     let results = results.into_inner().unwrap();
+    // Each scenario's committed log (relative, without .log) and whether it is a control run.
+    let meta: BTreeMap<String, (String, bool)> = todo
+        .iter()
+        .map(|(n, p)| {
+            let first = crate::scenario::load(p).ok().and_then(|l| l.parts.into_iter().next());
+            let golden = first.as_ref().and_then(|s| s.golden.clone()).unwrap_or_else(|| n.clone());
+            (n.clone(), (golden, first.is_some_and(|s| s.control)))
+        })
+        .collect();
     // A committed log no scenario produces any more (only checked for a full run).
     let orphans: Vec<String> = if only.is_none() {
-        fs::read_dir(&expected)
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "log")).filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).filter(|n| !results.contains_key(n)).collect())
-            .unwrap_or_default()
+        let goldens: std::collections::BTreeSet<&str> = meta.values().map(|(g, _)| g.as_str()).collect();
+        let mut logs = Vec::new();
+        logs_under(&expected, "", &mut logs);
+        logs.into_iter().filter(|g| !goldens.contains(g.as_str())).collect()
     } else {
         vec![]
     };
     let (mut same, mut new, mut bad) = (0, 0, 0);
     for (name, (ok, text)) in &results {
-        let want = fs::read_to_string(expected.join(format!("{name}.log"))).ok();
-        let fails = failures(text);
+        let (golden, control) = &meta[name];
+        let path = expected.join(format!("{golden}.log"));
+        let want = fs::read_to_string(&path).ok();
+        // A control run is expected to show failures; only its log is compared.
+        let fails = if *control { vec![] } else { failures(text) };
         let cmp = compare(text, want.as_deref());
         let differs = matches!(cmp, Outcome::Differs(_));
         let verdict = match cmp {
@@ -196,7 +224,7 @@ pub fn regress(args: &[String]) -> i32 {
         if differs || !ok || !fails.is_empty() {
             bad += 1;
         }
-        println!("== {name}: {verdict}{}", if *ok { "" } else { "; the run exited with an error" });
+        println!("== {name}{}: {verdict}{}", if *control { " (control: failures expected)" } else { "" }, if *ok { "" } else { "; the run exited with an error" });
         for l in text.lines().filter(|l| l.starts_with("RESULT")) {
             println!("{l}");
         }
@@ -204,8 +232,8 @@ pub fn regress(args: &[String]) -> i32 {
             println!("  FAILURE: {l}");
         }
         if bless {
-            let _ = fs::create_dir_all(&expected);
-            if let Err(e) = fs::write(expected.join(format!("{name}.log")), text) {
+            let _ = fs::create_dir_all(path.parent().unwrap());
+            if let Err(e) = fs::write(&path, text) {
                 println!("  bless failed: {e}");
             }
         }

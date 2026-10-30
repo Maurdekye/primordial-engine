@@ -34,7 +34,7 @@ against this list. Where the order changed an answer, the text says so. Examples
     running it.
   * **[I]** inferred or proposed design. Not yet tested.
 * Choices that go beyond what the user specified are collected in **section 24, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D77**, with
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D79**, with
   letter suffixes where one topic was split (e.g. D14a). Most are now settled by the user (24 says which and
   when); the few still open are marked so.
 * Review findings (C1, H4, M3, R13-C1, …) are cited where they changed the design;
@@ -138,7 +138,7 @@ Rulings that shape the design:
   (15:40Z, D13).
 * **The open decisions** (18:42-19:21Z): the user ruled D2, D4, D11, D18a/D20, D21, D23 and D62, D27a and
   D34, D32, D49, D60 and D72, and took the recommendation for every other (19:11Z). Section 24 records
-  each. The rulings raised five new questions, D74-D78.
+  each. The rulings raised five new questions, D74-D78, which the user settled as recommended at 19:58Z.
 
 ---
 
@@ -3384,6 +3384,20 @@ confirmed facts, and only with proof.**
     (`RejectedNoProof`);
   * a correctly certified record with a NaN position, standing for a bug or a compromised majority in A
     (`RejectedInvalid`).
+* **Measured dishonest-majority attacks** (P2-5) [V session-sim `r14 forge`]. W is on A's and B's route
+  lists, and members 2 and 3, its whole membership, sign as W. Every one of these was refused, and
+  objects 52 to 55 stayed one live copy each in the honest worlds A and B:
+  * W mints A:53, which is live in A, into B as if born in W (`RejectedNoProvenance`);
+  * W mints an id it was never born with (`RejectedNoProvenance`);
+  * W forges an earlier hop A to W, signed by the one member of A it controls (`RejectedNoProvenance`);
+  * W splices A's genuine hop of another object onto A:54 (`RejectedNoProvenance`);
+  * refund and keep: W certifies to A a refusal of A:55, so A refunds it, while W's replicas accepted it.
+    W then exports it to B, presenting A's departure certificate as the hop (`RejectedNoProvenance`);
+  * resurrection: A:52 went A to W to B and back to A. W exports it again into B (`RejectedFork`: the
+    chain skips B's own last exit, and B now holds a fork proof against W), and into A (`RejectedLiveId`).
+  * Control, the same run with the provenance checks off [V `r14 forge --no-provenance`]: the two mints,
+    the forged hop, refund and keep, and the resurrection into B were all accepted. That left a second
+    copy of A:52, A:53, A:54 and A:55 in B, plus a minted W:500.
 * **Why settled rather than optimistic:** only confirmed, certified facts cross, so neither world ever acts
   on the other's speculation, and no correction is ever needed. The optimistic alternative is D45.
 
@@ -3415,17 +3429,98 @@ persists until a verdict arrives.
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
-  * **Conservation assumes that every world on a route list has an honest majority** (D46). A world that
-    one member controls is that member's word, so it never belongs on another world's route list.
-    * A route-listed world whose majority is dishonest can sign a fresh departure of any global id: one
-      born elsewhere, live elsewhere, or spent. Any world where that id is not live would accept it, so
-      that is a cross-world duplicate or a resurrection [I, review of f060e30].
   * With route lists, a single member, including the carrier, can no longer mint, lose or duplicate an
-    object [V r14 forge]. A dishonest majority of a routed world still can: trust is per route.
-  * **Global ids are not bound to their birth world.** The reviewer proposed that a global id's world
-    prefix must equal the source world, but objects travel on (A to B to C), and B's records then carry
-    A's ids. Instead, a record is vouched for by its source's majority, and B refuses a global id that is
-    already live in B.
+    object [V r14 forge]. Without provenance, a dishonest majority of a routed world still could. It
+    could sign a fresh departure of any global id (born elsewhere, live elsewhere, or spent), and any
+    world where that id is not live would accept it [I, review of f060e30; V `r14 forge --no-provenance`].
+  * **Per-object provenance chains** (D46's option for untrusted partners, MVP under D21; package P2-5,
+    `spikes/sim-core/src/provenance.rs`) [V r14 forge, r14 chain]:
+    * **Birth binding.** A global id is (birth world, index), and its birth record is the birth world's
+      genesis object list. Production adds runtime births as a `Born` fact certified by the birth
+      world's majority [I].
+    * **Hops.** When A commits a transfer (on B's certified acceptance), A's members attest "A committed
+      transfer t of object g to B; g had entered A by transfer v (0: born in A)". That certificate is the
+      hop. A departure certificate alone is not enough: a dishonest B could certify a refusal to A, which
+      refunds the object, and still claim to hold it.
+    * **Chains.** Each `Arrive` carries the hops from the object's birth into its source world, and the
+      source's departure certificate covers the chain's hash, so a relayer can neither strip nor swap it.
+      The destination checks every hop against the epoch certificates of the world that signed it,
+      whether or not that world is on its own route list (P2-4 supplies them; the spike uses a static
+      stub). A to B to C to A works [V r14 chain: three hops, conserved, all equal in both orders].
+    * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
+      entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
+      hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
+      verdict was confirmed in A, 0.65 s after the departure [V r14 ok, chain]. A world can export only
+      an object whose way in it can prove.
+    * **Pinning (review P25-2).** B's copy depends on A's commit certificate.
+      * A dishonest A that withholds it, or an honest A whose members all leave within the window
+        before they attest (about 60 ms after the verdict is confirmed, measured above), can stop the
+        object from ever leaving B.
+      * That is griefing, not duplication: the object stays live and usable in B, and A gains nothing
+        it did not already have.
+    * **Rejected: a hop made of A's departure certificate plus B's accepted verdict** (review P25-2;
+      @coordinator-opus, 20:33Z).
+      * It would end the pinning. But a dishonest B could then certify a refusal to A (A refunds) and an
+        acceptance in its own hop, and every later world would accept the object: refund and keep would
+        become a double spend that is only detected, where today it is refused [V r14 forge].
+      * Both forms cannot be offered side by side, because an attacker always picks the weaker one.
+    * **Last exits.** Each world keeps, per global id, whether the object is here (live or in escrow) or
+      which transfer last took it away. That record is never pruned: in the spike's layout it is about
+      48 bytes per object that ever left, plus the certified export that brought the object in, which
+      it keeps as fork evidence (about 0.2 KB with two signers). An arrival of an object that is here
+      is `RejectedLiveId`. An arrival whose chain skips this world's last exit
+      is `RejectedFork`. Two exports by one world of the same incoming hop are kept as a fork proof
+      against that world's majority (review P25-3):
+      * the proof carries both certificates, so any third party can check it [V r14 forge, r14
+        doublespend: "verifies for a third party: true"; unit test];
+      * it is recorded only once the frame that found it is confirmed, so every replica holds it from
+        the same confirmed state, and a speculative frame later rolled back leaves none.
+    * **Costs per frame (review P25-4).** Each object's chain hash is cached with its chain. Commit facts
+      are queued once, when their frame is confirmed, and attested once; nothing rescans the table.
+    * **Why not a world prefix.** The reviewer of round 3 proposed that a global id's prefix must equal
+      the source world. Objects travel on (A to B to C), so the chain binds the id to its birth world
+      instead.
+    * **What remains: double spends by a holder** [V `r14 doublespend`]. A dishonest-majority world can
+      export an object it legitimately received a second time, into a world that has not seen the object
+      since. That includes the world it got the object from: A:52 went A to W to B; W then exported it
+      into A, citing its genuine hop in, and A accepted it. That left two copies, in A and B.
+      * When the copies meet (here, B's return of A:52 into A), the receiving world holds a transferable
+        fork proof: two exports by W's majority of one incoming hop.
+      * If the copies never meet, nobody ever holds a proof.
+      **Detect only (user, D79, 20:07Z):** the fork proof is the defence, and the cheating world can then
+      be cut off (removed from route lists). A per-object registry that orders every hop, for example at
+      the birth world, was considered and rejected under D79, not even as an opt-in: it costs one extra
+      relay round per hop, and objects freeze when their birth world is unreachable [I].
+    * **The guarantee: no double identity** (review P25-1). A dishonest majority can lose, keep or
+      double-spend only objects that passed through it, and cannot give a second live identity to any
+      other object.
+      * **Provenance does not vouch for content.** An object's kind, state and carried data are signed
+        by each holder's majority alone. W can export A's common object as a rare kind under its genuine
+        id, which W's own logic could not tell from legitimate crafting.
+      * **Provenance does not vouch for new births.** A world's own births (its genesis, and in
+        production its `Born` facts) are its majority's word.
+      * **Chains may pass through unlisted worlds.** `check_chain` accepts hops through worlds on no
+        route list, because identity is unaffected. But W can then also pass along objects "born" in a
+        world D that it alone controls.
+      * So a partner world's objects, and their content, are only as trustworthy as the worlds they came
+        through.
+      * **The policy hook** (`ImportPolicy`, a stub: the spike's worlds accept anything; refusals are
+        `RejectedPolicy`). A destination can restrict:
+        * which birth worlds it accepts objects from;
+        * which worlds a chain may pass through. Its own route list is a natural default for untrusted
+          partners;
+        * which kinds it accepts from each source world.
+
+        Production adds per-kind content checks, run by the destination's logic on arrival (22.8,
+        22.9) [I].
+    * **Chain size.** Each hop is a certificate of the source's epoch majority. With Ed25519 that is about
+      64 bytes per signer, about 0.65 KB per hop for a 16-member world, so a chain grows linearly with
+      hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
+      its own last exit (it checked the earlier ones on the way in) [I].
+    * **Long-range forgery.** Members of an old epoch who have since left can still sign facts for that
+      epoch. Binding a fact's frame to the epoch active at that frame (P2-4's `from_frame`) stops a later
+      epoch backdating, but not an old majority that colludes. This is the long-range attack of
+      proof-of-stake systems [I].
   * **Member lists change** (review R3-8b). In the spike they are fixed at startup, so an evicted member
     would still count toward the other world's majority. Production keys certificates to a membership
     epoch, and each membership change is certified by the previous epoch's majority, so another world can
@@ -3488,7 +3583,8 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 | abort | Member 2's earlier grab reaches member 1 150 ms late: A rolls back 12 frames past fA | Departure `RejectedClaimed`; nothing relayed | 1 live copy (A) | all equal |
 | reject | Member 3 closes B's portal at a frame member 1 hears of 150 ms late: B rolls back 10 frames past fB | Arrival rejected; verdict returns the object to A | 1 live copy (A) | all equal |
 | throttle | Member 1's replica of A is a background world (one burst per 250 ms) | Same as ok | 1 live copy (B) | all equal; digests equal to ok's; member 2's confirmation lag unchanged |
-| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid` | 1 live copy (B), 0 pending; objects 50 and 51 still in A | all equal |
+| forge | Relays by members who cannot have proofs: a member of B mints the object; a member of B squats the transfer id; a member of A commits the escrow; the carrier claims a rejection with B's signatures over the acceptance. Round 3 adds a departure to a world one member controls, a departure to an unknown world, a mint from a world one member controls, and a certified record with its shape kind changed. P2-5 adds a routed world W whose whole membership is dishonest: two mints, a forged hop, a spliced hop, refund and keep, and two resurrections (22.6) | `RejectedNoProof`, or `RejectedNoRoute` for the round-3 routes; a NaN record `RejectedInvalid`; P2-5: `RejectedNoProvenance`, `RejectedFork`, `RejectedLiveId` | 1 live copy (B), 0 pending; objects 50 and 51 still in A; A:52 to A:55 one copy each in A and B | all equal (A, B and W) |
+| chain (P2-5) | Three worlds, A (60 Hz), B (50 Hz) and C (60 Hz), routed to each other. Member 1 carries object 40 A to B to C to A; each next departure carries the hop in | Every departure and arrival accepted; the arrival back in A checks a two-hop chain that contains A's own last exit | 1 live copy (A), 0 pending | all equal, all three worlds and both orders (digests differ between orders, for abort's reason) |
 | late | A 2-frame deadline, shorter than the certificate round | Arrival `RejectedLate`; the certified refusal returns the object to A | 1 live copy (A), 0 pending | all equal |
 | crash | Three members per world; member 4 is in both. The carrier goes silent 84 ms after its departure (reviews NEW-6, R3-7) | Both worlds remove the carrier after 180 frames of silence; member 4 relays the transfer; accepted in B | 1 live copy (B), 0 pending | all equal (live members) |
 | ok, abort, reject with worlds and peers in reverse order | Process-level isolation | Same as forward | same | all equal. ok and reject have digests identical to forward. abort's A digest differs (review round 3): the escrow key derives from the Depart's entry id, whose chain contents depend on processing order |
@@ -3561,7 +3657,7 @@ What moved, and why:
 
 | Phase | Content | Milestone and exit criteria |
 |---|---|---|
-| 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on Windows and Linux, x86-64 on two CPUs and ARM. Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
+| 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on the user's machines: Windows and Linux, x86-64 on two CPUs (ARM deferred). Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
 | 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal with volunteer relays (D35) and **relay mailboxes** for offline mail (D32); state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6) and **regions** with provisional arrival and following (D60); **multi-threaded stepping** in the fork if the D2 study succeeds; **pe-worlds**: two worlds per client, the settled handoff with provenance checks, portal rendering | M2: friends and strangers play over the internet with no server of ours; late join works; a ball pit of 500 balls stays within budget at 90 Hz, or at its 60 Hz fallback (D4); an object carried through a portal between two sessions |
 | 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels: owner panels (structured adapters + PTY), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a), **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32) | M3: a player's own Claude Code or Codex, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
 | 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; voice input on Windows (D33; Linux per D77); per-eye portal straddling | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal |
@@ -3574,10 +3670,11 @@ What moved, and why:
    feasibility study is under way), coalesced rollbacks, keyframes, region-scoped rollback in phase 3,
    remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), the 60 Hz fallback (D76) and
    opt-in input delay (D41).
-2. **Determinism beyond one machine.** With the engine's physics (vdW on), it is verified on one PC, in
-   five build settings. The Intel laptop and Linux runs came before that change; @design-reviewer is
-   re-running both on main. ARM and macOS never ran. Linux is now a day-one platform (D20), and parallel
-   stepping (D2) must stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix.
+2. **Determinism beyond the machines tested.** With the engine's physics (vdW on), main (d79f160) is
+   byte-identical on this PC in five build settings, on <laptop> (Intel, also with `target-cpu=native`) and
+   as a Linux musl build, the four wasm modules included [V @design-reviewer's re-check; report
+   `determinism-main-d79f160.md` in its working folder]. ARM and macOS never ran. Parallel stepping (D2) must
+   stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
 3. **The session protocol is new code, and strangers may join from day one** (D21). Confirmation,
    eviction and fetch repair were proved in an in-process simulator and over loopback UDP, not on the
    internet. Removing one silent, slow or equivocating member is built [V crashstall, capped slow member,
@@ -3680,11 +3777,11 @@ Rules for every package:
 
 **P2-6. Determinism matrix.**
 * What: one command that builds and runs the determinism set (`scripts/run_determinism.sh`) on each
-  available machine and compares digests across them: Windows x64, Linux x64 (glibc and musl), two x86-64
-  CPUs, and ARM64.
+  available machine and compares digests across them: Windows x64, Linux x64 (glibc and musl) and two
+  x86-64 CPUs. ARM64 is deferred: no ARM machine is available.
 * Skills: build and CI engineering, cross-compilation, scripting.
-* Depends on: **a decision on where CI runs**: the repository has no remote, and no ARM machine is known.
-  @coordinator-opus to ask the user (a hosted CI, a self-hosted runner, or local machines only).
+* Depends on: nothing. **Settled (user, 19:58Z): CI runs on local machines only:** this PC's Windows and
+  WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
 
@@ -3692,8 +3789,8 @@ Rules for every package:
 * What: build the same guest commits on Windows and Linux hosts with the pinned toolchain and the 13.2
   rules; find and remove host-dependent differences; measure build times for the activation lead.
 * Skills: the Rust toolchain and reproducible builds (rustc and cargo internals), Linux.
-* Depends on: a Linux host with the pinned toolchain (WSL has none today, so it needs an install, or
-  <laptop>).
+* Depends on: a Linux host with the pinned toolchain. **Approved (user, 19:58Z):** install rustup and
+  build-essential in WSL Ubuntu-24.04. Owner: @design-reviewer.
 * Done: the spike guests plus one larger test crate are byte-identical (raw hash) on both hosts and from
   two checkout paths; every difference found is fixed or written down as a 13.2 rule; a build-time table.
 
@@ -4205,10 +4302,16 @@ entry says so.
   * **Trust assumption:** every route-listed world has an honest majority. A world whose majority is
     dishonest can sign a departure of any global id, which another world accepts wherever that id is
     not live: a cross-world duplicate, or a resurrected object.
-  * **Option for untrusted partners** [I]: bind each global id to its birth world, and require a
+  * **Option for untrusted partners**: bind each global id to its birth world, and require a
     provenance chain. Each `Arrive` certificate then references the certified transfer, or the birth
     record, that brought the object into its source world. A destination checks the chain back to the
-    birth world, which costs one extra reference per hop.
+    birth world, which costs one extra reference per hop. **Built in the spike (P2-5, 22.7)** [V r14 forge,
+    r14 chain]: mints, forged or spliced hops, refund and keep, and resurrections are refused. What remains
+    is a double spend by a world of an object it legitimately held [V r14 doublespend]. **Settled (user,
+    D79, 20:07Z): detect only.** It is caught by transferable fork proofs when the copies meet, and the
+    cheating world can then be cut off. A per-object registry at the birth world was considered and
+    rejected, not even as an opt-in (one more relay round per hop, and objects freeze when their birth
+    world is unreachable) [I].
   * Cost: one attestation entry per member per transfer step, and each world must know the other's member
     keys.
   * Alternatives:
@@ -4440,6 +4543,7 @@ entry says so.
     cost to receivers, which already pay for lateness (8.2).
 
 * **D74. When a peer's build does not match (13.2; raised by D11).**
+  * **Settled (user, 19:58Z): (a), with (b) as an opt-in.** On a mismatch the peer pauses the world at the activation frame and the author gets a report; the peer may choose to run the author's module for that commit.
   * The problem: every peer builds every commit, and a peer whose module differs from the author's hash
     cannot run it without diverging.
   * Options:
@@ -4453,6 +4557,7 @@ entry says so.
   * Recommendation: (a), with (b) as an explicit per-peer opt-in. Once builds are reproducible across
     machines (13.2), a mismatch is a bug to fix, and should be rare.
 * **D75. Where the pinned toolchain comes from (13.2; raised by D11).**
+  * **Settled (user, 19:58Z): (a).** Peers share the toolchain as content-addressed files verified against hashes pinned in the engine release, with the official Rust distribution as the fallback.
   * Every peer needs rustc and the wasm32 std, about 1 GB [I].
   * Options:
     * **(a) Peers distribute it among themselves** as content-addressed artifacts, verified against
@@ -4464,6 +4569,7 @@ entry says so.
       every toolchain update becomes an engine update.
   * Recommendation: (a).
 * **D76. What triggers the fallback from 90 to 60 Hz (5; raised by D4).**
+  * **Settled (user, 19:58Z): (a).** The world owner switches between 90 and 60 Hz, warned by the engine when members' machines cannot keep up.
   * A world's rate must change for every member at the same frame, as a logged world setting.
   * Options:
     * **(a) The world owner chooses,** changing the setting like a commit, at an activation frame. The
@@ -4475,6 +4581,7 @@ entry says so.
     * **(c) Fixed when the world is created.**
   * Recommendation: (a).
 * **D77. Voice input on Linux (21.2; raised by D20 and D33).**
+  * **Settled (user, 19:58Z): as recommended:** no voice input on Linux in the MVP (the VR keyboard instead); a local speech model later.
   * Linux has no OS speech-recognition service like Windows'.
   * Options:
     * **(a) No voice input on Linux in the MVP;** text through the VR keyboard. Recommended for the MVP.
@@ -4483,6 +4590,7 @@ entry says so.
     * **(c) A separate non-Rust speech service on Linux,** as a 20.1 boundary.
   * Recommendation: (a) now, (b) later.
 * **D78. A default hub for the automatic Hubchat identities (21.7; raised by D32).**
+  * **Settled (user, 19:58Z): (a), no default hub.** The automatic identities register once the player adds a hub.
   * Every player and panel gets a hub identity at first launch, minted locally. With no hub built in, it
     reaches Hubchat users only once the player adds a hub.
   * Options:
@@ -4492,6 +4600,16 @@ entry says so.
       work out of the box, but every player then depends on that hub for the bridge.
     * **(c) A list of community hubs** to choose from at first use.
   * Recommendation: (a), with (c) as a convenience once community hubs exist.
+* **D79. A double spend by a world that legitimately held the object (22.7, D46; raised by P2-5).**
+  * **Settled (user, 20:07Z): detect only.** A world that sends one object to two others is caught by
+    transferable fork proofs when the copies meet, and it can then be cut off. A per-object registry at
+    the birth world was considered and rejected, not even as an opt-in: it costs one more relay round per
+    hop, and objects freeze while their birth world is unreachable.
+  * The reviewer's follow-up P25-2 (each hop carrying the destination's verdict certificate) is not
+    taken: @provenance-eng measured that it would turn refund-and-keep from refused into detect-only.
+    The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
+    vanished source world can stop an object it handed over from leaving its new world again. That is
+    griefing, not duplication.
 
 ---
 

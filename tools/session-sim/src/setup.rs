@@ -146,6 +146,14 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
     if let Some(d) = s.sim.carry_deadline_frames {
         sim.carry_deadline_frames = d;
     }
+    if s.sim.provenance == Some(false) {
+        // Control run: arrivals skip the P2-5 provenance checks.
+        for p in &mut sim.peers {
+            for r in p.worlds.values_mut() {
+                r.sim.provenance = false;
+            }
+        }
+    }
     Ok(sim)
 }
 
