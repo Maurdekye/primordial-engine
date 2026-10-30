@@ -292,6 +292,12 @@ pub struct World {
     pub contact_hertz: f32,
     pub contact_damping_ratio: f32,
     pub contact_recycle_distance: f32,
+    /// Primordial Engine fork: scale-dependent recycling radius parameters (snapshotted when
+    /// enabled). See [`crate::recycle_scale`].
+    pub contact_recycle_scaling: crate::recycle_scale::ContactRecycleScaling,
+    /// Primordial Engine fork: optional replacement for the built-in radius formula. Like the
+    /// other callbacks it is not snapshotted; re-register it on a freshly created world.
+    pub contact_recycle_radius_fcn: Option<crate::recycle_scale::ContactRecycleRadiusFn>,
 
     pub friction_callback: Option<FrictionCallback>,
     pub restitution_callback: Option<RestitutionCallback>,
@@ -505,6 +511,8 @@ impl World {
             contact_hertz: def.contact_hertz,
             contact_damping_ratio: def.contact_damping_ratio,
             contact_recycle_distance: contact_recycle_distance(),
+            contact_recycle_scaling: def.contact_recycle_scaling,
+            contact_recycle_radius_fcn: None,
             friction_callback: Some(def.friction_callback.unwrap_or(default_friction_callback)),
             restitution_callback: Some(
                 def.restitution_callback

@@ -1,0 +1,3 @@
+trace: 600 frames, 256 bodies, release profile, 418.0344ms total (696.7 us/frame), digest 7903109aab28ed9b, final world hash 969d4edf682d551c -> spikes\out\vdw\trace-off-win-opts.txt
+build: release profile, target x86_64, contact recycling: upstream fixed
+RESULT: PASS

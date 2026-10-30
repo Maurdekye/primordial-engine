@@ -5,6 +5,7 @@
 use crate::core::{get_length_units_per_meter, SECRET_COOKIE};
 use crate::debug_draw::{CreateDebugShapeCallback, DestroyDebugShapeCallback};
 use crate::math_functions::Vec3;
+use crate::recycle_scale::ContactRecycleScaling;
 
 /// Optional world capacities that can be used to avoid run-time allocations.
 /// (b3Capacity)
@@ -77,6 +78,9 @@ pub struct WorldDef {
     pub destroy_debug_shape: Option<DestroyDebugShapeCallback>,
     /// Passed to the debug shape callbacks.
     pub user_debug_shape_context: u64,
+    /// Primordial Engine fork: scale-dependent contact-recycling radius. Off by default.
+    /// See [`crate::recycle_scale`].
+    pub contact_recycle_scaling: ContactRecycleScaling,
     /// Used internally to detect a valid definition. DO NOT SET.
     pub internal_value: i32,
 }
@@ -108,6 +112,7 @@ pub fn default_world_def() -> WorldDef {
         create_debug_shape: None,
         destroy_debug_shape: None,
         user_debug_shape_context: 0,
+        contact_recycle_scaling: ContactRecycleScaling::disabled(),
         internal_value: SECRET_COOKIE,
     }
 }

@@ -1,0 +1,6 @@
+[INFO] falling ragdolls vs C golden (--vdw/--no-recycle, C golden n/a; matches C: false): sleepStep=361 hash=0x271CC3DF (C: 291, 0xFF4C605B) in 54.8331ms
+[INFO] wave pile vs C golden (--vdw/--no-recycle, C golden n/a; matches C: false): sleepStep=307 hash=0xCA128F5D (C: 272, 0x266F83B0) in 37.9113ms
+[INFO] query spawn vs C golden (--vdw/--no-recycle, C golden n/a; matches C: false): sleepStep=242 hash=0x101DF9DB hits=59 queryHash=0xE3271F3D (C: 242, 0xF3AD9BA6, 59, 0xE3271F3D) in 3.3875ms
+[INFO] mesh drop vs C golden (--vdw/--no-recycle, C golden n/a; matches C: false): sleepStep=220 hash=0xCE3B7A62 (C: 226, 0xD2FF069D) in 96.3383ms
+build: release profile, target x86_64, contact recycling: scale-dependent (--vdw)
+RESULT: PASS

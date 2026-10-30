@@ -1,0 +1,3 @@
+images: 13 snapshots, digest 03c99cef9149fcf4 -> spikes\out\vdw\images-vdw-win-release.txt
+build: release profile, target x86_64, contact recycling: scale-dependent (--vdw)
+RESULT: PASS
