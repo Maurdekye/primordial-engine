@@ -580,6 +580,8 @@ pub struct Stats {
     pub lying_votes: u64,
     /// Members this replica presumed crashed and voted to remove (review R3-2).
     pub suspicions: u64,
+    /// Members this replica voted to demote because their link could not keep up (review R3-9).
+    pub demotions: u64,
     /// Silence votes this replica withdrew because the member was heard from again (review R3-2).
     pub withdrawn_votes: u64,
 }
@@ -742,6 +744,9 @@ pub struct WorldSim {
     lies: BTreeSet<(MemberId, MemberId)>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
+    /// Per member: my present frame since when its newest validated horizon has trailed my present
+    /// by more than half the speculation limit (review R3-9, demotion).
+    lagging: BTreeMap<MemberId, u64>,
     /// Equivocators: first disputed seq and the two versions.
     proofs: BTreeMap<MemberId, (u32, EntryId, EntryId)>,
     /// Heads this member froze when it learned of a proof.
@@ -760,7 +765,8 @@ pub struct WorldSim {
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
-    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64)>,
+    /// (holder, author) -> (first seq asked, when, current retry interval), all in ms.
+    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
     pub check_hashes: BTreeMap<u64, u64>,
@@ -837,6 +843,7 @@ impl WorldSim {
             stable_hi: BTreeMap::new(),
             lies: BTreeSet::new(),
             heard: BTreeMap::new(),
+            lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
             frozen: BTreeMap::new(),
             votes: BTreeMap::new(),
@@ -1401,7 +1408,20 @@ impl WorldSim {
                 continue;
             }
             let heard = self.heard.get(&j).copied().unwrap_or(0);
-            if self.now < heard + self.cfg.suspect_after {
+            // Review R3-9 (demotion, 10.9 item 6): a member whose newest validated horizon trails
+            // this replica's present by more than half the speculation limit, for as long as a
+            // silent member is given, is voted out the same way. Its link cannot carry the session;
+            // it can follow as a spectator. A short congestion (c1: about 2 s) does not qualify.
+            let h = self.chain_state.get(&j).and_then(|c| c.0).unwrap_or(0);
+            let since = if self.now > h + self.cfg.window / 2 {
+                *self.lagging.entry(j).or_insert(self.now)
+            } else {
+                self.lagging.remove(&j);
+                self.now
+            };
+            let silent = self.now >= heard + self.cfg.suspect_after;
+            let slow = self.now >= since + self.cfg.suspect_after;
+            if !silent && !slow {
                 continue;
             }
             let mine = self.contiguous.get(&j).copied().unwrap_or(0);
@@ -1417,8 +1437,13 @@ impl WorldSim {
                 }
                 continue;
             }
-            self.stats.suspicions += 1;
-            self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
+            if silent {
+                self.stats.suspicions += 1;
+                self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
+            } else {
+                self.stats.demotions += 1;
+                self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
+            }
             out.push(self.freeze_and_vote(j, 0));
             self.maybe_evict(j);
         }
@@ -1560,7 +1585,8 @@ impl WorldSim {
     }
 
     pub fn on_fetch(&self, author: MemberId, from: u32, to: u32) -> Vec<Msg> {
-        (from..=to.min(from + 64))
+        // At most 16 entries per reply (review R3-9): the requester asks again for the rest.
+        (from..=to.min(from + 15))
             .filter_map(|s| self.by_author.get(&(author, s)).and_then(|id| self.entries.get(id)))
             .map(|e| Msg::Entry(e.clone()))
             .collect()
@@ -1570,11 +1596,19 @@ impl WorldSim {
     pub fn take_fetches(&mut self, now_ms: u64) -> Vec<(MemberId, Msg)> {
         let mut out = Vec::new();
         for (to, author, from, upto) in std::mem::take(&mut self.wants) {
-            let last = self.fetch_asked.get(&(to, author)).copied();
-            if last.is_some_and(|(f, t)| f == from && now_ms < t + 60) {
-                continue;
-            }
-            self.fetch_asked.insert((to, author), (from, now_ms));
+            // Review R3-9: the same range is re-asked with exponential backoff, 60 ms doubling up to
+            // 2 s, so a congested link is not flooded with repeats of requests whose replies are
+            // still queued (a fixed 60 ms was shorter than a congested round trip).
+            let wait = match self.fetch_asked.get(&(to, author)).copied() {
+                Some((f, t, w)) if f == from => {
+                    if now_ms < t + w {
+                        continue;
+                    }
+                    (w * 2).min(2000)
+                }
+                _ => 60,
+            };
+            self.fetch_asked.insert((to, author), (from, now_ms, wait));
             out.push((to, Msg::Fetch { author, from, to: upto }));
         }
         out
