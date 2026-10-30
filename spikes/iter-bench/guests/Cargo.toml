@@ -37,6 +37,8 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+# No name section (design 13.2, P2-7): it would carry crate hashes that depend on the host OS.
+strip = "symbols"
 
 # Like phase-1 guests (opt-level = "s").
 [profile.rel-s]
