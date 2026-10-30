@@ -252,7 +252,19 @@ pub fn ser_world_config(buf: &mut RecBuffer, world: &World) {
     if world.enable_restitution_propagation {
         flags |= 0x10;
     }
+    // Primordial Engine fork: flag 0x20 = scale-dependent recycling enabled; its parameters
+    // follow the flags byte. Disabled worlds write exactly the upstream bytes.
+    let scaling = world.contact_recycle_scaling;
+    if scaling.enabled {
+        flags |= 0x20;
+    }
     buf.append_u8(flags);
+    if scaling.enabled {
+        buf.append_f32(scaling.length_fraction);
+        buf.append_f32(scaling.min_distance);
+        buf.append_f32(scaling.max_distance);
+        buf.append_u8(scaling.combine as u8);
+    }
 }
 
 pub fn des_world_config(r: &mut SnapReader<'_>, world: &mut World) {
@@ -279,6 +291,18 @@ pub fn des_world_config(r: &mut SnapReader<'_>, world: &mut World) {
     world.enable_continuous = flags & 0x04 != 0;
     world.enable_speculative = flags & 0x08 != 0;
     world.enable_restitution_propagation = flags & 0x10 != 0;
+    // Primordial Engine fork: see ser_world_config. The radius callback is not part of the
+    // image and stays whatever the destination world has registered.
+    if flags & 0x20 != 0 {
+        world.contact_recycle_scaling.enabled = true;
+        world.contact_recycle_scaling.length_fraction = r.f32();
+        world.contact_recycle_scaling.min_distance = r.f32();
+        world.contact_recycle_scaling.max_distance = r.f32();
+        world.contact_recycle_scaling.combine =
+            crate::recycle_scale::RecycleLengthCombine::from_u8(r.u8());
+    } else {
+        world.contact_recycle_scaling.enabled = false;
+    }
 }
 
 fn ser_capacity(buf: &mut RecBuffer, c: &Capacity) {
