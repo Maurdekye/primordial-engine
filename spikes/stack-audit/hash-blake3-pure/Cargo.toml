@@ -1,0 +1,11 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-hash-blake3-pure"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+blake3 = { version = "1.8", features = ["pure"] }

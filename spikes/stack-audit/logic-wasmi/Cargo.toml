@@ -1,0 +1,11 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-logic-wasmi"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "deterministic"] }

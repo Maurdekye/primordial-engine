@@ -1,0 +1,13 @@
+# Dependency-audit probe (never built). Decentralized discovery + NAT port mapping candidates.
+[package]
+name = "audit-discovery"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mainline = "8"
+mdns-sd = "0.21"
+igd-next = "0.18"

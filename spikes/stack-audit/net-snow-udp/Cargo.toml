@@ -1,0 +1,13 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-net-snow-udp"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+snow = "0.10"
+ed25519-dalek = "3"
+x25519-dalek = "3"

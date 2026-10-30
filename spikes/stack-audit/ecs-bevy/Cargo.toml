@@ -1,0 +1,11 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-ecs-bevy"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bevy_ecs = "0.20"

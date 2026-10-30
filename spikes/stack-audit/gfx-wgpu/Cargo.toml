@@ -1,0 +1,12 @@
+# Dependency-audit probe (never built). Resolved with `cargo metadata` only.
+[package]
+name = "audit-gfx-wgpu"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wgpu = "30"
+naga = { version = "30", features = ["wgsl-in", "spv-out", "hlsl-out"] }
