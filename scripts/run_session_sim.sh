@@ -17,8 +17,14 @@ run loss loss
 run ties ties
 run claims claims
 run backdate backdate
-for v in ok abort reject throttle forge late crash; do run r14-$v r14 $v; done
-for v in ok abort reject; do run r14-$v-reverse r14 $v --reverse; done
+for v in ok abort reject throttle forge late crash chain chain-epoch; do run r14-$v r14 $v; done
+for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done
+# P2-5 controls, outside the pass/fail check below (both are expected NOT CONSERVED): the forge
+# attacks with provenance checks off, and the double spend that provenance chains cannot stop.
+mkdir -p $O/p2-5-controls
+for c in "r14-forge-no-provenance r14 forge --no-provenance" "r14-doublespend r14 doublespend"; do
+  set -- $c; name=$1; shift; "$B" "$@" > "$O/p2-5-controls/$name.log" 2>&1; echo "== control $name"; grep "^RESULT" "$O/p2-5-controls/$name.log"
+done
 run ballpit-60hz ballpit
 run ballpit-60hz-noloss ballpit --loss 0
 run ballpit-60hz-ahead4 ballpit --ahead 4
@@ -31,7 +37,7 @@ for v in badvote liar crashstall; do run review3-$v $v; done
 # P2-4, the view change (design 10.8): several members at once, a withheld vote, colluders, an
 # equivocating proposer, a join, and the D80 quorum comparisons (twosilent5 and bridge run both rules;
 # bridge under a strict majority forks by design, and each side is checked on its own).
-for v in twosilent twosilent5 withheld colluders badproposer bridge join; do run p2-4-$v $v; done
+for v in twosilent twosilent5 withheld colluders badproposer bridge join refwithhold; do run p2-4-$v $v; done
 run p2-4-vcscale-64 vcscale --members 64 --silent 2
 run p2-4-vcscale-256 vcscale --members 256 --silent 2 --no-heads
 # Fail on any fork, replay mismatch, panic, false check or lost/duplicated object (reviews NEW-2, NEW-7).

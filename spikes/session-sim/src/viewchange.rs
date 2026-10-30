@@ -12,7 +12,8 @@
 //!   proposer is proven faulty and removed too.
 //! * `bridge`:      a partition between {1, 2} and {3, 4} from 3 to 12 s, with faulty member 8
 //!   reaching both sides: it hides what it hears (its references stop), backs every vote, prevotes
-//!   and precommits every proposal, and applies no decision (D80). Under a strict majority each side
+//!   and precommits every proposal, echoes the nil votes of rounds without one (so each side moves
+//!   on to rounds its own members propose in), and applies no decision (D80). Under a strict majority each side
 //!   removes the other: the session forks. Under the Byzantine quorum neither side can, and the
 //!   session carries on whole once the partition heals and 8 behaves.
 
@@ -46,8 +47,9 @@ fn rule_name(q: QuorumRule) -> &'static str {
 /// Every decision each listed replica took: (epoch reached, clock frame, round, removed).
 pub(crate) fn vc_report(sim: &Sim, members: &[MemberId], label: &str) {
     for &m in members {
-        let r = &sim.replica(m, 1).sim;
-        let at: Vec<String> = r.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} ({:.2} s) round {rd} removed {rm:?}", *f as f64 / 60.0)).collect();
+        let rep = sim.replica(m, 1);
+        let r = &rep.sim;
+        let at: Vec<String> = r.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} (t={:.2} s) round {rd} removed {rm:?}", sim_secs(rep, *f))).collect();
         println!(
             "RESULT {label}: m{m} epoch {} members {:?} view changes {} (resets {}, highest round {}) | {}",
             r.epoch,
@@ -57,7 +59,18 @@ pub(crate) fn vc_report(sim: &Sim, members: &[MemberId], label: &str) {
             r.stats.max_round,
             if at.is_empty() { "no decision".to_string() } else { at.join("; ") }
         );
+        if std::env::var("PE_EVENTS").is_ok_and(|v| !v.is_empty()) {
+            for e in &r.events {
+                println!("  event {e}");
+            }
+            println!("  vc {}", r.vc_debug());
+        }
     }
+}
+
+/// The scenario time (the clock its events are scheduled in) at which a replica's clock frame `f` began.
+pub(crate) fn sim_secs(rep: &Replica, f: u64) -> f64 {
+    (rep.epoch_us + f * rep.dt_us) as f64 / 1e6
 }
 
 fn silent_from(ids: &'static [MemberId], t_us: u64) -> Filter {
@@ -287,9 +300,10 @@ pub fn vc_scale(n: u32, silent: u32, heads: bool) {
     let mut undecided = 0;
     let mut members_after = BTreeSet::new();
     for &m in &live {
-        let r = &sim.replica(m, 1).sim;
+        let rep = sim.replica(m, 1);
+        let r = &rep.sim;
         match r.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
-            Some(d) => at.push(d.1 as f64 / 60.0 - 1.0),
+            Some(d) => at.push(sim_secs(rep, d.1) - 1.0),
             None => undecided += 1,
         }
         members_after.insert(r.members.len());
@@ -340,4 +354,24 @@ pub fn join() {
         println!("  m{m}: admitted {:?}; 4's touches: {}", r.admitted, touch_state(&sim, m, joiner));
     }
     verdict(&sim, &[1, 2, 3, 4], "join (member 4 asks to join at t=2 s and touches an object at frame 420)", panic_at);
+}
+
+/// A member that withholds references (P2-4): from t = 2 s member 8's acks reference no more of anyone's
+/// chain, while its horizon keeps advancing. Before, that stalled every member's confirmation for good;
+/// now 1, 2 and 3 vote it out once it has held back for `suspect_after` frames.
+pub fn refwithhold() {
+    let ids = [1, 2, 3, 8];
+    let ps = peers_with(&ids, SimConfig::default(), |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (400, touch(33, 3.0))]) } else { BTreeMap::new() });
+    let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 12_000_000);
+    let i8 = sim.peers.iter().position(|p| p.id == 8).unwrap();
+    let mut hiding = false;
+    let panic_at = run_to_end(&mut sim, |sim| {
+        if !hiding && sim.net.now_us >= 2_000_000 {
+            sim.peers[i8].worlds.get_mut(&1).unwrap().sim.freeze_others();
+            hiding = true;
+        }
+    });
+    report(&sim, &[1, 2, 3], "refwithhold");
+    vc_report(&sim, &[1, 2, 3], "refwithhold");
+    verdict(&sim, &[1, 2, 3], "refwithhold (8 stops referencing others' chains at t=2 s)", panic_at);
 }
