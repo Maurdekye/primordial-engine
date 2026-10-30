@@ -2,7 +2,7 @@
 
 What P2-8 built and measured, as edits to the design text. Tags follow the design's convention. `[V pe-mcp]`
 means verified by `crates/pe-mcp`'s tests and the recorded Claude Code runs in `spikes/out/mcp/` (branch
-`p2/mcp`), on Windows, plus the test suite on Linux (WSL2, static musl).
+`p2/mcp`), on Windows, plus the test suite on Linux (WSL2: static musl, and a native glibc build).
 
 ## 17.1 Where it lives: replace the last two bullets ("Library", "Spike coverage")
 
@@ -65,10 +65,9 @@ means verified by `crates/pe-mcp`'s tests and the recorded Claude Code runs in `
 
 ## 23.4 P2-8: status line
 
-* Built on branch `p2/mcp`: 44 tests pass on Windows and on Linux (WSL2, static musl binaries built on
-  Windows), and Claude Code drove a peer over the pipe and over HTTP on Windows. Not yet: Claude Code on
-  Linux, a native glibc build (it waits for the Linux host), resource subscriptions, and
-  `schema.components`. **The P2-3 seam** is `crates/pe-mcp/src/backend.rs` (`DrivenPeer`, plus
+* Built on branch `p2/mcp`: 44 tests pass on Windows and on Linux (WSL2: static musl binaries built on
+  Windows, and a native glibc build), and Claude Code drove a peer over the pipe and over HTTP on Windows.
+  Not yet: Claude Code on Linux, resource subscriptions, and `schema.components`. **The P2-3 seam** is `crates/pe-mcp/src/backend.rs` (`DrivenPeer`, plus
   `ScenarioControl` for the simulator only). `pe-session` needs, per driven member: author an interaction
   at the present frame and broadcast it, an entry's verdict and whether it is confirmed, frame and `conf`,
   object state, hashes and check hashes, membership with evictions, sync counters, and the protocol events

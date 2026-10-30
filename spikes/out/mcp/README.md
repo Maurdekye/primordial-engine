@@ -42,3 +42,5 @@ one tool the agent did not call; the tests cover it.
 priority). [`tests-linux-wsl.log`](tests-linux-wsl.log) holds the same 44 tests on Linux: WSL2 Ubuntu-24.04,
 kernel 6.6.87.2, static musl binaries built on Windows by `crates/pe-mcp/run-linux-tests.sh`. They pass,
 including the Unix-socket tests and `serve --pipe -- pe-mcp bridge` end to end.
+[`tests-linux-glibc.log`](tests-linux-glibc.log) holds the native glibc build in WSL: rustc 1.99.1, gcc
+13.3, from a copy of HEAD 4ba1b3e. All 44 pass.
