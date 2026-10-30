@@ -34,7 +34,7 @@ against this list. Where the order changed an answer, the text says so. Examples
     running it.
   * **[I]** inferred or proposed design. Not yet tested.
 * Choices that go beyond what the user specified are collected in **section 24, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D78**, with
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D79**, with
   letter suffixes where one topic was split (e.g. D14a). Most are now settled by the user (24 says which and
   when); the few still open are marked so.
 * Review findings (C1, H4, M3, R13-C1, …) are cited where they changed the design;
@@ -4558,6 +4558,13 @@ entry says so.
       work out of the box, but every player then depends on that hub for the bridge.
     * **(c) A list of community hubs** to choose from at first use.
   * Recommendation: (a), with (c) as a convenience once community hubs exist.
+* **D79. A double spend by a world that legitimately held the object (22.7, D46; raised by P2-5).**
+  * **Settled (user, 20:07Z): detect only.** A world that sends one object to two others is caught by
+    transferable fork proofs when the copies meet, and it can then be cut off. A per-object registry at
+    the birth world was considered and rejected, not even as an opt-in: it costs one more relay round per
+    hop, and objects freeze while their birth world is unreachable.
+  * Within detect-only, P2-5 follow-up P25-2 makes each hop carry the destination's verdict
+    certificate, so an object no longer depends on its source world to prove where it went.
 
 ---
 
