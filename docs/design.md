@@ -3607,6 +3607,125 @@ What moved, and why:
 13. **Multi-world memory and CPU** (22.3): there are no engine limits (D49), so a player can open worlds
     until the machine struggles. Mitigations: throttling, parking and the memory/CPU slider (D50).
 
+### 23.4 Phase 2 work packages
+
+Phase 2 split into packages that can be staffed in parallel, one agent each. @engine-architect keeps the
+protocol core (P2-3, P2-4) and design ownership, and integrates. Already running and not listed: the
+parallel Box3D feasibility study (D2, @vdw-physics) and the <laptop> and Linux determinism re-check on main
+(@design-reviewer).
+
+Rules for every package:
+* Windows and Linux from day one (D20): "done" always means both.
+* Builds, tests and benchmarks run at low priority with capped jobs, one heavy job at a time (machine-load
+  rule); timings taken that way are labelled noisy.
+* Work on a branch; @engine-architect merges. Protocol and determinism packages are reviewed by
+  @design-reviewer before merge.
+* Done means the stated tests or scenarios pass, with logs committed under `spikes/out/` or the crate's
+  test output, and the design updated where the package changes it.
+
+**P2-1. Core and sim store (`pe-core`, `pe-sim`).**
+* What: ids, the fixed-step clock, deterministic math, RNG streams and hashing; the sim store
+  (deterministic component columns), the object hierarchy, a minimal component registry, and snapshot +
+  hash (6.1, 16). Production versions of what `spikes/sim-core` does ad hoc.
+* Skills: Rust systems programming, data-oriented (ECS) design, determinism discipline (4.3).
+* Depends on: nothing.
+* Done: unit tests; snapshot and restore round-trip bit-exact; state hashes identical on Windows and
+  Linux; snapshot cost no worse than the spike's (6.2).
+
+**P2-2. Physics wrapper (`pe-physics`).**
+* What: the engine's only door to the box3d fork: body binding, interactions to forces and joints, world
+  images, `engine_world_def()`, several worlds per process; room for multi-threaded stepping (D2) when
+  the feasibility study lands.
+* Skills: Rust, physics engines (Box3D), floating-point determinism.
+* Depends on: P2-1.
+* Done: the spike's goldens, 600-frame trace and rollback T1-T5 reproduce through the wrapper, release and
+  debug, on Windows and Linux, with digests equal to the committed records (`spikes/out/vdw/`).
+
+**P2-3. Protocol core (`pe-session`), @engine-architect.**
+* What: the session protocol ported from `spikes/sim-core` and `spikes/session-sim` into a crate with a
+  stable API: entries and chains, acks, votes, stable-data confirmation, equivocation proofs and
+  eviction, crash removal, demotion, the tie rank, carried state, keyframes and rollback, sync checks, gap
+  repair, the congestion controller, R14 transfers. **Grabs-only claims** (D72) change here.
+* Skills: distributed protocols, Rust.
+* Depends on: P2-1, P2-2; P2-4's view change and P2-5's provenance chains are merged into it.
+* Done: all 30 phase-1 scenarios pass against `pe-session` (every replica equal to its offline replay,
+  conserved, 0 false checks), plus grab-race scenarios: two grabs within one latency (the loser's grab
+  undone), and pushes on a held object (never refused).
+
+**P2-4. The proposer-based view change, @engine-architect**
+(@item:primordial-engine/phase-2-proposer-based-view-change-multiple-fail).
+* What: membership changes decided by a proposer and a strict majority for session and world logs:
+  several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator,
+  and per-epoch certificates that other worlds follow (R3-8b). Built in the spike first, then merged
+  into P2-3.
+* Skills: consensus protocols (PBFT, Raft joint consensus), Rust.
+* Depends on: nothing new; it builds on round 3's votes and stable-data confirmation.
+* Done: `crashstall` and new scenarios recover: two members silent at once, a withheld vote, and two
+  colluders among five. `badvote` (two colluders among four, no honest majority) recovers too, because a
+  forked vote is itself a signed equivocation proof, and members excluded by proof do not count toward
+  the quorum. No confirmed frame is ever undone; world-log eviction finishes within about 8.9 s with 256
+  members (measured with a log-only world, 25.5.2); the suite stays all-equal and conserved; reviewed by
+  @design-reviewer.
+
+**P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
+* What: every global id bound to its birth world; each `Arrive` certificate references the certified
+  transfer or birth record that brought the object into its source world; a destination checks the chain
+  back to the birth world against epoch certificates.
+* Skills: protocol security, signatures and certificate chains, Rust.
+* Depends on: P2-4's epoch-certificate interface (start with today's static membership behind that
+  interface).
+* Done: `r14 forge` extended with dishonest-majority attacks (minting an object, resurrecting a moved one,
+  forging an earlier hop), all refused; A to B to C carries conserved; the suite all-equal; reviewed by
+  @design-reviewer.
+
+**P2-6. Determinism matrix.**
+* What: one command that builds and runs the determinism set (`scripts/run_determinism.sh`) on each
+  available machine and compares digests across them: Windows x64, Linux x64 (glibc and musl), two x86-64
+  CPUs, and ARM64.
+* Skills: build and CI engineering, cross-compilation, scripting.
+* Depends on: **a decision on where CI runs**: the repository has no remote, and no ARM machine is known.
+  @coordinator-opus to ask the user (a hosted CI, a self-hosted runner, or local machines only).
+* Done: a digest table, equal across every machine available; a mismatch names its first differing
+  output.
+
+**P2-7. Byte-identical guest builds across OSes (D11 groundwork for `pe-build`).**
+* What: build the same guest commits on Windows and Linux hosts with the pinned toolchain and the 13.2
+  rules; find and remove host-dependent differences; measure build times for the activation lead.
+* Skills: the Rust toolchain and reproducible builds (rustc and cargo internals), Linux.
+* Depends on: a Linux host with the pinned toolchain (WSL has none today, so it needs an install, or
+  <laptop>).
+* Done: the spike guests plus one larger test crate are byte-identical (raw hash) on both hosts and from
+  two checkout paths; every difference found is fixed or written down as a 13.2 rule; a build-time table.
+
+**P2-8. MCP server from day one (`pe-mcp`).**
+* What: the test and driver interface: an rmcp server with the 17.x tool catalogue for phase 2 (step,
+  state, propose an interaction, sync and membership status, scenario control), per-session tokens and
+  scopes, structured errors. Replaces `spikes/mcp-stub`.
+* Skills: Rust, MCP and JSON-RPC, rmcp.
+* Depends on: P2-3's API (start against the spike API).
+* Done: Claude Code connects and drives a peer through a scripted scenario; every tool has tests,
+  including its errors; the schema is documented.
+
+**P2-9. Session simulator as a test tool (`tools/session-sim`).**
+* What: the phase-1 simulator turned into a tool: scenarios in files, fault injection (partitions,
+  jitter, loss, asymmetric and capped links, crashes, Byzantine behaviour), offline-replay comparison,
+  one regression command.
+* Skills: Rust, distributed-systems testing.
+* Depends on: P2-3 for its final form; it starts from `spikes/session-sim`.
+* Done: the 30 phase-1 scenarios and P2-4's new ones run from scenario files with identical results; one
+  command runs them all.
+
+**P2-10. LAN peer for M1 (`pe-app`, minimal).**
+* What: a headless peer executable running `pe-session` over UDP with signatures (from `spikes/p2p`;
+  Noise and NAT traversal come in phase 3), with MCP attached.
+* Skills: Rust networking, application glue.
+* Depends on: P2-2, P2-3, P2-8.
+* Done: the M1 demo: 2-4 peers on a LAN, Windows and Linux mixed, converge to identical histories under
+  scripted loss and delay, survive a member dropping out, and an AI agent drives one of them.
+
+Order: P2-1, P2-6, P2-7, P2-8 and P2-9 can start at once; P2-4 starts now (@engine-architect); P2-2 after
+P2-1; P2-3 after P2-1 and P2-2, taking in P2-4 and then P2-5; P2-10 last.
+
 ---
 
 ## 24. Decisions needing the user
