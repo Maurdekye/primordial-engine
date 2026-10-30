@@ -67,3 +67,119 @@ The new spikes found and fixed these defects in the first draft of the fixes:
   entry. The bound now uses the lower median of the other members' arrivals.
 * **Claims without a cooldown.** Non-renewing impulses moved the monopoly to whoever touches every frame;
   the 10-frame cooldown fixes it [V session-sim claims].
+
+---
+
+# Round 2: re-verification of 3d0f98a
+
+Review: @design-reviewer, `review-round2/review-round2.md`. The review found 32 new findings (4 Critical,
+8 High, 14 Medium, 6 Low) and left 10 round-1 findings partial. The response is on branch `round2-fixes`,
+on top of the perturbation-history study (442286f).
+
+Evidence tags are as above. "Fixed in design" means the design now states the rule, but no spike exercises
+it [I].
+
+**Summary:**
+* **All 4 Criticals are fixed, with spike evidence.** The reviewer's four repros now run as session-sim
+  scenarios, and `scripts/run_session_sim.sh` fails on any fork, panic or false check. It passes:
+  * 26 scenarios, every replica bit-identical to its offline replay, 0 false checks;
+  * a `r14 forge` scenario, in which every proofless relay does nothing.
+* **Of 8 Highs:**
+  * fixed with evidence: NEW-5, NEW-7;
+  * fixed in design: NEW-8, NEW-9, NEW-10, and D12-1/D12-2 (D12 is now a user decision);
+  * fixed in part: NEW-6.
+* **Mediums and Lows:** 15 fixed or fixed in design, 5 deferred with reasons, 3 fixed in part. None
+  refuted.
+* **The user's 14:31Z rule, "an author never sees its own interaction corrected",** settled the
+  re-stamping questions (H5, NEW-1, NEW-2, viz-2): nothing is ever re-stamped.
+
+**What the fixes cost:**
+* **Finality lag doubled:** confirmation takes 8.5 frames (142 ms) instead of 4.2 on 50 ms links, because
+  it waits for one more ack round (D54).
+* **Ball-pit traffic grew 28% per message** (acks became larger chain entries). Per-tick batching more
+  than recovers it: 11.9 kB/s for both directions together, against 14.7 in 3d0f98a.
+
+## Round-1 findings left partial
+
+| ID | Status | How | Evidence |
+|---|---|---|---|
+| C1 | **Fixed** | Every decision input is a chain entry (acks included); confirmation uses stable data only; validity is chain-local (6.4, 8.2, 10.8) | [V session-sim ackfork, outage: honest members equal, equal to replay; c1: 116-frame rollback, no fork] |
+| C2 | **Fixed** | An equivocation after confirmation keeps the stable version. Eviction uses a cut from the voters' frozen heads. A rollback below the confirmed frame is an assertion failure (9.3, D55) | [V lateequiv, evict, c2: no panic, equal] |
+| H4 | **Fixed** | Check hashes travel inside ack entries, so a two-faced hash is an equivocation. The image is made canonical before hashing (NEW-7). The suite fails on any bad check | [V every scenario 0 bad; r14-throttle 18/0 and 15/0] |
+| H5 | **Fixed in part, by user rule** | No re-stamping. Backdating is bounded chain-locally by binding horizons and a 2-frame horizon slack, to about 4 frames. A member that lags its horizon only stalls confirmation. Residual: a cheater can still pick, within about 4 frames, a frame where `tie_rank` favours it (8.2, D42) | [V backdate parts 1 and 2] |
+| L2 | **Deferred** | Release builds should check that the state is finite at check frames (one pass over body states). This is not yet a design rule. Reason: it only matters once ARM joins the matrix (rule 8); it goes in with the CI matrix | — |
+| L3 | **Decision** | Arena-only logic snapshots are unenforceable. D57 recommends whole-linear-memory snapshots with dirty pages | [I] |
+| R13-C1 | **Fixed in design** | Toolchain config reserved and invoked by pinned path (NEW-8); workspace re-scanned before each launch (NEW-10); allowlist plus absolute paths (NEW-19); exact ancestor files (NEW-18) | 15.6, 21.10 |
+| R13-C2 | **Fixed in design** | The private session sends nothing without payload approval, auto-forward is removed, and forwards go only into restricted turns (NEW-9) | 21.10 |
+| R13-H2 | **Fixed in design** | Exact `@builtin` plugin allowlist per pinned version, hook events fatal, canary files in gate 9a (NEW-11) | 21.10 |
+| R13-L3 | **Fixed in part** | D27d now offers a real alternative (a guest brings their own harness). With auto-forward removed, D30's "a careless accept is cheap" holds again. D34's wording is unchanged | 24 |
+
+## New findings (Part 2)
+
+| ID | Sev. | Status | How | Evidence |
+|---|---|---|---|---|
+| NEW-1 | Critical | **Fixed** | Acks, votes and check hashes are chain entries. Confirmation is the minimum over members of the horizon in that member's stable prefix + 1. Late reports are gone, and no decision depends on per-receiver data (10.8, D54) | [V session-sim ackfork: 9 evicted, its touch void at both members, equal; outage: equal after a 6.5 s one-way outage] |
+| NEW-2 | Critical | **Fixed** | Effective frame = stamp, so eviction cannot move anything. After a proof, only non-stable entries are withdrawn. The cut is the common prefix of frozen heads, and the evicted member stops counting after its last valid horizon. `mark_dirty` below the confirmed frame is a fatal assertion (9.3, D55) | [V lateequiv: stable version kept, 9 cut at seq 103 from frame 206; evict: touch stays at 60; no panic in any scenario] |
+| NEW-3 | Critical | **Fixed** | A Verdict needs a certificate: a strict majority of B's members' signatures over exactly that outcome. It may be relayed by anyone (22.6, D46) | [V r14 forge: proofless commit and the carrier's false rejection both `RejectedNoProof`; conserved] |
+| NEW-4 | Critical | **Fixed** | An Arrive needs a transfer id derived from its Depart and a certificate from a strict majority of A's members; the Depart names its destination (22.6) | [V r14 forge: mint without a departure `RejectedNoProof`] |
+| NEW-5 | High | **Fixed** | Transfer id = hash(source world, Depart id). Proofless Arrives do not consume the id | [V r14 forge: squat `RejectedNoProof`, real arrival accepted] |
+| NEW-6 | High | **Fixed in part** | Self-certifying relays let any member of both worlds finish a transfer; refunds need B's certified "not received". With nobody in both worlds the object waits, which is inherent (two generals). Doc defect corrected (22.10) | [I: the spike's carrier is still the only relayer; a crashed member is removed by the general view change, also I] |
+| NEW-7 | High | **Fixed** | The check hash covers the image after a restore-and-reserialize round trip (9.1) | [V r14-throttle: 18 ok / 0 bad (A), 15 / 0 (B); was 42 / 24] |
+| NEW-8 | High | **Fixed in design** | `.cargo`, `rust-toolchain` and `rust-toolchain.toml` are reserved. cargo and rustc run by pinned absolute path with `RUSTUP_TOOLCHAIN`, `CARGO_HOME` and `--config` overrides, under the restricted identity. Rule 7 and 13.2 no longer reference a repo toolchain file (15.6) | [I] |
+| NEW-9 | High | **Fixed in design** | 21.10 | [I] |
+| NEW-10 | High | **Fixed in design** | 21.10 | [I] |
+| NEW-11 | Medium | **Fixed in design** | 21.10: exact plugin names from the reviewer's init listing | [I; plugin names V reviewer] |
+| NEW-12 | Medium | **Deferred** | Reason: the throttle metric and the relay latency (+75 ms) need a throttle-aware measurement. Acks still go out unthrottled, so lag stays insensitive. A throttled member can author state-free entries; carried-state touches need a caught-up sim. Queued with the R14 implementation phase | — |
+| NEW-13 | Medium | **Deferred** | Reason: a per-client CPU total and a GPU budget for portals belong with R16's measured per-region costs (world-chunks, §25) and D49's limits. Worlds are independent Box3D instances and can step on separate threads [I] | — |
+| NEW-14 | Medium | **Fixed in design** | One decider session per request (21.10) | [I] |
+| NEW-15 | Medium | **Fixed in part** | Budgets are now stated per member count and latency band: the 90 Hz and 100 ms rows are flagged over budget; batching is measured; p99 ticks are in 6.8 | [V ballpit-90hz, observer-100, r18 capped, snap; I for 3-4 members] |
+| NEW-16 | Medium | **Fixed in design** | Non-contacts go to the manual inbox, with a concurrency cap. Linux containment needs a uid or a mount namespace plus Landlock. macOS containment is a gate (21.10) | [I] |
+| NEW-17 | Medium | **Decision** | D57 | [I] |
+| NEW-18 | Medium | **Fixed in design** | 21.10 | [I] |
+| NEW-19 | Medium | **Fixed in design** | Allowlist, absolute paths, `NoDefaultCurrentDirectoryInExePath=1` (15.6) | [I] |
+| NEW-20 | Medium | **Fixed in design** | Feature allowlist, gated on the observed tool list (21.10) | [I] |
+| NEW-21 | Low | **Deferred** | Reason: ACL, budget, deadline and component-policy paths need the real ACL tables. Arrival placement should be at the portal, with record validation (finite, bounded velocity) and global-id references. All of this is for the R14 implementation phase | — |
+| NEW-22 | Low | **Deferred** | Reason: D48's data path. Foreign modules are pinned by canonical hash and their data treated as untrusted input; to be written into D48 with R15's module trust | — |
+| NEW-23 | Low | **Fixed** | 6.4 now cites the current lag (8.5 frames); 9.2's "0 mismatches" now holds for every scenario and is enforced by the script; 8.2's finality is enforced in code | [V] |
+| NEW-24 | Low | **Fixed in design** | Job object at creation; revocation applies "after F" (21.10) | [I] |
+| NEW-25 | Low | **Fixed in part** | Colliding normalized sibling names are invalid (15.6); D27d gains the bring-your-own-harness alternative. Per-key guest caps are deferred to the guest-admission work | [I] |
+
+## Iteration benchmark and D12 (Part 3)
+
+| ID | Sev. | Status | How | Evidence |
+|---|---|---|---|---|
+| D12-1 | High | **Fixed in design** | The per-OS split is withdrawn: a session cannot mix runtimes. D12 is now a user decision: wasmi everywhere now, Cranelift everywhere once patched and fuel-tested, runtime-independent fuel, or a user exception. Rule 7 is restated as "same engine version and sim-relevant config, verified by the matrix" (4.3, 13.3) | [V reviewer fuelprobe] |
+| D12-2 | High | **Fixed in design** | States that wasmtime's `helpers.c` compiles on Linux and macOS whatever the features, with the two ways out (a `[patch]`, or a `no_std` custom platform) | [V reviewer] |
+| D12-3 | Medium | **Deferred** | Reason: `audit_native.py` must also flag `asm!` and `global_asm!`. This is a script change, queued with the CI matrix; 13.3 states the gap | — |
+| D12-4 | Medium | **Fixed** | 2.1 now has separate rows for local build and swap, and for edit-to-every-peer (about 1.05 s); load numbers added | [V components] |
+| D12-5 | Medium | **Fixed in design** | The swap compiles off-thread during the activation lead and is cached by canonical hash; Winch first is the alternative (13.3) | [V reviewer timings] |
+| D12-6 | Medium | **Fixed in design** | Budgets use the `rel-fast` ratios (wasmi 9.8x, Cranelift 2.1x) and the annotation-free compile time (13.3) | [V reviewer] |
+| D12-7 | Low | **Deferred** | Reason: an ARM NaN probe, asserting cross-runtime equality, and stating in 13.6 that epoch interruption is nondeterministic all go with the CI determinism matrix | — |
+
+## Ball-pit matrix findings (@ballpit-viz, 2996d39)
+
+| ID | Status | How | Evidence |
+|---|---|---|---|
+| viz-1 | **Fixed** | Check hashes are compared only for confirmed frames the member has finished simulating, never with a re-simulation pending (9.2) | [V 0 bad checks in every scenario] |
+| viz-2 | **Fixed, by user rule** | Nothing is re-stamped: a late receiver pays with a deeper rollback, and the author's history never changes (8.2). Adaptive input delay stays opt-in only | [V r18 capped: author rollbacks 0 and own entries moved 0, in every run] |
+| viz-3 | **Fixed** | Ack late-lists are gone; acks carry only heads | [V] |
+| viz-4 | **Fixed** | Per-tick batching, with acks on frame ticks, cut the uplink from 77 to 65 kbit/s. The congestion controller keeps 32-64 kbit/s caps real-time with queues under 100 ms (10.9) | [V r18 capped] |
+
+## User inputs folded in during round 2
+
+* **"An author never sees its own interaction corrected" (14:31Z):** 8.2, D42, 10.9.
+* **R18 recovery (14:29Z):** 10.9, D53, D56. Acceptance: the capped cells recover. Measured at 64, 48 and
+  32 kbit/s with the adaptive transport: 0 stalled frames, 0 drops, at most a 94 ms queue, and back to real
+  time at once [V].
+* **vdW notes (14:49Z, 14:40Z):** with vdW on, a lossy session's outcome depends on network timing, while
+  every peer stays deterministic and equal. "Contended" should mean causally connected (7.3).
+
+## Found while fixing (round 2)
+
+* **Stability must count references to one's own chain.** The first build skipped them, and confirmation
+  never advanced.
+* **A hole in a chain hides that chain's acks.** Under 10% loss, gap detection from acks alone deadlocked;
+  an entry that arrives past a hole must reveal the hole itself.
+* **An eviction's cut may need versions fetched after the votes,** so the eviction is retried when they
+  arrive.
+* **Batching saves little unless acks share the frame's datagram.**
