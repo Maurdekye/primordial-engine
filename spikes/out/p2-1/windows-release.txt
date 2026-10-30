@@ -1,19 +1,24 @@
-   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-core)
+commit 11b6ca4c4a648ec2d90341a5c6958776530057ee
+working tree changes: 0
+rustc 1.99.0 (b940084d7 2026-09-28)
+host: x86_64-pc-windows-msvc
+LLVM version: 23.1.1
    Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
-    Finished `release` profile [optimized] target(s) in 21.78s
+    Finished `release` profile [optimized] target(s) in 4.12s
      Running unittests src\lib.rs (target\release\deps\pe_core-29ac9d17aaef031b.exe)
 
-running 17 tests
+running 18 tests
 test clock::tests::frame_boundaries_90hz_exact ... ok
 test clock::tests::frame_clock_due ... ok
 test clock::tests::session_clock_slews_and_is_monotonic ... ok
 test coords::tests::ceil_log2_matches ... ok
 test coords::tests::cells_nest ... ok
 test coords::tests::normalize_and_sub ... ok
+test coords::tests::normalize_never_panics ... ok
 test coords::tests::owo_battery_corner_aligned ... ok
 test coords::tests::region_round_trip_exact ... ok
 test dmath::tests::accuracy_against_std ... ok
-test dmath::tests::golden_bits ... RESULT dmath golden=0xf1cf7f9547a5d079
+test dmath::tests::golden_bits ... RESULT dmath golden=0xf17f26f98ad6b88c
 ok
 test dmath::tests::special_values ... ok
 test fpenv::tests::detects_and_resets_flush_to_zero ... ok
@@ -23,40 +28,44 @@ test ids::tests::object_id_order_matches_u64 ... ok
 test rng::tests::seek_and_streams ... ok
 test rng::tests::splitmix_matches_reference ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
      Running unittests src\lib.rs (target\release\deps\pe_sim-f0a0a1adeb432db8.exe)
 
-running 3 tests
+running 4 tests
 test registry::tests::layout_rules ... ok
+test registry::tests::overflow_and_reserved_ids ... ok
 test registry::tests::value_checks ... ok
 test snapshot::tests::forest_check ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests\determinism.rs (target\release\deps\determinism-28957dba5eed0227.exe)
 
 running 6 tests
 test corrupt_or_mismatched_bytes_are_refused ... ok
-test golden_trace ... RESULT golden objects=121 frame=600 trace=0x8effd667bd4fa407 world=0x18c584b928ecf125
+test golden_trace ... RESULT golden objects=121 frame=600 trace=0x37f7c134152aadd9 world=0x5627f9c11ffc392e
 ok
 test hash_ignores_history_only_state ... ok
 test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
      Running tests\store.rs (target\release\deps\store-85e5ac7963473179.exe)
 
-running 5 tests
+running 8 tests
 test columns_stay_sorted ... ok
 test components_typed_and_raw ... ok
+test deep_chain_loads_in_linear_time ... ok
+test hierarchy_edits_keep_world_transforms ... ok
 test hierarchy_order_cycles_and_destroy ... ok
 test objects_and_counters ... ok
+test transform_limits ... ok
 test world_transforms_compose ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
    Doc-tests pe_core
 
