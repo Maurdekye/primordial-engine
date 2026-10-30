@@ -35,7 +35,24 @@ committed in `spikes/out/vdw/`. `tests/common/mod.rs` rebuilds the spike's pile 
 "soonest wins" claim rule and its `RollbackSim` on pe-physics; every check runs in the engine
 configuration (`vdw`) and the upstream one (`off`), at 1, 3 and 8 worker threads.
 
-__EVIDENCE__
+| Check | Windows x64 debug | Windows x64 release | Linux x64 musl debug (WSL2) | Linux x64 musl release (WSL2) |
+|---|---|---|---|---|
+| Goldens: 4 engine + 4 Box3D C scenes, at 1/3/8 workers | PASS | PASS | PASS | PASS |
+| 600-frame trace equal to `trace-{vdw,off}-win-<profile>.txt` line for line; digests `80839f4a54133e13` (engine) and `7903109aab28ed9b` (upstream) | PASS | PASS | PASS | PASS |
+| World-image bytes every 50 frames equal to `images-*-win-<profile>.txt` | PASS | PASS | PASS | PASS |
+| Rollback T1-T5; T4 goes through `to_bytes`/`from_bytes` into a fresh world with a different worker count | PASS | PASS | PASS | PASS |
+| Three worlds in one process, stepped interleaved (engine at 2 and 4 workers, upstream at 1) | PASS | PASS | PASS | PASS |
+| API: refusals change nothing; hull bodies and pushes; image round trips with joints and a grab, corrupt bytes refused; poses into the sim store; worker-count changes mid-run | PASS | PASS | PASS | PASS |
+
+All [V], at commit 3b5438b with a clean tree, rustc 1.99.0; logs in `spikes/out/p2-2/`. Each log has
+the same 42 RESULT lines (goldens, trace digests, image digests per profile, rollback), and the
+script fails if any differs. The Linux runs reproduce the Windows records byte for byte, image
+bytes included: Box3D's world serialization is the same on both. `cargo clippy -p pe-physics -p
+box3d-rust --all-targets` is clean (one D2 lint, needless borrows in the compound narrow-phase path,
+fixed here).
+
+Run times (Windows, idle priority, shared machine, noisy): the record tests take 12.8 s in release
+and 189 s in debug.
 
 ## Choices the design text should pick up [I]
 
