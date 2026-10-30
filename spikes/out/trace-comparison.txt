@@ -1,0 +1,6 @@
+IDENTICAL trace-win-release-2
+IDENTICAL trace-win-debug
+IDENTICAL trace-win-native
+IDENTICAL trace-win-opt1
+IDENTICAL trace-win-opts
+IDENTICAL trace-linux-musl-release
