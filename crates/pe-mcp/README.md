@@ -52,12 +52,20 @@ scopes, and rights come from that mapping, never from tool arguments. A token ex
 (`--ttl-s`, default 1 h), on revocation, and when the session ends (`serve`'s harness exits). Each launch
 gets a new token.
 
+Two limits of phase 2:
+* **No re-issue.** A harness that stays idle past the TTL loses the server until `serve` launches it again.
+  Re-issue on resume comes with the harness adapters (`pe-harness`).
+* **The token is in the harness's environment,** so every subprocess the harness starts inherits it: its
+  shell tool, for example, could reach the peer with the harness's scopes. Give a harness only the scopes it
+  needs (`--scopes`). The launch profiles should remove `PE_MCP_TOKEN` from tool subprocesses where the
+  harness allows it.
+
 ## Scopes
 
 | Scope | Tools |
 |---|---|
 | `read` | `session_info`, `session_members`, `session_sync_status`, `world_get_state`, `world_get_object`, `world_hashes`, `world_interaction_status`; all resources |
-| `interact` | `world_propose_interaction` |
+| `interact` | `world_propose_interaction`, and `world_interaction_status` (it reads only the caller's own tickets) |
 | `control` | `world_step`, `scenario_load`, `scenario_fault`, `scenario_check` |
 
 `tools/list` and `resources/list` show only what the caller's scopes allow. Calling a tool outside them
@@ -78,7 +86,7 @@ below it is confirmed and can never be rolled back. Hashes are 16 hex digits.
 | `session_info` | Principal, scopes, the member you drive, members, scene, clock, frame, `conf`; `faulted` if the session stopped | none |
 | `world_get_state` | Frame, `conf`, state hash, a page of objects (`offset`, `limit` ≤ 256, `next_offset`), the claims in force | none |
 | `world_get_object` | One object: global id, kind, position, rotation, velocities, exact-state hash, claim | `unknown_object` |
-| `world_propose_interaction` | Authors an interaction as your member through the player path: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. `touch` or `grab` with `impulse` (magnitude ≤ 100 N·s), or `hand` with `target_mm` (ball-pit hands only). Returns a `ticket` | `unknown_object`, `rate_limited` (64 unresolved), `not_ready` (paused at the speculation limit; step and retry), `peer_crashed` |
+| `world_propose_interaction` | Authors an interaction as your member through the player path: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. `touch` or `grab` with `impulse` (magnitude ≤ 100 N·s), or `hand` with `target_mm` (ball-pit scenes; only your own member's hand). Returns a `ticket` | `unknown_object`, `not_owner` (another member's hand), `rate_limited` (64 unresolved), `not_ready` (paused at the speculation limit; step and retry), `peer_crashed` |
 | `world_interaction_status` | `pending`, `accepted`, `rejected` (with `reason`: `claimed` plus `by_member` and `until_frame`, `cooldown`, `gone`, …) or `void`. `final` once the stamp is confirmed; until then a rollback can still change it | `unknown_ticket` (tickets belong to their principal) |
 | `world_step` | Advances virtual time by `ms` (1..=10000) or `frames` (1..=600, exact). Reports frame, `conf`, rollbacks, re-simulated frames, `paused`, your interactions whose state changed, and protocol events (at most 50) | none |
 | `world_hashes` | State hash after each frame in `[from, to)` (≤ 600 frames), and the check hashes compared with other members | none |
@@ -93,7 +101,7 @@ below it is confirmed and can never be rolled back. Hashes are 16 hex digits.
 
 **Errors.** A tool error is a tool result with `isError: true`. Its `structuredContent`, and its text content
 as the same JSON, is `{code, message, field?, details?}`, with `code` one of `invalid_argument`,
-`unknown_object`, `unknown_ticket`, `forbidden`, `rate_limited`, `not_ready`, `peer_crashed`,
+`unknown_object`, `unknown_ticket`, `forbidden`, `not_owner`, `rate_limited`, `not_ready`, `peer_crashed`,
 `no_scenario_control`, `session_faulted` and `internal`. Arguments that do not deserialize are reported the
 same way, as `invalid_argument`. An unknown tool or a malformed request is a JSON-RPC error. If the sim
 panics, the call returns `internal`, and every later call returns `session_faulted` until `scenario_load`.

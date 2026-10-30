@@ -2,7 +2,8 @@
 
 Claude Code 2.1.292 (model `claude-sonnet-5-5`, headless `-p`) ran the scripted scenario in
 [`scenario.md`](scenario.md) against `pe-mcp` on Windows, once over each transport. The pipe run used the
-binary from commit 50a39a8; the HTTP run used the same code plus the schema clean-up described below. The engine launched the harness, as design 17.1 describes:
+binary built from commit 50a39a8. The HTTP run used 50a39a8 plus the then-uncommitted schema clean-up
+described below, which was committed unchanged in 5a1568c. The engine launched the harness, as design 17.1 describes:
 
 ```text
 pe-mcp serve --pipe --principal claude-code -- claude -p "<scenario.md>" --mcp-config cfg-pipe.json \
