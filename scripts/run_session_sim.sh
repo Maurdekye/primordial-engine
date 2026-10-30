@@ -2,18 +2,20 @@
 # Builds and runs every session-protocol scenario (in-process, virtual clock; deterministic).
 # Logs go to spikes/out/session-sim/; the RESULT lines are the evidence cited in docs/design.md.
 # usage: scripts/run_session_sim.sh            (from any directory; needs only a Rust toolchain)
-#        scripts/run_session_sim.sh --pe       the same scenarios on crates/pe-session (P2-3), logs in
+#        scripts/run_session_sim.sh --pe       the same scenarios on crates/pe-session through its fork
+#                                              of this harness, crates/pe-session-sim (P2-3); logs in
 #                                              spikes/out/session-sim-pe/
 set -u
 cd "$(dirname "$0")/.."
 if [ "${1:-}" = --pe ]; then
-  cargo build --release -q -p pe-spike-session-sim --no-default-features --features pe || exit 1
+  cargo build --release -q -p pe-session-sim || exit 1
+  B=target/release/pe-session-sim
   O=spikes/out/session-sim-pe
 else
   cargo build --release -q -p pe-spike-session-sim || exit 1
+  B=target/release/pe-spike-session-sim
   O=spikes/out/session-sim
 fi
-B=target/release/pe-spike-session-sim
 mkdir -p $O
 run() { local name=$1; shift; "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }
 run c1 c1

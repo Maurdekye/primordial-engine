@@ -14,11 +14,4 @@ name = "pe-spike-session-sim"
 path = "src/main.rs"
 
 [dependencies]
-pe-sim-core = { workspace = true, optional = true }
-pe-session = { path = "../../crates/pe-session", optional = true }
-
-[features]
-# P2-3: the same scenarios on either protocol core; `pe` runs them on crates/pe-session.
-default = ["spike"]
-spike = ["dep:pe-sim-core"]
-pe = ["dep:pe-session"]
+pe-sim-core.workspace = true
