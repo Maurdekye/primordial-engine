@@ -17,8 +17,14 @@ run loss loss
 run ties ties
 run claims claims
 run backdate backdate
-for v in ok abort reject throttle forge late crash; do run r14-$v r14 $v; done
-for v in ok abort reject; do run r14-$v-reverse r14 $v --reverse; done
+for v in ok abort reject throttle forge late crash chain; do run r14-$v r14 $v; done
+for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done
+# P2-5 controls, outside the pass/fail check below (both are expected NOT CONSERVED): the forge
+# attacks with provenance checks off, and the double spend that provenance chains cannot stop.
+mkdir -p $O/p2-5-controls
+for c in "r14-forge-no-provenance r14 forge --no-provenance" "r14-doublespend r14 doublespend"; do
+  set -- $c; name=$1; shift; "$B" "$@" > "$O/p2-5-controls/$name.log" 2>&1; echo "== control $name"; grep "^RESULT" "$O/p2-5-controls/$name.log"
+done
 run ballpit-60hz ballpit
 run ballpit-60hz-noloss ballpit --loss 0
 run ballpit-60hz-ahead4 ballpit --ahead 4

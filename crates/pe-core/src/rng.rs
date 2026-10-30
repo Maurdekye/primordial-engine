@@ -80,7 +80,8 @@ impl Rng {
     /// Uniform in [lo, hi) for finite `lo < hi`: `lo + (hi - lo) * u`, so the same bits everywhere. When
     /// rounding would give `hi`, it returns the largest value below `hi` (review P21-11).
     pub fn range_f32(&mut self, lo: f32, hi: f32) -> f32 {
-        let v = lo + (hi - lo) * self.next_f32();
+        // In f64, so a width beyond f32's range (hi - lo = inf) still spreads (review P21R-8).
+        let v = (lo as f64 + (hi as f64 - lo as f64) * self.next_f32() as f64) as f32;
         if v < hi {
             v
         } else {
@@ -116,6 +117,13 @@ mod tests {
     }
 
     #[test]
+    fn wide_range_spreads() {
+        let mut c = Rng::stream(3, 3);
+        let neg = (0..1000).filter(|_| c.range_f32(-f32::MAX, f32::MAX) < 0.0).count();
+        assert!((300..700).contains(&neg), "{neg}");
+    }
+
+    #[test]
     fn seek_and_streams() {
         let mut a = Rng::stream(42, 7);
         let draws: Vec<u64> = (0..100).map(|_| a.next_u64()).collect();
@@ -132,6 +140,8 @@ mod tests {
             // A range whose width rounds the top draws up to hi.
             let r = c.range_f32(1.0e8, 1.0e8 + 8.0);
             assert!((1.0e8..1.0e8 + 8.0).contains(&r), "{r}");
+            let w = c.range_f32(-f32::MAX, f32::MAX);
+            assert!(w.is_finite() && w < f32::MAX);
         }
     }
 }
