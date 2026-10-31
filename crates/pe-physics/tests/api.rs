@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use pe_physics::{
     BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig, PhysicsError,
-    PhysicsWorld, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
+    PhysicsWorld, Pose, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
 };
 use pe_sim::{Registry, SimStore, Transform};
 
@@ -108,6 +108,20 @@ fn rotations_are_normalized() {
     let n2: f32 = q.iter().map(|c| c * c).sum();
     assert!((n2 - 1.0).abs() < 1.0e-6, "{n2}");
     run(&mut pw, 5);
+
+    // A rotation Box3D already takes as unit length keeps its bits (P2-3 arrivals), including
+    // one whose length is not 1.0 even in f32, so that dividing by it would change the bits.
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let q = (1..40)
+        .map(|k| [0.0, s, 0.0, s].map(|c| c * (1.0 + k as f32 * 1.0e-7)))
+        .find(|q| {
+            let n2: f32 = q.iter().map(|c| c * c).sum();
+            (n2 - 1.0).abs() < 20.0 * f32::EPSILON && n2.sqrt() != 1.0
+        })
+        .expect("a rotation Box3D takes as unit whose length is not 1.0");
+    pw.add_body(id(2), &ball(5.0).with_rotation(q)).unwrap();
+    assert_eq!(pw.pose(id(2)).unwrap().rotation.map(f32::to_bits), q.map(f32::to_bits), "bits kept");
+    assert!(invalid(pw.add_body(id(3), &ball(8.0).with_rotation([0.0, 0.0, 0.0, 1.03]))), "beyond 1%");
 }
 
 #[test]
@@ -561,4 +575,129 @@ fn hull_and_shape_counts_bounded() {
     pw.add_body(id(3), &many).unwrap();
     assert!(invalid(pw.add_body(id(4), &many.clone().with_shape(sphere()))));
     assert_eq!(pw.body_count(), 2);
+}
+
+fn bits(p: Pose, v: ([f32; 3], [f32; 3])) -> Vec<u64> {
+    let f32s = p.rotation.iter().chain(&v.0).chain(&v.1).map(|c| c.to_bits() as u64);
+    p.position.iter().map(|c| c.to_bits()).chain(f32s).collect()
+}
+
+/// Carried state (P2-3, review SET-1/SET-2): the toucher's pose and velocities, applied with
+/// `set_state` by every peer (the toucher included) at the same frame, give identical worlds
+/// afterwards: off-centre bodies, a source asleep on the ground, one settling towards sleep
+/// (sleep timer running), and one rolling in contact. Applied by the receiver only, an
+/// off-centre body diverges on the next step, although its pose bits are equal.
+#[test]
+fn carried_state_lands_exactly() {
+    let off = |y: f64| {
+        BodyDesc::new(BodyKind::Dynamic, [0.0, y, 0.0])
+            .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.37, 0.05, -0.11], radius: 0.3 }))
+            .with_shape(ShapeDesc::new(Geometry::Sphere { center: [-0.2, 0.0, 0.0], radius: 0.2 }))
+    };
+    let cases = [
+        ("off-centre, spinning", off(3.0).with_velocity([0.7, 0.0, -0.2], [0.3, 4.1, 1.7]), off(9.0), 37),
+        ("asleep on the ground", ball(0.5), ball(9.0), 300),
+        ("settling, sleep timer running", ball(0.5), ball(9.0), 20),
+        ("rolling in contact", ball(0.6).with_velocity([1.5, 0.0, 0.0], [0.0, 0.0, -3.0]), ball(9.0), 20),
+    ];
+    for both_sides in [true, false] {
+        for (label, src, dst, frames) in &cases {
+            let mut a = world(PhysicsConfig::engine());
+            let mut b = world(PhysicsConfig::engine());
+            for pw in [&mut a, &mut b] {
+                pw.add_body(id(1), &ground()).unwrap();
+            }
+            a.add_body(id(2), src).unwrap();
+            b.add_body(id(2), dst).unwrap();
+            run(&mut a, *frames);
+            let (pose, vel) = (a.pose(id(2)).unwrap(), a.velocity(id(2)).unwrap());
+            if both_sides {
+                a.set_state(id(2), pose, vel.0, vel.1).unwrap();
+            }
+            b.set_state(id(2), pose, vel.0, vel.1).unwrap();
+            assert_eq!(bits(b.pose(id(2)).unwrap(), b.velocity(id(2)).unwrap()), bits(pose, vel), "exact bits, {label}");
+            assert!(b.is_awake(id(2)).unwrap(), "carried state is awake, {label}");
+            let (ra, rb) = (run(&mut a, 120), run(&mut b, 120));
+            let first = ra.iter().zip(&rb).position(|(x, y)| x != y);
+            println!("RESULT carried state, {label}, both sides {both_sides}: first differing frame of 120 {first:?}");
+            if both_sides {
+                assert_eq!(first, None, "{label}");
+                assert_eq!(a.is_awake(id(2)).unwrap(), b.is_awake(id(2)).unwrap(), "{label}");
+            } else if label.starts_with("off-centre") {
+                assert_eq!(first, Some(0), "receiver only: the derived state differs (SET-1)");
+            }
+        }
+    }
+
+    // Refusals change nothing; each check runs before anything is written.
+    let mut b = world(PhysicsConfig::engine());
+    b.add_body(id(1), &ground()).unwrap();
+    b.add_body(id(2), &ball(2.0)).unwrap();
+    run(&mut b, 3);
+    let before = b.state_hash().unwrap();
+    let pose = b.pose(id(2)).unwrap();
+    let ok = ([0.1, 0.0, 0.0], [0.0; 3]);
+    assert!(invalid(b.set_state(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose }, ok.0, ok.1)), "not unit: refused, not renormalized");
+    assert!(invalid(b.set_state(id(2), Pose { rotation: [f32::NAN, 0.0, 0.0, 1.0], ..pose }, ok.0, ok.1)));
+    assert!(invalid(b.set_state(id(2), Pose { position: [f64::NAN, 0.0, 0.0], ..pose }, ok.0, ok.1)));
+    assert!(invalid(b.set_state(id(2), Pose { position: [2.0e6, 0.0, 0.0], ..pose }, ok.0, ok.1)));
+    assert!(invalid(b.set_state(id(2), pose, [1.0e5, 0.0, 0.0], ok.1)));
+    assert!(invalid(b.set_state(id(2), pose, ok.0, [f32::NAN, 0.0, 0.0])), "the pose is not written either");
+    assert!(invalid(b.set_pose(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose })));
+    assert!(invalid(b.set_velocity(id(2), [0.0; 3], [f32::NAN, 0.0, 0.0])), "the linear part is not written either");
+    assert!(invalid(b.set_state(id(1), pose, ok.0, ok.1)), "static body");
+    assert!(invalid(b.set_pose(id(1), pose)), "static body");
+    assert!(invalid(b.set_velocity(id(1), [1.0, 0.0, 0.0], [0.0; 3])), "static body");
+    assert_eq!(b.set_state(id(7), pose, ok.0, ok.1), Err(PhysicsError::NotBound(id(7))));
+    assert_eq!(b.state_hash().unwrap(), before, "a refused call changed the world");
+}
+
+/// set_target (hands): a kinematic body reaches its target pose after dt.
+#[test]
+fn targets_drive_hands() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    let hand = BodyDesc::new(BodyKind::Kinematic, [0.0, 1.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
+    pw.add_body(id(2), &hand).unwrap();
+    // 30 degrees about y: Box3D turns a body by at most 45 degrees per step.
+    let (s, c) = 15f32.to_radians().sin_cos();
+    let target = Pose { position: [0.5, 1.2, -0.3], rotation: [0.0, s, 0.0, c] };
+    pw.set_target(id(2), target, DT, true).unwrap();
+    pw.step(DT).unwrap();
+    let got = pw.pose(id(2)).unwrap();
+    let d = got.position.iter().zip(&target.position).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let dot: f32 = got.rotation.iter().zip(&target.rotation).map(|(a, b)| a * b).sum();
+    assert!(d < 1.0e-5 && dot.abs() > 1.0 - 1.0e-5, "hand at {got:?}, target {target:?}");
+
+    let before = pw.state_hash().unwrap();
+    for dt in [0.0, -1.0, 1.0e-4, 2.0, f32::NAN] {
+        assert!(invalid(pw.set_target(id(2), target, dt, true)), "dt {dt}");
+    }
+    assert!(invalid(pw.set_target(id(2), Pose { rotation: [0.0, 0.0, 0.0, 0.5], ..target }, DT, true)));
+    assert!(invalid(pw.set_target(id(2), Pose { position: [0.0, f64::INFINITY, 0.0], ..target }, DT, true)));
+    assert!(invalid(pw.set_target(id(1), target, DT, true)), "static body");
+    assert_eq!(pw.state_hash().unwrap(), before);
+}
+
+/// After a destroy, a world that never restored saves the same transfer as one restored from
+/// it, so `from_transfer` accepts it and their check hashes agree (world-chunks' r14 case: a
+/// sphere resting in a settled pile leaves through a portal; the freed slot kept its type).
+#[test]
+fn transfer_canonical_after_destroy() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    for n in 0..12u32 {
+        let (x, z) = ((n % 4) as f64 * 1.1 - 1.6, (n / 4) as f64 * 1.1 - 1.1);
+        pw.add_body(id(2 + n), &BodyDesc { position: [x, 0.5, z], ..ball(0.0) }).unwrap();
+    }
+    run(&mut pw, 120);
+    pw.remove_body(id(7)).unwrap();
+    for frames in [0, 1, 30] {
+        run(&mut pw, frames);
+        let transfer = pw.save_transfer().unwrap();
+        let confirmed = transfer.check_hash();
+        let joiner = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &transfer, &confirmed);
+        assert!(joiner.is_ok(), "{frames} frames after the destroy: {:?}", joiner.err());
+        assert_eq!(joiner.unwrap().check_hash().unwrap(), confirmed);
+    }
 }

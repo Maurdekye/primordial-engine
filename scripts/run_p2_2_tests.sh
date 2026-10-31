@@ -72,7 +72,7 @@ for f in "$out"/windows-*.txt "$out"/linux-musl-*.txt; do
     echo "TESTS FAILED in $f"; status=1
   fi
   n=$(results "$f" | wc -l)
-  [ "$n" = 50 ] || { echo "$f has $n RESULT lines, expected 50"; status=1; }
+  [ "$n" = 58 ] || { echo "$f has $n RESULT lines, expected 58"; status=1; }
   d=$(results "$f" | grep -v "^RESULT images" | sort)
   if [ -z "$d" ]; then echo "NO RESULT LINES in $f"; status=1; continue; fi
   if [ -z "$ref" ]; then ref="$d"; elif [ "$d" != "$ref" ]; then echo "RESULT lines differ in $f"; status=1; fi
