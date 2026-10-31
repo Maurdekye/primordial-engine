@@ -43,6 +43,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `r14/` | 14 | R14 settled handoff: ok, abort, reject, throttle, forge (16 attacks, P2-5's dishonest-majority world W included), late, crash, chain (P2-5: A -> B -> C -> A), and ok/abort/reject/chain in reverse peer order; plus P2-5's two controls, forge-no-provenance and doublespend |
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
+| `ownership/` | 1 | world ownership (design 12.5): forged, rogue, recovery-key and removed-owner certificates refused; a double sale in one frame detected, disputed until a merge, every replica equal to the replay |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 
@@ -95,6 +96,7 @@ hz = 60                             # dt = 1/hz; default 60
 window = 120                        # SimConfig overrides: window, seed, horizon_slack, check_every,
 seed = 0xA                          #   hand_predict, suspect_after
 routes = [2]                        # R14 genesis route list
+owners = { keys = [10], rule = "all", nonce = 1 }   # world ownership genesis (12.5); rule all, any or k
 
 [world.1.plan]                      # actions per member; within a frame, in file order
 1 = [
@@ -105,6 +107,7 @@ routes = [2]                        # R14 genesis route list
     { at = 200, backdated = { obj = 50, impulse = [0.0, 6.0, 0.0], back = 20 } },
     { at = 0, hand = { obj = 500, target_mm = [0, 200, 0], active = true, ahead = 0 } },
     { ballpit_sweep = { ahead = 0 } },                                       # the scripted gesture
+    { at = 60, owner = { change = "add", key = 20, signers = [10] } },       # an ownership certificate
 ]
 3 = []                              # an empty plan clears an included one
 
@@ -140,7 +143,7 @@ delay. Conditions:
 - `world`.
 - `from`, `to`, `involves`: a member id or a list; `involves` means sent by or to.
 - `partition = [[1, 2], [3]]`: sender and receiver are in different groups. Members in no group are unaffected.
-- `msg`: `entry`, `fetch`, `batch`, or an entry payload: `touch`, `hand`, `ack`, `vote`, `unvote`, `attest`, `depart`, `arrive`, `verdict`, `portal`.
+- `msg`: `entry`, `fetch`, `batch`, or an entry payload: `touch`, `hand`, `ack`, `vote`, `unvote`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `ownership`.
 - `stamp`, `seq`: chain entries only.
 - `times = N`: the rule applies to at most N messages.
 
@@ -184,6 +187,12 @@ behaviour `x` has fired.
 
 Backdated touches are a plan action (`backdated`).
 
+An `owner` plan action publishes a world-ownership certificate built on the member's present
+ownership head and signed by `signers` (spike signatures: any member can sign as any key). `change` is
+`add`, `leave`, `remove`, `challenge` or `remove_dormant` (with `key`), `set_recovery` (`key` is the
+owner, `recovery` the key, or none to clear it), `set_rule` (`rule`) or `merge` (joins every head). The
+world needs `owners`.
+
 ### Reports: `[[report]]`
 
 Reports print after the run, in file order, in the spike's formats:
@@ -191,6 +200,7 @@ Reports print after the run, in file order, in the spike's formats:
 - `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`. It prints `UNCONFIRMED` (a failure) if `frames` passes the lowest confirmed frame of the checked replicas.
 - `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
+- `ownership`: each replica's owner view (owners, rule, heads, DISPUTED, recovery keys) against an offline replay of `world`'s final log over `frames`; every certificate in frame order, applied or refused with the reason; each fork proof, checked as a third party holding only the chain prefix would check it; and with `at = [f, ...]`, the replay's view after frame f - 1.
 - `stats`.
 - `membership`.
 - `acceptance`.

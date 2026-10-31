@@ -1570,7 +1570,7 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Every peer validates** every interaction and commit against the ACL state *as of that frame*. A
   non-authorized action is rejected identically everywhere, with a machine-readable reason.
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
-  concern (D10).
+  concern (D10). Who the owners are is now the world's ownership chain (12.5).
 
 ### 12.3 AI agents [I]
 
@@ -1608,6 +1608,152 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Revocation.** Revoking a certificate (`CertRevoked {key, effective_frame}`) stops the agent at a
   deterministic frame. The frame is a confirmed frame (6.4), so every peer stops the agent at the same
   point. Guests hold no keys of their own, so re-locking a panel needs no log entry (21.5).
+
+### 12.5 World ownership (user rulings 22:37Z-22:54Z; spike `ownership.rs`)
+
+World ownership is a **lasting property of a world**, separate from a session's admins (12.4 on
+`viewchange`), and several people can share it (22:37Z). It is held as a **chain of signed ownership
+certificates**, each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain, no
+blockchain"). The chain travels with the world, in its genesis document, every save and each session's
+log, and anyone can verify it offline. It replaces 12.2's single `owner` role and D10's optional
+threshold: the ACL's owner is whoever the chain names.
+
+* **Owners are keys**: each player's long-term Ed25519 identity key (10.3), never a session `MemberId`,
+  which changes on every rejoin. A session maps members to keys through their join certificates. Owners
+  are equals: no owner has more power than another under any rule below.
+* **The certificate** (spike: `ownership::Cert`): `world` (the world id), `seq`, `prev` (the parent
+  certificate's id; several for a merge), `change`, `time` (the world's session time) and `sigs`. A
+  certificate's id is the hash of everything but the signatures, and is what each key signs.
+  * `change` is one of: `Genesis{owners, rule, nonce}`, `Add{key}`, `Leave{key}`, `Remove{key}`,
+    `SetRule{rule}`, `SetRecovery{owner, recovery}`, `Challenge{key}`, `RemoveDormant{key}` or `Merge`.
+* **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
+  the genesis certificate, so the original owners can't be rewritten without changing the world's
+  identity [I]. (The spike uses the genesis certificate's id.)
+* **Validity.** Certificate n is valid only if its signatures satisfy the rule of the owner set **at its
+  parent**, `seq` is one more than the parent's and `time` doesn't decrease. Signers outside that set
+  never count, so a key that left or was removed is a stranger to every later certificate. Verifying is
+  a walk from genesis, a few hundred bytes per change. A verifier caches the newest head it holds for
+  each world.
+
+**Signing rule: option A (22:54Z, O1, "for now").**
+
+| Change | Who signs |
+|---|---|
+| Add an owner | every current owner |
+| Leave ownership | the leaving owner alone; the last owner can't leave |
+| Remove another owner | every other owner |
+| Change the rule | every current owner |
+| Name or clear a recovery key | that owner |
+| Sell the world | `Add(buyer)`, then `Leave(seller)` |
+
+* **Why A.** Owners always get in as Admin (row 0, 22:48Z), and only a co-owner can demote or kick them
+  (Q27, 22:49Z/22:51Z). So adding an owner adds someone who always gets in as Admin and whom only owners
+  can remove from a session. Under A, a rogue co-owner can't add sock puppets or take the world from the
+  others. A sole owner, the common case, signs everything alone.
+* **Kept for comparison** (the spike implements both): rule B, where any one owner adds and nobody can
+  remove an owner, and rule C, k of n.
+* **The fallback for owners who vanish (22:54Z, O2).** Without one, a single lost key freezes every Add
+  and Remove.
+  * **A recovery key first.** An owner can name one; the UI offers it at Add owner and at Leave. It signs
+    in that owner's place, but never to make itself an owner (spike: an `Add` of a recovery key doesn't
+    count that key's signature).
+  * **Then, for an owner with no recovery key, a 30-day objection window.** Every other owner signs a
+    `Challenge`. After 30 days of the world's session time, they may sign `RemoveDormant`. Any signature
+    by the challenged owner during the window cancels it.
+  * Why the key comes first: a vanished owner may simply be offline elsewhere and never see the notice.
+    And session time is what a session's members agree it is, so owners who collude could age the window
+    in a private session.
+  * **The consequence:** an active owner can never be removed against their will, because their own
+    signature cancels the window. There is no way out of a hostile co-owner who is still active. Rule C,
+    for example two-thirds removing an owner without their signature, would solve it, at the cost that a
+    majority could push someone out.
+
+**Double transfers: forks, proofs and the union (22:54Z, O4; detect-only, as D79).**
+
+* **A fork** is two valid certificates with one parent. Under rule A it takes every owner of the parent
+  signing both: a sole owner selling twice, or all the owners colluding. Under rule B, two owners adding
+  people while offline also fork.
+* **The fork proof** (`ForkProof`): the two certificates. Anyone holding the chain up to the parent can
+  check it, and it names the keys that signed both. A player's or a discovery client's own policy may
+  distrust those keys.
+* **The owner set after a fork is the union**, defined so that it depends only on the set of
+  certificates held, never on the order they arrived in (measured: every arrival order tried gives one
+  digest). The precise rule is D87 [P]:
+  * every head's owners;
+  * minus a key that a `Remove` on some branch took out, unless a head that saw that `Remove` (has it as
+    an ancestor) holds the key again (observed-remove);
+  * a `Leave` counts only if every branch contains it;
+  * recovery keys merge the same way;
+  * the strictest rule wins;
+  * an objection window stays open only if it is open on every branch.
+* **Seller who sold twice.** Both buyers end up co-owners, and the seller is caught by the fork proof.
+* **"Ownership disputed".** A peer that holds more than one head shows the world as disputed. Joins use
+  the union.
+* **The merge certificate** names every head as parents and records the union. Its content is forced, so
+  any owner of the union may sign it. After it, a certificate that extends a merged head is refused, so
+  nobody can keep growing a superseded branch under its smaller owner set.
+* **Within one session** canonical order applies concurrent certificates. The second one with the same
+  parent becomes the fork proof, and every replica holds the same union.
+
+**In the session log [V: spike].**
+
+* A certificate is published as a `Payload::Ownership` entry (wire tag 20).
+* **Without P2-4 (the spike on main).** It applies at its frame, in canonical order, to the world's
+  ownership book, which is part of the rollback state and of the state hash. A certificate whose `time`
+  is later than its entry's frame is refused.
+* **With P2-4 (agreed with @engine-architect for 10.8).** A Change's validators must agree on every
+  admin decision without reading frame state.
+  * So an ownership certificate is an admin-layer entry, like `SetRole`: it stays pending until a
+    decision lists it in `Change.admin`.
+  * It is checked with `Book::insert` in commit order, against the `Book` that the admin run holds (not
+    a member set). Validity depends on the rule, recovery keys, open windows and any fork, and owners are
+    identity keys, so absent owners count too.
+  * The rollback-state book applies it at the deciding change's boundary, with `time <= boundary`.
+  * No verdict of `Book::insert` depends on a validator's clock (as VC-3 requires): its only time is the
+    certificates' own `time`, which may not decrease along a chain and is bounded by the boundary.
+    The objection window counts that time. A relationship record's expiry (O5) is checked against the
+    session's agreed time at the same boundary, never against a local clock [I].
+  * The Membership seam carries the book at epoch start, plus the ordered certificates.
+* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 kick and demote
+  checks (12.4) all ask whether the member's identity key, from its join certificate, is in
+  `book.view().owners` at that step.
+
+**Joins, relationship records and discovery.**
+
+* **The join-rule matrix** is in 12.4 (22:47Z, 22:51Z). Every row tests either session state or a signed
+  record: ownership certificates, relationship records (friend: a pair of signed records; confidant: one
+  record by the person who marks the confidant), or an invite ticket (inviter, invitee or bearer, world,
+  expiry). So each row is decided the same way on every replica, with no owner present [I].
+* **Revocation.**
+  * A person's relationship records form a hash chain with sequence numbers: a revocation is a newer
+    record.
+  * A join is evaluated against the newest record the log has committed at the join's frame, so a
+    revocation committed before the join always wins, on every replica.
+  * The stated gap: an offline revocation that hasn't reached the session can't be seen. Records expire
+    after about 30 days and are re-signed automatically while their signer is online (22:54Z, O5).
+* **Discovery (D9, D35).** A world's DHT record and every invite carry the world id and its ownership
+  head (seq and id), signed by an owner. A client verifies the chain it fetches from any peer of the
+  world against the world id. Two records whose heads fork are a fork proof.
+* **Where owners are shown.** Only the world info card and World settings show the owners (Q25, 22:54Z),
+  and both show a fork notice when the client holds a fork proof.
+* **Home worlds (Q28, 22:54Z):** home friends means friends of any owner.
+
+**What the spike shows.** `spikes/sim-core/src/ownership.rs` holds 13 unit tests, and
+`tools/session-sim/scenarios/ownership/ownership.toml` runs 3 replicas and an offline replay [V, Windows].
+* **Refused:**
+  * a stranger's `Add` of itself, and a forged signature;
+  * a co-owner adding a sock puppet alone;
+  * a recovery key adding itself;
+  * a removed or departed owner signing;
+  * the last owner leaving;
+  * a tampered, gapped, time-reversed or mis-sequenced chain;
+  * an early `RemoveDormant`, and one after the window was cancelled.
+* **Detected:** a double sale. The proof verifies for a third party holding only the chain prefix, the
+  union is the same in every arrival order, and one buyer's merge ends the dispute.
+* **In a session:** both conflicting certificates of one frame apply in canonical order, the world reads
+  DISPUTED until the merge, and all replicas equal the offline replay.
+* **A bug the session run found:** a key removed in the shared prefix and re-added on one branch was
+  dropped from the union. That is what led to the observed-remove rule in D87.
 
 ---
 
@@ -4035,7 +4181,8 @@ entry says so.
   * Alternatives: our own bootstrap or relay servers (reliable, but a soft central point); invites and LAN
     only (purest, worst UX).
 * **D10. Root of authority (12).**
-  * **Settled (user, 19:11Z): as recommended.**
+  * **Settled (user, 19:11Z): as recommended.** Since 22:39Z the owners are the world's ownership chain,
+    and adding an owner follows rule A (12.5).
   * Recommend: the world creator's key is the genesis owner and can add co-owners; optional k-of-n owner
     threshold for ACL changes.
   * Alternatives: a mandatory multi-owner threshold; a fully democratic majority of present members.
@@ -4736,6 +4883,22 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
+* **D87. How the union after an ownership fork treats removals and recovery keys (12.5; raised by the ownership spike).**
+  * The user ruled a union merge (22:54Z, O4). Its edge cases are a definition gap the spike had to fill.
+  * Recommend: observed-remove.
+    * A `Remove` on any branch counts, unless a head that saw it holds the key again. Otherwise a removed
+      owner undoes its removal by signing any certificate of its own on the old parent and publishing it
+      later.
+    * A `Leave` counts only if every branch contains it.
+    * Recovery keys merge the same way.
+    * If two owners removed each other on two copies of the world, both stay.
+    * The merge certificate may be signed by any owner of the union, and a certificate extending a merged
+      head is refused.
+  * Alternative: a plain union. Simpler, but a removed owner can always revive itself through a fork.
+* **D88. Who may lock session rules for a world (12.5, 12.4; raised by the UX's "unless the world's owners have locked them").**
+  * Recommend: a lock is a signed ownership-chain entry, under the same rule as `SetRule` (every current
+    owner), so a lone co-owner can't impose or lift one.
+  * Alternative: any one owner may lock and unlock.
 
 ---
 
