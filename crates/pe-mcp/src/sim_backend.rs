@@ -162,7 +162,7 @@ impl DrivenPeer for SimSession {
         self.replica().conf
     }
     fn object_count(&self) -> u32 {
-        self.replica().t.objs.len() as u32
+        self.replica().obj_slots()
     }
 
     fn state(&self, offset: u32, limit: u32) -> WorldState {
