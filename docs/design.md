@@ -1618,8 +1618,9 @@ no blockchain"). The chain travels with the world, in its genesis document, ever
 session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
 single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
 
-The rules below follow seven rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
-OWNR-9, OWNS-1 to OWNS-12, OWNT-1 to OWNT-10, OWNU-1 to OWNU-8, OWNV-1 to OWNV-7, OWNW-1 to OWNW-7).
+The rules below follow eight rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
+OWNR-9, OWNS-1 to OWNS-12, OWNT-1 to OWNT-10, OWNU-1 to OWNU-8, OWNV-1 to OWNV-7, OWNW-1 to OWNW-7,
+OWNX-1 to OWNX-7).
 
 **Consent only (user ruling 2026-10-31 08:31Z, OT = (a)).** Under rule A nobody is removed against
 their will, and nothing depends on time. A recovery key is a plain backup of its owner's key: its
@@ -1643,7 +1644,9 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   Keys sign the hash of everything but the signatures, and that hash is the certificate's id.
   * Copies with different signatures are one certificate. A book merges the signatures that matter
     (owners' and recovery keys' at the parent) until a session attests it.
-  * The attestation carries the committed signer set, which is frozen from then on (OWNR-4, OWNS-5).
+  * The attestation carries the committed signatures, which are frozen from then on (OWNR-4, OWNS-5).
+    A book counts only the signers whose signature it verifies, so a session can't name a signer who
+    never signed (OWNX-1).
   * Padding a certificate with other keys' signatures creates nothing.
   * The encoding has exactly one form.
 * **The changes:** `Genesis{owners, rule, nonce}`, `Add`, `Leave`, `Remove` (rule C only), `SetRule`,
@@ -1711,16 +1714,24 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * A solo change is one that not every owner at its parent signed. An owner's backup key signs as the
     owner.
   * The genesis owners split 256 equally. An owner added later gets its share from the owners who
-    signed its addition: each gives its remaining share divided by the new owner count. Gifts move
-    share and never create it, so solo changes along any history total at most 256, and there is no
-    separate world-wide cap.
-  * A solo change needs one signing owner with share left, and costs each signing owner one. So an
-    owner's remaining share shrinks only through certificates it signed. **Invariant 9:** whatever
-    other keys do, an honest owner can still make as many solo changes as it has left, and all owners
+    signed its addition: each gives its remaining share divided by the new owner count.
+  * A leaver's remaining share passes to the remaining owners, in equal parts, so selling the world
+    (add the buyer, then leave) keeps the world's share (OWNX-4). A rule-C removal passes the target's
+    remaining share to its removers.
+  * Share moves and is never created, so solo changes along one history total at most 256, and there
+    is no separate world-wide cap.
+  * A solo change needs one signing owner with share left. Each signing owner pays one, up to its
+    share: one with nothing left co-signs for free. So an owner's remaining share shrinks only through
+    certificates it signed, except a rule-C removal of it (OWNX-5). **Invariant 9:** whatever other
+    keys do, an honest owner can still make as many solo changes as it has left, and all owners
     together can always make a joint change, until the book is full.
-  * Leave, and clearing one's own backup key, are exempt. Clearing is the way out of a stolen backup
-    (OWNV-2), and it needs a key to clear.
-  * Copies join the shares by minimum and the counts by maximum [I].
+  * Leave, clearing one's own backup key and Merge are exempt. Clearing is the way out of a stolen
+    backup (OWNV-2), and it needs a key to clear.
+  * Copies join the shares by minimum and the counts by maximum [I]. So across copies that each add an
+    owner and then merge, the shares can total more than 256: by one gift per copy (OWNX-3, for
+    example 298 after two copies each add one owner).
+  * The cap is per history. Siblings on one parent are each judged on their own history, so a co-owner
+    with a session of its own can attest solo siblings until the book is full (OWNX-2; D87).
   * A sole owner's changes are all joint, so only the 1,024 cap bounds them: until compaction, a sole
     owner can fill its own book (OWNW-7; D87).
   * Without compaction, which production needs [I], an honest long-lived world also reaches 1,024 in
@@ -1753,6 +1764,7 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * Its signature counts as the owner's in every rule, merge, removal and solo-share check.
   * A stolen backup equals a stolen key. The owner can clear it (exempt from the cap) or replace it, and
     a replaced backup is a former key.
+  * One backup key backs one owner (OWNX-6).
 * **Kept for comparison** (the spike implements both):
   * rule B: any one owner adds, and nobody can be removed;
   * rule C: k of n, with instant `Remove`. Concurrent mutual removals void each other (OWNR-7).
@@ -1808,7 +1820,10 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * under rule C, remove an owner through a fork-point removal (OWN-3's limit, above);
   * void an honest change: a former owner's Leave committed on an old fork voids an honest removal
     of them, and changes signed against the set without them then fail;
-  * fill the 1,024 cap through a branch where its minted keys are the only owners.
+  * fill the 1,024 cap, under any rule: a co-owner with a session of its own attests solo siblings on
+    one parent, each judged on its own history, until the book is full, and then even the owners'
+    joint merge is refused (OWNX-2). An attacker with only former keys can do the same on a branch
+    where its minted keys are the only owners.
   In the harness's 15,000 random histories, A2 removed an honest owner in 307, added an owner in
   5,641, and voided an honest change in 359. It loosened the rule in 99, always
   together with such a takeover or with a stolen current backup key, which is its owner's key (A2 held
@@ -1931,7 +1946,13 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * **Under consent only it found** rule C's stated exception (seed 1895), and that a stolen current
     backup key legitimately changes the rule (seed 5460): it is now counted as a compromised owner, not
     a failed rule join. Converting the tests found OWN-3's fork-point limit.
-* **Tests:** 63 ownership tests pass; the three ignored ones are debug helpers. The tests of
+  * **Round 9** [V: harness, 5,000 histories at e09d4b4: every must-hold invariant held; A2 residual:
+    honest owner lost 94, owner gained 1,822, honest change voided 114, rule loosened 33; 3 histories hit
+    rule C's exception]: A2 sometimes names a signer with a made-up signature (OWNX-1),
+    and the independent share reference models shares passing on Leave and removal. It found that an
+    owner could run into debt (paying a solo change beyond its share), which a passed share then paid
+    off first (seed 54); a signing owner now pays only up to its share.
+* **Tests:** 67 ownership tests pass; the three ignored ones are debug helpers. The tests of
   the removed machinery went with it (OWNS-1a, OWNS-1c, OWNS-1d, OWNT-1, OWNT-1b, OWNT-3 and the
   window and recovery tests); `backup_key_acts_as_its_owner` replaces them.
 * **Regression tests for the reviews.** Each set fails on the code before its fix:
@@ -1941,7 +1962,8 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * f961f44, 6 from round 4;
   * 5e2de2c, 7 from round 5;
   * fc83412, 6 from round 6;
-  * 1660b92, 3 from round 7.
+  * 1660b92, 3 from round 7;
+  * 4f13228, 4 from round 8 (OWNX-1a, OWNX-1b, OWNX-4, OWNX-6).
 * **The session scenario** gives ALL EQUAL, and the full regress has 42 of 42 identical. The ownership
   scenario was rewritten for consent only (f73354b): a removal under rule A is refused, and backup keys
   co-sign an addition, make their owner leave and clear themselves.
@@ -5085,11 +5107,21 @@ entry says so.
       key.
     * **The residual, accepted for now** [V: harness, 15,000 histories at c4bf06b and a8c41cd]: anyone who runs a
       session of their own can return a former owner or add a co-owner through a fork at an old state,
-      remove an owner under rule C at a fork point, void an honest change, and fill the cap on a minted
-      branch. An honest owner was lost in 307 histories, an owner gained in 5,641, and an
+      remove an owner under rule C at a fork point, and void an honest change. **Any co-owner with a
+      session of its own can also brick the world, under any rule:** it fills the 1,024 cap with
+      solo siblings, and then even the owners' joint merge is refused (OWNX-2). An honest owner was lost in 307 histories, an owner gained in 5,641, and an
       honest change voided in 359, always detected and shown as disputed.
-    * **Also recorded** (the hardening stopped after round 8, as @coordinator-opus set; each is
-      Medium or lower):
+    * **Also recorded** (the hardening stopped after round 9, as @coordinator-opus set):
+      * OWNX-2 (Medium-High, A2): the bricking above. Not fixed in the spike: counting each owner's
+        solo certificates across the whole book makes a certificate's validity depend on concurrent
+        ones, not its causal past. Storage then stays bounded and books converge only with a
+        deterministic eviction of attested certificates, plus charged merges (OWNW-2 enforced on
+        insert). That is a structural change to the storage layer. Compaction and bound session
+        lineages are the natural places for it;
+      * OWNX-3 (Medium): across copies that each add an owner and then merge, the shares can total
+        more than 256, by one gift per copy;
+      * OWNX-5 (Low): a rule-C removal passes the target's share to its removers, the one way a share
+        changes without its holder signing;
       * a sole owner can fill its own book to 1,024 until compaction (OWNW-7);
       * rule C: targets of voided mutual removals stay owners in the view, but their own changes are
         refused at insert (12.5);
