@@ -8,7 +8,12 @@ from measured parts; **inferred** = design reasoning, not run.
 
 ## A. Still open
 
-None from the protocol. The Gnosarium design's open questions are with @coordinator-opus.
+From the protocol: three questions about admin permissions, raised by the P2-4 review (VCR-10) and put to
+you as V1-V3 by @coordinator-opus. A role holding only the kick permission can kick the last admin, which
+closes the session; the roles permission can grant Admin, so it equals Admin; and removing an honest but
+slow sole admin closes the session for good. Recommended: only admins kick admins; only admins grant
+Admin, and the roles permission grants only lesser roles; keep closing on the last admin's timeout, with a
+longer grace period. The Gnosarium design's open questions are with @coordinator-opus too.
 
 ## B. Your rulings
 
