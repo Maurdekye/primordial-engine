@@ -238,6 +238,47 @@ pub fn body_set_transform(world: &mut World, body_id: BodyId, position: Pos, rot
     }
 }
 
+/// Primordial Engine fork: forget what the body's history cached, so that its next step depends
+/// only on its state and the rest of the world (carried state, design 7.3). Its contacts are
+/// destroyed (with their manifolds: recycled anchors and warm-start impulses), its fat AABBs
+/// are rebuilt around its transform and buffered as moved, so the next step recreates its
+/// contacts in sorted pair-key order, and its sleep timer is reset. Touch-begin events fire again
+/// for those contacts, and the body has no warm start for one step. Bodies touching it are not
+/// woken by the destroy.
+pub fn body_reset_history(world: &mut World, body_id: BodyId) {
+    crate::recording::with_recording(world, |rec| {
+        rec.write_body_reset_history(body_id);
+    });
+    debug_assert!(super::lifecycle::body_is_valid(world, body_id));
+    debug_assert!(!world.locked);
+    if world.locked {
+        return;
+    }
+
+    let body_index = get_body_full_id(world, body_id);
+    super::lifecycle::destroy_body_contacts(world, body_index, false);
+    world.bodies[body_index as usize].sleep_time = 0.0;
+
+    let body = &world.bodies[body_index as usize];
+    let transform = world.solver_sets[body.set_index as usize].body_sims[body.local_index as usize].transform;
+    let speculative = speculative_distance();
+    let mut shape_id = body.head_shape_id;
+    while shape_id != NULL_INDEX {
+        let shape = &world.shapes[shape_id as usize];
+        let next_shape_id = shape.next_shape_id;
+        let aabb = compute_fat_shape_aabb(shape, transform, speculative);
+        let fat_aabb = aabb_inflate(aabb, shape.aabb_margin);
+        let proxy_key = shape.proxy_key;
+        world.shapes[shape_id as usize].aabb = aabb;
+        world.fat_aabbs[shape_id as usize] = fat_aabb;
+        // A disabled body has no proxy.
+        if proxy_key != NULL_INDEX {
+            world.broad_phase.move_proxy(proxy_key, fat_aabb);
+        }
+        shape_id = next_shape_id;
+    }
+}
+
 /// (b3Body_SetAwake)
 pub fn body_set_awake(world: &mut World, body_id: BodyId, awake: bool) {
     crate::recording::with_recording(world, |rec| {
