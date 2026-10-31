@@ -76,12 +76,18 @@ measures that queue and feeds it (`set_link`) every tick.
 
 ## Evidence (`spikes/out/m1/`)
 
-All measured. The current build (pe-session at p2/session f634185, with pe-physics) is the `*-store` set.
+All measured. The current build (main 0d792e8 with P2-3's pe-session, the held hand target and the
+10.3 session id) is the `*-rebase` set; the `*-store` set is the build before it (pe-session at
+p2/session f634185, with pe-physics).
 
 | Run | Result |
 |---|---|
+| `mixed-windows-wsl-rebase/` | Members 1–2 on Windows, 3–4 native Linux in WSL; loss on members 2 and 3; member 4 drops out at 15 s and is removed about 3 s later. Members 1–3 identical over 1800 frames, replay-equal, 0 failed checks |
+| `loopback-windows-rebase/`, `tests-windows-rebase.log` | Windows loopback (`m1-loopback.sh`): ALL EQUAL. pe-session, pe-mcp and pe-app tests: 94 pass |
+| `linux-wsl-rebase.log` | WSL2 Ubuntu-24.04, native glibc: pe-app and pe-mcp tests pass, `m1-loopback.sh` ALL EQUAL |
+| `agent-windows-rebase/` | Claude Code (Sonnet 5.5) drove member 1 of a live 4-peer ball-pit session: found its own hand, moved it to y = 0.4 m, saw it held there 3 s later, moved it to (0.3, 0.3) and released it; saw member 4's eviction; `scenario_check` refused. Identical over 12000 frames |
 | `mixed-windows-wsl-store/` | Members 1–2 on Windows, 3–4 native Linux in WSL; loss on members 2 and 3; member 4 drops out at 15 s. Members 1–3 identical over 1800 frames, replay-equal, 0 failed checks |
-| `tailscale-windows-laptop-store/` | This PC and <laptop> over Tailscale (RTT about 15 ms); loss on member 2; member 4 drops out at 15 s. Identical over 1800 frames, 0 failed checks |
+| `tailscale-windows-laptop-store/` | This PC and an Intel laptop over Tailscale (RTT about 15 ms); loss on member 2; member 4 drops out at 15 s. Identical over 1800 frames, 0 failed checks |
 | `loopback-windows-store/`, `tests-windows-store.log` | Windows loopback (`m1-loopback.sh`): ALL EQUAL. pe-app and pe-mcp tests pass |
 | `linux-wsl-store.log` | WSL2 Ubuntu-24.04, native glibc: tests pass, `m1-loopback.sh` ALL EQUAL |
 | `agent-windows-session/` | On the first SessionCore build: Claude Code (Sonnet 5.5) drove member 1 of a live 4-peer session through pe-mcp over the pipe. Its touches were accepted and final, it saw member 4's eviction, and `scenario_check` was refused. Identical over 12000 frames |
