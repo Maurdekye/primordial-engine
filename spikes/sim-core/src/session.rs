@@ -21,8 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use box3d_rust::body::{
     body_apply_linear_impulse_to_center, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_transform, body_set_angular_velocity, body_set_linear_velocity,
-    body_set_target_transform, body_set_transform, create_body, destroy_body,
+    body_get_transform, body_reset_history, body_set_angular_velocity, body_set_awake,
+    body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::geometry::{Capsule, Sphere};
 use box3d_rust::hull::make_box_hull;
@@ -114,11 +114,16 @@ impl BodyState {
     pub fn ang(&self) -> Vec3 {
         Vec3 { x: self.f(13), y: self.f(14), z: self.f(15) }
     }
-    /// Overwrite the body's state with these exact bits.
+    /// Overwrite the body's state with these exact bits, awake, and forget its history (design
+    /// 7.3, as pe-physics' `set_state` does): the fork's `body_reset_history` destroys its contacts
+    /// (recycled manifolds and warm starts), zeroes its joints' impulses and its sleep timer, so its
+    /// next step depends only on its state and the rest of the world.
     pub fn write(&self, world: &mut World, id: BodyId) {
         body_set_transform(world, id, self.pos(), self.rot());
         body_set_linear_velocity(world, id, self.lin());
         body_set_angular_velocity(world, id, self.ang());
+        body_set_awake(world, id, true);
+        body_reset_history(world, id);
     }
     pub fn hash(&self) -> u64 {
         fnv_u64s(self.0.iter().map(|&b| b as u64))
@@ -1482,8 +1487,9 @@ pub struct Tables {
     /// Never pruned: a world's own last exit is what lets it refuse a forked chain.
     pub seen: BTreeMap<u64, Seen>,
     pub portal_open: bool,
-    /// Active hands: frames since the hand's last entry (dead reckoning, `SimConfig::hand_predict`).
-    pub hand_idle: BTreeMap<u32, u64>,
+    /// Active hands: frames since the hand's last entry, that entry's `span`, and whether it continues
+    /// a stream, so the hand may coast past its span (dead reckoning, `SimConfig::hand_predict`).
+    pub hand_idle: BTreeMap<u32, (u64, u8, bool)>,
 }
 
 #[derive(Clone)]
@@ -1583,8 +1589,9 @@ pub struct SimConfig {
     pub horizon_slack: u64,
     pub seed: u64,
     pub check_every: u64,
-    /// Remote-hand dead reckoning: an active hand with no entry for a frame keeps its last
-    /// commanded velocity for up to this many frames, then holds. 0 = hold at once.
+    /// Remote-hand dead reckoning (D52): once an active hand's last entry's span has run out, it
+    /// keeps its last commanded velocity, at most 3 m/s, for up to this many frames, then holds.
+    /// 0 = hold once the span ends. Default 6.
     pub hand_predict: u64,
     /// A member none of whose entries has arrived for this many frames is presumed crashed and
     /// voted out (review R3-2). 1.5x the speculation limit, so a congested member is not.
@@ -1611,7 +1618,7 @@ impl Default for SimConfig {
             horizon_slack: 2,
             seed: 0x5052_494D_4F52_4449,
             check_every: 30,
-            hand_predict: 0,
+            hand_predict: 6,
             suspect_after: 180,
             quorum: QuorumRule::Bft,
             vc_timeout: 20,
@@ -2246,10 +2253,8 @@ impl WorldSim {
             s.hash_into(*g, &mut v);
         }
         v.push(self.t.portal_open as u64);
-        if self.cfg.hand_predict > 0 {
-            for (o, n) in &self.t.hand_idle {
-                v.extend([*o as u64, *n, 11]);
-            }
+        for (o, (n, span, stream)) in &self.t.hand_idle {
+            v.extend([*o as u64, *n, *span as u64, *stream as u64, 11]);
         }
         fnv_u64s(v)
     }
@@ -5397,7 +5402,12 @@ impl WorldSim {
                 body_set_target_transform(&mut self.world, o.body, WorldTransform { p, q: QUAT_IDENTITY }, dt, true);
                 hands_set.insert(*obj);
                 if *active {
-                    self.t.hand_idle.insert(*obj, 0);
+                    // The coast continues only a stream (@coordinator-opus, 2026-10-31; D52): an entry
+                    // that comes more than the previous entry's span + `hand_predict` frames after it
+                    // (a one-shot target, a gesture's start) is followed over its span, then held. The
+                    // previous entry was n + 1 frames ago.
+                    let stream = self.t.hand_idle.get(obj).is_some_and(|&(n, sp, _)| n + 1 <= sp as u64 + self.cfg.hand_predict);
+                    self.t.hand_idle.insert(*obj, (0, *span, stream));
                 } else {
                     self.t.hand_idle.remove(obj);
                 }
@@ -5657,26 +5667,37 @@ impl WorldSim {
                 self.outcomes.insert(id, (f, o));
             }
         }
-        // Hands without a target this frame hold still, or, with `hand_predict`, an active hand
-        // keeps its last commanded velocity for up to that many frames (dead reckoning). Both are
-        // deterministic rules of the sim: a speculative frame that lacks the author's entry
-        // predicts with them, and the entry's arrival replaces the prediction by rollback.
+        // Hands without a target this frame: an active hand follows its last entry over the rest of
+        // that entry's span (D53: the target is reached `span` frames after the entry), then, if that
+        // entry continues a stream, keeps its velocity for up to `hand_predict` more frames at most
+        // 3 m/s (D52's coast), then holds: it moves while n <= (span - 1) + hand_predict frames after
+        // the entry. An entry that does not continue a stream is held once its span ends. These are
+        // deterministic rules of the sim: a speculative frame that lacks the author's entry predicts
+        // with them, and the entry's arrival replaces the prediction by rollback.
         let hands: Vec<(u32, Obj)> =
             self.t.objs.iter().enumerate().filter_map(|(i, o)| o.filter(|o| o.kind == 4).map(|o| (i as u32, o))).collect();
         for (i, o) in hands {
             if hands_set.contains(&i) {
                 continue;
             }
-            let coast = match self.t.hand_idle.get_mut(&i) {
-                Some(n) if self.cfg.hand_predict > 0 => {
+            // None: hold. Some(false): inside the entry's span. Some(true): coasting past it.
+            let motion = match self.t.hand_idle.get_mut(&i) {
+                Some((n, span, stream)) => {
                     *n += 1;
-                    *n <= self.cfg.hand_predict
+                    let follow = (*span as u64).saturating_sub(1);
+                    if *n <= follow {
+                        Some(false)
+                    } else if *stream && *n <= follow + self.cfg.hand_predict {
+                        Some(true)
+                    } else {
+                        None
+                    }
                 }
-                _ => false,
+                None => None,
             };
-            if !coast {
+            if motion.is_none() {
                 body_set_linear_velocity(&mut self.world, o.body, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
-            } else {
+            } else if motion == Some(true) {
                 // Never coast faster than a hand moves: a jump (a teleport-like target) would
                 // otherwise be extrapolated as a 40 m/s flight.
                 let v = body_get_linear_velocity(&self.world, o.body);
@@ -5693,16 +5714,17 @@ impl WorldSim {
             self.stats.step_us += now_us() - t0;
             self.stats.steps += 1;
         }
-        // User ruling 09:30Z: the touched object takes the carried resulting state. A no-op when
-        // this peer is on the author's world line; otherwise it pulls the object onto it.
+        // User ruling 09:30Z: the touched object takes the carried resulting state. On the author's
+        // world line the bits are the ones it holds; otherwise it pulls the object onto it. Written
+        // always (review SET-1: writing a pose recomputes derived state), and the write resets the
+        // body's history (7.3), so every peer does the same thing at this frame; `overwrites` counts
+        // the writes that changed bits.
         for (obj, st) in carry {
             if let Some(o) = self.live(obj) {
-                if BodyState::read(&self.world, o.body) != st {
-                    st.write(&mut self.world, o.body);
-                    if record {
-                        self.stats.overwrites += 1;
-                    }
+                if record && BodyState::read(&self.world, o.body) != st {
+                    self.stats.overwrites += 1;
                 }
+                st.write(&mut self.world, o.body);
             }
         }
         // Expire claims; their holders enter a short cooldown on that object.
