@@ -49,7 +49,8 @@ const REPORT_HOLD_US: u64 = 5_000_000;
 const HOLD_SIGNAL_US: u64 = 25_000;
 /// The scripted bandwidth cap's token bucket (the harness's `Cap` model).
 const CAP_BURST_BYTES: f64 = 4000.0;
-/// CoDel-like drops (scripted `codel`): drop while the sojourn time stays above 5 ms for 100 ms.
+/// Scripted `codel`: CoDel's control law (RFC 8289, simplified to per-datagram decisions): once the
+/// sojourn time has stayed above 5 ms for 100 ms, drop, then drop again every 100 ms / sqrt(count).
 const CODEL_TARGET_US: u64 = 5_000;
 const CODEL_INTERVAL_US: u64 = 100_000;
 /// One row of the link series every 250 ms of session time.
@@ -101,7 +102,10 @@ struct Shaper {
     last_us: u64,
     queue: std::collections::VecDeque<(u64, SocketAddr, Vec<u8>)>,
     bytes: u64,
-    above_since: u64,
+    first_above: u64,
+    dropping: bool,
+    count: u64,
+    drop_next: u64,
     /// The longest sojourn in the current series row, µs (the true queue, for the evidence only).
     row_max_us: u64,
 }
@@ -667,22 +671,41 @@ impl Node {
                     if (d.len() as f64) > sh.tokens {
                         break;
                     }
-                    sh.tokens -= d.len() as f64;
                     let (enq, addr, d) = (*enq, sh.queue.front().unwrap().1, sh.queue.pop_front().unwrap().2);
                     sh.bytes -= d.len() as u64;
                     let sojourn = now - enq;
                     sh.row_max_us = sh.row_max_us.max(sojourn);
+                    // A CoDel drop happens at dequeue and uses no link time, so tokens are spent after.
                     if link.codel {
-                        if sojourn <= CODEL_TARGET_US {
-                            sh.above_since = 0;
-                        } else if sh.above_since == 0 {
-                            sh.above_since = now;
-                        } else if now >= sh.above_since + CODEL_INTERVAL_US {
-                            sh.above_since = now;
+                        // RFC 8289: never drop while less than one datagram's worth is left queued.
+                        let ok_to_drop = if sojourn < CODEL_TARGET_US || sh.bytes <= wire::MTU as u64 {
+                            sh.first_above = 0;
+                            false
+                        } else if sh.first_above == 0 {
+                            sh.first_above = now + CODEL_INTERVAL_US;
+                            false
+                        } else {
+                            now >= sh.first_above
+                        };
+                        let gap = |count: u64| (CODEL_INTERVAL_US as f64 / (count as f64).sqrt()) as u64;
+                        if sh.dropping {
+                            if !ok_to_drop {
+                                sh.dropping = false;
+                            } else if now >= sh.drop_next {
+                                sh.count += 1;
+                                sh.drop_next += gap(sh.count);
+                                codel_drops += 1;
+                                continue;
+                            }
+                        } else if ok_to_drop {
+                            sh.dropping = true;
+                            sh.count = if sh.count > 2 && now < sh.drop_next + 16 * CODEL_INTERVAL_US { sh.count - 2 } else { 1 };
+                            sh.drop_next = now + gap(sh.count);
                             codel_drops += 1;
                             continue;
                         }
                     }
+                    sh.tokens -= d.len() as f64;
                     out.push((addr, d));
                 }
                 if !sh.tokens.is_finite() {

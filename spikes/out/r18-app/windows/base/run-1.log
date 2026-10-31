@@ -1,0 +1,18 @@
+pe-app: member 1 of session 7a546e06a7f4e969 on 127.0.0.1:7401; 3 members, 900 frames
+[m1 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m1 t=0ms f=0] every member ready: session epoch 1270287
+[m1 t=730ms f=43] status: frame 43 now 43 conf 38 members {1, 2, 3} rollbacks 0 | sent 73 faulted 0 capped 0 recv 74 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms
+[m1 t=2000ms f=119] fault: links to all now 0% loss, 25 ms +-10 ms
+[m1 t=2730ms f=163] status: frame 163 now 163 conf 156 members {1, 2, 3} rollbacks 0 | sent 236 faulted 0 capped 0 recv 195 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms
+[m1 t=4734ms f=284] status: frame 284 now 284 conf 278 members {1, 2, 3} rollbacks 0 | sent 476 faulted 0 capped 0 recv 316 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m1 t=6735ms f=404] status: frame 404 now 404 conf 396 members {1, 2, 3} rollbacks 0 | sent 716 faulted 0 capped 0 recv 435 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m1 t=8737ms f=524] status: frame 524 now 524 conf 518 members {1, 2, 3} rollbacks 0 | sent 956 faulted 0 capped 0 recv 556 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms
+[m1 t=10738ms f=644] status: frame 644 now 644 conf 638 members {1, 2, 3} rollbacks 0 | sent 1196 faulted 0 capped 0 recv 676 rejected {} bad entry sigs 0 | R18 level 0 signal Some(6) ms
+[m1 t=12739ms f=764] status: frame 764 now 764 conf 756 members {1, 2, 3} rollbacks 0 | sent 1436 faulted 0 capped 0 recv 795 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m1 t=14740ms f=884] status: frame 884 now 884 conf 878 members {1, 2, 3} rollbacks 0 | sent 1676 faulted 0 capped 0 recv 916 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m1 t=16388ms f=904] DONE frames 0..900: digest f843890d4f5f51c2 replay f843890d4f5f51c2 (EQUAL), conf 900, members [1, 2, 3]
+[m1 t=16388ms f=904] slow step: 1307 ms (receive 0 ms, tick 0 ms, send 1307 ms)
+[m1 t=16742ms f=1004] status: frame 1004 now 1004 conf 902 members {1, 2, 3} rollbacks 0 | sent 1756 faulted 0 capped 0 recv 1020 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m1 t=17051ms f=1022] paused at frame 1022 (speculation limit)
+[m1 t=17088ms f=1025] resumed at frame 1025
+member 1: frames 0..900 digest f843890d4f5f51c2 replay f843890d4f5f51c2 (EQUAL), conf 900, members at end [1, 2, 3], rollbacks 0, checks ok 60 bad 0
