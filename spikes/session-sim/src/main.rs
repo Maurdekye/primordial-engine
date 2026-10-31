@@ -1417,6 +1417,7 @@ fn main() {
         Some("kickpartition") => p24r::kickpartition(),
         Some("lastadmin") => p24r::lastadmin(),
         Some("adminclose") => p24r::adminclose(),
+        Some("kickadmin") => p24r::kickadmin(),
         Some("ghostkick") => p24r3::ghostkick(),
         Some("selfkickhead") => p24r3::selfkickhead(),
         Some("ackgap") => p24r3::ackgap(),
