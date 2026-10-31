@@ -7,4 +7,4 @@ RESULT adminvoid: 3's role at m1 Some(0) -> THE VOID ENTRY IS NOT APPLIED; m1 co
   m1: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 1 equivocations 0 checks ok 60 bad 0
   m2: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 2 violations 1 equivocations 0 checks ok 60 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 2 violations 1 equivocations 0 checks ok 60 bad 0
-RESULT adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it): frames 0..592 honest m1=e7d9480867ba0841 m2=e7d9480867ba0841 m3=e7d9480867ba0841 | offline replay e7d9480867ba0841 | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
+RESULT adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
