@@ -394,10 +394,10 @@ fn backdate() {
 fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chain: Vec<Hop>) -> Entry {
     let fake = pe_sim_core::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64);
     let deadline = sim.replica(by, w).sim.now + 600;
-    let fact = fact_departed(6, fake, &record, w, deadline, chain_hash(&chain));
+    let fact = fact_departed(6, fake, &record, w, deadline, chain_hash(&chain), 0);
     let cert: Vec<(MemberId, u64)> = [2u32, 3].iter().map(|&m| (m, member_sig(6, m, fact))).collect();
     let i = sim.peers.iter().position(|p| p.id == by).unwrap();
-    let e = sim.peers[i].worlds.get_mut(&w).unwrap().sim.author(Payload::Arrive { transfer: transfer_id(6, fake), record, depart: fake, deadline, cert, chain }, None);
+    let e = sim.peers[i].worlds.get_mut(&w).unwrap().sim.author(Payload::Arrive { transfer: transfer_id(6, fake), record, depart: fake, deadline, cert, chain, proof: EpochProof::default() }, None);
     let members: Vec<MemberId> = sim.replica(by, w).sim.members.iter().copied().collect();
     for to in members {
         if to != by {
@@ -571,12 +571,12 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 2_200_000 {
                 // R3-5: member 3 certifies, as the whole membership of its world E, a departure that
                 // never happened, of a record carrying A's object 40's global id.
-                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 5, src_frame: 0, via: 0 };
+                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 16]), src_world: 5, src_frame: 0, via: 0 };
                 let fake = 0x1234_5678;
-                let fact = fact_departed(5, fake, &record, 2, u64::MAX, chain_hash(&[]));
+                let fact = fact_departed(5, fake, &record, 2, u64::MAX, chain_hash(&[]), 0);
                 let i = pidx(&sim, 3);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                    Payload::Arrive { transfer: transfer_id(5, fake), record, depart: fake, deadline: u64::MAX, cert: vec![(3, member_sig(5, 3, fact))], chain: vec![] },
+                    Payload::Arrive { transfer: transfer_id(5, fake), record, depart: fake, deadline: u64::MAX, cert: vec![(3, member_sig(5, 3, fact))], chain: vec![], proof: EpochProof::default() },
                     None,
                 );
                 forged.push((2, 3, e.id(), "member 3 mints A's object 40 into B from its own world E"));
@@ -584,12 +584,12 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             }
             if t == 2_500_000 {
                 // NEW-4: member 3 (only in B) mints object 40 into B with no departure behind it.
-                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 1, src_frame: 100, via: 0 };
+                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 16]), src_world: 1, src_frame: 100, via: 0 };
                 let fake = 0xDEAD_BEEF;
-                let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]));
+                let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]), 0);
                 let i = pidx(&sim, 3);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, deadline: u64::MAX, cert: vec![(3, member_sig(1, 3, fact))], chain: vec![] },
+                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, deadline: u64::MAX, cert: vec![(3, member_sig(1, 3, fact))], chain: vec![], proof: EpochProof::default() },
                     None,
                 );
                 forged.push((2, 3, e.id(), "member 3 mints object 40 into B (no departure; signs as itself)"));
@@ -600,7 +600,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                     // NEW-5: member 3 squats the real transfer id before the carrier relays.
                     let i = pidx(&sim, 3);
                     let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                        Payload::Arrive { transfer, record: x.record.unwrap(), depart: x.depart, deadline: x.deadline, cert: vec![], chain: vec![] },
+                        Payload::Arrive { transfer, record: x.record.unwrap(), depart: x.depart, deadline: x.deadline, cert: vec![], chain: vec![], proof: EpochProof::default() },
                         None,
                     );
                     forged.push((2, 3, e.id(), "member 3 squats the real transfer id with a proofless Arrive"));
@@ -610,16 +610,14 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 2_700_000 {
                 // NEW-21: a certified but invalid record (a bug, or a compromised majority, in A): the
                 // signatures are genuine A signatures over a record with a NaN position.
-                let mut st = BodyState([0; 13]);
-                st.0[0] = f32::NAN.to_bits();
-                st.0[6] = 1.0f32.to_bits();
+                let st = BodyState::new([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.0; 3], [0.0; 3]);
                 let record = ObjRecord { global: (1u64 << 32) | 41, kind: 1, state: st, src_world: 1, src_frame: 150, via: 0 };
                 let fake = 0x0BAD_0BAD;
-                let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]));
+                let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]), 0);
                 let cert: Vec<(MemberId, u64)> = [1u32, 2].iter().map(|&m| (m, member_sig(1, m, fact))).collect();
                 let i = pidx(&sim, 1);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, deadline: u64::MAX, cert, chain: vec![] },
+                    Payload::Arrive { transfer: transfer_id(1, fake), record, depart: fake, deadline: u64::MAX, cert, chain: vec![], proof: EpochProof::default() },
                     None,
                 );
                 forged.push((2, 1, e.id(), "a certified record with a NaN position (a bug or a compromised majority in A)"));
@@ -629,7 +627,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 if let Some((transfer, _)) = esc {
                     // NEW-3 (loss): member 2 (only in A) commits the escrow with a proofless verdict.
                     let i = pidx(&sim, 2);
-                    let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: true, cert: vec![] }, None);
+                    let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: true, cert: vec![], frame: 0, proof: EpochProof::default() }, None);
                     forged.push((1, 2, e.id(), "member 2 commits the escrow with a proofless Verdict"));
                     send_all(&mut sim, 1, 2, &e);
                 }
@@ -638,13 +636,13 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 if let Some((transfer, x)) = esc {
                     // R3-8: the carrier relays A's genuine certificate with the record's kind changed.
                     let rec = x.record.unwrap();
-                    let fact = fact_departed(1, x.depart, &rec, 2, x.deadline, chain_hash(&[]));
+                    let fact = fact_departed(1, x.depart, &rec, 2, x.deadline, chain_hash(&[]), 0);
                     let cert = sim.replica(1, 1).sim.cert(fact);
                     if let Some(cert) = cert {
                         let bad = ObjRecord { kind: (rec.kind + 1) % 3, ..rec };
                         let i = pidx(&sim, 1);
                         let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
-                            Payload::Arrive { transfer, record: bad, depart: x.depart, deadline: x.deadline, cert, chain: vec![] },
+                            Payload::Arrive { transfer, record: bad, depart: x.depart, deadline: x.deadline, cert, chain: vec![], proof: EpochProof::default() },
                             None,
                         );
                         forged.push((2, 1, e.id(), "the carrier relays A's genuine certificate with the record's kind changed"));
@@ -656,10 +654,10 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 if let Some((transfer, _)) = esc {
                     // NEW-3 (duplication): before the real verdict lands, the carrier claims B
                     // rejected the object, presenting B's genuine signatures over the acceptance.
-                    let fact = fact_verdict(2, transfer, true);
+                    let fact = fact_verdict(2, transfer, true, 0, 0);
                     let cert: Vec<(MemberId, u64)> = [1u32, 3].iter().map(|&m| (m, member_sig(2, m, fact))).collect();
                     let i = pidx(&sim, 1);
-                    let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: false, cert }, None);
+                    let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: false, cert, frame: 0, proof: EpochProof::default() }, None);
                     forged.push((1, 1, e.id(), "the carrier claims a rejection with B's signatures over the acceptance"));
                     send_all(&mut sim, 1, 1, &e);
                 }
@@ -669,9 +667,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             // ---- P2-5: dishonest-majority attacks by W (members 2 and 3 sign as W) ----
             let t = sim.net.now_us;
             // A sane body state (at rest, 2 m up, unit rotation), so only provenance can refuse it.
-            let mut st = BodyState([0; 13]);
-            st.0[1] = 2.0f32.to_bits();
-            st.0[6] = 1.0f32.to_bits();
+            let st = BodyState::new([0.0, 2.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.0; 3], [0.0; 3]);
             let rec = |global: u64, via: u64| ObjRecord { global, kind: 1, state: st, src_world: 6, src_frame: 50, via };
             if doublespend {
                 // A:52 went A -> W -> B. W's majority exports it again, into A, citing its genuine hop
@@ -679,8 +675,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 let a = &sim.replica(1, 1).sim;
                 let in_b = sim.replica(3, 2).sim.t.objs.iter().flatten().any(|o| o.global == g(52));
                 if let (4_600_000, true, Some(Seen::Left { transfer: t1, dest: 6, .. })) = (t, in_b, a.t.seen.get(&g(52)).cloned()) {
-                    let cert = a.cert(fact_committed(1, t1, g(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
+                    let hop = a.own_hop(t1, g(52)).unwrap();
                     let e = forge_from_w(&mut sim, 1, 2, rec(g(52), t1), vec![hop]);
                     forged.push((1, 2, e.id(), "RESIDUAL: W's majority double-spends A:52 (now in B) into A, citing its genuine hop in"));
                 }
@@ -694,7 +689,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 3_400_000 && !doublespend {
                 // A hop A -> W that A never certified: the attackers hold only member 2's key of A.
                 let fake = 0xF0F0;
-                let fact = fact_committed(1, fake, g(54), 6, 0);
+                let fact = fact_committed(1, fake, g(54), 6, 0, 0, 0);
                 let hop = Hop { src: 1, dest: 6, transfer: fake, via: 0, epoch: 0, frame: 0, certs: vec![], cert: vec![(2, member_sig(1, 2, fact))] };
                 let e = forge_from_w(&mut sim, 2, 3, rec(g(54), fake), vec![hop]);
                 forged.push((2, 3, e.id(), "W's majority forges an earlier hop (A -> W of A:54, signed by m2 of A only)"));
@@ -703,8 +698,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // A's genuine commit certificate of A:52's hop into W, spliced onto A:54.
                 let a = &sim.replica(1, 1).sim;
                 if let Some(Seen::Left { transfer, dest: 6, via: 0, .. }) = a.t.seen.get(&g(52)).cloned() {
-                    if let Some(cert) = a.cert(fact_committed(1, transfer, g(52), 6, 0)) {
-                        let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
+                    if let Some(hop) = a.own_hop(transfer, g(52)) {
                         let e = forge_from_w(&mut sim, 2, 3, rec(g(54), transfer), vec![hop]);
                         forged.push((2, 3, e.id(), "W's majority splices A's genuine hop of A:52 onto A:54"));
                     }
@@ -717,11 +711,11 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 let esc = a.t.escrow.iter().find(|(_, e)| e.dest == 6 && e.status == EscrowStatus::Pending && e.record.is_some_and(|r| r.global == g(55)));
                 if let Some((transfer, x)) = esc.map(|(t, e)| (*t, *e)) {
                     let r = x.record.unwrap();
-                    if a.cert(fact_departed(1, x.depart, &r, 6, x.deadline, chain_hash(&[]))).is_some() {
-                        let fact = fact_verdict(6, transfer, false);
+                    if a.cert(fact_departed(1, x.depart, &r, 6, x.deadline, chain_hash(&[]), 0)).is_some() {
+                        let fact = fact_verdict(6, transfer, false, 0, 0);
                         let wcert: Vec<(MemberId, u64)> = [2u32, 3].iter().map(|&m| (m, member_sig(6, m, fact))).collect();
                         let i = sim.peers.iter().position(|p| p.id == 2).unwrap();
-                        let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: false, cert: wcert }, None);
+                        let e = sim.peers[i].worlds.get_mut(&1).unwrap().sim.author(Payload::Verdict { transfer, accepted: false, cert: wcert, frame: 0, proof: EpochProof::default() }, None);
                         println!("  setup t={} ms: W's majority certifies to A a refusal of A:55 (transfer {transfer}), while W's replicas accept it", t / 1000);
                         send_all(&mut sim, 1, 2, &e);
                         refunded = Some((transfer, x));
@@ -732,7 +726,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // ... then W exports A:55 to B, presenting A's departure certificate (all A ever
                 // signed of this hop) in place of a commit certificate.
                 let r = x.record.unwrap();
-                let cert = sim.replica(2, 1).sim.cert(fact_departed(1, x.depart, &r, 6, x.deadline, chain_hash(&[]))).unwrap();
+                let cert = sim.replica(2, 1).sim.cert(fact_departed(1, x.depart, &r, 6, x.deadline, chain_hash(&[]), 0)).unwrap();
                 let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
                 let e = forge_from_w(&mut sim, 2, 3, rec(g(55), transfer), vec![hop]);
                 forged.push((2, 3, e.id(), "refund and keep: W exports A:55 (refunded to A) into B with A's departure certificate"));
@@ -758,8 +752,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 let back = a.t.objs.iter().flatten().any(|o| o.global == g(52)) && matches!(a.t.seen.get(&g(52)), Some(Seen::Here { from: 2, .. }));
                 let first = sim.peers.iter().flat_map(|p| p.jobs.iter()).find(|j| j.src == 1 && j.dst == 6 && j.record.is_some_and(|r| r.global == g(52))).map(|j| j.transfer);
                 if let (true, Some(t1)) = (back, first) {
-                    let cert = a.cert(fact_committed(1, t1, g(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
+                    let hop = a.own_hop(t1, g(52)).unwrap();
                     let e = forge_from_w(&mut sim, 2, 3, rec(g(52), t1), vec![hop.clone()]);
                     forged.push((2, 3, e.id(), "W's majority resurrects A:52 into B, which it has left for A since"));
                     let e = forge_from_w(&mut sim, 1, 2, rec(g(52), t1), vec![hop]);
@@ -1183,7 +1176,7 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
     let (en, eb) = sim.net.bytes(1, "");
     // Wire estimate: one datagram per message with ~52 B of IP/UDP/AEAD/session overhead.
     let wire = |n: u64, b: u64| (b + 52 * n) as f64 / secs;
-    let naive_payload = naive_changed * (4 + 52) + naive_frames * 16;
+    let naive_payload = naive_changed * (4 + std::mem::size_of::<BodyState>() as u64) + naive_frames * 16; // id + exact state
     let naive_quant = naive_changed * (2 + 24) + naive_frames * 16;
     println!(
         "RESULT ballpit {hz} Hz, {hands} hand(s), input delay {ahead} frames, loss {loss}%: sweep window {secs:.2} s, {naive_frames} frames"
@@ -1281,8 +1274,9 @@ fn handowner() {
             // 2 m above where member 2 sees it.
             if forge && !planted && now >= 2_400_000 {
                 let r2 = &mut sim.peers[i2].worlds.get_mut(&1).unwrap().sim;
-                if let Some(mut st) = r2.obj_state(h1) {
-                    st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                if let Some(st) = r2.obj_state(h1) {
+                    let [x, y, z] = st.pos_f64();
+                    let st = st.with_pos([x, y + 2.0, z]);
                     let e = r2.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (h1, st));
                     sim.net.send(1, 2, 1, &Msg::Entry(e));
                 }
@@ -1429,6 +1423,11 @@ fn main() {
         Some("adminfork") => p24r4::adminfork(),
         Some("randsched") => randsched::main(&args),
         Some("capfake") => p24r4::capfake(),
+        Some("voidfork") => p24r4::voidfork(),
+        Some("voiddeep") => p24r4::voiddeep(),
+        Some("plainfork") => p24r4::plainfork(),
+        Some("pfsilent") => p24r4::pfsilent(),
+        Some("slowcapper") => p24r4::slowcapper(),
         Some("fakeadmin") => p24r4::fakeadmin(),
         Some("bigjoin") => p24r4::bigjoin(),
         Some("adminwedge") => p24r4::adminwedge(),

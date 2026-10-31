@@ -11,13 +11,13 @@ use std::time::Instant;
 use box3d_rust::body::{body_apply_linear_impulse_to_center, create_body};
 use box3d_rust::hull::make_box_hull;
 use box3d_rust::id::BodyId;
-use box3d_rust::math_functions::{Pos, Vec3};
+use box3d_rust::math_functions::Vec3;
 use box3d_rust::recording::{deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer, RegistrySlot};
 use box3d_rust::shape::create_hull_shape;
 use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::{world_get_awake_body_count, World};
 use pe_sim_core::session::{block_delta, build_scene, BodyState, SceneKind};
-use pe_sim_core::{DT, SUBSTEPS};
+use pe_sim_core::{pos, DT, SUBSTEPS};
 
 /// Full world images, the way the session layer takes them.
 struct Imager {
@@ -116,7 +116,7 @@ fn stacks() -> (World, Vec<BodyId>) {
     let mut w = World::new(&pe_sim_core::engine_world_def());
     let mut g = default_body_def();
     g.type_ = BodyType::Static;
-    g.position = Pos { x: 0.0, y: -0.5, z: 0.0 };
+    g.position = pos(0.0, -0.5, 0.0);
     let gb = create_body(&mut w, &g);
     create_hull_shape(&mut w, gb, &default_shape_def(), &make_box_hull(20.0, 0.5, 20.0).base);
     let mut bodies = Vec::new();
@@ -124,7 +124,7 @@ fn stacks() -> (World, Vec<BodyId>) {
         for k in 0..4 {
             let mut d = default_body_def();
             d.type_ = BodyType::Dynamic;
-            d.position = Pos { x: -10.5 + 3.0 * (s % 8) as f32, y: 0.25 + 0.5 * k as f32, z: -10.5 + 3.0 * (s / 8) as f32 };
+            d.position = pos(-10.5 + 3.0 * (s % 8) as f32, 0.25 + 0.5 * k as f32, -10.5 + 3.0 * (s / 8) as f32);
             let b = create_body(&mut w, &d);
             let mut sd = default_shape_def();
             sd.density = 1.0;

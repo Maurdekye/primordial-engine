@@ -2,9 +2,9 @@ REPRO capfake fixed=false: 9 removed at never; live at the end: false; m1 conf 1
   m1: conf 143 frame 263 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 15 bad 0
   m2: conf 143 frame 263 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 15 bad 0
   m3: conf 143 frame 263 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 15 bad 0
-RESULT capfake fixed=false: frames 0..262 honest m1=1eabbd39fa4c52d0 m2=1eabbd39fa4c52d0 m3=1eabbd39fa4c52d0 | offline replay 1eabbd39fa4c52d0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 45 bad 0
+RESULT capfake fixed=false: frames 0..262 honest m1=8cffc6d1839742a1 m2=8cffc6d1839742a1 m3=8cffc6d1839742a1 | offline replay 8cffc6d1839742a1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 45 bad 0
 REPRO capfake fixed=true: 9 removed at 4.15 s; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
   m1: conf 826 frame 833 members {1, 2, 3} evicted {9: (122, 232)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 57 bad 0
   m2: conf 826 frame 833 members {1, 2, 3} evicted {9: (122, 232)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 57 bad 0
   m3: conf 826 frame 833 members {1, 2, 3} evicted {9: (122, 232)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 57 bad 0
-RESULT capfake fixed=true: frames 0..832 honest m1=1f360dea85ccc6a0 m2=1f360dea85ccc6a0 m3=1f360dea85ccc6a0 | offline replay 1f360dea85ccc6a0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 171 bad 0
+RESULT capfake fixed=true: frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 171 bad 0

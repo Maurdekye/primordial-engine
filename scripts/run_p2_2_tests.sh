@@ -6,6 +6,8 @@
 #   scripts/run_p2_2_tests.sh --check-only compare the existing logs only
 # Set PE_HEAVY to a wrapper script (e.g. a lock that runs one job at a time at idle priority) and every
 # cargo job runs through it as `bash $PE_HEAVY <command>`. Never runs `wsl --shutdown`.
+# The fork's own suite (cargo test -p box3d-rust --release, Windows) is logged in
+# spikes/out/p2-2/fork-suite-windows-release.txt and must pass.
 # Logs: spikes/out/p2-2/{windows,linux-musl}-{debug,release}.txt, each starting with the commit, the
 # working-tree state and the compiler. The RESULT lines must be equal across all four logs, except
 # the images digest, which differs between debug and release in Box3D's own snapshot header
@@ -34,6 +36,11 @@ for prof in debug release; do
   results "$out/windows-$prof.txt" | wc -l | sed "s/^/windows $prof RESULT lines: /"
   grep -E "^test result" "$out/windows-$prof.txt" || true
 done
+
+if [ $run = yes ]; then
+  { header; low cargo test -p box3d-rust --release --offline; } > "$out/fork-suite-windows-release.txt" 2>&1 || true
+  grep -E "^test result" "$out/fork-suite-windows-release.txt" | sed "s/^/fork suite: /" || true
+fi
 
 if [ $linux = yes ]; then
   target=x86_64-unknown-linux-musl
@@ -65,6 +72,10 @@ fi
 
 # Every log passes every test and gives the same RESULT lines (images per profile).
 status=0
+fork="$out/fork-suite-windows-release.txt"
+if [ ! -e "$fork" ] || grep -qE "FAILED|panicked|^error" "$fork" || [ "$(grep -c '^test result: ok' "$fork")" -lt 2 ]; then
+  echo "FORK SUITE FAILED ($fork)"; status=1
+fi
 ref=""
 for f in "$out"/windows-*.txt "$out"/linux-musl-*.txt; do
   [ -e "$f" ] || continue

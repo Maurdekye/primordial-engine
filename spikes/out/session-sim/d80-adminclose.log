@@ -5,4 +5,4 @@ RESULT adminclose: m3 epoch 1 members {2, 3} view changes 1 (resets 0, highest r
 RESULT adminclose: the only admin (1) silent from 3 s; session closed at frame Some(438) at m2, Some(438) at m3 -> CLOSED, the same frame everywhere
   m2: conf 887 frame 893 members {2, 3} evicted {1: (86, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 31 bad 0
   m3: conf 887 frame 893 members {2, 3} evicted {1: (86, 173)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 31 bad 0
-RESULT adminclose (the only admin goes silent at t=3 s): frames 0..892 honest m2=64afc61db42fdb4b m3=64afc61db42fdb4b | offline replay 64afc61db42fdb4b | ALL EQUAL, NO FALSE CHECKS ; checks ok 62 bad 0
+RESULT adminclose (the only admin goes silent at t=3 s): frames 0..892 honest m2=9dc12f3147099f66 m3=9dc12f3147099f66 | offline replay 9dc12f3147099f66 | ALL EQUAL, NO FALSE CHECKS ; checks ok 62 bad 0

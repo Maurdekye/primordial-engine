@@ -163,7 +163,8 @@ pub struct GetStateParams {
 pub struct ObjectSummary {
     pub object: u32,
     pub kind: String,
-    pub position: [f32; 3],
+    /// World position in metres (f64: Box3D positions are double precision, D58).
+    pub position: [f64; 3],
     pub linear_velocity: [f32; 3],
 }
 
@@ -198,7 +199,8 @@ pub struct ObjectState {
     pub global_id: String,
     /// box, sphere, capsule, ball or hand. Hands are kinematic and move only by `hand` interactions.
     pub kind: String,
-    pub position: [f32; 3],
+    /// World position in metres (f64: Box3D positions are double precision, D58).
+    pub position: [f64; 3],
     /// Unit quaternion, [x, y, z, w].
     pub rotation: [f32; 4],
     pub linear_velocity: [f32; 3],
