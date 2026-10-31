@@ -1,3 +1,3 @@
-trace: 600 frames, 256 bodies, debug profile, 2.1482906s total (3580.5 us/frame), digest 7903109aab28ed9b, final world hash 969d4edf682d551c -> spikes/out/vdw/trace-off-win-debug.txt
-build: debug profile, target x86_64, contact recycling: upstream fixed (--upstream)
+trace: 600 frames, 256 bodies, debug profile, 2.3857017s total (3976.2 us/frame), digest e8a2386a0f2ed7d6, final world hash ac5ab5ed7b831a9e -> spikes/out/vdw/trace-off-win-debug.txt
+build: debug profile, target x86_64, contact recycling: upstream fixed (--upstream), worker threads: 1
 RESULT: PASS

@@ -1,6 +1,6 @@
-[PASS] falling ragdolls vs C golden: sleepStep=291 hash=0xFF4C605B (C: sleepStep=291 hash=0xFF4C605B) in 338.5053ms
-[PASS] wave pile vs C golden: sleepStep=272 hash=0x266F83B0 (C: sleepStep=272 hash=0x266F83B0) in 328.6772ms
-[PASS] query spawn vs C golden: sleepStep=242 hash=0xF3AD9BA6 hits=59 queryHash=0xE3271F3D (C: sleepStep=242 hash=0xF3AD9BA6 hits=59 queryHash=0xE3271F3D) in 28.4061ms
-[PASS] mesh drop vs C golden: sleepStep=226 hash=0xD2FF069D (C: sleepStep=226 hash=0xD2FF069D) in 595.8099ms
-build: debug profile, target x86_64, contact recycling: upstream fixed (--upstream)
+[PASS] falling ragdolls vs C golden: sleepStep=263 hash=0xA5423F98 (C: sleepStep=263 hash=0xA5423F98) in 419.0686ms
+[PASS] wave pile vs C golden: sleepStep=272 hash=0xC8E5F3D6 (C: sleepStep=272 hash=0xC8E5F3D6) in 412.9677ms
+[PASS] query spawn vs C golden: sleepStep=242 hash=0x489585E6 hits=59 queryHash=0x5B4429DC (C: sleepStep=242 hash=0x489585E6 hits=59 queryHash=0x5B4429DC) in 29.4318ms
+[PASS] mesh drop vs C golden: sleepStep=218 hash=0xD378CF04 (C: sleepStep=218 hash=0xD378CF04) in 728.6301ms
+build: debug profile, target x86_64, contact recycling: upstream fixed (--upstream), worker threads: 1
 RESULT: PASS

@@ -571,7 +571,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 2_200_000 {
                 // R3-5: member 3 certifies, as the whole membership of its world E, a departure that
                 // never happened, of a record carrying A's object 40's global id.
-                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 5, src_frame: 0, via: 0 };
+                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 16]), src_world: 5, src_frame: 0, via: 0 };
                 let fake = 0x1234_5678;
                 let fact = fact_departed(5, fake, &record, 2, u64::MAX, chain_hash(&[]), 0);
                 let i = pidx(&sim, 3);
@@ -584,7 +584,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             }
             if t == 2_500_000 {
                 // NEW-4: member 3 (only in B) mints object 40 into B with no departure behind it.
-                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 1, src_frame: 100, via: 0 };
+                let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 16]), src_world: 1, src_frame: 100, via: 0 };
                 let fake = 0xDEAD_BEEF;
                 let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]), 0);
                 let i = pidx(&sim, 3);
@@ -610,9 +610,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 2_700_000 {
                 // NEW-21: a certified but invalid record (a bug, or a compromised majority, in A): the
                 // signatures are genuine A signatures over a record with a NaN position.
-                let mut st = BodyState([0; 13]);
-                st.0[0] = f32::NAN.to_bits();
-                st.0[6] = 1.0f32.to_bits();
+                let st = BodyState::new([f64::NAN, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.0; 3], [0.0; 3]);
                 let record = ObjRecord { global: (1u64 << 32) | 41, kind: 1, state: st, src_world: 1, src_frame: 150, via: 0 };
                 let fake = 0x0BAD_0BAD;
                 let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]), 0);
@@ -669,9 +667,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             // ---- P2-5: dishonest-majority attacks by W (members 2 and 3 sign as W) ----
             let t = sim.net.now_us;
             // A sane body state (at rest, 2 m up, unit rotation), so only provenance can refuse it.
-            let mut st = BodyState([0; 13]);
-            st.0[1] = 2.0f32.to_bits();
-            st.0[6] = 1.0f32.to_bits();
+            let st = BodyState::new([0.0, 2.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.0; 3], [0.0; 3]);
             let rec = |global: u64, via: u64| ObjRecord { global, kind: 1, state: st, src_world: 6, src_frame: 50, via };
             if doublespend {
                 // A:52 went A -> W -> B. W's majority exports it again, into A, citing its genuine hop
@@ -1180,7 +1176,7 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
     let (en, eb) = sim.net.bytes(1, "");
     // Wire estimate: one datagram per message with ~52 B of IP/UDP/AEAD/session overhead.
     let wire = |n: u64, b: u64| (b + 52 * n) as f64 / secs;
-    let naive_payload = naive_changed * (4 + 52) + naive_frames * 16;
+    let naive_payload = naive_changed * (4 + std::mem::size_of::<BodyState>() as u64) + naive_frames * 16; // id + exact state
     let naive_quant = naive_changed * (2 + 24) + naive_frames * 16;
     println!(
         "RESULT ballpit {hz} Hz, {hands} hand(s), input delay {ahead} frames, loss {loss}%: sweep window {secs:.2} s, {naive_frames} frames"
@@ -1278,8 +1274,9 @@ fn handowner() {
             // 2 m above where member 2 sees it.
             if forge && !planted && now >= 2_400_000 {
                 let r2 = &mut sim.peers[i2].worlds.get_mut(&1).unwrap().sim;
-                if let Some(mut st) = r2.obj_state(h1) {
-                    st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                if let Some(st) = r2.obj_state(h1) {
+                    let [x, y, z] = st.pos_f64();
+                    let st = st.with_pos([x, y + 2.0, z]);
                     let e = r2.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (h1, st));
                     sim.net.send(1, 2, 1, &Msg::Entry(e));
                 }
@@ -1426,6 +1423,11 @@ fn main() {
         Some("adminfork") => p24r4::adminfork(),
         Some("randsched") => randsched::main(&args),
         Some("capfake") => p24r4::capfake(),
+        Some("voidfork") => p24r4::voidfork(),
+        Some("voiddeep") => p24r4::voiddeep(),
+        Some("plainfork") => p24r4::plainfork(),
+        Some("pfsilent") => p24r4::pfsilent(),
+        Some("slowcapper") => p24r4::slowcapper(),
         Some("fakeadmin") => p24r4::fakeadmin(),
         Some("bigjoin") => p24r4::bigjoin(),
         Some("adminwedge") => p24r4::adminwedge(),

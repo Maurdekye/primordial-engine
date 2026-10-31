@@ -27,7 +27,7 @@ use box3d_rust::body::{
 use box3d_rust::geometry::{Capsule, Sphere};
 use box3d_rust::hull::make_box_hull;
 use box3d_rust::id::BodyId;
-use box3d_rust::math_functions::{Pos, Quat, Transform, Vec3, QUAT_IDENTITY};
+use box3d_rust::math_functions::{Pos, Quat, Vec3, WorldTransform, QUAT_IDENTITY};
 use box3d_rust::recording::{
     deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer,
     RegistrySlot,
@@ -37,7 +37,7 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_WORDS};
-use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
@@ -51,35 +51,68 @@ pub const LOGIC: MemberId = 0;
 // ---- object state ------------------------------------------------------------------------------
 
 /// Exact bit pattern of a rigid body's sim state: position, rotation, linear and angular velocity.
+/// 16 words (D58): the position as three f64, each two words, low word first; then the rotation
+/// and both velocities as f32 bits. An f32 build widens its positions exactly, so it keeps its bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BodyState(pub [u32; 13]);
+pub struct BodyState(pub [u32; 16]);
 
+#[allow(clippy::unnecessary_cast)] // Pos is f64 under double-precision, f32 without it
 impl BodyState {
     pub fn read(world: &World, id: BodyId) -> Self {
         let t = body_get_transform(world, id);
         let v = body_get_linear_velocity(world, id);
         let w = body_get_angular_velocity(world, id);
+        let p = |x: f64| [x.to_bits() as u32, (x.to_bits() >> 32) as u32];
+        let [x, y, z] = [p(t.p.x as f64), p(t.p.y as f64), p(t.p.z as f64)];
         BodyState([
-            t.p.x.to_bits(), t.p.y.to_bits(), t.p.z.to_bits(),
+            x[0], x[1], y[0], y[1], z[0], z[1],
             t.q.v.x.to_bits(), t.q.v.y.to_bits(), t.q.v.z.to_bits(), t.q.s.to_bits(),
             v.x.to_bits(), v.y.to_bits(), v.z.to_bits(),
             w.x.to_bits(), w.y.to_bits(), w.z.to_bits(),
         ])
     }
+    /// A state from its parts: position, rotation (x, y, z, s), linear and angular velocity.
+    pub fn new(p: [f64; 3], q: [f32; 4], v: [f32; 3], w: [f32; 3]) -> Self {
+        let mut s = [0u32; 16];
+        for (k, x) in p.into_iter().enumerate() {
+            s[2 * k] = x.to_bits() as u32;
+            s[2 * k + 1] = (x.to_bits() >> 32) as u32;
+        }
+        for (k, x) in q.into_iter().chain(v).chain(w).enumerate() {
+            s[6 + k] = x.to_bits();
+        }
+        BodyState(s)
+    }
+    /// This state at another position.
+    pub fn with_pos(&self, p: [f64; 3]) -> Self {
+        let mut s = Self::new(p, [0.0; 4], [0.0; 3], [0.0; 3]);
+        s.0[6..].copy_from_slice(&self.0[6..]);
+        s
+    }
+    pub fn pos_f64(&self) -> [f64; 3] {
+        [self.d(0), self.d(2), self.d(4)]
+    }
+    /// Every component finite (no NaN or infinity).
+    pub fn is_finite(&self) -> bool {
+        self.pos_f64().iter().all(|x| x.is_finite()) && self.0[6..].iter().all(|&b| f32::from_bits(b).is_finite())
+    }
     fn f(&self, i: usize) -> f32 {
         f32::from_bits(self.0[i])
     }
+    fn d(&self, i: usize) -> f64 {
+        f64::from_bits(self.0[i] as u64 | (self.0[i + 1] as u64) << 32)
+    }
     pub fn pos(&self) -> Pos {
-        Pos { x: self.f(0), y: self.f(1), z: self.f(2) }
+        Pos { x: self.d(0) as _, y: self.d(2) as _, z: self.d(4) as _ }
     }
     pub fn rot(&self) -> Quat {
-        Quat { v: Vec3 { x: self.f(3), y: self.f(4), z: self.f(5) }, s: self.f(6) }
+        Quat { v: Vec3 { x: self.f(6), y: self.f(7), z: self.f(8) }, s: self.f(9) }
     }
     pub fn lin(&self) -> Vec3 {
-        Vec3 { x: self.f(7), y: self.f(8), z: self.f(9) }
+        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
     }
     pub fn ang(&self) -> Vec3 {
-        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
+        Vec3 { x: self.f(13), y: self.f(14), z: self.f(15) }
     }
     /// Overwrite the body's state with these exact bits.
     pub fn write(&self, world: &mut World, id: BodyId) {
@@ -275,6 +308,26 @@ pub mod fix {
     /// replica keeps the first version of a seq it receives, so a forker's chain past its fork may
     /// never link here, and its precommit in a quorum others decided on held this replica back.
     pub const PF1: u64 = 1 << 32;
+    /// VC7R-1: a listed admin entry is judged along its own ancestry (the chain-local rules replayed
+    /// from the prefix this replica validated), never by which branch of its author's chain this replica
+    /// linked: a horizon-void version held as a duplicate was valid here and void where it was linked.
+    /// Pure only with `RECUT` on (review VC8R-2): the replay reads the ack-epoch history.
+    pub const VC7R1: u64 = 1 << 33;
+    /// VC7R-2: evidence an honest member must deliver gets the slow-member allowance (`suspect_after`)
+    /// before its author is voted out: a cap's polka (VC6R-1) and a vote's frozen head (VC4R-5). The
+    /// cap's polka also counts every prevote the precommit named that is held, linked or not.
+    pub const VC7R2: u64 = 1 << 34;
+    /// Round 8 (found while building `slowcapper`): a cut that re-points a removed member's chain
+    /// re-validates the cut branch from a clean chain state, the ack-epoch history included. Without it
+    /// the history of the abandoned branch made every re-validated early ack fail VC-5's epoch rule, so
+    /// a replica that re-pointed voided the removed member's acks and one that did not kept them.
+    /// Review VC8R-2: VC7R1's purity rests on it, since `valid_on_own_branch` reads that history.
+    pub const RECUT: u64 = 1 << 35;
+    /// VC8R-1: a proven forker's prevotes count toward a polka (a lock, a re-proposal's valid round)
+    /// wherever they sit in its chain, in any version, as PF-1 counts its precommits toward a decision.
+    /// A member that kept another version of the forked seq could not count the forker's prevote, never
+    /// saw the polka the others locked on, and the locked members prevoted nil on everything else.
+    pub const VC8R1: u64 = 1 << 36;
     /// Review OWNY-2 (ownership, 12.5): a certificate built on a pending one's head is held and judged
     /// again after each decision, not dropped at receipt. (A high bit, clear of P2-4's next flags.)
     pub const OWNY2: u64 = 1 << 40;
@@ -1022,7 +1075,7 @@ impl Rd<'_> {
         RoleId::try_from(self.u32()?).ok()
     }
     fn state(&mut self) -> Option<BodyState> {
-        let mut s = [0u32; 13];
+        let mut s = [0u32; 16];
         for b in &mut s { *b = self.u32()? }
         Some(BodyState(s))
     }
@@ -1341,10 +1394,10 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             let mut world = World::new(&crate::engine_world_def());
             static_box(&mut world, Pos { x: 0.0, y: -0.5, z: 0.0 }, 2.0, 0.5, 2.0);
             let (w, h) = (1.2f32, 0.6f32);
-            static_box(&mut world, Pos { x: w + 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: -w - 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: w + 0.1 }, w + 0.2, h, 0.1);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: -w - 0.1 }, w + 0.2, h, 0.1);
+            static_box(&mut world, pos(w + 0.1, h, 0.0), 0.1, h, w + 0.2);
+            static_box(&mut world, pos(-w - 0.1, h, 0.0), 0.1, h, w + 0.2);
+            static_box(&mut world, pos(0.0, h, w + 0.1), w + 0.2, h, 0.1);
+            static_box(&mut world, pos(0.0, h, -w - 0.1), w + 0.2, h, 0.1);
             let mut objs = Vec::with_capacity(balls + hands);
             let per_row = 16usize;
             let spacing = 2.0 * w / per_row as f32;
@@ -1355,11 +1408,11 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
                 d.type_ = BodyType::Dynamic;
                 d.linear_damping = 0.1;
                 d.angular_damping = 0.3;
-                d.position = Pos {
-                    x: -w + spacing * (ix as f32 + 0.5) + jitter,
-                    y: BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
-                    z: -w + spacing * (iz as f32 + 0.5) - jitter,
-                };
+                d.position = pos(
+                    -w + spacing * (ix as f32 + 0.5) + jitter,
+                    BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
+                    -w + spacing * (iz as f32 + 0.5) - jitter,
+                );
                 let b = create_body(&mut world, &d);
                 add_shape(&mut world, b, 3);
                 objs.push(Some(Obj { body: b, global: g(i), kind: 3 }));
@@ -1367,7 +1420,7 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             for k in 0..hands {
                 let mut d = default_body_def();
                 d.type_ = BodyType::Kinematic;
-                d.position = Pos { x: -0.8 + 1.6 * k as f32, y: 1.5, z: 0.0 };
+                d.position = pos(-0.8 + 1.6 * k as f32, 1.5, 0.0);
                 let b = create_body(&mut world, &d);
                 add_shape(&mut world, b, 4);
                 objs.push(Some(Obj { body: b, global: g(balls + k), kind: 4 }));
@@ -1735,6 +1788,10 @@ pub struct WorldSim {
     chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
     /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
     ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
+    /// Per author: ack seq -> that valid ack's stamp. With `ack_hist` and `ack_epoch_from`, the chain
+    /// state at any seq of the validated prefix, from which a listed admin entry on another branch is
+    /// judged (review VC7R-1).
+    ack_stamps: BTreeMap<MemberId, BTreeMap<u32, u64>>,
     /// (referrer, author) -> seq -> (id, the referrer's ack that said so): what each member's acks
     /// said it holds of each chain, up to the referrer's vote against that author (review R3-1).
     /// Never pruned in the spike; production keeps only the newest reference per pair, because
@@ -1771,10 +1828,16 @@ pub struct WorldSim {
     vc_later: BTreeMap<u32, Vec<EntryId>>,
     /// Every proposal entry seen, by value (answers `Msg::FetchValue`).
     proposal_ids: BTreeMap<u64, EntryId>,
+    /// Review PF-1 and VC7R-6: proposal entries of later epochs kept by value before their epoch began
+    /// (another version, or a proven forker's past its fork), noted on entering it.
+    later_proposals: BTreeMap<u32, Vec<EntryId>>,
     /// Review PF-1: every signed precommit held for a value, any version, linked into its author's
     /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
     /// counted from it (`precommitters`); everyone else counts in chain order.
     pc_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
+    /// Review VC8R-1: every signed prevote held for a value, any version, linked or not, as `pc_held`
+    /// is for precommits. Only proven members are counted from it (`prevoters`).
+    pv_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
     /// Decided changes, one per epoch boundary: (change, round, precommit signatures).
     decided: Vec<(Change, u32, Vec<(MemberId, u64)>)>,
     /// Decisions: (epoch reached, my clock frame when I decided, round, members removed).
@@ -1987,6 +2050,7 @@ impl WorldSim {
             at_frame: BTreeMap::new(),
             chain_state: BTreeMap::new(),
             ack_hist: BTreeMap::new(),
+            ack_stamps: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
@@ -2001,7 +2065,9 @@ impl WorldSim {
             vc: Vc::default(),
             vc_later: BTreeMap::new(),
             proposal_ids: BTreeMap::new(),
+            later_proposals: BTreeMap::new(),
             pc_held: BTreeMap::new(),
+            pv_held: BTreeMap::new(),
             decided: Vec::new(),
             vc_log: Vec::new(),
             withhold_vc: false,
@@ -2370,6 +2436,12 @@ impl WorldSim {
                 self.pc_held.entry((epoch, round, value)).or_default().insert(e.member);
             }
         }
+        // Review VC8R-1: and every signed prevote for a value, the same way.
+        if let Payload::Prevote { epoch, round, value } = e.payload {
+            if value != 0 && epoch >= self.epoch {
+                self.pv_held.entry((epoch, round, value)).or_default().insert(e.member);
+            }
+        }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
             self.entries.insert(id, e.clone());
@@ -2523,6 +2595,7 @@ impl WorldSim {
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
+                self.ack_stamps.entry(m).or_default().insert(e.seq, e.stamp);
                 for &(q, s, hid) in &heads {
                     if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);
@@ -2697,13 +2770,15 @@ impl WorldSim {
             self.stats.equivocations += 1;
             self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:016x} / {b:016x})"));
         }
+        let old_k = self.proofs.get(&m).map(|p| p.0);
         let (k0, a0, b0) = match self.proofs.get(&m) {
             Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
             _ => (k, a, b),
         };
         self.proofs.insert(m, (k0, a0, b0));
         // Review PF-1: m's proposals already held past its fork may never link here: keep them by value.
-        if self.fixes_off & fix::PF1 == 0 {
+        // Once per proof, or when it moves earlier (VC7R-6); later ones are kept as they arrive (insert).
+        if self.fixes_off & fix::PF1 == 0 && old_k.is_none_or(|ok| k0 < ok) {
             let held: Vec<EntryId> = self.by_author.range((m, k0)..=(m, u32::MAX)).map(|(_, &id)| id).collect();
             for id in held {
                 self.note_proposal(id);
@@ -2875,7 +2950,7 @@ impl WorldSim {
                     }
                     continue;
                 }
-                if self.polka_any(r, v) {
+                if self.cap_polka_holds(m, r, v) {
                     continue;
                 }
                 let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
@@ -2885,7 +2960,10 @@ impl WorldSim {
                     // round trip, so ids still missing a further half window after the cap ripened name
                     // prevotes nobody holds. The capper is voted out instead of the fetch being retried
                     // for good.
-                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                    // Review VC7R-2: the fetch gets the allowance a slow member gets (`suspect_after`), on
+                    // top of the cap's ripening, not a further half window.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { after };
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + after + budget {
                         if self.members.contains(&m) && !self.voted(m) && !self.held(m) {
                             self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
                             out.extend(self.freeze_and_vote(m, 0, 0));
@@ -2957,8 +3035,12 @@ impl WorldSim {
                 if r.frozen.0 > 0 && !self.head_held(y, r.frozen) {
                     self.want_entry(v, r.frozen.1, 15);
                     self.want_entry_all(r.frozen.1, 15);
-                    if v != self.me && self.now >= r.at + self.cfg.window / 2 && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
-                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {} frames: vote to remove it", r.frozen.0, self.cfg.window / 2));
+                    // Review VC7R-2: the vote stops blocking resets after half a window (`fresh`, VC4R-5),
+                    // but its voter gets the slow-member allowance to deliver the head before it is voted
+                    // out: an honest voter's head may lie on a branch of a forker's chain only it holds.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { self.cfg.window / 2 };
+                    if v != self.me && self.now >= r.at + budget && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
+                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {budget} frames: vote to remove it", r.frozen.0));
                         out.extend(self.freeze_and_vote(v, 0, 0));
                     }
                 }
@@ -3514,6 +3596,9 @@ impl WorldSim {
         let Payload::Propose { epoch, round, ref change, .. } = e.payload else { return };
         let v = change.value();
         self.proposal_ids.entry(v).or_insert(id);
+        if epoch > self.epoch && self.fixes_off & fix::PF1 == 0 {
+            self.later_proposals.entry(epoch).or_default().push(id);
+        }
         if epoch == self.epoch && change.epoch == epoch && e.member == self.proposer(epoch, round) {
             let c = change.clone();
             self.vc.changes.entry(v).or_insert(c);
@@ -3563,6 +3648,27 @@ impl WorldSim {
         self.vc.any_prevotes.get(&(round, v)).is_some_and(|ms| ms.iter().filter(|m| base.contains(m)).count() >= q)
     }
 
+    /// Whether capper `m`'s polka for `v` in `round` holds here: the prevotes recorded for it in any
+    /// version, and (review VC7R-2) every prevote the cap's precommit named that is held, linked into its
+    /// author's chain or not. A fetched prevote sitting past a gap in its author's chain counted for
+    /// nothing, so the capper was voted out at once.
+    fn cap_polka_holds(&self, m: MemberId, round: u32, v: u64) -> bool {
+        if self.fixes_off & fix::VC7R2 != 0 {
+            return self.polka_any(round, v);
+        }
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        let mut ms: BTreeSet<MemberId> = self.vc.any_prevotes.get(&(round, v)).cloned().unwrap_or_default();
+        for id in self.cap_polka.get(&m).into_iter().flatten() {
+            if let Some(e) = self.entries.get(id) {
+                if matches!(e.payload, Payload::Prevote { epoch, round: r, value } if epoch == self.epoch && r == round && value == v) {
+                    ms.insert(e.member);
+                }
+            }
+        }
+        ms.iter().filter(|x| base.contains(x)).count() >= q
+    }
+
     fn quorum_for(&self, votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, v: u64) -> bool {
         let Some(xs) = self.excluded_of(v) else { return false };
         let (base, _, q) = self.base(&xs);
@@ -3583,6 +3689,28 @@ impl WorldSim {
             }
         }
         ms
+    }
+
+    /// The members whose prevote for `v` in `round` counts toward a polka (a lock, a re-proposal's
+    /// valid round): those recorded in chain order, and (review VC8R-1) every member proven to have
+    /// forked its chain that signed one held here, wherever it sits in that chain, in any version, as
+    /// `precommitters` counts precommits. A faulty member's prevote counts once per value; two polkas
+    /// for different values of one round still need an honest member that prevoted both.
+    fn prevoters(&self, round: u32, v: u64) -> BTreeSet<MemberId> {
+        let mut ms: BTreeSet<MemberId> = self.vc.prevotes.get(&round).map(|r| r.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
+        if self.fixes_off & fix::VC8R1 == 0 {
+            if let Some(held) = self.pv_held.get(&(self.epoch, round, v)) {
+                ms.extend(held.iter().filter(|m| self.proofs.contains_key(m)));
+            }
+        }
+        ms
+    }
+
+    /// Whether a quorum (counted as the change `v` defines it) prevoted `v` in `round`.
+    fn polka(&self, round: u32, v: u64) -> bool {
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        self.prevoters(round, v).iter().filter(|m| base.contains(m)).count() >= q
     }
 
     fn precommit_quorum(&self, round: u32, v: u64) -> bool {
@@ -3829,6 +3957,45 @@ impl WorldSim {
 
     /// Whether `c` is a valid change for this epoch. Deterministic once this replica holds every
     /// entry it names (and has validated the voters' chains up to their votes); None until then.
+    /// Review VC7R-1: whether admin entry `id` is valid along its own ancestry. It walks back from the
+    /// entry to the prefix of its author's chain this replica has validated, replays the chain-local
+    /// rules over the rest (only acks change chain state: `validate`), and judges the entry by VCR-9's
+    /// horizon rule. The prefix is common to every branch through it, so the answer is the same at every
+    /// replica that holds the entry's ancestry, whichever branch it linked. None while an ancestor is
+    /// missing (it is fetched).
+    fn valid_on_own_branch(&mut self, id: EntryId) -> Option<bool> {
+        let e = self.entries.get(&id)?.clone();
+        let m = e.member;
+        let linked = if m == self.me { self.my_seq } else { self.contiguous.get(&m).copied().unwrap_or(0) };
+        let mut seg: Vec<Entry> = Vec::new();
+        let (mut cur, mut k) = (e.prev, e.seq.saturating_sub(1));
+        while k > 0 && !(k <= linked && self.by_author.get(&(m, k)) == Some(&cur)) {
+            let Some(p) = self.entries.get(&cur).cloned() else {
+                self.want_entry_all(cur, 0);
+                return None;
+            };
+            cur = p.prev;
+            seg.push(p);
+            k -= 1;
+        }
+        // The chain state after seq k of the validated prefix.
+        let mut max_h = self.ack_hist.get(&m).and_then(|a| a.range(..=k).next_back()).map(|(_, h)| *h);
+        let mut last_ack = self.ack_stamps.get(&m).and_then(|a| a.range(..=k).next_back()).map_or(0, |(_, st)| *st);
+        let mut prev_epoch = self.ack_epoch_from.get(&m).and_then(|a| a.iter().filter(|&(_, &sq)| sq <= k).map(|(&ep, _)| ep).max()).unwrap_or(0);
+        let adm = if self.fixes_off & fix::VC3R6 == 0 { self.admitted_epoch.get(&m).copied().unwrap_or(0) } else { 0 };
+        for p in seg.iter().rev() {
+            if let Payload::Ack { horizon, epoch, .. } = p.payload {
+                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (epoch >= prev_epoch && (epoch <= prev_epoch + 1 || epoch <= adm));
+                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack >= p.stamp && epoch_ok {
+                    max_h = Some(max_h.map_or(horizon, |x| x.max(horizon)));
+                    last_ack = p.stamp;
+                    prev_epoch = prev_epoch.max(epoch);
+                }
+            }
+        }
+        Some(self.fixes_off & fix::VCR9 != 0 || max_h.is_none_or(|h| e.stamp > h))
+    }
+
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
         let timed = self.fixes_off & fix::VC3 != 0;
@@ -3864,6 +4031,12 @@ impl WorldSim {
             // Review VC3R-3: an admin entry counts only from a chain prefix this replica has validated,
             // and only if that validation did not void it (a backdated one is horizon-void, VCR-9).
             if self.fixes_off & fix::VC3R3 == 0 {
+                if self.fixes_off & fix::VC7R1 == 0 {
+                    if !self.valid_on_own_branch(id)? {
+                        return Some(false);
+                    }
+                    continue;
+                }
                 if e.member != self.me && self.contiguous.get(&e.member).copied().unwrap_or(0) < e.seq {
                     return None;
                 }
@@ -4180,7 +4353,7 @@ impl WorldSim {
                 let decision = match ok {
                     None => None,
                     Some(ok) if vr == NO_ROUND => Some(ok && fresh_in_time && self.vc.locked.is_none_or(|(lv, _)| lv == v)),
-                    Some(ok) if vr < r && self.quorum_for(&self.vc.prevotes, vr, v) => {
+                    Some(ok) if vr < r && self.polka(vr, v) => {
                         Some(ok && self.vc.locked.is_none_or(|(lv, lr)| lr <= vr || lv == v))
                     }
                     Some(_) => None,
@@ -4197,7 +4370,7 @@ impl WorldSim {
         // Lines 36-43: a quorum prevoted the round's proposal: lock it and precommit it.
         if self.vc.step != Step::Propose && !self.vc.polka_done.contains(&r) {
             if let Some(&(v, _)) = self.vc.proposals.get(&r) {
-                if self.quorum_for(&self.vc.prevotes, r, v) {
+                if self.polka(r, v) {
                     let c = self.vc.changes.get(&v).cloned().unwrap_or_default();
                     let leads = self.change_leads(&c);
                     // My precommit caps my acks below the boundary only while it is still ahead of
@@ -4310,8 +4483,13 @@ impl WorldSim {
     fn apply_change(&mut self, c: Change, round: u32, out: &mut Vec<Entry>) {
         let v = c.value();
         let xs: BTreeSet<MemberId> = c.excluded.iter().map(|(m, _)| *m).collect();
+        // Review VC7R-5: exactly a quorum of signers, the lowest member ids among the precommits held, so
+        // the certificate's size is bounded and replicas holding more than a quorum agree on it. Two
+        // replicas that decided on different quorums still sign different (equally valid) certificates:
+        // a certificate is checked by its signatures (`epoch_cert_ok`), never compared by its bytes.
+        let (_, _, q_sig) = self.base(&xs);
         let sigs: Vec<(MemberId, u64)> =
-            self.precommitters(round, v).into_iter().filter(|m| !xs.contains(m)).map(|m| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect();
+            self.precommitters(round, v).into_iter().filter(|m| !xs.contains(m)).take(q_sig).map(|m| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
         // D80: role entries in commit order (kicks are among the removals), then the removals, then
         // each joiner's starting role against the membership they leave.
@@ -4551,6 +4729,7 @@ impl WorldSim {
         self.votes.clear();
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
+        self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
         let unfreeze: Vec<MemberId> = self.frozen.keys().copied().filter(|m| !self.evicted.contains_key(m)).collect();
         for m in unfreeze {
             self.frozen.remove(&m);
@@ -4584,9 +4763,11 @@ impl WorldSim {
             }
         }
         // Review PF-1: proposals of the new epoch kept by value before it began (another version, or a
-        // proven forker's past its fork) name values it may decide.
+        // proven forker's past its fork) name values it may decide. Indexed by epoch (VC7R-6).
         if self.fixes_off & fix::PF1 == 0 {
-            let held: Vec<EntryId> = self.proposal_ids.values().copied().collect();
+            let mut keep = self.later_proposals.split_off(&self.epoch);
+            let held = keep.remove(&self.epoch).unwrap_or_default();
+            self.later_proposals = keep;
             for id in held {
                 self.note_proposal(id);
             }
@@ -4645,6 +4826,10 @@ impl WorldSim {
                 self.contiguous.insert(x, 0);
                 self.chain_state.remove(&x);
                 self.ack_hist.remove(&x);
+                self.ack_stamps.remove(&x);
+                if self.fixes_off & fix::RECUT == 0 {
+                    self.ack_epoch_from.remove(&x);
+                }
             }
             // Re-validating the cut's branch replays its acks, and each ack recomputes confirmation.
             // Confirming then, before that branch's entries act, would confirm frames whose
@@ -5204,12 +5389,12 @@ impl WorldSim {
                 }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 let p = if *active {
-                    Pos { x: target_mm[0] as f32 * 0.001, y: target_mm[1] as f32 * 0.001, z: target_mm[2] as f32 * 0.001 }
+                    pos(target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001)
                 } else {
                     Pos { x: 0.0, y: 1.5, z: 0.0 }
                 };
                 let dt = self.cfg.dt * (*span).max(1) as f32;
-                body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, dt, true);
+                body_set_target_transform(&mut self.world, o.body, WorldTransform { p, q: QUAT_IDENTITY }, dt, true);
                 hands_set.insert(*obj);
                 if *active {
                     self.t.hand_idle.insert(*obj, 0);
@@ -5300,7 +5485,7 @@ impl WorldSim {
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
                 // majority in the source world). Refuse non-finite or absurd states.
                 let st = record.state;
-                let finite = st.0.iter().all(|&b| (b >> 23) & 0xFF != 0xFF);
+                let finite = st.is_finite();
                 let (q, v, w) = (st.rot(), st.lin(), st.ang());
                 let qn = q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z + q.s * q.s;
                 let sane = finite
@@ -5543,7 +5728,7 @@ impl WorldSim {
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
                 let bad = self.t.objs.iter().flatten().find(|o| {
                     let st = BodyState::read(&self.world, o.body);
-                    st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
+                    !st.is_finite()
                 });
                 if let Some(o) = bad {
                     self.stats.nonfinite += 1;

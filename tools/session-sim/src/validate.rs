@@ -428,8 +428,10 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 if !(at_ms < part_ms && part_ms <= others_ms) {
                     v.err("admin_wedge: needs at_ms < part_ms <= others_ms".into());
                 }
-                if others.contains(part) || others.contains(member) {
-                    v.err("admin_wedge: others must not hold part or the member".into());
+                // The spike derives them: the others are everyone the SetRole goes to but `part`.
+                let want: Vec<u32> = a_to.iter().copied().filter(|m| m != part).collect();
+                if *others != want || !a_to.contains(part) || a_to.contains(member) {
+                    v.err(format!("admin_wedge: a_to must hold part and not the member, and others must be a_to without part ({want:?})"));
                 }
             }
             Byzantine::GoSilent { member, from_ms, .. } => {
@@ -453,7 +455,28 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.err("admin_fork: a_to and b_to overlap".into());
                 }
             }
-            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to } => {
+            Byzantine::ForkSegment { member, p, others, segment, at_ms, swap_ms, own_fixes_off, .. } => {
+                if !["void_one", "void_role", "valid_role", "plain"].contains(&segment.as_str()) {
+                    v.err(format!("fork_segment: segment `{segment}` is not void_one, void_role, valid_role or plain"));
+                }
+                if *swap_ms <= *at_ms {
+                    v.err("fork_segment: swap_ms must come after at_ms".into());
+                }
+                // The spike's P is the last member that is not the forker, the others the rest.
+                v.member(1, *member, "fork_segment");
+                others.iter().chain([p]).for_each(|&m| v.member(1, m, "fork_segment"));
+                v.time(*at_ms, "fork_segment");
+                let ms: Vec<u32> = v.sim.peers.iter().find_map(|pe| pe.worlds.get(&1)).map(|r| r.sim.members.iter().copied().filter(|m| m != member).collect()).unwrap_or_default();
+                if ms.last() != Some(p) || *others != ms[..ms.len().saturating_sub(1)] {
+                    v.err(format!("fork_segment: p must be the last member but the forker and others the rest ({ms:?})"));
+                }
+                for f in own_fixes_off {
+                    if !crate::setup::FIXES.iter().any(|(n, _)| n == f) {
+                        v.err(format!("fork_segment: unknown fix `{f}`"));
+                    }
+                }
+            }
+            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to, .. } => {
                 v.member(1, *member, "equivocate_prevote");
                 value_to.iter().chain(nil_to).for_each(|&m| v.member(1, m, "equivocate_prevote to"));
                 v.time(*from_ms, "equivocate_prevote");
@@ -553,7 +576,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.err("fork_info: no fork_branch behaviour".into());
                 }
             }
-            Report::Check { case, honest, sides, at, members, target, runs, event, expect, conf_min, from_ms, until_ms, .. } => {
+            Report::Check { case, honest, sides, at, members, target, runs, event, expect, conf_min, from_ms, until_ms, role, .. } => {
                 checks += 1;
                 honest.iter().for_each(|&m| v.member(1, m, "check honest"));
                 sides.iter().flatten().for_each(|&m| v.member(1, m, "check sides"));
@@ -590,7 +613,11 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "prevotefork" => at.is_some() && target.is_some() && event.is_some() && !members.is_empty() && !honest.is_empty(),
                     "prevotefork_pf" => !members.is_empty() && !honest.is_empty(),
                     "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
-                    "adminwedge" => target.is_some() && !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { .. })),
+                    "adminwedge" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { member, .. } if Some(*member) == *target)),
+                    "voidfork" | "plainfork" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkSegment { .. })),
+                    "voiddeep" => !honest.is_empty() && role.is_some() && s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkSegment { .. })),
+                    "pfsilent" => !honest.is_empty() && !members.is_empty() && target.is_some_and(|t| members.contains(&t)),
+                    "slowcapper" => !honest.is_empty() && !members.is_empty() && at.is_some() && target.is_some(),
                     // The silence start must be a fault rule's, so the two cannot drift apart.
                     "vcscale" => matches!(r, Report::Check { silent: Some(_), from_ms: Some(t), .. } if s.fault.iter().any(|f| f.drop && f.after_ms == Some(*t))),
                     _ => true,

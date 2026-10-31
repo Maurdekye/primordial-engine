@@ -114,3 +114,31 @@ fn hostile_pair_sets_refused() {
         .expect("a key at its home slot followed by an empty one");
     assert!(!with(&|s| s.items.swap(from, to)), "key off its probe chain");
 }
+
+/// Review P22S-2: a key whose Murmur finalizer gives 0 in the low 32 bits hashes to 1, is
+/// stored as an occupied slot, and the set reads back. The key is built by inverting the
+/// finalizer (each xor-shift by 33 is its own inverse; each odd multiplier is a unit).
+#[test]
+fn key_hashing_to_zero_is_stored() {
+    let inverse = |c: u64| {
+        let mut x = c; // Newton's iteration doubles the correct low bits each step.
+        for _ in 0..6 {
+            x = x.wrapping_mul(2u64.wrapping_sub(c.wrapping_mul(x)));
+        }
+        x
+    };
+    let mut k: u64 = 1 << 32;
+    k ^= k >> 33;
+    k = k.wrapping_mul(inverse(0xc4ceb9fe1a85ec53));
+    k ^= k >> 33;
+    k = k.wrapping_mul(inverse(0xff51afd7ed558ccd));
+    k ^= k >> 33;
+    assert_ne!(k, 0);
+    assert_eq!(key_hash(k), 1, "raw hash of {k:#x} is 0, mapped to 1");
+    let mut set = HashSet::new(16);
+    assert!(!set.add_key(k));
+    assert!(set.add_key(k), "found again");
+    assert!(accepted(&bytes_of(&set)));
+    assert!(set.remove_key(k));
+    assert_eq!(set.count(), 0);
+}

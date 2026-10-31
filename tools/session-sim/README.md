@@ -45,14 +45,14 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 34 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 | `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
 
-All but `faults/` are the suite of `scripts/run_session_sim.sh` (82 scenarios and the three controls of
+All but `faults/` are the suite of `scripts/run_session_sim.sh` (87 scenarios and the three controls of
 P2-5 and P2-4, whose logs are in `spikes/out/session-sim/p2-5-controls/` and `p2-4-controls/`); their
 logs are identical to the committed ones. The `faults/` logs are new in P2-9. All of them are
 identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`,
@@ -137,7 +137,7 @@ ack_heads = false                   # acks without heads (design 25.5.2); defaul
 ack_every_frames = 30               # every replica acks this often
 fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1,
                                     #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S, VC6R1, VC6R3,
-                                    #   VC6R4, PF1
+                                    #   VC6R4, PF1, VC7R1, VC7R2, RECUT, VC8R1
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
@@ -291,7 +291,18 @@ behaviour `x` has fired.
   listing the SetRole, and prevotes nil to `prevote_to`.
 - `equivocate_prevote`: review VC4R-1: from `from_ms`, once round-0 proposer `member` holds its
   round-0 prevote and proposal, it sends the proposal's value to `value_to` and nil to `nil_to` as
-  two versions of that prevote; its genuine round-0 prevotes reach nobody.
+  two versions of that prevote; its genuine round-0 prevotes reach nobody. With `slow_to` and
+  `slow_ms` (review VC7R-2, `slowcapper`), every delivery of the value version to `slow_to`, from
+  anyone, is delayed a further `slow_ms`.
+- `fork_segment`: reviews VC7R-1 and VC8R-1 (p24r4.rs `voidfork` and `fork_segment_sim`): at
+  `at_ms` round-0 proposer `member` sends its real branch B to `others` and a forged branch A to `p`;
+  at `swap_ms` each gets the other. `segment` = `void_one` (B an Attest, A a SetRole giving `p`
+  role `role`, stamped `back` frames earlier, listed in its change), `void_role` / `valid_role` (B
+  two Attests, A an ack declaring horizon B1 + 40 and a SetRole stamped B1 + 10; `valid_role`'s ack
+  claims epoch + 2, so it counts for nothing) or `plain` (B two Attests, A one; an empty change).
+  Once every one of `others` holds its own precommit, or at `crash_by_ms`, it crashes (everything it
+  sends is lost); its own replica runs with `own_fixes_off` off as well. `p` must be the last member
+  but the forker and `others` the rest, as in the spike.
 - `noop_setrole`: review VC6R-4: from `from_ms` (while a member at `while_member_at`), every
   `every_ms` `member` signs a SetRole giving itself `role`, sent to `to`.
 - `admin_wedge`: review VC6R-3 (p24r4.rs `adminwedge`): at `at_ms` `member` sends `a_to` a SetRole
@@ -337,8 +348,11 @@ Reports print after the run, in file order, in the spike's formats:
   `strikeframe_total` (over kept runs), `aheadshield`, `fakeref`, `capstale`, `lagchurn`,
   `votechurn` (it samples a confirmation lag before each step, every 100 ms), `votechurn_off`,
   `adminvoid`, `joinskip`, `joinwedge`, `slowref`, `fakemix`, `adminfork`, `prevotefork`,
-  `prevotefork_off`, `prevotefork_pf`, `capfake`, `fakeadmin`, `adminwedge` (the round-7 cases report
-  liveness: every listed member's frame within a window of its confirmed frame). The fields each reads are listed in scenario.rs (`Report::Check`).
+  `prevotefork_off`, `prevotefork_pf`, `capfake`, `fakeadmin`, `adminwedge`, `voidfork`, `slowcapper`,
+  `voiddeep`, `plainfork`, `pfsilent` (the round-7 and round-8 cases report liveness: every listed
+  member's frame within a window of its confirmed frame; each prints the spike's verdict line,
+  `RESULT <name> fixed=<b>: -> ...`, FAIL when a fix-off run no longer fails or a shipped run does).
+  The fields each reads are listed in scenario.rs (`Report::Check`).
 - `handowner`: review HO-1 over three kept runs (`forged`, `clean`, `fixoff`).
 - `stats`.
 - `membership`.
