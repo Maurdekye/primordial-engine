@@ -224,6 +224,133 @@ pub fn decode_tables(b: &[u8]) -> Option<Tables> {
     (r.1 == b.len() && chains_ok && encode_tables(&t) == b).then_some(t)
 }
 
+// ---- donor and joiner ----------------------------------------------------------------------------
+
+/// A world's state after its check frame `frame` (design 9.5): the three canonical parts its check hash
+/// covers. A donor sends it; a joiner restores it only after [`WorldSim::import_state`]'s checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateTransfer {
+    pub world: u32,
+    pub frame: u64,
+    /// `pe_physics::Transfer::to_bytes`.
+    pub physics: Vec<u8>,
+    /// `pe_sim::Snapshot::to_bytes` of the engine tables' store.
+    pub store: Vec<u8>,
+    /// [`encode_tables`].
+    pub tables: Vec<u8>,
+}
+
+/// Why a joiner refused a state transfer. Each is the donor's failure to deliver, never a reason to
+/// trust less: the joiner asks another member.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferError {
+    /// For another world.
+    OtherWorld,
+    /// No check hash for that frame was signed identically by a quorum of its epoch's members with at
+    /// least one other than the donor (review P22S-1), yet.
+    NoQuorum,
+    /// A part is not canonical or not completely consumed.
+    Physics,
+    Store,
+    Tables,
+    /// The parts are canonical but their check hash is not the trusted one.
+    Hash,
+}
+
+impl WorldSim {
+    /// The check hash after frame `f` (this replica's state) and the parts it covers.
+    pub(super) fn check_state(&mut self, f: u64) -> (CheckHash, StateTransfer) {
+        let t0 = now_us();
+        let physics = self.world.save_transfer().expect("a usable physics world").to_bytes();
+        let ph = pe_physics::CheckHash::of(&physics);
+        let t1 = now_us();
+        // A NaN is a deterministic error on every peer, never hashed (review P21-5).
+        self.store.check_values().expect("no invalid value in the engine tables");
+        let store = self.store.snapshot().to_bytes();
+        let tables = encode_tables(&self.t);
+        let c = check_hash_of(&ph, self.frame, &store, &tables);
+        self.stats.checks += 1;
+        self.stats.check_physics_us += t1 - t0;
+        self.stats.check_rest_us += now_us() - t1;
+        (c, StateTransfer { world: self.world_id, frame: f, physics, store, tables })
+    }
+
+    /// The newest confirmed check-frame state this replica holds, for a joiner (design 9.5).
+    pub fn export_state(&self) -> Option<StateTransfer> {
+        let fin = self.conf.min(self.frame);
+        self.served.range(..fin).next_back().map(|(_, s)| s.clone())
+    }
+
+    /// The check hash a joiner trusts for check frame `frame` (review P22S-1): one that a quorum of the
+    /// members of the epoch active at `frame` signed identically in their acks, at least one of them a
+    /// member other than `donor`. Never the donor's word alone: a world with a single member cannot
+    /// vouch for its own transfer.
+    pub fn trusted_check(&self, frame: u64, donor: MemberId) -> Option<CheckHash> {
+        let members = self.members_at(self.epoch_at(frame))?;
+        let (_, q) = quorum(self.cfg.quorum, members.len());
+        let mut signed: Vec<(CheckHash, BTreeSet<MemberId>)> = Vec::new();
+        for (id, e) in &self.entries {
+            if let Payload::Ack { check: Some((f, h)), .. } = &e.payload {
+                if *f == frame && members.contains(&e.member) && !self.is_void(*id) {
+                    match signed.iter_mut().find(|(x, _)| x == h) {
+                        Some((_, by)) => {
+                            by.insert(e.member);
+                        }
+                        None => signed.push((*h, BTreeSet::from([e.member]))),
+                    }
+                }
+            }
+        }
+        signed.into_iter().find(|(_, by)| by.len() >= q && by.iter().any(|&m| m != donor)).map(|(h, _)| h)
+    }
+
+    /// Restores a donor's state transfer (design 9.5): only if its world matches, a quorum vouches for
+    /// a check hash at its frame ([`WorldSim::trusted_check`], from the signed acks this replica holds),
+    /// each part is canonical and completely consumed, and the parts hash to that check hash. Then the
+    /// replica continues from the frame after it: entries stamped at or before it are already in the
+    /// state, and it never rolls back below it. Nothing changes on a refusal.
+    pub fn import_state(&mut self, st: &StateTransfer, donor: MemberId) -> Result<(), TransferError> {
+        if st.world != self.world_id {
+            return Err(TransferError::OtherWorld);
+        }
+        let trusted = self.trusted_check(st.frame, donor).ok_or(TransferError::NoQuorum)?;
+        let transfer = pe_physics::Transfer::from_bytes(&st.physics).map_err(|_| TransferError::Physics)?;
+        let ph = pe_physics::CheckHash::of(&st.physics);
+        let snap = pe_sim::Snapshot::from_bytes(&st.store, &session_registry()).map_err(|_| TransferError::Store)?;
+        if snap.to_bytes() != st.store {
+            return Err(TransferError::Store);
+        }
+        let t = decode_tables(&st.tables).ok_or(TransferError::Tables)?;
+        let next = st.frame + 1;
+        if check_hash_of(&ph, next, &st.store, &st.tables) != trusted {
+            return Err(TransferError::Hash);
+        }
+        // From here the bytes are a state a quorum, so an honest member, computed.
+        let world = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &transfer, &ph).map_err(|_| TransferError::Physics)?;
+        self.store.restore(&snap).map_err(|_| TransferError::Store)?;
+        self.world = world;
+        self.t = t;
+        self.frame = next;
+        self.floor = next;
+        self.dirty_from = None;
+        self.compacted_len = 0;
+        // What this replica computed before is superseded.
+        self.hashes.clear();
+        self.check_hashes.clear();
+        self.check_hashes.insert(st.frame, trusted);
+        self.outcomes.clear();
+        self.obj_hist.clear();
+        self.pos_hist.clear();
+        self.ring.clear();
+        let k = self.save();
+        self.ring.insert(next, k);
+        self.served.clear();
+        self.served.insert(st.frame, st.clone());
+        self.stats.imports += 1;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -138,6 +138,8 @@ pub struct Stats {
     pub max_ring_bytes: u64,
     /// Geometry-registry compactions (P22-12), their time, and the most blobs the registry held.
     pub compactions: u64,
+    /// State transfers this replica restored (design 9.5).
+    pub imports: u64,
     pub compact_us: u64,
     pub max_registry_len: u64,
     /// Check hashes computed and their cost: the physics state's (pe-physics `check_hash`: canonical
@@ -407,6 +409,12 @@ pub struct WorldSim {
     ring: BTreeMap<u64, Keyframe>,
     /// Geometry blobs right after the last registry compaction (P22-12).
     compacted_len: usize,
+    /// The canonical parts of each check frame's state not yet superseded by a newer confirmed one: what
+    /// this replica can serve a joiner (design 9.5).
+    served: BTreeMap<u64, StateTransfer>,
+    /// The first frame this replica simulated itself: a state transfer put it there (0 otherwise).
+    /// Entries stamped before it are in the transferred state; it never rolls back below it.
+    floor: u64,
     /// R14: the worlds this one trades objects with, and their members: its agreed route list
     /// (D46 trust config, part of the world's genesis; reviews R3-4 to R3-6). Any other world can
     /// neither receive its objects nor vouch for one.
@@ -694,6 +702,8 @@ impl WorldSim {
             frame: 0,
             ring: BTreeMap::new(),
             compacted_len: 0,
+            served: BTreeMap::new(),
+            floor: 0,
             peers_of: BTreeMap::new(),
             epochs: EpochBook { keys: keys.public.clone(), ..EpochBook::default() },
             provenance: true,
