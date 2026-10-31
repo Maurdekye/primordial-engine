@@ -2076,6 +2076,12 @@ and the engager's hand replayed after the gesture had ended.
        its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
        most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
        (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
+     * A hand pose falls on a frame aligned to its level's stride, the first such frame after the last
+       pose; at a level change it is not held back to last + k. So the gap after a change is at most the
+       new stride, and a hand never stops while its author keeps sending. Before, a pose also had to be k
+       frames after the last, and at 4→5 pose 258 was followed by 272, freezing the hand 2 frames even
+       with span then coast (@shader-reviewer's matrix finding M1; fixed in pe-session at 649a77f, with a
+       test through every level change [V @world-chunks]). The spike follows with its next change.
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
