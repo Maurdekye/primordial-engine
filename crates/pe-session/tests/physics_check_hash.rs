@@ -81,3 +81,36 @@ fn check_hash_is_the_same_after_a_destroy_whichever_path() {
     }
     println!("RESULT NEW-7 via pe_physics::check_hash: equal at frame 40 for both restore paths ({})", straight.check_hash().unwrap());
 }
+
+/// Repeated rollbacks across a destroy (as a replica re-simulating late entries does): keyframes
+/// every 4 frames, and at frames 12, 14, 16 ... 30 a restore to the newest keyframe at least 3
+/// frames back, then re-simulation. The check hash must equal the straight world's at frame 40.
+#[test]
+fn check_hash_after_repeated_rollbacks_across_a_destroy() {
+    let mut straight = pile();
+    for f in 0..40 {
+        frame(&mut straight, f);
+    }
+    let mut w = pile();
+    let mut ring: std::collections::BTreeMap<u64, pe_physics::WorldImage> = Default::default();
+    let mut f = 0u64;
+    let mut rollbacks = 0;
+    while f < 40 {
+        if f % 4 == 0 && !ring.contains_key(&f) {
+            ring.insert(f, w.save_image().unwrap());
+        }
+        frame(&mut w, f);
+        f += 1;
+        if (12..=30).contains(&f) && f % 2 == 0 && rollbacks < 10 {
+            let (&k, img) = ring.range(..=f - 3).next_back().unwrap();
+            w.restore_image(img).unwrap();
+            ring.retain(|&g, _| g <= k);
+            f = k;
+            rollbacks += 1;
+        }
+    }
+    let (a, b) = (w.check_hash().unwrap(), straight.check_hash().unwrap());
+    println!("RESULT repeated rollbacks ({rollbacks}) across a destroy: state_hash equal {}, check_hash equal {}", w.state_hash().unwrap() == straight.state_hash().unwrap(), a == b);
+    assert_eq!(w.state_hash().unwrap(), straight.state_hash().unwrap());
+    assert_eq!(a, b);
+}
