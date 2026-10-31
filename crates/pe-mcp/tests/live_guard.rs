@@ -74,7 +74,7 @@ impl DrivenPeer for FakeLive {
         Hashes { conf: 0, frames: vec![], checks: vec![] }
     }
     fn member_info(&self) -> Members {
-        Members { me: 1, epoch: 0, members: vec![], suspicions: 0, demotions: 0, withdrawn_votes: 0, equivocations: 0, lying_votes: 0 }
+        Members { me: 1, epoch: 0, members: vec![], suspicions: 0, demotions: 0, view_changes: 0, resets: 0, equivocations: 0, lying_votes: 0, decisions: vec![] }
     }
     fn sync(&self) -> SyncStatus {
         SyncStatus {

@@ -1,16 +1,10 @@
-commit 5245776cbf53da52d7eabbf80a600b2b1f6a753f
+commit 5fb9c4170af8a19dad514c149e3a1a8c71aae99d
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling cpufeatures v0.3.1
-   Compiling arrayvec v0.7.8
-   Compiling constant_time_eq v0.4.2
-   Compiling cfg-if v1.0.5
-   Compiling box3d-rust v0.5.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\box3d-fork)
-   Compiling blake3 v1.8.7
-   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-physics)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.79s
+   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\compact\crates\pe-physics)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.42s
      Running unittests src\lib.rs (target\debug\deps\pe_physics-46ac55e950bbb459.exe)
 
 running 0 tests
@@ -19,8 +13,23 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests\api.rs (target\debug\deps\api-5362cd0977d15e60.exe)
 
-running 13 tests
+running 20 tests
+test carried_state_lands_exactly ... RESULT carried state, off-centre, spinning, both sides true: first differing frame of 120 None
+RESULT carried state, asleep on the ground, both sides true: first differing frame of 120 None
+RESULT carried state, settling, sleep timer running, both sides true: first differing frame of 120 None
+RESULT carried state, rolling in contact, both sides true: first differing frame of 120 None
+RESULT carried state, off-centre, spinning, both sides false: first differing frame of 120 Some(0)
+RESULT carried state, asleep on the ground, both sides false: first differing frame of 120 Some(0)
+RESULT carried state, settling, sleep timer running, both sides false: first differing frame of 120 Some(9)
+RESULT carried state, rolling in contact, both sides false: first differing frame of 120 None
+ok
 test check_hash_is_canonical ... ok
+test compact_images_is_exact ... RESULT compact registry 31 -> 9 blobs (20 kept images)
+ok
+test compact_images_refusal_changes_nothing ... ok
+test compaction_is_invisible_to_the_simulation ... RESULT compaction peer late by 3: registry at most 17 blobs (75 unique hulls made), now 17
+RESULT compaction peer late by 7: registry at most 20 blobs (75 unique hulls made), now 12
+ok
 test foreign_and_corrupt_images ... ok
 test forged_confirmations_still_refused ... ok
 test grabs ... RESULT grab spring gap after 3 s: 0.0000 m (hand at x = 3.000)
@@ -34,9 +43,13 @@ test refusals_change_nothing ... ok
 test rolled_back_peer_has_the_straight_check_hash ... RESULT rollback check_hash after 60 frames 9e86908b0f8eee4b371aef141e6a9dbbc83f440f094546e93f03b45028dcde96
 ok
 test rotations_are_normalized ... ok
+test stale_and_foreign_images_refused ... RESULT stale images after compaction: 100 of 100 refused
+ok
+test targets_drive_hands ... ok
+test transfer_canonical_after_destroy ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
 
      Running tests\spike_records.rs (target\debug\deps\spike_records-54e0938baa09903e.exe)
 
@@ -95,7 +108,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 186.35s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 179.41s
 
    Doc-tests pe_physics
 
