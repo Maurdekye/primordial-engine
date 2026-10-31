@@ -40,7 +40,7 @@ pub fn statejoin() {
         if step == 0 && now >= 3_000_000 {
             // The joiner asks to join, and member 1 hands it the log (as latejoin).
             for m in ids {
-                sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                sim.net.send(1, joiner, m, &join_msg(&TEST_SESSION, joiner, vec![], u64::MAX));
             }
             relay(sim);
             step = 1;
