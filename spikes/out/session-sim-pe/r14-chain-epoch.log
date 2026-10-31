@@ -15,9 +15,9 @@ RESULT r14 chain-epoch: arrival into C with chain [1->2 (epoch 1, 1 certs)] -> S
 RESULT r14 chain-epoch: hop 2->3 relayed into C: signed by epoch 0 at frame 423, carrying 0 epoch certificate(s)
 RESULT r14 chain-epoch: A:40 live copies A 0, B 0, C 1 ; pending escrows 0 -> CONSERVED (in C, nothing in limbo)
   m1 world 1: rollbacks 2 max depth 3 resim frames 8 (1.1 ms) overwrites 0 paused frames 79 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 705 frame 714
-  m2 world 1: rollbacks 12 max depth 3 resim frames 52 (5.9 ms) overwrites 0 paused frames 82 violations 0 equivocations 0 checks ok 22 bad 0 nonfinite 0 conf 705 frame 713
+  m2 world 1: rollbacks 12 max depth 3 resim frames 52 (6.3 ms) overwrites 0 paused frames 82 violations 0 equivocations 0 checks ok 22 bad 0 nonfinite 0 conf 705 frame 713
   m5 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 545 violations 0 equivocations 0 checks ok 4 bad 0 nonfinite 0 conf 48 frame 168
-  m1 world 2: rollbacks 2 max depth 3 resim frames 5 (0.8 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 584 frame 592
+  m1 world 2: rollbacks 2 max depth 3 resim frames 5 (0.7 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 584 frame 592
   m3 world 2: rollbacks 3 max depth 3 resim frames 13 (1.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 584 frame 592
   m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 703 frame 712
   m4 world 3: rollbacks 1 max depth 3 resim frames 6 (0.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 703 frame 712

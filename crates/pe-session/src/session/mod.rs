@@ -49,7 +49,7 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
-pub use crate::sign::{sig_words, test_fact_sig, test_sign, KeyRing, PublicKeys, Sig, SignedEntry};
+pub use crate::sign::{sig_words, test_fact_sig, test_sign, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
 };

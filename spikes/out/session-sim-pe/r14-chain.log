@@ -25,10 +25,10 @@ RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
 RESULT r14 chain: A:40 live copies A 1 (Some("here, chain 2 hops, settled false")), B 0 (Some("left for 3")), C 0 (Some("left for 1")) ; pending escrows 0 -> CONSERVED (back in A, nothing in limbo)
   m1 world 1: rollbacks 2 max depth 3 resim frames 8 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
   m2 world 1: rollbacks 15 max depth 3 resim frames 62 (8.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 2 max depth 3 resim frames 5 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m1 world 2: rollbacks 2 max depth 3 resim frames 5 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
   m3 world 2: rollbacks 3 max depth 3 resim frames 10 (1.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
   m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
-  m4 world 3: rollbacks 3 max depth 3 resim frames 16 (1.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
+  m4 world 3: rollbacks 3 max depth 3 resim frames 16 (1.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
 RESULT r14 chain A world 1: frames 0..500 digests m1=b48068b5f2d66916 m2=b48068b5f2d66916 | offline replay b48068b5f2d66916 | ALL EQUAL
 RESULT r14 chain B world 2: frames 0..400 digests m1=17ad143a0da46f3b m3=17ad143a0da46f3b | offline replay 17ad143a0da46f3b | ALL EQUAL
 RESULT r14 chain C world 3: frames 0..480 digests m1=0e044af36e6ce32b m4=0e044af36e6ce32b | offline replay 0e044af36e6ce32b | ALL EQUAL

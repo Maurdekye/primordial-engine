@@ -34,8 +34,8 @@ RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 
   m2 world 6: rollbacks 2 max depth 4 resim frames 11 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
   m3 world 6: rollbacks 1 max depth 3 resim frames 3 (0.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
   m1 world 1: rollbacks 6 max depth 4 resim frames 27 (3.4 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (9.2 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 3 max depth 3 resim frames 9 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (8.5 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 3 max depth 3 resim frames 9 (1.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
   m3 world 2: rollbacks 3 max depth 3 resim frames 14 (1.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 doublespend A world 1: frames 0..500 digests m1=8b8eb6807dc9fe21 m2=8b8eb6807dc9fe21 | offline replay 8b8eb6807dc9fe21 | ALL EQUAL
 RESULT r14 doublespend B world 2: frames 0..400 digests m1=83082cd4cc5c575a m3=83082cd4cc5c575a | offline replay 83082cd4cc5c575a | ALL EQUAL
