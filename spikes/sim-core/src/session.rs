@@ -36,6 +36,7 @@ use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_s
 use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
+use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_WORDS};
 use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
@@ -172,6 +173,11 @@ pub enum Payload {
     Provenance { hop: Hop },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
+    /// World ownership (12.5): one signed certificate of the world's ownership chain, an admin entry
+    /// (D80) like a kick. Any member may publish one: the owners' signatures in it are its authority.
+    /// A view change commits it in commit order, and it applies if it is valid against the book
+    /// the entries before it leave, so every replica holds the same owners after each decision.
+    Ownership { epoch: u32, cert: Cert },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
     /// before `horizon`; per other author, the newest seq it holds contiguously and that entry's
     /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
@@ -322,6 +328,9 @@ pub mod fix {
     /// A member that kept another version of the forked seq could not count the forker's prevote, never
     /// saw the polka the others locked on, and the locked members prevoted nil on everything else.
     pub const VC8R1: u64 = 1 << 36;
+    /// Review OWNY-2 (ownership, 12.5): a certificate built on a pending one's head is held and judged
+    /// again after each decision, not dropped at receipt. (A high bit, clear of P2-4's next flags.)
+    pub const OWNY2: u64 = 1 << 40;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -335,6 +344,11 @@ pub const MAX_POLKA: usize = 512;
 /// refused. The spike sends every certificate from the partner's genesis; production sends only the
 /// ones the receiver lacks [I].
 pub const MAX_EPOCH_CERTS: usize = 1024;
+
+/// Review OWNZ-1: the most ownership entries one author has held for a missing parent (OWNY-2); past
+/// it, such an entry is dropped at receipt as before, so one faulty member can't grow the set that
+/// every decision re-scans.
+pub const MAX_HELD_PER_AUTHOR: usize = 16;
 
 /// Round 3 only (`fix::VC3R2` off, review VC3R-2): a member whose votes or caps resets overruled in
 /// this many of the last `STRIKE_EPOCHS` epochs is voted out.
@@ -402,6 +416,17 @@ fn admin_key(e: &Entry) -> (u64, MemberId, u32) {
     (e.stamp, e.member, e.seq)
 }
 
+/// A member's ownership key (12.5). In the spike a member id is its identity (10.3); production
+/// reads the key from the member's signed genesis or join entry. The one place that maps them.
+pub fn key_of(m: MemberId) -> Key {
+    m
+}
+
+/// The member an ownership key identifies, the inverse of [`key_of`].
+pub fn member_of(k: Key) -> MemberId {
+    k
+}
+
 /// The membership state an admin sequence runs against (D80).
 #[derive(Clone)]
 struct AdminRun {
@@ -409,7 +434,11 @@ struct AdminRun {
     roles: BTreeMap<MemberId, RoleId>,
     defs: BTreeMap<RoleId, u64>,
     excluded: BTreeSet<MemberId>,
-    owners: BTreeSet<MemberId>,
+    /// The world owners' keys (12.5; [`key_of`] maps a member to its key).
+    owners: BTreeSet<Key>,
+    /// The world's ownership chain (12.5), if it has one, and the session lineage that commits to it.
+    book: Option<Book>,
+    lineage: u32,
 }
 
 impl AdminRun {
@@ -434,7 +463,7 @@ impl AdminRun {
         match e.payload {
             Payload::Kick { target, .. } => {
                 // Q27 (user 22:49Z, kicks assumed alike): only a co-owner kicks an owner.
-                let owner_safe = self.owners.contains(&target) && !self.owners.contains(&a);
+                let owner_safe = self.owners.contains(&key_of(target)) && !self.owners.contains(&key_of(a));
                 if p & perm::KICK == 0 || target == a || !self.members.contains(&target) || owner_safe {
                     return false;
                 }
@@ -444,7 +473,7 @@ impl AdminRun {
             }
             Payload::SetRole { member, role, .. } => {
                 // Q27 (user 22:49Z): an owner may give up Admin, but only a co-owner demotes an owner.
-                let owner_safe = self.owners.contains(&member) && member != a && !self.owners.contains(&a) && role != ADMIN;
+                let owner_safe = self.owners.contains(&key_of(member)) && member != a && !self.owners.contains(&key_of(a)) && role != ADMIN;
                 if p & perm::ROLES == 0 || !self.members.contains(&member) || (role != ADMIN && !self.defs.contains_key(&role)) || owner_safe {
                     return false;
                 }
@@ -464,6 +493,18 @@ impl AdminRun {
                     return false;
                 }
                 self.defs.insert(role, perms);
+                true
+            }
+            // 12.5: valid against the book as the entries before it leave it. The outcome depends
+            // on the book, the certificate and commit order only, never on the boundary (which is
+            // computed after the admin entries); the entry's stamp stands in as the frame, which
+            // only the session's own attestation record reads. Later entries see the new owners.
+            Payload::Ownership { ref cert, .. } => {
+                let Some(b) = self.book.as_mut() else { return false };
+                if !matches!(b.commit_local(cert.clone(), self.lineage, e.stamp), Ok(Insert::Applied)) {
+                    return false;
+                }
+                self.owners = b.view().owners.owners;
                 true
             }
             _ => false,
@@ -871,6 +912,11 @@ impl Wr {
             }
             Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
+            Payload::Ownership { epoch, cert } => {
+                let w = cert.to_words();
+                assert!(w.len() <= MAX_CERT_WORDS, "an ownership certificate is at most {MAX_CERT_WORDS} words");
+                self.u8(20); self.u32(*epoch); self.u32(w.len() as u32); for x in w { self.u64(x) }
+            }
             Payload::Ack { horizon, heads, check, epoch } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
                 // their entry ids; a later epoch is tag 14 with the epoch appended.
@@ -1058,6 +1104,14 @@ impl Rd<'_> {
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()?, frame: self.u64()?, proof: self.epoch_proof()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
+            20 => {
+                let epoch = self.u32()?;
+                let n = self.u32()? as usize;
+                if n > MAX_CERT_WORDS { return None; }
+                let mut w = Vec::with_capacity(n.min(256));
+                for _ in 0..n { w.push(self.u64()?) }
+                Payload::Ownership { epoch, cert: Cert::from_words(&w)? }
+            }
             tag @ (7 | 14) => {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
@@ -1181,6 +1235,7 @@ pub fn is_protocol(p: &Payload) -> bool {
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
+            | Payload::Ownership { .. }
     )
 }
 
@@ -1829,10 +1884,17 @@ pub struct WorldSim {
     /// The relationships each pending joiner showed.
     join_attests: BTreeMap<MemberId, Vec<Attest>>,
     /// D80 (user 22:37Z): the world's owners, signed world metadata, shareable by several people;
-    /// separate from the session's admins.
+    /// separate from the session's admins. A world without an ownership chain (`book`) lists them
+    /// here; one with a chain takes them from it.
     pub owners: BTreeSet<MemberId>,
+    /// World ownership (12.5): the world's ownership chain. Governance, like roles: changed only by
+    /// the certificates decided view changes commit, never rewound by a rollback.
+    pub book: Option<Book>,
     /// This epoch's admin entries from members allowed to make them, as held.
     admin_pending: BTreeSet<EntryId>,
+    /// Review OWNY-2: ownership entries not pending only because a parent certificate is not in the
+    /// book yet (built on a pending one's head); judged again after each decision.
+    own_held: BTreeSet<EntryId>,
     /// Admin entries as the decided changes judged them: applied, or refused.
     pub admin_outcomes: BTreeMap<EntryId, bool>,
     /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
@@ -2027,7 +2089,9 @@ impl WorldSim {
             join_rules: JoinRules::default(),
             join_attests: BTreeMap::new(),
             owners: BTreeSet::new(),
+            book: None,
             admin_pending: BTreeSet::new(),
+            own_held: BTreeSet::new(),
             admin_outcomes: BTreeMap::new(),
             closed_at: None,
             fixes_off: 0,
@@ -2480,7 +2544,7 @@ impl WorldSim {
     fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
         // D80: an admin entry stays pending across epochs until a decision judges it.
-        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. });
+        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, epoch, .. } => {
@@ -2502,7 +2566,7 @@ impl WorldSim {
             }
             // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
             // horizon like any entry: no backdating past what its author has declared.
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } if self.fixes_off & fix::VCR9 == 0 => {
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
                 max_h.is_none_or(|h| e.stamp > h)
             }
             Payload::Vote { .. }
@@ -2511,7 +2575,8 @@ impl WorldSim {
             | Payload::Precommit { .. }
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
-            | Payload::DefineRole { .. } => true,
+            | Payload::DefineRole { .. }
+            | Payload::Ownership { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
             _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
         };
@@ -2565,7 +2630,8 @@ impl WorldSim {
             | Payload::Precommit { epoch, .. }
             | Payload::Kick { epoch, .. }
             | Payload::SetRole { epoch, .. }
-            | Payload::DefineRole { epoch, .. } => {
+            | Payload::DefineRole { epoch, .. }
+            | Payload::Ownership { epoch, .. } => {
                 if epoch > self.epoch {
                     self.vc_later.entry(epoch).or_default().push(id);
                 } else if epoch == self.epoch || admin_entry {
@@ -3297,6 +3363,26 @@ impl WorldSim {
                     self.admin_pending.insert(id);
                 }
             }
+            // 12.5: pending only while the certificate would apply to the book as decided (V1's
+            // receipt rule): an entry that cannot apply would start view changes for nothing (VC6R-4).
+            // Re-sent later, it is a new entry.
+            Payload::Ownership { ref cert, .. } => {
+                if !self.admin_outcomes.contains_key(&id) && self.closed_at.is_none() && self.members.contains(&m) {
+                    match self.ownership_judge(cert) {
+                        Ok(Insert::Applied) => {
+                            self.admin_pending.insert(id);
+                        }
+                        // Review OWNY-2: its parent may be a pending certificate; hold it until it is decided.
+                        Err(OwnError::MissingParent) if self.fixes_off & fix::OWNY2 == 0 => {
+                            let mine = self.own_held.iter().filter(|h| self.entries.get(h).is_some_and(|e| e.member == m)).count();
+                            if mine < MAX_HELD_PER_AUTHOR {
+                                self.own_held.insert(id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -3323,7 +3409,48 @@ impl WorldSim {
     }
 
     fn admin_run(&self) -> AdminRun {
-        AdminRun { members: self.members.clone(), roles: self.roles.clone(), defs: self.role_defs.clone(), excluded: BTreeSet::new(), owners: self.owners.clone() }
+        AdminRun {
+            members: self.members.clone(),
+            roles: self.roles.clone(),
+            defs: self.role_defs.clone(),
+            excluded: BTreeSet::new(),
+            owners: self.owner_keys(),
+            book: self.book.clone(),
+            lineage: self.world_id,
+        }
+    }
+
+    /// The world owners' keys (12.5): from the ownership chain if the world has one, else from the
+    /// owners it lists.
+    pub fn owner_keys(&self) -> BTreeSet<Key> {
+        match &self.book {
+            Some(b) => b.view().owners.owners,
+            None => self.owners.iter().map(|&m| key_of(m)).collect(),
+        }
+    }
+
+    /// How `cert` would fare against the book as decided now (12.5): it applies if its owners'
+    /// signatures check and it builds on the current heads.
+    fn ownership_judge(&self, cert: &Cert) -> Result<Insert, OwnError> {
+        match self.book.clone() {
+            Some(mut b) => b.commit_local(cert.clone(), self.world_id, self.frame),
+            None => Err(OwnError::NotAllowed),
+        }
+    }
+
+    fn ownership_applies(&self, cert: &Cert) -> bool {
+        matches!(self.ownership_judge(cert), Ok(Insert::Applied))
+    }
+
+    /// 12.5: publish an ownership certificate (an admin entry); every replica judges it.
+    pub fn publish_ownership(&mut self, cert: Cert) -> Entry {
+        let epoch = self.epoch;
+        self.author_vc(Payload::Ownership { epoch, cert })
+    }
+
+    /// The decided view changes, in order (the ownership report replays their admin entries).
+    pub fn decided_changes(&self) -> impl Iterator<Item = &Change> {
+        self.decided.iter().map(|(c, _, _)| c)
     }
 
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
@@ -3366,8 +3493,9 @@ impl WorldSim {
     /// Whether member `j` may join now under the join rules, against `run` (the membership the
     /// change leaves before its joins), and with which starting role (D80).
     fn join_role(&self, j: MemberId, attests: &[Attest], run: &AdminRun) -> Option<RoleId> {
-        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin.
-        if self.owners.contains(&j) {
+        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin. Owners, like the
+        // other targets, are as the admin entries before the join in its change leave them (review OWNY-1).
+        if run.owners.contains(&key_of(j)) {
             return Some(ADMIN);
         }
         let has = |rel: Rel, g: MemberId| match rel {
@@ -3377,7 +3505,7 @@ impl WorldSim {
         };
         for rule in &self.join_rules.rules {
             let group: Vec<MemberId> = match rule.target {
-                Target::Owner => self.owners.iter().copied().collect(),
+                Target::Owner => run.owners.iter().copied().map(member_of).collect(),
                 Target::Player => run.members.iter().copied().collect(),
                 Target::Admin => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&ADMIN)).collect(),
                 Target::Role(r) => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&r)).collect(),
@@ -3960,7 +4088,7 @@ impl WorldSim {
         for &(id, ok) in &c.admin {
             let e = self.entries.get(&id)?.clone();
             let epoch = match e.payload {
-                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } => epoch,
+                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } => epoch,
                 _ => return Some(false),
             };
             let key = admin_key(&e);
@@ -4380,6 +4508,15 @@ impl WorldSim {
                     Some(Payload::DefineRole { role, perms, .. }) => {
                         self.role_defs.insert(role, perms);
                     }
+                    // 12.5: the session commits the certificate at the deciding boundary. Its
+                    // validity does not depend on the frame, so it applies here as in the run.
+                    Some(Payload::Ownership { cert, .. }) => {
+                        let lineage = self.world_id;
+                        if let Some(b) = self.book.as_mut() {
+                            let r = b.commit_local(cert, lineage, c.boundary);
+                            debug_assert!(matches!(r, Ok(Insert::Applied)), "a decided certificate applies: {r:?}");
+                        }
+                    }
                     _ => {}
                 }
             } else {
@@ -4420,6 +4557,40 @@ impl WorldSim {
             .collect();
         for id in gone {
             self.admin_pending.remove(&id);
+        }
+        // 12.5: a pending certificate the decision made stale or invalid can never apply: drop it
+        // unjudged, as `gone` does (V1's receipt rule).
+        let dead: Vec<EntryId> = self
+            .admin_pending
+            .iter()
+            .copied()
+            .filter(|id| matches!(self.entries.get(id).map(|e| &e.payload), Some(Payload::Ownership { cert, .. }) if !self.ownership_applies(cert)))
+            .collect();
+        for id in dead {
+            self.admin_pending.remove(&id);
+        }
+        // Review OWNY-2: a held certificate whose parents the decision brought into the book is judged
+        // again: pending if it now applies, dropped if it never can; still held while a parent is missing.
+        let held: Vec<EntryId> = self.own_held.iter().copied().collect();
+        for id in held {
+            let Some(e) = self.entries.get(&id) else { continue };
+            let Payload::Ownership { cert, .. } = &e.payload else { continue };
+            if self.admin_outcomes.contains_key(&id) || self.closed_at.is_some() || !self.members.contains(&e.member) {
+                self.own_held.remove(&id);
+                continue;
+            }
+            if self.book.as_ref().is_some_and(|b| cert.prev.iter().any(|p| b.cert(*p).is_none())) {
+                continue;
+            }
+            match self.ownership_judge(cert) {
+                Err(OwnError::MissingParent) => {}
+                r => {
+                    self.own_held.remove(&id);
+                    if r == Ok(Insert::Applied) {
+                        self.admin_pending.insert(id);
+                    }
+                }
+            }
         }
         // Review VC-6: a decided epoch restarts the slowness timers, so one borderline view cannot vote
         // again the instant a reset ends. Review VCR-4: the unbacked-epoch timers do not restart (a
@@ -5437,7 +5608,8 @@ impl WorldSim {
             | Payload::Precommit { .. }
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
-            | Payload::DefineRole { .. } => Outcome::Accepted,
+            | Payload::DefineRole { .. }
+            | Payload::Ownership { .. } => Outcome::Accepted,
         }
     }
 
@@ -5686,6 +5858,25 @@ impl WorldSim {
     pub fn members_evicted(&self) -> &BTreeMap<MemberId, (u32, u64)> {
         &self.evicted
     }
+
+    /// Give the world an ownership chain from its genesis certificate (part of the genesis
+    /// document; before the first frame is simulated).
+    pub fn set_ownership(&mut self, genesis: Cert) {
+        assert_eq!(self.frame, 0, "ownership is part of the world's genesis");
+        self.book = Some(Book::new(genesis).expect("a valid genesis certificate"));
+    }
+
+    /// A certificate for `change` on top of this replica's present ownership head(s), signed by
+    /// `keys` (spike: anyone can sign as any
+    /// key, standing in for a key holder handing the member a signed certificate). A merge joins
+    /// every head; any other change builds on the first head.
+    pub fn owner_cert(&self, change: OwnChange, keys: &[Key]) -> Option<Cert> {
+        let b = self.book.as_ref()?;
+        let heads = b.heads();
+        let prev = if change == OwnChange::Merge { heads } else { heads.into_iter().take(1).collect() };
+        let seq = prev.iter().map(|p| b.cert(*p).map_or(0, |c| c.seq)).max()? + 1;
+        Some(Cert { world: b.world, seq, prev, change, sigs: vec![] }.signed(keys))
+    }
 }
 
 // ---- offline reference ---------------------------------------------------------------------------
@@ -5857,5 +6048,115 @@ mod round3_tests {
         let mut w = Wr(Vec::new());
         w.change(&c);
         assert_eq!(Rd(&w.0, 0).change(), Some(c));
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    //! Review round 10 (ownership on the admin layer): joins read the owners the change's own admin
+    //! entries leave (OWNY-1); a certificate built on a pending one's head waits for it (OWNY-2).
+    use super::*;
+    use crate::ownership::SignRule;
+
+    const GUEST: RoleId = 5;
+
+    /// Member 1 of a session of [1, 2] whose world is owned by `owners` (rule A), where everyone else
+    /// joins as GUEST.
+    fn world(owners: &[Key]) -> WorldSim {
+        let mut s = WorldSim::new(1, 1, &[1, 2], SceneKind::Empty, SimConfig::default());
+        s.set_ownership(Cert::genesis(owners, SignRule::All, 7));
+        s.join_rules = JoinRules::public(GUEST);
+        s
+    }
+
+    /// A change listing admin entry `id` (applied) and member 9's join with `role`.
+    fn change_with_join(s: &WorldSim, id: EntryId, role: RoleId) -> Change {
+        let exp = 1000;
+        Change { epoch: s.epoch, admin: vec![(id, true)], add: vec![9], add_roles: vec![role], add_attests: vec![vec![]], add_reqs: vec![(join_sig_in(s.session, 9, exp), exp)], boundary: 10, ..Default::default() }
+    }
+
+    #[test]
+    fn an_owner_leaving_in_the_change_of_its_join_is_not_row_0() {
+        let mut s = world(&[1, 9]);
+        let cert = s.owner_cert(OwnChange::Leave { key: 9 }, &[9]).unwrap();
+        let id = s.publish_ownership(cert).id();
+        assert!(s.admin_pending.contains(&id));
+        // The decided book still lists 9; the change's own Leave removes it before the join.
+        assert!(s.owner_keys().contains(&9));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, ADMIN)), Some(false));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, GUEST)), Some(true));
+    }
+
+    #[test]
+    fn an_owner_added_in_the_change_of_its_join_is_row_0() {
+        let mut s = world(&[1]);
+        let cert = s.owner_cert(OwnChange::Add { key: 9 }, &[1]).unwrap();
+        let id = s.publish_ownership(cert).id();
+        assert!(!s.owner_keys().contains(&9));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, ADMIN)), Some(true));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, GUEST)), Some(false));
+    }
+
+    /// Owners [1]: 1 adds 9 (pending), then 1 and 9 add 8 on top of that certificate.
+    fn chained(fixes_off: u64) -> (WorldSim, EntryId, EntryId) {
+        let mut s = world(&[1]);
+        s.fixes_off = fixes_off;
+        let c1 = s.owner_cert(OwnChange::Add { key: 9 }, &[1]).unwrap();
+        let c2 = Cert { world: c1.world, seq: c1.seq + 1, prev: vec![c1.id()], change: OwnChange::Add { key: 8 }, sigs: vec![] }.signed(&[1, 9]);
+        let id1 = s.publish_ownership(c1).id();
+        let id2 = s.publish_ownership(c2).id();
+        (s, id1, id2)
+    }
+
+    #[test]
+    fn a_certificate_on_a_pending_head_is_held_until_its_parent_is_decided() {
+        let (mut s, id1, id2) = chained(0);
+        assert!(s.admin_pending.contains(&id1));
+        assert!(!s.admin_pending.contains(&id2) && s.own_held.contains(&id2));
+        let c = Change { epoch: s.epoch, admin: vec![(id1, true)], boundary: 10, ..Default::default() };
+        assert_eq!(s.change_valid(&c), Some(true));
+        s.apply_change(c, 0, &mut Vec::new());
+        assert!(s.owner_keys().contains(&9));
+        assert!(s.admin_pending.contains(&id2) && s.own_held.is_empty());
+        // Its own change then commits it.
+        let c = Change { epoch: s.epoch, admin: vec![(id2, true)], boundary: 20, ..Default::default() };
+        assert_eq!(s.change_valid(&c), Some(true));
+        s.apply_change(c, 0, &mut Vec::new());
+        assert_eq!(s.owner_keys(), BTreeSet::from([1, 8, 9]));
+    }
+
+    #[test]
+    fn without_owny2_a_certificate_on_a_pending_head_is_lost() {
+        let (mut s, id1, id2) = chained(fix::OWNY2);
+        assert!(!s.admin_pending.contains(&id2) && s.own_held.is_empty());
+        let c = Change { epoch: s.epoch, admin: vec![(id1, true)], boundary: 10, ..Default::default() };
+        s.apply_change(c, 0, &mut Vec::new());
+        assert!(!s.admin_pending.contains(&id2));
+    }
+
+    #[test]
+    fn an_author_holds_at_most_max_held_per_author() {
+        // Review OWNZ-1: certificates naming parents that never exist are held up to the cap only.
+        let mut s = world(&[1]);
+        let world = s.book.as_ref().unwrap().world;
+        for n in 0..MAX_HELD_PER_AUTHOR as u64 + 4 {
+            let c = Cert { world, seq: 2, prev: vec![1000 + n], change: OwnChange::Add { key: 9 }, sigs: vec![] }.signed(&[1]);
+            s.publish_ownership(c);
+        }
+        assert_eq!(s.own_held.len(), MAX_HELD_PER_AUTHOR);
+        assert!(s.admin_pending.is_empty());
+    }
+
+    #[test]
+    fn an_oversized_ownership_entry_is_refused() {
+        // Review OWNY-3: a tag-20 payload claiming more than MAX_CERT_WORDS words is never read.
+        let mut w = Wr(Vec::new());
+        w.u8(1); // Msg::Entry
+        w.u32(1); w.u32(1); w.u64(0); w.u64(5); // member, seq, prev, stamp
+        w.u8(20); w.u32(0); w.u32(MAX_CERT_WORDS as u32 + 1);
+        for i in 0..=MAX_CERT_WORDS as u64 { w.u64(i) }
+        w.u8(0); // carried: none
+        assert_eq!(decode_msg(&w.0), None);
+        assert_eq!(Cert::from_words(&vec![0; MAX_CERT_WORDS + 1]), None);
     }
 }

@@ -47,7 +47,8 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8; these five pending on pe-session, `pe-pending.txt`); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes. Pending on pe-session (`pe-pending.txt`): its log is the spike's |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
@@ -143,6 +144,7 @@ fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1.
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
+ownership = { keys = [10], rule = "all", nonce = 1 }   # world ownership genesis (12.5); rule all, any or k
 
 [world.1.plan]                      # actions per member; within a frame, in file order
 1 = [
@@ -157,6 +159,7 @@ join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallbac
     { at = 120, kick = { target = 2 } },                                     # D80 admin entries
     { at = 240, set_role = { member = 2, role = 0 } },
     { at = 125, define_role = { role = 1, perms = 0 } },
+    { at = 60, owner = { change = "add", key = 20, signers = [10] } },       # an ownership certificate
 ]
 3 = []                              # an empty plan clears an included one
 
@@ -216,7 +219,7 @@ delay, or `deliver = true` (so no later rule matches it). Conditions:
 - `world`.
 - `from`, `to`, `involves`: a member id or a list; `involves` means sent by or to.
 - `partition = [[1, 2], [3]]`: sender and receiver are in different groups. Members in no group are unaffected.
-- `msg`: `entry`, `fetch`, `batch`, `join` (a join request), or an entry payload: `touch`, `hand`, `ack`, `vote`, `propose`, `prevote`, `precommit`, `kick`, `setrole`, `definerole`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `provenance`.
+- `msg`: `entry`, `fetch`, `batch`, `join` (a join request), or an entry payload: `touch`, `hand`, `ack`, `vote`, `propose`, `prevote`, `precommit`, `kick`, `setrole`, `definerole`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `provenance`, `ownership`.
 - `stamp`, `seq`: chain entries only.
 - `author`: chain entries authored by this member (or list), whoever sends them.
 - `round`: `propose`, `prevote` or `precommit` entries of this round; `nil = true` (or `false`):
@@ -324,6 +327,15 @@ behaviour `x` has fired.
 
 Backdated touches are a plan action (`backdated`).
 
+An `owner` plan action (spike API; not in this pe-session tool yet, so `ownership` is in
+`pe-pending.txt`) publishes a world-ownership certificate built on the member's present
+ownership head and signed by `signers` (spike signatures: any member can sign as any key). `change` is
+`add`, `leave` or `remove` (rule C only) with `key`, `set_recovery` (`key` is the owner, `recovery` its
+backup key, or none to clear it), `set_rule` (`rule`) or `merge` (joins every head). An owner's
+recovery key signs as the owner (consent-only ownership, OT = (a)). The world needs `ownership`. The
+certificate is an admin entry (D80): a view change commits it, at its boundary, if it applies to the
+book the admin entries before it leave; one that can't apply when received is never pending.
+
 ### Reports: `[[report]]`
 
 Reports print after the run, in file order, in the spike's formats:
@@ -331,6 +343,7 @@ Reports print after the run, in file order, in the spike's formats:
 - `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`. It prints `UNCONFIRMED` (a failure) if `frames` passes the lowest confirmed frame of the checked replicas.
 - `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
+- `ownership`: each replica's owner view (owners, rule, heads, DISPUTED, recovery keys) and outcomes against an offline reference: a fresh book from the genesis certificate with the certificates of the first replica's decided changes applied in order; every decided certificate with its epoch and boundary, applied or refused; every certificate never committed, with the reason against the book as decided before its stamp; each fork proof, checked as a third party holding only the chain prefix would check it; and with `at = [f, ...]`, the reference's view after the decisions with boundaries up to f.
 
   `verdict`, `membership`, `view_changes`, `admin` and `before_fix` take `honest = [1, 2, 3]`,
   `honest = { members_at = 3 }` (the membership member 3 holds at the end of the run), or
