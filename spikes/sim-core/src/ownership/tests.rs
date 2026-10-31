@@ -44,10 +44,11 @@ fn commit(b: &mut Book, change: Change, keys: &[Key], frame: u64) -> Result<Inse
 fn put(b: &mut Book, prev: CertId, change: Change, keys: &[Key], at: Option<(Lineage, u64)>) -> CertId {
     let c = next(b, prev, change, keys);
     let id = c.id();
-    // Offline, a certificate whose parent doesn't count yet is parked until it does (OWNT-2, OWNT-5).
-    assert!(matches!(b.insert(c), Ok(Insert::Applied | Insert::Parked)));
-    if let Some((l, f)) = at {
-        b.record(id, l, f);
+    match at {
+        // Delivered with its attestation, as the contract says.
+        Some((l, f)) => assert!(matches!(b.insert_recorded(c, l, f), Ok(Insert::Applied | Insert::Parked))),
+        // Unattested: kept only if someone who matters at a head pays for it.
+        None => assert!(matches!(b.insert(c), Ok(Insert::Applied | Insert::Parked) | Err(OwnError::Unattested))),
     }
     id
 }
@@ -279,12 +280,21 @@ fn double_sale() -> (Book, Vec<Cert>) {
     (b, vec![to_b, b_out, to_c, c_out])
 }
 
+/// Session `l`'s attestation of `c` at frame `f`, signed by its members in `sessions()`.
+fn attest_of(b: &Book, c: &Cert, l: Lineage, f: u64) -> Attest {
+    let members: &[MemberId] = if l == L2 { &[4, 5] } else { &[1, 2, 3] };
+    Attest::make(b.world, c.id(), l, f, &c.signers(), members)
+}
+
+/// The double sale's attestations: L1 committed the sale to B, L2 the sale to C.
+fn sale_attests(b0: &Book, certs: &[Cert]) -> Vec<Attest> {
+    certs.iter().enumerate().map(|(i, c)| attest_of(b0, c, if i < 2 { L1 } else { L2 }, 1 + i as u64)).collect()
+}
+
+/// Both sales delivered with their attestations, as one batch (the delivery contract).
 fn sold_twice(b0: &Book, certs: &[Cert]) -> Book {
     let mut b = b0.clone();
-    insert_all(&mut b, certs).unwrap();
-    for (i, c) in certs.iter().enumerate() {
-        b.record(c.id(), if i < 2 { L1 } else { L2 }, 1 + i as u64);
-    }
+    assert!(b.insert_attested(certs, &sale_attests(b0, certs), &sessions()).is_empty());
     b
 }
 
@@ -292,13 +302,12 @@ fn sold_twice(b0: &Book, certs: &[Cert]) -> Book {
 fn double_sale_is_detected_and_merges_in_any_order() {
     let (b0, certs) = double_sale();
     let mut views = BTreeSet::new();
+    let att = sale_attests(&b0, &certs);
     for perm in [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1], [1, 3, 0, 2]] {
         let order: Vec<Cert> = perm.iter().map(|&i| certs[i].clone()).collect();
+        let atts: Vec<Attest> = perm.iter().rev().map(|&i| att[i].clone()).collect();
         let mut b = b0.clone();
-        insert_all(&mut b, &order).unwrap();
-        for &i in perm.iter().rev() {
-            b.record(certs[i].id(), if i < 2 { L1 } else { L2 }, 1 + i as u64);
-        }
+        assert!(b.insert_attested(&order, &atts, &sessions()).is_empty());
         assert!(b.view().disputed);
         views.insert((owners(&b), b.digest()));
     }
@@ -336,8 +345,10 @@ fn unattested_fork_counts_for_nothing() {
     put(&mut b, c1, Change::Leave { key: S }, &[S], Some((L1, 2)));
     let eve = put(&mut b, g, Change::Add { key: EVE }, &[S], None);
     assert_eq!(owners(&b), [B]);
+    // S no longer matters at a head, so nobody pays for it: not even kept.
+    assert!(b.cert(eve).is_none());
     // With a session of its own on an old copy, the former sole owner still can (the residual).
-    b.record(eve, L2, 1);
+    put(&mut b, g, Change::Add { key: EVE }, &[S], Some((L2, 1)));
     assert_eq!(owners(&b), [B, EVE]);
     assert!(b.forks()[0].equivocation());
 }
@@ -442,17 +453,16 @@ fn arrival_order_never_matters() {
     p.sort_unstable();
     let m2 = Cert { world: b.world, seq: 4, prev: p, change: Change::Merge, sigs: vec![] }.signed(&[C]);
     certs.extend([ext, m, m2]);
+    let atts: Vec<Attest> = certs.iter().map(|c| attest_of(&b0, c, L1, 1)).collect();
     let mut seen = BTreeSet::new();
     for rot in 0..certs.len() {
         let mut order = certs.clone();
         order.rotate_left(rot);
+        let mut a = atts.clone();
+        a.rotate_left(rot);
+        a.reverse();
         let mut bk = b0.clone();
-        insert_all(&mut bk, &order).unwrap();
-        let mut ids: Vec<CertId> = certs.iter().map(Cert::id).collect();
-        ids.rotate_left(rot);
-        for id in ids.iter().rev() {
-            bk.record(*id, L1, 1);
-        }
+        assert!(bk.insert_attested(&order, &a, &sessions()).is_empty());
         assert_eq!(bk.len(), 8);
         seen.insert(bk.digest());
     }
@@ -748,8 +758,11 @@ fn owns2_unattested_counter_removal_voids_nothing() {
     let g = b.genesis;
     let ch = put(&mut b, g, Change::Challenge { key: K }, &[A], Some((L1, 1)));
     put(&mut b, ch, Change::RemoveDormant { key: K }, &[A], Some((L1, 1 + W)));
-    let c2 = put(&mut b, g, Change::Challenge { key: A }, &[K], None);
-    put(&mut b, c2, Change::RemoveDormant { key: A }, &[K], None);
+    // K, removed, answers unattested on the genesis: nobody who matters at a head pays for it.
+    let c2 = next(&b, g, Change::Challenge { key: A }, &[K]);
+    let c3 = Cert { world: b.world, seq: 2, prev: vec![c2.id()], change: Change::RemoveDormant { key: A }, sigs: vec![] }.signed(&[K]);
+    let _ = b.insert(c2);
+    let _ = b.insert(c3);
     assert_eq!(owners(&b), [A]);
 }
 
@@ -804,8 +817,7 @@ fn owns8_sock_merge_does_not_clear_the_dispute() {
     let g = b.genesis;
     let c1 = put(&mut b, g, Change::Add { key: B }, &[S], Some((L1, 1)));
     put(&mut b, c1, Change::Leave { key: S }, &[S], Some((L1, 2)));
-    let eve = put(&mut b, g, Change::Add { key: EVE }, &[S], None);
-    b.record(eve, L2, 1);
+    put(&mut b, g, Change::Add { key: EVE }, &[S], Some((L2, 1)));
     assert!(b.view().disputed);
     let m = merge(&b, &[EVE]);
     b.insert(m.clone()).unwrap();
@@ -1031,8 +1043,9 @@ fn rv4_owt8_mutual_removal_dispute() {
 fn rv5_ownu1_verify_chain_over_256_attested() {
     let mut l = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
     for i in 0..300u32 {
+        // Joint changes: solo ones are capped well below 300 (OWNV-3).
         let k = if i % 2 == 0 { S } else { B };
-        commit(&mut l, Change::SetRecovery { owner: k, recovery: Some(1000 + i) }, &[k], i as u64 + 1).unwrap();
+        commit(&mut l, Change::SetRecovery { owner: k, recovery: Some(1000 + i) }, &[S, B], i as u64 + 1).unwrap();
     }
     let g = l.cert(l.genesis).unwrap().clone();
     let rest: Vec<Cert> = l.prefix_of(head(&l)).into_iter().filter(|c| c.seq > 0).collect();
@@ -1216,7 +1229,7 @@ fn rv6_ownv2_recovery_key_spends_owner_share() {
         }
     }
     assert_eq!(commit(&mut b, Change::SetRecovery { owner: S, recovery: None }, &[S], 9000), Ok(Insert::Applied));
-    assert!(b.view().owners.recovery.get(&S).is_none());
+    assert!(!b.view().owners.recovery.contains_key(&S));
 }
 
 /// OWNV-3: under rule B, "add a new key of mine, then leave" can't fill the book: the solo cap is
@@ -1274,4 +1287,23 @@ fn rv6_ownv5_unfixable_and_stale_certs_are_not_kept() {
     // B, a former owner, on the genesis.
     let _ = b.insert(next(&b, g, Change::Add { key: X }, &[B]));
     assert_eq!(b, before);
+}
+
+/// OWNV-7: a book keeps other sessions' signed attestations, so a third party can forward them, and
+/// says which parents it lacks after `MissingParent`.
+#[test]
+fn ownv7_attestations_forward_and_missing_parents() {
+    let (b0, certs) = double_sale();
+    let a = sold_twice(&b0, &certs);
+    // A relays everything it holds to a fresh book: its certificates and the attestations it imported.
+    let held: Vec<Cert> = certs.iter().map(|c| a.cert(c.id()).unwrap().clone()).collect();
+    let fwd = a.attestations();
+    assert_eq!(fwd.len(), 4);
+    let mut c = b0.clone();
+    assert!(c.insert_attested(&held, &fwd, &sessions()).is_empty());
+    assert_eq!(c.view(), a.view());
+    // A child of something c doesn't hold: refused, and c names what to ask for.
+    let fresh = b0.clone();
+    assert_eq!(fresh.clone().insert(certs[1].clone()), Err(OwnError::MissingParent));
+    assert_eq!(fresh.missing_parents(&certs[1]), [certs[0].id()]);
 }

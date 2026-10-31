@@ -1,10 +1,14 @@
 //! Adversarial harness for the ownership invariants (world-ownership-draft.md, section 0): random
 //! attacker strategies against random honest histories, every invariant checked on every book.
 //!
-//! * Honest side: owners act through sessions with `commit_local`. Usually one lineage; sometimes the
-//!   world is copied, both copies play on in two lineages, and the copies meet and merge.
-//! * A1: holds former owners' keys, removed owners' keys, stolen recovery keys and stranger keys;
-//!   forks anywhere, mints key chains, floods, pads, strips, replays and reorders certificates.
+//! * Honest side: owners act through sessions with `commit_local`, sometimes gossiping the
+//!   certificate unattested first. Usually one lineage; sometimes the world is copied, both copies play
+//!   on in two lineages, and the copies meet and merge. An honest step is never refused for capacity
+//!   (`Quota`, `Full`), and `Budget` only once its signers really used their shares (checked against
+//!   an independent count).
+//! * A1: holds former owners' keys, removed owners' keys, stolen recovery keys and stranger keys,
+//!   and in some runs a current co-owner's key; forks anywhere, mints key chains, floods, pads,
+//!   strips, replays and reorders certificates.
 //! * A2: A1 plus sessions of its own (lineages 8 and 9) attesting anything at any frames, with
 //!   signer subsets the certificates really carry. Forged signer sets (OWNT-1) and the window and
 //!   recovery machinery are deferred with the trust root (D87): removed under OT(a).
@@ -63,6 +67,51 @@ struct History {
     next_key: Key,
     former: BTreeSet<Key>,
     recovery_keys: BTreeSet<Key>,
+    /// Check honest refusals (off where an attacker holds a current owner's key).
+    strict: bool,
+}
+
+/// The solo change `c` on `head` was refused with `Budget`: check, with a count of our own over the
+/// counting history (which can only be higher than the book's, joined by maximum), that solo changes
+/// used up SOLO_CERTS or every owner who signed used the share it got when it was added (OWNV-2/3/4).
+fn budget_is_real(b: &Book, head: CertId, signers: &BTreeSet<Key>) -> bool {
+    let past: Vec<CertId> = b.inner.anc[&head].iter().copied().filter(|x| b.counts(*x)).collect();
+    let charged_owners = |st: &Owners, sg: &BTreeSet<Key>| -> Vec<Key> {
+        st.owners.iter().copied().filter(|o| sg.contains(o) || st.recovery.get(o).is_some_and(|r| r.keys().any(|k| sg.contains(k)))).collect()
+    };
+    let mut total = 0usize;
+    let mut own: BTreeMap<Key, usize> = BTreeMap::new();
+    for &x in &past {
+        let c = &b.inner.certs[&x];
+        if c.prev.len() != 1 || matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. }) {
+            continue;
+        }
+        let st = &b.inner.eff[&c.prev[0]];
+        let sg = &b.inner.signers[&x];
+        let by = charged_owners(st, sg);
+        if st.owners.is_subset(sg) || by.is_empty() {
+            continue;
+        }
+        total += 1;
+        for o in by {
+            *own.entry(o).or_default() += 1;
+        }
+    }
+    if total >= SOLO_CERTS {
+        return true;
+    }
+    let st = &b.inner.eff[&head];
+    charged_owners(st, signers).iter().all(|o| {
+        // The share it got when it was last added (a recovered key inherits one: not checked).
+        let added = past.iter().filter(|x| match &b.inner.certs[x].change {
+            Change::Genesis { owners, .. } => owners.contains(o),
+            Change::Add { key } => key == o,
+            _ => false,
+        });
+        let Some(at) = added.max_by_key(|x| b.inner.certs[x].seq) else { return true };
+        let n = b.inner.eff[at].owners.len().max(1);
+        own.get(o).copied().unwrap_or(0) >= SOLO_CERTS / n
+    })
 }
 
 /// One honest step in `lineage` on a counting head; an invalid attempt is simply refused.
@@ -121,7 +170,18 @@ fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Inser
     };
     let c = cert_on(&h.book, vec![head], change, &keys);
     let before = v.owners.owners;
-    let r = h.book.commit_local(c, lineage, h.frame);
+    if rng.chance(20) {
+        // Gossiped unattested first, for co-signing; an honest owner always has room.
+        let g = h.book.insert(c.clone());
+        assert!(!h.strict || g != Err(OwnError::Quota), "an honest proposal hit the quota: {c:?}");
+    }
+    let r = h.book.commit_local(c.clone(), lineage, h.frame);
+    if h.strict {
+        assert!(!matches!(r, Err(OwnError::Full | OwnError::Quota)), "an honest step refused for capacity: {r:?} {c:?}");
+        if r == Err(OwnError::Budget) {
+            assert!(budget_is_real(&h.book, head, &c.signers()), "an honest solo change refused though its signers have their shares: {c:?}");
+        }
+    }
     for k in before.difference(&h.book.view().owners.owners) {
         h.former.insert(*k);
     }
@@ -132,7 +192,7 @@ fn honest_history(rng: &mut Rng) -> History {
     let owners = [1, 2, 3];
     let rule = [SignRule::All, SignRule::All, SignRule::Threshold(2), SignRule::Any][rng.below(4)];
     let book = Book::new(Cert::genesis(&owners, rule, rng.next())).unwrap();
-    let mut h = History { book, frame: 0, next_key: 100, former: BTreeSet::new(), recovery_keys: BTreeSet::new() };
+    let mut h = History { book, frame: 0, next_key: 100, former: BTreeSet::new(), recovery_keys: BTreeSet::new(), strict: true };
     let steps = if rng.chance(1) { 700 } else { rng.below(40) + 3 };
     for _ in 0..steps {
         let _ = honest_step(rng, &mut h, L1);
@@ -229,26 +289,24 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
             }
         };
         let id = c.id();
-        let _ = book.insert(c);
         if sessions_too && rng.chance(60) {
+            // Committed in one of A2's own sessions, delivered with its attestation.
             let frame = if rng.chance(50) { rng.next() >> 20 } else { rng.below(1000) as u64 };
+            let s: BTreeSet<Key> = c.signers();
+            let mut atts = vec![Attest::make(book.world, id, lineage, frame, &s, &[1])];
             if rng.chance(30) {
                 // Two attestations of one certificate in one lineage, equal frames, signer subsets.
-                if let Some(held) = book.cert(id).cloned() {
-                    let s: BTreeSet<Key> = held.signers();
-                    let sub: BTreeSet<Key> = s.iter().copied().filter(|_| rng.chance(50)).collect();
-                    for set in [s, sub] {
-                        book.attest(&Attest::make(book.world, id, lineage, frame, &set, &[1]), &ss);
-                    }
-                }
-            } else {
-                book.record(id, lineage, frame);
+                let sub: BTreeSet<Key> = s.iter().copied().filter(|_| rng.chance(50)).collect();
+                atts.push(Attest::make(book.world, id, lineage, frame, &sub, &[1]));
             }
+            book.insert_attested(&[c], &atts, &ss);
             if rng.chance(30)
                 && let Some(&p) = book.cert(id).and_then(|c| c.prev.first())
             {
                 book.record(p, lineage, frame.saturating_sub(OBJECTION_FRAMES + 1));
             }
+        } else {
+            let _ = book.insert(c);
         }
     }
 }
@@ -281,6 +339,51 @@ fn relay_flood(rng: &mut Rng, book: &mut Book) {
         assert!(r.is_err(), "a keyless relay's certificate is refused: {r:?} {c:?} parent counts {}", before.counts(parent));
     }
     assert_eq!(*book, before, "a keyless relay stored something");
+}
+
+/// Invariant 5's charges (see `check`).
+fn check_charges(v: &Book, ctx: &str) {
+    let head_keys: BTreeSet<Key> = v
+        .inner
+        .view
+        .heads
+        .iter()
+        .flat_map(|h| {
+            let s = &v.inner.eff[h];
+            s.owners.iter().copied().chain(s.recovery.values().flat_map(|r| r.keys().copied())).collect::<Vec<_>>()
+        })
+        .collect();
+    let needed: BTreeSet<CertId> = v.inner.commits.keys().flat_map(|c| v.inner.anc[c].iter().copied()).collect();
+    for (id, c) in v.inner.certs.iter().chain(v.inner.parked.iter()) {
+        if c.prev.is_empty() || v.inner.commits.contains_key(id) {
+            assert!(!v.inner.charged.contains_key(id), "{ctx}: an attested certificate is charged");
+            continue;
+        }
+        match v.inner.charged.get(id) {
+            Some(Charge::Keys(ks)) => {
+                assert!(ks.is_subset(&c.signers()), "{ctx}: charged to a key that didn't sign it");
+                assert!(ks.is_subset(&head_keys), "{ctx}: charged to a key that doesn't matter at a head");
+            }
+            Some(Charge::Roots(rs)) => {
+                for r in rs {
+                    assert!(matches!(v.inner.charged.get(r), Some(Charge::Keys(_))), "{ctx}: inherited from a certificate that isn't charged to keys");
+                    assert!(c.prev.iter().any(|p| v.inner.anc.get(p).is_some_and(|a| a.contains(r))), "{ctx}: inherited from a certificate it doesn't hang from");
+                }
+            }
+            None => assert!(needed.contains(id) && !v.inner.parked.contains_key(id), "{ctx}: an unattested certificate charged to nobody"),
+        }
+    }
+    let mut own: BTreeMap<Key, usize> = BTreeMap::new();
+    let mut inherited: BTreeMap<CertId, usize> = BTreeMap::new();
+    for ch in v.inner.charged.values() {
+        match ch {
+            Charge::Keys(ks) if ks.len() == 1 => *own.entry(*ks.iter().next().unwrap()).or_default() += 1,
+            Charge::Roots(rs) if rs.len() == 1 => *inherited.entry(*rs.iter().next().unwrap()).or_default() += 1,
+            _ => {}
+        }
+    }
+    assert!(own.values().all(|&n| n <= UNATTESTED_PER_KEY), "{ctx}: a key over its quota: {own:?}");
+    assert!(inherited.values().all(|&n| n <= INHERITED_PER_CERT), "{ctx}: a certificate over its inherited quota");
 }
 
 type Essence = (BTreeSet<Key>, SignRule, bool, BTreeMap<Key, BTreeMap<Key, CertId>>, BTreeMap<Key, CertId>, BTreeMap<Key, Recovering>, Vec<CertId>, bool);
@@ -451,28 +554,23 @@ fn check(seed: u64, residual: &mut Residual) {
     let mut keys: Vec<Key> = h.former.iter().copied().chain(h.recovery_keys.iter().copied()).collect();
     keys.extend([7001, 7002]);
     keys.retain(|k| !honest.owners.owners.contains(k));
+    // A1 sometimes holds a current co-owner's key too (a rogue co-owner without a session).
+    let rogue: Option<Key> = (rng.chance(30) && honest.owners.owners.len() > 1).then(|| *honest.owners.owners.iter().next_back().unwrap());
     for sessions_too in [false, true] {
         let mut v = h.book.clone();
-        attack(&mut rng, &mut v, &keys, sessions_too);
-        let ctx = format!("seed {seed}, sessions {sessions_too}");
+        let mut ks = keys.clone();
+        if !sessions_too {
+            ks.extend(rogue);
+        }
+        attack(&mut rng, &mut v, &ks, sessions_too);
+        let ctx = format!("seed {seed}, sessions {sessions_too}, rogue {rogue:?}");
         let vv = v.view();
-        // 5: bounded. Unattested certificates, held or parked, are charged only to keys that matter
-        // at a counting certificate (or, at one some session attested, in its own state: the A2
-        // attacker's sessions), at most UNATTESTED_PER_KEY each. A keyless relay stores nothing
-        // (asserted in relay_flood).
-        let keys_of = |s: &Owners| s.owners.iter().copied().chain(s.recovery.values().flat_map(|r| r.keys().copied())).collect::<Vec<_>>();
-        let mattering: BTreeSet<Key> = v
-            .inner
-            .eff
-            .iter()
-            .filter(|(id, _)| v.counts(**id))
-            .flat_map(|(_, s)| keys_of(s))
-            .chain(v.inner.commits.keys().flat_map(|id| keys_of(&v.inner.linear[id])))
-            .collect();
-        let unattested = v.inner.certs.keys().filter(|id| **id != v.genesis && !v.inner.commits.contains_key(id)).count() + v.inner.parked.len();
-        assert_eq!(unattested, v.inner.charged.len(), "{ctx}: an unattested certificate charged to nobody");
-        assert!(v.inner.charged.values().all(|p| p.is_subset(&mattering)), "{ctx}: charged to a key that never mattered");
-        assert!(unattested <= UNATTESTED_PER_KEY * mattering.len(), "{ctx}: {unattested} unattested certs for {} keys", mattering.len());
+        // 5: bounded. A keyless relay stores nothing (asserted in relay_flood). Every unattested
+        // certificate, held or kept, is charged, unless an attestation depends on it: to its own
+        // signers that matter at a current head (never to a key that didn't sign it, OWNV-1), or to
+        // the unattested certificates it hangs from. A key's own charges stay within its quota, and
+        // a certificate's inherited ones within theirs.
+        check_charges(&v, &ctx);
         // 4: the view and the digest don't depend on arrival order.
         for batch in [true, false] {
             let (r, resent) = rebuilt(&mut rng, &v, batch);
@@ -492,15 +590,16 @@ fn check(seed: u64, residual: &mut Residual) {
         if !sessions_too {
             // 2: unattested changes change nothing.
             assert_eq!(essence(&vv), essence(&honest), "{ctx}: an A1 attacker changed the view");
-            // 3: liveness: an owner's unattested proposal on the head still gets in, and the next
-            // honest steps go the same way in both books.
+            // 3: liveness: an (uncompromised) owner's unattested proposal on the head still gets in,
+            // and the next honest steps go the same way in both books.
             let o = *vv.owners.owners.iter().next().unwrap();
+            assert_ne!(Some(o), rogue);
             let prop = cert_on(&v, vv.heads.clone(), Change::SetRecovery { owner: o, recovery: Some(55_555) }, &[o]);
             if vv.heads.len() == 1 {
                 assert_eq!(v.clone().insert(prop.clone()), h.book.clone().insert(prop), "{ctx}: an honest proposal went differently after the attack");
             }
-            let mut h1 = History { book: h.book.clone(), ..h.clone() };
-            let mut h2 = History { book: v.clone(), ..h.clone() };
+            let mut h1 = History { book: h.book.clone(), strict: false, ..h.clone() };
+            let mut h2 = History { book: v.clone(), strict: false, ..h.clone() };
             for k in 0..5 {
                 let mut r1 = Rng(seed ^ (k << 40));
                 let mut r2 = Rng(seed ^ (k << 40));
