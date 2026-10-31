@@ -1615,31 +1615,41 @@ World ownership is a **lasting property of a world**, separate from a session's 
 `viewchange`). Several people can share it (22:37Z). It is held as a **chain of signed ownership
 certificates**: each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain,
 no blockchain"). The chain travels with the world, in its genesis document, every save and each
-session's log, and anyone can verify it. It replaces 12.2's single `owner` role and D10's optional
-threshold: the ACL's owner is whoever the chain names. The rules below follow @design-reviewer's
-review of the first spike (OWN-1 to OWN-12). Three of them, marked D87, are with the user.
+session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
+single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
+
+The rules below follow two rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to OWNR-9).
+What the user still has to decide is D87.
 
 * **Owners are keys.** Each owner is a player's long-term Ed25519 identity key (10.3), never a session
-  `MemberId`, which changes on every rejoin. A session maps members to keys through their join
-  certificates. Owners are equals.
+  `MemberId`. A session maps members to keys through their join certificates. Owners are equals.
 * **The certificate** (`ownership::Cert`) has these fields:
-  * `world`: the world id;
+  * `world`;
   * `seq`;
-  * `prev`: the parent's id, or several concurrent parents for a merge;
+  * `prev`: the parent, or several pairwise-concurrent parents for a merge;
   * `change`;
   * `sigs`.
-  A certificate's id is the hash of everything but the signatures, and each key signs that id. The
-  encoding has exactly one form: trailing data is refused (OWN-11).
+  Keys sign the hash of everything but the signatures. The id also covers the set of valid signers,
+  so two copies with different signatures are two certificates (OWNR-4). The encoding has exactly one
+  form.
 * **The changes:** `Genesis{owners, rule, nonce}`, `Add`, `Leave`, `Remove` (rule C only), `SetRule`,
   `SetRecovery`, `Challenge`, `RemoveDormant`, `StartRecover`, `FinishRecover` and `Merge`.
 * **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
-  the genesis certificate, so the original owners can't be rewritten without changing the world's
-  identity [I]. (The spike uses the genesis certificate's id.)
-* **Validity is a function of a certificate's causal past alone** (OWN-5).
-  * A certificate is valid only if its signatures satisfy the rule of the owner set at its parent, and
-    `seq` follows. Signers outside that set never count.
-  * A certificate whose parent isn't held is refused, not kept (OWN-10).
-  * Session time enters only as a session's record of when it committed a certificate (below).
+  the genesis certificate [I]. (The spike uses the genesis certificate's id.)
+* **Valid, attested, counting.**
+  * **Valid:** a certificate's signatures satisfy the rule of the owner set at its parent. That is a
+    function of its causal past alone (OWN-5). A certificate whose parent isn't held is refused, not
+    kept (OWN-10).
+  * **Attested:** a session that commits a certificate records the world frame at which it did.
+    Exported, that record is an `Attest`, signed by a strict majority of the session's members (P2-4's
+    epoch certificates), so anyone can check it offline.
+  * **Counting:** a certificate counts only if it is attested and it applies at its parent's
+    *effective* state (below). A certificate signed on an old copy that no session committed changes
+    nothing. That is @design-reviewer's mitigation for forks.
+* **A session commits only certificates built on its current head** (or a merge of its heads), and only
+  if they count. So within one session the chain is linear: the first of two conflicting
+  certificates wins, and the second is refused as stale (OWNR-2). Forks arise only between disconnected
+  copies of the world, each with its own sessions.
 
 **Signing rule A (22:54Z, O1; removal and recovery per D87, recommended).**
 
@@ -1647,152 +1657,136 @@ review of the first spike (OWN-1 to OWN-12). Three of them, marked D87, are with
 |---|---|
 | Add an owner | every current owner |
 | Leave ownership | the leaving owner's own key; the last owner can't leave |
-| Remove another owner | nobody at once. Every other owner opens a 30-day objection window (`Challenge`), then removes the owner (`RemoveDormant`) if the window ran with no signature from that owner |
+| Remove another owner | nobody at once. Every other owner opens a 30-day objection window (`Challenge`), then removes the owner (`RemoveDormant`) once the window has run, if the target hasn't cancelled it |
 | Change the rule | every current owner |
 | Name, replace or clear a recovery key | that owner's own key |
-| Replace a lost key | the owner's recovery key: `StartRecover`, then `FinishRecover` after 7 days with no signature from the owner |
+| Replace a lost key | the owner's recovery key: `StartRecover`, then `FinishRecover` after 7 days, if the owner hasn't cancelled it |
 | Sell the world | `Add(buyer)`, then `Leave(seller)` |
 
 * **Why A.** Owners always get in as Admin (row 0, 22:48Z), and only a co-owner can demote or kick them
   (Q27). So adding an owner adds a permanent admin, and A stops a rogue co-owner from adding sock
-  puppets. A sole owner, the common case, signs everything alone.
-* **No owner is removed against their will while active** (the consequence the user accepted with O2).
-  * Any signature by the target, on any branch, after or concurrent with the `Challenge`, cancels the
-    window. That holds with two owners too: the first spike let either of two owners remove the other
-    at once (OWN-4).
+  puppets.
+* **No owner is removed against their will while active** (O2's promise; OWN-4).
+  * The target cancels a window with any ownership signature of theirs that some session attested
+    between the window's start and its completion, on any branch.
+  * A signature that no session committed, or one attested after the completion, cancels nothing. So
+    an old device or a stolen key can't undo a completed removal (OWNR-2).
   * The other side of this: there is no way out of a hostile co-owner who is still active.
-* **A recovery key never signs in its owner's place** (OWN-6). It can only replace a lost key, after a
-  delay the owner cancels by signing anything.
-  * Otherwise a stolen recovery key could add a second key it holds, then remove the owner.
-  * A replaced recovery key stops counting, on every branch.
+* **A recovery key never signs in its owner's place** (OWN-6).
+  * It only replaces a lost key, after 7 days, and the owner cancels by signing anything.
+  * A recovery key that the owner replaced or cleared, attested before it started, is dead on every
+    branch (`Revoked`).
+* **Windows count attested world frames** (OWN-7, OWNR-3).
+  * Both ends of a window must be attested by one session lineage, and the gap is measured there.
+  * Offline, the certificates and their attestations are enough to check it.
+  * Frames are world frames, which continue across the saves a session starts from, so a
+    cancellation attested in another lineage is compared on the same clock.
 * **Kept for comparison** (the spike implements both):
   * rule B: any one owner adds, and nobody can be removed;
-  * rule C: k of n, with instant `Remove`. A majority can then push someone out.
-
-**Windows count recorded session time** (OWN-7).
-
-* A session records the frame at which it commits each certificate. On P2-4 that is the deciding
-  change's boundary. A window counts from the frame recorded for its `Challenge` or `StartRecover` to
-  the frame recorded for the certificate that completes it.
-* A signer can't choose the time, so it can't backdate a window shut or forward-date a split between
-  sessions and offline verifiers.
-* The cost: a dormant removal or a recovery can be checked only with the session's record. Offline it
-  is `Unattested`. Production attaches the session's commit attestation, signed by its epoch majority,
-  to such certificates [I].
-* Session time is what a session's members agree it is, so owners who collude could age a window in a
-  private session. The recovery key's shorter delay exists for the owner who has simply lost a key.
+  * rule C: k of n, with instant `Remove`. Concurrent mutual removals void each other (OWNR-7).
 
 **Forks: proofs and the union (22:54Z, O4, refined by D87; detect-only, as D79).**
 
 * **A fork** is two valid certificates with one parent.
-  * Honest concurrency forks too, without anyone signing both: two owners on two devices each naming a
-    recovery key, or adding someone under rule B (OWN-8).
-  * A key that signed both is an **equivocator**. The fork proof, the two certificates (`ForkProof`),
-    names it, and a client's own policy may distrust it.
-  * Anyone holding the parent's causal past, in any order and merges included (OWN-9), can check the
-    proof.
-* **The owner set after a fork is a union, computed from the set of certificates held**, so arrival
-  order never matters (OWN-5). It is defined over the causal past of the heads:
-  * An owner is present if some counting certificate that added them (genesis included) hasn't been seen
-    by a counting removal of them. This is observed-remove. A Leave, a completed window or a completed
-    recovery sticks across forks unless the same history adds the person back (OWN-2). A key that left
-    in a shared prefix and was re-added on one branch stays.
-  * **A change on one branch counts only if the owners added on concurrent branches approve it too**
-    (OWN-3).
-    * A removal needs every one of them.
-    * An addition needs only those added after its own branch split off. So additions made right at a
-      fork point don't need each other, and a double sale still makes both buyers co-owners.
-    * As a result, a former sole owner can't evict owners added later, and a co-owner can't add people
-      alone by building on an old branch where they were the sole owner.
-  * A window stays open if a counting certificate opened it and the target hasn't signed since, on any
-    branch.
-  * Recovery keys merge by observed-remove too.
-  * The strictest rule of the heads wins. If two owners removed each other on two copies of the world,
-    both stay.
-* **What a fork can still do [I]:** keys that once held full authority can add a co-owner by signing on
-  that old state. A seller can sell again. A former sole owner can add someone with a fork from back
-  when they were alone. This is always detected (an equivocation proof naming them) and shown as
-  "Ownership disputed", and the person added this way can't remove anyone. Preventing it needs a global
-  order, which D79 rejected.
-* **A merge certificate** joins pairwise concurrent heads only, so it can't roll anything back (OWN-1).
-  It invalidates nothing and records the forced union. Any owner of the union may sign it.
-* **"Ownership disputed".** A peer that holds more than one head shows the world as disputed until a
-  merge covers them. Joins use the union.
-* **Within one session** canonical order applies concurrent certificates. Every replica holds the same
-  union, and the second certificate is the fork proof.
+  * Honest concurrency forks too, without anyone signing both (OWN-8).
+  * A key that signed both is an **equivocator**. The fork proof names it, and a client's own policy
+    may distrust it.
+  * Anyone holding the parent's causal past can check a fork proof, in any order, merges and windows
+    included (OWN-9).
+* **The effective pass** (OWNR-1). The book walks every certificate in causal order. A certificate
+  applies to its parent's effective state only if it counts there; otherwise its branch inherits the
+  parent's state. A merge joins its parents' effective states.
+* **The join after a fork** is an observed-remove set:
+  * An owner is present if some counting certificate that added them hasn't been seen by a counting
+    removal of them.
+  * So a Leave or a removal sticks across forks unless the same history adds the person back (OWN-2).
+  * Recovery keys merge the same way.
+* **A change on one branch counts only if the owners added by counting changes on concurrent branches
+  since it split off approve it too** (OWN-3).
+  * As a result, a former sole owner can't evict owners added later, and a co-owner can't add people
+    alone on an old branch.
+  * A double sale still makes both buyers co-owners: additions made right at a fork point don't need
+    each other.
+  * Unattested additions block nothing and revive nothing (OWNR-5).
+* **The rule after a fork** is the newest by causality, and the strictest among concurrent ones
+  (OWNR-9).
+* **A merge certificate** joins pairwise-concurrent certificates only, so it can't roll anything back
+  (OWN-1). It invalidates nothing, and any owner of the join may sign it.
+* **"Ownership disputed"** is shown while a peer holds more than one head. Joins use the join.
+* **What remains [I]:**
+  * Keys that once held full authority can still add a co-owner through a fork at that old state, if
+    they also run a session on a saved copy from back then to get it attested.
+  * A private session can claim any frames, so the owners who colluded to open a window can also age
+    it, and a stolen recovery key can rush a recovery, unless the owner signed something that a session
+    attested within the window.
+  * Both are detected: there is a fork proof, and the world shows as disputed.
+  * Preventing them needs a global order, which D79 rejected.
 
 **In the session log [V: spike].**
 
 * A certificate is published as a `Payload::Ownership` entry (wire tag 20).
-* **Without P2-4 (the spike on main).** It applies at its frame, in canonical order, to the world's
-  ownership book, recording that frame as its session time. The book is part of the rollback state and
-  of the state hash.
-* **With P2-4 (agreed with @engine-architect for 10.8).** A Change's validators must agree on every
-  admin decision without reading frame state.
-  * So an ownership certificate is an admin-layer entry, like `SetRole`: it stays pending until a
-    decision lists it in `Change.admin`.
-  * It is checked with `Book::insert_at` in commit order, against the `Book` that the admin run holds
-    (not a member set).
-  * The rollback-state book applies it at the deciding change's boundary, recording the boundary as its
-    session time.
+* **Without P2-4 (the spike on main).** It applies at its frame, in canonical order, through
+  `Book::commit_local`, which records the session's attestation at that frame. The book is part of the
+  rollback state and of the state hash. Cloning it into a keyframe is free until the next change
+  (OWNR-6).
+* **With P2-4 (agreed with @engine-architect for 10.8).**
+  * An ownership certificate is an admin-layer entry, decided in `Change.admin` and committed at the
+    deciding boundary, which is also its attested frame.
+  * The admin run holds the `Book`.
   * The Membership seam carries the book at epoch start, plus the ordered certificates.
-  * No verdict depends on a validator's clock (as VC-3 requires).
-* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 kick and demote
-  checks (12.4) all ask whether the member's identity key, from its join certificate, is in
-  `book.view().owners` at that step. A relationship record's expiry (O5) is checked against the
-  session's agreed time at the same step, never against a local clock [I].
+  * No verdict depends on a validator's clock (VC-3).
+* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) all
+  ask whether the member's identity key is in `book.view().owners` at that step. A relationship
+  record's expiry (O5) is checked against the session's agreed time at the same step [I].
+* **Cost.** A book holds at most 1,024 certificates. Each change re-runs the effective pass,
+  O(N log N). Production compacts a long linear history into a checkpoint that the owners sign [I].
 
 **Joins, relationship records and discovery.**
 
 * **The join-rule matrix** is in 12.4 (22:47Z, 22:51Z). Every row tests either session state or a
-  signed record, so each row is decided the same way on every replica, with no owner present [I]. The
-  signed records:
+  signed record, so each row is decided the same way on every replica [I]. The signed records:
   * ownership certificates;
   * relationship records: a friendship is a pair of signed records; a confidant mark is one record by
     the person who marks the confidant;
-  * invite tickets: inviter, invitee or bearer, world, expiry.
-* **Revocation.**
-  * A person's relationship records form a hash chain with sequence numbers: a revocation is a newer
-    record.
-  * A join is evaluated against the newest record the log has committed at the join's frame, so a
-    revocation committed before the join always wins, on every replica.
-  * The stated gap: an offline revocation that hasn't reached the session can't be seen. Records expire
-    after about 30 days and are re-signed automatically while their signer is online (22:54Z, O5).
-* **Discovery (D9, D35).** A world's DHT record and every invite carry the world id and its ownership
-  head (seq and id), signed by an owner. A client verifies the chain it fetches from any peer of the
-  world against the world id. Two records whose heads fork are a fork proof.
-* **Where owners are shown.** Only the world info card and World settings show the owners (Q25,
-  22:54Z), plus a fork notice when the client holds a proof.
-* **Home worlds (Q28, 22:54Z):** home friends means friends of any owner.
+  * invite tickets.
+* **Revocation.** A revocation committed before a join always wins, on every replica. Records expire
+  after about 30 days and are re-signed automatically while their signer is online (22:54Z, O5).
+* **Discovery (D9, D35).** World records and invites carry the world id and the ownership head, signed
+  by an owner. Two records whose heads fork are a fork proof.
+* **Where owners are shown.** Only the world info card and World settings show the owners (Q25), plus a
+  fork notice.
+* **Home worlds (Q28):** home friends means friends of any owner.
 
 **What the spike shows** [V, Windows].
 
-* **Tests.** `spikes/sim-core/src/ownership.rs` has 23 unit tests. The scenario
-  `tools/session-sim/scenarios/ownership/ownership.toml` runs 3 replicas plus an offline replay.
-* **Regression tests for the review.** Commit cbcdadb holds them against the first spike's code: all 12
-  fail there, one for each of OWN-1 to OWN-11. They pass in their new form.
+* **Tests.** `spikes/sim-core/src/ownership/tests.rs` has 34 tests. The scenario
+  `tools/session-sim/scenarios/ownership/ownership.toml` runs 3 replicas plus an offline replay, ALL
+  EQUAL.
+* **Regression tests for the review.** Commit cbcdadb holds them against round 1's code and commit
+  5083c64 against round 2's: all 12 and all 10 fail there. They pass in their new form.
 * **Refused or powerless:**
-  * a stranger's transfer, and a forged signature;
-  * a co-owner adding a sock puppet alone;
-  * a recovery key signing for its owner, or adding itself;
-  * any instant removal under A, including with two owners;
-  * a removal whose target signed during the window, on the same branch or another;
-  * a window counted offline, or before it ran;
+  * a stranger's transfer, a forged signature, and a forged or minority attestation;
+  * a co-owner adding alone;
+  * a recovery key signing for its owner;
+  * an instant removal under A;
+  * a removal or recovery the target cancelled;
+  * one completed too early;
+  * a completed one undone later by an unattested or late signature;
+  * a revoked recovery key;
   * a rolled-back merge;
-  * a seller returning through a fork;
-  * a former sole owner evicting later owners through a fork;
-  * a stale-branch owner adding alone;
-  * a rotated recovery key acting on an old branch;
+  * a seller returning;
+  * an old-state fork without the owners added since;
+  * an unattested fork;
+  * a stale certificate in a session;
   * the last owner leaving;
   * a tampered, gapped or mis-sequenced chain;
   * an orphan;
-  * a malleable encoding.
-* **Detected:** a double sale. The proof verifies for a third party, both buyers become co-owners in
-  every arrival order, and one buyer's merge ends the dispute.
-* **Known and allowed:** a former sole owner adding a co-owner through a fork, which is detected.
-* **In a session:** both conflicting certificates of one frame apply in canonical order. The world reads
-  DISPUTED until the merge, and a recovery that starts can't finish before its delay. All replicas
-  equal the offline replay.
+  * a malleable encoding;
+  * a book past its cap.
+* **Detected:** a double sale across two sessions. The proof verifies for a third party, both buyers
+  become co-owners in every arrival order, and one buyer's merge ends the dispute.
+* **In a session:** the second of two concurrent sales is refused as stale. A recovery that starts
+  can't finish before its delay. All replicas equal the offline replay.
 
 ---
 
@@ -4925,29 +4919,35 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
-* **D87. Ownership forks, removal and recovery (12.5; raised by @design-reviewer's review OWN-2 to OWN-6).**
-  * Asked as OA, OB and OC. Each is recommended as written in 12.5 and already built in the spike.
-  * **OA. The union after a fork (refines O4).**
-    * Recommended: a change on one branch counts only if the owners added on concurrent branches
-      approve it too. Additions made at a fork point don't need each other, so a double sale still makes
-      both buyers co-owners. A Leave or a removal sticks across forks unless the same history adds the
-      person back.
-    * What stays: keys that once held full authority can still add a co-owner through a fork. It is
-      always detected.
-    * Alternative: a branch change counts only if every other branch's owners signed it too. Nobody
-      gains through a fork, but a double sale cancels both sales, so the seller keeps the world.
-  * **OB. Removal under rule A (refines O1).**
-    * Recommended: always through the 30-day window, which the target cancels by signing anything, with
-      two owners too.
+* **D87. World ownership: what the user decides (12.5; after @design-reviewer's two review rounds).**
+  * One consolidated set, replacing OA, OB, OC and D88. Each is recommended as written in 12.5 and
+    built in the spike.
+  * **1. Forks of the ownership chain (refines O4).**
+    * Recommended: a change counts only once a session of the world committed it; within a session
+      the first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
+      both buyers of a double sale become co-owners, a Leave or removal sticks, and a change on one
+      copy needs the owners the other copy added since they split.
+    * What remains: someone who once held full authority can still add a co-owner by running a
+      session on an old saved copy. It is always detected and shown as "Ownership disputed".
+    * Alternative: a change counts only if every other copy's owners signed it too. Nobody gains
+      through a fork, but a double sale cancels both sales, so the seller keeps the world.
+  * **2. Removing an owner (refines O1).**
+    * Recommended: only through the 30-day window, which the target cancels by signing anything that
+      a session records within the window.
+    * What remains: owners who collude in a private session of their own can claim the time passed.
     * Alternative: instant removal by every other owner, which lets either of two owners remove the
       other.
-  * **OC. What a recovery key may do (refines O2).**
-    * Recommended: only replace its owner's lost key, after 7 days with no signature from the owner.
-    * Alternative: sign in the owner's place, which lets a stolen recovery key take the world.
-* **D88. Who may lock session rules for a world (12.5, 12.4; raised by the UX's "unless the world's owners have locked them").**
-  * Recommend: a lock is a signed ownership-chain entry, under the same rule as `SetRule` (every current
-    owner), so a lone co-owner can't impose or lift one.
-  * Alternative: any one owner may lock and unlock.
+  * **3. Recovery keys (refines O2).**
+    * Recommended: a recovery key only replaces its owner's lost key, after 7 days, and the owner
+      cancels by signing anything. A replaced recovery key is dead.
+    * What remains: a stolen recovery key run in a private session can rush the delay, unless the
+      owner signed something that a session recorded meanwhile.
+    * Alternative: the recovery key signs in the owner's place, which lets a stolen recovery key take
+      the world.
+  * **4. Locking session rules (was D88).**
+    * Recommended: a lock is an ownership-chain entry that every current owner signs, so a lone
+      co-owner can't impose or lift one.
+    * Alternative: any one owner may lock and unlock.
 
 ---
 
