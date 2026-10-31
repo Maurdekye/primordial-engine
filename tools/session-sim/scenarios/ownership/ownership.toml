@@ -1,0 +1,65 @@
+description = """
+World ownership (draft 4, rule A): a world's ownership chain carried in its session log. Key 10 \
+creates the world and is its sole owner. A forged transfer by a stranger, a co-owner adding a \
+sock puppet alone, a recovery key adding itself, a removed co-owner signing, and the last owner \
+leaving are all refused. A recovery key signs for its owner. The sole owner then sells twice in \
+one frame (two members publish the two certificates concurrently): canonical order applies both, \
+the world is disputed with the union of owners and a fork proof a third party can verify, and a \
+merge by one buyer ends the dispute. Every replica holds the same owners at every frame as an \
+offline replay of the final log."""
+
+end_ms = 7000
+
+[peer.1]
+skew_us = 1100
+[peer.2]
+skew_us = -700
+[peer.3]
+skew_us = 300
+
+[world.1]
+members = [1, 2, 3]
+scene = { pile = { side = 4, layers = 2 } }
+epoch_ms = 100
+seed = 0x0E
+owners = { keys = [10], rule = "all", nonce = 1 }
+
+# Keys: 10 the creator (S), 20 and 30 buyers or co-owners, 40 a later buyer, 50 S's recovery key,
+# 66 a stranger. Members publish certificates that key holders signed (spike signatures).
+[world.1.plan]
+1 = [
+    { at = 60, owner = { change = "add", key = 20, signers = [10] } },
+    { at = 150, owner = { change = "set_recovery", key = 10, recovery = 50, signers = [10] } },
+    { at = 220, owner = { change = "remove", key = 30, signers = [10, 20] } },
+    { at = 280, owner = { change = "leave", key = 10, signers = [10] } },
+    { at = 300, owner = { change = "add", key = 40, signers = [10] } },
+    { at = 360, owner = { change = "add", key = 66, signers = [10] } },
+    { at = 90, touch = { obj = 5, impulse = [0.0, 5.0, 0.0] } },
+]
+2 = [
+    { at = 90, owner = { change = "add", key = 66, signers = [66] } },
+    { at = 180, owner = { change = "add", key = 30, signers = [50, 20] } },
+    { at = 240, owner = { change = "add", key = 66, signers = [30, 10] } },
+    { at = 300, owner = { change = "add", key = 30, signers = [10] } },
+    { at = 200, touch = { obj = 12, impulse = [1.0, 5.0, 0.0] } },
+]
+3 = [
+    { at = 120, owner = { change = "add", key = 66, signers = [20] } },
+    { at = 200, owner = { change = "add", key = 50, signers = [50, 20, 30] } },
+    { at = 260, owner = { change = "leave", key = 20, signers = [20] } },
+    { at = 330, owner = { change = "merge", signers = [40] } },
+]
+
+[net]
+seed = 5
+link = { delay_ms = 30, jitter_ms = 10, loss_pct = 1 }
+
+[[report]]
+kind = "ownership"
+frames = 380
+label = "ownership"
+at = [250, 320, 345]
+[[report]]
+kind = "check_world"
+frames = 380
+label = "ownership"

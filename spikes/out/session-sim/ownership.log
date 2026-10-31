@@ -1,0 +1,23 @@
+RESULT ownership world 1: offline replay owners {10, 30, 40} rule All heads 1 recovery {10: [50]} | ALL EQUAL
+  m1: owners {10, 30, 40} rule All heads 1 recovery {10: [50]} digest e262b54b32a3a5d6
+  m2: owners {10, 30, 40} rule All heads 1 recovery {10: [50]} digest e262b54b32a3a5d6
+  m3: owners {10, 30, 40} rule All heads 1 recovery {10: [50]} digest e262b54b32a3a5d6
+  cert m1s31@60: seq 1 Add { key: 20 } by {10} -> applied
+  cert m2s46@90: seq 2 Add { key: 66 } by {66} -> refused Some(RejectedOwnership(Signers))
+  cert m3s60@120: seq 2 Add { key: 66 } by {20} -> refused Some(RejectedOwnership(Signers))
+  cert m1s77@150: seq 2 SetRecovery { owner: 10, recovery: Some(50) } by {10} -> applied
+  cert m2s91@180: seq 3 Add { key: 30 } by {20, 50} -> applied
+  cert m3s101@200: seq 4 Add { key: 50 } by {20, 30, 50} -> refused Some(RejectedOwnership(Signers))
+  cert m1s112@220: seq 4 Remove { key: 30 } by {10, 20} -> applied
+  cert m2s122@240: seq 5 Add { key: 66 } by {10, 30} -> refused Some(RejectedOwnership(Signers))
+  cert m3s131@260: seq 5 Leave { key: 20 } by {20} -> applied
+  cert m1s143@280: seq 6 Leave { key: 10 } by {10} -> refused Some(RejectedOwnership(LastOwner))
+  cert m1s154@300: seq 6 Add { key: 40 } by {10} -> applied
+  cert m2s153@300: seq 6 Add { key: 30 } by {10} -> applied
+  cert m3s166@330: seq 7 Merge by {40} -> applied
+  cert m1s184@360: seq 8 Add { key: 66 } by {10} -> refused Some(RejectedOwnership(Signers))
+  fork proof: Add { key: 30 } vs Add { key: 40 }, signed both by {10}; a third party holding 6 certificate(s) verifies it: true
+  after frame 249: owners {10, 20} rule All heads 1 recovery {10: [50]}
+  after frame 319: owners {10, 30, 40} rule All heads 2 DISPUTED recovery {10: [50]}
+  after frame 344: owners {10, 30, 40} rule All heads 1 recovery {10: [50]}
+RESULT ownership world 1: frames 0..380 digests m1=954c7fce6c77a1b4 m2=954c7fce6c77a1b4 m3=954c7fce6c77a1b4 | offline replay 954c7fce6c77a1b4 | ALL EQUAL

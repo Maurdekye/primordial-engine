@@ -36,6 +36,7 @@ use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_s
 use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
+use crate::ownership::{Book, Cert, Change, Insert, Key, OwnError};
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen, StaticEpochs,
@@ -137,6 +138,10 @@ pub enum Payload {
     Provenance { hop: Hop },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
+    /// World ownership: one signed certificate of the world's ownership chain (design draft 4).
+    /// Anyone may publish one; it applies at its frame, in canonical order, if it is valid against
+    /// the owner set there, so every replica holds the same owners at every frame.
+    Ownership { cert: Cert },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
     /// before `horizon`; per other author, the newest seq it holds contiguously and that entry's
     /// id; its newest confirmed check frame and full-state hash (review H4).
@@ -230,6 +235,10 @@ impl Wr {
             }
             Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
+            Payload::Ownership { cert } => {
+                let w = cert.to_words();
+                self.u8(17); self.u32(w.len() as u32); for x in w { self.u64(x) }
+            }
             Payload::Ack { horizon, heads, check } => {
                 self.u8(7); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.u64(*id) }
@@ -311,6 +320,12 @@ impl Rd<'_> {
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
+            17 => {
+                let n = self.u32()? as usize;
+                let mut w = Vec::with_capacity(n.min(256));
+                for _ in 0..n { w.push(self.u64()?) }
+                Payload::Ownership { cert: Cert::from_words(&w)? }
+            }
             7 => {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
@@ -585,6 +600,9 @@ pub struct Tables {
     /// Never pruned: a world's own last exit is what lets it refuse a forked chain.
     pub seen: BTreeMap<u64, Seen>,
     pub portal_open: bool,
+    /// World ownership: every certificate of the world's chain applied so far (None: the world has
+    /// no ownership chain, as in every scenario before it).
+    pub owners: Option<Book>,
     /// Active hands: frames since the hand's last entry (dead reckoning, `SimConfig::hand_predict`).
     pub hand_idle: BTreeMap<u32, u64>,
 }
@@ -730,6 +748,8 @@ pub enum Outcome {
     RejectedUnsettled,
     /// P25-1: this world's import policy refuses the object's birth world, chain or kind.
     RejectedPolicy,
+    /// World ownership: the certificate is not valid against the owner set at its frame.
+    RejectedOwnership(OwnError),
 }
 
 /// One member's eviction vote, as read from its chain (review R3-1).
@@ -1056,6 +1076,9 @@ impl WorldSim {
             s.hash_into(*g, &mut v);
         }
         v.push(self.t.portal_open as u64);
+        if let Some(b) = &self.t.owners {
+            v.extend([14, b.digest()]);
+        }
         if self.cfg.hand_predict > 0 {
             for (o, n) in &self.t.hand_idle {
                 v.extend([*o as u64, *n, 11]);
@@ -2131,6 +2154,19 @@ impl WorldSim {
                 self.t.portal_open = *open;
                 Outcome::Accepted
             }
+            Payload::Ownership { cert } => {
+                let Some(b) = self.t.owners.as_mut() else { return Outcome::RejectedOwnership(OwnError::WrongWorld) };
+                // A certificate can't claim session time later than the frame that publishes it
+                // (the objection window counts this time).
+                if cert.time > f {
+                    return Outcome::RejectedOwnership(OwnError::BadLink);
+                }
+                match b.insert(cert.clone()) {
+                    Ok(Insert::Applied | Insert::Waiting) => Outcome::Accepted,
+                    Ok(Insert::Duplicate) => Outcome::RejectedDuplicate,
+                    Err(e) => Outcome::RejectedOwnership(e),
+                }
+            }
             // Protocol entries never reach the sim (set_eff schedules only perturbations).
             Payload::Ack { .. } | Payload::Vote { .. } | Payload::Unvote { .. } | Payload::Attest { .. } | Payload::Provenance { .. } => Outcome::Accepted,
         }
@@ -2381,6 +2417,25 @@ impl WorldSim {
     pub fn members_evicted(&self) -> &BTreeMap<MemberId, (u32, u64)> {
         &self.evicted
     }
+
+    /// Give the world an ownership chain from its genesis certificate (part of the genesis
+    /// document; before the first frame is simulated).
+    pub fn set_ownership(&mut self, genesis: Cert) {
+        assert_eq!(self.frame, 0, "ownership is part of the world's genesis");
+        self.t.owners = Some(Book::new(genesis).expect("a valid genesis certificate"));
+    }
+
+    /// A certificate for `change` on top of this replica's present ownership head(s), stamped with
+    /// the frame `author` will give its entry, and signed by `keys` (spike: anyone can sign as any
+    /// key, standing in for a key holder handing the member a signed certificate). A merge joins
+    /// every head; any other change builds on the first head.
+    pub fn owner_cert(&self, change: Change, keys: &[Key]) -> Option<Cert> {
+        let b = self.t.owners.as_ref()?;
+        let heads = b.heads();
+        let prev = if change == Change::Merge { heads } else { heads.into_iter().take(1).collect() };
+        let seq = prev.iter().map(|p| b.cert(*p).map_or(0, |c| c.seq)).max()? + 1;
+        Some(Cert { world: b.world, seq, prev, change, time: self.frame.max(self.now), sigs: vec![] }.signed(keys))
+    }
 }
 
 // ---- offline reference ---------------------------------------------------------------------------
@@ -2419,6 +2474,9 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
     s.epochs = like.epochs.clone();
     s.provenance = like.provenance;
     s.import_policy = like.import_policy.clone();
+    if let Some(g) = like.t.owners.as_ref().and_then(|b| b.cert(b.genesis)) {
+        s.set_ownership(g.clone());
+    }
     s.run_log(log, frames)
 }
 
