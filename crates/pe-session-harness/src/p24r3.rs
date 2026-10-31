@@ -178,7 +178,9 @@ pub fn latejoin() {
                 for m in ids {
                     sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
                 }
-                for e in sim.replica(1, 1).sim.all_entries() {
+                let mut log = sim.replica(1, 1).sim.all_entries();
+                log.sort_by_key(|e| (e.member, e.seq));
+                for e in log {
                     sim.net.send(1, 1, joiner, &Msg::Entry(test_sign(1, e)));
                 }
                 asked = true;
