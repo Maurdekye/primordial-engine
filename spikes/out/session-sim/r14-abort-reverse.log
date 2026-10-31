@@ -7,9 +7,9 @@
   m1 world B: object 40 live copies 0; escrow []; arrivals []
   m3 world B: object 40 live copies 0; escrow []; arrivals []
 RESULT r14 abort (reverse order): object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 17 max depth 12 resim frames 230 (59.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 1 max depth 3 resim frames 3 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 2 max depth 2 resim frames 4 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m1 world 1: rollbacks 17 max depth 12 resim frames 230 (34.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 2 max depth 2 resim frames 4 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
   m3 world 2: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 abort A world 1: frames 0..500 digests m1=2a6420d494a48e47 m2=2a6420d494a48e47 | offline replay 2a6420d494a48e47 | ALL EQUAL
 RESULT r14 abort B world 2: frames 0..400 digests m1=c85a509f8b86a712 m3=c85a509f8b86a712 | offline replay c85a509f8b86a712 | ALL EQUAL

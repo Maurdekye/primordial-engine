@@ -1,0 +1,17 @@
+RESULT joinrules: m1 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []; epoch 2 at frame 149 (t=2.58 s) round 1 removed []
+RESULT joinrules: m2 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 1 removed []
+RESULT joinrules: m4 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 1 removed []
+RESULT joinrules: m6 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 121 (t=2.12 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 1 removed []
+RESULT joinrules: m7 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 1 removed []
+  m1: members {1, 2, 4, 6, 7} roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} admins [1, 6, 7] closed at None
+  m2: members {1, 2, 4, 6, 7} roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} admins [1, 6, 7] closed at None
+  m4: members {1, 2, 4, 6, 7} roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} admins [1, 6, 7] closed at None
+  m6: members {1, 2, 4, 6, 7} roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} admins [1, 6, 7] closed at None
+  m7: members {1, 2, 4, 6, 7} roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} admins [1, 6, 7] closed at None
+RESULT joinrules: admitted [1, 2, 4, 6, 7], roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} -> friend of an admin as Guest, owner's confidant as Admin, owner by row 0, stranger refused
+  m1: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 80 bad 0
+  m2: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 80 bad 0
+  m4: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
+  m6: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
+  m7: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
+RESULT joinrules (friends-of-admins as Guest, owners' confidants as Admin, row 0): frames 0..592 honest m1=7bbef1b4ec5e54d0 m2=7bbef1b4ec5e54d0 m4=7bbef1b4ec5e54d0 m6=7bbef1b4ec5e54d0 m7=7bbef1b4ec5e54d0 | offline replay 7bbef1b4ec5e54d0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 400 bad 0

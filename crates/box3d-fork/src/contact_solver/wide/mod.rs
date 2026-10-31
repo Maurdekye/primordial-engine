@@ -16,11 +16,20 @@ mod prepare;
 mod restitution;
 mod solve;
 mod store;
+mod view;
 
-pub use prepare::{prepare_contacts_convex, prepare_contacts_mesh_wide};
+pub use prepare::{
+    allocate_contacts_convex, allocate_contacts_mesh_wide, prepare_contacts_convex,
+    prepare_contacts_mesh_wide,
+};
+pub(crate) use prepare::{prepare_contacts_convex_range, prepare_contacts_mesh_wide_range};
 pub use restitution::apply_restitution_w;
+pub(crate) use restitution::apply_restitution_w_range;
 pub use solve::{push_contacts_w, solve_contacts_w, warm_start_contacts_w};
+pub(crate) use solve::{push_contacts_w_range, solve_contacts_w_range, warm_start_contacts_w_range};
 pub use store::store_impulses_w;
+pub(crate) use store::store_impulses_w_range;
+pub use view::{BodyStateSource, StatesView, WideView};
 
 use crate::body::{body_flags, BodyState, IDENTITY_BODY_STATE};
 use crate::constants::MAX_MANIFOLD_POINTS;
@@ -166,6 +175,22 @@ pub struct ContactConstraintWide {
     pub restitution: FloatW,
 
     pub manifold_count: i32,
+}
+
+impl ContactConstraintWide {
+    /// An all-zero constraint, a placeholder the prepare overwrites. (Primordial Engine fork)
+    pub fn zeroed() -> ContactConstraintWide {
+        // SAFETY: every field is an i32 or f32 (or an array or struct of them).
+        unsafe { core::mem::zeroed() }
+    }
+}
+
+impl ContactManifoldWide {
+    /// An all-zero manifold, a placeholder the prepare overwrites. (Primordial Engine fork)
+    pub fn zeroed() -> ContactManifoldWide {
+        // SAFETY: every field is an i32 or f32 (or an array or struct of them).
+        unsafe { core::mem::zeroed() }
+    }
 }
 
 /// The wide contact constraints of one graph color.
@@ -389,13 +414,16 @@ pub fn lane(a: FloatW, i: usize) -> f32 {
 }
 
 /// (b3GatherBodies, scalar path) Indices are base 1 with 0 for null.
-pub fn gather_bodies(states: &[BodyState], indices: &[i32; SIMD_WIDTH]) -> BodyStateW {
+pub fn gather_bodies<S: BodyStateSource + ?Sized>(
+    states: &S,
+    indices: &[i32; SIMD_WIDTH],
+) -> BodyStateW {
     let identity = IDENTITY_BODY_STATE;
     let s: [BodyState; SIMD_WIDTH] = core::array::from_fn(|i| {
         if indices[i] == 0 {
             identity
         } else {
-            states[(indices[i] - 1) as usize]
+            states.body_state((indices[i] - 1) as usize)
         }
     });
 
@@ -492,17 +520,28 @@ pub fn gather_bodies(states: &[BodyState], indices: &[i32; SIMD_WIDTH]) -> BodyS
 }
 
 /// This writes only the velocities back to the solver bodies. (b3ScatterBodies, scalar path)
-pub fn scatter_bodies(states: &mut [BodyState], indices: &[i32; SIMD_WIDTH], body: &BodyStateW) {
+///
+/// Primordial Engine fork: writes through a [`StatesView`] with raw place expressions, so no
+/// reference to a state is formed; non-dynamic (kinematic) states, which several blocks of a
+/// stage may read, are never written.
+pub fn scatter_bodies(states: StatesView, indices: &[i32; SIMD_WIDTH], body: &BodyStateW) {
     for (i, &index) in indices.iter().enumerate() {
         let index = index - 1;
-        if index != -1 && (states[index as usize].flags & body_flags::DYNAMIC_FLAG) != 0 {
-            let state = &mut states[index as usize];
-            state.linear_velocity.x = lane(body.v.x, i);
-            state.linear_velocity.y = lane(body.v.y, i);
-            state.linear_velocity.z = lane(body.v.z, i);
-            state.angular_velocity.x = lane(body.w.x, i);
-            state.angular_velocity.y = lane(body.w.y, i);
-            state.angular_velocity.z = lane(body.w.z, i);
+        if index == -1 {
+            continue;
+        }
+        assert!((index as usize) < states.len);
+        // SAFETY: in bounds; a dynamic state belongs to this block for the whole stage.
+        unsafe {
+            let state = states.ptr.add(index as usize);
+            if ((*state).flags & body_flags::DYNAMIC_FLAG) != 0 {
+                (*state).linear_velocity.x = lane(body.v.x, i);
+                (*state).linear_velocity.y = lane(body.v.y, i);
+                (*state).linear_velocity.z = lane(body.v.z, i);
+                (*state).angular_velocity.x = lane(body.w.x, i);
+                (*state).angular_velocity.y = lane(body.w.y, i);
+                (*state).angular_velocity.z = lane(body.w.z, i);
+            }
         }
     }
 }

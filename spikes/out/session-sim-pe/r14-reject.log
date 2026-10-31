@@ -1,0 +1,17 @@
+  carrier: t=2766ms depart authored in world 1 at frame 160
+  carrier: t=2968ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 140
+  carrier: t=3773ms arrival confirmed in world 2 (frame 140, accepted=false); verdict authored in world 1 at frame 220 (its sim there at frame 220)
+  carrier: t=3937ms verdict confirmed in world 1; transfer 16817996328531130808 resolved
+  carrier: phase Done accepted Some(false)
+  carrier: depart entry final outcome at A frame 160: Accepted
+  m1 world A: object 40 live copies 1; escrow ["T16817996328531130808:Returned"]; arrivals []
+  m2 world A: object 40 live copies 1; escrow ["T16817996328531130808:Returned"]; arrivals []
+  m1 world B: object 40 live copies 0; escrow []; arrivals ["T16817996328531130808:Rejected { frame: 140, until: 730 }"]
+  m3 world B: object 40 live copies 0; escrow []; arrivals ["T16817996328531130808:Rejected { frame: 140, until: 730 }"]
+RESULT r14 reject: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 14 max depth 3 resim frames 57 (7.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 3 max depth 10 resim frames 32 (3.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+RESULT r14 reject A world 1: frames 0..500 digests m1=9bd67ff64d9304a0 m2=9bd67ff64d9304a0 | offline replay 9bd67ff64d9304a0 | ALL EQUAL
+RESULT r14 reject B world 2: frames 0..400 digests m1=717f7ee985804781 m3=717f7ee985804781 | offline replay 717f7ee985804781 | ALL EQUAL

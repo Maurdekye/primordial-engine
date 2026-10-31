@@ -81,6 +81,11 @@ pub struct WorldDef {
     /// Primordial Engine fork: scale-dependent contact-recycling radius. Off by default.
     /// See [`crate::recycle_scale`].
     pub contact_recycle_scaling: ContactRecycleScaling,
+    /// Primordial Engine fork: number of threads the step may use, clamped to
+    /// `[1, MAX_WORKERS]`. 1 (the default) is the serial path. Results are bit-identical for
+    /// every value. (b3WorldDef::workerCount; the fork owns the threads, so there are no task
+    /// callbacks.) See `crate::worker_pool`.
+    pub worker_count: i32,
     /// Used internally to detect a valid definition. DO NOT SET.
     pub internal_value: i32,
 }
@@ -113,6 +118,7 @@ pub fn default_world_def() -> WorldDef {
         destroy_debug_shape: None,
         user_debug_shape_context: 0,
         contact_recycle_scaling: ContactRecycleScaling::disabled(),
+        worker_count: 1,
         internal_value: SECRET_COOKIE,
     }
 }

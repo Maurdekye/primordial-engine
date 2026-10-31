@@ -139,8 +139,8 @@ Rulings that shape the design:
 * **The open decisions** (18:42-19:21Z): the user ruled D2, D4, D11, D18a/D20, D21, D23 and D62, D27a and
   D34, D32, D49, D60 and D72, and took the recommendation for every other (19:11Z). Section 24 records
   each. The rulings raised five new questions, D74-D78, which the user settled as recommended at 19:58Z.
-  P2-5 raised D79 (settled 20:07Z); the phase-2 view change raises **D80, open:** how many members must
-  agree to change the member list.
+  P2-5 raised D79 (settled 20:07Z); the phase-2 view change raised D80, settled at 22:13Z as session
+  admins over a two-thirds safety layer (12.4, 10.8).
 
 ---
 
@@ -999,11 +999,19 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * **A member moves only its own hands** (P2-8 review: @shader-reviewer's probe moved another member's
   hand through `pe-mcp`, and every peer accepted it).
   * Hands are part of a member's avatar (16.3), and an entry's author is its chain's signed member (10.3).
-    So every replica refuses a `Hand` entry for a hand that is not its author's, with `RejectedNotOwner`.
-    It is a validity rule like the others, not a claim: it holds at every frame [V handowner: member
-    2's 46 entries for member 1's hand are refused at both replicas, and the history equals the run
-    without them].
-  * The same goes for any object that belongs to one member, as each such kind is added [I].
+    So every replica refuses any entry that names a hand that is not its author's, with
+    `RejectedNotOwner`: a hand move, a touch (so it takes no claim that would block the owner), and a
+    carry through a portal (review HO-1). It is a validity rule like the others, not a claim: it holds at
+    every frame.
+  * A touch carries the resulting state of the object it touches and no other (round 2 of HO-1): a touch
+    whose carried state names another object is refused, `RejectedInvalid`, before it takes any claim
+    [V handowner: member 2's 46 hand entries, its grab and its carry of member 1's hand, and its touch of
+    a ball carrying a state for member 1's hand are all refused at both replicas; member 1's own touch of
+    its hand right after is accepted; the history equals the run without member 2's entries. With the
+    carried-state check switched off, member 1's history changes].
+  * Hands are the first owner-only objects; avatar parts and any other per-member object join the class
+    as each kind is added [I]. In the spike ownership is fixed from the genesis list, so a joiner owns no
+    hand (review HO-2); pe-session keeps it in the hashed state, set by a confirmed entry (P2-3).
   * An agent at an unlocked panel acts as the panel's owner (D27a). The panel's messages carry their
     verified sender, but the owner's peer signs the entries, so the agent moves only the owner's hands.
     `pe-mcp` also refuses such a move before authoring it (`not_owner`, 17.2).
@@ -1417,17 +1425,21 @@ is fixed once the author's chain is contiguous up to it.
     together leave in one change [V twosilent].
   * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
     it at once, and a member that sees more than t members in a later round moves there.
-  * The locks make two decisions in one epoch impossible, whatever the network does, as long as at most t
-    of the members not excluded by proof are faulty. The timeouts bring a decision once messages arrive
-    in time (partial synchrony).
-* **Quorums (D80).** Let m be the epoch's members minus those the change excludes by proof; the change
-  lists them, with their proofs. A quorum is q = ceil((m + t + 1) / 2) of them, where t is the number of
-  faulty members not yet proven that the rule tolerates:
-  * D80 (b), recommended: t = floor((m - 1) / 3), the Byzantine quorum: just over two thirds;
-  * D80 (a): t = 0, a strict majority.
-
-  Any two quorums then share an honest member, so an epoch cannot be decided two ways. Excluding a member
-  proven faulty lowers m and q, and never helps the faulty: t(m - 1) >= t(m) - 1.
+  * The locks make two decisions in one epoch impossible, whatever the network does, within the bound
+    below, which counts every faulty member, proven or not. The timeouts bring a decision once messages
+    arrive in time (partial synchrony).
+* **Quorums (D80, settled 22:13Z: admins decide kicks, this layer commits and orders every change).** Let m
+  be the epoch's members minus those the change excludes by proof; the change lists them, with their
+  proofs. A quorum is q = ceil((m + t + 1) / 2) of them with t = floor((m - 1) / 3): just over two thirds,
+  the Byzantine quorum. A strict majority (t = 0) stays in the spike for comparison only.
+  * **The bound counts every faulty member, proven or not** (review VC-1). Two changes of one epoch
+    cannot both be decided while at most 2q(n) - n - 1 of the epoch's n members are faulty (the table's
+    "(b) faulty members that cannot split it" column below, never fewer than t(n)). A proof does not stretch it: a change that excludes proven
+    members needs a smaller quorum, so if only one side of a partition holds the proofs, each side can
+    decide alone once the bound is exceeded [V onesided, a control: 3 of 6 collude; one side excludes
+    them by proof and removes the third member, the other removes the first two with the colluders].
+  * Within the bound, proofs buy liveness: a session whose cheaters are proven still decides
+    [V badvote, colluders].
 * **The change** names, for each member it removes:
   * the votes it relies on: at least q, none from an excluded member, none a lie;
   * the **cut**: the deepest point of that member's chain that at least (votes - t) of those votes' frozen
@@ -1440,8 +1452,14 @@ is fixed once the author's chain is contiguous up to it.
   round 3's rule (9.3).
 * **Every change names a boundary frame** B, signed with it: the first frame of the new epoch. Added members
   count from B; facts about frames from B on are the new epoch's to certify (P2-5's epoch-at-frame
-  rule). Boundaries never go backwards. For a removal B is the proposer's present; for a join it lies
-  ahead (below).
+  rule). Boundaries never go backwards. For a removal B is the proposer's present; for a join, or a
+  change that closes the session (D80, below), it lies ahead.
+* **Validity never changes with time** (review VC-3). A Tendermint lock relies on it: a member locked on a
+  change must be able to decide it later. So a boundary's lead (more than one frame ahead of the
+  present, at most two join leads) is checked only when a change is first proposed, not when it is
+  proposed again in a later round [V jointiming: prevotes reach two of four members 1.5 s late, past
+  the join's boundary. Before the fix the epoch wedged: no decision, confirmation stuck at frame 176 and
+  every sim paused at the speculation limit. Now the join is decided in round 0 at 3.6 s].
 * **Exclusions are checked before anything is decided.** A change's exclusions set its quorum, so a faulty
   minority that listed honest members as "proven" could otherwise decide alone. Members prevote, lock on
   and decide a change only once every exclusion it lists checks out, and a change may list only proofs
@@ -1452,23 +1470,91 @@ is fixed once the author's chain is contiguous up to it.
   which is unsafe once a quorum rather than every member decides: after a withdrawal, the voter's later
   references can make entries stable that the withdrawn vote's frozen head drops, and a change naming
   that vote would cut them.
+  * A vote that names a kick (D80, below) freezes the target only for that kick. One that names no held,
+    pending kick of its target is answered by a reset too, once it has stood 180 frames (review VCR-1)
+    [V ghostkick: 9 votes against 2 for a kick that does not exist; a reset at 5.13 s answers it. Before
+    the fix confirmation stopped for good at frame 108].
+* **Cuts use only heads that resolve** (review VCR-2). A member's vote on its own kick must freeze exactly
+  its previous entry: no reference of its own can check any other head. A proposer computes a cut only
+  from votes whose frozen heads it can walk down to the prefix it holds, and asks every member, not
+  only the voter, for an entry it lacks [V selfkickhead: admin 1 kicks 4, and 4's own vote names a
+  head it never signed; 4 is removed at 2.28 s. Before the fix the kick never went through and
+  confirmation stopped at frame 116].
 * **Applying a decision.**
   * Epoch e + 1 starts. Removed members leave the list. Entries after each cut are void, and a removed
     member stops counting from the frame after the last horizon inside its cut.
-  * A member that did not vote may not yet hold a removed member's whole prefix up to the cut. Until it
-    does, it confirms only frames that the acks it holds of that prefix cover: an entry stamped at or
-    before a declared horizon must come before that ack in its chain (8.2).
-  * Every vote and freeze of epoch e ends. Members still silent are voted against again at once.
+  * A member may not yet hold a removed member's prefix up to the cut, or may hold another branch of a
+    fork in it (review VC-2). Until it holds the cut's version, it confirms only the frames that the acks
+    of the prefix verified against every member's references cover: an entry stamped at or before a
+    declared horizon must come before that ack in its chain (8.2), and past that prefix its copy may be
+    the other branch. It asks for the cut's branch from its highest missing stretch down, 16 entries per
+    reply (review VCR-5), takes it even as duplicates of the entries it holds, and confirms nothing while
+    it switches. The branch's entries are validated again before any of them acts, so one stamped at or
+    before a horizon its author declared is void, never applied below the confirmed frame (review VCR-6)
+    [V fork9: 9 forks; 1 and 2 hold the branch with its touch, 3 a longer one without. Before the fix 3
+    confirmed past the touch and then had to roll back below its confirmed frame; now all three equal
+    the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch; before the
+    fix 3 never got it all and stopped at frame 116. V cutbackdate: the cut's branch holds a touch
+    backdated 90 frames; before the fix 3 applied it below its confirmed frame and hit the rollback
+    assertion at 2.29 s].
+  * A replica applies a decision only once it holds every admin entry the change lists; it asks those
+    that precommitted it for the ones it lacks, by id (review VCR-8) [V slowadmin: an admin's entries
+    reach follower 6 2.5 s late on every path; it decides at 3.60 s once it has the entry. Before the
+    fix it panicked at 2.23 s].
+  * Every vote and freeze of epoch e ends, and the slowness timers restart (review VC-6). The timers on
+    acks from an epoch the reader has not reached do not: they end when the reader reaches that epoch
+    (review VCR-4). Members still silent are voted against again at once.
+  * The member acks at once in epoch e + 1, so its acks never skip an epoch, however many decisions fall
+    between its regular acks (review VCR-3).
 * **Joins** use the same decision: a change that adds members, with a boundary B ahead of the present
   (the proposer's present plus 60 frames) [V join].
-  * The joiner asks to join, and members accept a change that adds it only if they hold its request.
-    Strangers may join (D21); in production an invite or the world's ACL decides who may ask (12).
-  * A member precommits a join only while its own horizon is still below B, and its precommit names B.
-    From that precommit on, every reader counts that member's acks only below B until it reaches the next
-    epoch: a chain-local rule, so the member's own acks stay valid.
+  * The joiner asks to join, and members accept a change that adds it only if they hold its request and
+    the world's join rules admit it, with the starting role they give (12.4). The role travels in the
+    change, because a member can decide a join from others' precommits without holding the request.
+  * **So do the joiner's attestations** (review VCR-7). Every member judges the join rules from the
+    relationships the change carries, signature-checked, never from its own copy of the request, and a
+    joiner's first request stands. A joiner that shows each member something different cannot split
+    them [V joinattests: 5 shows its friendship with admin 1 to 1 and 2 only, and 9 prevotes but never
+    precommits; 5 joins as Guest. Before the fix 1 and 2 locked on the join while 3 refused it: no
+    decision, confirmation stuck at frame 176].
+  * A member precommits a join with a **cap** while B is still ahead of it: its precommit names B, and
+    from it on every reader counts that member's acks only below B (the smallest B it named, review
+    VC-10) until it reaches the next epoch. A precommit whose B is not ahead of its author's declared
+    horizon, or more than two join leads past the later of that horizon and its own stamp, is void: a
+    chain-local rule (reviews VC-4, VCR-12; counting from the stamp too lets a member that has not acked
+    yet, or acks rarely, precommit a join) [V lagprecommit: 3 acks once every 1.5 s and the join needs
+    its precommit; 5 joins at 2.95 s. Before the fix 3's precommit was void and nothing was decided].
+  * Once some member's acks are capped at or below B, others may precommit late, without a cap: every
+    reader then confirms nothing from B on before the decision, whoever holds the cap (review VC-3).
+  * Caps that no change explains, such as a faulty member's precommit for a value nobody proposes, are
+    cleared by a reset [V bogusprecommit: a precommit with boundary 1 is void; one just ahead of its
+    author's horizon caps it until a reset at 2.13 s. Before the fix confirmation stopped for good, at
+    frames 112 and 143].
+  * **A reset counts against the members it overrules** (review VCR-4): the authors of the epoch's caps,
+    and of its votes against members it keeps. A member overruled in 3 of the last 8 epochs is voted out,
+    so a member that forces a reset in every epoch costs three decisions, not one per epoch for good.
+    Votes against a member already overruled that often do not count against their voters [V capchurn:
+    from 2 s, 9 signs a capped precommit for no proposal in every epoch and its acks claim the next
+    epoch; three resets, then 9 is voted out at 2.50 s. Before the fix: 88 resets, and 9 never removed].
   * Acks carry their author's epoch. An ack from an epoch newer than the reader's never counts toward the
     reader's confirmation, so a member that decides late cannot confirm a frame from B on without the
     joiner either. Together: no member confirms a frame from B on before it knows of the join.
+  * An ack's epoch never falls and rises by at most one per ack (chain-local; otherwise void), and a
+    member whose acks claim an epoch the reader has not reached within 180 frames is voted out, like a
+    silent one (review VC-5) [V futureack: acks claiming epoch 999 are void and 9 is removed at 5.23 s
+    as too slow; acks claiming epoch 1 with no decision get it voted out at 5.17 s. Before the fix
+    confirmation stopped for good at frame 112].
+  * An honest member's acks never skip an epoch, because it acks on entering each (above), and a joiner
+    that catches up on several decisions at once acks each (review VCR-3) [V ackgap: 3 acks once a
+    second and two decisions fall between two of its acks; V latejoin: 5 catches up on two decisions at
+    once, then joins at epoch 3. Before the fix their later acks were all void, and each was voted out as
+    too slow].
+  * The 180-frame timer waits while another member's acks show the reader is behind (it fetches first),
+    so a reader that has not seen a decision yet does not suspect the members that have (review
+    VCR-12). A vote it casts anyway is harmless: it belongs to an epoch the others have left, and a
+    quorum locked on the decided change cannot decide another [V aheadlink: 3 hears only 4's acks for
+    5 s while the others decide; 3 is removed for not keeping up, and its votes against the members
+    ahead remove none of them].
   * Nothing the joiner signs acts before it is admitted. Once admitted, its entries stamped before B are
     void (a chain-local rule), and it counts toward confirmation from B on. It gets the state at a
     confirmed frame and the log after it (9.5); in the spike it follows the log from the start.
@@ -1478,14 +1564,16 @@ is fixed once the author's chain is contiguous up to it.
   a member that keeps acking but stops referencing some chain stalls everyone's confirmation as surely
   as a silent one. A member whose acks have referenced no more of some chain for 180 frames, while every
   other member (the checking replica included) holds and references more of it, is voted out the same
-  way. A member that only acks slowly still advances, and is not.
+  way. A member that only acks slowly still advances, and is not. A member that has voted against a
+  chain's author no longer references it, so that pair is skipped, and a new member's references count
+  from its admission (review VC-9).
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
   signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
   list can check it, so another world can follow a world's membership from its genesis, one certificate
   at a time. P2-5's hops carry the source's certificates up to the epoch that signed them, so a world
   checks a hop from a world not on its route list too (P25-5).
-* **What each rule tolerates**, counting members not excluded by proof:
+* **What each rule tolerates**, counting all of the epoch's members, proven faulty or not:
 
 | Members | (b) quorum | (b) removable at once | (b) faulty members that cannot split it | (a) quorum | (a) removable at once | (a) faulty members that cannot split it |
 |---|---|---|---|---|---|---|
@@ -1498,16 +1586,73 @@ is fixed once the author's chain is contiguous up to it.
 | 256 | 171 | 85 | 85 | 129 | 127 | 1 |
 
   "Removable at once" is m - q. "Cannot split it" is 2q - m - 1: the most faulty members two quorums can
-  share while still sharing an honest one. A two-member session removes no silent member (D7), but a member
-  proven faulty is removed by the other alone (m = 1, q = 1).
+  share while still sharing an honest one. It is the safety bound, counted over every member: proofs
+  lower a change's quorum for liveness, never the bound (review VC-1). A two-member session removes no
+  silent member (D7), but a member proven faulty is removed by the other alone (m = 1, q = 1), and a kick
+  goes through because the kicked member freezes its own chain too (below).
 * **Limits.**
   * Beyond the bound, a partition between honest members that a faulty member reaches on both sides lets
     each side decide its own epoch: the session forks [V bridge, under D80 (a)].
-  * A faulty member can keep forcing resets by voting against a healthy member again in each epoch. Each
-    costs one decision and stalls that member's chain while it lasts, not safety. Counting a vote that a
-    reset overrules against its author, so a repeat offender is voted out, is the rule to add [I].
+  * A faulty member that forces resets is voted out after three of them (VCR-4, above). So is an honest
+    member whose link to one other member keeps failing, which removes the member that cannot keep up
+    rather than its peer [I].
+  * A faulty proposer can still leave pending admin entries out of the changes it proposes in its own
+    rounds; the next honest proposer lists them in commit order [I].
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
+  * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
+    * epoch-at-frame for R14 hops: a hop's frame and epoch are not in the signed fact, so a third
+      party's check of the epoch active at the hop's frame trusts the carrier's labels (22.7);
+    * `cert_at` counts a world's majority over the members not excluded by proof, while a third party
+      counts over the whole epoch, so a correctly built hop can be refused elsewhere.
+  * A removal's boundary is the proposer's present, a little before the decision, so facts a member
+    attests under epoch e about frames between the boundary and its decision no longer match once it is
+    in e + 1. That costs griefing, not safety [I].
+* **Admins and roles (D80; user rulings 22:11Z-22:51Z).** The view change commits membership; who may
+  change it is session state as well, kept per epoch and changed only by decided changes.
+  * **Roles.** Admin, role 0, is built in: it always exists, holds every permission, and by default is the
+    only role and every player's. Admins define other roles as subsets of the permission catalogue and
+    give them to members, live. Admins are equal: none ranks above another, and the session's creator has
+    no special status. The spike's catalogue has the two permissions the protocol checks, kick and roles
+    (define and give); the rest of the catalogue is 12.4's.
+  * **Admin entries** are chain entries: a kick, a role given, a role defined. An admin's kick authorises
+    the removal alone; no member votes on it. Every member, the kicked one included, only freezes the
+    target's chain for the cut, so a kick goes through even in a session of two, where the others alone
+    would be no quorum.
+  * **Commit order.** A change lists the admin entries it commits in order of (stamp, author, seq), each
+    judged against the state the ones before it leave, and marks each applied or refused, so a refusal is
+    agreed. An entry no change has judged yet stays pending into later epochs. A kick by an admin removed
+    earlier in that order is refused: of two admins kicking each other in the same frame, the first in
+    commit order stays [V kickwar].
+  * An admin entry's stamp decides its place, so it obeys its author's horizon like any entry: it is void
+    if stamped at or before a horizon its author has declared (review VCR-9). A proposer lists pending
+    entries in commit order and stops at the first it cannot carry out yet (a kick still waiting for
+    frozen heads), instead of letting later ones overtake it [V kickbackdate: admins 1 and 2 kick each
+    other at frame 120, 2's kick backdated 30 frames; 2's kick is void and 2 is removed. Before the fix
+    the backdated kick came first and removed 1].
+  * **Open with the user** (review VCR-10, the user's questions V1-V3 through @coordinator-opus): a role
+    holding only the kick permission can kick the last admin, which closes the session; the roles
+    permission can grant Admin, so it equals Admin; and removing an honest but slow sole admin closes the
+    session for good. The coordinator recommends: only admins kick admins; only admins grant Admin, and
+    the roles permission grants only lesser roles; the session still closes when the last admin times
+    out, after a longer grace period. Not built until the user rules.
+  * **Kicks wait out a partition** instead of forking: under the two-thirds quorum neither side of
+    {1,2} | {3,4} commits anything, and after the heal the kick holds [V kickpartition].
+  * **The last admin** cannot give the role up without handing it on: such an entry is refused [V lastadmin].
+  * **Owners** (12.4): an owner may give up Admin, but only a co-owner demotes or kicks an owner (Q27,
+    user 22:49Z and 22:51Z). An owner removed that way can rejoin as Admin through join row 0, as the user
+    accepted.
+    * Agreed with @provenance-eng for the ownership chain (12.5): ownership certificates entering a
+      session are admin-layer entries, committed in order like role entries, so every replica judges each
+      against the same owners without reading frame state. Owner checks compare members' identity keys
+      (from their join certificates) with the chain's owners, and every time window in the chain's rules
+      is measured against the deciding change's boundary, never a replica's clock [I]. The spike keeps a
+      fixed owner set until @design-reviewer approves the ownership spike (its review found OWN-1 to
+      OWN-3).
+  * **No admin left: the session closes.** A change that leaves no admin (a kick, a removal on silence or
+    proof, a release) closes the session at its boundary. The boundary lies ahead, as a join's does, with
+    the same precommit caps, so nothing confirmed is undone, and nothing stamped at or after it acts. A
+    last admin that crashes or times out therefore closes the session (user 22:13Z) [V adminclose].
 * **Measured** [V session-sim, branch `viewchange`, D80 (b) unless named; logs in `spikes/out/session-sim/`]:
 
 | Scenario | What happens | Result |
@@ -1520,9 +1665,31 @@ is fixed once the author's chain is contiguous up to it.
 | `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
 | `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
 | `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.58 s |
-| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (527 paused frames); after the heal the one session removes 8 at 13.65 s. (a): {1,2} removes 3 and 4 at 6.18 s, {3,4} removes 1 and 2 at 7.80 s, and each side then removes 8: **two sessions** |
+| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (529 paused frames); after the heal one session, and a reset at 13.67 s keeps all five, since 8 behaves again and is proven of nothing (round 1 removed it as a withholder; its references stopped only behind its own votes, which review VC-9 no longer counts). (a): {1,2} removes 3 and 4 at 6.18 s, {3,4} removes 1 and 2 at 7.80 s, and each side then removes 8: **two sessions** |
 | `join` | member 4 asks to join at 2 s, touches an object at frame 420 | admitted at 2.10 s with boundary frame 175; its touch applies at every member; all four equal |
 | `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s | 8 removed at 5.23 s; paused 78 frames; all equal |
+| `fork9` | 9 forks its chain: 1 and 2 get a branch with its touch at frame 120, 3 a longer one without it; 3's votes 300 ms late | 9 removed at 2.32 s with the touch's branch as the cut; 3 adopts it; all equal (before the VC-2 fix 3 confirmed past the touch, then hit the rollback assertion) |
+| `jointiming` | 5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary | decided in round 0 at 3.6 s, all five equal (before the VC-3 fix: wedged, confirmation stuck at frame 176) |
+| `bogusprecommit` | 9 signs a precommit with boundary 1, or just ahead of its horizon | the first is void; the second's cap is cleared by a reset at 2.13 s; confirmation goes on (before the VC-4 fix: stuck at frames 112 and 143) |
+| `futureack` | 9's acks claim epoch 999, or epoch 1 with no decision | 9 removed at 5.23 s, and at 5.17 s; confirmation resumes (before the VC-5 fix: stuck at frame 112) |
+| `kickwar` | admins 1 and 2 kick each other at frame 120 | 1's kick applies first in commit order: 2 removed at 2.30 s, 2's kick refused; all equal |
+| `kickpartition` | partition {1,2} / {3,4} from 2 to 6 s; admin 1 kicks 3 at 3 s | nothing decided during it; 3 removed at 6.97 s after the heal; one session |
+| `lastadmin` | the only admin releases the role; later hands it to 2, then releases | release refused (2.17 s); hand-over and release applied (4.17 s, 4.23 s); admins {2} |
+| `adminclose` | the only admin silent from 3 s | removed at 6.5 s; the session closes at frame 438 on both remaining members; all equal |
+| `joinrules` | rules: friends of an admin join as Guest, confidants of an owner as Admin; four ask | the friend joins as Guest, the confidant and the owner (row 0) as Admin, the stranger is refused |
+| `onesided` (control) | 3 of 6 collude, above the bound; partition {1,2} / {3}; proofs only for 1 and 2 | two different epoch-1 decisions: the session forks, as the restated bound allows |
+| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | a reset at 5.13 s answers it; confirmation goes on (before the VCR-1 fix: stuck at frame 108) |
+| `selfkickhead` | admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed | 4 removed at 2.28 s (before the VCR-2 fix: never; confirmation stuck at frame 116) |
+| `ackgap` | 3 acks once a second; two decisions 0.25 s apart fall between two of its acks | both decided, 3 stays (before the VCR-3 fix: its later acks void, and 3 voted out as too slow) |
+| `latejoin` | 5 catches up on two decisions at once, then joins at epoch 3 | admitted at 3.10 s and stays (before the VCR-3 fix: voted out after joining) |
+| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | three resets, then 9 voted out at 2.50 s (before the VCR-4 fix: 88 resets, 9 never removed) |
+| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late, so the cut lies over 16 entries past what 3 holds | 9 removed at 3.63 s; 3 fetches the branch 16 entries at a time; all equal (before the VCR-5 fix: 3 stuck at frame 116) |
+| `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.29 s) |
+| `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits | 5 joins as Guest; 9 is removed later for not referencing 5's chain (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
+| `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.60 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.23 s) |
+| `kickbackdate` | `kickwar`, with 2's kick backdated 30 frames | 2's kick is void; 2 removed at 2.27 s (before the VCR-9 fix: the backdated kick removed 1) |
+| `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.95 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224) |
+| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.23 s for not keeping up; its votes against the members ahead remove none of them |
 | `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
 
   Every scenario's honest members equal each other and the offline replay of the final log, with no false
@@ -1530,7 +1697,8 @@ is fixed once the author's chain is contiguous up to it.
   unchanged except where the view change acts: `backdate` removes its lagging member sooner (66 paused
   frames instead of 128, cut at seq 87 instead of 119), `r14 crash` pauses 5 or 6 frames longer for its
   crashed carrier, and the R14 chain digests changed because hops now carry their commit frame and epoch
-  certificates (every outcome is the same) [V 5k].
+  certificates (every outcome is the same) [V 5k]. Round 3 changes no outcome elsewhere: decision times
+  and confirmed frames move by a frame or two, because members now ack on entering an epoch [V 5k].
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -1742,6 +1910,55 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Revocation.** Revoking a certificate (`CertRevoked {key, effective_frame}`) stops the agent at a
   deterministic frame. The frame is a confirmed frame (6.4), so every peer stops the agent at the same
   point. Guests hold no keys of their own, so re-locking a panel needs no log entry (21.5).
+
+### 12.4 Session admins, roles and join rules (D80; user rulings 22:11Z-22:51Z)
+
+The world's ACL (12.2) says who may edit the world. A **session** has admins and roles of its own, which
+decide who may kick, who may give roles and who may join. They are session state, changed only by signed
+entries that the view change commits (10.8).
+
+* **Admins jointly hold the session.** The role is called Admin everywhere, in the UI and in the docs
+  (22:18Z): the engine has no server, and no name should suggest one.
+  * Every player is an admin by default; a session can be configured so joiners get another role
+    (22:11Z). Several admins are normal, and they are equal: no creator or owner super-admin (22:18Z).
+  * An admin may kick anyone by one signed entry; the view change only commits it, in order (D80).
+  * There is always at least one admin: the last cannot give the role up without handing it on (22:11Z).
+  * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z).
+* **Roles.** Admin is built in, holds every permission and is by default the only role. Other roles are
+  named subsets of a permission catalogue that admins create and give, live (22:15Z). Resonite's role
+  system inspired the catalogue and live reassignment (22:14Z). Ours differs because no single peer
+  enforces it: every replica checks every entry against its epoch's roles, and role changes are ordered
+  with every other membership change by the view change.
+  * The catalogue [proposal]: kick; define and give roles; change the join rules; interact (touch, grab,
+    hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn
+    and save; use agent panels. The spike checks the first two (10.8).
+  * How 12.2's repository roles (`owner`, `builder`, `editor`, `player`, `spectator`) relate to session
+    roles is open [proposal: the world's ACL caps what any session role can grant; world owners are
+    the ownership chain's, below].
+* **World owners** are not session admins: ownership is a persistent property of the world, shareable by
+  several people, held as a chain of signed ownership certificates (@provenance-eng's draft, to fold in
+  as a 12.x; its questions O1-O5 are with the user).
+  * An owner always joins as Admin: **row 0** of every join rule list, fixed and not removable (22:48Z).
+  * An owner may give up Admin; only a co-owner demotes or kicks an owner (Q27, 22:49Z and 22:51Z). An
+    owner demoted or kicked that way can rejoin as Admin through row 0.
+* **Join rules** (22:37Z; a matrix since 22:47Z, extended at 22:51Z): after row 0, an ordered list of
+  rows "if the joiner [relation] [target], then [action]", then a fallback.
+  * Relations: is; is friends with; is a confidant of; has an invite ticket from; is a named player.
+  * Targets: a current player; a current admin; a current player with a given role; a world owner. A row
+    matches if the relation holds with any of its targets, or with all of them.
+  * Actions: refuse; admit as Admin; admit with a given role.
+  * Presets: Public (everyone, as Admin by default); Invite only (an invite ticket from a current
+    player); Friends only (a friend of a current admin, 22:17Z); Friends+ (a friend of any current
+    player); a home world (an owner's confidants as Admin, an owner's friends as Guest, 22:36Z).
+  * A relationship is a signed attestation the joiner presents: a friendship by both players, a confidant
+    mark by the player who made it (D27a), an invite ticket by its issuer, for this world.
+  * Rules are evaluated in the view change against the membership the change leaves. A join stands once
+    committed, even if the friend who vouched leaves, and "all of" means all at that commit (22:17Z). The
+    starting role travels in the change [V joinrules].
+  * Discovery advertises a session's access level, so a stranger is not offered a session it cannot join
+    (D9, D35) [I].
+  * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
+    rows [proposal].
 
 ---
 
@@ -2239,13 +2456,62 @@ tools also exists as an MCP tool, with structured input and output.
     constant time and never logged, and never appears in a URL or on a command line.
   * **Rotation:** a new token at every harness launch and resume. Tokens expire when the session ends,
     after an idle TTL, and immediately on revocation. `Mcp-Session-Id` is not an authentication factor.
-* **Library:** `rmcp` 3.8 (official Rust SDK), pure Rust with server, stdio, macros and schemars
-  [V audit `mcp-rmcp`].
-* **Spike coverage:** the spike's hand-written stub covered the core protocol shapes: initialize,
-  tools/list, tools/call with `structuredContent` and `isError`, resources/read, and JSON-RPC errors. It
-  has not been tested against a third-party MCP client [V mcp].
+* **Library:** `rmcp` 3.8.0 (official Rust SDK): server, macros, schemars, stdio and Streamable HTTP
+  [V audit `mcp-rmcp`; V pe-mcp].
+* **Built (P2-8):** `crates/pe-mcp` replaced `spikes/mcp-stub`. Claude Code 2.1.292 drove a peer through
+  a scripted scenario over the pipe and over HTTP, and both runs passed with identical results [V pe-mcp:
+  `crates/pe-mcp`'s 46 tests on Windows and Linux, and the recorded runs in `spikes/out/mcp/`].
+* **Pipe and socket specifics** [V pe-mcp; on Linux, the tests only]:
+  * Windows: a protected DACL with one ACE, full access for the current user's SID
+    (`D:P(A;;GA;;;<sid>)`, read back from the pipe in a test). The first instance is created with
+    `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a second server on the same name fails. Remote clients are refused,
+    and the name is random.
+  * Unix: the socket lives in a fresh `0700` directory under `$XDG_RUNTIME_DIR`, the socket file is `0600`,
+    and the peer's uid (SO_PEERCRED) must equal the engine's.
+  * Token: the bridge's first line is `PE-MCP-AUTH <token>`, and the engine answers `OK` or
+    `ERR unauthorized` and closes. The token is re-checked on every call, so revocation and expiry act on
+    open connections.
+  * The token reaches the harness only through its environment (`PE_MCP_TOKEN`), which harness MCP configs
+    can reference (`${PE_MCP_TOKEN}`). Every subprocess the harness starts (its shell tool, for example)
+    inherits it, and so can reach the peer with the harness's scopes. Launch profiles (`pe-harness`) should
+    remove it from tool subprocesses where the harness allows, and give a harness no more scopes than it
+    needs [I].
+  * No re-issue yet: a harness idle past the token's TTL (1 h by default) loses the server until it is
+    launched again. Re-issue on resume belongs to `pe-harness` [I].
+* **HTTP specifics** [V pe-mcp]: the server runs stateless (no `Mcp-Session-Id`), so authority comes from
+  each request's token alone. Tests cover a foreign `Host`, a suffix-attack `Host`, a second `Host`
+  header, a refused and an allowed `Origin`, preflight, the absence of CORS headers, a token that is
+  missing, wrong, sent in the wrong scheme or sent in the URL, and revocation.
 
 ### 17.2 Tool and resource catalog (proposed) [I]
+
+* **Tool names use underscores:** `world_get_state`, not `world.get_state`. The Anthropic API accepts only
+  `^[a-zA-Z0-9_-]{1,64}$` in tool names [I: the API's documented pattern, not re-checked here; Claude Code
+  passed underscore names through unchanged in both runs, V pe-mcp]. The table keeps the dotted names as the
+  catalogue's spelling.
+* **Phase 2 implements** [V pe-mcp]: `session_info`, `world_get_state`, `world_get_object`,
+  `world_propose_interaction`, `world_interaction_status`, `world_step`, `world_hashes`,
+  `session_members`, `session_sync_status`, `scenario_load`, `scenario_fault`, `scenario_check`, and the
+  resources `primordial://world/state`, `primordial://session/members` and `primordial://session/sync`.
+  The full schemas are in `crates/pe-mcp/schema/tools.json`.
+* **Phase-2 scopes** (the token decides them): `read`, `interact` (propose, and read its own tickets) and
+  `control` (`world_step` and `scenario_*`, simulator only: a live peer's clock is real time).
+  `tools/list` shows only what the token's scopes allow. The session kinds of the table below map onto
+  scope sets when panels arrive.
+* **Errors:** a tool error carries `{code, message, field?, details?}`. The codes are `invalid_argument`,
+  `unknown_object`, `unknown_ticket`, `forbidden`, `not_owner`, `rate_limited`, `not_ready`, `peer_crashed`,
+  `no_scenario_control`, `session_faulted` and `internal`. An unknown tool or a malformed request is a
+  JSON-RPC error.
+* **Interaction tickets:** proposing returns a ticket. Its status is `pending`, `accepted`, `rejected`
+  (with reason, such as `claimed` with its holder and end frame) or `void`, plus `final` once the stamp is
+  confirmed. Before that, a rollback can still change it. At most 64 unresolved interactions per principal
+  (`rate_limited`) is the first per-session rate limit of 17.4.
+* **A hand is its member's alone:** proposing a `hand` move for another member's hand returns `not_owner`
+  before anything is authored [V pe-mcp]. That protects only an honest peer, so every replica's
+  validation also refuses such an entry (8.4, `RejectedNotOwner`; in the spike on branch `viewchange`,
+  in review), and pe-session carries the rule (P2-3).
+* **Ordering:** the peer runs MCP calls one at a time, in arrival order. Calls a client sends in parallel
+  have no defined order between them [I].
 
 | Area | Tools / resources |
 |---|---|
@@ -2289,6 +2555,9 @@ tools also exists as an MCP tool, with structured input and output.
 * In the fork it applies a candidate commit or interactions, runs N frames faster than real time, and reads
   back hashes, metrics and object states. Nothing reaches the network.
 * This gives AI authors a safe edit-test loop with exact reproducibility.
+* The phase-2 simulator backend already shows the property forks rely on. The same `scenario_load`
+  parameters and seed, with the same calls, give identical hashes: tested across two engines, and seen in
+  two Claude Code runs over different transports that agreed on every reported number [V pe-mcp].
 
 ### 17.4 Same checks as human edits [I]
 
@@ -2327,6 +2596,8 @@ tools also exists as an MCP tool, with structured input and output.
 * Introspectable schemas and state.
 * Deterministic forks for testing.
 * Fast check loops: about 0.25 s for a small guest [V d5], milliseconds for WGSL validation [I].
+* Tool schemas carry no non-standard JSON Schema formats. schemars' `uint32` and `uint64` made Claude Code's
+  validator warn on every tool, so the server strips them and keeps the `minimum` bounds [V pe-mcp].
 
 ---
 
@@ -3582,7 +3853,10 @@ persists until a verdict arrives.
       whether or not that world is on its own route list. Each hop carries its source's certificates up
       to the epoch that signed it, and that epoch must be the one active at the hop's commit frame
       (P25-5, 10.8) [V r14 chain-epoch: a hop signed after its source removed a member checks at a world
-      that does not route to the source; provenance unit tests]. A to B to C to A works [V r14 chain:
+      that does not route to the source; provenance unit tests]. **Not enforced yet** (review VC-7): the
+      hop's frame and epoch are not in the signed fact, so this check trusts the carrier's labels, and
+      the source's `cert_at` counts its majority differently from a third party (VC-8). Rely on neither
+      until @provenance-eng's follow-up signs both. A to B to C to A works [V r14 chain:
       three hops, conserved, all equal in both orders].
     * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
       entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
@@ -3904,6 +4178,13 @@ Rules for every package:
   the quorum. No confirmed frame is ever undone; world-log eviction finishes within about 8.9 s with 256
   members (measured with a log-only world, 25.5.2); the suite stays all-equal and conserved; reviewed by
   @design-reviewer.
+* **Status:** built in the spike on `viewchange`; review round 1 by @design-reviewer at b01ebdf (changes
+  requested: VC-1 to VC-10, HO-1, HO-2), fixed in round 2 together with the D80 admin layer, each repro
+  showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 go to
+  @provenance-eng's follow-up, stated in 10.8's limits and 22.7. Review round 2 at 758ff5e (changes
+  requested: VCR-1 to VCR-12, and HO-1's carried state) is fixed in round 3, again with a repro per
+  finding that fails with its fix switched off; VCR-10 waits for the user (V1-V3). The port into
+  pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
 * What: every global id bound to its birth world; each `Arrive` certificate references the certified
@@ -3943,6 +4224,14 @@ Rules for every package:
 * Depends on: P2-3's API (start against the spike API).
 * Done: Claude Code connects and drives a peer through a scripted scenario; every tool has tests,
   including its errors; the schema is documented.
+* **Status: merged** (main 7ed07cc; approved by @shader-reviewer at b3b54e9). 46 tests pass on Windows and
+  on Linux (WSL2: static musl binaries built on Windows, and a native glibc build), and Claude Code drove a
+  peer over the pipe and over HTTP on Windows. Not yet: Claude Code on Linux, resource subscriptions, and
+  `schema.components`. **The P2-3 seam** is `crates/pe-mcp/src/backend.rs` (`DrivenPeer`, plus
+  `ScenarioControl` for the simulator only). `pe-session` needs, per driven member: author an interaction
+  at the present frame and broadcast it, an entry's verdict and whether it is confirmed, frame and `conf`,
+  object state, hashes and check hashes, membership with evictions and view-change decisions, sync
+  counters, and the protocol events log.
 
 **P2-9. Session simulator as a test tool (`tools/session-sim`).**
 * What: the phase-1 simulator turned into a tool: scenarios in files, fault injection (partitions,
@@ -4755,26 +5044,20 @@ entry says so.
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
 
-* **D80. How many members a view change needs (10.8; raised by P2-4, since strangers may join, D21).**
-  * The problem: removing members needs a decision that a cheating member cannot split in two across a
-    network partition, and that still happens when several members drop at once. No rule gives both at
-    every session size; the two goals trade against each other (Dwork, Lynch and Stockmeyer 1988).
-  * Options, counting the members not proven faulty:
-    * **(a) A strict majority.** Up to just under half can drop at once and still be removed: two of five,
-      three of seven or eight. But one cheating member that reaches both sides of a partition between
-      honest members can get each side to remove the other, and the session forks into two sessions
-      [V bridge: of five members, {1, 2} and {3, 4} each remove the other and end as two sessions]. Their
-      histories diverge from the next touch [I]. Even session sizes resist one such member; odd sizes none.
-    * **(b) A Byzantine quorum, just over two thirds:** 3 of 4, 4 of 5, 6 of 8, 171 of 256. No fork while
-      fewer than a third of the members not proven faulty cheat, partition or not [V bridge: one session,
-      the cheater removed after the heal]. But fewer members can drop at once: one of five, two of six to
-      eight; when more drop together, the rest pause safely until enough come back [V twosilent5].
-    * **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds of friends.
-  * Members proven faulty (by two contradicting signed entries) never count, under any option, so
-    proven cheaters cannot stall a removal [V badvote, colluders].
-  * Recommendation: **(b)**. A fork breaks "everything in sync" and conservation across worlds, and a
-    member that is also a volunteer relay (D35) can create the partition at will. The cost falls only on
-    sessions of 5, 7 or 8 that lose two or three members at the same moment.
+* **D80. Who may change a session's member list, and how many must agree (10.8, 12.4; raised by P2-4).**
+  **Settled 22:13Z: admins over a two-thirds safety layer.**
+  * The user answered with session admins (22:11Z): admins may kick anyone; there is always at least one
+    admin, and the last cannot give the role up without handing it on; every player is an admin by
+    default; the session closes when the last admin leaves.
+  * Confirmed reading (22:13Z): an admin's signed kick authorises a removal, with no vote. The
+    two-thirds quorum, option (b), stays underneath only as the commit and ordering rule. Conflicting
+    kicks resolve by commit order, a kick by an admin already removed is void, kicks wait out a
+    partition instead of forking, and silence or crash removal stays automatic. A last admin that crashes
+    or times out closes the session.
+  * Roles (22:14Z, 22:15Z), owners (Q27) and join rules (22:37Z-22:51Z) are in 12.4.
+  * Measured [V kickwar, kickpartition, lastadmin, adminclose, joinrules; bridge and twosilent5 for the
+    quorum]. The safety bound counts every faulty member, proven or not (review VC-1, 10.8) [V onesided,
+    a control above the bound]. Options (a), a strict majority, and (c), per world, are not taken.
 
 ---
 

@@ -60,7 +60,11 @@ impl World {
             c.contact_count = max_int(c.contact_count, self.contact_id_pool.id_count());
         }
 
+        let mut step_ticks = crate::stage_timer::Ticks::now();
+        let mut ticks = step_ticks;
+
         update_broad_phase_pairs(self);
+        self.profile.pairs = ticks.lap();
 
         let sub_steps = max_int(1, sub_step_count);
         let mut context = StepContext {
@@ -95,6 +99,7 @@ impl World {
         context.enable_warm_starting = self.enable_warm_starting;
 
         crate::contact::collide(self, time_step);
+        self.profile.collide = ticks.lap();
 
         // C finishes the user tree task (and validates the trees) inside b3Solve, right
         // before body finalization, which is skipped when the step is zero or nothing is
@@ -113,6 +118,7 @@ impl World {
         if time_step > 0.0 {
             solve(self, &context);
         }
+        self.profile.solve = ticks.lap();
 
         // Finish the tree task in case b3Solve didn't finish it
         if tree_task_pending {
@@ -121,6 +127,7 @@ impl World {
 
         // Update sensors (after solve; C physics_world.c runs b3OverlapSensors here)
         crate::sensor::overlap_sensors(self);
+        self.profile.sensors = ticks.lap();
 
         self.step_index = self.step_index.wrapping_add(1);
         self.validate_solver_sets();
@@ -130,6 +137,7 @@ impl World {
         self.sensor_end_events[self.end_event_array_index as usize].clear();
         self.contact_end_events[self.end_event_array_index as usize].clear();
         self.locked = false;
+        self.profile.step = step_ticks.lap();
 
         if self.recording.is_some() {
             use crate::math_functions::aabb_union;

@@ -1,0 +1,7 @@
+    Finished `release` profile [optimized] target(s) in 0.79s
+     Running `target\release\examples\store_bench.exe`
+RESULT store_bench reps=201 (median, microseconds; low priority, noisy)
+RESULT store_bench objects=256 image_bytes=46252 data_bytes=36864 snapshot_us=0.100 write_transforms_unshared_us=0.10 write_transforms_after_snapshot_us=0.40 deep_copy_us=1.30 restore_us=0.400 hash_us=2.70 to_bytes_us=23.50 from_bytes_us=41.90
+RESULT store_bench objects=1024 image_bytes=184492 data_bytes=147456 snapshot_us=0.100 write_transforms_unshared_us=0.30 write_transforms_after_snapshot_us=20.40 deep_copy_us=41.30 restore_us=0.200 hash_us=8.20 to_bytes_us=4.60 from_bytes_us=203.10
+RESULT store_bench objects=2048 image_bytes=368812 data_bytes=294912 snapshot_us=0.100 write_transforms_unshared_us=0.70 write_transforms_after_snapshot_us=2.10 deep_copy_us=83.10 restore_us=0.200 hash_us=15.90 to_bytes_us=17.60 from_bytes_us=491.80
+RESULT store_bench objects=8192 image_bytes=1474732 data_bytes=1179648 snapshot_us=0.100 write_transforms_unshared_us=2.50 write_transforms_after_snapshot_us=14.10 deep_copy_us=270.50 restore_us=0.200 hash_us=64.60 to_bytes_us=625.30 from_bytes_us=2024.00
