@@ -143,6 +143,14 @@ pub fn not_scenarios(dir: &Path) -> Result<Vec<String>, String> {
     name_list(dir, "not-scenarios.txt")
 }
 
+/// Scenario files whose behaviour pe-session does not have yet: `pe-pending.txt` in the scenarios
+/// folder, in `spike-only.txt`'s format. `regress` skips and reports them (they drive spike fixes not
+/// ported yet; their logs are the spike's, in `spikes/out/session-sim/`). The list only shrinks: a
+/// name with no scenario file is an error.
+pub fn pe_pending(dir: &Path) -> Result<Vec<String>, String> {
+    name_list(dir, "pe-pending.txt")
+}
+
 fn name_list(dir: &Path, file: &str) -> Result<Vec<String>, String> {
     let p = dir.join(file);
     let Ok(text) = fs::read_to_string(&p) else { return Ok(vec![]) };
@@ -190,7 +198,20 @@ pub fn regress(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let todo: Vec<(String, PathBuf)> = all.into_iter().filter(|(n, _)| only.as_ref().is_none_or(|o| o.contains(n))).collect();
+    let pending = match pe_pending(&scenarios) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let pending_stale: Vec<String> = pending
+        .iter()
+        .filter(|g| !all.iter().any(|(n, _)| n == *g))
+        .map(|g| format!("{g} is listed in pe-pending.txt but has no scenario file"))
+        .collect();
+    let todo: Vec<(String, PathBuf)> =
+        all.into_iter().filter(|(n, _)| only.as_ref().is_none_or(|o| o.contains(n)) && !pending.contains(n)).collect();
     if todo.is_empty() {
         eprintln!("error: no scenarios to run in {}", scenarios.display());
         return 2;
@@ -238,7 +259,7 @@ pub fn regress(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let mut stale: Vec<String> = Vec::new();
+    let mut stale: Vec<String> = pending_stale;
     let orphans: Vec<String> = if only.is_none() {
         let goldens: std::collections::BTreeSet<&str> = meta.values().map(|(g, _, _)| g.as_str()).collect();
         let mut logs = Vec::new();
@@ -254,7 +275,9 @@ pub fn regress(args: &[String]) -> i32 {
                 }
             }
         }
-        logs.into_iter().filter(|g| !goldens.contains(g.as_str()) && !spike_only.contains(g) && !not_scenarios.contains(g)).collect()
+        logs.into_iter()
+            .filter(|g| !goldens.contains(g.as_str()) && !spike_only.contains(g) && !not_scenarios.contains(g) && !pending.contains(g))
+            .collect()
     } else {
         vec![]
     };
@@ -321,6 +344,9 @@ pub fn regress(args: &[String]) -> i32 {
         if only.is_none() {
             println!("== {g}: not a scenario (a spike property test, run and checked by the spike suite; see not-scenarios.txt)");
         }
+    }
+    for g in pending.iter().filter(|g| only.as_ref().is_none_or(|o| o.contains(g))) {
+        println!("== {g}: pending on pe-session (not run: drives spike fixes not ported yet; see pe-pending.txt)");
     }
     for e in &stale {
         println!("== ERROR: {e}");

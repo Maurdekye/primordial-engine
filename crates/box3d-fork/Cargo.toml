@@ -22,6 +22,10 @@ name = "box3d_rust"
 path = "src/lib.rs"
 
 [features]
+# Primordial Engine fork: double precision is the default (D58: region-local origins, so rebases
+# and region merges are physics-neutral). `--no-default-features` builds f32 positions, checked
+# against Box3D C's f32 goldens.
+default = ["double-precision"]
 # Mirrors BOX3D_DOUBLE_PRECISION: double precision world positions for large worlds.
 double-precision = []
 # Primordial Engine fork: fill world::Profile with wall-clock stage timings (native only).

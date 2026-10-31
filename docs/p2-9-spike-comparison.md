@@ -96,7 +96,7 @@ scenario descriptions state the new figures (measured at the P2-3 review round, 
 
 | run | what it tests | spike (spike caps) | pe-session, spike caps | pe-session, scaled caps |
 |---|---|---|---|---|
-| fault-capped | one capped link: its queue fills, the controller-less link drops, member 1 lags and repairs through member 2, and the rest has headroom | 12 kbit/s 3->1, 64 elsewhere: 156 dropped, m1 rolls back up to 60 frames, conf 534-538, ALL EQUAL | conf 46 at m1, MISMATCH in unconfirmed frames | 36 kbit/s 3->1, 186 elsewhere: **125 dropped**; m1 rolls back up to 32 frames (others 2); conf 558 at every member, 0 paused; ALL EQUAL over 0..530, every checked frame confirmed. Without the 3->1 cap: **0 dropped** (headroom) |
+| fault-capped | one capped link: its queue fills, the controller-less link drops, member 1 lags and repairs through member 2, and the rest has headroom | 12 kbit/s 3->1, 64 elsewhere: 156 dropped, m1 rolls back up to 60 frames, conf 534-538, ALL EQUAL | conf 42 at m1 at 3af709a (46 at a812805), MISMATCH in unconfirmed frames | 36 kbit/s 3->1, 186 elsewhere: **125 dropped**; m1 rolls back up to 32 frames (others 2); conf 558 at every member, 0 paused; ALL EQUAL over 0..530, every checked frame confirmed. Without the 3->1 cap: **0 dropped** (headroom) |
 | fault-capped-collapse | a cap that binds everywhere, no R18: queues overflow and confirmation stalls, and safety holds | 16 kbit/s: stall at 114, confirmed prefix equal | stall at 34; the prefix check reaches unconfirmed frames | 46 kbit/s: **534 dropped**, stall at 104, confirmed prefix 0..95 **equal on every replica and the replay** |
 | fault-capped-r18 | the same links with R18: it thins entries and acks, keeps confirming, drops nothing | 16 kbit/s: 0 dropped, conf 568 | 98 dropped, conf 34: FAIL | 46 kbit/s: **0 dropped**, conf 586, ALL EQUAL. R18 engages: 1158 acks against collapse's 1752 (spike: 980 against 1752) |
 
@@ -133,20 +133,34 @@ So the 3->1 link now scales like the others (12 x 3 = 36).
 
 ## Since a812805: the P2-3 review round
 
-The per-scenario table below attributes the spike-to-pe-session differences at a812805. The review
-round (7aa4163, 649a77f and the scenario fix after) moved pe-session's goldens again. Measured with
-the harness suite at 7aa4163 against the goldens committed before it (timings masked): ALL EQUAL,
-0 false checks; 56 logs identical, 17 equal with ids masked, 15 different. The later commits change
-only runs that opt into R18 (none in the harness suite), statejoin and fault-capped. The tool's
-`regress` is 92 of 92 identical to the new goldens.
+The per-scenario table below attributes the spike-to-pe-session differences **at a812805**. Two
+changes moved pe-session's goldens after it; this section attributes them. Run at 3af709a,
+`scripts/p2-3/p29_causes.py` reports 15 logs as OTHER: diverged (the set_state reset, first bullet)
+and the 14 review-round logs (the bullets after it).
+
+- **The set_state history reset (main f65851e, merged at e98261f; goldens re-blessed at dc7c378, the
+  tool's fault goldens at 4a044bd).** It moved 71 goldens before the review round: digests and ids
+  only, plus p2-4-aheadlink's list order. It also changed **diverged** under the spike rule: 25 of 25
+  and 35 of 35 frames equal at that instant, against the spike's 23 of 25 and 33 of 35, and the two
+  "differs at that instant" lines are gone. A harness build at 4a044bd already gives 25/25 and 35/35,
+  so the cause is the reset [verified by run, @chunks-reviewer; mechanism inferred: carried state is
+  exact while speculating, design 7.3].
+
+The review round (7aa4163, 649a77f and the scenario fix after) moved them again. Measured with the
+harness suite at 7aa4163 against the goldens committed before it (timings masked): ALL EQUAL, 0 false
+checks; 56 logs identical, 17 equal with ids masked, 15 different. Compared at 3af709a it is 56, 16
+and 16: statejoin changed after 7aa4163 (P23-3 below) [verified, @chunks-reviewer]. The later commits
+change only runs that opt into R18 (none in the harness suite), statejoin and fault-capped. The
+tool's `regress` is 92 of 92 identical to the new goldens.
 
 - **P23-2: facts are 256-bit BLAKE3, signed with the session; the view-change value and the chain
   hash are 64-bit BLAKE3.** A precommit carries its fact signature, and an Attest its fact, so their
   entry ids change, and the change values too. With them changes the order in which id- and
   value-keyed tables iterate [inferred mechanism; the set is measured]:
-  - 17 logs differ only in ids (R14 transfer ids, entry ids);
-  - 13 view-change and eviction scenarios move a decision by a frame, a member's final conf by up to
-    2 frames, or a resimulation count by one: backdate, c2, d80-joinrules, d80-kickpartition,
+  - 17 logs differ only in ids (R14 transfer ids, entry ids), among them p2-4-aheadlink, whose vote
+    list prints in a different order;
+  - 13 view-change and eviction scenarios move a decision by up to two frames (onesided: 448 to
+    446), a member's final conf by up to 2 frames, or a resimulation count by one: backdate, c2, d80-joinrules, d80-kickpartition,
     p2-4-badproposer, p2-4-bridge, p2-4-controls/onesided, p2-4-lagchurn, p2-4-strikeframe,
     review2-ackfork, review2-lateequiv, review3-badvote, review3-liar. Each stays ALL EQUAL, and
     every decision is the same one.
@@ -158,6 +172,25 @@ only runs that opt into R18 (none in the harness suite), statejoin and fault-cap
   tampered state (Hash), then member 2's honest answer, which arrives after the tampered one used
   up that request (Unrequested).
 - **Whole-reply repair (the R1 cause above):** fault-capped, now at its proportional cap (36 kbit/s).
+
+- **D58 (main ca33fcd, merged at 88aa129; 65dc019, goldens 90e0c22).** Box3D's positions are f64,
+  and `BodyState` is 16 words (64 B; a touch entry 200 B, 188 before). Against the review round's
+  goldens: ALL EQUAL, 0 false checks; 4 identical, 77 equal with ids and hashes masked, 7 different.
+  Among the 77, besides digests and ids [verified, @chunks-reviewer]: diverged's, loss's and
+  state-frame's entries grow from 188 to 200 B, statejoin's physics state from 571064 to 581042 B,
+  and handowner's grab/carry list and aheadlink's vote list print in another entry-id order. The 7:
+  the 5 ball-pit logs' naive-streaming estimate (64 B a state, D58-3), and r14-forge and
+  p2-5-controls/r14-forge-no-provenance, whose world A counts one more carried-state overwrite at m1
+  and m2 (1 to 2). The spike's r14-forge moved the same way in its D58 re-bless (974c441 to ca33fcd)
+  [verified by reading the spike's logs]. The capped runs keep their points (fault-capped: 125
+  dropped, 0 paused, conf 558 at every member).
+
+- **P2-4 round 8 (main af23ae5) is not in pe-session yet.** Its five new scenarios (p2-4-voidfork,
+  slowcapper, voiddeep, plainfork, pfsilent) drive fixes pe-session does not have (VC7R-1/2, RECUT,
+  VC8R-1/2). They are listed in `tools/session-sim/scenarios/pe-pending.txt`, which `regress` skips
+  and reports, and `scripts/run_session_sim.sh --pe` does not run them; their logs are the spike's.
+  adminfork's and prevotefork's scenario files keep their round-7 versions (main's add VC6R3 and
+  VC8R1 switches). The round-8 port to pe-session is a follow-up.
 
 ## Fixture changes made by the port
 

@@ -7,7 +7,7 @@ RESULT twosilent5-majority: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 
   m1: conf 887 frame 893 members {1, 2, 3} evicted {4: (86, 173), 5: (86, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 64 bad 0
   m2: conf 887 frame 893 members {1, 2, 3} evicted {4: (86, 173), 5: (86, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 64 bad 0
   m3: conf 887 frame 893 members {1, 2, 3} evicted {4: (86, 173), 5: (86, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 64 bad 0
-RESULT twosilent5-majority (members 4 and 5 of 5 silent from t=3 s): frames 0..892 honest m1=72dfdc42e7fad15f m2=72dfdc42e7fad15f m3=72dfdc42e7fad15f | offline replay 72dfdc42e7fad15f | ALL EQUAL, NO FALSE CHECKS ; checks ok 192 bad 0
+RESULT twosilent5-majority (members 4 and 5 of 5 silent from t=3 s): frames 0..892 honest m1=1a29645c5d14e858 m2=1a29645c5d14e858 m3=1a29645c5d14e858 | offline replay 1a29645c5d14e858 | ALL EQUAL, NO FALSE CHECKS ; checks ok 192 bad 0
 RESULT twosilent5-bft: m1 members {1, 2, 3, 4, 5} evicted {} conf 169 frame 289 paused frames 604 lying votes found 0
 RESULT twosilent5-bft: m2 members {1, 2, 3, 4, 5} evicted {} conf 169 frame 289 paused frames 604 lying votes found 0
 RESULT twosilent5-bft: m3 members {1, 2, 3, 4, 5} evicted {} conf 169 frame 289 paused frames 604 lying votes found 0
@@ -17,4 +17,4 @@ RESULT twosilent5-bft: m3 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets
   m1: conf 169 frame 289 members {1, 2, 3, 4, 5} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 24 bad 0
   m2: conf 169 frame 289 members {1, 2, 3, 4, 5} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 24 bad 0
   m3: conf 169 frame 289 members {1, 2, 3, 4, 5} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 24 bad 0
-RESULT twosilent5-bft (members 4 and 5 of 5 silent from t=3 s): frames 0..288 honest m1=2af09fda30a5ce94 m2=2af09fda30a5ce94 m3=2af09fda30a5ce94 | offline replay 2af09fda30a5ce94 | ALL EQUAL, NO FALSE CHECKS ; checks ok 72 bad 0
+RESULT twosilent5-bft (members 4 and 5 of 5 silent from t=3 s): frames 0..288 honest m1=7b12ddfdf57c988e m2=7b12ddfdf57c988e m3=7b12ddfdf57c988e | offline replay 7b12ddfdf57c988e | ALL EQUAL, NO FALSE CHECKS ; checks ok 72 bad 0

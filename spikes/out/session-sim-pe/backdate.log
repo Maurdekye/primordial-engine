@@ -1,13 +1,13 @@
-  part 1: member 3 entry stamped 300 -> effective None (void: true)
-  part 1: member 3 entry stamped 420 -> effective None (void: true)
   part 1: member 3 entry stamped 180 -> effective None (void: true)
-  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (3.0 ms) overwrites 3 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
-  m2 world 1: rollbacks 6 max depth 2 resim frames 14 (2.5 ms) overwrites 3 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 654
-  m3 world 1: rollbacks 12 max depth 2 resim frames 25 (4.5 ms) overwrites 3 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
-RESULT backdate part 1 world 1: frames 0..600 digests m1=6eb951ef1d567ab4 m2=6eb951ef1d567ab4 m3=6eb951ef1d567ab4 | offline replay 6eb951ef1d567ab4 | ALL EQUAL
+  part 1: member 3 entry stamped 420 -> effective None (void: true)
+  part 1: member 3 entry stamped 300 -> effective None (void: true)
+  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (3.1 ms) overwrites 3 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
+  m2 world 1: rollbacks 6 max depth 2 resim frames 14 (2.9 ms) overwrites 3 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 654
+  m3 world 1: rollbacks 12 max depth 2 resim frames 25 (4.6 ms) overwrites 3 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
+RESULT backdate part 1 world 1: frames 0..600 digests m1=12ce1c5a8d60fa74 m2=12ce1c5a8d60fa74 m3=12ce1c5a8d60fa74 | offline replay 12ce1c5a8d60fa74 | ALL EQUAL
   part 2: member 3 entry stamped 300 -> effective None (void: true)
-  m1 world 1: rollbacks 3 max depth 2 resim frames 11 (2.1 ms) overwrites 2 paused frames 96 violations 104 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 646 frame 653
-  m2 world 1: rollbacks 4 max depth 2 resim frames 8 (1.2 ms) overwrites 2 paused frames 97 violations 104 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 648 frame 654
-  m3 world 1: rollbacks 4 max depth 2 resim frames 7 (1.9 ms) overwrites 2 paused frames 415 violations 105 equivocations 0 checks ok 2 bad 0 nonfinite 0 conf 214 frame 334
+  m1 world 1: rollbacks 3 max depth 2 resim frames 11 (1.8 ms) overwrites 2 paused frames 96 violations 104 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 646 frame 653
+  m2 world 1: rollbacks 4 max depth 2 resim frames 8 (1.3 ms) overwrites 2 paused frames 97 violations 104 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 648 frame 654
+  m3 world 1: rollbacks 4 max depth 2 resim frames 7 (1.6 ms) overwrites 2 paused frames 415 violations 105 equivocations 0 checks ok 2 bad 0 nonfinite 0 conf 214 frame 334
 RESULT backdate part 2: removed from the session (cut, from frame): {3: (102, 1)}
-RESULT backdate part 2 world 1: frames 0..600 digests m1=b17f7ea3f34ef6f1 m2=b17f7ea3f34ef6f1 | offline replay b17f7ea3f34ef6f1 | ALL EQUAL
+RESULT backdate part 2 world 1: frames 0..600 digests m1=8bfbfe55a7af5f85 m2=8bfbfe55a7af5f85 | offline replay 8bfbfe55a7af5f85 | ALL EQUAL

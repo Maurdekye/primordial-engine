@@ -1,8 +1,8 @@
 RESULT r15 hooks, phase-1 pile (stays active), 240 frames; timings noisy (low priority, shared machine)
-RESULT    256 bodies (awake at end 253): pre-solve 160 calls/step avg, 291 max; friction+restitution mixing 319.3/step; step 0.586 ms plain, 0.610 ms with native hooks
-RESULT   1024 bodies (awake at end 1015): pre-solve 610 calls/step avg, 985 max; friction+restitution mixing 1220.1/step; step 4.789 ms plain, 6.595 ms with native hooks
+RESULT    256 bodies (awake at end 254): pre-solve 161 calls/step avg, 291 max; friction+restitution mixing 322.8/step; step 0.325 ms plain, 0.312 ms with native hooks
+RESULT   1024 bodies (awake at end 1014): pre-solve 612 calls/step avg, 994 max; friction+restitution mixing 1223.7/step; step 1.575 ms plain, 1.572 ms with native hooks
 RESULT r15 hooks: calls per step of box3d-rust's existing hooks, 240 frames of a collapsing pile (4 substeps, 60 Hz); timings noisy (low priority, shared machine)
-RESULT    256 bodies (awake at end 0): pre-solve 1 calls/step avg, 64 max; pair filter 9.8/step; friction+restitution mixing 2.1/step; step 0.079 ms plain, 0.083 ms with native hooks
-RESULT   1024 bodies (awake at end 0): pre-solve 4 calls/step avg, 256 max; pair filter 43.0/step; friction+restitution mixing 8.5/step; step 0.348 ms plain, 0.354 ms with native hooks
-build: release profile, target x86_64, contact recycling: scale-dependent (engine default)
+RESULT    256 bodies (awake at end 0): pre-solve 1 calls/step avg, 64 max; pair filter 9.8/step; friction+restitution mixing 2.1/step; step 0.052 ms plain, 0.050 ms with native hooks
+RESULT   1024 bodies (awake at end 0): pre-solve 4 calls/step avg, 256 max; pair filter 43.0/step; friction+restitution mixing 8.5/step; step 0.218 ms plain, 0.213 ms with native hooks
+build: release profile, target x86_64, contact recycling: scale-dependent (engine default), worker threads: 1
 RESULT: PASS

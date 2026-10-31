@@ -379,7 +379,7 @@ impl WorldSim {
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
                 // majority in the source world). Refuse non-finite or absurd states.
                 let st = record.state;
-                let finite = st.0.iter().all(|&b| (b >> 23) & 0xFF != 0xFF);
+                let finite = st.is_finite();
                 let (q, v, w) = (st.rot(), st.lin(), st.ang());
                 let qn = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
                 let sane = finite
@@ -506,9 +506,9 @@ impl WorldSim {
     }
 
     /// Recreate an object from a record at `at`, keeping its rotation and velocities.
-    pub(super) fn spawn(&mut self, r: &ObjRecord, at: [f32; 3]) -> u32 {
+    pub(super) fn spawn(&mut self, r: &ObjRecord, at: [f64; 3]) -> u32 {
         let i = self.obj_slots() as usize;
-        let d = BodyDesc::new(BodyKind::Dynamic, at.map(f64::from))
+        let d = BodyDesc::new(BodyKind::Dynamic, at)
             .with_rotation(r.state.rot())
             .with_velocity(r.state.lin(), r.state.ang())
             .with_shape(shape_desc(r.kind));
@@ -633,7 +633,7 @@ impl WorldSim {
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
                 let bad = self.objects().map(|(_, o)| o).find(|o| {
                     let st = BodyState::read(&self.world, o.id);
-                    st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
+                    !st.is_finite()
                 });
                 if let Some(o) = bad {
                     self.stats.nonfinite += 1;

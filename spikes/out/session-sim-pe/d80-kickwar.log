@@ -11,4 +11,4 @@ RESULT kickwar: members left [1, 3, 4]: exactly one of the two admins removed: t
   m1: conf 467 frame 473 members {1, 3, 4} evicted {2: (59, 118)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 36 bad 0
   m3: conf 467 frame 473 members {1, 3, 4} evicted {2: (59, 118)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 36 bad 0
   m4: conf 467 frame 473 members {1, 3, 4} evicted {2: (59, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 36 bad 0
-RESULT kickwar (admins 1 and 2 kick each other at frame 120): frames 0..472 honest m1=77423120d2011e0b m3=77423120d2011e0b m4=77423120d2011e0b | offline replay 77423120d2011e0b | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT kickwar (admins 1 and 2 kick each other at frame 120): frames 0..472 honest m1=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 m4=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0

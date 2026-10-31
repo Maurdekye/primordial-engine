@@ -4,8 +4,8 @@ RESULT loss acceptance (after re-sim to its present frame, the receiver's copy o
   differs at that instant: world 1 receiver m3 author m2 obj 50 frame 122; equal to the author's final history: true
   differs at that instant: world 1 receiver m1 author m2 obj 50 frame 126; equal to the author's final history: true
   differs at that instant: world 1 receiver m3 author m1 obj 50 frame 127; equal to the author's final history: false
-  m1 world 1: rollbacks 9 max depth 3 resim frames 35 (17.7 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
-  m2 world 1: rollbacks 9 max depth 11 resim frames 40 (18.1 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 760 frame 774
-  m3 world 1: rollbacks 12 max depth 3 resim frames 42 (18.9 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
-  bytes: entries 50 msgs 9400 B (avg 188 B), acks 3680 msgs 909160 B, dropped 442
-RESULT loss world 1: frames 0..700 digests m1=25a2c95c7c6ac072 m2=25a2c95c7c6ac072 m3=25a2c95c7c6ac072 | offline replay 25a2c95c7c6ac072 | ALL EQUAL
+  m1 world 1: rollbacks 9 max depth 3 resim frames 35 (16.5 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
+  m2 world 1: rollbacks 9 max depth 11 resim frames 40 (17.8 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 760 frame 774
+  m3 world 1: rollbacks 12 max depth 3 resim frames 42 (18.6 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
+  bytes: entries 50 msgs 10000 B (avg 200 B), acks 3680 msgs 909160 B, dropped 442
+RESULT loss world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112baf49e9c4b m3=a97112baf49e9c4b | offline replay a97112baf49e9c4b | ALL EQUAL

@@ -27,7 +27,7 @@ use box3d_rust::body::{
 use box3d_rust::geometry::{Capsule, Sphere};
 use box3d_rust::hull::make_box_hull;
 use box3d_rust::id::BodyId;
-use box3d_rust::math_functions::{Pos, Quat, Transform, Vec3, QUAT_IDENTITY};
+use box3d_rust::math_functions::{Pos, Quat, Vec3, WorldTransform, QUAT_IDENTITY};
 use box3d_rust::recording::{
     deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer,
     RegistrySlot,
@@ -36,9 +36,10 @@ use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_s
 use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
-use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_WORDS};
+use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
-    birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
+    birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
 
 pub type MemberId = u32;
@@ -50,35 +51,68 @@ pub const LOGIC: MemberId = 0;
 // ---- object state ------------------------------------------------------------------------------
 
 /// Exact bit pattern of a rigid body's sim state: position, rotation, linear and angular velocity.
+/// 16 words (D58): the position as three f64, each two words, low word first; then the rotation
+/// and both velocities as f32 bits. An f32 build widens its positions exactly, so it keeps its bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BodyState(pub [u32; 13]);
+pub struct BodyState(pub [u32; 16]);
 
+#[allow(clippy::unnecessary_cast)] // Pos is f64 under double-precision, f32 without it
 impl BodyState {
     pub fn read(world: &World, id: BodyId) -> Self {
         let t = body_get_transform(world, id);
         let v = body_get_linear_velocity(world, id);
         let w = body_get_angular_velocity(world, id);
+        let p = |x: f64| [x.to_bits() as u32, (x.to_bits() >> 32) as u32];
+        let [x, y, z] = [p(t.p.x as f64), p(t.p.y as f64), p(t.p.z as f64)];
         BodyState([
-            t.p.x.to_bits(), t.p.y.to_bits(), t.p.z.to_bits(),
+            x[0], x[1], y[0], y[1], z[0], z[1],
             t.q.v.x.to_bits(), t.q.v.y.to_bits(), t.q.v.z.to_bits(), t.q.s.to_bits(),
             v.x.to_bits(), v.y.to_bits(), v.z.to_bits(),
             w.x.to_bits(), w.y.to_bits(), w.z.to_bits(),
         ])
     }
+    /// A state from its parts: position, rotation (x, y, z, s), linear and angular velocity.
+    pub fn new(p: [f64; 3], q: [f32; 4], v: [f32; 3], w: [f32; 3]) -> Self {
+        let mut s = [0u32; 16];
+        for (k, x) in p.into_iter().enumerate() {
+            s[2 * k] = x.to_bits() as u32;
+            s[2 * k + 1] = (x.to_bits() >> 32) as u32;
+        }
+        for (k, x) in q.into_iter().chain(v).chain(w).enumerate() {
+            s[6 + k] = x.to_bits();
+        }
+        BodyState(s)
+    }
+    /// This state at another position.
+    pub fn with_pos(&self, p: [f64; 3]) -> Self {
+        let mut s = Self::new(p, [0.0; 4], [0.0; 3], [0.0; 3]);
+        s.0[6..].copy_from_slice(&self.0[6..]);
+        s
+    }
+    pub fn pos_f64(&self) -> [f64; 3] {
+        [self.d(0), self.d(2), self.d(4)]
+    }
+    /// Every component finite (no NaN or infinity).
+    pub fn is_finite(&self) -> bool {
+        self.pos_f64().iter().all(|x| x.is_finite()) && self.0[6..].iter().all(|&b| f32::from_bits(b).is_finite())
+    }
     fn f(&self, i: usize) -> f32 {
         f32::from_bits(self.0[i])
     }
+    fn d(&self, i: usize) -> f64 {
+        f64::from_bits(self.0[i] as u64 | (self.0[i + 1] as u64) << 32)
+    }
     pub fn pos(&self) -> Pos {
-        Pos { x: self.f(0), y: self.f(1), z: self.f(2) }
+        Pos { x: self.d(0) as _, y: self.d(2) as _, z: self.d(4) as _ }
     }
     pub fn rot(&self) -> Quat {
-        Quat { v: Vec3 { x: self.f(3), y: self.f(4), z: self.f(5) }, s: self.f(6) }
+        Quat { v: Vec3 { x: self.f(6), y: self.f(7), z: self.f(8) }, s: self.f(9) }
     }
     pub fn lin(&self) -> Vec3 {
-        Vec3 { x: self.f(7), y: self.f(8), z: self.f(9) }
+        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
     }
     pub fn ang(&self) -> Vec3 {
-        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
+        Vec3 { x: self.f(13), y: self.f(14), z: self.f(15) }
     }
     /// Overwrite the body's state with these exact bits.
     pub fn write(&self, world: &mut World, id: BodyId) {
@@ -124,11 +158,13 @@ pub enum Payload {
     /// this deadline, is confirmed" (reviews NEW-4, R3-8); without it the entry does nothing.
     /// `deadline` is a frame of the destination world: a later arrival is refused (R3-6).
     /// P2-5: `chain` is the object's provenance from its birth into the source world; the
-    /// certificate covers its hash.
-    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop> },
+    /// certificate covers its hash. `proof` names the source's epoch at the departure frame
+    /// (`record.src_frame`) with its epoch certificates: the signers are that epoch's (22.7, R3-8b).
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop>, proof: EpochProof },
     /// R14, source world: the destination's confirmed verdict, with a strict majority of the
-    /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
-    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
+    /// destination's members' signatures over it (review NEW-3). Anyone may relay it. `frame` is the
+    /// destination's arrival frame, and `proof` its epoch there with its epoch certificates.
+    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)>, frame: u64, proof: EpochProof },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
     Attest { fact: u64, sig: u64 },
@@ -137,6 +173,11 @@ pub enum Payload {
     Provenance { hop: Hop },
     /// R14 test fixture: open or close this world's arrival portal.
     Portal { open: bool },
+    /// World ownership (12.5): one signed certificate of the world's ownership chain, an admin entry
+    /// (D80) like a kick. Any member may publish one: the owners' signatures in it are its authority.
+    /// A view change commits it in commit order, and it applies if it is valid against the book
+    /// the entries before it leave, so every replica holds the same owners after each decision.
+    Ownership { epoch: u32, cert: Cert },
     /// The author's ack, as a chain entry (review NEW-1): it will author nothing stamped at or
     /// before `horizon`; per other author, the newest seq it holds contiguously and that entry's
     /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
@@ -267,6 +308,29 @@ pub mod fix {
     /// replica keeps the first version of a seq it receives, so a forker's chain past its fork may
     /// never link here, and its precommit in a quorum others decided on held this replica back.
     pub const PF1: u64 = 1 << 32;
+    /// VC7R-1: a listed admin entry is judged along its own ancestry (the chain-local rules replayed
+    /// from the prefix this replica validated), never by which branch of its author's chain this replica
+    /// linked: a horizon-void version held as a duplicate was valid here and void where it was linked.
+    /// Pure only with `RECUT` on (review VC8R-2): the replay reads the ack-epoch history.
+    pub const VC7R1: u64 = 1 << 33;
+    /// VC7R-2: evidence an honest member must deliver gets the slow-member allowance (`suspect_after`)
+    /// before its author is voted out: a cap's polka (VC6R-1) and a vote's frozen head (VC4R-5). The
+    /// cap's polka also counts every prevote the precommit named that is held, linked or not.
+    pub const VC7R2: u64 = 1 << 34;
+    /// Round 8 (found while building `slowcapper`): a cut that re-points a removed member's chain
+    /// re-validates the cut branch from a clean chain state, the ack-epoch history included. Without it
+    /// the history of the abandoned branch made every re-validated early ack fail VC-5's epoch rule, so
+    /// a replica that re-pointed voided the removed member's acks and one that did not kept them.
+    /// Review VC8R-2: VC7R1's purity rests on it, since `valid_on_own_branch` reads that history.
+    pub const RECUT: u64 = 1 << 35;
+    /// VC8R-1: a proven forker's prevotes count toward a polka (a lock, a re-proposal's valid round)
+    /// wherever they sit in its chain, in any version, as PF-1 counts its precommits toward a decision.
+    /// A member that kept another version of the forked seq could not count the forker's prevote, never
+    /// saw the polka the others locked on, and the locked members prevoted nil on everything else.
+    pub const VC8R1: u64 = 1 << 36;
+    /// Review OWNY-2 (ownership, 12.5): a certificate built on a pending one's head is held and judged
+    /// again after each decision, not dropped at receipt. (A high bit, clear of P2-4's next flags.)
+    pub const OWNY2: u64 = 1 << 40;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -275,6 +339,16 @@ pub const MAX_ATTESTS: usize = 64;
 /// Review VC6R-2: the most prevote ids a capped precommit carries (its polka). At least the largest
 /// quorum, so honest code never exceeds it; a decode of more is refused.
 pub const MAX_POLKA: usize = 512;
+
+/// Review P25E-3: the most epoch certificates a hop or an epoch proof carries; a decode of more is
+/// refused. The spike sends every certificate from the partner's genesis; production sends only the
+/// ones the receiver lacks [I].
+pub const MAX_EPOCH_CERTS: usize = 1024;
+
+/// Review OWNZ-1: the most ownership entries one author has held for a missing parent (OWNY-2); past
+/// it, such an entry is dropped at receipt as before, so one faulty member can't grow the set that
+/// every decision re-scans.
+pub const MAX_HELD_PER_AUTHOR: usize = 16;
 
 /// Round 3 only (`fix::VC3R2` off, review VC3R-2): a member whose votes or caps resets overruled in
 /// this many of the last `STRIKE_EPOCHS` epochs is voted out.
@@ -342,6 +416,17 @@ fn admin_key(e: &Entry) -> (u64, MemberId, u32) {
     (e.stamp, e.member, e.seq)
 }
 
+/// A member's ownership key (12.5). In the spike a member id is its identity (10.3); production
+/// reads the key from the member's signed genesis or join entry. The one place that maps them.
+pub fn key_of(m: MemberId) -> Key {
+    m
+}
+
+/// The member an ownership key identifies, the inverse of [`key_of`].
+pub fn member_of(k: Key) -> MemberId {
+    k
+}
+
 /// The membership state an admin sequence runs against (D80).
 #[derive(Clone)]
 struct AdminRun {
@@ -349,7 +434,11 @@ struct AdminRun {
     roles: BTreeMap<MemberId, RoleId>,
     defs: BTreeMap<RoleId, u64>,
     excluded: BTreeSet<MemberId>,
-    owners: BTreeSet<MemberId>,
+    /// The world owners' keys (12.5; [`key_of`] maps a member to its key).
+    owners: BTreeSet<Key>,
+    /// The world's ownership chain (12.5), if it has one, and the session lineage that commits to it.
+    book: Option<Book>,
+    lineage: u32,
 }
 
 impl AdminRun {
@@ -374,7 +463,7 @@ impl AdminRun {
         match e.payload {
             Payload::Kick { target, .. } => {
                 // Q27 (user 22:49Z, kicks assumed alike): only a co-owner kicks an owner.
-                let owner_safe = self.owners.contains(&target) && !self.owners.contains(&a);
+                let owner_safe = self.owners.contains(&key_of(target)) && !self.owners.contains(&key_of(a));
                 if p & perm::KICK == 0 || target == a || !self.members.contains(&target) || owner_safe {
                     return false;
                 }
@@ -384,7 +473,7 @@ impl AdminRun {
             }
             Payload::SetRole { member, role, .. } => {
                 // Q27 (user 22:49Z): an owner may give up Admin, but only a co-owner demotes an owner.
-                let owner_safe = self.owners.contains(&member) && member != a && !self.owners.contains(&a) && role != ADMIN;
+                let owner_safe = self.owners.contains(&key_of(member)) && member != a && !self.owners.contains(&key_of(a)) && role != ADMIN;
                 if p & perm::ROLES == 0 || !self.members.contains(&member) || (role != ADMIN && !self.defs.contains_key(&role)) || owner_safe {
                     return false;
                 }
@@ -404,6 +493,18 @@ impl AdminRun {
                     return false;
                 }
                 self.defs.insert(role, perms);
+                true
+            }
+            // 12.5: valid against the book as the entries before it leave it. The outcome depends
+            // on the book, the certificate and commit order only, never on the boundary (which is
+            // computed after the admin entries); the entry's stamp stands in as the frame, which
+            // only the session's own attestation record reads. Later entries see the new owners.
+            Payload::Ownership { ref cert, .. } => {
+                let Some(b) = self.book.as_mut() else { return false };
+                if !matches!(b.commit_local(cert.clone(), self.lineage, e.stamp), Ok(Insert::Applied)) {
+                    return false;
+                }
+                self.owners = b.view().owners.owners;
                 true
             }
             _ => false,
@@ -764,6 +865,7 @@ impl Wr {
     fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
     fn hop(&mut self, h: &Hop) {
         self.u32(h.src); self.u32(h.dest); self.u64(h.transfer); self.u64(h.via); self.u32(h.epoch); self.u64(h.frame);
+        assert!(h.certs.len() <= MAX_EPOCH_CERTS, "a hop carries at most {MAX_EPOCH_CERTS} epoch certificates");
         self.u32(h.certs.len() as u32); for c in &h.certs { self.epoch_cert(c) }
         self.cert(&h.cert)
     }
@@ -774,6 +876,10 @@ impl Wr {
         self.u32(c.proofs.len() as u32); for e in &c.proofs { self.entry(e) }
     }
     fn chain(&mut self, c: &[Hop]) { self.u32(c.len() as u32); for h in c { self.hop(h) } }
+    fn epoch_proof(&mut self, p: &EpochProof) {
+        assert!(p.certs.len() <= MAX_EPOCH_CERTS, "an epoch proof carries at most {MAX_EPOCH_CERTS} certificates");
+        self.u32(p.epoch); self.u32(p.certs.len() as u32); for c in &p.certs { self.epoch_cert(c) }
+    }
     fn attests(&mut self, a: &[Attest]) {
         assert!(a.len() <= MAX_ATTESTS, "{} attestations: at most {MAX_ATTESTS} travel", a.len());
         self.u32(a.len() as u32);
@@ -795,17 +901,22 @@ impl Wr {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
                 match hop { Some(h) => { self.u8(1); self.hop(h) } None => self.u8(0) }
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain, proof } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
                 self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame); self.u64(record.via);
-                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain);
+                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain); self.epoch_proof(proof);
             }
             Payload::Provenance { hop } => { self.u8(16); self.hop(hop) }
-            Payload::Verdict { transfer, accepted, cert } => {
-                self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
+            Payload::Verdict { transfer, accepted, cert, frame, proof } => {
+                self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert); self.u64(*frame); self.epoch_proof(proof);
             }
             Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
+            Payload::Ownership { epoch, cert } => {
+                let w = cert.to_words();
+                assert!(w.len() <= MAX_CERT_WORDS, "an ownership certificate is at most {MAX_CERT_WORDS} words");
+                self.u8(20); self.u32(*epoch); self.u32(w.len() as u32); for x in w { self.u64(x) }
+            }
             Payload::Ack { horizon, heads, check, epoch } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
                 // their entry ids; a later epoch is tag 14 with the epoch appended.
@@ -916,9 +1027,18 @@ impl Rd<'_> {
     fn hop(&mut self) -> Option<Hop> {
         let (src, dest, transfer, via, epoch, frame) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?, self.u32()?, self.u64()?);
         let n = self.u32()? as usize;
+        if n > MAX_EPOCH_CERTS { return None; }
         let mut certs = Vec::with_capacity(n.min(64));
         for _ in 0..n { certs.push(self.epoch_cert()?) }
         Some(Hop { src, dest, transfer, via, epoch, frame, certs, cert: self.cert()? })
+    }
+    fn epoch_proof(&mut self) -> Option<EpochProof> {
+        let epoch = self.u32()?;
+        let n = self.u32()? as usize;
+        if n > MAX_EPOCH_CERTS { return None; }
+        let mut certs = Vec::with_capacity(n.min(64));
+        for _ in 0..n { certs.push(self.epoch_cert()?) }
+        Some(EpochProof { epoch, certs })
     }
     fn epoch_cert(&mut self) -> Option<EpochCert> {
         let (world, epoch, change, round) = (self.u32()?, self.u32()?, self.change()?, self.u32()?);
@@ -955,7 +1075,7 @@ impl Rd<'_> {
         RoleId::try_from(self.u32()?).ok()
     }
     fn state(&mut self) -> Option<BodyState> {
-        let mut s = [0u32; 13];
+        let mut s = [0u32; 16];
         for b in &mut s { *b = self.u32()? }
         Some(BodyState(s))
     }
@@ -978,12 +1098,20 @@ impl Rd<'_> {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
                     via: self.u64()?,
                 };
-                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()? }
+                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()?, proof: self.epoch_proof()? }
             }
             16 => Payload::Provenance { hop: self.hop()? },
-            5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
+            5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()?, frame: self.u64()?, proof: self.epoch_proof()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
+            20 => {
+                let epoch = self.u32()?;
+                let n = self.u32()? as usize;
+                if n > MAX_CERT_WORDS { return None; }
+                let mut w = Vec::with_capacity(n.min(256));
+                for _ in 0..n { w.push(self.u64()?) }
+                Payload::Ownership { epoch, cert: Cert::from_words(&w)? }
+            }
             tag @ (7 | 14) => {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
@@ -1107,6 +1235,7 @@ pub fn is_protocol(p: &Payload) -> bool {
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
+            | Payload::Ownership { .. }
     )
 }
 
@@ -1127,11 +1256,16 @@ pub const MAX_ARRIVAL_SPIN: f32 = 2000.0;
 /// it bounds how long a transfer stays open and its id must be kept. World config in production.
 pub const MAX_DEADLINE_FRAMES: u64 = 3600;
 
-/// P25-3: the source's certified departure carried by an `Arrive`, as one export of a fork proof.
-/// The spike's certificates have no epochs yet (P2-4): epoch 0.
-fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, u64)]) -> Export {
-    Export::Departed { src, epoch: 0, depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
+/// P25-3: the source's certified departure carried by an `Arrive`, as one export of a fork proof,
+/// with the source's epoch proof, so a third party checks it from the source's genesis.
+#[allow(clippy::too_many_arguments)]
+fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, u64)], proof: &EpochProof) -> Export {
+    Export::Departed { src, proof: proof.clone(), depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
 }
+
+/// A transfer this world committed, as its members attest it: (transfer, global id, destination, the
+/// transfer the object had entered by, commit frame). The epoch goes into the fact when it is signed.
+pub type Commit = (u64, u64, u32, u64, u64);
 
 /// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
 pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
@@ -1139,11 +1273,13 @@ pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
 }
 
 /// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
-/// (a frame of `dest`), with provenance `chain` (its [`chain_hash`])." Covers every field of the
-/// record (review R3-8) and the chain (P2-5), so a relayer can neither strip nor swap the chain.
-pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64) -> u64 {
+/// (a frame of `dest`), with provenance `chain` (its [`chain_hash`]), in its epoch `epoch`." Covers
+/// every field of the record (review R3-8), its departure frame `src_frame` included, and the chain
+/// (P2-5), so a relayer can neither strip nor swap the chain, nor relabel the epoch.
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, epoch: u32) -> u64 {
     fnv_u64s([
         1,
+        epoch as u64,
         record.via,
         chain,
         src as u64,
@@ -1158,9 +1294,10 @@ pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, d
     ])
 }
 
-/// "World `dst` confirmed transfer `transfer` as accepted / rejected."
-pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool) -> u64 {
-    fnv_u64s([2, dst as u64, transfer, accepted as u64])
+/// "World `dst` confirmed transfer `transfer` as accepted / rejected at its frame `frame`, in its
+/// epoch `epoch`."
+pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool, frame: u64, epoch: u32) -> u64 {
+    fnv_u64s([2, dst as u64, transfer, accepted as u64, frame, epoch as u64])
 }
 
 /// Spike model of member `member` of world `world` signing `fact`. Production: an Ed25519
@@ -1257,10 +1394,10 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             let mut world = World::new(&crate::engine_world_def());
             static_box(&mut world, Pos { x: 0.0, y: -0.5, z: 0.0 }, 2.0, 0.5, 2.0);
             let (w, h) = (1.2f32, 0.6f32);
-            static_box(&mut world, Pos { x: w + 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: -w - 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: w + 0.1 }, w + 0.2, h, 0.1);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: -w - 0.1 }, w + 0.2, h, 0.1);
+            static_box(&mut world, pos(w + 0.1, h, 0.0), 0.1, h, w + 0.2);
+            static_box(&mut world, pos(-w - 0.1, h, 0.0), 0.1, h, w + 0.2);
+            static_box(&mut world, pos(0.0, h, w + 0.1), w + 0.2, h, 0.1);
+            static_box(&mut world, pos(0.0, h, -w - 0.1), w + 0.2, h, 0.1);
             let mut objs = Vec::with_capacity(balls + hands);
             let per_row = 16usize;
             let spacing = 2.0 * w / per_row as f32;
@@ -1271,11 +1408,11 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
                 d.type_ = BodyType::Dynamic;
                 d.linear_damping = 0.1;
                 d.angular_damping = 0.3;
-                d.position = Pos {
-                    x: -w + spacing * (ix as f32 + 0.5) + jitter,
-                    y: BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
-                    z: -w + spacing * (iz as f32 + 0.5) - jitter,
-                };
+                d.position = pos(
+                    -w + spacing * (ix as f32 + 0.5) + jitter,
+                    BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
+                    -w + spacing * (iz as f32 + 0.5) - jitter,
+                );
                 let b = create_body(&mut world, &d);
                 add_shape(&mut world, b, 3);
                 objs.push(Some(Obj { body: b, global: g(i), kind: 3 }));
@@ -1283,7 +1420,7 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             for k in 0..hands {
                 let mut d = default_body_def();
                 d.type_ = BodyType::Kinematic;
-                d.position = Pos { x: -0.8 + 1.6 * k as f32, y: 1.5, z: 0.0 };
+                d.position = pos(-0.8 + 1.6 * k as f32, 1.5, 0.0);
                 let b = create_body(&mut world, &d);
                 add_shape(&mut world, b, 4);
                 objs.push(Some(Obj { body: b, global: g(balls + k), kind: 4 }));
@@ -1627,10 +1764,12 @@ pub struct WorldSim {
     pub fork_proofs: BTreeMap<(u32, u64, u64, u64, u64), ForkProof>,
     /// Cross-world effects of each simulated frame, kept outside the rollback state: a re-simulation
     /// of the frame replaces them, and they are acted on only once the frame is confirmed (P25-3,
-    /// P25-4): (commit facts to attest, fork proofs found).
-    frame_effects: BTreeMap<u64, (Vec<u64>, Vec<ForkProof>)>,
-    /// Confirmed commit facts not yet attested (P25-4: each attested once).
-    commits_due: Vec<u64>,
+    /// P25-4): (commits to attest, fork proofs found).
+    frame_effects: BTreeMap<u64, (Vec<Commit>, Vec<ForkProof>)>,
+    /// Confirmed commits. Each is attested once per epoch label: if a later membership change moves
+    /// its frame into another epoch, members attest the fact again with that epoch (VC-7). Kept for
+    /// the world's life in the spike; production drops one once its epoch can no longer change [I].
+    commits: Vec<Commit>,
     attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
@@ -1649,6 +1788,10 @@ pub struct WorldSim {
     chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
     /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
     ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
+    /// Per author: ack seq -> that valid ack's stamp. With `ack_hist` and `ack_epoch_from`, the chain
+    /// state at any seq of the validated prefix, from which a listed admin entry on another branch is
+    /// judged (review VC7R-1).
+    ack_stamps: BTreeMap<MemberId, BTreeMap<u32, u64>>,
     /// (referrer, author) -> seq -> (id, the referrer's ack that said so): what each member's acks
     /// said it holds of each chain, up to the referrer's vote against that author (review R3-1).
     /// Never pruned in the spike; production keeps only the newest reference per pair, because
@@ -1685,10 +1828,16 @@ pub struct WorldSim {
     vc_later: BTreeMap<u32, Vec<EntryId>>,
     /// Every proposal entry seen, by value (answers `Msg::FetchValue`).
     proposal_ids: BTreeMap<u64, EntryId>,
+    /// Review PF-1 and VC7R-6: proposal entries of later epochs kept by value before their epoch began
+    /// (another version, or a proven forker's past its fork), noted on entering it.
+    later_proposals: BTreeMap<u32, Vec<EntryId>>,
     /// Review PF-1: every signed precommit held for a value, any version, linked into its author's
     /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
     /// counted from it (`precommitters`); everyone else counts in chain order.
     pc_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
+    /// Review VC8R-1: every signed prevote held for a value, any version, linked or not, as `pc_held`
+    /// is for precommits. Only proven members are counted from it (`prevoters`).
+    pv_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
     /// Decided changes, one per epoch boundary: (change, round, precommit signatures).
     decided: Vec<(Change, u32, Vec<(MemberId, u64)>)>,
     /// Decisions: (epoch reached, my clock frame when I decided, round, members removed).
@@ -1735,10 +1884,17 @@ pub struct WorldSim {
     /// The relationships each pending joiner showed.
     join_attests: BTreeMap<MemberId, Vec<Attest>>,
     /// D80 (user 22:37Z): the world's owners, signed world metadata, shareable by several people;
-    /// separate from the session's admins.
+    /// separate from the session's admins. A world without an ownership chain (`book`) lists them
+    /// here; one with a chain takes them from it.
     pub owners: BTreeSet<MemberId>,
+    /// World ownership (12.5): the world's ownership chain. Governance, like roles: changed only by
+    /// the certificates decided view changes commit, never rewound by a rollback.
+    pub book: Option<Book>,
     /// This epoch's admin entries from members allowed to make them, as held.
     admin_pending: BTreeSet<EntryId>,
+    /// Review OWNY-2: ownership entries not pending only because a parent certificate is not in the
+    /// book yet (built on a pending one's head); judged again after each decision.
+    own_held: BTreeSet<EntryId>,
     /// Admin entries as the decided changes judged them: applied, or refused.
     pub admin_outcomes: BTreeMap<EntryId, bool>,
     /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
@@ -1882,7 +2038,7 @@ impl WorldSim {
             hand_owners,
             fork_proofs: BTreeMap::new(),
             frame_effects: BTreeMap::new(),
-            commits_due: Vec::new(),
+            commits: Vec::new(),
             attested: BTreeSet::new(),
             known: members.iter().copied().chain([me]).collect(),
             entries: BTreeMap::new(),
@@ -1894,6 +2050,7 @@ impl WorldSim {
             at_frame: BTreeMap::new(),
             chain_state: BTreeMap::new(),
             ack_hist: BTreeMap::new(),
+            ack_stamps: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
@@ -1908,7 +2065,9 @@ impl WorldSim {
             vc: Vc::default(),
             vc_later: BTreeMap::new(),
             proposal_ids: BTreeMap::new(),
+            later_proposals: BTreeMap::new(),
             pc_held: BTreeMap::new(),
+            pv_held: BTreeMap::new(),
             decided: Vec::new(),
             vc_log: Vec::new(),
             withhold_vc: false,
@@ -1930,7 +2089,9 @@ impl WorldSim {
             join_rules: JoinRules::default(),
             join_attests: BTreeMap::new(),
             owners: BTreeSet::new(),
+            book: None,
             admin_pending: BTreeSet::new(),
+            own_held: BTreeSet::new(),
             admin_outcomes: BTreeMap::new(),
             closed_at: None,
             fixes_off: 0,
@@ -2275,6 +2436,12 @@ impl WorldSim {
                 self.pc_held.entry((epoch, round, value)).or_default().insert(e.member);
             }
         }
+        // Review VC8R-1: and every signed prevote for a value, the same way.
+        if let Payload::Prevote { epoch, round, value } = e.payload {
+            if value != 0 && epoch >= self.epoch {
+                self.pv_held.entry((epoch, round, value)).or_default().insert(e.member);
+            }
+        }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
             self.entries.insert(id, e.clone());
@@ -2377,7 +2544,7 @@ impl WorldSim {
     fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
         // D80: an admin entry stays pending across epochs until a decision judges it.
-        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. });
+        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, epoch, .. } => {
@@ -2399,7 +2566,7 @@ impl WorldSim {
             }
             // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
             // horizon like any entry: no backdating past what its author has declared.
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } if self.fixes_off & fix::VCR9 == 0 => {
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
                 max_h.is_none_or(|h| e.stamp > h)
             }
             Payload::Vote { .. }
@@ -2408,7 +2575,8 @@ impl WorldSim {
             | Payload::Precommit { .. }
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
-            | Payload::DefineRole { .. } => true,
+            | Payload::DefineRole { .. }
+            | Payload::Ownership { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
             _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
         };
@@ -2427,6 +2595,7 @@ impl WorldSim {
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
+                self.ack_stamps.entry(m).or_default().insert(e.seq, e.stamp);
                 for &(q, s, hid) in &heads {
                     if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);
@@ -2461,7 +2630,8 @@ impl WorldSim {
             | Payload::Precommit { epoch, .. }
             | Payload::Kick { epoch, .. }
             | Payload::SetRole { epoch, .. }
-            | Payload::DefineRole { epoch, .. } => {
+            | Payload::DefineRole { epoch, .. }
+            | Payload::Ownership { epoch, .. } => {
                 if epoch > self.epoch {
                     self.vc_later.entry(epoch).or_default().push(id);
                 } else if epoch == self.epoch || admin_entry {
@@ -2600,13 +2770,15 @@ impl WorldSim {
             self.stats.equivocations += 1;
             self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:016x} / {b:016x})"));
         }
+        let old_k = self.proofs.get(&m).map(|p| p.0);
         let (k0, a0, b0) = match self.proofs.get(&m) {
             Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
             _ => (k, a, b),
         };
         self.proofs.insert(m, (k0, a0, b0));
         // Review PF-1: m's proposals already held past its fork may never link here: keep them by value.
-        if self.fixes_off & fix::PF1 == 0 {
+        // Once per proof, or when it moves earlier (VC7R-6); later ones are kept as they arrive (insert).
+        if self.fixes_off & fix::PF1 == 0 && old_k.is_none_or(|ok| k0 < ok) {
             let held: Vec<EntryId> = self.by_author.range((m, k0)..=(m, u32::MAX)).map(|(_, &id)| id).collect();
             for id in held {
                 self.note_proposal(id);
@@ -2778,7 +2950,7 @@ impl WorldSim {
                     }
                     continue;
                 }
-                if self.polka_any(r, v) {
+                if self.cap_polka_holds(m, r, v) {
                     continue;
                 }
                 let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
@@ -2788,7 +2960,10 @@ impl WorldSim {
                     // round trip, so ids still missing a further half window after the cap ripened name
                     // prevotes nobody holds. The capper is voted out instead of the fetch being retried
                     // for good.
-                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                    // Review VC7R-2: the fetch gets the allowance a slow member gets (`suspect_after`), on
+                    // top of the cap's ripening, not a further half window.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { after };
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + after + budget {
                         if self.members.contains(&m) && !self.voted(m) && !self.held(m) {
                             self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
                             out.extend(self.freeze_and_vote(m, 0, 0));
@@ -2860,8 +3035,12 @@ impl WorldSim {
                 if r.frozen.0 > 0 && !self.head_held(y, r.frozen) {
                     self.want_entry(v, r.frozen.1, 15);
                     self.want_entry_all(r.frozen.1, 15);
-                    if v != self.me && self.now >= r.at + self.cfg.window / 2 && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
-                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {} frames: vote to remove it", r.frozen.0, self.cfg.window / 2));
+                    // Review VC7R-2: the vote stops blocking resets after half a window (`fresh`, VC4R-5),
+                    // but its voter gets the slow-member allowance to deliver the head before it is voted
+                    // out: an honest voter's head may lie on a branch of a forker's chain only it holds.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { self.cfg.window / 2 };
+                    if v != self.me && self.now >= r.at + budget && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
+                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {budget} frames: vote to remove it", r.frozen.0));
                         out.extend(self.freeze_and_vote(v, 0, 0));
                     }
                 }
@@ -3184,6 +3363,26 @@ impl WorldSim {
                     self.admin_pending.insert(id);
                 }
             }
+            // 12.5: pending only while the certificate would apply to the book as decided (V1's
+            // receipt rule): an entry that cannot apply would start view changes for nothing (VC6R-4).
+            // Re-sent later, it is a new entry.
+            Payload::Ownership { ref cert, .. } => {
+                if !self.admin_outcomes.contains_key(&id) && self.closed_at.is_none() && self.members.contains(&m) {
+                    match self.ownership_judge(cert) {
+                        Ok(Insert::Applied) => {
+                            self.admin_pending.insert(id);
+                        }
+                        // Review OWNY-2: its parent may be a pending certificate; hold it until it is decided.
+                        Err(OwnError::MissingParent) if self.fixes_off & fix::OWNY2 == 0 => {
+                            let mine = self.own_held.iter().filter(|h| self.entries.get(h).is_some_and(|e| e.member == m)).count();
+                            if mine < MAX_HELD_PER_AUTHOR {
+                                self.own_held.insert(id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -3210,7 +3409,48 @@ impl WorldSim {
     }
 
     fn admin_run(&self) -> AdminRun {
-        AdminRun { members: self.members.clone(), roles: self.roles.clone(), defs: self.role_defs.clone(), excluded: BTreeSet::new(), owners: self.owners.clone() }
+        AdminRun {
+            members: self.members.clone(),
+            roles: self.roles.clone(),
+            defs: self.role_defs.clone(),
+            excluded: BTreeSet::new(),
+            owners: self.owner_keys(),
+            book: self.book.clone(),
+            lineage: self.world_id,
+        }
+    }
+
+    /// The world owners' keys (12.5): from the ownership chain if the world has one, else from the
+    /// owners it lists.
+    pub fn owner_keys(&self) -> BTreeSet<Key> {
+        match &self.book {
+            Some(b) => b.view().owners.owners,
+            None => self.owners.iter().map(|&m| key_of(m)).collect(),
+        }
+    }
+
+    /// How `cert` would fare against the book as decided now (12.5): it applies if its owners'
+    /// signatures check and it builds on the current heads.
+    fn ownership_judge(&self, cert: &Cert) -> Result<Insert, OwnError> {
+        match self.book.clone() {
+            Some(mut b) => b.commit_local(cert.clone(), self.world_id, self.frame),
+            None => Err(OwnError::NotAllowed),
+        }
+    }
+
+    fn ownership_applies(&self, cert: &Cert) -> bool {
+        matches!(self.ownership_judge(cert), Ok(Insert::Applied))
+    }
+
+    /// 12.5: publish an ownership certificate (an admin entry); every replica judges it.
+    pub fn publish_ownership(&mut self, cert: Cert) -> Entry {
+        let epoch = self.epoch;
+        self.author_vc(Payload::Ownership { epoch, cert })
+    }
+
+    /// The decided view changes, in order (the ownership report replays their admin entries).
+    pub fn decided_changes(&self) -> impl Iterator<Item = &Change> {
+        self.decided.iter().map(|(c, _, _)| c)
     }
 
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
@@ -3253,8 +3493,9 @@ impl WorldSim {
     /// Whether member `j` may join now under the join rules, against `run` (the membership the
     /// change leaves before its joins), and with which starting role (D80).
     fn join_role(&self, j: MemberId, attests: &[Attest], run: &AdminRun) -> Option<RoleId> {
-        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin.
-        if self.owners.contains(&j) {
+        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin. Owners, like the
+        // other targets, are as the admin entries before the join in its change leave them (review OWNY-1).
+        if run.owners.contains(&key_of(j)) {
             return Some(ADMIN);
         }
         let has = |rel: Rel, g: MemberId| match rel {
@@ -3264,7 +3505,7 @@ impl WorldSim {
         };
         for rule in &self.join_rules.rules {
             let group: Vec<MemberId> = match rule.target {
-                Target::Owner => self.owners.iter().copied().collect(),
+                Target::Owner => run.owners.iter().copied().map(member_of).collect(),
                 Target::Player => run.members.iter().copied().collect(),
                 Target::Admin => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&ADMIN)).collect(),
                 Target::Role(r) => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&r)).collect(),
@@ -3355,6 +3596,9 @@ impl WorldSim {
         let Payload::Propose { epoch, round, ref change, .. } = e.payload else { return };
         let v = change.value();
         self.proposal_ids.entry(v).or_insert(id);
+        if epoch > self.epoch && self.fixes_off & fix::PF1 == 0 {
+            self.later_proposals.entry(epoch).or_default().push(id);
+        }
         if epoch == self.epoch && change.epoch == epoch && e.member == self.proposer(epoch, round) {
             let c = change.clone();
             self.vc.changes.entry(v).or_insert(c);
@@ -3404,6 +3648,27 @@ impl WorldSim {
         self.vc.any_prevotes.get(&(round, v)).is_some_and(|ms| ms.iter().filter(|m| base.contains(m)).count() >= q)
     }
 
+    /// Whether capper `m`'s polka for `v` in `round` holds here: the prevotes recorded for it in any
+    /// version, and (review VC7R-2) every prevote the cap's precommit named that is held, linked into its
+    /// author's chain or not. A fetched prevote sitting past a gap in its author's chain counted for
+    /// nothing, so the capper was voted out at once.
+    fn cap_polka_holds(&self, m: MemberId, round: u32, v: u64) -> bool {
+        if self.fixes_off & fix::VC7R2 != 0 {
+            return self.polka_any(round, v);
+        }
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        let mut ms: BTreeSet<MemberId> = self.vc.any_prevotes.get(&(round, v)).cloned().unwrap_or_default();
+        for id in self.cap_polka.get(&m).into_iter().flatten() {
+            if let Some(e) = self.entries.get(id) {
+                if matches!(e.payload, Payload::Prevote { epoch, round: r, value } if epoch == self.epoch && r == round && value == v) {
+                    ms.insert(e.member);
+                }
+            }
+        }
+        ms.iter().filter(|x| base.contains(x)).count() >= q
+    }
+
     fn quorum_for(&self, votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, v: u64) -> bool {
         let Some(xs) = self.excluded_of(v) else { return false };
         let (base, _, q) = self.base(&xs);
@@ -3424,6 +3689,28 @@ impl WorldSim {
             }
         }
         ms
+    }
+
+    /// The members whose prevote for `v` in `round` counts toward a polka (a lock, a re-proposal's
+    /// valid round): those recorded in chain order, and (review VC8R-1) every member proven to have
+    /// forked its chain that signed one held here, wherever it sits in that chain, in any version, as
+    /// `precommitters` counts precommits. A faulty member's prevote counts once per value; two polkas
+    /// for different values of one round still need an honest member that prevoted both.
+    fn prevoters(&self, round: u32, v: u64) -> BTreeSet<MemberId> {
+        let mut ms: BTreeSet<MemberId> = self.vc.prevotes.get(&round).map(|r| r.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
+        if self.fixes_off & fix::VC8R1 == 0 {
+            if let Some(held) = self.pv_held.get(&(self.epoch, round, v)) {
+                ms.extend(held.iter().filter(|m| self.proofs.contains_key(m)));
+            }
+        }
+        ms
+    }
+
+    /// Whether a quorum (counted as the change `v` defines it) prevoted `v` in `round`.
+    fn polka(&self, round: u32, v: u64) -> bool {
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        self.prevoters(round, v).iter().filter(|m| base.contains(m)).count() >= q
     }
 
     fn precommit_quorum(&self, round: u32, v: u64) -> bool {
@@ -3670,6 +3957,45 @@ impl WorldSim {
 
     /// Whether `c` is a valid change for this epoch. Deterministic once this replica holds every
     /// entry it names (and has validated the voters' chains up to their votes); None until then.
+    /// Review VC7R-1: whether admin entry `id` is valid along its own ancestry. It walks back from the
+    /// entry to the prefix of its author's chain this replica has validated, replays the chain-local
+    /// rules over the rest (only acks change chain state: `validate`), and judges the entry by VCR-9's
+    /// horizon rule. The prefix is common to every branch through it, so the answer is the same at every
+    /// replica that holds the entry's ancestry, whichever branch it linked. None while an ancestor is
+    /// missing (it is fetched).
+    fn valid_on_own_branch(&mut self, id: EntryId) -> Option<bool> {
+        let e = self.entries.get(&id)?.clone();
+        let m = e.member;
+        let linked = if m == self.me { self.my_seq } else { self.contiguous.get(&m).copied().unwrap_or(0) };
+        let mut seg: Vec<Entry> = Vec::new();
+        let (mut cur, mut k) = (e.prev, e.seq.saturating_sub(1));
+        while k > 0 && !(k <= linked && self.by_author.get(&(m, k)) == Some(&cur)) {
+            let Some(p) = self.entries.get(&cur).cloned() else {
+                self.want_entry_all(cur, 0);
+                return None;
+            };
+            cur = p.prev;
+            seg.push(p);
+            k -= 1;
+        }
+        // The chain state after seq k of the validated prefix.
+        let mut max_h = self.ack_hist.get(&m).and_then(|a| a.range(..=k).next_back()).map(|(_, h)| *h);
+        let mut last_ack = self.ack_stamps.get(&m).and_then(|a| a.range(..=k).next_back()).map_or(0, |(_, st)| *st);
+        let mut prev_epoch = self.ack_epoch_from.get(&m).and_then(|a| a.iter().filter(|&(_, &sq)| sq <= k).map(|(&ep, _)| ep).max()).unwrap_or(0);
+        let adm = if self.fixes_off & fix::VC3R6 == 0 { self.admitted_epoch.get(&m).copied().unwrap_or(0) } else { 0 };
+        for p in seg.iter().rev() {
+            if let Payload::Ack { horizon, epoch, .. } = p.payload {
+                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (epoch >= prev_epoch && (epoch <= prev_epoch + 1 || epoch <= adm));
+                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack >= p.stamp && epoch_ok {
+                    max_h = Some(max_h.map_or(horizon, |x| x.max(horizon)));
+                    last_ack = p.stamp;
+                    prev_epoch = prev_epoch.max(epoch);
+                }
+            }
+        }
+        Some(self.fixes_off & fix::VCR9 != 0 || max_h.is_none_or(|h| e.stamp > h))
+    }
+
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
         let timed = self.fixes_off & fix::VC3 != 0;
@@ -3705,6 +4031,12 @@ impl WorldSim {
             // Review VC3R-3: an admin entry counts only from a chain prefix this replica has validated,
             // and only if that validation did not void it (a backdated one is horizon-void, VCR-9).
             if self.fixes_off & fix::VC3R3 == 0 {
+                if self.fixes_off & fix::VC7R1 == 0 {
+                    if !self.valid_on_own_branch(id)? {
+                        return Some(false);
+                    }
+                    continue;
+                }
                 if e.member != self.me && self.contiguous.get(&e.member).copied().unwrap_or(0) < e.seq {
                     return None;
                 }
@@ -3756,7 +4088,7 @@ impl WorldSim {
         for &(id, ok) in &c.admin {
             let e = self.entries.get(&id)?.clone();
             let epoch = match e.payload {
-                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } => epoch,
+                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } => epoch,
                 _ => return Some(false),
             };
             let key = admin_key(&e);
@@ -4021,7 +4353,7 @@ impl WorldSim {
                 let decision = match ok {
                     None => None,
                     Some(ok) if vr == NO_ROUND => Some(ok && fresh_in_time && self.vc.locked.is_none_or(|(lv, _)| lv == v)),
-                    Some(ok) if vr < r && self.quorum_for(&self.vc.prevotes, vr, v) => {
+                    Some(ok) if vr < r && self.polka(vr, v) => {
                         Some(ok && self.vc.locked.is_none_or(|(lv, lr)| lr <= vr || lv == v))
                     }
                     Some(_) => None,
@@ -4038,7 +4370,7 @@ impl WorldSim {
         // Lines 36-43: a quorum prevoted the round's proposal: lock it and precommit it.
         if self.vc.step != Step::Propose && !self.vc.polka_done.contains(&r) {
             if let Some(&(v, _)) = self.vc.proposals.get(&r) {
-                if self.quorum_for(&self.vc.prevotes, r, v) {
+                if self.polka(r, v) {
                     let c = self.vc.changes.get(&v).cloned().unwrap_or_default();
                     let leads = self.change_leads(&c);
                     // My precommit caps my acks below the boundary only while it is still ahead of
@@ -4151,8 +4483,13 @@ impl WorldSim {
     fn apply_change(&mut self, c: Change, round: u32, out: &mut Vec<Entry>) {
         let v = c.value();
         let xs: BTreeSet<MemberId> = c.excluded.iter().map(|(m, _)| *m).collect();
+        // Review VC7R-5: exactly a quorum of signers, the lowest member ids among the precommits held, so
+        // the certificate's size is bounded and replicas holding more than a quorum agree on it. Two
+        // replicas that decided on different quorums still sign different (equally valid) certificates:
+        // a certificate is checked by its signatures (`epoch_cert_ok`), never compared by its bytes.
+        let (_, _, q_sig) = self.base(&xs);
         let sigs: Vec<(MemberId, u64)> =
-            self.precommitters(round, v).into_iter().filter(|m| !xs.contains(m)).map(|m| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect();
+            self.precommitters(round, v).into_iter().filter(|m| !xs.contains(m)).take(q_sig).map(|m| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
         // D80: role entries in commit order (kicks are among the removals), then the removals, then
         // each joiner's starting role against the membership they leave.
@@ -4170,6 +4507,15 @@ impl WorldSim {
                     }
                     Some(Payload::DefineRole { role, perms, .. }) => {
                         self.role_defs.insert(role, perms);
+                    }
+                    // 12.5: the session commits the certificate at the deciding boundary. Its
+                    // validity does not depend on the frame, so it applies here as in the run.
+                    Some(Payload::Ownership { cert, .. }) => {
+                        let lineage = self.world_id;
+                        if let Some(b) = self.book.as_mut() {
+                            let r = b.commit_local(cert, lineage, c.boundary);
+                            debug_assert!(matches!(r, Ok(Insert::Applied)), "a decided certificate applies: {r:?}");
+                        }
                     }
                     _ => {}
                 }
@@ -4211,6 +4557,40 @@ impl WorldSim {
             .collect();
         for id in gone {
             self.admin_pending.remove(&id);
+        }
+        // 12.5: a pending certificate the decision made stale or invalid can never apply: drop it
+        // unjudged, as `gone` does (V1's receipt rule).
+        let dead: Vec<EntryId> = self
+            .admin_pending
+            .iter()
+            .copied()
+            .filter(|id| matches!(self.entries.get(id).map(|e| &e.payload), Some(Payload::Ownership { cert, .. }) if !self.ownership_applies(cert)))
+            .collect();
+        for id in dead {
+            self.admin_pending.remove(&id);
+        }
+        // Review OWNY-2: a held certificate whose parents the decision brought into the book is judged
+        // again: pending if it now applies, dropped if it never can; still held while a parent is missing.
+        let held: Vec<EntryId> = self.own_held.iter().copied().collect();
+        for id in held {
+            let Some(e) = self.entries.get(&id) else { continue };
+            let Payload::Ownership { cert, .. } = &e.payload else { continue };
+            if self.admin_outcomes.contains_key(&id) || self.closed_at.is_some() || !self.members.contains(&e.member) {
+                self.own_held.remove(&id);
+                continue;
+            }
+            if self.book.as_ref().is_some_and(|b| cert.prev.iter().any(|p| b.cert(*p).is_none())) {
+                continue;
+            }
+            match self.ownership_judge(cert) {
+                Err(OwnError::MissingParent) => {}
+                r => {
+                    self.own_held.remove(&id);
+                    if r == Ok(Insert::Applied) {
+                        self.admin_pending.insert(id);
+                    }
+                }
+            }
         }
         // Review VC-6: a decided epoch restarts the slowness timers, so one borderline view cannot vote
         // again the instant a reset ends. Review VCR-4: the unbacked-epoch timers do not restart (a
@@ -4349,6 +4729,7 @@ impl WorldSim {
         self.votes.clear();
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
+        self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
         let unfreeze: Vec<MemberId> = self.frozen.keys().copied().filter(|m| !self.evicted.contains_key(m)).collect();
         for m in unfreeze {
             self.frozen.remove(&m);
@@ -4382,9 +4763,11 @@ impl WorldSim {
             }
         }
         // Review PF-1: proposals of the new epoch kept by value before it began (another version, or a
-        // proven forker's past its fork) name values it may decide.
+        // proven forker's past its fork) name values it may decide. Indexed by epoch (VC7R-6).
         if self.fixes_off & fix::PF1 == 0 {
-            let held: Vec<EntryId> = self.proposal_ids.values().copied().collect();
+            let mut keep = self.later_proposals.split_off(&self.epoch);
+            let held = keep.remove(&self.epoch).unwrap_or_default();
+            self.later_proposals = keep;
             for id in held {
                 self.note_proposal(id);
             }
@@ -4443,6 +4826,10 @@ impl WorldSim {
                 self.contiguous.insert(x, 0);
                 self.chain_state.remove(&x);
                 self.ack_hist.remove(&x);
+                self.ack_stamps.remove(&x);
+                if self.fixes_off & fix::RECUT == 0 {
+                    self.ack_epoch_from.remove(&x);
+                }
             }
             // Re-validating the cut's branch replays its acks, and each ack recomputes confirmation.
             // Confirming then, before that branch's entries act, would confirm frames whose
@@ -4767,21 +5154,24 @@ impl WorldSim {
             if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
                 if esc.depart_frame < self.conf {
                     let chain = self.chain_hash_of(rec.global);
-                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain));
+                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain, self.epoch_at(rec.src_frame)));
                 }
             }
         }
         // P2-5: a committed transfer is the hop the destination's next departure needs. P25-4: each
-        // commit is queued once, when its frame is confirmed.
+        // commit is queued once its frame is confirmed. VC-7: the fact names the frame and the epoch
+        // active at it in this replica's log.
         self.confirm_effects();
-        facts.append(&mut self.commits_due);
+        for &(t, g, dest, via, frame) in &self.commits {
+            facts.push(fact_committed(self.world_id, t, g, dest, via, frame, self.epoch_at(frame)));
+        }
         for (t, a) in &self.t.arrivals {
             let (frame, accepted) = match a {
                 Arrival::Accepted { frame, .. } => (*frame, true),
                 Arrival::Rejected { frame, .. } => (*frame, false),
             };
             if frame < self.conf {
-                facts.push(fact_verdict(self.world_id, *t, accepted));
+                facts.push(fact_verdict(self.world_id, *t, accepted, frame, self.epoch_at(frame)));
             }
         }
         let mut out = Vec::new();
@@ -4830,7 +5220,7 @@ impl WorldSim {
                 break;
             }
             let (commits, forks) = e.remove();
-            self.commits_due.extend(commits);
+            self.commits.extend(commits);
             for p in forks {
                 let k = p.key();
                 if !self.fork_proofs.contains_key(&k) {
@@ -4853,7 +5243,6 @@ impl WorldSim {
         })
     }
 
-    /// The provenance chain of an object here: what its next departure's `Arrive` carries.
     /// The cached hash of [`Self::chain_of`] (what a departure certificate covers).
     pub fn chain_hash_of(&self, g: u64) -> u64 {
         match self.t.seen.get(&g) {
@@ -4862,6 +5251,7 @@ impl WorldSim {
         }
     }
 
+    /// The provenance chain of an object here: what its next departure's `Arrive` carries.
     pub fn chain_of(&self, g: u64) -> Vec<Hop> {
         match self.seen_of(g) {
             Some(Seen::Here { chain, .. }) => chain,
@@ -4884,6 +5274,29 @@ impl WorldSim {
         })
     }
 
+    /// A certificate from this world's log for a fact about its `frame`, `fact(epoch)` naming the
+    /// epoch active there, with the epoch proof a partner checks it by: the certificates up to that
+    /// epoch, and the next one once decided, since `cert_at` then leaves out the members it excluded
+    /// by proof (VC-8). None until that epoch's majority has attested it.
+    pub fn vouch(&self, frame: u64, fact: impl Fn(u32) -> u64) -> Option<(EpochProof, Vec<(MemberId, u64)>)> {
+        let (epoch, cert) = self.cert_at(fact(self.epoch_at(frame)), frame)?;
+        let certs = self.epoch_certs_upto(epoch + 1).or_else(|| self.epoch_certs_upto(epoch))?;
+        Some((EpochProof { epoch, certs }, cert))
+    }
+
+    /// The certified hop of transfer `transfer` of object `global` that this world committed, from its
+    /// own log: what a relayer copies into the destination (P2-5). Signed by a majority of the epoch
+    /// active at the commit frame, with this world's certificates up to it, and the next one once
+    /// decided (VC-8). None until that majority has attested it.
+    pub fn own_hop(&self, transfer: u64, global: u64) -> Option<Hop> {
+        let (dest, via, frame) = match self.t.seen.get(&global) {
+            Some(Seen::Left { transfer: t, dest, via, frame, .. }) if *t == transfer => (*dest, *via, *frame),
+            _ => self.commits.iter().find(|c| c.0 == transfer && c.1 == global).map(|c| (c.2, c.3, c.4))?,
+        };
+        let (EpochProof { epoch, certs }, cert) = self.vouch(frame, |e| fact_committed(self.world_id, transfer, global, dest, via, frame, e))?;
+        Some(Hop { src: self.world_id, dest, transfer, via, epoch, frame, certs, cert })
+    }
+
     /// `hop` is the certified commit of the transfer that brought object `g` here.
     fn hop_in_ok(&self, g: u64, here: &Seen, hop: &Hop) -> bool {
         let Seen::Here { via, from, from_via, .. } = here else { return false };
@@ -4891,7 +5304,7 @@ impl WorldSim {
             && hop.dest == self.world_id
             && hop.transfer == *via
             && hop.via == *from_via
-            && self.epochs.hop_ok(hop, fact_committed(hop.src, hop.transfer, g, hop.dest, hop.via))
+            && self.epochs.hop_ok(hop, g)
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -4976,12 +5389,12 @@ impl WorldSim {
                 }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 let p = if *active {
-                    Pos { x: target_mm[0] as f32 * 0.001, y: target_mm[1] as f32 * 0.001, z: target_mm[2] as f32 * 0.001 }
+                    pos(target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001)
                 } else {
                     Pos { x: 0.0, y: 1.5, z: 0.0 }
                 };
                 let dt = self.cfg.dt * (*span).max(1) as f32;
-                body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, dt, true);
+                body_set_target_transform(&mut self.world, o.body, WorldTransform { p, q: QUAT_IDENTITY }, dt, true);
                 hands_set.insert(*obj);
                 if *active {
                     self.t.hand_idle.insert(*obj, 0);
@@ -5055,19 +5468,24 @@ impl WorldSim {
                 self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
                 Outcome::Accepted
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain, proof } => {
                 let src = record.src_world;
                 // Reviews R3-4, R3-5: only a world on the agreed route list can vouch for an object.
-                let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
+                if !self.peers_of.contains_key(&src) {
+                    return Outcome::RejectedNoRoute;
+                }
+                // R3-8b: signed by the source's epoch at the departure frame, checked from its
+                // genesis through the epoch certificates the `Arrive` carries, so a member the source
+                // has removed no longer counts.
                 let chash = chain_hash(chain);
-                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chash);
-                if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
+                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chash, proof.epoch);
+                if *transfer != transfer_id(src, *depart) || !self.epochs.vouched(src, record.src_frame, proof, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
                 // majority in the source world). Refuse non-finite or absurd states.
                 let st = record.state;
-                let finite = st.0.iter().all(|&b| (b >> 23) & 0xFF != 0xFF);
+                let finite = st.is_finite();
                 let (q, v, w) = (st.rot(), st.lin(), st.ang());
                 let qn = q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z + q.s * q.s;
                 let sane = finite
@@ -5099,7 +5517,7 @@ impl WorldSim {
                         return Outcome::RejectedPolicy;
                     }
                     let known = self.seen_of(record.global);
-                    let arrival = arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert);
+                    let arrival = arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert, proof);
                     if let Some(p) = known.as_ref().and_then(|k| fork_proof(k, record.global, chain, &arrival)) {
                         if record_effects {
                             self.frame_effects.entry(f).or_default().1.push(p);
@@ -5141,19 +5559,20 @@ impl WorldSim {
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });
-                let entry = Some(Box::new(arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert)));
+                let entry = Some(Box::new(arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert, proof)));
                 let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), chash, settled: false, entry };
                 self.t.seen.insert(record.global, here);
                 self.watched.insert(obj);
                 Outcome::Accepted
             }
-            Payload::Verdict { transfer, accepted, cert } => {
+            Payload::Verdict { transfer, accepted, cert, frame, proof } => {
                 let Some(esc) = self.t.escrow.get(transfer).copied() else { return Outcome::RejectedGone };
                 if esc.status != EscrowStatus::Pending {
                     return Outcome::RejectedDuplicate;
                 }
-                let members = self.peers_of.get(&esc.dest).cloned().unwrap_or_default();
-                if !cert_ok(&members, esc.dest, fact_verdict(esc.dest, *transfer, *accepted), cert) {
+                // R3-8b, as for `Arrive`: the destination's epoch at its arrival frame.
+                let fact = fact_verdict(esc.dest, *transfer, *accepted, *frame, proof.epoch);
+                if !self.peers_of.contains_key(&esc.dest) || !self.epochs.vouched(esc.dest, *frame, proof, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
                 if *accepted {
@@ -5164,7 +5583,7 @@ impl WorldSim {
                     };
                     self.t.seen.insert(rec.global, Seen::Left { transfer: *transfer, dest: esc.dest, via: rec.via, frame: f, from, from_via, entry });
                     if record_effects {
-                        self.frame_effects.entry(f).or_default().0.push(fact_committed(self.world_id, *transfer, rec.global, esc.dest, rec.via));
+                        self.frame_effects.entry(f).or_default().0.push((*transfer, rec.global, esc.dest, rec.via, f));
                     }
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Committed, record: None, ..esc });
                 } else {
@@ -5189,7 +5608,8 @@ impl WorldSim {
             | Payload::Precommit { .. }
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
-            | Payload::DefineRole { .. } => Outcome::Accepted,
+            | Payload::DefineRole { .. }
+            | Payload::Ownership { .. } => Outcome::Accepted,
         }
     }
 
@@ -5308,7 +5728,7 @@ impl WorldSim {
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
                 let bad = self.t.objs.iter().flatten().find(|o| {
                     let st = BodyState::read(&self.world, o.body);
-                    st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
+                    !st.is_finite()
                 });
                 if let Some(o) = bad {
                     self.stats.nonfinite += 1;
@@ -5437,6 +5857,25 @@ impl WorldSim {
 
     pub fn members_evicted(&self) -> &BTreeMap<MemberId, (u32, u64)> {
         &self.evicted
+    }
+
+    /// Give the world an ownership chain from its genesis certificate (part of the genesis
+    /// document; before the first frame is simulated).
+    pub fn set_ownership(&mut self, genesis: Cert) {
+        assert_eq!(self.frame, 0, "ownership is part of the world's genesis");
+        self.book = Some(Book::new(genesis).expect("a valid genesis certificate"));
+    }
+
+    /// A certificate for `change` on top of this replica's present ownership head(s), signed by
+    /// `keys` (spike: anyone can sign as any
+    /// key, standing in for a key holder handing the member a signed certificate). A merge joins
+    /// every head; any other change builds on the first head.
+    pub fn owner_cert(&self, change: OwnChange, keys: &[Key]) -> Option<Cert> {
+        let b = self.book.as_ref()?;
+        let heads = b.heads();
+        let prev = if change == OwnChange::Merge { heads } else { heads.into_iter().take(1).collect() };
+        let seq = prev.iter().map(|p| b.cert(*p).map_or(0, |c| c.seq)).max()? + 1;
+        Some(Cert { world: b.world, seq, prev, change, sigs: vec![] }.signed(keys))
     }
 }
 
@@ -5609,5 +6048,115 @@ mod round3_tests {
         let mut w = Wr(Vec::new());
         w.change(&c);
         assert_eq!(Rd(&w.0, 0).change(), Some(c));
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    //! Review round 10 (ownership on the admin layer): joins read the owners the change's own admin
+    //! entries leave (OWNY-1); a certificate built on a pending one's head waits for it (OWNY-2).
+    use super::*;
+    use crate::ownership::SignRule;
+
+    const GUEST: RoleId = 5;
+
+    /// Member 1 of a session of [1, 2] whose world is owned by `owners` (rule A), where everyone else
+    /// joins as GUEST.
+    fn world(owners: &[Key]) -> WorldSim {
+        let mut s = WorldSim::new(1, 1, &[1, 2], SceneKind::Empty, SimConfig::default());
+        s.set_ownership(Cert::genesis(owners, SignRule::All, 7));
+        s.join_rules = JoinRules::public(GUEST);
+        s
+    }
+
+    /// A change listing admin entry `id` (applied) and member 9's join with `role`.
+    fn change_with_join(s: &WorldSim, id: EntryId, role: RoleId) -> Change {
+        let exp = 1000;
+        Change { epoch: s.epoch, admin: vec![(id, true)], add: vec![9], add_roles: vec![role], add_attests: vec![vec![]], add_reqs: vec![(join_sig_in(s.session, 9, exp), exp)], boundary: 10, ..Default::default() }
+    }
+
+    #[test]
+    fn an_owner_leaving_in_the_change_of_its_join_is_not_row_0() {
+        let mut s = world(&[1, 9]);
+        let cert = s.owner_cert(OwnChange::Leave { key: 9 }, &[9]).unwrap();
+        let id = s.publish_ownership(cert).id();
+        assert!(s.admin_pending.contains(&id));
+        // The decided book still lists 9; the change's own Leave removes it before the join.
+        assert!(s.owner_keys().contains(&9));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, ADMIN)), Some(false));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, GUEST)), Some(true));
+    }
+
+    #[test]
+    fn an_owner_added_in_the_change_of_its_join_is_row_0() {
+        let mut s = world(&[1]);
+        let cert = s.owner_cert(OwnChange::Add { key: 9 }, &[1]).unwrap();
+        let id = s.publish_ownership(cert).id();
+        assert!(!s.owner_keys().contains(&9));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, ADMIN)), Some(true));
+        assert_eq!(s.change_valid(&change_with_join(&s, id, GUEST)), Some(false));
+    }
+
+    /// Owners [1]: 1 adds 9 (pending), then 1 and 9 add 8 on top of that certificate.
+    fn chained(fixes_off: u64) -> (WorldSim, EntryId, EntryId) {
+        let mut s = world(&[1]);
+        s.fixes_off = fixes_off;
+        let c1 = s.owner_cert(OwnChange::Add { key: 9 }, &[1]).unwrap();
+        let c2 = Cert { world: c1.world, seq: c1.seq + 1, prev: vec![c1.id()], change: OwnChange::Add { key: 8 }, sigs: vec![] }.signed(&[1, 9]);
+        let id1 = s.publish_ownership(c1).id();
+        let id2 = s.publish_ownership(c2).id();
+        (s, id1, id2)
+    }
+
+    #[test]
+    fn a_certificate_on_a_pending_head_is_held_until_its_parent_is_decided() {
+        let (mut s, id1, id2) = chained(0);
+        assert!(s.admin_pending.contains(&id1));
+        assert!(!s.admin_pending.contains(&id2) && s.own_held.contains(&id2));
+        let c = Change { epoch: s.epoch, admin: vec![(id1, true)], boundary: 10, ..Default::default() };
+        assert_eq!(s.change_valid(&c), Some(true));
+        s.apply_change(c, 0, &mut Vec::new());
+        assert!(s.owner_keys().contains(&9));
+        assert!(s.admin_pending.contains(&id2) && s.own_held.is_empty());
+        // Its own change then commits it.
+        let c = Change { epoch: s.epoch, admin: vec![(id2, true)], boundary: 20, ..Default::default() };
+        assert_eq!(s.change_valid(&c), Some(true));
+        s.apply_change(c, 0, &mut Vec::new());
+        assert_eq!(s.owner_keys(), BTreeSet::from([1, 8, 9]));
+    }
+
+    #[test]
+    fn without_owny2_a_certificate_on_a_pending_head_is_lost() {
+        let (mut s, id1, id2) = chained(fix::OWNY2);
+        assert!(!s.admin_pending.contains(&id2) && s.own_held.is_empty());
+        let c = Change { epoch: s.epoch, admin: vec![(id1, true)], boundary: 10, ..Default::default() };
+        s.apply_change(c, 0, &mut Vec::new());
+        assert!(!s.admin_pending.contains(&id2));
+    }
+
+    #[test]
+    fn an_author_holds_at_most_max_held_per_author() {
+        // Review OWNZ-1: certificates naming parents that never exist are held up to the cap only.
+        let mut s = world(&[1]);
+        let world = s.book.as_ref().unwrap().world;
+        for n in 0..MAX_HELD_PER_AUTHOR as u64 + 4 {
+            let c = Cert { world, seq: 2, prev: vec![1000 + n], change: OwnChange::Add { key: 9 }, sigs: vec![] }.signed(&[1]);
+            s.publish_ownership(c);
+        }
+        assert_eq!(s.own_held.len(), MAX_HELD_PER_AUTHOR);
+        assert!(s.admin_pending.is_empty());
+    }
+
+    #[test]
+    fn an_oversized_ownership_entry_is_refused() {
+        // Review OWNY-3: a tag-20 payload claiming more than MAX_CERT_WORDS words is never read.
+        let mut w = Wr(Vec::new());
+        w.u8(1); // Msg::Entry
+        w.u32(1); w.u32(1); w.u64(0); w.u64(5); // member, seq, prev, stamp
+        w.u8(20); w.u32(0); w.u32(MAX_CERT_WORDS as u32 + 1);
+        for i in 0..=MAX_CERT_WORDS as u64 { w.u64(i) }
+        w.u8(0); // carried: none
+        assert_eq!(decode_msg(&w.0), None);
+        assert_eq!(Cert::from_words(&vec![0; MAX_CERT_WORDS + 1]), None);
     }
 }

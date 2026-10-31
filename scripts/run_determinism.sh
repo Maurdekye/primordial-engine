@@ -51,7 +51,9 @@ if has physics; then
     $P trace 600 $O/trace-vdw-$b.txt > $O/trace-vdw-$b.log 2>&1
     same $O/trace-vdw-$b.txt spikes/out/vdw/trace-vdw-win-$b.txt "trace 600 ($b) == vdW branch record"
     $P --upstream trace 600 $O/trace-off-$b.txt > $O/trace-off-$b.log 2>&1
-    same $O/trace-off-$b.txt spikes/out/trace-win-release-1.txt "trace 600 --upstream ($b) == phase-1 record"
+    # The upstream baseline (spikes/out/vdw/trace-off-*): until D58 it equalled the phase-1 f32
+    # record spikes/out/trace-win-release-1.txt byte for byte; with double precision it is re-recorded.
+    same $O/trace-off-$b.txt spikes/out/vdw/trace-off-win-$b.txt "trace 600 --upstream ($b) == upstream record"
     $P images $O/images-vdw-$b.txt > $O/images-vdw-$b.log 2>&1
     same $O/images-vdw-$b.txt spikes/out/vdw/images-vdw-win-$b.txt "snapshot images ($b) == vdW branch record"
     $P rollback > $O/rollback-vdw-$b.log 2>&1; grep -q "RESULT: PASS" $O/rollback-vdw-$b.log && r=ok || r=bad
