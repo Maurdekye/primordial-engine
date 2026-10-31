@@ -11,8 +11,8 @@
   m3 world B: object 40 live copies 1; escrow []; arrivals ["T16817996328531130808:Accepted { obj: 75, frame: 140 }"]
 RESULT r14 throttle: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
   m1 world 1: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 530
-  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (7.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 2 max depth 8 resim frames 11 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (7.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 2 max depth 8 resim frames 11 (1.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
   m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 throttle A world 1: frames 0..500 digests m1=d522c9189140dca6 m2=d522c9189140dca6 | offline replay d522c9189140dca6 | ALL EQUAL
 RESULT r14 throttle B world 2: frames 0..400 digests m1=1747acbc200a314d m3=1747acbc200a314d | offline replay 1747acbc200a314d | ALL EQUAL

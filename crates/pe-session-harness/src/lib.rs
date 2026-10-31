@@ -343,28 +343,26 @@ pub struct Job {
 }
 
 pub struct Replica {
-    pub sim: WorldSim,
+    /// The member's session core (P2-3 S6): the replica, its timers, R18 and its outbox. The
+    /// replica derefs to it, so `r.sim`, `r.adapt`, `r.level_ms`... read the core's.
+    pub core: SessionCore,
     pub scene: SceneKind,
-    pub epoch_us: u64,
-    pub dt_us: u64,
-    /// Background mode: advance only every `period_us`, in one burst (design 22.3).
-    pub throttle_us: Option<u64>,
-    pub throttle_from_us: u64,
-    last_burst_us: u64,
     pub plan: BTreeMap<u64, Vec<Action>>,
-    next_ack_us: u64,
-    pub ack_every_us: u64,
-    last_frame_seen: u64,
-    /// R18: adapt the hand-entry rate and ack interval to this member's uplink queue.
-    pub adapt: bool,
-    pub level: usize,
-    level_t: u64,
-    calm_since: u64,
-    hand_last: BTreeMap<u32, u64>,
-    /// Time spent at each congestion level (ms), and the highest level reached.
-    pub level_ms: [u64; 6],
     /// Remote state-carrying entries awaiting the acceptance check: (entry, author, obj).
     pub pending_accept: Vec<(EntryId, MemberId, u32)>,
+}
+
+impl std::ops::Deref for Replica {
+    type Target = SessionCore;
+    fn deref(&self) -> &SessionCore {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for Replica {
+    fn deref_mut(&mut self) -> &mut SessionCore {
+        &mut self.core
+    }
 }
 
 pub struct Peer {
@@ -423,33 +421,27 @@ impl Peer {
         if std::env::var("PE_CLAIM_RULE").as_deref() == Ok("spike") {
             cfg.claim_rule = ClaimRule::Spike;
         }
-        let dt_us = (cfg.dt as f64 * 1e6).round() as u64;
-        self.worlds.insert(
-            world,
-            Replica {
-                sim: WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)),
-                scene,
-                epoch_us,
-                dt_us,
-                throttle_us: None,
-                throttle_from_us: 0,
-                last_burst_us: 0,
-                plan,
-                next_ack_us: 0,
-                ack_every_us: 2 * dt_us,
-                last_frame_seen: u64::MAX,
-                adapt: false,
-                level: 0,
-                level_t: 0,
-                calm_since: 0,
-                hand_last: BTreeMap::new(),
-                level_ms: [0; 6],
-                pending_accept: Vec::new(),
-            },
-        );
+        let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)));
+        core.start(epoch_us);
+        core.set_offset(self.skew_us);
+        self.worlds.insert(world, Replica { core, scene, plan, pending_accept: Vec::new() });
     }
 }
 
+/// The IO's half of the core's outbox: every message to each of its recipients, in order. Review
+/// R3-9: a repair yields to a long uplink queue (the requester asks again).
+fn drain(net: &mut Net, w: WorldId, from: MemberId, core: &mut SessionCore) {
+    for o in core.outbox() {
+        for to in o.to {
+            if o.class == Class::Repair && net.backlog_us(from, to) > REPAIR_MAX_BACKLOG_US {
+                continue;
+            }
+            net.post(w, from, to, &o.msg);
+        }
+    }
+}
+
+#[allow(dead_code)]
 fn broadcast(net: &mut Net, w: WorldId, from: MemberId, members: &[MemberId], m: &Msg) {
     for &to in members {
         if to != from {
@@ -465,12 +457,7 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
     }
 }
 
-/// R18: hand-entry stride and ack interval (frames) at each congestion level.
-/// Congestion levels (R18): frames between hand entries, and between acks. Review R3-9 added
-/// levels 4 and 5 for links of about 8-16 kbit/s, and aligns both to the same frame ticks, so a
-/// hand entry and an ack share one datagram.
-pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
-pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+pub use pe_session::peer::{AuthorError, Class, Out, SessionCore, ACK_FRAMES, HAND_STRIDE};
 
 impl Sim {
     pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
@@ -535,51 +522,15 @@ impl Sim {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            let members: Vec<MemberId> = r.sim.audience();
-            match m {
-                Msg::Entry(e) => {
-                    let carried = e.carried.map(|(o, _)| o);
-                    let author = e.member;
-                    let id = e.id();
-                    // Proofs of equivocation come back with this member's vote: broadcast them.
-                    let out = r.sim.insert(e);
-                    if let Some(obj) = carried {
-                        if author != to {
-                            r.pending_accept.push((id, author, obj));
-                        }
-                    }
-                    for v in out {
-                        broadcast(&mut self.net, w, to, &members, &Msg::Entry(v));
-                    }
-                    for (dest, f) in r.sim.take_fetches(now / 1000) {
-                        if dest != to {
-                            self.net.post(w, to, dest, &f);
-                        }
+            if let Msg::Entry(e) = &m {
+                if let Some((obj, _)) = e.carried {
+                    if e.member != to {
+                        r.pending_accept.push((e.id(), e.member, obj));
                     }
                 }
-                Msg::Fetch { author, from: a, to: b } => {
-                    // Review R3-9: repairs yield to the queue. Answering into a full uplink only
-                    // makes the queue, and the requester's next round trip, longer.
-                    if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US {
-                        continue;
-                    }
-                    for e in r.sim.on_fetch(author, a, b) {
-                        self.net.post(w, to, from, &e);
-                    }
-                }
-                Msg::FetchValue { value } => {
-                    for e in r.sim.on_fetch_value(value) {
-                        self.net.post(w, to, from, &e);
-                    }
-                }
-                Msg::Join { member, attests } => r.sim.on_join(member, attests),
-                Msg::FetchEntry { id } => {
-                    for e in r.sim.on_fetch_entry(id) {
-                        self.net.post(w, to, from, &e);
-                    }
-                }
-                Msg::Batch(_) => {}
             }
+            r.core.receive(from, m, now);
+            drain(&mut self.net, w, to, &mut r.core);
         }
         // 2. peers tick
         let order: Vec<usize> = if self.reverse_order { (0..self.peers.len()).rev().collect() } else { (0..self.peers.len()).collect() };
@@ -608,141 +559,76 @@ impl Sim {
         let deadline_frames = self.carry_deadline_frames;
         for w in wids {
             let r = self.peers[pi].worlds.get_mut(&w).unwrap();
-            let clock = (now as i64 + skew).max(0) as u64;
-            if clock < r.epoch_us {
-                continue;
-            }
-            let clock_frame = (clock - r.epoch_us) / r.dt_us;
-            r.sim.now = clock_frame;
-            let members: Vec<MemberId> = r.sim.audience();
             if r.adapt {
-                // R18 congestion control. Signal: this member's own uplink queue delay (the spike
-                // reads the bottleneck directly; production estimates it from the one-way delay
-                // gradient of acks, as WebRTC's GCC does). Up fast, down slowly.
-                let b = members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
-                if b > 40_000 && now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
-                    r.level += 1;
-                    r.level_t = now;
-                }
-                if b < 10_000 {
-                    if r.calm_since == 0 {
-                        r.calm_since = now;
-                    }
-                } else {
-                    r.calm_since = 0;
-                }
-                if r.level > 0 && r.calm_since > 0 && now >= r.calm_since + 300_000 && now >= r.level_t + 300_000 {
-                    r.level -= 1;
-                    r.level_t = now;
-                    r.calm_since = now;
-                }
-                r.ack_every_us = ACK_FRAMES[r.level] * r.dt_us;
-                r.level_ms[r.level] += 1;
+                // R18's signal: this member's own uplink queue delay (the spike reads the bottleneck
+                // directly; production estimates it from the one-way delay gradient of acks, as
+                // WebRTC's GCC does).
+                let b = r.sim.audience().iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
+                r.core.set_link(b);
             }
-            // Simulate once per new clock frame (coalesces all late arrivals of a frame into one
-            // rollback: option (c)); background worlds advance in periodic bursts.
+            r.core.ack_on_frames = self.net.batching;
+            let clock_frame = r.core.clock_frame(now);
             // A background world catches up before its member authors anything that carries state
             // (design 22.3 rule 2): a due action forces a burst.
-            let due = r.plan.get(&clock_frame).is_some_and(|v| v.iter().any(|a| !matches!(a, Action::Hand { .. })));
-            let throttled = !due && r.throttle_us.is_some_and(|p| now >= r.throttle_from_us && now < r.last_burst_us + p);
-            let mut new_frame = false;
-            if !throttled && (clock_frame != r.last_frame_seen || !r.sim.caught_up()) {
-                new_frame = clock_frame != r.last_frame_seen;
-                r.last_frame_seen = clock_frame;
-                if r.throttle_us.is_some() && now >= r.throttle_from_us {
-                    r.last_burst_us = now;
-                }
-                r.sim.advance(clock_frame);
+            let due = clock_frame.is_some_and(|f| r.plan.get(&f).is_some_and(|v| v.iter().any(|a| !matches!(a, Action::Hand { .. }))));
+            if let Some(clock_frame) = r.core.begin_tick(now, due) {
                 // Planned actions for this frame (authored at the start of the frame). Hand poses
-                // stream even while the sim is behind (stamped at the present, R18); anything else
-                // needs a caught-up sim and is dropped otherwise (as in 3d0f98a).
-                let ready = r.sim.caught_up() && r.sim.frame == clock_frame;
-                {
-                    let actions = r.plan.remove(&clock_frame).unwrap_or_default();
-                    {
-                        for a in actions {
-                            if !ready && !matches!(a, Action::Hand { .. }) {
+                // stream even while the sim is behind (stamped at the present, R18), at the
+                // congestion level's stride; anything else needs a caught-up sim and is dropped
+                // otherwise (as in 3d0f98a).
+                for a in r.plan.remove(&clock_frame).unwrap_or_default() {
+                    let p = match a {
+                        Action::Touch { obj, impulse, grab } => Payload::Touch { obj, impulse, grab },
+                        Action::Hand { obj, target_mm, active, .. } => Payload::Hand { obj, target_mm, active, span: 1 },
+                        Action::Portal { open } => Payload::Portal { open },
+                        Action::Backdated { obj, impulse, back } => {
+                            if r.core.ready() {
+                                let e = r.core.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back);
+                                r.core.sent(e);
+                            }
+                            continue;
+                        }
+                        Action::Kick { target } => Payload::Kick { epoch: 0, target },
+                        Action::SetRole { member, role } => Payload::SetRole { epoch: 0, member, role },
+                        Action::DefineRole { role, perms } => Payload::DefineRole { epoch: 0, role, perms },
+                        Action::Carry { obj, dest, .. } => {
+                            if !r.core.ready() {
                                 continue;
                             }
-                            if let Action::Hand { obj, active: true, .. } = a {
-                                let k = if r.adapt { HAND_STRIDE[r.level] } else { 1 };
-                                // On frame ticks that are multiples of k, so the entry shares the
-                                // ack's datagram (review R3-9).
-                                if clock_frame % k != 0 || r.hand_last.get(&obj).is_some_and(|&l| clock_frame < l + k) {
-                                    continue;
-                                }
-                                r.hand_last.insert(obj, clock_frame);
-                            }
-                            let span = if r.adapt { HAND_STRIDE[r.level] as u8 } else { 1 };
-                            let e = match a {
-                                Action::Touch { obj, impulse, grab } => {
-                                    r.sim.author(Payload::Touch { obj, impulse, grab }, Some(obj))
-                                }
-                                Action::Hand { obj, target_mm, active, ahead } => {
-                                    r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span }, ahead)
-                                }
-                                Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
-                                Action::Backdated { obj, impulse, back } => {
-                                    r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
-                                }
-                                Action::Kick { target } => r.sim.kick(target),
-                                Action::SetRole { member, role } => r.sim.set_role(member, role),
-                                Action::DefineRole { role, perms } => r.sim.define_role(role, perms),
-                                Action::Carry { obj, dest, .. } => {
-                                    let deadline = presents.get(&dest).map_or(u64::MAX, |p| p + deadline_frames);
-                                    let hop = r.sim.pending_hop(obj);
-                                    let e = r.sim.author(Payload::Depart { obj, dest, deadline, hop }, None);
-                                    let id = e.id();
-                                    let transfer = transfer_id(w, id);
-                                    new_jobs.push(Job {
-                                        transfer,
-                                        src: w,
-                                        dst: dest,
-                                        depart: id,
-                                        arrive: None,
-                                        verdict: None,
-                                        phase: JobPhase::WaitDepart,
-                                        accepted: None,
-                                        record: None,
-                                        log: vec![format!("t={}ms depart authored in world {w} at frame {}", now / 1000, e.stamp)],
-                                    });
-                                    broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
-                                    continue;
-                                }
-                            };
-                            broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+                            let deadline = presents.get(&dest).map_or(u64::MAX, |p| p + deadline_frames);
+                            let hop = r.sim.pending_hop(obj);
+                            let Ok(e) = r.core.author(Payload::Depart { obj, dest, deadline, hop }, 0) else { continue };
+                            let id = e.id();
+                            let transfer = transfer_id(w, id);
+                            new_jobs.push(Job {
+                                transfer,
+                                src: w,
+                                dst: dest,
+                                depart: id,
+                                arrive: None,
+                                verdict: None,
+                                phase: JobPhase::WaitDepart,
+                                accepted: None,
+                                record: None,
+                                log: vec![format!("t={}ms depart authored in world {w} at frame {}", now / 1000, e.stamp)],
+                            });
+                            continue;
                         }
+                    };
+                    let ahead = if let Action::Hand { ahead, .. } = a { ahead } else { 0 };
+                    match r.core.author(p.clone(), ahead) {
+                        // Scenario fixture (handowner): an adversarial member moves another's hand,
+                        // past the core's own refusal; every replica refuses it (8.4).
+                        Err(AuthorError::NotOwner) => {
+                            let e = r.core.sim.author_ahead(p, ahead);
+                            r.core.sent(e);
+                        }
+                        Ok(_) | Err(AuthorError::NotReady | AuthorError::Stride) => {}
                     }
                 }
             }
-            let r = self.peers[pi].worlds.get_mut(&w).unwrap();
-            // With batching, acks ride in the same datagram as the frame's entries (R18, viz-4).
-            let ack_due = if self.net.batching {
-                let every = (r.ack_every_us / r.dt_us).max(1);
-                new_frame && clock_frame % every == 0
-            } else {
-                now >= r.next_ack_us
-            };
-            if ack_due {
-                r.next_ack_us = now + r.ack_every_us;
-                let a = r.sim.author_ack();
-                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
-            }
-            for e in r.sim.attest_due() {
-                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
-            }
-            // Review R3-2: vote out members that have gone silent; P2-4: decide removals.
-            for e in r.sim.suspects_due() {
-                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
-            }
-            for e in r.sim.view_change_due() {
-                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
-            }
-            for (dest, f) in r.sim.take_fetches(now / 1000) {
-                if dest != pid {
-                    self.net.post(w, pid, dest, &f);
-                }
-            }
+            r.core.end_tick(now);
+            drain(&mut self.net, w, pid, &mut r.core);
         }
         // Reviews NEW-6, R3-7: certificates are self-certifying, so every member of both worlds
         // relays a pending transfer it is not relaying yet; the carrier may have crashed. A second
