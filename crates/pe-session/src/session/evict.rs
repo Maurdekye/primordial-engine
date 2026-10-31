@@ -9,7 +9,7 @@ impl WorldSim {
     pub(super) fn on_proof(&mut self, m: MemberId, k: u32, a: EntryId, b: EntryId) -> Vec<Entry> {
         if !self.proofs.contains_key(&m) {
             self.stats.equivocations += 1;
-            self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:016x} / {b:016x})"));
+            self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:?} / {b:?})"));
         }
         let (k0, a0, b0) = match self.proofs.get(&m) {
             Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
@@ -18,7 +18,7 @@ impl WorldSim {
         self.proofs.insert(m, (k0, a0, b0));
         let mut out = Vec::new();
         if m != self.me && self.members.contains(&m) && !self.voted(m) {
-            out.extend(self.freeze_and_vote(m, k0, 0));
+            out.extend(self.freeze_and_vote(m, k0, EntryId::NONE));
         }
         self.reconcile(m);
         out
@@ -42,9 +42,9 @@ impl WorldSim {
         }
         let (f, fid) = match self.hidden.as_ref().and_then(|h| h.get(&m)) {
             Some(&(hs, hid)) if hs < f => (hs, hid),
-            _ => (f, if f == 0 { 0 } else { self.by_author[&(m, f)] }),
+            _ => (f, if f == 0 { EntryId::NONE } else { self.by_author[&(m, f)] }),
         };
-        let (f, fid) = if self.lie_in_votes { (0, 0) } else { (f, fid) };
+        let (f, fid) = if self.lie_in_votes { (0, EntryId::NONE) } else { (f, fid) };
         let v = Entry {
             member: self.me,
             seq: self.my_seq + 1,
@@ -103,14 +103,14 @@ impl WorldSim {
             .collect();
         for (m, k) in proven {
             if m != self.me && self.members.contains(&m) && !self.voted(m) {
-                out.extend(self.freeze_and_vote(m, k.max(1), 0));
+                out.extend(self.freeze_and_vote(m, k.max(1), EntryId::NONE));
             }
         }
         if self.byz_ally {
             let targets: Vec<MemberId> = self.votes.keys().copied().filter(|t| *t != self.me && self.members.contains(t)).collect();
             for t in targets {
                 if !self.voted(t) {
-                    out.extend(self.freeze_and_vote(t, 0, 0));
+                    out.extend(self.freeze_and_vote(t, 0, EntryId::NONE));
                 }
             }
             return out;
@@ -128,7 +128,7 @@ impl WorldSim {
                 let since = *self.newer_since.entry(j).or_insert(self.now);
                 if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.withhold_vc {
                     self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.epoch));
-                    out.extend(self.freeze_and_vote(j, 0, 0));
+                    out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
                 }
             }
         }
@@ -182,7 +182,7 @@ impl WorldSim {
                 self.stats.demotions += 1;
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
             }
-            out.extend(self.freeze_and_vote(j, 0, 0));
+            out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
         }
         out.extend(self.withholders_due());
         out
@@ -245,7 +245,7 @@ impl WorldSim {
             if let Some(y) = blocks {
                 self.stats.withholders += 1;
                 self.ev(format!("member {j} has referenced no more of member {y}'s chain for {} frames while every other member has: vote to remove it", self.cfg.suspect_after));
-                out.extend(self.freeze_and_vote(j, 0, 0));
+                out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
             }
         }
         out

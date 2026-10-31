@@ -3,7 +3,31 @@
 use super::*;
 
 pub type MemberId = u32;
-pub type EntryId = u64;
+/// An entry's identity: the SHA-256 of its canonical encoding, all 256 bits (S3b). Signatures cover
+/// it, so a shorter id would let an author grind two entries with one id. All zeros means "none"
+/// (the `prev` of a member's first entry).
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EntryId(pub [u8; 32]);
+
+impl EntryId {
+    pub const NONE: EntryId = EntryId([0; 32]);
+
+    /// The first 8 bytes, little-endian: for hash inputs and log labels only, never as an identity.
+    pub fn short(&self) -> u64 {
+        self.words()[0]
+    }
+
+    /// All 256 bits as four little-endian words, for 64-bit hash inputs.
+    pub fn words(&self) -> [u64; 4] {
+        std::array::from_fn(|i| u64::from_le_bytes(self.0[8 * i..8 * i + 8].try_into().unwrap()))
+    }
+}
+
+impl std::fmt::Debug for EntryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}", self.short().swap_bytes())
+    }
+}
 /// Member 0 is world logic: its actions are computed identically on every peer, never networked,
 /// and never take claims (review M3).
 pub const LOGIC: MemberId = 0;
@@ -150,11 +174,12 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Spike: 64-bit FNV of the encoding. Production: BLAKE3 of the signed bytes.
+    /// SHA-256 of the canonical encoding (S3b; the spike used 64-bit FNV).
     pub fn id(&self) -> EntryId {
-        let mut w = Wr(Vec::with_capacity(96));
+        use sha2::Digest;
+        let mut w = Wr(Vec::with_capacity(128));
         w.entry(self);
-        fnv_bytes(&w.0)
+        EntryId(sha2::Sha256::digest(&w.0).into())
     }
 }
 
@@ -190,6 +215,7 @@ impl Wr {
     pub(super) fn u8(&mut self, v: u8) { self.0.push(v) }
     pub(super) fn u32(&mut self, v: u32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     pub(super) fn u64(&mut self, v: u64) { self.0.extend_from_slice(&v.to_le_bytes()) }
+    pub(super) fn id(&mut self, v: EntryId) { self.0.extend_from_slice(&v.0) }
     pub(super) fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     pub(super) fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
     pub(super) fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
@@ -208,7 +234,7 @@ impl Wr {
     pub(super) fn entry(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
-        self.u64(e.prev);
+        self.id(e.prev);
         self.u64(e.stamp);
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
@@ -224,7 +250,7 @@ impl Wr {
             Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
                 self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame); self.u64(record.via);
-                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain);
+                self.id(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain);
             }
             Payload::Provenance { hop } => { self.u8(16); self.hop(hop) }
             Payload::Verdict { transfer, accepted, cert } => {
@@ -236,14 +262,14 @@ impl Wr {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
                 // their entry ids; a later epoch is tag 14 with the epoch appended.
                 self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
-                for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.u64(*id) }
+                for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.id(*id) }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
             }
             Payload::Vote { epoch, target, seq, frozen, kick } => {
                 // A vote that answers no kick keeps tag 8 (and so its id); a kick vote is tag 15.
-                self.u8(if *kick == 0 { 8 } else { 15 }); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1);
-                if *kick != 0 { self.u64(*kick) }
+                self.u8(if *kick == EntryId::NONE { 8 } else { 15 }); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.id(frozen.1);
+                if *kick != EntryId::NONE { self.id(*kick) }
             }
             Payload::Kick { epoch, target } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
             Payload::SetRole { epoch, member, role } => { self.u8(18); self.u32(*epoch); self.u32(*member); self.u32(*role as u32) }
@@ -264,25 +290,25 @@ impl Wr {
     pub(super) fn change(&mut self, c: &Change) {
         // A change with admin entries or kicks sets the epoch's top bit and carries them; any other
         // keeps the P2-4 layout, so its value is unchanged (D80).
-        let ext = !c.admin.is_empty() || c.remove.iter().any(|r| r.kick != 0) || c.add_roles.iter().any(|&r| r != ADMIN);
+        let ext = !c.admin.is_empty() || c.remove.iter().any(|r| r.kick != EntryId::NONE) || c.add_roles.iter().any(|&r| r != ADMIN);
         self.u32(if ext { c.epoch | CHANGE_EXT } else { c.epoch });
         self.u32(c.remove.len() as u32);
         for r in &c.remove {
             self.u32(r.member);
             self.u32(r.votes.len() as u32);
-            for v in &r.votes { self.u64(*v) }
+            for v in &r.votes { self.id(*v) }
             self.u32(r.cut.0);
-            self.u64(r.cut.1);
-            if ext { self.u64(r.kick) }
+            self.id(r.cut.1);
+            if ext { self.id(r.kick) }
         }
         self.u32(c.add.len() as u32);
         for m in &c.add { self.u32(*m) }
         self.u64(c.boundary);
         self.u32(c.excluded.len() as u32);
-        for (m, p) in &c.excluded { self.u32(*m); self.u64(p.a); self.u64(p.b) }
+        for (m, p) in &c.excluded { self.u32(*m); self.id(p.a); self.id(p.b) }
         if ext {
             self.u32(c.admin.len() as u32);
-            for (id, ok) in &c.admin { self.u64(*id); self.u8(*ok as u8) }
+            for (id, ok) in &c.admin { self.id(*id); self.u8(*ok as u8) }
             self.u32(c.add_roles.len() as u32);
             for r in &c.add_roles { self.u32(*r as u32) }
         }
@@ -314,6 +340,7 @@ impl Rd<'_> {
     pub(super) fn u8(&mut self) -> Option<u8> { Some(self.take(1)?[0]) }
     pub(super) fn u32(&mut self) -> Option<u32> { Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     pub(super) fn u64(&mut self) -> Option<u64> { Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?)) }
+    pub(super) fn id(&mut self) -> Option<EntryId> { Some(EntryId(self.take(32)?.try_into().ok()?)) }
     pub(super) fn i32(&mut self) -> Option<i32> { Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     pub(super) fn f32(&mut self) -> Option<f32> { Some(f32::from_bits(self.u32()?)) }
     pub(super) fn cert(&mut self) -> Option<Vec<(MemberId, u64)>> {
@@ -354,7 +381,7 @@ impl Rd<'_> {
     pub(super) fn entry(&mut self) -> Option<Entry> {
         let member = self.u32()?;
         let seq = self.u32()?;
-        let prev = self.u64()?;
+        let prev = self.id()?;
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
@@ -370,7 +397,7 @@ impl Rd<'_> {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
                     via: self.u64()?,
                 };
-                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()? }
+                Payload::Arrive { transfer, record, depart: self.id()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()? }
             }
             16 => Payload::Provenance { hop: self.hop()? },
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
@@ -380,14 +407,14 @@ impl Rd<'_> {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
-                for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.u64()?)) }
+                for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.id()?)) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
             }
             tag @ (8 | 15) => {
-                let (epoch, target, seq, frozen) = (self.u32()?, self.u32()?, self.u32()?, (self.u32()?, self.u64()?));
-                let kick = if tag == 15 { self.u64()? } else { 0 };
+                let (epoch, target, seq, frozen) = (self.u32()?, self.u32()?, self.u32()?, (self.u32()?, self.id()?));
+                let kick = if tag == 15 { self.id()? } else { EntryId::NONE };
                 Payload::Vote { epoch, target, seq, frozen, kick }
             }
             17 => Payload::Kick { epoch: self.u32()?, target: self.u32()? },
@@ -413,9 +440,9 @@ impl Rd<'_> {
             let member = self.u32()?;
             let k = self.u32()? as usize;
             let mut votes = Vec::with_capacity(k.min(256));
-            for _ in 0..k { votes.push(self.u64()?) }
-            let cut = (self.u32()?, self.u64()?);
-            let kick = if ext { self.u64()? } else { 0 };
+            for _ in 0..k { votes.push(self.id()?) }
+            let cut = (self.u32()?, self.id()?);
+            let kick = if ext { self.id()? } else { EntryId::NONE };
             remove.push(Removal { member, votes, cut, kick });
         }
         let n = self.u32()? as usize;
@@ -424,12 +451,12 @@ impl Rd<'_> {
         let boundary = self.u64()?;
         let n = self.u32()? as usize;
         let mut excluded = Vec::with_capacity(n.min(256));
-        for _ in 0..n { excluded.push((self.u32()?, Proof { a: self.u64()?, b: self.u64()? })) }
+        for _ in 0..n { excluded.push((self.u32()?, Proof { a: self.id()?, b: self.id()? })) }
         let mut admin = Vec::new();
         let mut add_roles = vec![ADMIN; add.len()];
         if ext {
             let n = self.u32()? as usize;
-            for _ in 0..n { admin.push((self.u64()?, self.u8()? != 0)) }
+            for _ in 0..n { admin.push((self.id()?, self.u8()? != 0)) }
             let n = self.u32()? as usize;
             add_roles = Vec::with_capacity(n.min(256));
             for _ in 0..n { add_roles.push(self.u32()? as RoleId) }

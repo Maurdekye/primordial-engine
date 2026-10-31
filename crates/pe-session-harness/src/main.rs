@@ -389,7 +389,7 @@ fn backdate() {
 /// P2-5: a forged arrival from the dishonest-majority world W (6, members 2 and 3), signed by both
 /// of W's members, into world `w` by member `by`.
 fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chain: Vec<Hop>) -> SignedEntry {
-    let fake = pe_session::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64);
+    let fake = fake_id(pe_session::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64));
     let deadline = sim.replica(by, w).sim.now + 600;
     let fact = fact_departed(6, fake, &record, w, deadline, chain_hash(&chain));
     let cert: Vec<(MemberId, u64)> = [2u32, 3].iter().map(|&m| (m, member_sig(6, m, fact))).collect();
@@ -569,7 +569,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // R3-5: member 3 certifies, as the whole membership of its world E, a departure that
                 // never happened, of a record carrying A's object 40's global id.
                 let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 5, src_frame: 0, via: 0 };
-                let fake = 0x1234_5678;
+                let fake = fake_id(0x1234_5678);
                 let fact = fact_departed(5, fake, &record, 2, u64::MAX, chain_hash(&[]));
                 let i = pidx(&sim, 3);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
@@ -582,7 +582,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 2_500_000 {
                 // NEW-4: member 3 (only in B) mints object 40 into B with no departure behind it.
                 let record = ObjRecord { global: (1u64 << 32) | 40, kind: 1, state: BodyState([0; 13]), src_world: 1, src_frame: 100, via: 0 };
-                let fake = 0xDEAD_BEEF;
+                let fake = fake_id(0xDEAD_BEEF);
                 let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]));
                 let i = pidx(&sim, 3);
                 let e = sim.peers[i].worlds.get_mut(&2).unwrap().sim.author(
@@ -611,7 +611,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 st.0[0] = f32::NAN.to_bits();
                 st.0[6] = 1.0f32.to_bits();
                 let record = ObjRecord { global: (1u64 << 32) | 41, kind: 1, state: st, src_world: 1, src_frame: 150, via: 0 };
-                let fake = 0x0BAD_0BAD;
+                let fake = fake_id(0x0BAD_0BAD);
                 let fact = fact_departed(1, fake, &record, 2, u64::MAX, chain_hash(&[]));
                 let cert: Vec<(MemberId, u64)> = [1u32, 2].iter().map(|&m| (m, member_sig(1, m, fact))).collect();
                 let i = pidx(&sim, 1);

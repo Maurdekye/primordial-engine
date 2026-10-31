@@ -1,7 +1,7 @@
   t=3574 ms: 9's touch s26 at frame 50 confirmed at m1: true, at m2: true (m1 conf 201) -> 9 signs a second version
-  9's touches at m1: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
-  9's touches at m2: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
-  9's touches at m3: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
+  9's touches at m1: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m2: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m3: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
 RESULT withheld: m1 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
 RESULT withheld: m2 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
 RESULT withheld: m3 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0

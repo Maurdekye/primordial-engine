@@ -1,8 +1,8 @@
   t=3574 ms: 9's touch s26 at frame 50 confirmed at m1: true, at m2: true (m1 conf 201) -> 9 signs a second version
   t=3611 ms: 8 sends members 1, 2 and 3 a forged vote against 9 with frozen head (0, 0)
-  9's touches at m1: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
-  9's touches at m2: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
-  9's touches at m3: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
+  9's touches at m1: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m2: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m3: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
 RESULT colluders: m1 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
 RESULT colluders: m2 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
 RESULT colluders: m3 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1

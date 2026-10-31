@@ -36,10 +36,10 @@ impl Deref for SignedEntry {
 
 /// The bytes an entry's signature covers.
 pub fn signing_message(world: u32, id: EntryId) -> Vec<u8> {
-    let mut m = Vec::with_capacity(ENTRY_DOMAIN.len() + 4 + 8);
+    let mut m = Vec::with_capacity(ENTRY_DOMAIN.len() + 4 + 32);
     m.extend_from_slice(ENTRY_DOMAIN);
     m.extend_from_slice(&world.to_le_bytes());
-    m.extend_from_slice(&id.to_le_bytes());
+    m.extend_from_slice(&id.0);
     m
 }
 
@@ -117,7 +117,7 @@ mod tests {
     use crate::session::Payload;
 
     fn entry(member: MemberId, seq: u32) -> Entry {
-        Entry { member, seq, prev: 0, stamp: 5, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None }
+        Entry { member, seq, prev: EntryId::NONE, stamp: 5, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None }
     }
 
     #[test]
