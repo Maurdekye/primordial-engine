@@ -237,7 +237,7 @@ impl Wr {
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
             Payload::Ownership { cert } => {
                 let w = cert.to_words();
-                self.u8(17); self.u32(w.len() as u32); for x in w { self.u64(x) }
+                self.u8(20); self.u32(w.len() as u32); for x in w { self.u64(x) }
             }
             Payload::Ack { horizon, heads, check } => {
                 self.u8(7); self.u64(*horizon); self.u32(heads.len() as u32);
@@ -320,7 +320,7 @@ impl Rd<'_> {
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
-            17 => {
+            20 => {
                 let n = self.u32()? as usize;
                 let mut w = Vec::with_capacity(n.min(256));
                 for _ in 0..n { w.push(self.u64()?) }
