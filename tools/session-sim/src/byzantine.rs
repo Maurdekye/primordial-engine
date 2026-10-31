@@ -241,7 +241,7 @@ impl Actor {
                 // The fork passes every fault; after the crash nothing else from it does.
                 let (member, crashed, fork) = (*member, self.silent.clone(), self.forged_vote.clone());
                 Some(Box::new(move |_t, _w, from, _to, m| match m {
-                    Msg::Entry(e) if fork.get() != 0 && e.id() == fork.get() => Some(Fate::Deliver),
+                    Msg::Entry(e) if fork.get() != EntryId::NONE && e.id() == fork.get() => Some(Fate::Deliver),
                     _ if from == member && crashed.get() => Some(Fate::Drop),
                     _ => None,
                 }))
@@ -506,7 +506,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 act.mix.0 = t;
                 let r = sim_mut(sim, *member, 1);
-                let epoch = r.epoch;
+                let epoch = r.vcm.epoch;
                 let e = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
                 send_to(sim, *member, to, &e);
             }
@@ -515,9 +515,9 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let t = sim.net.now_us;
                 if act.step == 0 && t >= at_ms * 1000 {
                     let r = sim_mut(sim, *member, 1);
-                    let epoch = r.epoch;
+                    let epoch = r.vcm.epoch;
                     let a = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
-                    let b = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..a.clone() };
+                    let b = Entry { payload: Payload::Attest { fact: 1, sig: [0; 64] }, ..a.entry.clone() };
                     act.forged_vote.set(b.id());
                     act.fork_entry = Some(b);
                     send_to(sim, *member, a_to, &a);
@@ -530,11 +530,11 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                         act.step = 2;
                     }
                 } else if act.step == 2 && t >= part_ms * 1000 {
-                    sim.net.send(1, *member, *part, &Msg::Entry(act.fork_entry.clone().unwrap()));
+                    sim.net.send(1, *member, *part, &Msg::Entry(test_sign(1, act.fork_entry.clone().unwrap())));
                     act.step = 3;
                 } else if act.step == 3 && t >= others_ms * 1000 {
                     for &m in others {
-                        sim.net.send(1, *member, m, &Msg::Entry(act.fork_entry.clone().unwrap()));
+                        sim.net.send(1, *member, m, &Msg::Entry(test_sign(1, act.fork_entry.clone().unwrap())));
                     }
                     act.step = 4;
                 }
