@@ -1,6 +1,8 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of 31 October 2026, after your decisions of 18:42Z-22:54Z on 30 October. This summarises design.md section 24
+As of 31 October 2026, after your decisions of 18:42Z-22:54Z on 30 October. Your rulings on session
+admins, roles and join rules (D80) arrive with the view-change branch, and those on world ownership
+(D87, D88) with the ownership branch. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
@@ -8,7 +10,7 @@ from measured parts; **inferred** = design reasoning, not run.
 
 ## A. Still open
 
-Six proposals from your agent-panel rulings of 21:50Z-22:54Z, with @coordinator-opus. Each has options and
+Seven proposals from your agent-panel rulings of 21:50Z-22:54Z, with @coordinator-opus. Each has options and
 a recommendation in design.md section 24:
 * **D81** the built-in speech models: which pure-Rust runtime, which model size, CPU or GPU (a spike first);
 * **D82** a guest's or confidant's turn carries their own gaze and pointing, never yours;
@@ -16,7 +18,9 @@ a recommendation in design.md section 24:
   admins may clear them;
 * **D84** which settings your agent changes at once (with undo) and which need your confirmation;
 * **D85** spoken replies are made on the panel owner's machine and streamed like a voice;
-* **D86** an open panel shows others the conversation and summaries, never raw tool output.
+* **D86** an open panel shows others the conversation and summaries, never raw tool output;
+* **D89** confidants' turns use your panels in Restricted mode unless you untick it, or get your panel's
+  full profile, as ruled.
 
 ## B. Your rulings
 
@@ -58,7 +62,7 @@ a recommendation in design.md section 24:
 | D74 build mismatch | The peer pauses and the author gets a report; the peer may opt in to run the author's module for that commit | 19:58Z |
 | D75 toolchain | Shared between peers and verified by hash, with the official Rust servers as the fallback | 19:58Z |
 | D76 90 to 60 Hz | The world owner switches, warned by the engine | 19:58Z |
-| D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
+| D77 Linux voice | None in the MVP (the VR keyboard instead); **superseded at 21:51Z** by the built-in speech model on both systems (D33, below) | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
 | D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
 | D33, D77 voice | Voice prompting with one local, offline Whisper-class model built into the engine, on Windows and Linux; Windows speech recognition only as a lighter fallback. The models ship in the installer | 21:50-21:51Z, 22:23Z |
