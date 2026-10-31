@@ -13,7 +13,7 @@ use box3d_rust::hull::{create_hull, make_box_hull};
 use box3d_rust::id::{BodyId, JointId};
 use box3d_rust::joint::{
     create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
-    joint_is_valid, joint_wake_bodies, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
+    joint_is_valid, joint_wake_bodies, JointType, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
 };
 use box3d_rust::math_functions::{Pos, Quat, Transform as BoxTransform, Vec3};
 use box3d_rust::recording::hash_world_state;
@@ -90,6 +90,16 @@ pub enum JointKind {
 }
 
 impl JointKind {
+    /// The Box3D joint type a joint of this kind is made as.
+    pub(crate) fn box3d_type(self) -> JointType {
+        match self {
+            JointKind::Spherical => JointType::Spherical,
+            JointKind::Weld => JointType::Weld,
+            JointKind::Distance => JointType::Distance,
+            JointKind::Grab => JointType::Motor,
+        }
+    }
+
     pub(crate) fn from_u8(v: u8) -> Option<JointKind> {
         Some(match v {
             0 => JointKind::Spherical,
@@ -564,18 +574,19 @@ impl PhysicsWorld {
     }
 
     /// Box3D's state hash: every body's transform and velocities (the C reference's hash,
-    /// which the spikes' traces record).
-    pub fn box3d_hash(&self) -> u64 {
-        hash_world_state(&self.world)
+    /// which the spikes' traces record). Refused while poisoned.
+    pub fn box3d_hash(&self) -> Result<u64, PhysicsError> {
+        self.usable()?;
+        Ok(hash_world_state(&self.world))
     }
 
     /// The per-frame state hash (design 9.1): [`Self::box3d_hash`] (body transforms and
     /// velocities) plus the binding and joint tables. XXH64 (pe-core), so it composes with the
     /// sim store's hash. It does not cover sleep timers, contact caches, warm starts, islands or
-    /// the settings; [`Self::check_hash`] covers the whole state.
-    pub fn state_hash(&self) -> u64 {
+    /// the settings; [`Self::check_hash`] covers the whole state. Refused while poisoned.
+    pub fn state_hash(&self) -> Result<u64, PhysicsError> {
         let mut h = pe_core::hash::Hasher::new(0);
-        h.write_u64(self.box3d_hash());
+        h.write_u64(self.box3d_hash()?);
         h.write_u64(self.bodies.len() as u64);
         for (id, body) in &self.bodies {
             h.write_u32(id.creator);
@@ -590,7 +601,7 @@ impl PhysicsWorld {
             h.write_u32(joint.id.generation as u32);
             h.write_u32(joint.kind as u32);
         }
-        h.finish()
+        Ok(h.finish())
     }
 
     // ---------------------------------------------------------------------------------------
@@ -607,10 +618,11 @@ impl PhysicsWorld {
     ///   bound frame has moved before its children are placed in it.
     /// * Scale is kept as it is: physics does not read it (colliders come from [`BodyDesc`]).
     /// * Bound objects without a `Transform` are skipped.
-    ///
-    /// All or nothing: if any pose is refused, every transform written so far is put back.
-    /// Returns how many transforms were written.
-    pub fn write_root_transforms(&self, store: &mut SimStore, origin: [i64; 3]) -> Result<usize, PhysicsError> {
+    /// * An object whose pose the sim store refuses (outside its limits, for example under a
+    ///   frame scaled near zero) keeps its transform and is listed in
+    ///   [`WriteBack::refused`]; the others are still written (review P22R-7). Each transform
+    ///   is written whole or not at all.
+    pub fn write_root_transforms(&self, store: &mut SimStore, origin: [i64; 3]) -> Result<WriteBack, PhysicsError> {
         if self.poisoned {
             return Err(PhysicsError::Poisoned);
         }
@@ -630,27 +642,21 @@ impl PhysicsWorld {
             .collect();
         order.sort_unstable_by_key(|&(d, id, _)| (d, id));
 
-        let mut old: Vec<(ObjectId, Transform)> = Vec::with_capacity(order.len());
+        let mut out = WriteBack::default();
         for &(_, id, body) in &order {
             match self.place(store, id, body, origin) {
-                Ok(t) => {
-                    let slot = store.get_mut::<Transform>(id).expect("filtered above");
-                    old.push((id, *slot));
-                    *slot = t;
+                Some(t) => {
+                    *store.get_mut::<Transform>(id).expect("filtered above") = t;
+                    out.written += 1;
                 }
-                Err(e) => {
-                    for (id, t) in old.into_iter().rev() {
-                        *store.get_mut::<Transform>(id).expect("written above") = t;
-                    }
-                    return Err(e);
-                }
+                None => out.refused.push(id),
             }
         }
-        Ok(old.len())
+        Ok(out)
     }
 
     /// The transform that puts `id` at `body`'s pose (see [`Self::write_root_transforms`]).
-    fn place(&self, store: &SimStore, id: ObjectId, body: BodyId, origin: [i64; 3]) -> Result<Transform, PhysicsError> {
+    fn place(&self, store: &SimStore, id: ObjectId, body: BodyId, origin: [i64; 3]) -> Option<Transform> {
         let current = *store.get::<Transform>(id).expect("checked by the caller");
         let xf = body_get_transform(&self.world, body);
         let p = [xf.p.x as f64, xf.p.y as f64, xf.p.z as f64];
@@ -664,9 +670,15 @@ impl PhysicsWorld {
                 Transform { scale: current.scale, ..target.local_in(Some(&fw)) }
             }
         };
-        if t.validate(frame.is_some()).is_err() {
-            return Err(PhysicsError::InvalidValue("body pose outside the sim store's limits"));
-        }
-        Ok(t)
+        t.validate(frame.is_some()).is_ok().then_some(t)
     }
+}
+
+/// What [`PhysicsWorld::write_root_transforms`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WriteBack {
+    /// Transforms written.
+    pub written: usize,
+    /// Objects whose pose the sim store refused, in write order; their transforms are unchanged.
+    pub refused: Vec<ObjectId>,
 }

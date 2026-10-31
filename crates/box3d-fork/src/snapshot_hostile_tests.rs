@@ -21,7 +21,7 @@ use crate::world::World;
 
 /// A small world with every image section populated: static and dynamic bodies, hulls and
 /// spheres, contacts, islands, a joint and a sensor.
-fn scene(def: &WorldDef) -> World {
+pub(crate) fn scene(def: &WorldDef) -> World {
     let mut world = World::new(def);
     let ground = create_body(&mut world, &default_body_def());
     create_hull_shape(&mut world, ground, &default_shape_def(), &make_box_hull(10.0, 1.0, 10.0).base);
@@ -141,4 +141,19 @@ fn image_settings_out_of_range_refused() {
     let combine = 48 + 28 + 20 + 1 + 12;
     assert_eq!(bytes[16 + combine], 1, "HarmonicMean combine byte located");
     assert!(!restore(&patch(combine, &[7])), "unknown combine");
+}
+
+/// An image must be consumed exactly: a byte appended to a real image is refused (review
+/// P22R-1: no unread bytes ride along under a confirmed hash).
+#[test]
+fn trailing_bytes_refused() {
+    let world = scene(&default_world_def());
+    let (mut bytes, registry) = image(&world);
+    let restore = |b: &[u8]| {
+        let mut slots = registry.to_slots();
+        deserialize_into_shell(b, &mut World::new(&default_world_def()), &mut slots)
+    };
+    assert!(restore(&bytes));
+    bytes.push(0);
+    assert!(!restore(&bytes));
 }

@@ -139,7 +139,7 @@ fn images_match_record() {
             let mut got = String::new();
             while g.frame <= 600 {
                 if g.frame.is_multiple_of(50) {
-                    let image = g.pw.save_image();
+                    let image = g.pw.save_image().unwrap();
                     let bytes = image.world_bytes();
                     got += &format!("{} {} {:016x}\n", g.frame, bytes.len(), fnv_bytes(bytes));
                 }
@@ -228,17 +228,19 @@ fn rollback_t1_to_t5() {
                 sim.advance_to(300);
                 let mut other = Game::pile(config);
                 other.step_scripted(&inputs, 300);
-                let confirmed = other.pw.check_hash();
-                let bytes = sim.game.pw.save_transfer().to_bytes();
+                let confirmed = other.pw.check_hash().unwrap();
+                let bytes = sim.game.pw.save_transfer().unwrap().to_bytes();
                 let transfer = pe_physics::Transfer::from_bytes(&bytes).unwrap();
                 assert_eq!(transfer.to_bytes(), bytes, "T4 transfer bytes round trip, {ctx}");
                 assert_eq!(transfer.check_hash(), confirmed, "T4 check hash independent of save history, {ctx}");
-                println!("RESULT transfer {mode} frame=300 workers={workers} check_hash {confirmed:016x} bytes {}", bytes.len());
+                println!("RESULT transfer {mode} frame=300 workers={workers} check_hash {confirmed} bytes {}", bytes.len());
                 // The joiner may run a different worker count.
                 let joiner = config.with_workers(9 - workers);
-                assert!(PhysicsWorld::from_transfer(joiner, &transfer, confirmed ^ 1).is_err(), "T4 unconfirmed, {ctx}");
-                let pw = PhysicsWorld::from_transfer(joiner, &transfer, confirmed).expect("fresh restore");
-                assert_eq!(pw.check_hash(), confirmed, "T4 joiner's check hash, {ctx}");
+                let mut other_hash = confirmed;
+                other_hash.0[31] ^= 1;
+                assert!(PhysicsWorld::from_transfer(joiner, &transfer, &other_hash).is_err(), "T4 unconfirmed, {ctx}");
+                let pw = PhysicsWorld::from_transfer(joiner, &transfer, &confirmed).expect("fresh restore");
+                assert_eq!(pw.check_hash().unwrap(), confirmed, "T4 joiner's check hash, {ctx}");
                 let mut g = Game { pw, objects: sim.game.objects.clone(), frame: 300, claims: sim.game.claims.clone(), seed: SEED };
                 assert!(g.pw.all_bodies_valid(), "T4 body ids, {ctx}");
                 let hs = g.step_scripted(&inputs, FRAMES);
@@ -273,7 +275,7 @@ fn several_worlds_per_process() {
         for (g, h) in games.iter_mut().zip(hashes.iter_mut()) {
             g.advance(&now);
             h.0.push(g.hash());
-            h.1.push(g.pw.box3d_hash());
+            h.1.push(g.pw.box3d_hash().unwrap());
         }
     }
     let digest = |(s, w): &(Vec<u64>, Vec<u64>)| fnv_u64s(s.iter().copied().chain(w.iter().copied()));

@@ -84,22 +84,24 @@ pub fn ser_hash_set(buf: &mut RecBuffer, hs: &HashSet) {
     }
 }
 
+/// Read a set written by [`ser_hash_set`] and check what `find_slot` relies on to terminate
+/// and to find every key: a power-of-two capacity of at least 16 (`HashSet::new`'s minimum),
+/// at most half of it in use (`add_key` grows before that), `count` equal to the occupied
+/// slots, empty slots all zero, and every key non-zero, with its own hash, at the slot its
+/// probe chain reaches. A crafted set could otherwise make `find_slot` loop forever (no empty
+/// slot) or index out of bounds (capacity 0) in the next step's pair update.
 pub fn des_hash_set(r: &mut SnapReader<'_>) -> HashSet {
     let cap = r.u32();
     let cnt = r.u32();
-    let valid =
-        r.check_count(cap as i32, 16, 16) && (cap == 0 || (cap & (cap - 1)) == 0) && cnt <= cap;
-    if r.ok && !valid && (cap != 0 || cnt != 0) {
+    let valid = r.check_count(cap as i32, 16, 16)
+        && cap >= 16
+        && cap.is_power_of_two()
+        && cnt <= cap / 2;
+    if r.ok && !valid {
         r.ok = false;
     }
     if !r.ok {
         return HashSet::new(16);
-    }
-    if cap == 0 {
-        return HashSet {
-            items: Vec::new(),
-            count: 0,
-        };
     }
     let mut items = Vec::with_capacity(cap as usize);
     for _ in 0..cap {
@@ -108,7 +110,29 @@ pub fn des_hash_set(r: &mut SnapReader<'_>) -> HashSet {
         let _pad = r.u32();
         items.push(SetItem { key, hash });
     }
-    HashSet { items, count: cnt }
+    let set = HashSet { items, count: cnt };
+    if r.ok && !hash_set_consistent(&set) {
+        r.ok = false;
+    }
+    set
+}
+
+fn hash_set_consistent(set: &HashSet) -> bool {
+    let mut occupied = 0;
+    for (i, item) in set.items.iter().enumerate() {
+        if item.hash == 0 {
+            if item.key != 0 {
+                return false;
+            }
+            continue;
+        }
+        occupied += 1;
+        // Some empty slot exists (count <= capacity / 2), so `find_slot` terminates.
+        if item.key == 0 || item.hash != crate::table::key_hash(item.key) || set.find_slot(item.key, item.hash) != i {
+            return false;
+        }
+    }
+    occupied == set.count
 }
 
 // DynamicTree: version, scalars, then nodes and parents to nodeEnd and proxies at capacity.

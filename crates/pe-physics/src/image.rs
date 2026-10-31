@@ -4,19 +4,23 @@
 //! * A [`WorldImage`] is Box3D's own world serialization plus the engine's binding and joint
 //!   tables. Geometry (hulls, meshes) is not repeated in every image: it is interned once per
 //!   world in a registry that only grows, and images refer to it by index. Images restore only
-//!   into the world that saved them (rollback). They are trusted local data.
+//!   into the world that saved them (rollback). They are trusted local data: the only way to
+//!   get one is [`PhysicsWorld::save_image`], and they are never read from bytes (outside the
+//!   `raw` test feature).
 //! * A [`Transfer`] is an image saved against a fresh registry, with exactly the geometry it
 //!   uses, in shape order. Its bytes depend only on the physics state, not on the world's save
 //!   history or the build profile, so [`Transfer::check_hash`] is the same on every honest
 //!   peer with that state ([`PhysicsWorld::check_hash`]). A joiner restores a transfer only
 //!   when its hash matches the confirmed one (design 9.1): the bytes come from an untrusted
-//!   donor, and Box3D cannot check that every index in them is consistent.
+//!   donor, and Box3D cannot check that every index in them is consistent. The check hash is
+//!   BLAKE3 over all of the bytes, so a donor cannot find other bytes with the confirmed hash;
+//!   the restored world must also save back to exactly the transfer's bytes.
 
 use std::collections::BTreeSet;
 
 use box3d_rust::body::body_is_valid;
 use box3d_rust::id::{BodyId, JointId};
-use box3d_rust::joint::joint_is_valid;
+use box3d_rust::joint::{joint_get_type, joint_is_valid};
 use box3d_rust::recording::{
     deserialize_into_shell, image_world_settings, serialize_world, world_settings, GeometryKind,
     GeometryRegistry, RecBuffer, RegistrySlot, SNAP_FLAG_VALIDATION,
@@ -50,6 +54,37 @@ pub struct WorldImage {
     bodies: Vec<(ObjectId, BodyId)>,
     joints: Vec<(JointKey, JointId, JointKind)>,
     anchor: Option<BodyId>,
+}
+
+/// The full-state check hash (design 9.1) of a world: BLAKE3 (pure Rust, D16) of its
+/// [`Transfer`] bytes, keyed for this use. Cryptographic, so a matching hash means matching
+/// bytes even when the bytes come from a hostile peer (review P22R-1). XXH64 is enough to
+/// detect divergence between honest peers ([`PhysicsWorld::state_hash`]) but not this.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CheckHash(pub [u8; 32]);
+
+/// BLAKE3 key-derivation context, so the hash cannot be confused with another BLAKE3 use.
+const CHECK_HASH_CONTEXT: &str = "Primordial Engine 2026-10-31 pe-physics transfer check hash";
+
+impl CheckHash {
+    /// The check hash of `transfer_bytes` ([`Transfer::to_bytes`]).
+    pub fn of(transfer_bytes: &[u8]) -> CheckHash {
+        let mut h = blake3::Hasher::new_derive_key(CHECK_HASH_CONTEXT);
+        h.update(transfer_bytes);
+        CheckHash(*h.finalize().as_bytes())
+    }
+}
+
+impl std::fmt::Display for CheckHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
+    }
+}
+
+impl std::fmt::Debug for CheckHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CheckHash({self})")
+    }
 }
 
 /// The physics state of a world for a joining peer: an image and the geometry it uses.
@@ -162,9 +197,11 @@ impl WorldImage {
         out
     }
 
-    /// Parse [`Self::to_bytes`]. Checks the framing and the table invariants (see
-    /// [`Self::check_tables`]). Box3D's world bytes are only checked when restored, and only
-    /// for being readable: see the module docs for what makes untrusted bytes safe.
+    /// Parse [`Self::to_bytes`], for tests and tools only (feature `raw`): images are local
+    /// data, and a restored image is not hash-checked (review P22R-5). Checks the framing and
+    /// the table invariants (see [`Self::check_tables`]); Box3D's world bytes are only checked
+    /// when restored, and only for being readable.
+    #[cfg(feature = "raw")]
     pub fn from_bytes(data: &[u8]) -> Result<WorldImage, PhysicsError> {
         let mut r = Reader { data };
         let image = WorldImage::read(&mut r)?;
@@ -282,10 +319,10 @@ impl Transfer {
         Ok(Transfer { geometry, image })
     }
 
-    /// XXH64 (pe-core) of [`Self::to_bytes`]: the full-state check hash (design 9.1). Equal on
+    /// [`CheckHash::of`] [`Self::to_bytes`]: the full-state check hash (design 9.1). Equal on
     /// every peer with the same physics state, whatever its save history or build profile.
-    pub fn check_hash(&self) -> u64 {
-        pe_core::hash::xxh64(&self.to_bytes(), 0)
+    pub fn check_hash(&self) -> CheckHash {
+        CheckHash::of(&self.to_bytes())
     }
 
     /// The number of geometry blobs it carries.
@@ -296,10 +333,12 @@ impl Transfer {
 
 impl PhysicsWorld {
     /// Save the physics state for rollback. Images of one world share its geometry registry.
-    pub fn save_image(&mut self) -> WorldImage {
+    /// Refused while poisoned: a half-restored world must not enter the ring (review P22R-4).
+    pub fn save_image(&mut self) -> Result<WorldImage, PhysicsError> {
+        self.usable()?;
         let mut buf = RecBuffer::new();
         serialize_world(&self.world, &mut buf, &mut self.images.registry);
-        self.image_with(buf.data)
+        Ok(self.image_with(buf.data))
     }
 
     fn image_with(&self, world: Vec<u8>) -> WorldImage {
@@ -312,10 +351,12 @@ impl PhysicsWorld {
     }
 
     /// Restore an image saved from this world (or from a world restored from the same
-    /// transfer). Box3D's world value is overwritten in place, so the worker threads and the
-    /// configuration stay. An image whose settings differ from this world's is refused before
-    /// anything is written. If Box3D refuses the bytes after it has started writing, the world
-    /// is poisoned ([`PhysicsError::Poisoned`]) until a good image is restored.
+    /// transfer): local rollback only. Images are trusted, so nothing here is hash-checked;
+    /// state from another peer arrives as a [`Transfer`]. Box3D's world value is overwritten in
+    /// place, so the worker threads and the configuration stay. An image whose settings differ
+    /// from this world's is refused before anything is written. If Box3D refuses the bytes
+    /// after it has started writing, the world is poisoned ([`PhysicsError::Poisoned`]) until a
+    /// good image is restored (the one call a poisoned world accepts).
     pub fn restore_image(&mut self, image: &WorldImage) -> Result<(), PhysicsError> {
         if self.world.locked {
             return Err(PhysicsError::Locked);
@@ -329,8 +370,13 @@ impl PhysicsWorld {
         Ok(())
     }
 
-    /// The physics state for a joining peer (see [`Transfer`]).
-    pub fn save_transfer(&self) -> Transfer {
+    /// The physics state for a joining peer (see [`Transfer`]). Refused while poisoned.
+    pub fn save_transfer(&self) -> Result<Transfer, PhysicsError> {
+        self.usable()?;
+        Ok(self.transfer())
+    }
+
+    fn transfer(&self) -> Transfer {
         let mut registry = GeometryRegistry::new();
         let mut buf = RecBuffer::new();
         serialize_world(&self.world, &mut buf, &mut registry);
@@ -346,16 +392,19 @@ impl PhysicsWorld {
     }
 
     /// The full-state check hash ([`Transfer::check_hash`] of [`Self::save_transfer`]).
-    pub fn check_hash(&self) -> u64 {
-        self.save_transfer().check_hash()
+    /// Refused while poisoned.
+    pub fn check_hash(&self) -> Result<CheckHash, PhysicsError> {
+        Ok(self.save_transfer()?.check_hash())
     }
 
     /// A new world from a transfer (a joiner's path). Refused unless the transfer's check hash
     /// is `confirmed`, the check hash the session confirmed for that state: only then is the
     /// donor's data trusted. `config` must be the world's configuration; the transfer's
-    /// settings must equal it, and the worker count comes from it.
-    pub fn from_transfer(config: PhysicsConfig, transfer: &Transfer, confirmed: u64) -> Result<PhysicsWorld, PhysicsError> {
-        if transfer.check_hash() != confirmed {
+    /// settings must equal it, and the worker count comes from it. The new world must save back
+    /// to exactly the transfer, so no byte of it went unread: every geometry blob is used once,
+    /// in order, and Box3D consumed all of its world bytes.
+    pub fn from_transfer(config: PhysicsConfig, transfer: &Transfer, confirmed: &CheckHash) -> Result<PhysicsWorld, PhysicsError> {
+        if transfer.check_hash() != *confirmed {
             return Err(PhysicsError::BadImage("check hash differs from the confirmed one"));
         }
         let mut pw = PhysicsWorld::new(config)?;
@@ -367,6 +416,9 @@ impl PhysicsWorld {
         pw.images.refresh_slots();
         restore_into(&mut pw.world, &mut pw.images.slots, &transfer.image)?;
         pw.set_tables(&transfer.image)?;
+        if pw.transfer() != *transfer {
+            return Err(PhysicsError::BadImage("transfer is not canonical: it does not save back to itself"));
+        }
         Ok(pw)
     }
 
@@ -377,6 +429,10 @@ impl PhysicsWorld {
             || !image.anchor.is_none_or(|b| body_is_valid(world, b))
         {
             return Err(PhysicsError::BadImage("tables name bodies or joints the world does not have"));
+        }
+        // A grab must be Box3D's motor joint, or set_grab_velocity would panic (P22R-3).
+        if !image.joints.iter().all(|&(_, j, kind)| joint_get_type(world, j) == kind.box3d_type()) {
+            return Err(PhysicsError::BadImage("a joint's kind differs from its Box3D type"));
         }
         self.bodies = image.bodies.iter().copied().collect();
         self.joints = image.joints.iter().map(|&(k, id, kind)| (k, JointEntry { id, kind })).collect();

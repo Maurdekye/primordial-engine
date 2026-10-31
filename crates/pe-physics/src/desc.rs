@@ -25,6 +25,10 @@ pub mod limits {
     pub const MAX_PUSH: f32 = 1.0e9;
     /// Largest gravity component, m/s^2.
     pub const MAX_GRAVITY: f32 = 1.0e4;
+    /// Most points a hull is built from (Box3D keeps at most 64 hull vertices), and most
+    /// shapes on one body: building costs every peer CPU time (review P22R-6).
+    pub const MAX_HULL_POINTS: usize = 1024;
+    pub const MAX_SHAPES_PER_BODY: usize = 64;
 }
 
 use limits::*;
@@ -72,7 +76,8 @@ pub enum Geometry {
     Capsule { center1: [f32; 3], center2: [f32; 3], radius: f32 },
     /// A box centred on the body origin, by half extents.
     Box { half_extents: [f32; 3] },
-    /// The convex hull of these points (at most 64 hull vertices are kept).
+    /// The convex hull of 4 to [`limits::MAX_HULL_POINTS`] points (at most 64 hull vertices
+    /// are kept).
     Hull { points: Vec<[f32; 3]> },
 }
 
@@ -136,7 +141,7 @@ impl ShapeDesc {
                 }
             }
             Geometry::Hull { points } => {
-                if points.len() < 4 {
+                if points.len() < 4 || points.len() > MAX_HULL_POINTS {
                     return Err(PhysicsError::BadHull);
                 }
                 for p in points {
@@ -219,6 +224,9 @@ impl BodyDesc {
         bounded(&[self.linear_damping, self.angular_damping], MAX_DAMPING, "damping")?;
         if self.linear_damping < 0.0 || self.angular_damping < 0.0 {
             return Err(PhysicsError::InvalidValue("negative damping"));
+        }
+        if self.shapes.len() > MAX_SHAPES_PER_BODY {
+            return Err(PhysicsError::InvalidValue("too many shapes on one body"));
         }
         for shape in &self.shapes {
             shape.validate()?;
