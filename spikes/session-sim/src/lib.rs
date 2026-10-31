@@ -362,8 +362,9 @@ pub struct Replica {
     pub level: usize,
     level_t: u64,
     calm_since: u64,
-    /// D56: the level at which the uplink last congested, and when, so the controller re-enters it
-    /// only after a longer calm (`CONGESTED_REENTRY_US`) and forgets it after `CONGESTED_MEMORY_US`.
+    /// D56: the level the controller last raised from, and when the uplink was last congested, so the
+    /// controller re-enters that level only after a longer calm (`CONGESTED_REENTRY_US`) and forgets it
+    /// after `CONGESTED_MEMORY_US` with no congestion.
     congested: Option<(usize, u64)>,
     hand_last: BTreeMap<u32, u64>,
     /// Time spent at each congestion level (ms), and the highest level reached.
@@ -633,6 +634,12 @@ impl Sim {
                     r.congested = Some((r.level, now));
                     r.level += 1;
                     r.level_t = now;
+                } else if b > 40_000 {
+                    // Review D56-1: congestion that cannot raise (at the coarsest level, or within 100 ms
+                    // of the last raise) keeps the memory too; it is forgotten only after 30 s with none.
+                    if let Some((_, t)) = r.congested.as_mut() {
+                        *t = now;
+                    }
                 }
                 if r.congested.is_some_and(|(_, t)| now >= t + CONGESTED_MEMORY_US) {
                     r.congested = None;

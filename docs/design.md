@@ -2236,7 +2236,9 @@ and the engager's hand replayed after the gesture had ended.
      (after 300 ms below 10 ms).
      * **It remembers the level that congested** (@coordinator-opus, 2026-10-31; D56). After congestion
        at level L, it lowers back into L only after 5 s of calm instead of 300 ms, and forgets L after
-       30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Without it, a
+       30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Any queue above
+       40 ms counts as congestion here, whether or not it raises the level: at the coarsest level none
+       can, and on-and-off cross-traffic there must not age L out (review D56-1). Without it, a
        stream at twice the cap cycled every 3.5 s: each 300 ms of calm lowered it back to level 0, and
        the queue reached 340-390 ms before the raises caught up [V pe-app r18-app]. The spike mirrors it
        (p2/spike-d56; the measured effect is under the table below).
