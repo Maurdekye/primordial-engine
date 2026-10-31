@@ -16,7 +16,8 @@ pub enum SceneKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Obj {
-    pub body: BodyId,
+    /// The object's body in the physics world: [`object_id`] of its table index.
+    pub id: ObjectId,
     pub global: u64,
     pub kind: u8,
 }
@@ -27,97 +28,93 @@ pub(super) const HAND_R: f32 = 0.09;
 /// Dead-reckoning speed cap for a hand without an entry (m/s).
 pub(super) const HAND_COAST_VMAX: f32 = 3.0;
 
-pub(super) fn add_shape(world: &mut World, body: BodyId, kind: u8) {
-    let mut sd = default_shape_def();
-    sd.density = 1.0;
+/// The physics id of object-table entry `i` (S2). Scene statics, which are not objects, are
+/// creator 1.
+pub fn object_id(i: usize) -> ObjectId {
+    ObjectId::new(0, i as u32 + 1)
+}
+
+fn static_id(k: u32) -> ObjectId {
+    ObjectId::new(1, k + 1)
+}
+
+/// The shape of an object of `kind` (as the spike's `add_shape`).
+pub(super) fn shape_desc(kind: u8) -> ShapeDesc {
     match kind {
-        0 => {
-            let h = make_box_hull(0.4, 0.4, 0.4);
-            create_hull_shape(world, body, &sd, &h.base);
-        }
-        1 => {
-            let s = Sphere { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, radius: 0.45 };
-            create_sphere_shape(world, body, &sd, &s);
-        }
-        2 => {
-            let c = Capsule {
-                center1: Vec3 { x: -0.3, y: 0.0, z: 0.0 },
-                center2: Vec3 { x: 0.3, y: 0.0, z: 0.0 },
-                radius: 0.25,
-            };
-            create_capsule_shape(world, body, &sd, &c);
-        }
+        0 => ShapeDesc::new(Geometry::Box { half_extents: [0.4, 0.4, 0.4] }).with_density(1.0),
+        1 => ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.45 }).with_density(1.0),
+        2 => ShapeDesc::new(Geometry::Capsule { center1: [-0.3, 0.0, 0.0], center2: [0.3, 0.0, 0.0], radius: 0.25 }).with_density(1.0),
         3 => {
-            sd.density = 0.2;
-            sd.base_material.rolling_resistance = 0.2;
-            sd.base_material.friction = 0.6;
-            let s = Sphere { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, radius: BALL_R };
-            create_sphere_shape(world, body, &sd, &s);
+            let mut s = ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: BALL_R }).with_density(0.2).with_friction(0.6);
+            s.rolling_resistance = 0.2;
+            s
         }
-        _ => {
-            let s = Sphere { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, radius: HAND_R };
-            create_sphere_shape(world, body, &sd, &s);
-        }
+        _ => ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: HAND_R }).with_density(1.0),
     }
 }
 
-pub(super) fn static_box(world: &mut World, p: Pos, hx: f32, hy: f32, hz: f32) {
-    let mut d = default_body_def();
-    d.type_ = BodyType::Static;
-    d.position = p;
-    let b = create_body(world, &d);
-    let hull = make_box_hull(hx, hy, hz);
-    create_hull_shape(world, b, &default_shape_def(), &hull.base);
+fn static_box(world: &mut PhysicsWorld, k: u32, p: [f32; 3], half_extents: [f32; 3]) {
+    let d = BodyDesc::new(BodyKind::Static, p.map(f64::from)).with_shape(ShapeDesc::new(Geometry::Box { half_extents }));
+    world.add_body(static_id(k), &d).expect("scene static");
 }
 
-/// Builds the scene. `world_tag` makes global object ids unique across worlds (R14).
-pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>) {
+/// Builds the scene. `world_tag` makes global object ids unique across worlds (R14). Bodies are
+/// created in the spike's order with the spike's settings, so the physics is the same.
+pub fn build_scene(kind: SceneKind, world_tag: u32) -> (PhysicsWorld, Vec<Option<Obj>>) {
     let g = |i: usize| ((world_tag as u64) << 32) | i as u64;
+    let mut world = PhysicsWorld::new(PhysicsConfig::engine()).expect("engine physics config");
+    let mut objs = Vec::new();
+    let add = |world: &mut PhysicsWorld, objs: &mut Vec<Option<Obj>>, d: BodyDesc, kind: u8| {
+        let i = objs.len();
+        world.add_body(object_id(i), &d).expect("scene body");
+        objs.push(Some(Obj { id: object_id(i), global: g(i), kind }));
+    };
     match kind {
         SceneKind::Pile { side, layers } => {
-            let s = crate::build_pile_scene(side, layers);
-            let objs = s.bodies.iter().enumerate().map(|(i, &b)| Some(Obj { body: b, global: g(i), kind: (i % 3) as u8 })).collect();
-            (s.world, objs)
+            static_box(&mut world, 0, [0.0, -1.0, 0.0], [40.0, 1.0, 40.0]);
+            for layer in 0..layers {
+                for ix in 0..side {
+                    for iz in 0..side {
+                        let n = objs.len();
+                        // Small deterministic jitter so the pile topples (in f32, as the spike).
+                        let jitter = (n as f32 * 0.618_034).fract() * 0.2 - 0.1;
+                        let p = [(ix as f32 - side as f32 * 0.5) * 1.1 + jitter, 0.5 + layer as f32 * 1.2, (iz as f32 - side as f32 * 0.5) * 1.1 - jitter];
+                        let k = (n % 3) as u8;
+                        add(&mut world, &mut objs, BodyDesc::new(BodyKind::Dynamic, p.map(f64::from)).with_shape(shape_desc(k)), k);
+                    }
+                }
+            }
         }
         SceneKind::BallPit { balls, hands } => {
-            let mut world = World::new(&crate::engine_world_def());
-            static_box(&mut world, Pos { x: 0.0, y: -0.5, z: 0.0 }, 2.0, 0.5, 2.0);
+            static_box(&mut world, 0, [0.0, -0.5, 0.0], [2.0, 0.5, 2.0]);
             let (w, h) = (1.2f32, 0.6f32);
-            static_box(&mut world, Pos { x: w + 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: -w - 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: w + 0.1 }, w + 0.2, h, 0.1);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: -w - 0.1 }, w + 0.2, h, 0.1);
-            let mut objs = Vec::with_capacity(balls + hands);
+            static_box(&mut world, 1, [w + 0.1, h, 0.0], [0.1, h, w + 0.2]);
+            static_box(&mut world, 2, [-w - 0.1, h, 0.0], [0.1, h, w + 0.2]);
+            static_box(&mut world, 3, [0.0, h, w + 0.1], [w + 0.2, h, 0.1]);
+            static_box(&mut world, 4, [0.0, h, -w - 0.1], [w + 0.2, h, 0.1]);
             let per_row = 16usize;
             let spacing = 2.0 * w / per_row as f32;
             for i in 0..balls {
                 let (ix, iz, iy) = (i % per_row, (i / per_row) % per_row, i / (per_row * per_row));
                 let jitter = (i as f32 * 0.618_034).fract() * 0.02 - 0.01;
-                let mut d = default_body_def();
-                d.type_ = BodyType::Dynamic;
+                let p = [
+                    -w + spacing * (ix as f32 + 0.5) + jitter,
+                    BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
+                    -w + spacing * (iz as f32 + 0.5) - jitter,
+                ];
+                let mut d = BodyDesc::new(BodyKind::Dynamic, p.map(f64::from)).with_shape(shape_desc(3));
                 d.linear_damping = 0.1;
                 d.angular_damping = 0.3;
-                d.position = Pos {
-                    x: -w + spacing * (ix as f32 + 0.5) + jitter,
-                    y: BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
-                    z: -w + spacing * (iz as f32 + 0.5) - jitter,
-                };
-                let b = create_body(&mut world, &d);
-                add_shape(&mut world, b, 3);
-                objs.push(Some(Obj { body: b, global: g(i), kind: 3 }));
+                add(&mut world, &mut objs, d, 3);
             }
             for k in 0..hands {
-                let mut d = default_body_def();
-                d.type_ = BodyType::Kinematic;
-                d.position = Pos { x: -0.8 + 1.6 * k as f32, y: 1.5, z: 0.0 };
-                let b = create_body(&mut world, &d);
-                add_shape(&mut world, b, 4);
-                objs.push(Some(Obj { body: b, global: g(balls + k), kind: 4 }));
+                let d = BodyDesc::new(BodyKind::Kinematic, [(-0.8 + 1.6 * k as f32) as f64, 1.5, 0.0]).with_shape(shape_desc(4));
+                add(&mut world, &mut objs, d, 4);
             }
-            (world, objs)
         }
-        SceneKind::Empty => (World::new(&crate::engine_world_def()), Vec::new()),
+        SceneKind::Empty => {}
     }
+    (world, objs)
 }
 
 impl WorldSim {
@@ -125,20 +122,15 @@ impl WorldSim {
 
     pub(super) fn save(&mut self) -> Keyframe {
         let t0 = now_us();
-        let mut buf = RecBuffer::new();
-        serialize_world(&self.world, &mut buf, &mut self.registry);
-        if self.registry.entries.len() != self.slot_count {
-            self.slots = self.registry.to_slots();
-            self.slot_count = self.registry.entries.len();
-        }
+        let image = self.world.save_image().expect("a usable physics world");
         self.stats.saves += 1;
         self.stats.save_us += now_us() - t0;
-        Keyframe { image: buf.data, t: self.t.clone() }
+        Keyframe { image, t: self.t.clone() }
     }
 
     pub(super) fn restore(&mut self, k: &Keyframe, frame: u64) {
         let t0 = now_us();
-        assert!(deserialize_into_shell(&k.image, &mut self.world, &mut self.slots), "restore failed");
+        self.world.restore_image(&k.image).expect("restore failed");
         self.t = k.t.clone();
         self.frame = frame;
         self.stats.restore_us += now_us() - t0;
@@ -146,14 +138,14 @@ impl WorldSim {
 
     /// Bytes of world image the ring holds now (the memory side of the snapshot knob).
     pub fn ring_bytes(&self) -> u64 {
-        self.ring.values().map(|k| k.image.len() as u64).sum()
+        self.ring.values().map(|k| k.image.world_bytes().len() as u64).sum()
     }
 
     /// What the ring would hold as one full base image plus block deltas: (full bytes, bytes if
     /// every later image were stored as a delta against the base, bytes if each were stored as a
     /// delta against the previous image), with 64-byte blocks.
     pub fn ring_delta_bytes(&self) -> (u64, u64, u64) {
-        let imgs: Vec<&[u8]> = self.ring.values().map(|k| k.image.as_slice()).collect();
+        let imgs: Vec<&[u8]> = self.ring.values().map(|k| k.image.world_bytes()).collect();
         let Some(base) = imgs.first() else { return (0, 0, 0) };
         let full = imgs.iter().map(|i| i.len() as u64).sum();
         let vs_base = base.len() as u64 + imgs[1..].iter().map(|i| block_delta(base, i, 64)).sum::<u64>();
@@ -184,22 +176,26 @@ impl WorldSim {
     }
 
     /// Hash of the full world image plus tables: used at confirmed check frames (review H4).
-    pub fn image_hash(&mut self) -> u64 {
-        // A check-hash serialization is not a keyframe: keep it out of the snapshot counters.
-        let (n, us) = (self.stats.saves, self.stats.save_us);
-        let k = self.save();
-        (self.stats.saves, self.stats.save_us) = (n, us);
-        // Review NEW-7: after a destroy, a world that stepped continuously and one restored from a
-        // keyframe hold the same physics but different image bytes. Hash the image of a scratch
-        // world restored from this one instead, so both paths hash alike.
-        let scratch = self.scratch.get_or_insert_with(|| World::new(&crate::engine_world_def()));
-        assert!(deserialize_into_shell(&k.image, scratch, &mut self.slots), "canonical restore failed");
-        let mut buf = RecBuffer::new();
-        serialize_world(scratch, &mut buf, &mut self.registry);
-        fnv_bytes(&buf.data) ^ self.tables_hash().rotate_left(17)
+    /// The check hash at this frame (design 9.1, P22R-1): BLAKE3 over pe-physics's full-state check
+    /// hash (canonical whichever way the state was reached: review NEW-7, tests/physics_check_hash.rs)
+    /// and every engine table.
+    pub fn check_hash(&mut self) -> CheckHash {
+        let physics = self.world.check_hash().expect("a usable physics world");
+        let mut h = blake3::Hasher::new();
+        h.update(b"pe-check");
+        h.update(&physics.0);
+        for w in self.tables_words() {
+            h.update(&w.to_le_bytes());
+        }
+        CheckHash(*h.finalize().as_bytes())
     }
 
     pub(super) fn tables_hash(&self) -> u64 {
+        fnv_u64s(self.tables_words())
+    }
+
+    /// Every engine table, canonically, as 64-bit words.
+    pub(super) fn tables_words(&self) -> Vec<u64> {
         let mut v = vec![self.frame];
         for (i, o) in self.t.objs.iter().enumerate() {
             if let Some(o) = o {
@@ -230,16 +226,16 @@ impl WorldSim {
                 v.extend([*o as u64, *n, 11]);
             }
         }
-        fnv_u64s(v)
+        v
     }
 
     /// Per-frame hash: Box3D body transforms + velocities, plus every engine table.
     pub fn state_hash(&self) -> u64 {
-        hash_world_state(&self.world) ^ self.tables_hash().rotate_left(29)
+        self.world.box3d_hash().expect("a usable physics world") ^ self.tables_hash().rotate_left(29)
     }
 
     pub fn obj_state(&self, obj: u32) -> Option<BodyState> {
-        self.t.objs.get(obj as usize).copied().flatten().map(|o| BodyState::read(&self.world, o.body))
+        self.t.objs.get(obj as usize).copied().flatten().map(|o| BodyState::read(&self.world, o.id))
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -300,8 +296,10 @@ impl WorldSim {
                         }
                     }
                 }
-                let imp = Vec3 { x: impulse[0], y: impulse[1], z: impulse[2] };
-                body_apply_linear_impulse_to_center(&mut self.world, o.body, imp, true);
+                // pe-physics refuses a non-finite or absurd impulse (limits::MAX_PUSH): invalid.
+                if self.world.push(o.id, Push::Impulse(*impulse)).is_err() {
+                    return Outcome::RejectedInvalid;
+                }
                 if claims {
                     // Takes the claim, or renews the holder's: held while the grab keeps renewing it,
                     // it lapses CLAIM_FRAMES after the last renewal, then the holder's cooldown starts.
@@ -325,12 +323,15 @@ impl WorldSim {
                 }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 let p = if *active {
-                    Pos { x: target_mm[0] as f32 * 0.001, y: target_mm[1] as f32 * 0.001, z: target_mm[2] as f32 * 0.001 }
+                    [target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001]
                 } else {
-                    Pos { x: 0.0, y: 1.5, z: 0.0 }
+                    [0.0, 1.5, 0.0]
                 };
                 let dt = self.cfg.dt * (*span).max(1) as f32;
-                body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, dt, true);
+                let target = Pose { position: p.map(f64::from), rotation: [0.0, 0.0, 0.0, 1.0] };
+                if self.world.set_target(o.id, target, dt, true).is_err() {
+                    return Outcome::RejectedInvalid;
+                }
                 hands_set.insert(*obj);
                 if *active {
                     self.t.hand_idle.insert(*obj, 0);
@@ -397,8 +398,8 @@ impl WorldSim {
                     }
                 }
                 let record =
-                    ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.body), src_world: self.world_id, src_frame: f, via };
-                destroy_body(&mut self.world, o.body);
+                    ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.id), src_world: self.world_id, src_frame: f, via };
+                self.world.remove_body(o.id).expect("a bound body");
                 self.t.objs[*obj as usize] = None;
                 self.t.claims.remove(obj);
                 self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
@@ -418,11 +419,11 @@ impl WorldSim {
                 let st = record.state;
                 let finite = st.0.iter().all(|&b| (b >> 23) & 0xFF != 0xFF);
                 let (q, v, w) = (st.rot(), st.lin(), st.ang());
-                let qn = q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z + q.s * q.s;
+                let qn = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
                 let sane = finite
                     && (0.99..=1.01).contains(&qn)
-                    && v.x * v.x + v.y * v.y + v.z * v.z <= MAX_ARRIVAL_SPEED * MAX_ARRIVAL_SPEED
-                    && w.x * w.x + w.y * w.y + w.z * w.z <= MAX_ARRIVAL_SPIN * MAX_ARRIVAL_SPIN;
+                    && v[0] * v[0] + v[1] * v[1] + v[2] * v[2] <= MAX_ARRIVAL_SPEED * MAX_ARRIVAL_SPEED
+                    && w[0] * w[0] + w[1] * w[1] + w[2] * w[2] <= MAX_ARRIVAL_SPIN * MAX_ARRIVAL_SPIN;
                 if !sane {
                     if !self.t.arrivals.contains_key(transfer) {
                         self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
@@ -488,7 +489,7 @@ impl WorldSim {
                     self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                     return Outcome::RejectedLiveId;
                 }
-                let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
+                let obj = self.spawn(record, [0.0, 2.0, 0.0]);
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });
                 let entry = Some(Box::new(arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert)));
                 let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), chash, settled: false, entry };
@@ -543,17 +544,16 @@ impl WorldSim {
     }
 
     /// Recreate an object from a record at `at`, keeping its rotation and velocities.
-    pub(super) fn spawn(&mut self, r: &ObjRecord, at: Pos) -> u32 {
-        let mut d = default_body_def();
-        d.type_ = BodyType::Dynamic;
-        d.position = at;
-        d.rotation = r.state.rot();
-        d.linear_velocity = r.state.lin();
-        d.angular_velocity = r.state.ang();
-        let b = create_body(&mut self.world, &d);
-        add_shape(&mut self.world, b, r.kind);
-        self.t.objs.push(Some(Obj { body: b, global: r.global, kind: r.kind }));
-        (self.t.objs.len() - 1) as u32
+    pub(super) fn spawn(&mut self, r: &ObjRecord, at: [f32; 3]) -> u32 {
+        let i = self.t.objs.len();
+        let d = BodyDesc::new(BodyKind::Dynamic, at.map(f64::from))
+            .with_rotation(r.state.rot())
+            .with_velocity(r.state.lin(), r.state.ang())
+            .with_shape(shape_desc(r.kind));
+        // The arrival checks (NEW-21) keep the record within pe-physics's limits.
+        self.world.add_body(object_id(i), &d).expect("a checked record");
+        self.t.objs.push(Some(Obj { id: object_id(i), global: r.global, kind: r.kind }));
+        i as u32
     }
 
     /// Step one frame: keyframe, entries in canonical order, hands, Box3D step, carried states.
@@ -603,34 +603,37 @@ impl WorldSim {
                 }
                 _ => false,
             };
+            let (v, w) = self.world.velocity(o.id).expect("a bound body");
             if !coast {
-                body_set_linear_velocity(&mut self.world, o.body, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+                self.world.set_velocity(o.id, [0.0; 3], w).expect("a bound hand");
             } else {
                 // Never coast faster than a hand moves: a jump (a teleport-like target) would
                 // otherwise be extrapolated as a 40 m/s flight.
-                let v = body_get_linear_velocity(&self.world, o.body);
-                let sp = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+                let sp = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
                 if sp > HAND_COAST_VMAX {
                     let k = HAND_COAST_VMAX / sp;
-                    body_set_linear_velocity(&mut self.world, o.body, Vec3 { x: v.x * k, y: v.y * k, z: v.z * k });
+                    self.world.set_velocity(o.id, v.map(|c| c * k), w).expect("a bound hand");
                 }
             }
         }
         let t0 = now_us();
-        self.world.step(self.cfg.dt, SUBSTEPS);
+        self.world.step(self.cfg.dt).expect("a usable physics world");
         if record {
             self.stats.step_us += now_us() - t0;
             self.stats.steps += 1;
         }
-        // User ruling 09:30Z: the touched object takes the carried resulting state. A no-op when
-        // this peer is on the author's world line; otherwise it pulls the object onto it.
+        // User ruling 09:30Z: the touched object takes the carried resulting state. Every peer,
+        // the toucher included, writes it at this frame, whether or not its bits already match
+        // (review SET-1): a body whose pose was set has a recomputed centre of mass, rotation0 and
+        // world inertia, unlike an integrated one with the same bits, so a peer that skipped the
+        // write would diverge at the next step on an off-centre body. Sleep (review SET-2): the
+        // touch's impulse woke the body this frame on every peer, so it is awake everywhere when
+        // the state is written. `overwrites` counts the writes that changed the bits.
         for (obj, st) in carry {
             if let Some(o) = self.live(obj) {
-                if BodyState::read(&self.world, o.body) != st {
-                    st.write(&mut self.world, o.body);
-                    if record {
-                        self.stats.overwrites += 1;
-                    }
+                let differs = BodyState::read(&self.world, o.id) != st;
+                if st.write(&mut self.world, o.id).is_ok() && record && differs {
+                    self.stats.overwrites += 1;
                 }
             }
         }
@@ -651,12 +654,12 @@ impl WorldSim {
                 }
             }
             if f % self.cfg.check_every == 0 {
-                let h = self.image_hash();
+                let h = self.check_hash();
                 self.check_hashes.insert(f, h);
                 // Review L2: a release-build finite check at every check frame. NaN payload bits differ
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
                 let bad = self.t.objs.iter().flatten().find(|o| {
-                    let st = BodyState::read(&self.world, o.body);
+                    let st = BodyState::read(&self.world, o.id);
                     st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
                 });
                 if let Some(o) = bad {
@@ -671,8 +674,7 @@ impl WorldSim {
                     .objs
                     .iter()
                     .map(|o| o.map_or([f32::NAN; 3], |o| {
-                        let x = body_get_transform(&self.world, o.body).p;
-                        [x.x as f32, x.y as f32, x.z as f32]
+                        self.world.pose(o.id).expect("a bound body").position.map(|c| c as f32)
                     }))
                     .collect();
                 self.pos_hist.insert(f, p);
@@ -764,7 +766,7 @@ impl WorldSim {
     /// Bytes of rollback snapshot data held: every keyframe's world image plus its object table
     /// (ballpit-viz; `ring_bytes` counts the world images only).
     pub fn ring_bytes_with_objs(&self) -> usize {
-        self.ring.values().map(|k| k.image.len() + k.t.objs.len() * std::mem::size_of::<Option<Obj>>()).sum()
+        self.ring.values().map(|k| k.image.world_bytes().len() + k.t.objs.len() * std::mem::size_of::<Option<Obj>>()).sum()
     }
 
     pub fn caught_up(&self) -> bool {

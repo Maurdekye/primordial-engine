@@ -1,0 +1,47 @@
+description = """
+P2-5 control: r14-forge with the provenance checks off, to show what W's attacks did before \
+P2-5. Expected NOT CONSERVED in the honest worlds; only the log is compared."""
+include = ["r14-forge.toml"]
+golden = "p2-5-controls/r14-forge-no-provenance"
+control = true
+
+[sim]
+provenance = false
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "forge"
+[[report]]
+kind = "r14_forge_conservation"
+label = "forge"
+original = true
+attacks = 16
+control = true
+[[report]]
+kind = "stats"
+world = 6
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 forge A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 forge B"
+[[report]]
+kind = "check_world"
+world = 6
+frames = 480
+label = "r14 forge W"

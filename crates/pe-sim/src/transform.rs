@@ -8,7 +8,8 @@
 //!   offset from its frame, so its precision is that offset's ulp: about 1e-13 m at 1 km, 1e-10 m at
 //!   1,000 km, 1 um out to about 4e9 m. Keep children within about 10^6 km of their frame; far content
 //!   belongs in its own root.
-//! * **Plain edits are data edits** (review P21R-3): `insert`/`insert_raw` and `remove` of a `Transform`,
+//! * **Plain edits are data edits** (review P21R-3), each costing O(depth) for its frame lookups (review
+//!   P21S-4): `insert`/`insert_raw` and `remove` of a `Transform`,
 //!   and [`SimStore::set_parent`], store exactly what they are given and never rewrite other objects. So a
 //!   state rebuilt by a loader is the same whatever order it inserts in. An edit that would leave an object
 //!   with a frame and a non-zero `chunk` is refused.
@@ -257,6 +258,21 @@ fn invalid(object: ObjectId, field: &str) -> Error {
     Error::InvalidValue { component: ComponentId::TRANSFORM.0, object, field: field.to_string() }
 }
 
+/// `q` normalized in `f64` (review P21S-1: in `f32`, a tiny `q` has a subnormal `q.q` and normalizes to a
+/// norm far from 1), or the identity if the result still fails the norm limit.
+fn repaired_rot(q: [f32; 4]) -> [f32; 4] {
+    let d = q.map(|x| x as f64);
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] + d[3] * d[3]).sqrt();
+    if n.is_finite() && n > 0.0 {
+        let r = d.map(|x| (x / n) as f32);
+        let n2: f32 = r.iter().map(|x| x * x).sum();
+        if (0.98..=1.02).contains(&n2) {
+            return r;
+        }
+    }
+    [0.0, 0.0, 0.0, 1.0]
+}
+
 /// The nearest value to `t` that passes [`Transform::validate`] (`maintain_transforms`' repair).
 fn repaired(t: &Transform, has_frame: bool) -> Transform {
     let mut r = *t;
@@ -266,7 +282,7 @@ fn repaired(t: &Transform, has_frame: bool) -> Transform {
         r.chunk = r.chunk.map(|c| c.clamp(-ROOT_CHUNK_LIMIT, ROOT_CHUNK_LIMIT));
     }
     r.pos = r.pos.map(|p| if p.is_finite() { p.clamp(-POS_LIMIT, POS_LIMIT) } else { 0.0 });
-    r.rot = quat_normalize(r.rot);
+    r.rot = repaired_rot(r.rot);
     r.scale = r.scale.map(|v| {
         if !v.is_finite() || v == 0.0 {
             1.0
@@ -422,7 +438,7 @@ impl SimStore {
             // Objects below that had no frame gain one.
             for k in self.frame_children(id) {
                 if self.get::<Transform>(k).unwrap().chunk != [0; 3] {
-                    return Err(invalid(k, "chunk"));
+                    return Err(Error::ChunkUnderFrame { object: k });
                 }
             }
         }
@@ -478,6 +494,10 @@ impl SimStore {
     /// Rebases root positions into their chunk (exact; review P21-7) where the rebased form is within the
     /// limits, and repairs any `Transform` outside them (written through `get_mut`; review P21R-5). Returns
     /// how many rows it changed. Linear in the objects.
+    ///
+    /// As a system it must run **after** every system that writes transforms through `get_mut` or
+    /// `column_mut`: schedule it last (review P21S-3), so every state that is snapshotted or sent to a
+    /// joiner has been repaired.
     pub fn maintain_transforms(&mut self) -> usize {
         let flags = self.transform_frame_flags();
         let ids: Vec<ObjectId> = self.column::<Transform>().0.to_vec();
@@ -501,7 +521,7 @@ impl SimStore {
 }
 
 /// [`SimStore::maintain_transforms`] as a system, for schedules whose systems write transforms through
-/// `get_mut` or `column_mut`.
+/// `get_mut` or `column_mut`. Add it **last** (review P21S-3).
 pub fn maintain_transforms(store: &mut SimStore, _ctx: &TickCtx) {
     store.maintain_transforms();
 }

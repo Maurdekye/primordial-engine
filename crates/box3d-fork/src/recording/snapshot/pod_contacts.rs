@@ -29,6 +29,10 @@ use crate::recording::snapshot::joints::{des_joint_sim, ser_joint_sim};
 use crate::shape::{Shape, ShapeGeometry};
 use crate::world::World;
 
+/// Lower bounds on a record's image size, for count checks.
+pub(crate) const MATERIAL_MIN_BYTES: i32 = 32;
+pub(crate) const MANIFOLD_MIN_BYTES: i32 = 40;
+
 pub fn ser_manifold(buf: &mut RecBuffer, m: &Manifold) {
     for p in &m.points {
         ser_manifold_point(buf, p);
@@ -133,7 +137,7 @@ pub fn ser_shapes(buf: &mut RecBuffer, world: &World, registry: &mut GeometryReg
     buf.append_i32(world.shapes.len() as i32);
     for (i, shape) in world.shapes.iter().enumerate() {
         let is_live = shape.id == i as i32;
-        ser_shape_scalars(buf, shape);
+        ser_shape_scalars(buf, shape, is_live);
         if !is_live {
             buf.append_i32(0); // materialCount
             buf.append_i32(-1); // geo kind sentinel
@@ -181,7 +185,10 @@ pub fn ser_shapes(buf: &mut RecBuffer, world: &World, registry: &mut GeometryReg
     }
 }
 
-fn ser_shape_scalars(buf: &mut RecBuffer, s: &Shape) {
+/// Primordial Engine fork: a freed slot's shape type is written as the reader restores it (the
+/// default geometry's), not the stale type of the shape that last lived there, so a live
+/// world's image equals the image of a world restored from it (canonical check hashes, P2-3).
+fn ser_shape_scalars(buf: &mut RecBuffer, s: &Shape, is_live: bool) {
     buf.append_i32(s.id);
     buf.append_i32(s.body_id);
     buf.append_i32(s.prev_shape_id);
@@ -200,7 +207,8 @@ fn ser_shape_scalars(buf: &mut RecBuffer, s: &Shape) {
     buf.append_u32(s.name_id);
     buf.append_u16(s.generation);
     buf.append_u8(s.flags);
-    buf.append_i32(s.shape_type() as i32);
+    let shape_type = if is_live { s.shape_type() } else { ShapeGeometry::default().shape_type() };
+    buf.append_i32(shape_type as i32);
 }
 
 pub fn des_shapes(r: &mut SnapReader<'_>, world: &mut World, slots: &mut [RegistrySlot]) {
@@ -247,7 +255,7 @@ pub fn des_shapes(r: &mut SnapReader<'_>, world: &mut World, slots: &mut [Regist
             saved_user_shape[i as usize] = 0;
         }
 
-        let mat_count = r.i32();
+        let mat_count = r.count(MATERIAL_MIN_BYTES);
         if !r.ok {
             break;
         }
@@ -258,6 +266,7 @@ pub fn des_shapes(r: &mut SnapReader<'_>, world: &mut World, slots: &mut [Regist
         }
         if mat_count > 0 {
             let mut mats = Vec::with_capacity(mat_count as usize);
+            // mat_count was checked against the bytes left by r.count
             for _ in 0..mat_count {
                 mats.push(r.material());
             }
@@ -472,7 +481,7 @@ pub fn des_contacts(r: &mut SnapReader<'_>) -> Vec<Contact> {
     for i in 0..count.max(0) {
         let mut c = des_contact_scalars(r);
         let is_live = c.contact_id == i;
-        let manifold_count = r.i32();
+        let manifold_count = r.count(MANIFOLD_MIN_BYTES);
         if !r.ok {
             break;
         }
@@ -486,9 +495,9 @@ pub fn des_contacts(r: &mut SnapReader<'_>) -> Vec<Contact> {
             c.manifolds.clear();
         }
         if is_live && (c.flags & contact_flags::SIM_MESH_CONTACT) != 0 {
-            let cache_count = r.i32();
-            let mut triangle_cache = Vec::with_capacity(cache_count.max(0) as usize);
-            for _ in 0..cache_count.max(0) {
+            let cache_count = r.count(8);
+            let mut triangle_cache = Vec::with_capacity(cache_count as usize);
+            for _ in 0..cache_count {
                 triangle_cache.push(TriangleCache {
                     triangle_index: r.i32(),
                     cache: des_contact_cache(r),
@@ -607,15 +616,15 @@ pub fn des_graph_color(
     } else {
         BitSet::new(0)
     };
-    let n = r.i32();
-    let mut joint_sims = Vec::with_capacity(n.max(0) as usize);
-    for _ in 0..n.max(0) {
+    let n = r.count(super::joints::JOINT_SIM_MIN_BYTES);
+    let mut joint_sims = Vec::with_capacity(n as usize);
+    for _ in 0..n {
         joint_sims.push(des_joint_sim(r));
     }
     let convex_contacts = des_i32_array(r);
-    let n = r.i32();
-    let mut contacts = Vec::with_capacity(n.max(0) as usize);
-    for _ in 0..n.max(0) {
+    let n = r.count(10);
+    let mut contacts = Vec::with_capacity(n as usize);
+    for _ in 0..n {
         contacts.push(ContactSpec {
             contact_id: r.i32(),
             manifold_start: r.i32(),

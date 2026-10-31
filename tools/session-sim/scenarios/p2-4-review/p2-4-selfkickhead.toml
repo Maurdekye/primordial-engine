@@ -1,0 +1,37 @@
+description = """
+P2-4 review round 3, VCR-2: admin 1 kicks 4 at frame 120 (2 s); 4 casts no view-change entry of \
+its own, and its vote on its own kick names a head it never signed. Part 1 runs with VCR-2's fix \
+switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 120, kick = { target = 4 } }]
+2 = [{ at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[world.1.member.4]
+withhold_vc = true
+
+[[byzantine]]
+kind = "self_kick_vote"
+member = 4
+frozen = [10000, 0xBAD]
+to = [1, 2, 3]
+
+[[part]]
+world.1.fixes_off = ["VCR2"]
+report = [
+    { kind = "line", text = "  4 removed at m1: {removed@1:4} s" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed)", fix = "VCR-2's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "selfkickhead" },
+    { kind = "check", case = "selfkickhead", label = "selfkickhead", at = 1, target = 4 },
+    { kind = "verdict", honest = [1, 2, 3], label = "selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed)" },
+]

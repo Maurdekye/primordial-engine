@@ -1,0 +1,29 @@
+description = """
+Ties: all three members touch the same object in the same frame, every 40 frames, 150 times; \
+the tie rank picks one winner per frame, the same on every replica."""
+include = ["../common/pile.toml"]
+# 6100 frames of 16.667 ms, plus 200 ms.
+end_us = 101_868_700
+
+[world.1]
+scene = { pile = { side = 8, layers = 2 } }
+
+[world.1.plan]
+1 = [{ at = 40, every = 40, count = 150, touch = { obj = 50, impulse = [0.0, 0.5, 0.0] } }]
+2 = [{ at = 40, every = 40, count = 150, touch = { obj = 50, impulse = [0.0, 0.5, 0.0] } }]
+3 = [{ at = 40, every = 40, count = 150, touch = { obj = 50, impulse = [0.0, 0.5, 0.0] } }]
+
+[net]
+seed = 5
+link = { delay_ms = 30, jitter_ms = 10 }
+
+[[report]]
+kind = "outcomes"
+at = 1
+mode = "wins"
+prefix = "RESULT ties: same-frame conflicts on one object at 150 frames, winners per member "
+
+[[report]]
+kind = "check_world"
+frames = 6000
+label = "ties"
