@@ -647,6 +647,23 @@ fn check(seed: u64, residual: &mut Residual) {
                 let mut clean = h.book.clone();
                 let _ = clean.insert(prop.clone());
                 let mut vp = v.clone();
+                // First every attacker key that matters at the head fills its quota.
+                let hd = vv.heads[0];
+                let mut fresh: Key = 600_000;
+                for &k in &ks {
+                    let change = |fresh: Key| {
+                        if vv.owners.owners.contains(&k) {
+                            Some(Change::SetRecovery { owner: k, recovery: Some(fresh) })
+                        } else {
+                            vv.owners.recovery.iter().find(|(_, r)| r.contains_key(&k)).map(|(&q, _)| Change::StartRecover { owner: q, new_key: fresh })
+                        }
+                    };
+                    for _ in 0..UNATTESTED_PER_KEY + 2 {
+                        fresh += 1;
+                        let Some(ch) = change(fresh) else { break };
+                        let _ = vp.insert(cert_on(&vp, vec![hd], ch, &[k]));
+                    }
+                }
                 let _ = vp.insert(prop.clone());
                 for &k in &ks {
                     let _ = vp.insert(Cert { sigs: vec![], ..prop.clone() }.signed(&[k]));
