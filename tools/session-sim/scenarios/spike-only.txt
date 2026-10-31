@@ -12,12 +12,3 @@ p2-4-joinwedge      # round 5 (VC4R-2): a join request seen by part of the sessi
 p2-4-prevotefork    # round 6 (VC4R-1): an equivocated prevote; the capped precommit's polka
 p2-4-slowref        # round 5 (VC4R-3): fake references shielding a slow member
 randsched           # round 5: the randomized schedule generator; to become a non-log check
-#
-# P2-9 fault scenarios whose output shifted with P2-4 rounds 5-6. Each still runs ALL EQUAL with a
-# matching offline replay and no false checks; only counts and timings moved. Their scenario files
-# are removed until re-mirrored: restore them from 5ba3eab:tools/session-sim/scenarios/faults/.
-fault-asymmetric
-fault-capped
-fault-crash-recover
-fault-partition-evict
-fault-partition-heal
