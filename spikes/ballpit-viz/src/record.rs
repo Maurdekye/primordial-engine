@@ -160,7 +160,8 @@ fn read_state(s: &WorldSim) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
     for i in 0..N_OBJ {
         let st = s.obj_state(i as u32).expect("object exists");
         let (p, v) = (st.pos(), st.lin());
-        pos.push([p.x, p.y, p.z]);
+        // The recording is for display: f32 positions (Box3D's are f64 under D58).
+        pos.push([p.x as f32, p.y as f32, p.z as f32]);
         vel.push([v.x, v.y, v.z]);
     }
     (pos, vel)
@@ -437,7 +438,7 @@ fn record_naive(cell: &Cell) -> Recording {
                 last_k[1] = k;
                 if (K0..K1).contains(&k) {
                     let newest = disp.iter().filter_map(|d| d.map(|(f, _)| f)).max().unwrap_or(0);
-                    let pos = disp.iter().map(|d| d.map(|(_, st)| { let p = st.pos(); [p.x, p.y, p.z] }).unwrap_or([0.0; 3])).collect();
+                    let pos = disp.iter().map(|d| d.map(|(_, st)| { let p = st.pos(); [p.x as f32, p.y as f32, p.z as f32] }).unwrap_or([0.0; 3])).collect();
                     let vel = disp.iter().map(|d| d.map(|(_, st)| { let v = st.lin(); [v.x, v.y, v.z] }).unwrap_or([0.0; 3])).collect();
                     let m = Metrics {
                         snapshot_bytes: (N_OBJ * (NAIVE_PER_OBJ + 8)) as u64,
@@ -470,7 +471,7 @@ fn record_naive(cell: &Cell) -> Recording {
         if b != Some(a) {
             let (pa, pb) = (a.pos(), b.unwrap().pos());
             let d = ((pa.x - pb.x).powi(2) + (pa.y - pb.y).powi(2) + (pa.z - pb.z).powi(2)).sqrt();
-            worst = worst.max(d);
+            worst = worst.max(d as f32);
             off += 1;
         }
     }

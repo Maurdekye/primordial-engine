@@ -9,4 +9,4 @@ RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highe
   m1: conf 467 frame 473 members {1, 2, 3} evicted {9: (60, 118)} rollbacks 0 max depth 0 violations 1 equivocations 1 checks ok 36 bad 0
   m2: conf 467 frame 473 members {1, 2, 3} evicted {9: (60, 118)} rollbacks 3 max depth 4 violations 1 equivocations 1 checks ok 36 bad 0
   m3: conf 467 frame 473 members {1, 2, 3} evicted {9: (60, 118)} rollbacks 1 max depth 2 violations 2 equivocations 1 checks ok 36 bad 0
-RESULT cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold): frames 0..472 honest m1=850f4f8a18ecb2ea m2=850f4f8a18ecb2ea m3=850f4f8a18ecb2ea | offline replay 850f4f8a18ecb2ea | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold): frames 0..472 honest m1=43e1272c7c4212f7 m2=43e1272c7c4212f7 m3=43e1272c7c4212f7 | offline replay 43e1272c7c4212f7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
