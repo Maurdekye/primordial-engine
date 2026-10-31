@@ -1,10 +1,10 @@
-module validate+compile: v1 284.5µs, v2 84.5µs
-[PASS] D1 hot-swap v1->v2 at frame 300; late peer rolls back across the swap and converges: A vs B over 600 frames: first mismatch None; B rollbacks 1 resimulated 45 frames in 30.8344ms; swap step 947.4µs; snapshot 1702729 bytes/frame (physics + guest memory)
+module validate+compile: v1 271.7µs, v2 91.5µs
+[PASS] D1 hot-swap v1->v2 at frame 300; late peer rolls back across the swap and converges: A vs B over 600 frames: first mismatch None; B rollbacks 1 resimulated 45 frames in 30.8056ms; swap step 872.8µs; snapshot 1702729 bytes/frame (physics + guest memory)
 [PASS] D2 control peer without the commit diverges exactly at the swap frame: A vs C first mismatch at frame Some(300)
 [FAIL] D1b fuel consumed per frame identical on A and B (fuel is deterministic): total fuel A 49831, B 46800; max per tick 1714
        final guest state (32 bytes, v2): [02, 00, 00, 00, 06, 00, 00, 00, 53, d7, 0c, ec, 16, d6, 51, 43, 58, 02, 00, 00, 00, 00, 00, 00, 0f, 00, 00, 00, 8d, e8, 70, 3f]; host-side rejected guest calls: 0
-       3 peers x 600 frames incl. per-frame snapshots: 1.3606533s
-[FAIL] D3 runaway edit is halted by fuel at the identical instruction both times: trap Some("all fuel consumed by WebAssembly") after 181.5µs; fuel left 0; guest state at halt 79f77bfc91bdd325 (run 2: bde1c36627cfa6ca)
-[PASS] D4 Box3D pile run compiled to wasm32 + wasmi == native digest: digest cc60208f048dd6d7 (native cc60208f048dd6d7, engine world def, double precision true); module compile 3.173ms; 600 frames in 4.31667s (7194 us/frame interpreted)
+       3 peers x 600 frames incl. per-frame snapshots: 1.2044236s
+[FAIL] D3 runaway edit is halted by fuel at the identical instruction both times: trap Some("all fuel consumed by WebAssembly") after 186.4µs; fuel left 0; guest state at halt 79f77bfc91bdd325 (run 2: bde1c36627cfa6ca)
+[PASS] D4 Box3D pile run compiled to wasm32 + wasmi == native digest: digest cc60208f048dd6d7 (native cc60208f048dd6d7, engine world def, double precision true); module compile 2.9316ms; 600 frames in 4.4705904s (7451 us/frame interpreted)
 peers: A B C
 RESULT: FAIL

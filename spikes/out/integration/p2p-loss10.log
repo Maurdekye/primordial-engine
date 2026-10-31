@@ -1,7 +1,8 @@
 [loss10] peer 1 == peer 2 for all 600 frames
 [loss10] peer 1: offline replay of my final log acff99303e44d1f1 (EQUAL)
 [loss10] peer 2: offline replay of my final log acff99303e44d1f1 (EQUAL)
-[loss10] acceptance at receiver 1: 9/9 re-simulated remote touches equal the author 2 final history
-[loss10] acceptance at receiver 2: 9/9 re-simulated remote touches equal the author 1 final history
-DONE frames 0..600: digest acff99303e44d1f1; offline replay of my final log acff99303e44d1f1 (EQUAL); rollbacks 6 (max depth 5, resimulated 30), carried-state overwrites 0, checks ok 23 bad 0, confirmed frame 720, datagrams sent 664 dropped 77, bad signatures 0, forged entries 0
-DONE frames 0..600: digest acff99303e44d1f1; offline replay of my final log acff99303e44d1f1 (EQUAL); rollbacks 6 (max depth 5, resimulated 28), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 635 dropped 65, bad signatures 0, forged entries 0
+[loss10] receiver 1 frame 126 obj 50 differs from author 2 (contended: same-frame conflict window on object 50)
+[loss10] acceptance at receiver 1: 8/9 re-simulated remote touches equal the author 2 final history
+[loss10] acceptance at receiver 2: 11/11 re-simulated remote touches equal the author 1 final history
+DONE frames 0..600: digest acff99303e44d1f1; offline replay of my final log acff99303e44d1f1 (EQUAL); rollbacks 6 (max depth 14, resimulated 43), carried-state overwrites 0, checks ok 24 bad 0, confirmed frame 720, datagrams sent 674 dropped 78, bad signatures 0, forged entries 0
+DONE frames 0..600: digest acff99303e44d1f1; offline replay of my final log acff99303e44d1f1 (EQUAL); rollbacks 6 (max depth 22, resimulated 50), carried-state overwrites 0, checks ok 23 bad 0, confirmed frame 720, datagrams sent 588 dropped 64, bad signatures 0, forged entries 0

@@ -1,16 +1,16 @@
 RESULT re-sim from one base image: restore + N steps (median of 5), Box3D 4 substeps at 60 Hz, single thread
-RESULT    256 bodies active (base at frame 60, pile collapsing): awake 256, image 0.50 MB, save 0.26 ms, restore 0.47 ms | depth:ms 1:1.0 2:1.6 4:2.6 8:4.4 15:8.0 30:15.2 45:22.6 60:29.4 120:56.7 | awake after 120 frames 253
-RESULT    256 bodies late (base at frame 900): awake 244, image 0.57 MB, save 0.46 ms, restore 0.45 ms | depth:ms 1:0.8 2:1.5 4:2.2 8:3.4 15:5.4 30:10.1 45:14.4 60:19.0 120:38.1 | awake after 120 frames 244
-RESULT   1024 bodies active (base at frame 60, pile collapsing): awake 1024, image 1.95 MB, save 0.88 ms, restore 1.67 ms | depth:ms 1:4.0 2:6.2 4:9.5 8:17.3 15:30.3 30:62.1 45:94.8 60:121.7 120:231.8 | awake after 120 frames 1022
-RESULT   1024 bodies late (base at frame 900): awake 994, image 2.35 MB, save 1.50 ms, restore 1.84 ms | depth:ms 1:3.8 2:5.2 4:7.8 8:13.0 15:22.8 30:42.9 45:65.0 60:85.3 120:169.7 | awake after 120 frames 992
+RESULT    256 bodies active (base at frame 60, pile collapsing): awake 256, image 0.50 MB, save 0.25 ms, restore 0.35 ms | depth:ms 1:0.8 2:1.2 4:1.9 8:3.4 15:6.0 30:11.8 45:17.4 60:23.1 120:46.5 | awake after 120 frames 253
+RESULT    256 bodies late (base at frame 900): awake 244, image 0.57 MB, save 0.20 ms, restore 0.40 ms | depth:ms 1:0.7 2:1.0 4:1.6 8:2.7 15:4.4 30:8.3 45:12.2 60:15.7 120:31.4 | awake after 120 frames 244
+RESULT   1024 bodies active (base at frame 60, pile collapsing): awake 1024, image 1.95 MB, save 1.00 ms, restore 1.42 ms | depth:ms 1:3.4 2:4.9 4:7.7 8:13.7 15:24.2 30:47.9 45:72.6 60:99.1 120:190.7 | awake after 120 frames 1022
+RESULT   1024 bodies late (base at frame 900): awake 994, image 2.35 MB, save 1.24 ms, restore 1.38 ms | depth:ms 1:2.7 2:3.8 4:5.9 8:10.1 15:17.5 30:33.6 45:51.2 60:66.4 120:139.1 | awake after 120 frames 992
 RESULT partial restore through the box3d-rust API (body_set_transform + set velocities) vs full image restore
 RESULT   256-body pile, active: full restore 256/256 bodies bit-equal after 30 frames; ALL bodies' pose+velocity written back: first mismatch after frame Some(1), after 30 frames 2/256 bit-equal, max position error 339.92 mm
 RESULT   64 isolated 4-box stacks, settled (awake 0): perturbed stack restored by API, others asleep and untouched (verified unchanged): perturbed stack 0/4 bit-equal after 60 frames (max error 8.71 mm), other stacks 252/252 bit-equal
 RESULT image deltas: bytes to store an image as 64 B blocks changed vs a base k frames older (8 B per block index)
-RESULT    256 bodies active (frame 60): image 0.50 MB | k=1: 111%, k=4: 103%, k=16: 110%, k=60: 110% | diff scan 0.04 ms
-RESULT    256 bodies late (frame 900): image 0.57 MB | k=1: 43%, k=4: 44%, k=16: 44%, k=60: 46% | diff scan 0.05 ms
-RESULT   1024 bodies active (frame 60): image 1.95 MB | k=1: 112%, k=4: 112%, k=16: 111%, k=60: 110% | diff scan 0.10 ms
-RESULT   1024 bodies late (frame 900): image 2.35 MB | k=1: 105%, k=4: 105%, k=16: 47%, k=60: 110% | diff scan 0.15 ms
+RESULT    256 bodies active (frame 60): image 0.50 MB | k=1: 111%, k=4: 103%, k=16: 110%, k=60: 110% | diff scan 0.03 ms
+RESULT    256 bodies late (frame 900): image 0.57 MB | k=1: 43%, k=4: 44%, k=16: 44%, k=60: 46% | diff scan 0.03 ms
+RESULT   1024 bodies active (frame 60): image 1.95 MB | k=1: 112%, k=4: 112%, k=16: 111%, k=60: 110% | diff scan 0.11 ms
+RESULT   1024 bodies late (frame 900): image 2.35 MB | k=1: 105%, k=4: 105%, k=16: 47%, k=60: 110% | diff scan 0.11 ms
 RESULT   1024 bodies late (frame 900), one body pushed: k=1: 105% (awake 994), k=4: 110% (awake 994), k=16: 110% (awake 994), k=60: 110% (awake 993)
 build: release profile, target x86_64, contact recycling: scale-dependent (engine default), worker threads: 1
 RESULT: PASS

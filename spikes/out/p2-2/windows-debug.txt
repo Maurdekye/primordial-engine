@@ -1,10 +1,20 @@
-commit c05887f7c3699d3db57bf6597e76cfbf377ecf7e
+commit c59092254b0b5f61de55692cecdb1884542e41bb
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\dp\crates\pe-physics)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.33s
+   Compiling constant_time_eq v0.4.2
+   Compiling arrayvec v0.7.8
+   Compiling syn v3.0.9
+   Compiling cfg-if v1.0.5
+   Compiling cpufeatures v0.3.1
+   Compiling blake3 v1.8.7
+   Compiling bytemuck_derive v1.12.1
+   Compiling bytemuck v1.25.2
+   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\merge-dp\crates\pe-core)
+   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\merge-dp\crates\pe-sim)
+   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\merge-dp\crates\pe-physics)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.34s
      Running unittests src\lib.rs (target\debug\deps\pe_physics-a4fda86fcbcbb18c.exe)
 
 running 0 tests
@@ -57,7 +67,7 @@ test transfer_canonical_after_destroy ... ok
 test transfer_geometry_order_and_duplicates_refused ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.00s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.21s
 
      Running tests\spike_records.rs (target\debug\deps\spike_records-c9f5799953185a75.exe)
 
@@ -116,7 +126,7 @@ RESULT trace off workers=3 digest e8a2386a0f2ed7d6
 RESULT trace off workers=8 digest e8a2386a0f2ed7d6
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 187.44s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 190.48s
 
    Doc-tests pe_physics
 
