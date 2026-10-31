@@ -456,10 +456,10 @@ impl SessionCore {
             self.last_conf = s.conf;
             self.events.push(Event::Confirmed { conf: s.conf });
         }
-        for (epoch, _, _, removed) in &s.vc_log[self.last_epoch_log..] {
+        for (epoch, _, _, removed) in &s.vcm.vc_log[self.last_epoch_log..] {
             self.events.push(Event::Epoch { epoch: *epoch, removed: removed.clone() });
         }
-        self.last_epoch_log = s.vc_log.len();
+        self.last_epoch_log = s.vcm.vc_log.len();
         let paused = s.frame < s.now;
         if paused != self.paused {
             self.paused = paused;

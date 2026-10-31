@@ -43,10 +43,11 @@ impl WorldSim {
             self.fetch_asked.insert((to, author), (from, now_ms, wait));
             out.push((to, Msg::Fetch { author, from, to: upto }));
         }
-        for (to, value) in std::mem::take(&mut self.value_wants) {
+        let (values, ids) = self.vcm.take_fetch_wants();
+        for (to, value) in values {
             out.push((to, Msg::FetchValue { value }));
         }
-        for (to, id) in std::mem::take(&mut self.entry_wants) {
+        for (to, id) in ids {
             out.push((to, Msg::FetchEntry { id }));
         }
         out

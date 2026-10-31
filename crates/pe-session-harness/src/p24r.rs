@@ -62,7 +62,7 @@ pub(crate) fn sim_mut(sim: &mut Sim, m: MemberId) -> &mut WorldSim {
 fn quiet_equal(sim: &Sim, honest: &[MemberId]) -> bool {
     let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(honest[0], 1).sim;
-    let members: Vec<MemberId> = first.members.iter().copied().collect();
+    let members: Vec<MemberId> = first.vcm.members.iter().copied().collect();
     let reference = replay(1, SCENE, first.cfg, first.public_keys(), &members, &final_log(first), frames);
     let rd = digest(&reference, frames);
     let bad: u64 = honest.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
@@ -104,7 +104,7 @@ pub(crate) fn before_fix(label: &str, fix: &str, sim: &Sim, honest: &[MemberId],
         "  {label} with {fix} switched off (the behaviour before the fix): {state}; {}; at m{}: members {:?}, evicted {:?}",
         confs(sim, honest),
         honest[0],
-        r.members,
+        r.vcm.members,
         r.members_evicted().keys().collect::<Vec<_>>()
     );
 }
@@ -274,7 +274,7 @@ pub fn jointiming() {
         let all = [1, 2, 3, 4, 5];
         let label = "jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary)";
         if !fixed {
-            let admitted = sim.replica(1, 1).sim.members.contains(&joiner);
+            let admitted = sim.replica(1, 1).sim.vcm.members.contains(&joiner);
             println!("  joiner admitted at m1: {admitted}");
             before_fix(label, "VC-3's fix", &sim, &[1, 2, 3, 4], stopped);
             continue;
@@ -333,7 +333,7 @@ pub fn futureack() {
             let mut set = false;
             let stopped = run_quiet(&mut sim, |sim| {
                 if !set && sim.net.now_us >= 2_000_000 {
-                    sim_mut(sim, 9).fake_ack_epoch = Some(if part == 1 { 999 } else { 1 });
+                    sim_mut(sim, 9).vcm.fake_ack_epoch = Some(if part == 1 { 999 } else { 1 });
                     set = true;
                 }
             });
@@ -356,7 +356,7 @@ pub fn futureack() {
 pub(crate) fn outcomes(sim: &Sim, m: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
     let mut v: Vec<(u64, String)> = r
-        .admin_outcomes
+        .vcm.admin_outcomes
         .iter()
         .filter_map(|(id, ok)| {
             let e = r.all_entries().into_iter().find(|e| e.id() == *id)?;
@@ -375,7 +375,7 @@ pub(crate) fn outcomes(sim: &Sim, m: MemberId) -> String {
 
 pub(crate) fn roles_line(sim: &Sim, m: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
-    format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.members, r.roles, r.admins(), r.closed_at)
+    format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.vcm.members, r.vcm.roles, r.admins(), r.vcm.closed_at)
 }
 
 pub fn kickwar() {
@@ -388,7 +388,7 @@ pub fn kickwar() {
     });
     let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 8_000_000);
     let stopped = run_to_end(&mut sim, |_| {});
-    let left: Vec<MemberId> = sim.replica(3, 1).sim.members.iter().copied().collect();
+    let left: Vec<MemberId> = sim.replica(3, 1).sim.vcm.members.iter().copied().collect();
     let honest: Vec<MemberId> = left.clone();
     vc_report(&sim, &honest, "kickwar");
     for &m in &honest {
@@ -418,8 +418,8 @@ pub fn kickpartition() {
         println!("RESULT kickpartition: m{m}: {}", outcomes(&sim, m));
     }
     let rep1 = sim.replica(1, 1);
-    let during = rep1.sim.vc_log.iter().any(|d| sim_secs(rep1, d.1) < 6.0);
-    let (a, b) = (sim.replica(1, 1).sim.members.clone(), sim.replica(4, 1).sim.members.clone());
+    let during = rep1.sim.vcm.vc_log.iter().any(|d| sim_secs(rep1, d.1) < 6.0);
+    let (a, b) = (sim.replica(1, 1).sim.vcm.members.clone(), sim.replica(4, 1).sim.vcm.members.clone());
     println!(
         "RESULT kickpartition: decided during the partition: {during}; members after: m1 {a:?}, m4 {b:?} -> {}",
         if a == b && !a.contains(&3) && !during { "ONE SESSION, 3 removed after the heal" } else { "FAIL" }
@@ -430,10 +430,10 @@ pub fn kickpartition() {
 pub(crate) fn guests(ps: &mut [Peer], admins: &[MemberId]) {
     let admins = admins.to_vec();
     each_sim(ps, move |s| {
-        s.role_defs.insert(GUEST, 0);
-        let ms: Vec<MemberId> = s.roles.keys().copied().collect();
+        s.vcm.role_defs.insert(GUEST, 0);
+        let ms: Vec<MemberId> = s.vcm.roles.keys().copied().collect();
         for m in ms {
-            s.roles.insert(m, if admins.contains(&m) { ADMIN } else { GUEST });
+            s.vcm.roles.insert(m, if admins.contains(&m) { ADMIN } else { GUEST });
         }
     });
 }
@@ -481,7 +481,7 @@ pub fn adminclose() {
     for &m in &honest {
         println!("  {}", roles_line(&sim, m));
     }
-    let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.closed_at).collect();
+    let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.vcm.closed_at).collect();
     let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]);
     println!(
         "RESULT adminclose: the only admin (1) silent from 3 s; session closed at frame {:?} at m2, {:?} at m3 -> {}",
@@ -509,8 +509,8 @@ pub fn joinrules() {
     }
     guests(&mut ps, &[1]);
     each_sim(&mut ps, |s| {
-        s.owners = [owner].into();
-        s.join_rules = JoinRules {
+        s.vcm.owners = [owner].into();
+        s.vcm.join_rules = JoinRules {
             rules: vec![
                 JoinRule { target: Target::Admin, all: false, rel: Rel::Friend, role: Some(GUEST) },
                 JoinRule { target: Target::Owner, all: false, rel: Rel::Confidant, role: Some(ADMIN) },
@@ -535,13 +535,13 @@ pub fn joinrules() {
             asked = true;
         }
     });
-    let admitted: Vec<MemberId> = sim.replica(1, 1).sim.members.iter().copied().collect();
+    let admitted: Vec<MemberId> = sim.replica(1, 1).sim.vcm.members.iter().copied().collect();
     let honest: Vec<MemberId> = admitted.clone();
     vc_report(&sim, &honest, "joinrules");
     for &m in &honest {
         println!("  {}", roles_line(&sim, m));
     }
-    let roles = &sim.replica(1, 1).sim.roles;
+    let roles = &sim.replica(1, 1).sim.vcm.roles;
     let ok = roles.get(&friend) == Some(&GUEST) && roles.get(&confidant) == Some(&ADMIN) && roles.get(&owner) == Some(&ADMIN) && !admitted.contains(&stranger);
     println!(
         "RESULT joinrules: admitted {admitted:?}, roles {roles:?} -> {}",
@@ -567,7 +567,7 @@ pub fn onesided() {
         _ => BTreeMap::new(),
     });
     for p in ps.iter_mut().filter(|p| [7, 8, 9].contains(&p.id)) {
-        p.worlds.get_mut(&1).unwrap().sim.byz_ally = true;
+        p.worlds.get_mut(&1).unwrap().sim.vcm.byz_ally = true;
     }
     let crafted: Rc<RefCell<BTreeSet<EntryId>>> = Rc::default();
     let cr = crafted.clone();
@@ -613,7 +613,7 @@ pub fn onesided() {
         }
     });
     vc_report(&sim, &[1, 2, 3], "onesided");
-    let first = |m: MemberId| sim.replica(m, 1).sim.vc_log.first().map(|d| d.3.clone());
+    let first = |m: MemberId| sim.replica(m, 1).sim.vcm.vc_log.first().map(|d| d.3.clone());
     let (a, b) = (first(1), first(3));
     println!(
         "RESULT onesided (control: 3 of 6 collude, above t(6) = 1): epoch 1 removed {a:?} at m1, {b:?} at m3 -> {}{}",

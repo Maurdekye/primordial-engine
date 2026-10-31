@@ -466,7 +466,7 @@ impl Sim {
         let mut worlds: BTreeMap<WorldId, Vec<MemberId>> = BTreeMap::new();
         for p in &peers {
             for (w, r) in &p.worlds {
-                worlds.entry(*w).or_insert_with(|| r.sim.members.iter().copied().collect());
+                worlds.entry(*w).or_insert_with(|| r.sim.vcm.members.iter().copied().collect());
             }
         }
         for p in &mut peers {
@@ -690,7 +690,7 @@ impl Sim {
                             ));
                             j.arrive = Some(e.id());
                             j.phase = JobPhase::WaitArrive;
-                            let members: Vec<MemberId> = dst.sim.members.iter().copied().collect();
+                            let members: Vec<MemberId> = dst.sim.vcm.members.iter().copied().collect();
                             broadcast(&mut self.net, j.dst, pid, &members, &Msg::Entry(e));
                         }
                         other => {
@@ -720,7 +720,7 @@ impl Sim {
                     j.accepted = Some(accepted);
                     j.verdict = Some(e.id());
                     j.phase = JobPhase::WaitVerdict;
-                    let members: Vec<MemberId> = src.sim.members.iter().copied().collect();
+                    let members: Vec<MemberId> = src.sim.vcm.members.iter().copied().collect();
                     broadcast(&mut self.net, j.src, pid, &members, &Msg::Entry(e));
                 }
                 JobPhase::WaitVerdict => {
@@ -747,7 +747,7 @@ impl Sim {
                     let e = dst.sim.author(Payload::Provenance { hop }, None);
                     j.log.push(format!("t={}ms commit certified in world {}; hop relayed into world {} at frame {}", now / 1000, j.src, j.dst, e.stamp));
                     j.phase = JobPhase::Done;
-                    let members: Vec<MemberId> = dst.sim.members.iter().copied().collect();
+                    let members: Vec<MemberId> = dst.sim.vcm.members.iter().copied().collect();
                     broadcast(&mut self.net, j.dst, pid, &members, &Msg::Entry(e));
                 }
                 JobPhase::Done => {}

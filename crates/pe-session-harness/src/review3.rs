@@ -48,7 +48,7 @@ pub(crate) fn report(sim: &Sim, honest: &[MemberId], label: &str) {
         let r = &sim.replica(m, 1).sim;
         println!(
             "RESULT {label}: m{m} members {:?} evicted {:?} conf {} frame {} paused frames {} lying votes found {}",
-            r.members,
+            r.vcm.members,
             r.members_evicted(),
             r.conf,
             r.frame,
@@ -131,7 +131,7 @@ pub fn crashstall() {
         "RESULT crashstall: member 3 silent from t=3 s; at t=15 s m1 conf {} (frame {}), member 3 still a member: {}",
         r1.conf,
         r1.frame,
-        r1.members.contains(&3)
+        r1.vcm.members.contains(&3)
     );
     verdict(&sim, &[1, 2], "crashstall (member 3 silent from t=3 s)", panic_at);
 }
