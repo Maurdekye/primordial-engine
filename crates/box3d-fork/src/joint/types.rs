@@ -780,3 +780,108 @@ impl Default for JointSim {
         }
     }
 }
+
+// Primordial Engine fork: one place per joint type for the impulses warm starting carries, used
+// when warm starting is off and by body_reset_history.
+impl DistanceJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.impulse = 0.0;
+        self.lower_impulse = 0.0;
+        self.upper_impulse = 0.0;
+        self.motor_impulse = 0.0;
+    }
+}
+
+impl MotorJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.linear_velocity_impulse = crate::math_functions::VEC3_ZERO;
+        self.angular_velocity_impulse = crate::math_functions::VEC3_ZERO;
+        self.linear_spring_impulse = crate::math_functions::VEC3_ZERO;
+        self.angular_spring_impulse = crate::math_functions::VEC3_ZERO;
+    }
+}
+
+impl ParallelJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.perp_impulse = crate::math_functions::Vec2 { x: 0.0, y: 0.0 };
+    }
+}
+
+impl PrismaticJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.perp_impulse = crate::math_functions::Vec2 { x: 0.0, y: 0.0 };
+        self.angular_impulse = crate::math_functions::VEC3_ZERO;
+        self.motor_impulse = 0.0;
+        self.spring_impulse = 0.0;
+        self.lower_impulse = 0.0;
+        self.upper_impulse = 0.0;
+    }
+}
+
+impl RevoluteJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.linear_impulse = crate::math_functions::VEC3_ZERO;
+        self.perp_impulse = crate::math_functions::VEC2_ZERO;
+        self.motor_impulse = 0.0;
+        self.spring_impulse = 0.0;
+        self.lower_impulse = 0.0;
+        self.upper_impulse = 0.0;
+    }
+}
+
+impl SphericalJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.linear_impulse = crate::math_functions::VEC3_ZERO;
+        self.motor_impulse = crate::math_functions::VEC3_ZERO;
+        self.spring_impulse = crate::math_functions::VEC3_ZERO;
+        self.swing_impulse = 0.0;
+        self.lower_twist_impulse = 0.0;
+        self.upper_twist_impulse = 0.0;
+    }
+}
+
+impl WeldJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.linear_impulse = crate::math_functions::VEC3_ZERO;
+        self.angular_impulse = crate::math_functions::VEC3_ZERO;
+    }
+}
+
+impl WheelJoint {
+    /// Zero the accumulated impulses (what warm starting carries between steps).
+    pub(crate) fn reset_impulses(&mut self) {
+        self.linear_impulse = crate::math_functions::VEC2_ZERO;
+        self.angular_impulse = crate::math_functions::VEC2_ZERO;
+        self.spin_impulse = 0.0;
+        self.suspension_spring_impulse = 0.0;
+        self.lower_suspension_impulse = 0.0;
+        self.upper_suspension_impulse = 0.0;
+        self.steering_spring_impulse = 0.0;
+        self.lower_steering_impulse = 0.0;
+        self.upper_steering_impulse = 0.0;
+    }
+}
+
+impl JointSim {
+    /// Zero this joint's accumulated impulses (Primordial Engine fork, for body_reset_history).
+    pub(crate) fn reset_impulses(&mut self) {
+        match &mut self.union_ {
+            JointUnion::Distance(j) => j.reset_impulses(),
+            JointUnion::Filter => {}
+            JointUnion::Motor(j) => j.reset_impulses(),
+            JointUnion::Parallel(j) => j.reset_impulses(),
+            JointUnion::Revolute(j) => j.reset_impulses(),
+            JointUnion::Spherical(j) => j.reset_impulses(),
+            JointUnion::Prismatic(j) => j.reset_impulses(),
+            JointUnion::Weld(j) => j.reset_impulses(),
+            JointUnion::Wheel(j) => j.reset_impulses(),
+        }
+    }
+}

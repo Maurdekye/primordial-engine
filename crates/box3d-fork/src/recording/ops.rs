@@ -55,6 +55,9 @@ pub enum RecOp {
     BodyEnableHitEvents = 0x39,
     BodyAllowFastRotation = 0x3A,
     BodySetSafetyFactor = 0x3B,
+    /// Primordial Engine fork op (no upstream equivalent; the minor version is unchanged, as
+    /// only the fork reads it): `body_reset_history`, for carried state.
+    BodyResetHistory = 0x3C,
     CreateSphereShape = 0x40,
     CreateCapsuleShape = 0x41,
     CreateHullShape = 0x42,
@@ -228,6 +231,7 @@ impl RecOp {
             0x39 => Some(Self::BodyEnableHitEvents),
             0x3A => Some(Self::BodyAllowFastRotation),
             0x3B => Some(Self::BodySetSafetyFactor),
+            0x3C => Some(Self::BodyResetHistory),
             0x40 => Some(Self::CreateSphereShape),
             0x41 => Some(Self::CreateCapsuleShape),
             0x42 => Some(Self::CreateHullShape),

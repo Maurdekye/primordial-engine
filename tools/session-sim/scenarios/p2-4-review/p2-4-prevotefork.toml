@@ -1,0 +1,64 @@
+description = """
+P2-4 review rounds 5-7, VC4R-1 and PF-1: public join rules. At 1 s joiner 5 asks to join. \
+Round-0 proposer 1 equivocates its round-0 prevote: the join's value to capper 2, nil to observer \
+3 and 9; 9's round-0 prevotes are lost until 2.5 s. 2 sees a polka and precommits with a cap; 3 \
+sees only 2 and 3 prevote the value. With VC4R-1's fix off 3 votes 2 out for an unjustified cap. \
+1's chain continues from its own version of the forked seq, which 3 and 9 never hold: with PF-1's \
+fix off they cannot count 1's precommit, stay in epoch 0, and confirmation halts for good. As \
+shipped, 2 is kept, 1 is removed and confirmation goes on. Parts: VC4R-1 off, PF-1 off, shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+join_rules = { rules = [], fallback = 1 }
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of every part's run (frame 364 at
+# most): it never fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[join]]
+at_ms = 1000
+member = 5
+to = [1, 2, 3, 9]
+
+[[byzantine]]
+kind = "equivocate_prevote"
+member = 1
+from_ms = 1000
+value_to = [2]
+nil_to = [3, 9]
+
+# 9's round-0 prevotes are lost until 2.5 s, past the cap's judgment, then repaired.
+[[fault]]
+from = 9
+msg = "prevote"
+round = 0
+before_ms = 2500
+drop = true
+
+[[part]]
+world.1.fixes_off = ["VC4R1"]
+report = [
+    { kind = "check", case = "prevotefork_off", at = 3, target = 2, event = "member 2's precommit caps" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it)", fix = "VC4R-1's fix" },
+]
+
+[[part]]
+world.1.fixes_off = ["PF1"]
+report = [
+    { kind = "check", case = "prevotefork_pf", members = [1, 2, 3, 9, 5], honest = [2, 3, 9, 5] },
+    { kind = "before_fix", honest = [1, 2, 3], label = "prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it)", fix = "PF-1's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "prevotefork" },
+    # Liveness is that of the members other than the faulty proposer 1 (which is removed).
+    { kind = "check", case = "prevotefork", label = "prevotefork", at = 3, target = 2, event = "member 2's precommit caps", members = [1, 2, 3, 9, 5], honest = [2, 3, 9, 5] },
+    { kind = "verdict", honest = [1, 2, 3], label = "prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it)" },
+]

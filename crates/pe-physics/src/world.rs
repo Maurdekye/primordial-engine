@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
     body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity,
-    body_get_linear_velocity, body_get_transform, body_get_type, body_is_awake, body_is_valid,
+    body_get_linear_velocity, body_get_transform, body_get_type, body_is_awake, body_is_valid, body_reset_history,
     body_set_angular_velocity, body_set_awake, body_set_linear_velocity, body_set_target_transform, body_set_transform,
     create_body,
     destroy_body,
@@ -456,6 +456,14 @@ impl PhysicsWorld {
     /// awake by definition, so a body asleep on one peer and awake on another, or with different
     /// sleep timers, ends the same everywhere (SET-2). Both checks run before anything is
     /// written. Refused for static bodies.
+    ///
+    /// The body's history is forgotten too (the fork's `body_reset_history`): its contacts are
+    /// destroyed and recreated on the next step, so a recycled manifold (anchors from first
+    /// touch, warm-start impulses) on one peer and a fresh one on another cannot make the next
+    /// step differ. Speculatively a receiver's copy can differ from the toucher's at that frame;
+    /// in the confirmed history every peer's world is identical there, so the reset is the same
+    /// op everywhere. Touch-begin fires again for the body's contacts, and it has no warm start
+    /// for one step.
     pub fn set_state(&mut self, id: ObjectId, pose: Pose, linear: [f32; 3], angular: [f32; 3]) -> Result<(), PhysicsError> {
         let body = self.moving_body(id)?;
         let q = exact_rotation(&pose)?;
@@ -466,8 +474,7 @@ impl PhysicsWorld {
         body_set_linear_velocity(w, body, vec3(linear));
         body_set_angular_velocity(w, body, vec3(angular));
         body_set_awake(w, body, true);
-        // Waking resets the timer only for a body that was asleep; Box3D ids are 1-based.
-        w.bodies[(body.index1 - 1) as usize].sleep_time = 0.0;
+        body_reset_history(w, body);
         Ok(())
     }
 
