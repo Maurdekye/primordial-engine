@@ -14,4 +14,4 @@ RESULT join: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest r
   m2: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 60 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 60 bad 0
   m4: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 60 bad 0
-RESULT join (member 4 asks to join at t=2 s and touches an object at frame 420): frames 0..592 honest m1=2afeb06677fcbf57 m2=2afeb06677fcbf57 m3=2afeb06677fcbf57 m4=2afeb06677fcbf57 | offline replay 2afeb06677fcbf57 | ALL EQUAL, NO FALSE CHECKS ; checks ok 240 bad 0
+RESULT join (member 4 asks to join at t=2 s and touches an object at frame 420): frames 0..592 honest m1=c29d76c72720b9f3 m2=c29d76c72720b9f3 m3=c29d76c72720b9f3 m4=c29d76c72720b9f3 | offline replay c29d76c72720b9f3 | ALL EQUAL, NO FALSE CHECKS ; checks ok 240 bad 0

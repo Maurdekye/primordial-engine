@@ -460,7 +460,7 @@ impl Probe {
         let (en, eb) = sim.net.bytes(1, "");
         // Wire estimate: one datagram per message with ~52 B of IP/UDP/AEAD/session overhead.
         let wire = |n: u64, b: u64| (b + 52 * n) as f64 / secs;
-        let naive_payload = p.naive_changed * (4 + 52) + p.naive_frames * 16;
+        let naive_payload = p.naive_changed * (4 + std::mem::size_of::<BodyState>() as u64) + p.naive_frames * 16; // id + exact state
         let naive_quant = p.naive_changed * (2 + 24) + p.naive_frames * 16;
         println!("RESULT ballpit {hz} Hz, {hands} hand(s), input delay {ahead} frames, loss {loss}%: sweep window {secs:.2} s, {} frames", p.naive_frames);
         println!(
