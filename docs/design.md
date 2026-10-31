@@ -2106,10 +2106,86 @@ and the engager's hand replayed after the gesture had ended.
    * The 500-ball pit's uplink fell from 77 to 65 kbit/s, with the hand author sending every frame
      [V r18 capped].
 3. **Congestion control** on each member's uplink.
-   * **Signal:** this member's own queue delay. The spike reads the bottleneck queue directly. Production
-     estimates it from the one-way delay gradient of ack timestamps, as WebRTC's GCC does [I].
+   * **Signal:** this member's own queue delay. The spike reads the bottleneck queue directly.
+     Production (pe-app) estimates it LEDBAT-style (RFC 6817): each receiver measures the one-way queueing
+     delay of a sender's datagrams and echoes it back [V pe-app r18-app]. We chose this over WebRTC's GCC trendline
+     because the controller's 40 ms / 10 ms thresholds need an absolute delay, and GCC yields only
+     over/under-use signals.
+     * **Wire:** every datagram carries a signed stamp of 8 bytes. `ts` (u32) is the sender's monotonic
+       clock in µs at send time. `seq` (u16) counts datagrams per destination. `qrep` (u16) is the queue
+       delay the sender measured on the recipient's datagrams to it, in ms, with "none" before the first
+       sample. That's about 0.5 kbit/s at level 5's 7.5 datagrams/s, and 2 kbit/s at level 0.
+     * **Receiver**, per sender:
+       * The one-way delay is `recv − ts`, with `ts` unwrapped to 64 bits from the newest value seen.
+         The clock offset between the two machines is unknown but constant, so it cancels.
+       * **base** is the minimum over 12 buckets of 10 s (2 minutes).
+       * **current** is the minimum over the last 100 ms or the last 4 samples, whichever spans more, so
+         that level 5's sparse datagrams still fill the filter.
+       * **q = current − base**, sent as `qrep` in every datagram back to that sender.
+       * The send and receive times are taken at the socket, just before sendto and just after
+         recvfrom, so the sim's tick and processing time don't read as queueing.
+     * **Sender:** each tick, `set_link` gets the largest report from any member. A member's congested
+       downlink thins the stream to everyone, which matches every member receiving the same entries.
+       * A report is fresh for 1 s and held at its last value for up to 5 s.
+       * With no report left, the controller gets a value inside its dead band (25 ms: above the 10 ms
+         calm level, below the 40 ms trigger), so its level holds. Silence is never read as calm.
+     * **Loss** is counted from `seq` gaps and logged, but not fed to the controller. Random loss
+       (Wi-Fi) isn't congestion, and tail-drop loss arrives with a full queue, which the delay already
+       shows.
+     * **Measured** [V pe-app r18-app; 3 members in a 500-ball pit, member 1 sweeping every frame,
+       25 ± 5 ms one-way, a cap on member 1's uplinks from 2 s (token bucket, 4 kB burst, 500 ms
+       tail-drop queue), 30 s; the same on Windows and on native Linux]:
+       * With no cap, the signal reads 2-3 ms (6-8 ms at most: the scripted jitter), and the level stays 0.
+       * With 80 kbit/s (member 1 offers about 168 kbit/s per link at level 0), the level cycles
+         through 0-5 and spends 30-33% of the time at 5. The cap's real queue peaks at 387-388 ms and the
+         signal at 362-372 ms. There are no drops, confirmation lag is at most 37 frames, and the session
+         stays live and all equal with all three members.
+       * With the same cap and the signal not fed (the level stays 0), the queue fills to its 500 ms
+         limit, and the receivers' estimate reads 450-475 ms. About 800 of member 1's datagrams are
+         dropped, member 2 pauses at the speculation limit at 4.7 s, and member 1 is removed at about
+         7 s.
+       * The cycle has a period of about 3.5 s. The controller lowers one level per 300 ms of calm,
+         back to level 0, where the stream again exceeds the cap by twice: the 40 ms trigger plus five
+         100 ms raises let the queue reach about 340 ms. A controller that remembers the last level that
+         congested, or raises by more than one level at a time, would cut those peaks (a D56 tuning
+         question).
+     * **Known limits [I]:**
+       * *Route changes.* A route change that adds more than 40 ms of path delay reads as a queue until
+         the old minimum ages out of the base window. The stream is then thinned for up to 2 minutes:
+         a coarser hand, but no stall. We don't re-base automatically, because a long standing queue
+         from cross-traffic (someone else's upload filling the uplink) is exactly when we should thin.
+         Seen in testing: 25 ms of scripted delay added at session start read as 25-33 ms of queue [V].
+       * *Standing queues longer than the base window* (review AR-1). Cross-traffic that fills the uplink
+         for over 2 minutes becomes the base: q then reads about 0, and the level falls while the queue
+         stays full. RFC 6817 uses 10 minutes. We keep 2 [proposal]: a longer base keeps a route
+         change's false queue reading longer (thinning for up to 10 minutes), and thinning our own
+         stream does not shorten a queue that another flow fills; it only yields bandwidth to it.
+       * *Clock drift.* At up to 100 ppm, drift moves the estimate by at most 12 ms over the 2-minute
+         window, below the 40 ms trigger.
+       * *Below level 5's rate* (review AR-3). A link below what level 5 still sends, about 60 kbit/s
+         per link for a member sweeping its hand, cannot carry the member: at 40 kbit/s, member 1 was
+         removed at 6.8 s [V @design-reviewer, pe-app r18-app].
+       * *One faulty report* (review AR-4). The sender takes the largest report, so one faulty member
+         reporting a full queue holds every sender at level 5. That costs bandwidth and hand precision,
+         not safety or liveness. Ignoring the top report would stop it, but would also ignore one
+         member's genuinely congested downlink, and does not work with two members [I].
+       * *AQM bottlenecks.* On a bottleneck running fq_codel or CAKE (common on SQM home routers), queueing
+         delay stays near 5-20 ms and congestion shows as drops. A delay-only controller then never
+         reaches 40 ms and never thins, and repairs compete with the stream. A loss rule is the
+         follow-up. Not shown: with a simplified CoDel on the 80 kbit/s cap, the queue still averaged
+         105 ms (max 330 ms) against twice the link's capacity, so the controller did engage. The
+         session stayed all equal, with 176 CoDel drops [V pe-app r18-app, Windows].
+       * *Timestamps.* pe-app stamps arrivals in a receive thread at the socket. Before that thread,
+         the observers' rollback ticks in the ball pit read as 25-38 ms of queue on an uncapped link
+         [V]. Sends are stamped as each datagram is built, just before sendto, so a slow tick delays a
+         send but never reads as queueing.
    * **Response:** six levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
      (after 300 ms below 10 ms).
+     * **It remembers the level that congested** (@coordinator-opus, 2026-10-31; D56). After congestion
+       at level L, it lowers back into L only after 5 s of calm instead of 300 ms, and forgets L after
+       30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Without it, a
+       stream at twice the cap cycled every 3.5 s: each 300 ms of calm lowered it back to level 0, and
+       the queue reached 340-390 ms before the raises caught up [V pe-app r18-app].
      * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
@@ -6152,9 +6228,13 @@ entry says so.
 * **D56. R18 defaults (10.9).** The controller thresholds:
   * **Settled (user, 19:11Z): as recommended.**
   * up above 40 ms of uplink queue, at most every 100 ms;
-  * down after 300 ms below 10 ms.
+  * down after 300 ms below 10 ms;
+  * within those, the level that last congested is re-entered only after 5 s of calm, and forgotten
+    after 30 s with no congestion (@coordinator-opus, 2026-10-31, from @shader-lang's 80 kbit/s
+    measurement; 10.9) [proposal: 5 s and 30 s].
 
-  Production measures the queue by delay gradient, as GCC does [I]. These defaults kept a 32-64 kbit/s cap
+  Production (pe-app) measures the queue as a LEDBAT-style one-way queueing delay (10.9, item 3) [V pe-app
+  r18-app]. These defaults kept a 32-64 kbit/s cap
   real-time with queues under about 100 ms, and 16 kbit/s with queues under 400 ms (review R3-9) [V].
   * Alternative: loss-based control (as in TCP Reno). It reacts only after the router queue is already
     full, the 500 ms bufferbloat this replaces.
