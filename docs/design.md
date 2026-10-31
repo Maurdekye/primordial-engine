@@ -1309,8 +1309,11 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
 * **The joiner holds its simulation until the state is imported, and a state never rewinds a replica**
-  (reviews P23R-1 and P23R-2): a state join needs a joiner that is not simulating yet, and a refused
-  answer uses up that donor's request, so the joiner asks another member [V @world-chunks, pe-session].
+  (review P23R-1). This is a requirement on the joiner's IO: pe-session's core does not hold it yet.
+  The harness meets it [V statejoin, which sets `throttle_us`], and the core enforces it later
+  [proposal; `request_state`'s rustdoc states the precondition].
+* A refused answer uses up that donor's request, so the joiner asks another member (review P23R-2)
+  [V @world-chunks, pe-session].
 * Region- or island-scoped transfer is a later optimization.
 
 ---
