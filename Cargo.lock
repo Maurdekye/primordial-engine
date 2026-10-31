@@ -1212,6 +1212,7 @@ dependencies = [
 name = "pe-session-harness"
 version = "0.1.0"
 dependencies = [
+ "pe-physics",
  "pe-session",
 ]
 
