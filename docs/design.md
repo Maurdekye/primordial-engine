@@ -2238,7 +2238,8 @@ and the engager's hand replayed after the gesture had ended.
        at level L, it lowers back into L only after 5 s of calm instead of 300 ms, and forgets L after
        30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Without it, a
        stream at twice the cap cycled every 3.5 s: each 300 ms of calm lowered it back to level 0, and
-       the queue reached 340-390 ms before the raises caught up [V pe-app r18-app].
+       the queue reached 340-390 ms before the raises caught up [V pe-app r18-app]. The spike mirrors it
+       (p2/spike-d56; the measured effect is under the table below).
      * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
@@ -2307,7 +2308,8 @@ transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3;
-adaptive cells re-run with span then coast and the level-change rule, p2/spike-hand]:
+adaptive cells re-run with span then coast and the level-change rule, p2/spike-hand, then with D56's
+congested-level memory, p2/spike-d56]:
 
 | Cap | Transport | Uplink m1 | Max queue, drops | Stalled frames | Max confirmation lag | Back to real time after the gesture | End state |
 |---|---|---|---|---|---|---|---|
@@ -2316,18 +2318,18 @@ adaptive cells re-run with span then coast and the level-change rule, p2/spike-h
 | 64 kbit/s | batched, or batched + adaptive | 65 kbit/s | 0 ms, 0 | 0 / 0 | 9 frames | at once | equal |
 | 48 kbit/s | per message | 76 kbit/s | 499 ms, 52 | 238 / 262 | 328 frames | never in the run | not converged |
 | 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 22 | 139 frames | 2.4 s | equal |
-| 48 kbit/s | **batched + adaptive** | 57 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
-| 32 kbit/s | **batched + adaptive** | 39 kbit/s | **105 ms**, 0 | **0 / 0** | 16 frames | **at once** | equal |
-| 16 kbit/s | **batched + adaptive** (30 s run) | 17 kbit/s | **414 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
-| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 492 ms, 12 | 1,323 / 1,335 | 1,453 frames | 21.7 s | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 35 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
-| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 36 kbit/s | **393 ms**, 0 | **0 / 0** | 35 frames | **61 ms** | equal |
-| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 66 kbit/s | **198 ms**, 0 | **0** (all four) | 34 frames | **at once** | all four equal |
+| 48 kbit/s | **batched + adaptive** | 54 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
+| 32 kbit/s | **batched + adaptive** | 29 kbit/s | **82 ms**, 0 | **0 / 0** | 15 frames | **at once** | equal |
+| 16 kbit/s | **batched + adaptive** (30 s run) | 14 kbit/s | **414 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
+| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 492 ms, 2 | 191 / 204 | 322 frames | 1.7 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 34 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
+| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 35 kbit/s | **393 ms**, 0 | **0 / 0** | 35 frames | **at once** | equal |
+| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 38 kbit/s | **197 ms**, 0 | **0** (all four) | 32 frames | **at once** | all four equal |
 | 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 30 kbit/s | 498 ms on member 3's links | 135 / 135 before the demotion | 255 frames | at once | member 3 demoted after 3 s of lag; members 1 and 2 equal |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
-  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 22 s of the gesture's end, and a
+  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 2 s of the gesture's end, and a
   member too slow for the session is demoted.
 * **Span then coast and the level-change rule (p2/spike-hand)** moved the adaptive cells a little, and no
   cell changed state [V spikes/out/r18]: peaks rose at 16 kbit/s (364 → 414 ms) and in the step (343 →
@@ -2335,6 +2337,12 @@ adaptive cells re-run with span then coast and the level-change rule, p2/spike-h
   ms). The likely cause [I]: after a level change, a pose may now come up to one stride sooner, which adds
   an entry while the queue builds. That is the cost of a hand that never stops while its author sends.
   The other transports changed only in digests.
+* **D56's congested-level memory (p2/spike-d56)** then changed the adaptive cells more [V spikes/out/r18]:
+  12 kbit/s recovers in 1.7 s instead of 21.7 s (2 drops instead of 12, 191 stalled frames instead of
+  1,323), the step from 64 to 16 is back in real time at once, and 32 kbit/s peaks at 82 ms instead of
+  105. Peak queues elsewhere are unchanged: the first congestion sets them, and the memory stops the
+  repeats. The cost is a coarser hand: the controller stays longer at the coarsest level it reached (on
+  the shared uplink, 21 s of 30 at level 5, sending 38 kbit/s instead of 66).
 * **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
   even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
   wire format]. Below the floor a two-member session stalls, because it cannot demote either member
