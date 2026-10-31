@@ -21,7 +21,7 @@ against this list. Where the order changed an answer, the text says so. Examples
 * confirmation-based finality, which makes commits final in about 0.14 s instead of 2 s (6.4, 15.2);
 * the body budget (D2);
 * the ball pit's perturbation-source design (7.5);
-* `rel-fast` as the iteration build profile (13.7).
+* `rel-fast` as the build profile for committed logic (13.2, 13.7; settled by the user at 22:47Z).
 
 ## How to read this document
 
@@ -139,6 +139,13 @@ Rulings that shape the design:
 * **The open decisions** (18:42-19:21Z): the user ruled D2, D4, D11, D18a/D20, D21, D23 and D62, D27a and
   D34, D32, D49, D60 and D72, and took the recommendation for every other (19:11Z). Section 24 records
   each. The rulings raised five new questions, D74-D78, which the user settled as recommended at 19:58Z.
+* **Agent panels** (21:50-22:54Z): Claude Code, Codex and Antigravity as the launch harnesses, through one
+  harness layer (21.1); voice prompting with a speech model built into the engine on Windows and Linux,
+  and spoken replies heard nearby (21.11); panels know where the player looks and points (21.12), with
+  guidance tools (21.13); game settings changed by talking to the agent (21.14); **openness first**:
+  prompts, replies and agents' work are seen and heard nearby by default (21.4); confidants (21.5); a
+  simplified transcript (21.2). The proposals these rulings left open are D81-D86.
+* **Logic builds** use the `rel-fast` profile, without LTO (22:47Z, 13.2).
 
 ---
 
@@ -264,8 +271,13 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 2. No wall-clock time, OS randomness or I/O in the sim. Randomness comes from the session seed plus the
    frame plus explicit streams.
 3. No transcendental functions from `std`/libm in sim code; their results may vary by platform. Use
-   Box3D's deterministic math or an engine `pe_core::dmath` with bit-exact polynomial implementations.
-   Basic IEEE ops (`+ - * / sqrt`, conversions) are exact.
+   Box3D's deterministic math or `pe_core::dmath` (P2-1): bit-exact `f32` `sin`, `cos`, `sin_cos`, `tan`,
+   `atan`, `atan2`, `asin`, `acos`, `exp`, `ln`, `log2`, `pow` and `powi`, each an `f64` fdlibm kernel
+   rounded to `f32`, within 1 ulp of `std` over the tested ranges [V P2-1]. Basic IEEE ops
+   (`+ - * / sqrt`, conversions) are exact.
+   * **`powi` and `powf` count as transcendental here.** LLVM folds `f32::powi` at compile time with
+     another algorithm: on constant inputs a release build gave results 2 ulps from the debug build's
+     [V P2-1]. Use `dmath::powi` and `dmath::pow`.
 4. No iteration over hash-ordered containers in the sim. Use `BTreeMap` or sorted vectors. box3d-rust's
    own HashMaps are lookup-only [S grep of the crate].
 5. All inputs that enter the sim are quantized to exact f32 bit patterns at the boundary (VR poses: 18.4).
@@ -281,8 +293,18 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 9. **NaN and the FP environment (review L2).** A debug assertion checks every body's state is finite after
    each step. Release builds check it at every check frame, one pass over body states, and report the
    first non-finite object [V session-sim: the suite fails on any non-finite state, and none occurs].
-   The sim thread checks MXCSR (FTZ/DAZ off) every tick and resets it, because native libraries loaded
-   in-process (OpenXR runtimes, audio drivers) can change it [I].
+   **The FP control register holds on every simulation thread, workers included** (@chunks-reviewer's D2
+   finding). Native libraries loaded in-process (OpenXR runtimes, audio drivers) can change it [I].
+   * `pe_core::fpenv::check_and_reset()` compares the calling thread's whole register with the platform
+     default and restores it: MXCSR 0x1F80 ignoring the sticky flags on x86-64 (so FTZ and DAZ off,
+     round to nearest, exceptions masked); FPCR 0 on aarch64 (FZ, DN, rounding mode, traps, and
+     FEAT_AFP's FIZ, AH and NEP). It costs one register read and a compare, and writes only if something
+     changed [V P2-1 on x86-64, by setting flush-to-zero; aarch64 not run].
+   * pe-sim's tick calls it first, on the sim thread, every tick [S `crates/pe-sim/src/schedule.rs`].
+   * The parallel stepping's helpers (D2) run each job with the calling thread's register, copied in at
+     the job's start, so a worker never steps with a setting of its own [S
+     `crates/box3d-fork/src/worker_pool.rs`; not tested separately]. Any other thread that runs sim code
+     calls the check at each job start.
 10. **No process-global sim state (R14).** box3d-rust's length unit is a process global; it stays at
     1.0 for every world. Its `human` sample module (a thread-local RNG) is never used in sim code. Logic
     runtimes compile eagerly (22.2) [S].
@@ -348,7 +370,7 @@ A snapshot at frame *f* (the state before frame *f*'s entries) contains:
 |---|---|---|
 | Box3D world | `recording::serialize_world` image (POD + geometry registry), restored in place with `deserialize_into_shell`. Bodies created or destroyed after the snapshot are undone by the restore, and their ids are reissued identically on re-simulation | [V b1, b4; V session-sim r14: bodies destroyed by a departure and created by an arrival or return across rollbacks] |
 | Engine tables | claims, object table, R14 escrow and arrival tables: plain copies | [V session-sim] |
-| Sim ECS store (16) | column copies (memcpy) | [I] |
+| Sim ECS store (16) | copy-on-write columns: a snapshot shares every column buffer, and the first write afterwards copies that column once; unwritten columns are never copied. Snapshot and restore cost O(columns) | [V P2-1 `store_bench`: snapshot 0.1 us and restore 0.2-0.4 us up to 8,192 objects; a deep copy of every column takes 64-83 us at 2,048 objects, about 3% of the spike's Box3D image save] |
 | Logic module state | the module's sync state (7.4): component columns, the declared state arena, active module id | [V d1 for whole linear memory; I for the arena split] |
 | Session log | append-only; never rolled back. Entries are re-applied on re-simulation | [V b2, b3, d1, session-sim] |
 
@@ -1030,6 +1052,12 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   * The round trip costs one restore plus one save per check frame (every 30 frames) [V session-sim
     r14-throttle: 18 ok / 0 bad in world A, 15 ok / 0 bad in world B].
 * **Objects:** the per-object state hashes that carried state (7.3) is compared against.
+* **The hash (P2-1)** [V P2-1]: XXH64, pinned in-tree and checked against the reference crate, over the
+  sim store's canonical content: the frame, the seed, the objects, the creator counters and every
+  non-empty column with its schema hash. State reached through different operation orders hashes and
+  serializes identically. The spikes used byte-wise FNV-1a, which is several times slower on whole
+  columns. `checked_state_hash()` scans the values first, so a stray NaN is a deterministic error on
+  every peer, not a hash of platform-specific NaN bits; sync checks use it.
 
 ### 9.2 Cadence
 
@@ -1213,7 +1241,7 @@ if our bulk transport proves weak.
   membership. A minority side speculates up to the speculation limit and then pauses. On heal it rejoins
   the majority's epoch by state transfer. Its unconfirmed entries can be resubmitted as new entries. No
   confirmed history is ever discarded (review H3). Two-member sessions are **D7**.
-* **Always-on peers** (like Resonite's headless hosts) are ordinary members that keep a world running.
+* **Always-on peers** (like Resonite's headless clients) are ordinary members that keep a world running.
   They have no authority.
 
 ### 10.7 e4mc lessons (user question)
@@ -1243,23 +1271,23 @@ if our bulk transport proves weak.
      * The second pair is the **password**. It is secret and used only inside a PAKE.
      * The last word is a **check word**, used to catch typos.
      * All words come from a 7,776-word list, so each word carries log2(7776) = 12.9 bits.
-   * **The host announces itself under the nameplate.** The member who creates the code (the host) announces
+   * **The code's creator announces itself under the nameplate.** The member who creates the code announces
      its address with BitTorrent `announce_peer` (BEP 5) under
      `infohash = BLAKE3("primordial/code/v1" ‖ nameplate)[..20]`. A relay address (10.5) also works. The
-     host re-announces until the code expires.
-   * **The joiner finds the host, then proves the password.**
+     creator re-announces until the code expires.
+   * **The joiner finds the creator, then proves the password.**
      * The joiner's peer checks the check word locally, so a typo never costs an attempt.
      * It calls `get_peers(infohash)` and contacts at most 8 of the returned addresses.
      * With each, it runs a PAKE (SPAKE2, or CPace; neither pure-Rust crate is audited yet), with the
        password as input and the nameplate bound into the transcript.
-   * **On success, the host sends a normal invite ticket** (11) over the PAKE-keyed channel: session ID,
+   * **On success, the creator sends a normal invite ticket** (11) over the PAKE-keyed channel: session ID,
      member addresses, the inviter's key and a join secret. The join then proceeds as for any invite
      (10.6).
    * **Nothing derived from the password is ever published.** The DHT holds only the nameplate's infohash
-     and the host's address. No signed session record exists to forge.
+     and the creator's address. No signed session record exists to forge.
    * **Limits:**
      * a code expires after 10 minutes, or after one use unless the owner allows more;
-     * the host accepts at most 10 failed PAKE runs per code in total, and at most one per source address
+     * the creator accepts at most 10 failed PAKE runs per code in total, and at most one per source address
        per 5 s, then burns the code and tells its owner;
      * joining still passes the session's own admission rule, if it has one.
    * **Shorter form, through a friend.** If the joiner already knows a member (a friend record, 11), the code
@@ -1281,21 +1309,21 @@ if our bulk transport proves weak.
 | Attack | Bound |
 |---|---|
 | Offline guessing of the password | Not possible: nothing derived from it is published or sent outside a PAKE run |
-| Online guessing against the host | At most 10 guesses per code: 10 / 7,776² = 10 / 6.0 × 10⁷ ≈ 1.7 × 10⁻⁷ |
-| Fake hosts announced under the nameplate | Each joiner attempt contacts at most 8 candidates: ≤ 8 / 6.0 × 10⁷ ≈ 1.3 × 10⁻⁷ per attempt, and failed runs are shown to the joiner |
+| Online guessing against the creator | At most 10 guesses per code: 10 / 7,776² = 10 / 6.0 × 10⁷ ≈ 1.7 × 10⁻⁷ |
+| Fake creators announced under the nameplate | Each joiner attempt contacts at most 8 candidates: ≤ 8 / 6.0 × 10⁷ ≈ 1.3 × 10⁻⁷ per attempt, and failed runs are shown to the joiner |
 | Nameplate collisions (honest) | With 10⁴ live codes, a given code shares its nameplate with probability ≈ 1.7 × 10⁻⁴. The only cost is failed PAKE runs, which can burn a code; the owner makes a new one |
 | Burning someone's code (denial of service) | Ten wrong guesses burn it. Low impact: the owner makes a new code |
 | Someone who overhears the whole code | Can join. A code is a bearer invitation, like a ticket. Use single-use codes, or admission approval |
 
    * **Costs:**
      * the code grows from three words plus a check word to four plus a check word (ease of use, D35a);
-     * the host must stay online and reachable, directly or through a relay, while the code is live;
-     * DHT observers learn that the announced address hosts a Primordial join code, much as BitTorrent
-       peers are visible. Announcing a relay address hides the host's address (D35b).
+     * the creator must stay online and reachable, directly or through a relay, while the code is live;
+     * DHT observers learn that the announced address serves a Primordial join code, much as BitTorrent
+       peers are visible. Announcing a relay address hides the creator's address (D35b).
    * **Rejected alternative:** binding a key fingerprint into the code. Resisting offline search and
      second-preimage attacks needs about 6 words (77.5 bits) plus a check word, which is not memorable.
-2. **Outbound-only reachability.** A host behind NAT stays reachable by holding an outbound connection to
-   a relay. Our equivalent: members with open ports, plus **volunteer relays** that anyone can run (the
+2. **Outbound-only reachability.** An e4mc server behind NAT stays reachable by holding an outbound
+   connection to a relay. Our equivalent: members with open ports, plus **volunteer relays** that anyone can run (the
    normal peer binary in relay mode).
    * They forward only end-to-end-encrypted packets, addressed by peer public key.
    * Each peer picks the relays it trusts.
@@ -1694,10 +1722,13 @@ from its source.
 
     * **The release profile does not fit the lead.** The 0.5 s lead (2.1) fits only small modules
       built with release (LTO, 1 CGU); a 6.4k-line module needs about 2.3 s on the laptop.
-    * **`rel-fast` fits.** It is reproducible (above) and rebuilds the 6.4k-line module in about 0.5 s,
-      so committed modules should be built with a pinned `rel-fast`-like profile, the one the author's
-      own loop already uses (13.7). Release (LTO) is then an optional size optimization that every
-      peer would have to agree on [I].
+    * **`rel-fast` fits.** It is reproducible (above) and rebuilds the 6.4k-line module in about 0.5 s.
+      **Settled (user, 22:47Z, "Fast builds"):** committed modules are built with the pinned `rel-fast`
+      profile (no LTO), the one the author's own loop already uses (13.7). The user accepted its costs:
+      about 1% of run time against LTO and about 35% more module bytes (below). Release (LTO) would be an
+      optional size optimization that every peer has to agree on [I].
+    * **Not switched yet:** the guest build scripts still use the opt-s LTO profile. The switch, with
+      the re-recorded module hashes, is a follow-up to P2-6/P2-7 [I].
     * **Joining with a physics-sized module** costs about 20 s of building per module.
 
     **On this PC** (Ryzen 7 9700X, through the lock at idle priority, so noisy; spikes/out/p2-7/build-times-desktop.txt) [V], the same edit costs:
@@ -2064,12 +2095,31 @@ code, so a builder cannot make another player's harness run them (21.3).
 byte-exact snapshot and hash and must be definable by WASM modules at runtime. Presentation-side state can
 use the same store or bevy_ecs; it does not need rollback.
 
-### 16.2 Hierarchy [I]
+**Built (P2-1, `crates/pe-sim`)** [V P2-1]:
+* `ObjectId { creator: u32, counter: u32 }`, ordered by creator, then counter. Counters start at 1, so
+  `ObjectId::NONE` is (0, 0). The store keeps each creator's last counter, so an id is never reissued,
+  even after a destroy or a rollback. Across worlds an object is `GlobalId { birth_world, object }`
+  (R14, P2-5).
+* One column per component, sorted by `ObjectId` (4.3 rule 4), held in `Arc` buffers with copy-on-write
+  (6.1). Components are described at runtime (16.5).
+* `to_bytes` and `from_bytes` are the canonical little-endian state transfer (9.5). `from_bytes` checks
+  everything, because the bytes may come from another peer: sorted ids and counters, schemas, sizes and
+  values, the hierarchy, and lengths that fit `usize`. Every check is O(n log n) in the objects, so a
+  hostile donor cannot stall a joiner.
+* The crates refuse to compile for big-endian targets, because sim state is hashed and copied as raw
+  little-endian bytes.
 
-* Every object has `Parent(ObjectId)`, an ordered `Children` list, and a `Transform` (local position,
-  rotation, scale).
+### 16.2 Hierarchy [V P2-1 for the store; I for the rest]
+
+* **The hierarchy is the built-in `Node` component:** parent, first and last child, and previous and next
+  sibling, an intrusive list in fixed 40-byte rows, so it snapshots and hashes like any column. Only the
+  hierarchy API writes it. `set_parent` refuses cycles; destroying an object removes its subtree.
+  Traversal is roots in id order, then depth-first with children in list order [V P2-1].
+* **`Transform`** (80 bytes) holds an `f64` position, an `f32` quaternion and an `f32` scale. An object's
+  frame is its nearest ancestor with a `Transform`; how roots and children are placed is in 25.2 [V P2-1].
 * World transforms are propagated in a deterministic order (depth-first, children in list order) for sim
-  objects each frame; presentation propagates at render rate.
+  objects each frame; presentation propagates at render rate. They are derived data, never stored or
+  hashed, and they compose in a fixed IEEE order, so every peer gets the same bits [V P2-1].
 * Reparenting is an interaction (sim objects) or a presentation edit (presentation-only objects).
 
 ### 16.3 Sim state vs presentation [I]
@@ -2095,6 +2145,16 @@ use the same store or bevy_ecs; it does not need rollback.
 
 * A logic crate declares component schemas in an IDL (Rust attribute macros in the SDK generate a manifest
   embedded in the wasm custom section).
+* **The IDL is a field list with no padding (P2-1)** [V P2-1]. A component is a list of fields (name,
+  kind, offset, count) that covers its row exactly:
+  * no gaps or overlaps;
+  * natural alignment, and the row a multiple of its alignment.
+
+  So no row has padding bytes, and every row is safe to hash and copy as bytes. A struct that needs
+  padding declares it as a field. `schema_hash` covers the whole description; snapshots record it, and
+  restoring into another schema fails. Native components and logic modules' components use the same
+  descriptions. Values are checked where they enter (4.3 rule 6): no NaN, no infinities, no bools other
+  than 0 or 1. Runtime registrations cannot take the engine's ids below 1024.
 * The host allocates columns and exposes typed query, get and set calls. The same schemas produce the MCP
   JSON Schemas (17.2).
 * Schema changes ship in commits. Activation migrates existing data: new fields get defaults, and a custom
@@ -2228,9 +2288,11 @@ tools also exists as an MCP tool, with structured input and output.
 | Logic | `logic.read`, `logic.write` (draft workspace), `logic.check` (rustc `--error-format=json` diagnostics), `logic.test_in_fork`, `scm.commit`, `scm.status`, `scm.rebase`, `scm.seat_status` |
 | Shaders | `shader.validate` (naga spans), `shader.commit`, `shader.preview_in_fork` (render-only) |
 | Assets | `asset.import`, `asset.get`, `asset.list`, `prefab.save` |
-| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`) |
+| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`). Session admin actions (kicks, roles, join rules; 12.4) likewise: an agent may request one, and the request waits in its owner's approval layer [proposal, Gnosarium UX section 15, item 11] |
 | Panels and hubs (R13) | `panel.connect` (private session only); `panel.send` (private session: any of its connections; inbox session: its own); `panel.inbox` (private session: owner-forwarded items only); `panel.close`; `panel.requests.*` (decider session only); `hub.contacts`; `hub.send` (first contact needs owner approval); `hub.inbox` (private session: owner-forwarded items only) (21.6, 21.7) |
 | Worlds and portals (R14) | `worlds.list`, `worlds.join`, `worlds.leave`, `worlds.set_presence` (owner-confirmed), `portal.*`, `transfer.request`, `transfer.status`. Every tool takes an explicit `world` (22.9) |
+| Panel turn, voice and context (21.5, 21.11-21.13) | `panel.turn.sender` (the verified sender, its standing as owner, guest or confidant, and `input: voice`); `panel.speak {text}`; resource `primordial://panel/context` (the turn's spatial context; a live subscription only with the live-feed permission); `annotation.list`, `annotation.get`, resource `primordial://panel/annotations` |
+| Settings (21.14) | `settings.list`, `settings.get`, `settings.set`, `settings.undo`; refused in guests' turns |
 
 **Scopes per session kind** (the token decides the kind, 21.3):
 
@@ -2240,6 +2302,10 @@ tools also exists as an MCP tool, with structured input and output.
 | Unlocked panel (21.5) | The owner, plus guests the access level admits; each turn's sender is verified and shown | The owner's, as for the private session (user ruling 19:00Z); `requested_by` records the guest | As the private session |
 | Inbox | One remote panel or hub correspondent | Read-only queries if granted; world actions only if the owner's ceiling allows | Reply on its own connection or thread only |
 | Decider | Untrusted request text | None | `panel.requests.list/accept/reject`, capped at the owner's ceiling |
+
+* **Guests' and confidants' turns** at the owner's panels (21.5): settings tools refuse in a guest's turn
+  (21.14), while a confidant's turn has the owner's tools. Each turn carries its own sender's spatial
+  context (21.12).
 
 **Peer-authored strings are marked untrusted [I]:**
 * **Wrapping.** Every result field that holds text written by another peer is wrapped as
@@ -2455,8 +2521,8 @@ section 7. **The spike workspace itself is 100% Rust (42 packages)** [V audit].
 | OpenXR loader (C++) + vendor runtime | Only way to reach headsets | `openxr` with `loaded`: loader `dlopen`ed [V audit] |
 | Linux desktop: libwayland/libX11 (dlopen), ALSA (audio) | Linux windowing and audio | winit/cpal |
 | The Rust compiler toolchain (rustc uses LLVM, C++) | Compiling game logic to wasm | Build tool, not linked into the engine; since D11 every peer runs it (13.2) |
-| Agent harness CLIs (Claude Code and Gemini CLI are Node.js apps; Codex CLI is a native vendor executable) and their cloud model APIs | R13 panels | Separate local processes spoken to over stdio or a PTY; the engine-side PTY (ConPTY via `portable-pty`), terminal emulator and chat UI are Rust [V audit `agent-panels`] |
-| OS speech recognition on Windows (D33; Linux has none, D77) | Voice input | `windows` crate bindings |
+| Agent harness CLIs (Claude Code, Codex CLI and Antigravity's `agy` are native vendor executables; Gemini CLI is a Node.js app) and their cloud model APIs | R13 panels | Separate local processes spoken to over stdio or a PTY; the engine-side PTY (ConPTY via `portable-pty`), terminal emulator and chat UI are Rust [V audit `agent-panels`] |
+| OS speech recognition on Windows, only as the lighter fallback (D33, revised 21:51Z) | Voice input | `windows` crate bindings. The built-in speech models run on a pure-Rust runtime (21.11, D81), so they are not a boundary [I] |
 | C runtimes that Rust itself links (review L1): the MSVC CRT on Windows, and MSVC `link.exe` to build; glibc on Linux (dynamic, OS-provided). Static musl builds, such as the phase-1 Linux run, embed musl's C. Official std builds may include compiler-rt objects in `compiler_builtins` | Every Rust binary | Recommend `linux-gnu`, not static musl, for Linux (D1) |
 | OS containment for restricted harness sessions: AppContainer, job objects, ACLs; Linux users or namespaces | R13 inbox and decider sessions | `windows` crate bindings (21.5) |
 
@@ -2502,16 +2568,28 @@ Decision: **D1**.
 
 ## 21. In-game agent panels (R13)
 
-Players work with their **own** agent harnesses (Claude Code, Codex, Gemini CLI, …) through in-game
-panels. The harness is a local process on the player's machine. The engine-side panel, terminal and chat
-UI are Rust. The harness itself is a separate, non-Rust or third-party process (20.1).
+Players work with their **own** agent harnesses through in-game panels. The harness is a local process on
+the player's machine. The engine-side panel, terminal and chat UI are Rust. The harness itself is a
+separate, non-Rust or third-party process (20.1).
+* **Launch harnesses: Claude Code, Codex (OpenAI's Codex CLI) and Google Antigravity** (user rulings
+  21:54Z, mfa655f4d42eb, and 21:55Z), supported "in the same generic way orgtree supports these
+  harnesses": one harness layer, with a driver per harness (21.1). Gemini CLI and other ACP agents can
+  follow through the same layer; they are not launch harnesses.
+* **The rulings of 21:50Z-22:54Z add** (their player-facing side is @gnosarium-ux's Gnosarium UX design,
+  sections 8.1-8.12):
+  * voice prompting with a speech model built into the engine, and spoken replies (21.11);
+  * the player's gaze and pointing as prompt context (21.12), and guidance annotations (21.13);
+  * game settings changed by talking to the agent (21.14);
+  * open panels: people nearby see and hear prompts, replies and the agent's work (21.4);
+  * confidants, friends who may use your panels as you (21.5);
+  * a simplified transcript (21.2).
 
 **Security rules for this section [I]** (they answer review findings R13-C1, R13-C2 and R13-H1..H3):
 1. **One principal per restricted session.** A restricted session takes input from exactly one remote
    party (a panel connection or a hub correspondent). **The exception is an unlocked panel** (user
-   ruling 19:00Z, D27a): its own session takes input from the owner and from every guest the access level
-   admits, as though they were the owner, and each message carries signed sender attribution that the
-   guest cannot spoof (21.5).
+   ruling 19:00Z, D27a): its own session takes input from the owner, from every guest the access level
+   admits and from the owner's confidants (user ruling 22:34Z), as though they were the owner. Each
+   message carries signed sender attribution that the sender cannot spoof (21.5).
 2. **Only the owner's sessions have built-in tools.** Every session that reads text from a remote panel or
    hub is a **restricted session**:
    * it has no built-in tools;
@@ -2526,9 +2604,11 @@ UI are Rust. The harness itself is a separate, non-Rust or third-party process (
    (21.9).** Restricted sessions ship per harness once it passes its containment gates.
 
 Tags in this section: **[S]** marks a flag or text read in the installed CLI's `--help` on this machine.
-**[S docs]** marks the harness's official documentation. Nothing in this section is [V].
+**[S docs]** marks the harness's official documentation. **[S Orgtree's … page]** marks Orgtree's own
+harness documentation (its harness pages, audited at its commits 32bb414 and 2ec8c0e), which describes how
+Orgtree drives these CLIs; we have not re-checked it. Nothing in this section is [V].
 
-### 21.1 Hosting a harness: two integration paths
+### 21.1 Running a harness: two integration paths
 
 **Structured mode (recommended default).** The engine spawns the harness in its machine-readable headless
 or protocol mode. It renders the events as a chat UI: messages, streaming text, tool-call cards, diffs and
@@ -2538,8 +2618,9 @@ approvals.
 |---|---|---|---|
 | Claude Code 2.1.292 (native `claude.exe`, shipped in the npm package `@anthropic-ai/claude-code`) | `claude -p --input-format stream-json --output-format stream-json --include-partial-messages`, `--mcp-config <json>`, `--resume <session-id>` [S] | `--bare`, `--restricted`, `--tools`, `--allowedTools`, `--disallowedTools`, `--setting-sources`, `--settings`, `--strict-mcp-config`, `--permission-mode`, `--permission-prompts`, `--disable-slash-commands`, `--no-session-persistence` [S]. Config home moves with `CLAUDE_CONFIG_DIR` [S docs] | `--max-budget-usd` ("only works with --print") [S]. No turn-cap flag [S] |
 | Codex CLI 0.160.0 (native) | `codex exec --json` (JSONL events, `--output-schema`); `codex app-server` (experimental JSON-RPC); MCP servers via `-c mcp_servers.<name>…` [S flag; key path I] | `-s/--sandbox` (`read-only`, `workspace-write`, `danger-full-access`), `--ignore-user-config`, `--ignore-rules`, `--disable <FEATURE>`, `--ephemeral`, `--strict-config`, `-C/--cd` [S]. Config home moves with `CODEX_HOME` [S, S docs]. **`-a/--ask-for-approval` exists only on the interactive top-level command, not on `exec`, and offers only `on-request` and `never`** [S]. `exec` takes `approval_policy` through `-c` [S docs] | None [S] |
-| Gemini CLI 0.57.0 (Node.js app, via npm) | `--acp` (Agent Client Protocol) or `-p … -o stream-json` [S] | `--approval-mode`, `--policy`, `--allowed-mcp-server-names`, `-e/--extensions`, `-s/--sandbox` [S]. Config home moves with `GEMINI_CLI_HOME` [S docs]. Folder trust is "disabled by default", so project configuration loads from any folder [S docs] | None [S] |
-| Any ACP-capable agent (e.g. OpenCode 2.0.28 has `opencode acp` [S]) | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent | per agent |
+| Antigravity CLI 1.4.10 (`agy`, native) | One persistent `agy -p --input-format stream-json --output-format stream-json` process: "stream-json reads one NDJSON message per line from stdin and runs a turn for each" [S]. `--conversation <id>` resumes [S]. MCP servers through `agy mcp add` or the per-session `--settings` [S flags; keys I] | `--sandbox` ("terminal restrictions"), `--mode` (`accept-edits`, `auto`, `plan`), `--settings` ("for this session only, never saved"), `--disable-slash-commands` [S]. No equivalent of `--restricted` or `--tools` [S: none in `--help`]. Print mode cannot answer permission prompts, so Orgtree runs it with `--dangerously-skip-permissions` and denies tools through PreToolUse hooks, which "are not an OS filesystem sandbox" [S Orgtree's Antigravity page] | None [S] |
+| Gemini CLI 0.57.0 (Node.js app, via npm; not a launch harness) | `--acp` (Agent Client Protocol) or `-p … -o stream-json` [S] | `--approval-mode`, `--policy`, `--allowed-mcp-server-names`, `-e/--extensions`, `-s/--sandbox` [S]. Config home moves with `GEMINI_CLI_HOME` [S docs]. Folder trust is "disabled by default", so project configuration loads from any folder [S docs] | None [S] |
+| Any ACP-capable agent, later (e.g. OpenCode 2.0.28 has `opencode acp` [S]) | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent | per agent |
 
 **Flags and settings the engine never uses** [flags S; policy I]:
 * **Claude Code:**
@@ -2550,8 +2631,36 @@ approvals.
   * `--dangerously-bypass-hook-trust`, `--dangerously-bypass-approvals-and-sandbox`, `-s danger-full-access`;
   * in restricted sessions, also `--approve-for-me`, `-s workspace-write`, `--add-dir` and top-level
     `--search`.
+* **Antigravity:** `--remote-control` ("Create a remote connection for the CLI session"); `--add-dir`
+  pointing at content that came from peers; `--dangerously-skip-permissions` unless the engine's deny
+  hooks are installed and checked at launch (21.3).
 * **Gemini CLI:** `--skip-trust`, `-y/--yolo`, `--approval-mode yolo`, and the environment variable
   `GEMINI_CLI_TRUST_WORKSPACE=true`.
+
+**One harness layer, a driver per harness (user ruling 21:54Z) [I].** It follows how Orgtree drives its
+harnesses (Claude Code, Codex, Antigravity and others) through one runtime with a driver each [S
+Orgtree's harness pages]. Every driver implements the same interface:
+* **launch:** turn a launch profile (21.3, 21.5) into a command line, a clean environment, the session's
+  own config home and the engine MCP server;
+* **turn:** send a structured user message whose first part is the engine-written header (21.5);
+* **events:** text deltas, tool calls (name, arguments, start, end, result), thinking where the harness
+  exposes it, usage, and the turn's end, normalized into one stream. The transcript (21.2), the open-panel
+  filter (21.4) and the spend caps (21.5) all read that stream;
+* **steer:** input during a running turn where the harness allows it, otherwise at the next turn. Codex
+  has native exact-turn steering; Claude Code and Antigravity take it through hooks (at PostToolUse, and
+  at invocation boundaries) [S Orgtree's harness pages];
+* **interrupt:** a control message (Claude Code), an exact-turn interrupt (Codex), or ending the process
+  tree (Antigravity) [S Orgtree's harness pages];
+* **resume:** `--resume <id>` (Claude Code), threads (Codex), `--conversation <id>` (Antigravity) [S].
+
+**Capability flags per harness and version** (Gnosarium UX section 15, item 12), each with a plain reason
+when off, so the UI can say "Sharing isn't verified yet for Codex 0.161":
+* structured mode;
+* unlocking verified (gates 9g, 9i, 9j and 9l, 21.9);
+* restricted sessions available (that harness's containment gate);
+* steering and interrupt kinds, resume;
+* the models and effort levels the signed-in account offers;
+* usage readout, and images in prompts.
 
 **Launch profiles are pinned per harness version [I].** Each adapter records the harness versions its
 launch profiles were verified against (21.9). On any other version:
@@ -2580,6 +2689,14 @@ and renders a terminal emulator into the panel.
 * **VR:** laser-pointer or poke interaction, an in-engine Rust virtual keyboard, and panel grab and resize
   gestures.
 * **Text from other principals is sanitized before display** (rules in 21.5, "Input handling").
+* **The transcript is simplified** (user ruling 22:03Z, m6b61bb507d44): consecutive tool calls collapse
+  into one summary row, as in the ChatGPT and Claude web apps. Per-call detail (tool names, arguments,
+  results, diffs) shows only with an advanced setting, off by default.
+  * Every engine MCP tool carries a plain-language summary template ("moved 1 object", "edited 1 file"),
+    and each driver maps its harness's own tools onto the same words, so a row reads "Worked: moved 1
+    object, edited 1 file, ran 1 test" whatever the harness (Gnosarium UX section 15, item 9) [I].
+  * Things that need the owner are never collapsed: a pending confirmation, a failed test, a rejection,
+    a question from the agent [proposal, Gnosarium UX 8.2].
 * **Engine-owned approval layer.** Approvals render in a layer that panel content cannot draw into:
   * connection requests;
   * commit and edit confirmations;
@@ -2588,11 +2705,11 @@ and renders a terminal emulator into the panel.
 
   The layer shows the requester's verified key and petname. Neither agents nor guests can imitate or
   trigger it. This is the out-of-band channel that 12.3 and 17.4 rely on.
-* **Voice (D33):**
-  * (a) OS speech recognition (Windows `Windows.Media.SpeechRecognition` via the `windows` crate, an OS
-    boundary);
-  * (b) local Whisper-class models on a pure-Rust ML runtime (heavy; GPU optional);
-  * (c) push-to-talk audio handed to a harness that accepts audio, if any.
+  * The Gnosarium UX calls it **the Seal**. Its presentation is reserved: drawn last, without depth
+    testing, at a reserved body-attached or screen position, with haptic and chime cues no other UI
+    uses [proposal, Gnosarium UX section 15, item 6].
+* **Voice:** prompting by voice with a speech model built into the engine, and spoken replies (21.11;
+  D33, D77, D81, D85).
 
 ### 21.3 Wiring the harness to the engine's MCP server, and the panel workspace
 
@@ -2627,6 +2744,8 @@ and renders a terminal emulator into the panel.
 7. **Wiring per harness:**
    * Claude Code: `--mcp-config <file> --strict-mcp-config` [S].
    * Codex: `-c mcp_servers.primordial.command=…` [S flag; exact key path I].
+   * Antigravity: a server entry in the session's own `--settings` file, or `agy mcp add` in the session's
+     own config home [S flags; which of the two keeps sessions apart is I].
    * Gemini CLI: `--allowed-mcp-server-names primordial` [S], plus a server entry in the session's own
      `GEMINI_CLI_HOME` settings [I].
 
@@ -2658,6 +2777,7 @@ The workspace is built as follows:
 | Claude Code | `.claude/` (settings with hooks, an `env` block and helper commands; rules, skills, commands, subagents, output styles, workflows, agent memory); `.mcp.json` (under `-p`, "Connected without asking, approved or not"); `CLAUDE.md` and `CLAUDE.local.md` (working directory, every ancestor, and subdirectories on demand); `AGENTS.md` (any directory, read when no `CLAUDE.md` exists, v2.1.277+); `.worktreeinclude` | [S docs] |
 | Claude Code plugins | `.claude-plugin/`, `.lsp.json` | [I] (names in the binary) |
 | Codex | `.codex/` (`config.toml` loaded "from the project root to your current working directory", `hooks.json`, rules, agents, skills); `.agents/` (skills scanned "in every directory from your current working directory up to the repository root"); `AGENTS.md` and `AGENTS.override.md` (project root down to the working directory; the docs mention no trust gate) | [S docs]; `.agents/plugins` [I] |
+| Antigravity | `.agents/` (rules in `.agents/rules/`, skills); `AGENTS.md` and `GEMINI.md`, "always active for their directory scope"; MCP config under its home (`~/.gemini/antigravity-cli/`) | [S Orgtree's Antigravity page, citing Antigravity 1.3.5's Workspace Rules docs]; ancestors: unknown [I] |
 | Gemini CLI | `.gemini/` (`settings.json` with MCP servers and hooks, `.env`, commands, skills, agents, policies, `system.md`, sandbox profiles); `.agents/` (skills alias); `GEMINI.md` (ancestors up to the `.git` root or home, and up to 200 subdirectories); `.env` (working directory and parents); `.geminiignore` | [S docs] (bundled with 0.57.0) |
 | OpenCode | `.opencode/`, `opencode.json`, `opencode.jsonc`, `AGENTS.md` | [I] (names in the binary; docs not read) |
 | git, which harnesses run | `.git` (a planted one can set `core.fsmonitor`, which runs a command on `git status`) | [I] |
@@ -2695,10 +2815,19 @@ claude -p --input-format stream-json --output-format stream-json --include-parti
   * It still excludes project and local settings: "Pass `--setting-sources user` … so Claude Code reads
     neither the project's settings files nor its `.mcp.json`" [S docs].
   * The owner confirms the switch in the approval layer, and the panel shows which profile is active.
-* **Codex and Gemini private sessions** [I; flags S]:
+* **Codex, Antigravity and Gemini private sessions** [I; flags S]:
   * Codex: `codex exec --json --skip-git-repo-check -C <panel>\ws -c project_root_markers=[]`.
+  * Antigravity: `agy -p --input-format stream-json --output-format stream-json --disable-slash-commands
+    --settings <panel>\owner\agy.json --conversation <id>`.
+    * Its print mode cannot answer permission prompts, so Orgtree's adapter adds
+      `--dangerously-skip-permissions` and denies every tool outside the profile with PreToolUse hooks
+      [S Orgtree's Antigravity page]. Ours would do the same for the restricted profile (no terminal, web
+      or subagents) and refuse to launch if the hooks are not in place.
+    * Hooks are a check, not containment, so gate 9k tests them (21.9). Whether `--mode accept-edits`
+      with an allow-list in `--settings` denies the rest in print mode, which would avoid the skip flag,
+      is for gate 9k to find out [I].
   * Gemini CLI: `gemini --acp`.
-  * Neither CLI has an equivalent of `--restricted`. The stripped workspace and the ancestor check are
+  * None of them has an equivalent of `--restricted`. The stripped workspace and the ancestor check are
     their protection, and their sandbox and approval settings are the owner's choice.
   * Never `--dangerously-bypass-hook-trust`.
 
@@ -2719,18 +2848,41 @@ claude -p --input-format stream-json --output-format stream-json --include-parti
   * On this machine, `%USERPROFILE%\.claude\.credentials.json` and `%USERPROFILE%\.codex\auth.json` both
     exist (checked by name only). Any process running as the owner can read them. That is why restricted
     sessions run under another OS identity (21.5).
-* **Panel contents are private by default.** Other peers see:
-  * the panel object, its owner, and an "agent working" indicator;
-  * the signed game edits it makes, attributable to the session key, the owner and, for a guest's turn at
-    an unlocked panel, the guest (12.3).
-* **Who sees which transcript:**
-  * the owner sees every session of the panel;
-  * everyone who may write to an unlocked panel sees its conversation, as the owner does;
-  * a remote party sees only the messages on its own connection.
-* **View sharing.** The owner may share a panel's view with chosen peers. Only the rendered transcript of
-  the private session is shared, never a process. It travels as non-sim messages encrypted to the
-  recipients.
-* Defaults and options: **D26**.
+* **Panels are open by default** (the user's principle at 22:28Z, m7993557894dc: "you hear all prompts
+  made by those around you, hear their agents responses, see their guidlines drawn in the world, and can
+  watch them work in real time"). This reverses D26's 19:11Z default. The members of the panel's world
+  see and hear:
+  * the prompts, typed or spoken, and the agent's replies as they stream, spoken aloud nearby (21.11);
+  * the collapsed tool summaries (21.2) and the outcome of each confirmation;
+  * the agent's work in the world: the objects the running turn touches and the current step [I], and
+    threads, captions and ghost previews as the Gnosarium UX draws them [proposal, Gnosarium UX 8.4];
+  * the guidance annotations attached to prompts (21.13) and the outline of the context a prompt sent
+    (21.12);
+  * the panel object, its owner, its "agent working" state, and the signed game edits it makes,
+    attributable to the session key, the owner and, for a guest's or confidant's turn, the sender (12.3).
+* **What stays closed by default** (Q19, user 22:34Z, m5d978da3bf64: "keep all closed by default"):
+  * the right to act with the owner's authority: panels start Locked (D27a), and confidants are the one
+    standing exception (21.5);
+  * the approval layer's contents, until confirmed;
+  * credentials and keys: harness logins, API keys, tokens and identity secrets;
+  * what other people's agents push into yours: panel inboxes and the connection policy (D30, D30a);
+  * direct messages;
+  * eye tracking, which stays off (Q8, 21.12).
+* **What never leaves the owner's peer** (D86) [proposal, Gnosarium UX 8.4]: raw tool results and
+  arguments, file contents, shell output and diffs, whatever the owner's detail setting. Others get the
+  agent's prose and the summary rows. Text that leaves, and text spoken aloud, first passes a best-effort
+  filter that masks key-like and token-like strings and long high-entropy runs. It is labelled
+  best-effort: it cannot catch everything an agent writes in prose.
+* **Private panel** (Q20, ruled as recommended at 22:54Z, "for now"): a per-panel switch, off by default.
+  It hides the transcript, the prompt echo and the step caption from others, and spoken replies go only to
+  the person who prompted. Others still see the panel, its working state and its signed edits.
+* **How it travels** [I]: as non-sim presentation messages over the session transport, like pose streams
+  (16.3), never in the sim, rollback or hashes. They go to the members of the panel's world (D31),
+  encrypted to them; across worlds, a panel is visible where it is, like anything else (22.9).
+* **Who sees which transcript in full:** the owner sees every session of the panel; a guest or confidant
+  sees the conversation as the world sees it, plus their own turns; a remote party sees only the messages
+  on its own connection.
+* Defaults and options: **D26** (open by default since 22:28Z), **D86**.
 
 ### 21.5 Unlocking a panel for others (user ruling 19:00Z)
 
@@ -2755,12 +2907,42 @@ unconditional access to it as though they were you, but informs the agent who is
   default, the Friends level, the panel's tool profile (the restricted profile by default, D25a), sender
   attribution, and re-locking at any time. Personal subscription terms may not allow sharing; that is the
   owner's responsibility.
+* **Guests cannot change the owner's settings** (Q12, user 22:28Z: "guests cant change your local
+  settings, they can only use your panel to influence the world around them"). Settings tools refuse in a
+  guest's turn (21.14).
+* **A guest's turn carries the guest's own gaze and pointing,** never the owner's (21.12, D82).
+
+**Confidants (user ruling 22:34Z, m5d978da3bf64):** "some friends can be marked as "confidants", who then
+get full access to your prompts as though they were you. the responding agent knows theyre a confidant of
+yours when they prompt it."
+* A confidant is a friend (D29) whom the owner marks. It is a **standing, per-person unlock**: the
+  confidant may prompt every panel of the owner, Locked ones included, with the owner's rights, harness,
+  login and AI capacity, like an unlocked panel's guest, without the panel being opened to anyone else.
+* **The mark is a signed, revocable attestation** [I]: the owner's user key signs (confidant, the friend's
+  key, issued, expires), and the record syncs across the owner's devices like the friend list. The
+  owner's peer checks it when the confidant's signed panel input arrives. The same attestation is the "is
+  a confidant of" relation that join rules read (12.4), presented by the joiner. Relationship records
+  expire after about 30 days unless re-signed, and are renewed automatically while the owner is online
+  (O5, ruled as recommended at 22:54Z, "for now").
+* **Revoking** stops accepting the confidant's input at once and interrupts a turn of theirs in flight,
+  as re-locking does. For join rules, a signed revocation supersedes the attestation [I].
+* **The turn header says so:** "<petname> ✓ verified (confidant of <owner>)", and `panel.turn.sender`
+  carries the same standing [I].
+* **Settings:** the Q12 refusal (21.14) does not apply to confidants: "as though they were you" includes
+  the owner's settings [the ruling's wording; stated explicitly in the Gnosarium UX].
+* **Confirmations stay the owner's** (Q22, ruled as recommended at 22:54Z, "for now"): commits, unlocks,
+  connections and kicks requested in a confidant's turn wait in the owner's approval layer. A confidant
+  never confirms them.
+* **Only while the owner's harness runs:** it runs only on the owner's machine (21.4), so a confidant can
+  prompt only while the owner is online with the panel open, from inside the panel's world.
+* **Profile for confidants** [proposal, Gnosarium UX 8.5a]: an owner setting, "Confidants use my panels in
+  Restricted mode", on by default, so a confidant's turns on a Full-profile panel get no shell or web.
 
 **Mechanics [I]:**
 * A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
   over the session transport's control channel, not the sim, signed by the guest's session key.
-* The owner's peer verifies the signature and checks the sender's key against the access level, then
-  queues the message as a turn of the panel's session. Turns from several people are taken in arrival
+* The owner's peer verifies the signature and checks the sender's key against the access level or the
+  owner's confidant attestations, then queues the message as a turn of the panel's session. Turns from several people are taken in arrival
   order; the panel shows whose turn is running.
 * **Sender attribution that cannot be spoofed:**
   * the adapter delivers every turn, the owner's included, as a structured user message
@@ -3160,13 +3342,16 @@ confirm that third-party clients are permitted [I].
   * harness CLIs and their cloud model services;
   * OS containment (AppContainer, job objects, ACLs), which is OS-provided and called through the
     `windows` crate;
-  * OS speech recognition, if chosen.
-* **Crates (23.1):** `pe-panels`, `pe-harness` (adapters, launch profiles, version pins), `pe-contain`
-  (OS identities, job objects, ACLs), `pe-hub`.
+  * Windows OS speech recognition, as the lighter fallback only. The built-in speech models run on a
+    pure-Rust runtime (21.11, D81).
+* **Crates (23.1):** `pe-panels`, `pe-harness` (the harness layer, drivers, launch profiles, version
+  pins), `pe-contain` (OS identities, job objects, ACLs), `pe-hub`, `pe-voice` (21.11), `pe-settings`
+  (21.14).
 * **Plan (23.2):**
-  * phase 4: owner-only desktop panels;
+  * phase 4: owner-only desktop panels for the three launch harnesses, with the collapsed transcript,
+    open panels, desktop spatial context and guidance tools, and settings by agent;
   * unlocking, inbox sessions and "ask agent" ship per harness, after that harness's gates pass (21.9);
-  * phase 5: VR panels and voice.
+  * phase 5: VR panels, voice prompting and spoken replies, and the VR guidance tools.
 * **Risks (23.3, risk 10):** harness drift is handled by version-pinned launch profiles (21.1).
 * **Several worlds (22.9):** personal panels follow embodiment; a connection belongs to the world it
   was made in.
@@ -3176,22 +3361,24 @@ confirm that third-party clients are permitted [I].
 
 ### 21.9 Verification gates before unlocking ships (spike item 9, expanded) [I]
 
-Spike-report item 9 becomes ten gates. Since the 19:00Z ruling, **unlocking** for harness H ships when 9g,
-9i and 9j pass for H. **Restricted sessions** (inbox and decider, 21.6) ship for H when H's containment
-gate passes (9a, 9b or 9d) and 9c, 9e, 9f and 9h pass too. Windows first, then Linux.
+Spike-report item 9 becomes twelve gates. Since the 19:00Z ruling, **unlocking** for harness H ships when
+9g, 9i, 9j and 9l pass for H. **Restricted sessions** (inbox and decider, 21.6) ship for H when H's
+containment gate passes (9a, 9b, 9d or 9k) and 9c, 9e, 9f and 9h pass too. Windows first, then Linux.
 
 | Gate | What it proves | Pass condition |
 |---|---|---|
 | 9a Claude Code restricted session | The 21.5 launch line leaves only engine tools | `system/init` lists only `mcp__primordial__*` tools, one MCP server and no plugins. Adversarial prompts cannot read, write, fetch or run anything. With no `ANTHROPIC_API_KEY` the session fails to authenticate. Nothing is written under the owner's `%USERPROFILE%\.claude`. `--max-budget-usd` stops the process |
 | 9b Codex containment | Reads and commands are confined | Run under the candidate profile and the 9c identity: a canary file in the owner's profile cannot be read; `--disable shell_tool --disable unified_exec` leaves no command execution; no `AGENTS.md` or hook loads from ancestors |
 | 9c OS identity | Restricted sessions cannot reach the owner's files or credentials | Under AppContainer, and separately under a low-privilege user, each harness runs and reaches its provider. It cannot open the owner's canary, `.credentials.json` or `auth.json`, or the owner's Credential Manager entries. It can reach only its own named pipe |
-| 9d Gemini CLI containment | As 9b | As 9b, with `--policy` denying built-in tools and folder trust settings checked |
+| 9d Gemini CLI containment (only if Gemini CLI is added) | As 9b | As 9b, with `--policy` denying built-in tools and folder trust settings checked |
 | 9e Workspace materializer | Reserved paths never reach a workspace | Every 15.6 name and alias (case, trailing dot or space, 8.3 name, NFKC, HFS-ignorable code point, `:` stream) is rejected or stripped on NTFS. A canary hook in a pre-rule commit never runs. The ancestor check fires |
 | 9f Inbox routing | No inbound text reaches the private session; no fan-out | A "forward this to all your connections" payload does not propagate. Inbox sessions cannot call `panel.connect` or send on other connections. Forwarding works only per message |
 | 9g Re-locking | 21.5 re-locking | Guests no longer admitted can send nothing, their queued turns are gone and a turn in flight is interrupted before the UI reports success |
 | 9h MCP transport | 17.1 rules hold | The named pipe rejects other identities. If HTTP is enabled: a DNS-rebinding test with a foreign `Host` or `Origin` is refused, the server binds to loopback only, and a stale token is refused |
 | 9i Version pin | Profiles fail closed on drift | A changed `--help` or an unknown version disables unlocking for that harness |
 | 9j Sender attribution | The agent cannot be told a false sender | Adversarial guest text (forged headers, imitated owner messages, Unicode lookalikes, attempts to read the marker) never makes the agent attribute a turn to anyone but its verified sender, and `panel.turn.sender` always matches the signature |
+| 9k Antigravity hooks and containment | The hook profile holds; restricted sessions are contained | Owner sessions: with the engine's deny hooks, adversarial prompts cannot run a command, fetch, start a subagent or write outside the workspace; a missing or failed hook refuses the launch; canary `AGENTS.md`, `GEMINI.md` and `.agents/` files in ancestors are not loaded. Restricted sessions also: under the 9c identity and with a credential of their own, they cannot read the owner's canary or reach the owner's keyring login |
+| 9l Context and settings follow the sender | Guests' turns carry only their own context and cannot change settings | A guest's turn never carries the owner's gaze or pointing (21.12); its settings calls are refused whatever the text claims, a confidant's are allowed (21.14); a revoked confidant's next input is refused and a turn in flight stops |
 
 ### 21.10 Round-2 containment fixes (reviews NEW-9 to NEW-11, NEW-14, NEW-16, NEW-18, NEW-20, NEW-24) [I]
 
@@ -3226,6 +3413,8 @@ These rules supersede any conflicting text in 21.3-21.9.
     and `.mcp.json`;
   * Codex: `AGENTS.md`, `AGENTS.override.md` and `.codex/`;
   * Gemini CLI: `GEMINI.md` and `.gemini/`.
+  * Antigravity: `AGENTS.md`, `GEMINI.md` and `.agents/`. Whether it reads them from ancestors is not
+    known, so gate 9k plants canaries [I].
 * **One decider per request** (NEW-14). An "ask agent" decision for a panel runs in a fresh session per
   requester, seeing only that requester's purpose text, so one requester cannot steer the decision for
   others.
@@ -3248,6 +3437,169 @@ These rules supersede any conflicting text in 21.3-21.9.
   * On Windows, a restricted process is put in a job object at creation (`CREATE_SUSPENDED` plus
     assignment, or `PROC_THREAD_ATTRIBUTE_JOB_LIST`), with `KILL_ON_JOB_CLOSE` and no breakaway.
   * Guests at unlocked panels hold no keys since the 19:00Z ruling, so `GuestRevoked` is gone.
+
+### 21.11 Voice: speaking to your agent, and spoken replies (D33, D77, D81, D85) [I]
+
+**Speech to text** (user rulings 21:50Z, m48857d678513, and 21:51Z, m012a25f076e9): voice prompting of
+agents is a requirement. **One local, offline Whisper-class model is built into the engine, on Windows
+and on Linux:** the same recognition everywhere, and nothing leaves the machine. Windows' OS speech
+recognition stays only as a lighter fallback on Windows. This supersedes D77's "no voice input on Linux in
+the MVP".
+* **The models ship in the installer** (user 22:23Z, Q13), so voice works at first launch and offline.
+* **Speaking to the agent is its own action,** separate from talking to people: hold a button or key
+  while looking at a panel, or with a panel focused [proposal, Gnosarium UX 8.6].
+* **The world microphone stays open while you prompt** (user 22:23Z, Q14: "dont mute, setting that can be
+  enabled to mute"): people nearby hear you talk to your agent. An opt-in setting cuts world voice while
+  the agent key is held. The capture feeds two consumers, world voice (unless muted) and the recognizer,
+  and others see a "talking to agent" state as presence data (Gnosarium UX section 15, item 7).
+* **Output:** text, with a timestamp per word, so "this" and "there" resolve to what the speaker pointed
+  at when saying them (21.12). Only text enters the prompt, and from there the harness's model provider;
+  audio never leaves the machine.
+* **The turn records that it was spoken:** the engine-written header (21.5) and `panel.turn.sender` carry
+  `input: voice`.
+
+**Spoken replies** (user rulings 22:02Z, mcc5c8af91ffd, and 22:23Z, Q15): agent panels get a text-to-speech
+tool "that theyre encouraged to use to respond to the user when they use speech to text at the panel".
+* **The tool:** `panel.speak {text}` on the engine MCP server (17.2). The engine speaks the text in the
+  panel's voice, and the transcript shows the same text, never extra content.
+* **The encouragement:** the panel's engine-written instructions carry a line such as "When a turn's
+  header says `input: voice`, answer briefly aloud with `panel.speak`, and keep the full answer in text."
+  After a typed prompt the agent stays silent unless asked [proposal, Gnosarium UX 8.6].
+* **Who hears it: everyone nearby, by default** (Q15: "on by default"). The reply plays spatialized from the
+  panel within a short range (about 5 m times the owner's scale) [range: proposal], as presentation audio
+  that never enters the sim. A per-panel switch limits it to the person who prompted, and a private panel
+  (21.4) always does. A new push-to-talk at the panel interrupts it [proposal].
+* **The model:** a local text-to-speech model, offline, in the installer. That speech synthesis is local,
+  like recognition, is the coordinator's reading of the 22:02Z ruling, stated to the user and not
+  contradicted [assumption].
+* **Where the speech is made (D85)** [proposal]: on the owner's peer, then streamed to listeners as voice
+  audio through the same path and budgets as a player's voice (26), rather than each listener
+  synthesizing the text. The voice then sounds the same to everyone, only one machine pays for the
+  model, and a panel speaking costs listeners what a person speaking costs.
+
+**The model runtime (D81)** [I; nothing measured yet]:
+* **100% Rust (20):** `whisper-rs` binds whisper.cpp (C++), so it is out. Candidates: `candle` (Hugging
+  Face's framework, with Whisper examples; pure-Rust CPU kernels, and CUDA or Metal backends we would not
+  enable), `burn` (a wgpu backend, so recognition could run on the GPU) and `tract` (ONNX inference on
+  the CPU). Each needs the section 20 audit of its resolved build.
+* **Model size:** Whisper-class models run from about 75 MB (tiny) to about 3 GB (large) at 16-bit
+  weights, and quantized versions are 2-4 times smaller [I: published sizes, not checked here]. Larger
+  models are more accurate and slower, and the installer carries the chosen one (Q13).
+* **CPU or GPU, and the frame budget:** recognition runs only while the agent key is held, plus a short
+  tail; synthesis, while a reply is spoken. On the CPU they compete with physics and rollback (6.5); on
+  the GPU, with VR rendering (18.3). Neither ever runs on the sim or render thread.
+* **Before choosing:** a spike measures each candidate's accuracy, time to the first word, and CPU and
+  GPU cost on the user's machines, with the ball pit and a VR-sized render load running.
+
+### 21.12 Spatial context: where the player looks and points (user ruling 21:52Z; D82) [I]
+
+"the prompt panels will know where youre looking, what youre looking at, and where youre pointing"
+(m41b9caa32fef), so prompts such as "make this bigger" or "put it there" resolve. The player's side is
+Gnosarium UX 8.7.
+
+| Context | VR | Desktop |
+|---|---|---|
+| Gaze ray, the object it hits, the hit point | head ray; eye tracking where the headset has it, off by default (Q8) | camera centre ray, or the cursor ray when the cursor is free |
+| Pointing ray, its target and hit point | either hand's laser or index finger | the cursor ray |
+| The player's position, world and scale | yes | yes |
+| Guidance annotations attached to the prompt (21.13) | explicit | explicit |
+
+* **Each part can be turned off per panel.** Eye tracking and the live feed (below) are off by default,
+  the two closed defaults the user kept (Q8, 22:28Z).
+* **Sampled locally:** the engine samples the rays at render rate into a short ring on the local peer (a
+  few seconds), so a prompt can carry the targets at given moments. Rays are presentation data (16.3,
+  18.4): they never enter the sim, and they leave the peer only inside a prompt or through the live feed.
+* **Interface hits do not count:** a ray that lands on a panel, the keyboard or the approval layer is not a
+  target. Each ray keeps its last world target from before it moved onto the interface [proposal,
+  Gnosarium UX 8.7].
+* **Typed prompts** carry the targets from when the composer gained focus, updated while a free hand or
+  the cursor keeps pointing, as the player sees them in the composer before sending.
+* **Spoken prompts** carry gaze and pointing through the whole utterance, joined to the recognizer's word
+  timestamps (21.11), so each "this", "that", "here" or "there" can resolve to what was pointed at, or
+  else looked at, when the word was said.
+* **What the agent receives:** an engine-written context block in the turn, beside the sender header. For
+  each target: the object id, its name (written by peers, so marked untrusted, 17.2), the hit point in
+  world coordinates (chunk plus local offset, 25.2) and the surface normal; the rays; and for spoken
+  turns, the table from words to targets. The same data is the resource `primordial://panel/context`
+  (17.2).
+* **Live feed:** an agent may subscribe to a live stream of the rays and targets, at a capped rate (for
+  example 10 Hz). It is a separate per-panel permission, off by default (Q8); while it is on, the panel
+  shows it.
+* **A guest's or confidant's turn carries that sender's own context** (D82) [proposal]. The sender's peer
+  sends it with the signed panel input, limited by the sender's own settings. The owner's gaze and
+  pointing never go with someone else's turn, and the header says whose context the turn carries.
+* **Where it goes:** the context reaches the harness as text, and from there its model provider: object
+  ids and names, coordinates, and the player's position and scale, like the rest of the prompt.
+* **What others see:** when a prompt is sent, its targets and attached annotations flash an outline for
+  everyone nearby; a private panel shows it to its owner only [proposal, Gnosarium UX 8.7].
+
+### 21.13 Guidance tools and annotations (user ruling 21:52Z; D83) [I]
+
+"give tools to players to help them guide the ai: allow them to point to specific objects, select areas,
+draw basic shapes, and so on" (mdba97be1a3fe). The tools (Gnosarium UX 8.8): pick objects; select a box,
+a sphere, a lasso outline or a painted area; draw lines, arrows, circles, boxes and freehand 3D sketches;
+place labels.
+* **An annotation is a shared session object, outside the sim:**
+  * an id, numbered per author (①, ②, …), so a prompt can say "copy ① into ②";
+  * its author's key, and the panel it was made for;
+  * its geometry in world coordinates (chunk plus local offset, 25.2): an object id or point (pick), a box
+    or sphere, a surface region (lasso or paint), a polyline or stroke (lines, arrows, sketches), or text
+    (labels);
+  * a private flag and a "keep" flag.
+* **Shown to others by default, can be made private** (user 22:28Z, Q9: "default show to others, can be
+  made private").
+  * A shared annotation travels to the members of its world as non-sim presentation messages, like pose
+    streams, and late joiners get the live set when they join.
+  * A private one stays on its author's peer and goes only into prompts, so only the agent prompted sees
+    it. A guest's private annotation goes to the panel owner's peer with the guest's prompt, since the
+    agent runs there.
+* **Structured prompt context:** an annotation attached to a prompt sends its id, kind and geometry, plus
+  the objects inside a selected volume or region (ids, and names marked untrusted), in the context block
+  (21.12). `annotation.list`, `annotation.get` and the resource `primordial://panel/annotations` serve the
+  full geometry (17.2).
+* **Lifetime and clearing (D83)** [proposal]: an annotation lives until its author clears it or leaves the
+  world; "keep" pins it across prompts; it is never saved with the world. Admins may clear others'
+  annotations (a session permission, 12.4); anyone may hide others' annotations from their own view.
+* **Not sim state:** annotations never enter rollback or hashes and cannot affect physics. Ghost previews
+  of what an agent proposes (Gnosarium UX section 15, item 4) are a private fork's result (17.3) drawn as
+  a presentation-only overlay, and travel the same way.
+* **Budgets:** each author has a cap on live annotations and on points per stroke, so a busy place cannot
+  flood its members.
+
+### 21.14 Game settings, changed by talking to your agent (user ruling 22:03Z; D84) [I]
+
+"manipulating game settings should be able to be done by talking to your agent" (md306f929ce4b).
+* **A typed settings registry:** every client setting is registered once, with a stable name
+  (`audio.music_volume`), a type and range (a number with bounds and a step, a choice, a flag), a
+  plain-language description and a default. The Settings screens and the agent's tools read the same
+  registry, so nothing is reachable through one and not the other. Areas: graphics, audio, voice, comfort
+  and locomotion, input, avatar culling (26), panels, privacy and sharing, and performance (the
+  memory/CPU knob, D50).
+* **Tools** (17.2): `settings.list {area?}`, `settings.get {names}`, `settings.set {changes, reason}` and
+  `settings.undo {token}`. `settings.set` applies at once and returns each change with its old value and
+  an undo token. Fuzzy requests ("a bit quieter") are the agent's job: it picks values within the ranges.
+* **Each change records its source** (the owner, or the panel and the turn's verified sender), so the
+  Settings screen can show "changed by <panel>" with a history per setting (Gnosarium UX section 15,
+  item 8).
+* **Guests cannot change the owner's settings** (Q12, user 22:28Z). In a guest's turn every settings call
+  is refused at call time, keyed to the turn's verified sender (`panel.turn.sender`, 21.5): "Settings can
+  only be changed in the owner's turn". Confidants are not guests; their turns may change settings
+  (21.5).
+  * The refusal is strict for direct calls in a guest's turn on a Restricted-profile panel.
+  * It is not strict for a deferred request: a guest's message stays in the conversation, so the agent
+    could act on it in the owner's next turn. Such a change shows the owner "may have been requested by
+    <guest>", with undo [proposal, Gnosarium UX 8.12].
+  * A Full-profile panel has a shell, so a guest's turn could edit the settings file itself. The engine
+    keeps that file outside the workspace (21.3) and watches it during guests' turns [proposal].
+* **What needs the owner's confirmation (D84)** [proposal]:
+  * settings that turn on sensitive sensing: eye tracking, and the live context feed (Q8);
+  * anything that is already an approval item: unlocking and the access level, the connection policy and
+    ceiling (21.6), the tool profile (D25a), adding a hub, spend caps. These go through the approval layer
+    whoever asks.
+  * Sharing settings need no confirmation, because openness is the default (22:28Z): annotations shown,
+    the private-panel switch, speaking aloud, gaze and pointing context.
+  * Comfort, graphics, audio, input and culling apply at once, with undo.
+* Settings are local to the player's machine, never sim state.
 
 ---
 
@@ -3743,9 +4095,14 @@ crates/
   pe-render      wgpu renderer, WGSL hot reload (naga), extrapolation + error smoothing, portal passes
   pe-xr          OpenXR session, Vulkan interop, poses, swept hand engagement, per-eye portal straddling
   pe-mcp         rmcp server, tool catalog, per-session tokens and scopes, forks
-  pe-panels      in-world panels: chat UI, terminal emulator (PTY mode), VR keyboard, approval layer,
-                 signed sender attribution (D27a), cross-session connections over P2P (D32)
-  pe-harness     harness adapters, version-pinned launch profiles, restricted sessions
+  pe-panels      in-world panels: chat UI with the collapsed transcript, terminal emulator (PTY mode),
+                 VR keyboard, approval layer, signed sender attribution (D27a) and confidants, open-panel
+                 streams, spatial context, guidance annotations, cross-session connections over P2P (D32)
+  pe-harness     one harness layer: drivers for Claude Code, Codex and Antigravity, capability flags,
+                 version-pinned launch profiles, restricted sessions
+  pe-voice       built-in speech to text and text to speech on a pure-Rust ML runtime (D81), push-to-talk
+                 capture, word timestamps; Windows OS recognition as the fallback
+  pe-settings    typed client settings registry: ranges, descriptions, change history and undo (21.14)
   pe-contain     OS identities (AppContainer / users), job objects, ACLs for restricted sessions and
                  sandboxed builds
   pe-hub         optional Orgtree bridge: automatic player and panel hub identities, hubchat-style panel
@@ -3775,8 +4132,8 @@ What moved, and why:
 |---|---|---|
 | 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on the user's machines: Windows and Linux, x86-64 on two CPUs (ARM deferred). Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
 | 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal with volunteer relays (D35) and **relay mailboxes** for offline mail (D32); state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6) and **regions** with provisional arrival and following (D60); **multi-threaded stepping** in the fork if the D2 study succeeds; **pe-worlds**: two worlds per client, the settled handoff with provenance checks, portal rendering | M2: friends and strangers play over the internet with no server of ours; late join works; a ball pit of 500 balls stays within budget at 90 Hz, or at its 60 Hz fallback (D4); an object carried through a portal between two sessions |
-| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels: owner panels (structured adapters + PTY), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a), **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32) | M3: a player's own Claude Code or Codex, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
-| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; voice input on Windows (D33; Linux per D77); per-eye portal straddling | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal |
+| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels for Claude Code, Codex and Antigravity through one harness layer: owner panels (structured adapters + PTY) with the collapsed transcript, **open by default** (21.4), desktop spatial context and guidance tools (21.12, 21.13), settings by agent (21.14), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a) and confidants, **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32) | M3: a player's own Claude Code, Codex or Antigravity, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
+| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; **voice**: the built-in speech model for prompting, and spoken replies, on Windows and Linux (21.11, D81); VR gaze (head, and eye tracking where present) and hand pointing as context, and the VR guidance tools (21.12, 21.13); per-eye portal straddling | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal; one prompts an agent by voice and both hear its reply |
 | 6. Scale + discovery | Mainline DHT discovery records; snapshot deltas; **larger sessions** (compact acks, relaying), a planned target (D23); background-world parking | M5: discovery without invites; sessions above 8 players; thousands of bodies across regions; several attended worlds per client |
 
 ### 23.3 Top risks
@@ -3814,11 +4171,16 @@ What moved, and why:
 11. **Agent panels (R13).** An unlocked panel gives guests the owner's rights (D27a, the user's accepted
     trade-off): prompt injection with the owner's authority, and spend on the owner's account. Harness
     CLI flags and protocols change often. Mitigations: Locked by default, signed sender attribution (gate
-    9j), version-pinned launch profiles, contained inbox and decider sessions (21.9).
+    9j), version-pinned launch profiles, contained inbox and decider sessions (21.9). Confidants (21.5)
+    carry the same rights at every access level. Open panels (21.4) show prompts and replies to everyone
+    nearby, so an agent that reads a secret can repeat it aloud; the secret filter is best-effort.
+    Antigravity's restriction rests on hooks, not containment (gate 9k).
 12. **The Orgtree bridge** (21.7): the hub's wire format is unverified, third-party clients may not be
     permitted, and the fourth client type needs a change on Orgtree's side.
 13. **Multi-world memory and CPU** (22.3): there are no engine limits (D49), so a player can open worlds
     until the machine struggles. Mitigations: throttling, parking and the memory/CPU slider (D50).
+14. **Built-in speech models** (21.11, D81): installer size, accuracy, and CPU and GPU cost next to
+    physics and VR rendering are not measured yet.
 
 ### 23.4 Phase 2 work packages
 
@@ -4044,6 +4406,7 @@ entry says so.
   * Alternatives: a mandatory multi-owner threshold; a fully democratic majority of present members.
 * **D11. Who compiles game logic (13.2).**
   * **Settled (user, 18:53Z): every peer compiles.** The consequences are in 13.2: byte-identical builds across machines and OSes, the activation lead and the cost of joining, toolchain distribution (D75) and what a mismatch means (D74).
+  * **Build profile settled (user, 22:47Z): "Fast builds".** Committed modules use the pinned `rel-fast` profile (no LTO): one-line edits rebuild in about 0.5 s and stay byte-identical across OSes, for about 1% of run time and about 35% more bytes against LTO (13.2).
   * Recommend: the committer compiles and peers run the shared wasm (sandboxed), identified by its
     canonical hash, with background reproducibility checks. Vendored dependencies; no build scripts or
     proc macros in logic crates except the SDK's.
@@ -4160,6 +4523,9 @@ entry says so.
 
 * **D25. Harness integration path (21.1).**
   * **Settled (user, 19:11Z): as recommended.**
+  * **Launch harnesses (user, 21:54Z and 21:55Z): Claude Code, Codex and Antigravity,** "in the same generic
+    way orgtree supports these harnesses": one harness layer with a driver per harness (21.1). Gemini CLI
+    and other ACP agents are not launch harnesses.
   * Recommend:
     * structured adapters by default: Claude Code `stream-json`, Codex `exec --json` or `app-server`, and
       ACP for Gemini CLI and others, rendered as a chat UI;
@@ -4177,13 +4543,19 @@ entry says so.
   * Alternative: the full profile by default. More capable, but injected repository text could then run
     commands as the owner.
 * **D26. Panel visibility to other peers (21.4).**
-  * **Settled (user, 19:11Z): as recommended.**
+  * **Reversed (user principle, 22:28Z): open by default.** People nearby hear and see prompts, replies,
+    guidance drawings and the agent's work (21.4). A per-panel "Private panel" switch, off by default (Q20,
+    22:54Z, "for now"). Six things stay closed by default (Q19, 22:34Z): the Locked default, the approval
+    layer, credentials and keys, panel inboxes, direct messages and eye tracking. What an open panel sends
+    others: D86.
+  * Settled at 19:11Z as recommended (below); that default no longer holds.
   * Recommend: private by default. Others see the panel, its owner, an "agent working" indicator and the
     signed edits it produces. The owner may share the rendered transcript with chosen peers.
   * Alternatives: visible to the whole session by default (more social; leaks prompts and code); never
     shareable.
 * **D27a. Default access level (21.5).**
   * **Settled (user, 19:00Z): Locked stays the default, and unlocking gives guests unconditional access to the panel as though they were the owner,** with the agent told who sends each message (21.5).
+  * **Extended (user, 22:34Z): confidants.** Friends the owner marks as confidants may prompt every panel of the owner, Locked ones included, as though they were the owner, and the agent is told they are a confidant (21.5). They do not confirm the owner's approval cards (Q22, 22:54Z, "for now").
   * Recommend: panels start **Locked**. Friends or Anyone is an explicit opt-in per panel.
   * Alternative: Friends by default (easier sharing, more exposure).
 * **D27b. Sessions per guest (21.5; review R13-H3).**
@@ -4218,6 +4590,8 @@ entry says so.
   * **Superseded in part by the 19:00Z ruling:** unlocking needs the attribution and re-locking gates (21.9); the containment gates now gate restricted sessions.
   * Recommend: each harness only after its own verification gates pass (Claude Code first). Codex and
     Gemini CLI stay owner-only until their containment is proven. PTY panels are never unlockable.
+  * **Since the 21:54Z harness ruling:** Claude Code, Codex and Antigravity each get restricted sessions
+    once their own containment gate passes (9a, 9b, 9k).
   * Alternative: unlock any structured harness with best-effort flags. Rejected, because Codex's read-only
     sandbox does not stop reads of the owner's credential file.
 * **D27h. Guest transcript retention (21.5).**
@@ -4286,7 +4660,8 @@ entry says so.
   * Recommend: agents never see the hub secret and reach hubs only through engine MCP tools. First contact
     with each recipient needs the owner's approval.
 * **D33. Voice input (21.2).**
-  * **Settled (user, 19:11Z): as recommended,** OS speech recognition on Windows. Linux, now a day-one platform, has no such service: D77.
+  * **Revised (user, 21:51Z, m012a25f076e9): a local Whisper-class model built into the engine, on Windows and Linux;** Windows OS speech recognition stays only as a lighter fallback. The models ship in the installer (22:23Z, Q13). Runtime, size and where it runs: D81. Spoken replies: 21.11, D85.
+  * Settled at 19:11Z as recommended (OS speech recognition on Windows); that answer no longer holds.
   * Recommend: OS speech recognition on Windows for the MVP (an OS boundary).
   * Alternatives: local Whisper-class models on a pure-Rust ML runtime (100% Rust, heavy); no voice in the
     MVP.
@@ -4313,15 +4688,15 @@ entry says so.
 * **D35a. Session codes (10.7, 11; review R13-M3).**
   * **Settled (user, 19:11Z): as recommended.**
   * Recommend: four words plus a check word. The public two-word nameplate is a DHT rendezvous; the secret
-    two-word password is used only inside a PAKE with the host, and nothing derived from it is ever
+    two-word password is used only inside a PAKE with the code's creator, and nothing derived from it is ever
     published. With a friend in the session, it shrinks to three words and nothing is published.
   * Alternative: three words plus a check word, hashed into a DHT key. Shorter, but anyone watching the
     DHT can break the code offline in minutes.
-* **D35b. What a code's host announces (10.7).**
+* **D35b. What a code's creator announces (10.7).**
   * **Settled (user, 19:11Z): as recommended.**
-  * Recommend: a relay address, so DHT observers do not learn the host's IP address.
-  * Alternative: the host's own address. It works without any relay, and exposes the host's IP while the
-    code is live.
+  * Recommend: a relay address, so DHT observers do not learn the creator's IP address.
+  * Alternative: the creator's own address. It works without any relay, and exposes the creator's IP
+    while the code is live.
 
 * **D36. Finality and membership (6.4, 10.8; reviews C1, C2, H3).**
   * **Settled (user, 19:11Z): as recommended.**
@@ -4710,7 +5085,7 @@ entry says so.
     * **(c) Fixed when the world is created.**
   * Recommendation: (a).
 * **D77. Voice input on Linux (21.2; raised by D20 and D33).**
-  * **Settled (user, 19:58Z): as recommended:** no voice input on Linux in the MVP (the VR keyboard instead); a local speech model later.
+  * **Superseded (user, 21:51Z):** Linux gets the same built-in local speech model as Windows (D33). The 19:58Z answer, no voice input on Linux in the MVP, no longer holds.
   * Linux has no OS speech-recognition service like Windows'.
   * Options:
     * **(a) No voice input on Linux in the MVP;** text through the VR keyboard. Recommended for the MVP.
@@ -4739,6 +5114,60 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
+* **D81. Speech models: runtime, size and where they run (21.11; raised by the 21:51Z voice ruling).**
+  * Ruled so far: one local Whisper-class speech-to-text model on Windows and Linux, shipped in the
+    installer (21:51Z; 22:23Z, Q13). Local text to speech is assumed (22:02Z).
+  * Options [I; nothing measured]:
+    * **Runtime:** `candle` (pure-Rust CPU kernels), `burn` (wgpu, so the GPU), or `tract` (ONNX on the
+      CPU). Each needs the section 20 audit. `whisper-rs` is out: it compiles whisper.cpp.
+    * **Model size:** a small or "turbo"-class model, quantized, at a few hundred MB in the installer.
+      Against it: tiny or base (under about 150 MB, less accurate), or large (about 3 GB at 16 bits).
+    * **CPU or GPU:** the CPU by default, off the sim and render threads; the GPU once measured against
+      VR frame times (18.3).
+  * Recommendation: decide after a spike that measures accuracy, time to the first word, and CPU and GPU
+    cost on the user's machines with the ball pit and a VR-sized render load running.
+* **D82. Spatial context at shared panels, and what reaches the model provider (21.12).**
+  * Ruled: panels know where the player looks, what they look at and where they point (21:52Z); eye
+    tracking and the live feed are off by default (Q8, 22:28Z).
+  * Proposal: a guest's or confidant's turn carries only that sender's own gaze and pointing, sent by the
+    sender's peer and limited by the sender's settings; the owner's never goes with another person's turn.
+    The context reaches the harness, and so its model provider, as text: object ids and names,
+    coordinates, and the player's position and scale.
+  * Alternative: a panel always carries its owner's context, whoever prompts. Simpler, but it shows the
+    agent, during a guest's turn, what the owner is looking at.
+* **D83. Guidance annotations: lifetime, and who may clear them (21.13).**
+  * Ruled: shown to others by default, can be made private (Q9, 22:28Z).
+  * Proposal: an annotation lives until its author clears it or leaves; "keep" pins it across prompts; it
+    is never saved with the world; admins may clear others' annotations; anyone may hide others' from
+    their own view.
+  * Alternatives: annotations expire after some minutes unless kept; or they can be saved with the world
+    as notes.
+* **D84. Which settings an agent may change without the owner's confirmation (21.14).**
+  * Ruled: the agent changes game settings when asked (22:03Z); guests cannot change the owner's settings
+    (Q12, 22:28Z); confidants can (22:34Z).
+  * Proposal: everyday settings (graphics, audio, comfort, input, culling) apply at once, with undo.
+    Confirmation for sensitive sensing (eye tracking, the live context feed) and for what is already an
+    approval item (unlocking, the access level, the connection policy and ceiling, the tool profile,
+    adding a hub, spend caps). Sharing settings need none, because openness is the default.
+  * Alternative: every change an agent makes to a setting needs a confirmation. Safer, slower, and against
+    the intent of changing settings by talking.
+* **D85. Where an agent's spoken reply is synthesized (21.11).**
+  * Ruled: replies are spoken to people nearby by default (Q15, 22:23Z).
+  * Options:
+    * **(a) On the panel owner's peer,** streamed to listeners through the voice path (26): one voice for
+      everyone, one machine pays for the model, and the bandwidth of a person speaking. Recommended.
+    * **(b) On each listener's peer,** from the reply text the open panel already sends: no audio
+      bandwidth, but every listener runs the model for every panel nearby, and the voice may differ with
+      each listener's model version.
+* **D86. What an open panel shows other people (21.4; the 22:28Z principle).**
+  * Ruled: open by default, so people nearby see and hear prompts, replies, guidance and the agent's work
+    (22:28Z); a private-panel switch, off by default (Q20, 22:54Z); six things stay closed (Q19, 22:34Z).
+  * Proposal: others get the conversation, not the raw work: the agent's prose, the collapsed tool
+    summaries (21.2), the objects the turn touches and the current step. Raw tool results and arguments,
+    file contents, shell output and diffs never leave the owner's peer, and outgoing text passes a
+    best-effort secret filter.
+  * Alternative: stream the detailed tool view as well, to "watch them work" in full. More open, but it
+    sends file contents and command output, with whatever secrets they hold, to everyone nearby.
 
 ---
 
@@ -4835,6 +5264,21 @@ length units, per world or per region.
 * **Below 1e-10 m or beyond 2^73 m** a parent object acts as a nested frame: child transforms are `f64`
   relative to it, so precision never runs out; regions for such players take their origin from that
   frame.
+* **Transforms as built (P2-1)** [V P2-1]:
+  * A root is placed by its `i64` chunk plus an `f64` offset from that chunk's corner. A child is placed
+    relative to its frame (its nearest ancestor with a `Transform`) and carries no chunk.
+  * A child's precision is its offset's ulp: about 1e-13 m at 1 km, 1e-10 m at 1,000 km, and 1 um out to
+    about 4e9 m. Keep children within about 10^6 km of their frame; far content belongs in its own root.
+  * Limits on the stored form, checked on insert, at check frames and on loading bytes: `|pos| <= 2^50` m,
+    a root's `|chunk| <= 2^61`, scale magnitudes in [2^-40, 2^40], and a rotation's squared norm within
+    2% of 1.
+  * **Plain edits are data edits:** inserting or removing a `Transform`, and `set_parent`, store exactly
+    what they are given, so a loader gets the same state whatever order it inserts in. **Keep-world edits
+    are explicit** (`set_parent_keep_world` and its siblings): they rewrite the affected local transforms
+    for the new frame, with the root's chunk recomputed exactly. 150 keep-world moves between rotated,
+    scaled frames 5 km apart stay within 1e-8 m.
+  * `maintain_transforms`, scheduled last in the tick, rebases roots into their chunk and repairs
+    out-of-limit values written through mutable access, so the state stays loadable by joiners.
 
 ### 25.3 Hierarchy and the spatial index
 
