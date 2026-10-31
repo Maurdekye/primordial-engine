@@ -1,37 +1,44 @@
-commit 4f66da5e8adfd073354e6261afd553d651846e63
+commit 5245776cbf53da52d7eabbf80a600b2b1f6a753f
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
+   Compiling cpufeatures v0.3.1
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling cfg-if v1.0.5
    Compiling box3d-rust v0.5.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\box3d-fork)
-   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-core)
-   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-sim)
+   Compiling blake3 v1.8.7
    Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-physics)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.69s
-     Running unittests src\lib.rs (target\debug\deps\pe_physics-d9ae765257bd8d39.exe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.79s
+     Running unittests src\lib.rs (target\debug\deps\pe_physics-46ac55e950bbb459.exe)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests\api.rs (target\debug\deps\api-adb70f09a43a52ac.exe)
+     Running tests\api.rs (target\debug\deps\api-5362cd0977d15e60.exe)
 
-running 10 tests
+running 13 tests
 test check_hash_is_canonical ... ok
 test foreign_and_corrupt_images ... ok
+test forged_confirmations_still_refused ... ok
 test grabs ... RESULT grab spring gap after 3 s: 0.0000 m (hand at x = 3.000)
 ok
 test hostile_transfers ... ok
+test hull_and_shape_counts_bounded ... ok
 test hull_bodies_and_pushes ... ok
 test images_and_transfers_round_trip_with_joints ... ok
 test poses_reach_the_sim_store ... ok
 test refusals_change_nothing ... ok
+test rolled_back_peer_has_the_straight_check_hash ... RESULT rollback check_hash after 60 frames 9e86908b0f8eee4b371aef141e6a9dbbc83f440f094546e93f03b45028dcde96
+ok
 test rotations_are_normalized ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
 
-     Running tests\spike_records.rs (target\debug\deps\spike_records-8997952c674e562a.exe)
+     Running tests\spike_records.rs (target\debug\deps\spike_records-54e0938baa09903e.exe)
 
 running 5 tests
 test goldens_match ... RESULT golden falling ragdolls recycle_scaling=true workers=1 Golden { sleep_step: 358, hash: 2984986542, query: None }
@@ -66,17 +73,17 @@ RESULT images off debug workers=1 digest b69caac8065e14cd
 RESULT images off debug workers=3 digest b69caac8065e14cd
 RESULT images off debug workers=8 digest b69caac8065e14cd
 ok
-test rollback_t1_to_t5 ... RESULT transfer vdw frame=300 workers=1 check_hash fc3999792b45a32f bytes 584542
+test rollback_t1_to_t5 ... RESULT transfer vdw frame=300 workers=1 check_hash 80d8a5de696a5d2fa4b6c01be0e9e25e85e7058d07ea6a90fcadda295acf89b7 bytes 584542
 RESULT rollback T1-T5 vdw workers=1 PASS
-RESULT transfer vdw frame=300 workers=3 check_hash fc3999792b45a32f bytes 584542
+RESULT transfer vdw frame=300 workers=3 check_hash 80d8a5de696a5d2fa4b6c01be0e9e25e85e7058d07ea6a90fcadda295acf89b7 bytes 584542
 RESULT rollback T1-T5 vdw workers=3 PASS
-RESULT transfer vdw frame=300 workers=8 check_hash fc3999792b45a32f bytes 584542
+RESULT transfer vdw frame=300 workers=8 check_hash 80d8a5de696a5d2fa4b6c01be0e9e25e85e7058d07ea6a90fcadda295acf89b7 bytes 584542
 RESULT rollback T1-T5 vdw workers=8 PASS
-RESULT transfer off frame=300 workers=1 check_hash 27d8dd7d28d065de bytes 584391
+RESULT transfer off frame=300 workers=1 check_hash 10fbeff4bb73db7eaf83e7cd689cd71371fac25a22f9e933799de524a43d051f bytes 584391
 RESULT rollback T1-T5 off workers=1 PASS
-RESULT transfer off frame=300 workers=3 check_hash 27d8dd7d28d065de bytes 584391
+RESULT transfer off frame=300 workers=3 check_hash 10fbeff4bb73db7eaf83e7cd689cd71371fac25a22f9e933799de524a43d051f bytes 584391
 RESULT rollback T1-T5 off workers=3 PASS
-RESULT transfer off frame=300 workers=8 check_hash 27d8dd7d28d065de bytes 584391
+RESULT transfer off frame=300 workers=8 check_hash 10fbeff4bb73db7eaf83e7cd689cd71371fac25a22f9e933799de524a43d051f bytes 584391
 RESULT rollback T1-T5 off workers=8 PASS
 ok
 test several_worlds_per_process ... ok
@@ -88,7 +95,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 184.35s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 186.35s
 
    Doc-tests pe_physics
 
