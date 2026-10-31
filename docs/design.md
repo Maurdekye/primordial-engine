@@ -1609,7 +1609,7 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   deterministic frame. The frame is a confirmed frame (6.4), so every peer stops the agent at the same
   point. Guests hold no keys of their own, so re-locking a panel needs no log entry (21.5).
 
-### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; spike `ownership.rs`)
+### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
 
 World ownership is a **lasting property of a world**, separate from a session's admins (12.4 on
 `viewchange`). Several people can share it (22:37Z). It is held as a **chain of signed ownership
@@ -5096,9 +5096,9 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
-* **D87. World ownership: what the user decides (12.5). Question 1 RULED 2026-10-31 08:31Z (OT = (a)):
-  consent only now, bound session lineages later. Questions 3 and 4 follow from it. Questions 2 and 5
-  are still open; the spike is built to their recommendations.**
+* **D87. World ownership: what the user decides (12.5). RULED.** Question 1 on 2026-10-31 08:31Z (OT =
+  (a)): consent only now, bound session lineages later; questions 3 and 4 follow from it. Questions 2
+  and 5 on 2026-10-31 12:52Z (msg m7fc6b059372d), both as recommended.**
   * **1. The trust root: which sessions may change ownership. RULED (a), consent only.**
     * No removal of a vanished owner. A recovery key is a backup with the owner's full power. No
       time-based protections, since without a trust root none of them can hold.
@@ -5135,8 +5135,13 @@ entry says so.
       check signatures; objection explicit and monotone), OWNV-2's second half (one recovery at a
       time; a recovery key's changes charged to itself) and OWNW-6 (Challenge and RemoveDormant
       budgets).
-  * **2. Forks of the ownership chain (refines O4).**
-    * Recommended: a change counts only once a session of the world committed it; within a session the
+  * **2. Forks of the ownership chain (refines O4). RULED 12:52Z: combine.** The user's words: "world
+    copies are combined with version-control style merging: the pre-merge backups are always available
+    to all players at all times, so nothing is ever lost". The ownership book already keeps both sides:
+    a merge certificate names every pre-merge head as a parent, and the certificates behind them stay
+    in the book, so each side's owner set before the merge can always be shown. The pre-merge world
+    backups themselves are 16.10's (@engine-architect).
+    * As built (the recommendation): a change counts only once a session of the world committed it; within a session the
       first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
       * both buyers of a double sale become co-owners;
       * each copy's additions stand;
@@ -5149,15 +5154,14 @@ entry says so.
       its addition. An owner's share shrinks only through changes it signed, so under every rule one
       owner can spend only its own share (OWNW-3).
     * Residual: as in 1.
-    * Alternative: a change counts only if every other copy's owners signed it too. Nobody gains
-      through a fork, but a double sale cancels both sales, so the seller keeps the world.
+    * Not chosen: a change counts only if every other copy's owners signed it too (a double sale
+      would cancel both sales).
   * **3. Removing an owner (refines O1). Settled by 1:** nobody is removed under rule A; rule C keeps
     instant k-of-n removal.
   * **4. Recovery keys (refines O2). Settled by 1:** a backup key with the owner's full power.
-  * **5. Locking session rules (was D88).**
-    * Recommended: a lock is an ownership-chain entry that every current owner signs, so a lone
-      co-owner can't impose or lift one.
-    * Alternative: any one owner may lock and unlock.
+  * **5. Locking session rules (was D88). RULED 12:52Z, as recommended:** a lock is an ownership-chain
+    entry that every current owner signs, so a lone co-owner can't impose or lift one. Not built in the
+    spike yet (a `SetLock` change under `SetRule`'s signing rule) [I].
 
 ---
 
