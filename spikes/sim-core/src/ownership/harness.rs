@@ -71,47 +71,56 @@ struct History {
     strict: bool,
 }
 
-/// The solo change `c` on `head` was refused with `Budget`: check, with a count of our own over the
-/// counting history (which can only be higher than the book's, joined by maximum), that solo changes
-/// used up SOLO_CERTS or every owner who signed used the share it got when it was added (OWNV-2/3/4).
-fn budget_is_real(b: &Book, head: CertId, signers: &BTreeSet<Key>) -> bool {
-    let past: Vec<CertId> = b.inner.anc[&head].iter().copied().filter(|x| b.counts(*x)).collect();
-    let charged_owners = |st: &Owners, sg: &BTreeSet<Key>| -> Vec<Key> {
-        st.owners.iter().copied().filter(|o| sg.contains(o) || st.recovery.get(o).is_some_and(|r| r.keys().any(|k| sg.contains(k)))).collect()
-    };
-    let mut total = 0usize;
-    let mut own: BTreeMap<Key, usize> = BTreeMap::new();
-    for &x in &past {
+/// Invariant 9's reference, computed from the history alone (not from the book's budget state): each
+/// owner's remaining solo changes after the counting chain up to `head`. A genesis owner starts with
+/// SOLO_CERTS over the genesis owners; an owner it signs an addition for receives its remaining over
+/// the new owner count; a solo change it signs (itself or through its recovery key) costs it one;
+/// Leave and clearing a recovery key cost nothing. Who owns what at each step (validity) is read from
+/// the book. None for a history with merges (copies join by min and max; not modelled here).
+fn reference_remaining(b: &Book, head: CertId) -> Option<BTreeMap<Key, u32>> {
+    let mut past: Vec<CertId> = b.inner.anc[&head].iter().copied().filter(|x| b.counts(*x)).collect();
+    past.sort_by_key(|x| (b.inner.certs[x].seq, *x));
+    let mut rem: BTreeMap<Key, u32> = BTreeMap::new();
+    for x in past {
         let c = &b.inner.certs[&x];
-        if c.prev.len() != 1 || matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. }) {
-            continue;
+        match (&c.change, c.prev.len()) {
+            (Change::Genesis { owners, .. }, _) => {
+                for o in owners {
+                    rem.insert(*o, (SOLO_CERTS / owners.len()) as u32);
+                }
+                continue;
+            }
+            (_, 1) => {}
+            _ => return None,
         }
         let st = &b.inner.eff[&c.prev[0]];
         let sg = &b.inner.signers[&x];
-        let by = charged_owners(st, sg);
-        if st.owners.is_subset(sg) || by.is_empty() {
-            continue;
+        let by: Vec<Key> = st.owners.iter().copied().filter(|o| sg.contains(o) || st.recovery.get(o).is_some_and(|r| r.keys().any(|k| sg.contains(k)))).collect();
+        let solo = !matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. }) && !st.owners.is_subset(sg) && !by.is_empty();
+        let before = rem.clone();
+        if let Change::Add { key } = c.change {
+            let n = st.owners.len() as u32 + 1;
+            let mut gift = 0;
+            for g in st.owners.iter().filter(|o| sg.contains(o)) {
+                let give = before.get(g).copied().unwrap_or(0) / n;
+                *rem.entry(*g).or_default() -= give;
+                gift += give;
+            }
+            rem.insert(key, gift);
         }
-        total += 1;
-        for o in by {
-            *own.entry(o).or_default() += 1;
+        if let Change::FinishRecover { owner } = c.change
+            && let Some(r) = st.recovering.get(&owner)
+        {
+            rem.insert(r.new_key, before.get(&owner).copied().unwrap_or(0));
+        }
+        if solo {
+            for o in by {
+                let e = rem.entry(o).or_default();
+                *e = e.saturating_sub(1);
+            }
         }
     }
-    if total >= SOLO_CERTS {
-        return true;
-    }
-    let st = &b.inner.eff[&head];
-    charged_owners(st, signers).iter().all(|o| {
-        // The share it got when it was last added (a recovered key inherits one: not checked).
-        let added = past.iter().filter(|x| match &b.inner.certs[x].change {
-            Change::Genesis { owners, .. } => owners.contains(o),
-            Change::Add { key } => key == o,
-            _ => false,
-        });
-        let Some(at) = added.max_by_key(|x| b.inner.certs[x].seq) else { return true };
-        let n = b.inner.eff[at].owners.len().max(1);
-        own.get(o).copied().unwrap_or(0) >= SOLO_CERTS / n
-    })
+    Some(rem)
 }
 
 /// One honest step in `lineage` on a counting head; an invalid attempt is simply refused.
@@ -178,14 +187,43 @@ fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Inser
     let r = h.book.commit_local(c.clone(), lineage, h.frame);
     if h.strict {
         assert!(!matches!(r, Err(OwnError::Full | OwnError::Quota)), "an honest step refused for capacity: {r:?} {c:?}");
-        if r == Err(OwnError::Budget) {
-            assert!(budget_is_real(&h.book, head, &c.signers()), "an honest solo change refused though its signers have their shares: {c:?}");
+        if r == Err(OwnError::Budget)
+            && let Some(rem) = reference_remaining(&h.book, head)
+        {
+            let st = &h.book.inner.eff[&head];
+            let sg = c.signers();
+            let by: Vec<Key> = st.owners.iter().copied().filter(|o| sg.contains(o) || st.recovery.get(o).is_some_and(|r| r.keys().any(|k| sg.contains(k)))).collect();
+            assert!(by.iter().all(|o| rem.get(o).copied().unwrap_or(0) == 0), "an honest solo change refused though a signer has share left by the reference: {c:?} {rem:?}");
         }
     }
     for k in before.difference(&h.book.view().owners.owners) {
         h.former.insert(*k);
     }
+    if h.strict {
+        probe_capacity(rng, h);
+    }
     r
+}
+
+/// Invariant 9: an honest owner with share left by the reference can make a solo change now, and all
+/// owners together can make a joint one, whatever else happened (until the book is full).
+fn probe_capacity(rng: &mut Rng, h: &History) {
+    let v = h.book.view();
+    if v.heads.len() != 1 || h.book.inner.commits.len() >= MAX_CERTS {
+        return;
+    }
+    let head = v.heads[0];
+    let all: Vec<Key> = v.owners.owners.iter().copied().collect();
+    let o = rng.pick(&all).unwrap();
+    let joint = cert_on(&h.book, vec![head], Change::SetRecovery { owner: o, recovery: Some(77_777) }, &all);
+    assert_eq!(h.book.clone().commit_local(joint, L1, h.frame + 1), Ok(Insert::Applied), "a joint change by every owner was refused");
+    let Some(rem) = reference_remaining(&h.book, head) else { return };
+    let solo = cert_on(&h.book, vec![head], Change::SetRecovery { owner: o, recovery: Some(77_778) }, &[o]);
+    let r = h.book.clone().commit_local(solo, L1, h.frame + 1);
+    if all.len() > 1 {
+        let left = rem.get(&o).copied().unwrap_or(0);
+        assert_eq!(r.is_ok(), left > 0, "owner {o} with {left} left by the reference: a solo change gave {r:?}");
+    }
 }
 
 fn honest_history(rng: &mut Rng) -> History {
@@ -603,7 +641,18 @@ fn check(seed: u64, residual: &mut Residual) {
             assert_ne!(Some(o), rogue);
             let prop = cert_on(&v, vv.heads.clone(), Change::SetRecovery { owner: o, recovery: Some(55_555) }, &[o]);
             if vv.heads.len() == 1 {
-                assert_eq!(v.clone().insert(prop.clone()), h.book.clone().insert(prop), "{ctx}: an honest proposal went differently after the attack");
+                assert_eq!(v.clone().insert(prop.clone()), h.book.clone().insert(prop.clone()), "{ctx}: an honest proposal went differently after the attack");
+                // Gossiped to the attacked book, which also gets copies re-signed by every attacker
+                // key (OWNW-1): it stays, with the owner's signature, wherever it did without them.
+                let mut clean = h.book.clone();
+                let _ = clean.insert(prop.clone());
+                let mut vp = v.clone();
+                let _ = vp.insert(prop.clone());
+                for &k in &ks {
+                    let _ = vp.insert(Cert { sigs: vec![], ..prop.clone() }.signed(&[k]));
+                }
+                let held = |b: &Book| b.cert(prop.id()).or_else(|| b.inner.parked.get(&prop.id())).is_some_and(|c| c.signers().contains(&o));
+                assert!(!held(&clean) || held(&vp), "{ctx}: an honest proposal dropped after attacker copies");
             }
             let mut h1 = History { book: h.book.clone(), strict: false, ..h.clone() };
             let mut h2 = History { book: v.clone(), strict: false, ..h.clone() };

@@ -55,11 +55,13 @@ pub const RECOVERY_FRAMES: u64 = 7 * 24 * 3600 * 60;
 /// changes are rare; each insert re-runs the effective pass, O(N log N). Production compacts a long
 /// linear history into a checkpoint signed by the owners [I].
 pub const MAX_CERTS: usize = 1024;
-/// Solo changes (not signed by every owner at their parent) take at most this many of [`MAX_CERTS`]
-/// along any history, all owners together (OWNU-6, OWNV-3). Each owner's share is this over the owner
-/// count when it became an owner, and never shrinks (OWNV-4). Leave and clearing one's own recovery
-/// key are exempt, but each is bounded by the additions and namings before it, so solo changes and
-/// their exemptions take at most half the book; joint changes keep the rest.
+/// The solo changes (not signed by every owner at their parent) a world's history may hold, split into
+/// per-owner shares (OWNU-6, OWNV-3, OWNV-4, OWNW-3). The genesis owners split it evenly. A newcomer's
+/// share comes out of the remaining shares of the owners who signed its addition, so the shares never
+/// add up to more than this, and an owner's remaining share only ever shrinks through certificates it
+/// signed itself (invariant 9). Leave and clearing one's own recovery key are exempt, but each is
+/// bounded by the additions and namings before it, so solo changes and their exemptions take at most
+/// half the book along one history; joint changes keep the rest.
 pub const SOLO_CERTS: usize = MAX_CERTS / 4;
 
 /// Spike model of `key` signing `msg`. Production: Ed25519.
@@ -336,15 +338,15 @@ pub enum OwnError {
     /// Every key (or certificate) the certificate is charged to already carries its limit of
     /// unattested certificates (OWNS-5, OWNU-4). Send it again with its attestation.
     Quota,
-    /// Solo changes used up [`SOLO_CERTS`] along this history, or every owner who signed this one used
-    /// its share (OWNU-6, OWNV-3, OWNV-4).
+    /// Every owner who signed this solo change used its share of [`SOLO_CERTS`] (OWNU-6, OWNW-3).
     Budget,
 }
 
 /// Unattested certificates (held or kept) charged to one key at most (OWNS-5, OWNU-2, OWNU-4,
 /// OWNV-1). A certificate is charged to its own signers that are owners or recovery keys at a current
-/// head; it gets in if each of them has room. Keys are charged one by one, never in groups, so
-/// nobody's flood crowds out another key.
+/// head; it gets in if one of them has room, so a signature someone else merges in never costs an
+/// honest signer its place (OWNW-1). Keys are counted one by one, never in groups, so nobody's flood
+/// crowds out another key.
 pub const UNATTESTED_PER_KEY: usize = 64;
 /// Unattested certificates signed by nobody who matters at a head (a key invited or minted by an
 /// unattested certificate) that one unattested certificate may carry (OWNT-2, OWNV-1).
@@ -390,10 +392,9 @@ pub struct Owners {
     /// Solo changes each owner signed (itself or through a recovery key) along this history
     /// (OWNU-6). Joined by maximum.
     pub solo: BTreeMap<Key, u32>,
-    /// Each owner's share of [`SOLO_CERTS`], fixed when it became an owner (OWNV-4).
+    /// Each owner's share of [`SOLO_CERTS`]: set when it became an owner, lowered only by the gifts it
+    /// signed (OWNV-4, OWNW-3). Joined by minimum.
     pub share: BTreeMap<Key, u32>,
-    /// Solo changes along this history, all owners together (OWNV-3). Joined by maximum.
-    pub solo_total: u32,
     pub seq: u32,
 }
 
@@ -434,18 +435,17 @@ impl Owners {
         v.extend(self.recovering.iter().flat_map(|(&o, r)| [o as u64 | 1 << 41, r.start, r.by as u64, r.new_key as u64]));
         v.extend(self.solo.iter().flat_map(|(&o, &n)| [o as u64 | 1 << 42, n as u64]));
         v.extend(self.share.iter().flat_map(|(&o, &n)| [o as u64 | 1 << 43, n as u64]));
-        v.push(self.solo_total as u64);
         fnv_u64s(v)
     }
 }
 
-/// Per-key maximum over several maps (counts and shares join by maximum).
-fn max_join<'a>(ms: impl Iterator<Item = &'a BTreeMap<Key, u32>>) -> BTreeMap<Key, u32> {
-    let mut out = BTreeMap::new();
+/// Per-key join over several maps: counts by maximum, shares by minimum (over the maps that have the
+/// key), so a join never gives an owner more room than either copy did.
+fn join_by<'a>(ms: impl Iterator<Item = &'a BTreeMap<Key, u32>>, f: fn(u32, u32) -> u32) -> BTreeMap<Key, u32> {
+    let mut out: BTreeMap<Key, u32> = BTreeMap::new();
     for m in ms {
         for (&k, &n) in m {
-            let e = out.entry(k).or_insert(0);
-            *e = (*e).max(n);
+            out.entry(k).and_modify(|e| *e = f(*e, n)).or_insert(n);
         }
     }
     out
@@ -634,12 +634,13 @@ impl Book {
         (!roots.is_empty()).then_some(Charge::Roots(roots))
     }
 
-    /// Every key (or certificate) charged has room: each signer pays.
+    /// One of the keys (or certificates) charged has room (OWNW-1: a merged signature never costs an
+    /// honest signer its place).
     fn has_room(&self, ch: &Charge) -> bool {
         let charged = self.inner.charged.values();
         match ch {
-            Charge::Keys(ks) => ks.iter().all(|k| charged.clone().filter(|c| matches!(c, Charge::Keys(x) if x.contains(k))).count() < UNATTESTED_PER_KEY),
-            Charge::Roots(rs) => rs.iter().all(|r| charged.clone().filter(|c| matches!(c, Charge::Roots(x) if x.contains(r))).count() < INHERITED_PER_CERT),
+            Charge::Keys(ks) => ks.iter().any(|k| charged.clone().filter(|c| matches!(c, Charge::Keys(x) if x.contains(k))).count() < UNATTESTED_PER_KEY),
+            Charge::Roots(rs) => rs.iter().any(|r| charged.clone().filter(|c| matches!(c, Charge::Roots(x) if x.contains(r))).count() < INHERITED_PER_CERT),
         }
     }
 
@@ -660,23 +661,38 @@ impl Book {
         }
         let mut sorted: Vec<&Cert> = certs.iter().collect();
         sorted.sort_by_key(|c| (c.seq, c.id()));
+        // OWNW-4: the attested certificates first, then a pass, so the unattested ones are judged
+        // against the heads the batch made.
+        let (attested, rest): (Vec<&Cert>, Vec<&Cert>) = sorted.into_iter().partition(|c| by.contains_key(&c.id()));
         let mut refused = Vec::new();
-        for c in sorted {
+        for c in attested {
             let id = c.id();
-            let r = match by.get(&id) {
-                Some(v) => match self.insert_raw(c.clone(), Admit::Free) {
-                    Ok(r) => {
-                        for a in v {
-                            self.record_raw(id, a.lineage, a.frame, a.signers.iter().copied().collect(), Some(a));
-                        }
-                        Ok(r)
+            match self.insert_raw(c.clone(), Admit::Free) {
+                Ok(_) => {
+                    for a in &by[&id] {
+                        self.record_raw(id, a.lineage, a.frame, a.signers.iter().copied().collect(), Some(a));
                     }
-                    Err(e) => self.park(c.clone(), e),
-                },
-                None => self.admit(c.clone()),
-            };
-            if let Err(e) = r {
-                refused.push((id, e));
+                }
+                Err(OwnError::MissingParent) if rest.iter().any(|r| c.prev.contains(&r.id())) => {}
+                Err(e) => {
+                    if let Err(e) = self.park(c.clone(), e) {
+                        refused.push((id, e));
+                    }
+                }
+            }
+        }
+        self.recompute();
+        for c in rest {
+            if let Err(e) = self.admit(c.clone()) {
+                refused.push((c.id(), e));
+            }
+        }
+        // Attested certificates that hang from unattested ones in the batch, and attestations of
+        // certificates held (or kept) before it.
+        let late: Vec<&Cert> = certs.iter().filter(|c| by.contains_key(&c.id()) && !self.inner.certs.contains_key(&c.id())).collect();
+        for c in late {
+            if let Err(e) = self.insert_raw(c.clone(), Admit::Free) {
+                refused.push((c.id(), e));
             }
         }
         // Attestations of certificates held (or kept) before the batch.
@@ -798,6 +814,10 @@ impl Book {
         if !c.prev.is_empty() && c.prev.iter().all(|p| self.inner.certs.contains_key(p)) && !c.prev.iter().all(|p| heads.contains(p)) {
             return Err(OwnError::Stale);
         }
+        // OWNW-2: an honest session's merge joins every counting head, never a subset.
+        if c.change == Change::Merge && c.prev.len() != heads.len() {
+            return Err(OwnError::Stale);
+        }
         if self.attested_count() >= MAX_CERTS {
             return Err(OwnError::Full);
         }
@@ -887,7 +907,7 @@ impl Book {
         match mode {
             Admit::Pool => {
                 // OWNT-2, OWNU-4, OWNV-1: charged to its own signers that matter at a head (or what it
-                // hangs from), each of which has room. Nobody to charge: it needs its attestation.
+                // hangs from), one of which has room. Nobody to charge: it needs its attestation.
                 let Some(ch) = self.charge_of(&c.prev, &signers, &self.inner.charged) else { return Err(OwnError::Unattested) };
                 if !self.has_room(&ch) {
                     return Err(OwnError::Quota);
@@ -1007,7 +1027,19 @@ impl Book {
                     return Err(OwnError::Signers);
                 }
                 s.add_owner(key, id);
-                s.share.insert(key, (SOLO_CERTS / s.owners.len()) as u32);
+                // OWNW-3: the newcomer's share comes out of the remaining shares of the owners who
+                // signed its addition (each gives its remaining over the new owner count). Nobody
+                // else's share changes, and the shares never add up to more than SOLO_CERTS.
+                let n = s.owners.len() as u32;
+                let mut gift = 0;
+                for g in p.owners.iter().filter(|o| signers.contains(o)) {
+                    let rem = p.share.get(g).copied().unwrap_or(0).saturating_sub(p.solo.get(g).copied().unwrap_or(0));
+                    let give = rem / n;
+                    *s.share.entry(*g).or_default() -= give;
+                    gift += give;
+                }
+                let used = s.solo.get(&key).copied().unwrap_or(0);
+                s.share.insert(key, used + gift);
             }
             Change::Leave { key } => {
                 if !p.owners.contains(&key) {
@@ -1112,10 +1144,9 @@ impl Book {
                 }
             }
         }
-        // OWNU-6, OWNV-3, OWNV-4: a solo change (not every owner at the parent signed it) needs room in
-        // SOLO_CERTS along this history, and one signing owner (itself or through a recovery key)
-        // within the share it got when it became an owner. Exempt: Leave, and clearing one's own
-        // recovery key, the way out of a stolen one (OWNV-2).
+        // OWNU-6, OWNV-3, OWNW-3: a solo change (not every owner at the parent signed it) needs one
+        // signing owner (itself or through a recovery key) with share left. Exempt: Leave, and
+        // clearing one's own recovery key, the way out of a stolen one (OWNV-2).
         let by: Vec<Key> = p
             .owners
             .iter()
@@ -1125,13 +1156,12 @@ impl Book {
         let exempt = matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. });
         if !exempt && !p.owners.is_subset(signers) && !by.is_empty() {
             let room = |o: &Key| p.solo.get(o).copied().unwrap_or(0) < p.share.get(o).copied().unwrap_or(0);
-            if p.solo_total as usize >= SOLO_CERTS || !by.iter().any(room) {
+            if !by.iter().any(room) {
                 return Err(OwnError::Budget);
             }
             for o in by {
                 *s.solo.entry(o).or_default() += 1;
             }
-            s.solo_total += 1;
         }
         // A recovery key never stays one once it is an owner itself.
         let owners = s.owners.clone();
@@ -1229,9 +1259,8 @@ impl Book {
             recovery,
             challenges,
             recovering,
-            solo: max_join(st.iter().map(|s| &s.solo)),
-            share: max_join(st.iter().map(|s| &s.share)),
-            solo_total: st.iter().map(|s| s.solo_total).max().unwrap_or(0),
+            solo: join_by(st.iter().map(|s| &s.solo), u32::max),
+            share: join_by(st.iter().map(|s| &s.share), u32::min),
             seq: st.iter().map(|s| s.seq).max().unwrap_or(0),
         }
     }
@@ -1366,15 +1395,15 @@ impl Book {
                 needed.extend(self.inner.certs[id].prev.iter().copied());
             }
         }
-        // Charges change as the heads move, so a key can end up over its quota (a certificate charged
-        // to two keys lands on one): the oldest stay, in causal order, as admission would have kept.
+        // Charges change as the heads move: in causal order, a certificate stays if one key (or
+        // certificate) it is charged to is under its quota there, as admission would have kept it.
         let mut charged = BTreeMap::new();
         let mut per_key: BTreeMap<Key, usize> = BTreeMap::new();
         let mut per_root: BTreeMap<CertId, usize> = BTreeMap::new();
         let mut fits = |ch: &Charge, take: bool| -> bool {
             let ok = match ch {
-                Charge::Keys(ks) => ks.iter().all(|k| per_key.get(k).copied().unwrap_or(0) < UNATTESTED_PER_KEY),
-                Charge::Roots(rs) => rs.iter().all(|r| per_root.get(r).copied().unwrap_or(0) < INHERITED_PER_CERT),
+                Charge::Keys(ks) => ks.iter().any(|k| per_key.get(k).copied().unwrap_or(0) < UNATTESTED_PER_KEY),
+                Charge::Roots(rs) => rs.iter().any(|r| per_root.get(r).copied().unwrap_or(0) < INHERITED_PER_CERT),
             };
             if ok || take {
                 match ch {
