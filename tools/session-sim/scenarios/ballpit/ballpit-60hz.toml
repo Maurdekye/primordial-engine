@@ -1,0 +1,38 @@
+description = """
+Ball pit (design 6.9): member 1's hand sweeps through a 500-ball pit for 3.33 s; member 2 \
+watches. Wire cost of the perturbation source (hand targets + acks) vs naive state streaming, \
+member 2's rollbacks during the sweep, and the end state. 60 +- 10 ms links, 2% loss."""
+end_ms = 9000
+
+[peer.1]
+skew_us = 1000
+[peer.2]
+skew_us = -1000
+
+[world.1]
+members = [1, 2]
+scene = { ballpit = { balls = 500, hands = 2 } }
+epoch_ms = 100
+hz = 60
+window = 120
+
+[world.1.plan]
+1 = [{ ballpit_sweep = { ahead = 0 } }]
+
+[net]
+seed = 17
+link = { delay_ms = 60, jitter_ms = 10, loss_pct = 2 }
+# Traffic is counted over the sweep window only.
+count_ms = [2100, 5760]
+
+[[report]]
+kind = "ballpit"
+baseline_ms = [1100, 2000]
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "check_world"
+frames = 510
+label = "ballpit 60Hz"

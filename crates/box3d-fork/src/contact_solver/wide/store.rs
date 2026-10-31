@@ -18,7 +18,37 @@ pub fn store_impulses_w(
     has_hit_events: &mut bool,
     neg_hit_threshold: f32,
 ) {
-    for (i, c) in set.constraints.iter().enumerate() {
+    // SAFETY: exclusive borrow of the contacts.
+    unsafe {
+        store_impulses_w_range(
+            set,
+            0..set.len(),
+            contacts.as_mut_ptr(),
+            contacts.len(),
+            hit_event_bit_set,
+            has_hit_events,
+            neg_hit_threshold,
+        )
+    }
+}
+
+/// [`store_impulses_w`] for constraints `constraint_range` of a color. (D2 block) Each worker
+/// passes its own hit-event bit set; the caller ORs them.
+///
+/// # Safety
+/// `contacts` points at `contact_count` live contacts, and no other thread touches the
+/// contacts of these constraints during the call (each contact is in exactly one lane).
+pub(crate) unsafe fn store_impulses_w_range(
+    set: &WideContactConstraints,
+    constraint_range: core::ops::Range<usize>,
+    contacts: *mut Contact,
+    contact_count: usize,
+    hit_event_bit_set: &mut BitSet,
+    has_hit_events: &mut bool,
+    neg_hit_threshold: f32,
+) {
+    for i in constraint_range {
+        let c = &set.constraints[i];
         let manifold_count = c.manifold_count;
         let manifolds = &set.manifolds[set.manifold_range(i)];
 
@@ -28,7 +58,9 @@ pub fn store_impulses_w(
                 continue;
             }
 
-            let contact = &mut contacts[contact_id as usize];
+            assert!((contact_id as usize) < contact_count);
+            // SAFETY: the function contract.
+            let contact = unsafe { &mut *contacts.add(contact_id as usize) };
             let lane_manifold_count = contact.manifold_count();
             debug_assert!(lane_manifold_count <= manifold_count);
 

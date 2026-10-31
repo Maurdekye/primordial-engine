@@ -1,0 +1,37 @@
+description = """
+R14 throttle: as r14-ok, but after the departure world A becomes a background world for member \
+1, advancing only every 250 ms in one burst (design 22.3). Its log equals r14-ok's, so its \
+histories must too (review NEW-12)."""
+include = ["r14-ok.toml"]
+
+[world.1.member.1]
+throttle_ms = 250
+throttle_from_ms = 3000
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "throttle"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 throttle A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 throttle B"
+[[report]]
+kind = "r14_lag"
+label = "throttle"
+throttled = true

@@ -10,6 +10,9 @@ members = [
     "spikes/ballpit-viz",
     "spikes/physics-in-wasm",
     "crates/pe-mcp",
+    "crates/pe-core",
+    "crates/pe-sim",
+    "tools/session-sim",
 ]
 # Guest game-logic crates build for wasm32-unknown-unknown separately.
 exclude = ["spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
@@ -39,3 +42,7 @@ opt-level = "s"
 lto = true
 panic = "abort"
 codegen-units = 1
+# No name section (design 13.2, P2-7): cargo's crate identity for a nested workspace member
+# (spikes/sim-core, crates/box3d-fork) depends on the host OS's path spelling, and the mangled
+# names carry it, so Windows and Linux builds differed there and nowhere else.
+strip = "symbols"
