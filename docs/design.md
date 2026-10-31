@@ -2950,8 +2950,9 @@ so nothing is ever lost"):
   met by every player seeing and previewing every before-merge version, and by none being deleted.
 * They are never thinned and never deleted, owners included [proposal: "always available ... at all
   times" rules out both].
-* Each costs a manifest and any blobs the merge dropped, because it shares the rest with the merged head
-  (storage, below).
+* Each costs a manifest, any blobs the merge dropped, and the full encodings of the runtime records it
+  held as deltas (at most the runtime image, about 1.5 MB, per backup); it shares the rest with the
+  merged head (storage, below).
 * The ownership chain's merge records both pre-merge heads too (D87; @provenance-eng).
 
 **Storage** (the user, 12:56Z, verbatim: "assets should be deduplicated and world deltas stored to save
@@ -2969,8 +2970,15 @@ on storage space, in a similar manner to how resonite works"):
     re-based onto its new previous kept version, or stored full; thinned versions are never kept alive
     as bases (review DS-2). A blob is still named by the hash of its full content and checked against
     it after decoding.
-  * A before-merge backup stores its changed chunk records as full copies, never as deltas, so no
-    damaged base can break a version that nothing may lose (review DS-3).
+  * A before-merge backup holds every chunk record it names as a full copy, never as a delta, so no
+    damaged base can break a version that nothing may lose (review DS-3). A record it shares with the
+    head is often stored as a delta under the same name, since the last autosave wrote it. That blob is
+    converted to a full encoding in place, never kept twice, so a name has one encoding; deltas based on
+    it stay valid, since its content and name are unchanged. Nothing re-encodes a blob a before-merge
+    backup names as a delta again (review DS-7) [proposal].
+  * Re-encoding a blob under its name (re-basing it, storing it full instead, or a before-merge
+    conversion) writes and syncs the new encoding in full before it replaces the old one in one atomic
+    step, so a crash at any point leaves one valid encoding (review DS-6).
   * So there is no world-wide keyframe: every manifest is complete, and only chunk records have
     keyframes.
 * **Collection is mark-and-sweep, never reference counts** [proposal]. A count drifts after a crash; a
@@ -2978,13 +2986,18 @@ on storage space, in a similar manner to how resonite works"):
   * The roots are every kept backup's manifest (by the schedule above), every head, every checkpoint and
     before-merge backup, and every other world's roots on the machine.
   * **What a sweep must never take** (review DS-1):
-    * writes in flight: a blob is written before the manifest that names it, so a sweep spares every
-      blob newer than its own start;
+    * writes in flight (review DS-1b): a write pins every blob its manifest will name, whether it
+      writes the blob or finds it already stored (a dedup hit). It pins a blob before writing it, or in
+      the same step as the lookup that finds it, and holds the pins until its manifest commits, or, if
+      a sweep is running then, until that sweep ends. Copies, checkpoints and re-encodings (above) are
+      writes too;
     * running sessions: each pins what it uses, its snapshot ring, its unsaved runtime state, and the
       assets it fetched for a joined world this machine holds no backup of; caches pin theirs the same
       way, until they release them;
-    * pending deltas: a delta being written pins the base it shares;
-    * a blob stored as a delta keeps its base chain reachable.
+    * a pinned or reached blob stored as a delta keeps its base chain, as encoded when it was pinned or
+      reached; so a delta being written pins the base it is written against.
+  * The sweep checks pins when it deletes, not only when it marks: checking a blob and deleting it are
+    one step against the lookup that would pin it (review DS-1b).
   * Nothing the protocol needs lives as a loose blob: the cross-world tables (22.7) and the ownership
     chain (12.5) are part of every manifest's authority data, so any kept manifest reaches them.
   * The sweep runs at idle priority, about daily. Thinning only drops manifests; the sweep then deletes
