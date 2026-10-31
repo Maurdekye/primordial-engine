@@ -1,0 +1,11 @@
+# Scenario files whose behaviour pe-session does not have yet, one name per line. `regress` skips
+# and reports them; each name leaves this list when its fixes are ported (see README). Their logs
+# are the spike's (spikes/out/session-sim/), from scripts/run_session_sim.sh without --pe.
+#
+# P2-4 review rounds 7-8, fixed in round 8 (main af23ae5): pe-session has round 7, not round 8
+# (VC7R-1/2, RECUT, VC8R-1/2, PF-1 changes). The round-8 port to pe-session is a follow-up.
+p2-4-voidfork       # VC7R-1: admin validity along the entry's own ancestry
+p2-4-slowcapper     # VC7R-2: a capper's fetch budget at the slow-member allowance
+p2-4-voiddeep       # VC8R-1/RECUT
+p2-4-plainfork      # VC8R-1: a forker's prevotes count toward a polka in any version
+p2-4-pfsilent       # VC8R-1 with PF-1

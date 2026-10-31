@@ -711,6 +711,34 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
   * PF-1 changes no other scenario's log: beyond wall-clock timings, the suite differs only in the
     round-7 repros' new liveness fields. `fixes_off` is now 64 bits wide (PF-1 is bit 32).
 
+* **Round 8** (round 7's review asked for changes: VC7R-1 High, VC7R-2 Medium, five lows), on a branch
+  until @design-reviewer's OK. Each repro fails with its fix switched off and passes with it, and every
+  round-7 and round-8 repro now prints a verdict line, so a lost liveness fails on its own (@ballpit-viz):
+
+  | Repro | Fix | With the fix | Fix off |
+  |---|---|---|---|
+  | `voidfork` (VC7R-1) | a listed admin entry is judged along its own ancestry, not by the branch the validator linked | the void listing is refused everywhere; faulty proposer removed at 2.25 s | two members lock on it, one prevotes nil for good; stops at 110 |
+  | `slowcapper` (VC7R-2) | evidence an honest member must deliver gets the 3 s slow-member allowance; named prevotes count once held | the slow capper is kept, confirmation goes on | the capper is voted against after 1 s (a false vote; it stays) |
+  | `voiddeep` (VC7R-1, @design-reviewer's probe) | the replay over a two-entry fork segment | void: refused everywhere; valid (its ack breaks VC-5): decided everywhere | void: halts at 110 |
+  | `plainfork` (VC8R-1) | a proven forker's prevotes count toward a polka in any version | the forker removed at 2.88 s, confirmation goes on | the member that kept the other version never sees the polka; stops at 110 |
+  | `pfsilent` (PF-1 with VC8R-1 on) | prevotefork with 9 silent from 1 s: the forker's precommit is in the only quorum | every member decides, confirmation goes on | 3 and the joiner stay in epoch 0 |
+
+  * capfake's faker is removed at 6.17 s instead of 4.15 s (the new budget); adminwedge decides 30 ms
+    sooner (VC7R-1 no longer waits for the faulty member's chain to be linked up to the listed entry,
+    checked with VC7R1 alone switched off: 4.03 s again).
+  * Found while building `slowcapper`: a re-pointed cut re-validated the removed member's chain with the
+    abandoned branch's ack-epoch history, voiding its acks at the replicas that switched and not at the
+    others (`fix::RECUT`). prevotefork's 28 such voids are gone.
+  * Lows: VC7R-4 (PF-1's exception named), VC7R-5 (certificates carry exactly a quorum), VC7R-6
+    (bounded scans), VC7R-7 (adminfork's control fixed). VC7R-3 stays inferred.
+  * **VC8R-1** (round 8's review, verified by run; older than round 8): one faulty proposer forking a
+    plain seq halted the session. Fixed in the round, with VC8R-2 (RECUT stated as VC7R-1's
+    precondition). Its effects on existing logs: prevotefork decides the join at 1.18 s (3.12 s before)
+    and removes 1 at 2.27 s, so its VC4R-1 and PF-1 controls also switch VC8R-1 off. adminfork decides
+    round 0's change (1's proposal, listing 9's forked SetRole) everywhere, so the SetRole applies and 3
+    is demoted, and removes 9 by proof at 4.55 s; before, it removed 9 in round 2 at 3.13 s. slowcapper
+    decides the join at 2.72 s and removes 1 at 3.80 s (5.07 and 6.23 s before), while 9's prevotes are
+    still held back, so 9 is voted against and kept by two resets.
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
   (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be

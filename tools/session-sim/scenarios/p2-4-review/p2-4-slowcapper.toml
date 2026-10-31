@@ -1,0 +1,59 @@
+description = """
+P2-4 review round 7, VC7R-2 (fixed in round 8): prevotefork's layout, but every delivery of \
+proposer 1's forked value-prevote to observer 3 is delayed a further 1.5 s, and 9's round-0 \
+prevotes are lost until 5 s. Only capper 2 holds the forked prevote, so 3's fetch waits on 2's \
+replies: longer than round 7's budget and well inside the allowance a slow member gets \
+(suspect_after). With VC7R-2's fix off 3 votes against the honest capper (one false vote removes \
+no one, so 2 stays); as shipped 3 does not. Part 1 runs with VC7R-2's fix switched off, part 2 as \
+shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+join_rules = { rules = [], fallback = 1 }
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of every part's run (frame 364 at
+# most): it never fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[join]]
+at_ms = 1000
+member = 5
+to = [1, 2, 3, 9]
+
+[[byzantine]]
+kind = "equivocate_prevote"
+member = 1
+from_ms = 1000
+value_to = [2]
+nil_to = [3, 9]
+slow_to = [3]
+slow_ms = 1500
+
+# 9's round-0 prevotes are lost until 5 s (in prevotefork 2.5 s, where they complete the polka).
+[[fault]]
+from = 9
+msg = "prevote"
+round = 0
+before_ms = 5000
+drop = true
+
+[[part]]
+world.1.fixes_off = ["VC7R2"]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "slowcapper" },
+    { kind = "check", case = "slowcapper", label = "slowcapper fixed=false", at = 3, target = 2, members = [2, 3, 9, 5], honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3], label = "slowcapper fixed=false" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "slowcapper" },
+    { kind = "check", case = "slowcapper", label = "slowcapper fixed=true", at = 3, target = 2, members = [2, 3, 9, 5], honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3], label = "slowcapper fixed=true" },
+]
