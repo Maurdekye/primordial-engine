@@ -166,6 +166,10 @@ fn print_stats(sim: &Sim, w: WorldId) {
                 let b3 = mean(&mut || { std::hint::black_box(pe_physics::CheckHash::of(std::hint::black_box(&bytes))); });
                 let store = r.sim.store.snapshot().to_bytes().len();
                 println!(
+                    "  m{} world {w}: geometry registry {} blobs now, {} at most; {} compactions ({:.1} ms)",
+                    p.id, r.sim.world.registry_len(), s.max_registry_len, s.compactions, s.compact_us as f64 / 1000.0
+                );
+                println!(
                     "  m{} world {w}: physics check hash at the end: save_transfer {save:.1} us, to_bytes {ser:.1} us, BLAKE3 {b3:.1} us over {} B ({:.0} MB/s); store snapshot {store} B",
                     p.id, bytes.len(), bytes.len() as f64 / b3
                 );
