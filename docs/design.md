@@ -1261,6 +1261,12 @@ if our bulk transport proves weak.
   * Object ids `(creator MemberId, counter)` stay unique for the life of the session. Objects that
     persist in the world beyond it are stored under the world-scoped form (session id, creator MemberId,
     counter), so ids from different sessions never collide in a save, a load or a merge (16.10).
+* **The session id** is the BLAKE3 hash of the session's signed genesis entry, which names the world,
+  the genesis members and a fresh random nonce of 256 bits (review SX-1). Two sessions of one world with
+  the same genesis members, such as a home opened twice or an owner reopening a world alone, therefore
+  get different ids. Join requests (10.8) and persisting object ids depend on that. The spike models the
+  session id as a hash of the world and the genesis members only (`session_id`), which is enough for its
+  scenarios, where no two sessions of one world run with the same genesis.
 * **Entries (review C2):**
   * every entry is signed by its author and carries the id of the author's previous entry, so each
     member's entries form a hash chain;
@@ -1607,9 +1613,11 @@ is fixed once the author's chain is contiguous up to it.
     attestation in any of them counts. Round 3 kept a joiner's first request, so any peer could pre-empt
     it with an empty one in the joiner's name [V joinsquat: 9 asks in 5's name at 1.9 s, and 5 asks at
     2.0 s with no attestation and at 2.5 s as admin 1's friend; 5 joins as Guest at 2.63 s. Before the
-    fix: never admitted]. The signature names the session (its world and genesis members) and an expiry,
-    so a request cannot be replayed into a later session of the same world, and a change is not proposed
-    with a request whose expiry is before its boundary (review VC4R-6).
+    fix: never admitted]. The signature names the session id and an expiry, so a request cannot be
+    replayed into another session of the same world, and a change is not proposed with a request whose
+    expiry is before its boundary (review VC4R-6). That needs a session id unique per session, even
+    between two sessions of one world with the same genesis members: 10.3's id includes the genesis
+    entry's random nonce (review SX-1).
   * **The change carries the joiner's signed request** (review VC4R-2), and every member judges the join
     from it, never from a request it happens to hold. A joiner's request may reach only some members
     (an outside joiner choosing recipients, or loss); carrying it in the change means a member that
@@ -2749,7 +2757,8 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
   data, not only its own bytes. A single-member session has no quorum (9.5), so its backups rest on the
   owner's signature alone (SW-7).
 * **Object ids that persist are world-scoped** (SW-2): (the creating session's id, creator MemberId,
-  counter), where the session id is the session's world and genesis members (10.3). A session's own
+  counter), where the session id hashes the session's signed genesis entry with its fresh nonce, so two
+  sessions of one world never share it, even with the same genesis members (10.3, SX-1). A session's own
   entries may name its own objects by 10.3's session-local (creator, counter); everything stored,
   loaded or merged uses the world-scoped form. So objects from different sessions never share an id:
   across a load from an earlier session's backup, with arrivals carried forward, across a head merge,
