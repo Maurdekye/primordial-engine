@@ -391,12 +391,7 @@ pub fn prepare_revolute_joint(world: &World, base: &mut JointSim, context: &Step
     joint.spring_softness = make_soft(joint.hertz, joint.damping_ratio, context.h);
 
     if !context.enable_warm_starting {
-        joint.linear_impulse = VEC3_ZERO;
-        joint.perp_impulse = VEC2_ZERO;
-        joint.motor_impulse = 0.0;
-        joint.spring_impulse = 0.0;
-        joint.lower_impulse = 0.0;
-        joint.upper_impulse = 0.0;
+        joint.reset_impulses();
     }
 }
 

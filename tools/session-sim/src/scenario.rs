@@ -609,6 +609,10 @@ pub enum Byzantine {
         #[serde(default)]
         every_epoch: bool,
         while_member_at: Option<u32>,
+        /// The precommit's polka (prevote ids), as hex strings ("0xDEADBEEF00000001": TOML integers
+        /// stop at i64): ids that need not exist (review VC6R-1).
+        #[serde(default)]
+        polka: Vec<String>,
     },
     /// From `from_ms` (while `member` is a member at `while_member_at`, if given), `member`'s acks
     /// claim epoch `epoch`, or `ahead` epochs past its own (session.rs `fake_ack_epoch`).
@@ -723,6 +727,32 @@ pub enum Byzantine {
         from_ms: u64,
         value_to: Vec<u32>,
         nil_to: Vec<u32>,
+    },
+    /// Review VC6R-4: from `from_ms` (while a member at `while_member_at`, if given), every
+    /// `every_ms` `member` signs a no-op SetRole giving itself role `role`, sent to `to`.
+    NoopSetrole {
+        member: u32,
+        from_ms: u64,
+        every_ms: u64,
+        role: u16,
+        to: Vec<u32>,
+        while_member_at: Option<u32>,
+    },
+    /// Review VC6R-3 (session-sim p24r4.rs `adminwedge`): at `at_ms`, `member` signs a SetRole giving
+    /// itself role `role`, sent to `a_to`, and keeps a fork of it (an Attest at the same seq). Its
+    /// precommits are a fault rule's. At the next millisecond on which every one of `others` holds its
+    /// own precommit, every message it sends is lost (it crashes), apart from the fork, which it sends
+    /// `part` at `part_ms` and `others` at `others_ms`, through any fault. `part` must be the
+    /// spike's: 4, or 3 if 4 is the round-0 proposer.
+    AdminWedge {
+        member: u32,
+        at_ms: u64,
+        role: u16,
+        a_to: Vec<u32>,
+        part: u32,
+        others: Vec<u32>,
+        part_ms: u64,
+        others_ms: u64,
     },
     /// Once `member`'s frame reaches `at_frame`, it signs a kick of `target` backdated `back`
     /// frames; sent to `to`.
