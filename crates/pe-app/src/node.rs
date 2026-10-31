@@ -14,7 +14,7 @@ use std::io::Write;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc::{self, Receiver, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,6 +63,10 @@ const SERIES_US: u64 = 250_000;
 /// socket buffer would (review AR-2: a flood must not grow memory). The default UDP receive buffers
 /// (64 KB on Windows, about 208 KB on Linux) hold a few hundred to about a thousand of our datagrams.
 const RX_QUEUE: usize = 1024;
+/// The same bound in bytes (review AR-6): a flood of 64 KB datagrams must not hold 64 MB. Counted by
+/// length rather than refusing datagrams over `wire::MTU`, because a single oversized item is sent
+/// alone in one oversized datagram.
+const RX_QUEUE_BYTES: usize = RX_QUEUE * wire::MTU;
 
 /// A scripted change to this node's outgoing links, at a session time.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -234,7 +238,8 @@ pub struct Traffic {
     pub datagrams_dropped_by_cap: u64,
     #[serde(default)]
     pub datagrams_dropped_by_codel: u64,
-    /// Dropped by the receive thread because the engine's queue was full.
+    /// Dropped by the receive thread because the engine's queue was full (1024 datagrams or
+    /// 1024 × MTU bytes).
     #[serde(default)]
     pub datagrams_dropped_rx_full: u64,
     pub datagrams_received: u64,
@@ -279,6 +284,8 @@ pub struct Node {
     /// Datagrams from the receive thread, each with its arrival time (µs since `origin`).
     net_rx: Receiver<(u64, Vec<u8>)>,
     rx_full: Arc<AtomicU64>,
+    /// Bytes waiting in `net_rx`.
+    rx_bytes: Arc<AtomicUsize>,
     origin: Instant,
     leader: u32,
     /// Session time = local time + offset.
@@ -361,6 +368,8 @@ impl Node {
         let (net_tx, net_rx) = mpsc::sync_channel(RX_QUEUE);
         let rx_full = Arc::new(AtomicU64::new(0));
         let full = rx_full.clone();
+        let rx_bytes = Arc::new(AtomicUsize::new(0));
+        let queued = rx_bytes.clone();
         let rsock = o.socket.try_clone().expect("clone the socket");
         rsock.set_read_timeout(Some(Duration::from_millis(100))).expect("read timeout");
         std::thread::Builder::new()
@@ -371,9 +380,16 @@ impl Node {
                     match rsock.recv_from(&mut buf) {
                         Ok((n, _)) => {
                             let t = origin.elapsed().as_micros() as u64;
+                            // This thread is the only one adding, so the check cannot overshoot.
+                            if queued.load(Ordering::Acquire) + n > RX_QUEUE_BYTES {
+                                full.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+                            queued.fetch_add(n, Ordering::AcqRel);
                             match net_tx.try_send((t, buf[..n].to_vec())) {
                                 Ok(()) => {}
                                 Err(TrySendError::Full(_)) => {
+                                    queued.fetch_sub(n, Ordering::AcqRel);
                                     full.fetch_add(1, Ordering::Relaxed);
                                 }
                                 Err(TrySendError::Disconnected(_)) => break,
@@ -402,6 +418,7 @@ impl Node {
             sock: o.socket,
             net_rx,
             rx_full,
+            rx_bytes,
             origin,
             offset_us: 0,
             best_rtt_us: u64::MAX,
@@ -484,6 +501,7 @@ impl Node {
     fn receive_all(&mut self) {
         while let Ok((recv_us, buf)) = self.net_rx.try_recv() {
             let n = buf.len();
+            self.rx_bytes.fetch_sub(n, Ordering::AcqRel);
             self.traffic.datagrams_received += 1;
             let keys = &self.keys;
             let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied());
