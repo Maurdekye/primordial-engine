@@ -46,7 +46,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
 | `p2-4-review/` | 34 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
-| `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame refused as stale, every replica equal to the replay |
+| `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
@@ -308,8 +308,9 @@ An `owner` plan action publishes a world-ownership certificate built on the memb
 ownership head and signed by `signers` (spike signatures: any member can sign as any key). `change` is
 `add`, `leave` or `remove` (rule C only) with `key`, `set_recovery` (`key` is the owner, `recovery` its
 backup key, or none to clear it), `set_rule` (`rule`) or `merge` (joins every head). An owner's
-recovery key signs as the owner (consent-only ownership, OT = (a)). The world needs `owners`. A
-certificate applies at its entry's frame, where the session attests it.
+recovery key signs as the owner (consent-only ownership, OT = (a)). The world needs `ownership`. The
+certificate is an admin entry (D80): a view change commits it, at its boundary, if it applies to the
+book the admin entries before it leave; one that can't apply when received is never pending.
 
 ### Reports: `[[report]]`
 
@@ -318,7 +319,7 @@ Reports print after the run, in file order, in the spike's formats:
 - `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`. It prints `UNCONFIRMED` (a failure) if `frames` passes the lowest confirmed frame of the checked replicas.
 - `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
-- `ownership`: each replica's owner view (owners, rule, heads, DISPUTED, recovery keys) against an offline replay of `world`'s final log over `frames`; every certificate in frame order, applied or refused with the reason; each fork proof, checked as a third party holding only the chain prefix would check it; and with `at = [f, ...]`, the replay's view after frame f - 1.
+- `ownership`: each replica's owner view (owners, rule, heads, DISPUTED, recovery keys) and outcomes against an offline reference: a fresh book from the genesis certificate with the certificates of the first replica's decided changes applied in order; every decided certificate with its epoch and boundary, applied or refused; every certificate never committed, with the reason against the book as decided before its stamp; each fork proof, checked as a third party holding only the chain prefix would check it; and with `at = [f, ...]`, the reference's view after the decisions with boundaries up to f.
 
   `verdict`, `membership`, `view_changes`, `admin` and `before_fix` take `honest = [1, 2, 3]`,
   `honest = { members_at = 3 }` (the membership member 3 holds at the end of the run), or
