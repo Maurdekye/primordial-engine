@@ -1,6 +1,7 @@
 description = """
-P2-4 review round 3, VCR-1: at 2 s, 9 votes against 2 for a kick that does not exist. Part 1 runs \
-with VCR-1's fix switched off, part 2 as shipped."""
+P2-4 review round 3, VCR-1: at 2 s, 9 votes against 2 for a kick that does not exist. Since round \
+4 (VC3R-2), a vote naming a kick nobody delivers gets its voter voted out. Part 1 runs with \
+VCR-1's fix switched off, part 2 as shipped."""
 include = ["../common/review.toml"]
 end_ms = 10000
 quiet_panics = true
@@ -29,5 +30,6 @@ report = [
 report = [
     { kind = "view_changes", honest = [1, 2, 3], label = "ghostkick" },
     { kind = "confs", honest = [1, 2, 3], label = "ghostkick" },
+    { kind = "check", case = "removed", label = "ghostkick", at = 1, target = 9, text = "VOTED OUT" },
     { kind = "verdict", honest = [1, 2, 3], label = "ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist)" },
 ]

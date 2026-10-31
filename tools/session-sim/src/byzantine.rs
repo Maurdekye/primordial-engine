@@ -174,6 +174,15 @@ impl Actor {
                     _ => None,
                 }))
             }
+            Byzantine::RotateEntries { member, from_ms, to } => {
+                let (member, from_us, to) = (*member, from_ms * 1000, to.clone());
+                Some(Box::new(move |t, _w, from, dest, m| match m {
+                    Msg::Entry(e) if t >= from_us && from == member && e.member == member => {
+                        Some(if to[(e.seq as usize) % to.len()] == dest { Fate::Deliver } else { Fate::Drop })
+                    }
+                    _ => None,
+                }))
+            }
             Byzantine::ForgeProposal { member, to, .. } => {
                 let (member, to, fv) = (*member, to.clone(), self.forged_vote.clone());
                 Some(Box::new(move |_t, _w, from, dest, m| match m {
@@ -285,7 +294,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let Some(g) = genuine else { continue };
                 let Payload::Propose { epoch, round, valid_round, ref change } = g.payload else { unreachable!() };
                 let mut f = g.clone();
-                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![] };
+                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };
                 f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
                 act.forged_vote.set(f.id());
                 for &m in to {
@@ -311,7 +320,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 let b = boundary.unwrap_or_else(|| r.now + ahead.unwrap_or(0));
                 let v = if *every_epoch { value ^ epoch as u64 } else { *value };
-                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b }, None);
+                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b, polka: vec![] }, None);
                 send_to(sim, *member, to, &e);
                 act.fired = true;
             }
@@ -371,6 +380,39 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let epoch = r.epoch;
                 let e = r.author(Payload::Vote { epoch, target: *member, seq: 0, frozen: (frozen[0] as u32, frozen[1]), kick }, None);
                 send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::ChurnVote { member, target, from_ms, until_ms, while_member_at, to } => {
+                let now = sim.net.now_us;
+                if now >= until_ms.map_or(u64::MAX, |u| u * 1000) || !due(sim, *member, *from_ms, *while_member_at) {
+                    continue;
+                }
+                let frozen = sim.replica(*member, 1).sim.all_entries().into_iter().filter(|e| e.member == *target).map(|e| (e.seq, e.id())).max().unwrap_or((0, 0));
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                if act.capped.insert(epoch) {
+                    let e = r.author(Payload::Vote { epoch, target: *target, seq: 0, frozen, kick: 0 }, None);
+                    send_to(sim, *member, to, &e);
+                }
+            }
+            Byzantine::VoidAdmin { member, at_ms, target, role, back, to } if !act.fired => {
+                if sim.net.now_us < at_ms * 1000 {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author_backdated(Payload::SetRole { epoch, member: *target, role: *role }, *back);
+                r.byz_change = Some(Change { epoch, admin: vec![(e.id(), true)], ..Default::default() });
+                let p = r.author(Payload::Prevote { epoch, round: 0, value: 0 }, None);
+                send_to(sim, *member, to, &e);
+                send_to(sim, *member, to, &p);
+                act.fired = true;
+            }
+            Byzantine::FakeRefs { member, from_ms, of, n } if !act.fired => {
+                if sim.net.now_us < from_ms * 1000 {
+                    continue;
+                }
+                sim_mut(sim, *member, 1).fake_refs = Some((*of, *n));
                 act.fired = true;
             }
             Byzantine::BackdatedKick { member, at_frame, target, back, to } if !act.fired => {
@@ -493,9 +535,17 @@ pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result
             continue;
         }
         let attests = j.attests.iter().map(|a| Ok(attest(crate::setup::rel(&a.rel)?, j.member, a.with, a.world))).collect::<Result<Vec<_>, String>>()?;
+        // P2-4 round 5 (VC4R-6): a join request is signed over its session and expiry, so it is valid in
+        // that session only. The spike's scenarios send it with no expiry (u64::MAX), as here; a
+        // fixture's `sig` overrides the signature (a forged request) and carries the same expiry.
+        let from = j.from.unwrap_or(j.member);
         for &m in &j.to {
             let a = if j.attests_to.as_ref().is_none_or(|t| t.contains(&m)) { attests.clone() } else { vec![] };
-            sim.net.send(j.world, j.member, m, &Msg::Join { member: j.member, attests: a });
+            let msg = match j.sig {
+                None => join_msg(sim.replica(m, j.world).sim.session(), j.member, a, u64::MAX),
+                Some(sig) => Msg::Join { member: j.member, attests: a, sig, expires: u64::MAX },
+            };
+            sim.net.send(j.world, from, m, &msg);
         }
         if let Some(from) = j.log_from {
             for e in sim.replica(from, j.world).sim.all_entries() {
