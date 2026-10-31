@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state overwrite (if different) -> hashes          |  |
+ |  | Box3D step -> carried-state write (always*) -> hashes                  |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -180,6 +180,9 @@ Rulings that shape the design:
  |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
  +------------------------------------------------------------------------------+
 ```
+
+\* Always (review SET-1) in pe-session. The spike writes carried state only when its bits differ, until
+p2/spike-reset lands (review PT-1).
 
 * **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
 * **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
@@ -681,6 +684,11 @@ inexact.
    holds it. The rule is part of the deterministic sim, so every peer applies it identically. On a
    speculative frame it acts as a prediction, and the real entry replaces it by rollback when it arrives.
    Before this change (3d0f98a), a hand without an entry stopped dead.
+   * A thinned entry (10.9) is followed over its declared span first, and the coast covers only a gap
+     past it: a hand moves while n ≤ (span − 1) + 6 frames after its last entry, then holds (D52, D53).
+     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163]. The
+     spike's rule is still flat (n ≤ `hand_predict`) and off by default (0); it follows with its next
+     change [V].
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
@@ -811,7 +819,9 @@ every player, perfectly synced, and optimized for CPU and memory.
 ### 7.3 Resulting state, and the acceptance criterion
 
 * **Contents:** for each body the entry touched, its exact post-frame state as bit patterns: position,
-  rotation, linear and angular velocity, 13 × 32 bits = 52 bytes [V session-sim encoding].
+  rotation, linear and angular velocity, 16 words = 64 bytes. The position is three f64 (D58's double
+  precision), the rest f32 bits; it was 13 words (52 bytes) before D58 [V by reading `BodyState` at
+  p2/double-precision 1ae64e6; review D58-2].
 * **Application rule** (applied identically by every peer, the author included, whenever frame *f* is
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
@@ -860,7 +870,7 @@ every player, perfectly synced, and optimized for CPU and memory.
   (9.3), and a state transfer covers true nondeterminism (9.3, 9.5).
 * **Contact island scope (D40):**
   * carrying the whole contact island of each touched body would make the local neighbourhood exact
-    sooner, at 52 bytes per island body;
+    sooner, at 64 bytes per island body;
   * the recommendation is touched bodies only, plus an island digest so a mismatch can trigger a scoped
     state transfer.
 * **Overwrites can erase late indirect effects.** An earlier-stamped entry that arrives late and pushed the
@@ -935,7 +945,7 @@ release build [V session-sim ballpit].
   small entry: the hand's state plus the canonical frame, quantized to 1 mm. Every peer simulates the balls
   from it. Start and end are ordinary entries, and the touched island's state is sent only when a sync
   check flags divergence [I; the spike compared end-state hashes instead]. This satisfies the ruling, because the perturbation (the hand) carries its state
-  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1 MB/s one way for naive exact state streaming: roughly 1/70 of the volume. The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
+  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1.2 MB/s one way for naive exact state streaming at D58's 64 bytes a state: roughly 1/80 of the volume (the logs price a state at 52 bytes and show 989 kB/s until review D58-3's re-bless). The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
 * **(b) Batch, delta-code and quantize island state.** This cuts naive streaming several-fold (measured
   above). But quantized state is not bit-exact unless the sender also snaps its own copy to the quantized
   values, and it still scales with the number of balls moving.
@@ -951,7 +961,7 @@ release build [V session-sim ballpit].
 ### 7.6 Bandwidth per interaction
 
 * **An entry is about 100-170 bytes before transport overhead** [V session-sim encoding]:
-  * a touch with carried state is 100 bytes;
+  * a touch with carried state is 112 bytes (100 with the 13-word state before D58);
   * a hand target without state is 44 bytes.
 * **Acks** grow with the member count (review R3-11): 56 + 16(N-1) bytes with a check hash, that is 72, 88,
   104, 168, 296 and 1,064 bytes for N = 2, 3, 4, 8, 16 and 64 [V reviewer]. Every member sends one to
@@ -976,7 +986,7 @@ release build [V session-sim ballpit].
   | Ack, 2 members, with its check hash | 208 (168 without the check) | 72 |
   | Ack, each further member | +40 (member, seq, 32-byte id) | +16 |
   | Hand target | 133 | 44 |
-  | Touch with carried state | 188 | 100 |
+  | Touch with carried state | 188 (200 once pe-session takes D58's 16-word state) | 112 |
   | Vote | 163 (195 naming a kick) | - |
 
   Each datagram adds about 44 bytes: 28 for IPv4 and UDP, and Noise's 16-byte tag [I]. Measured on the
@@ -2026,6 +2036,26 @@ is fixed once the author's chain is contiguous up to it.
   links [V session-sim r14];
 * the rollback window became the speculation limit (6.4).
 
+**Known limits of the port** (P2-3's review round, p2/session 7aa4163) [V @world-chunks; bounded by M1
+hardening, proposal]:
+* **P23-8:** `trusted_check` judges a joiner's check against the joiner's own view of decided changes, so
+  a joiner must hold the changes up to the check frame (the relayed log carries them). It ignores the
+  ack's epoch field. It now refuses when two hashes each reach a quorum (fixed).
+* **P23-9, unbounded growth from one faulty member:** versions per (member, seq); `pc_held` for any
+  future epoch (and `pv_held`, VC8R-1's, the same way; the spike shares both); join requests,
+  `followers` and `known`, with no limit on `expires`; `watched`, filled from any entry's carried index;
+  `Arrival::Rejected { until: u64::MAX }`, never pruned; `seen`, never pruned. Each needs a bound or a
+  prune.
+* **P23-13:** `hand_owners` is fixed from the genesis members and is not hashed state. Nothing checks
+  that a joiner was built from genesis, or that the session id is the genesis hash (SX-1 should).
+* **P23-14:** a hand sent through a portal returns as an unowned dynamic body. `frame_effects` is not in
+  a state transfer, so a joiner never attests commit facts at or before its import frame.
+* **P23-2, the open part:** facts are 256-bit BLAKE3, with the session in the signed message. But
+  `Change::value` and `chain_hash` are still 64 bits (truncated BLAKE3, no longer FNV), so a proposer
+  that grinds two changes to one value, a birthday search of about 2^32, remains possible. Widening both
+  to 256 bits changes the vote payloads and the R14 tables; it goes with P2-5's move to pe-session
+  [proposal; @provenance-eng agrees for the chain hash].
+
 ### 10.9 Recovery when the network degrades (R18)
 
 User requirement 18 (14:29Z): when the network degrades, the engine must detect it and recover. It must
@@ -2054,6 +2084,12 @@ and the engager's hand replayed after the gesture had ended.
        its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
        most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
        (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
+     * A hand pose falls on a frame aligned to its level's stride, the first such frame after the last
+       pose; at a level change it is not held back to last + k. So the gap after a change is at most the
+       new stride, and a hand never stops while its author keeps sending. Before, a pose also had to be k
+       frames after the last, and at 4→5 pose 258 was followed by 272, freezing the hand 2 frames even
+       with span then coast (@shader-reviewer's matrix finding M1; fixed in pe-session at 649a77f, with a
+       test through every level change [V @world-chunks]). The spike follows with its next change.
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
@@ -2070,7 +2106,10 @@ and the engager's hand replayed after the gesture had ended.
    * a fetch for the same range is re-asked with exponential backoff, from 60 ms up to 2 s;
    * a reply holds at most 16 entries, and the requester asks again for the rest;
    * a member answers a fetch only while its uplink to the requester holds under 100 ms;
-   * every batch is split into datagrams of at most 1,200 bytes.
+   * every batch is split into datagrams of at most 1,200 bytes;
+   * a fetch's answer is sent or dropped whole, decided at its first message. Cutting a reply short
+     starved repair: at 36 kbit/s on one link of three, every member paused about 160 frames
+     [V @world-chunks, pe-session].
    * **The weakness this leaves:** repairs only yield. On a link whose steady traffic sits just under
      its cap, a repair waits behind the steady stream, its re-asks back off to 2 s, and confirmation
      crawls or stalls for good. pe-session with R18 off showed it: idle acks at 62.5 kbit/s on a 64
@@ -2095,6 +2134,12 @@ and the engager's hand replayed after the gesture had ended.
      other member holds. Others' histories are never rewritten.
 8. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
    None was observed.
+
+**In pe-session** (P2-3; @coordinator-opus's split): `SessionCore` starts with R18 on (`adapt`,
+`ack_on_frames`). A production IO batches a tick's messages into one datagram per peer and reports its
+uplink queue delay (`set_link`). The test IOs (the session harness and `tools/session-sim`) send one
+datagram per message with the controller off unless a run opts in, so the protocol scenarios keep their
+transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
@@ -5683,7 +5728,7 @@ entry says so.
   * **Settled (user, 19:11Z): as recommended.**
   * Recommend: the touched bodies' exact state, plus a digest of their contact island; a mismatch triggers
     a scoped state transfer.
-  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 52 bytes per island body;
+  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 64 bytes per island body;
     a resting pile is one large island).
 * **D41. Continuous perturbations: hands in a ball pit (7.5; the main question).**
   * Recommend: a continuous interaction is a **perturbation source**. Its pose streams as small entries
