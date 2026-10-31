@@ -215,6 +215,14 @@ impl WorldSim {
         if self.entries.contains_key(&id) || (!self.known.contains(&e.member) && e.member != LOGIC) {
             return vec![];
         }
+        // Review PF-1: every signed precommit for a value, any version, linked into its author's chain
+        // or not (a proven member's counts from here, `precommitters`), with its fact signature (S3c),
+        // which the epoch certificate then carries; one whose signature fails is not held.
+        if let Payload::Precommit { epoch, round, value, ref sig, .. } = e.payload {
+            if value != 0 && epoch >= self.vcm.epoch && self.keys.public.fact_ok(e.member, self.world_id, vc_fact(epoch, round, value), sig) {
+                self.pc_held.entry((epoch, round, value)).or_default().insert(e.member, *sig);
+            }
+        }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
             self.entries.insert(id, e.clone());
@@ -257,6 +265,11 @@ impl WorldSim {
         let (member, seq) = (e.member, e.seq);
         self.entries.insert(id, e);
         self.set_eff(id);
+        // Review PF-1: a proposal of a member proven to have forked may never link here; keep it by
+        // value now, as any other version of a proposal is kept.
+        if self.fixes_off & fix::PF1 == 0 && self.vcm.proofs.contains_key(&member) {
+            self.note_proposal(id);
+        }
         let mut out = Vec::new();
         self.extend_chain(member, &mut out);
         // An entry past a hole in its author's chain shows the hole: ask for it.

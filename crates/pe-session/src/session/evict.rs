@@ -16,6 +16,13 @@ impl WorldSim {
             _ => (k, a, b),
         };
         self.vcm.proofs.insert(m, (k0, a0, b0));
+        // Review PF-1: m's proposals already held past its fork may never link here: keep them by value.
+        if self.fixes_off & fix::PF1 == 0 {
+            let held: Vec<EntryId> = self.by_author.range((m, k0)..=(m, u32::MAX)).map(|(_, &id)| id).collect();
+            for id in held {
+                self.note_proposal(id);
+            }
+        }
         let mut out = Vec::new();
         if m != self.me && self.vcm.members.contains(&m) && !self.voted(m) {
             out.extend(self.freeze_and_vote(m, k0, EntryId::NONE));
@@ -175,13 +182,13 @@ impl WorldSim {
             // member faking the cap would be voted out, so I first fetch the prevote ids its precommit
             // named (fetching a forked one records it, or proves the proposer equivocated), and vote it
             // out only once I hold them all and they are still no quorum.
-            let ripe: Vec<(MemberId, u32, u64, u64)> = self
+            let ripe: Vec<(MemberId, u32, u64, u64, u64)> = self
                 .cap_seen
                 .iter()
                 .filter(|(m, (_, _, at))| **m != self.me && self.now >= *at + after)
-                .map(|(m, (r, v, _))| (*m, *r, *v, self.vcm.join_caps.get(m).map_or(0, |c| c.1)))
+                .map(|(m, (r, v, at))| (*m, *r, *v, self.vcm.join_caps.get(m).map_or(0, |c| c.1), *at))
                 .collect();
-            for (m, r, v, b) in ripe {
+            for (m, r, v, b, at) in ripe {
                 let old_rule = self.fixes_off & fix::VC4R1 != 0;
                 if old_rule {
                     if !self.quorum_for(&self.vcm.vc.prevotes, r, v) && self.vcm.members.contains(&m) && !self.voted(m) && !self.held(m) {
@@ -196,6 +203,17 @@ impl WorldSim {
                 let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
                 let missing: Vec<EntryId> = ids.iter().copied().filter(|id| !self.entries.contains_key(id)).collect();
                 if !missing.is_empty() {
+                    // Review VC6R-1: an honest capper holds its own polka and answers a fetch within a
+                    // round trip, so ids still missing a further half window after the cap ripened name
+                    // prevotes nobody holds. The capper is voted out instead of the fetch being retried
+                    // for good.
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                        if self.vcm.members.contains(&m) && !self.voted(m) && !self.held(m) {
+                            self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
+                            out.extend(self.freeze_and_vote(m, 0, EntryId::NONE));
+                        }
+                        continue;
+                    }
                     for id in missing {
                         self.want_entry_all(id, 0);
                     }

@@ -131,7 +131,7 @@ pub fn fork9() {
 /// switched off. With `backdate`, 9 also signs, on A only, a touch backdated 90 frames 100 ms after the
 /// fork. With `detect_us`, everything 3 sends 1 and 2 in the `detect_us` after the fork arrives that late,
 /// so they find the fork late and cut A deeper (round 3: `deepfork`, `cutbackdate`).
-pub(crate) fn fork_run(fixes_off: u32, live_us: u64, backdate: bool, detect_us: u64) -> (Sim, Option<u64>, String) {
+pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: u64) -> (Sim, Option<u64>, String) {
     {
         let ids = [1, 2, 3, 9];
         let mut ps = peers_of(&ids, |m| match m {

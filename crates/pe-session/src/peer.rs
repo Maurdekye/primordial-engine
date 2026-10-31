@@ -142,7 +142,8 @@ impl SessionCore {
             throttle_from_us: 0,
             last_burst_us: 0,
             next_ack_us: 0,
-            ack_every_us: 2 * dt_us,
+            // Saturating: hz = 0 (dt = inf) must reach a validator rather than overflow in a debug build.
+            ack_every_us: dt_us.saturating_mul(2),
             ack_on_frames: false,
             last_frame_seen: u64::MAX,
             adapt: false,
