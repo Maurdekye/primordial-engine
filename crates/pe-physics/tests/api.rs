@@ -866,3 +866,41 @@ fn compaction_is_invisible_to_the_simulation() {
     assert!(compactions.iter().all(|&n| n >= 9), "{compactions:?}");
     assert!(rollbacks.iter().all(|&n| n >= 25), "{rollbacks:?}");
 }
+
+/// Images not passed to `compact_images` are refused afterwards, with nothing written: their
+/// geometry indices name other blobs in the new registry (review CMP-1). So is an image from
+/// another world with the same settings, whose indices never meant anything here.
+#[test]
+fn stale_and_foreign_images_refused() {
+    let mut pw = churn_world();
+    let mut ring = Vec::new();
+    for f in 0..120 {
+        churn(&mut pw, f);
+        pw.step(DT).unwrap();
+        ring.push(pw.save_image().unwrap());
+    }
+    let mut kept = ring.split_off(100);
+    pw.compact_images(&mut kept.iter_mut().collect::<Vec<_>>()).unwrap();
+    let live = (pw.state_hash().unwrap(), pw.check_hash().unwrap());
+    let refused = ring.iter().filter(|image| matches!(pw.restore_image(image), Err(PhysicsError::BadImage(_)))).count();
+    println!("RESULT stale images after compaction: {refused} of {} refused", ring.len());
+    assert_eq!(refused, ring.len());
+    assert!(!pw.is_poisoned(), "refused before anything is written");
+    assert_eq!((pw.state_hash().unwrap(), pw.check_hash().unwrap()), live, "the world is unchanged");
+    // Stale images cannot be compacted in either: nothing changes.
+    let len = pw.registry_len();
+    assert!(matches!(pw.compact_images(&mut [&mut ring[99]]), Err(PhysicsError::BadImage(_))));
+    assert_eq!((pw.registry_len(), pw.check_hash().unwrap()), (len, live.1));
+    // Another world, same settings and history.
+    let mut other = churn_world();
+    for f in 0..120 {
+        churn(&mut other, f);
+        other.step(DT).unwrap();
+    }
+    let theirs = other.save_image().unwrap();
+    assert!(matches!(pw.restore_image(&theirs), Err(PhysicsError::BadImage(_))));
+    assert!(!pw.is_poisoned());
+    // The kept images still restore.
+    pw.restore_image(&kept[19]).unwrap();
+    assert_eq!(pw.check_hash().unwrap(), live.1);
+}

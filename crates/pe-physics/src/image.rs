@@ -17,6 +17,7 @@
 //!   the restored world must also save back to exactly the transfer's bytes.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use box3d_rust::body::body_is_valid;
 use box3d_rust::id::{BodyId, JointId};
@@ -33,13 +34,30 @@ use crate::error::PhysicsError;
 use crate::world::{JointEntry, JointKey, JointKind, PhysicsWorld};
 
 /// Per-world geometry registry and the reader slots built from it.
-#[derive(Default)]
 pub(crate) struct ImageRegistry {
     registry: GeometryRegistry,
     slots: Vec<RegistrySlot>,
+    /// Which registry this is, unique in the process (review CMP-1). Images carry it, because
+    /// their geometry indices mean something only in the registry they were saved against.
+    /// Never hashed or stepped, so it may differ between peers.
+    id: u64,
+}
+
+/// The next registry id. Ids are compared, never ordered or hashed.
+static NEXT_REGISTRY_ID: AtomicU64 = AtomicU64::new(1);
+
+impl Default for ImageRegistry {
+    fn default() -> Self {
+        ImageRegistry::new(GeometryRegistry::new())
+    }
 }
 
 impl ImageRegistry {
+    fn new(registry: GeometryRegistry) -> Self {
+        let id = NEXT_REGISTRY_ID.fetch_add(1, Ordering::Relaxed);
+        ImageRegistry { slots: registry.to_slots(), registry, id }
+    }
+
     fn refresh_slots(&mut self) {
         if self.slots.len() != self.registry.entries.len() {
             self.slots = self.registry.to_slots();
@@ -54,6 +72,9 @@ pub struct WorldImage {
     bodies: Vec<(ObjectId, BodyId)>,
     joints: Vec<(JointKey, JointId, JointKind)>,
     anchor: Option<BodyId>,
+    /// The registry its geometry indices refer to (`None`: read from bytes under feature `raw`,
+    /// or part of a transfer, which carries its own geometry). Not part of the bytes.
+    registry: Option<u64>,
 }
 
 /// The full-state check hash (design 9.1) of a world: BLAKE3 (pure Rust, D16) of its
@@ -234,7 +255,7 @@ impl WorldImage {
             1 => Some(r.body()?),
             _ => return Err(PhysicsError::BadImage("bad anchor flag")),
         };
-        let image = WorldImage { world, bodies, joints, anchor };
+        let image = WorldImage { world, bodies, joints, anchor, registry: None };
         image.check_tables()?;
         Ok(image)
     }
@@ -338,15 +359,16 @@ impl PhysicsWorld {
         self.usable()?;
         let mut buf = RecBuffer::new();
         serialize_world(&self.world, &mut buf, &mut self.images.registry);
-        Ok(self.image_with(buf.data))
+        Ok(self.image_with(buf.data, Some(self.images.id)))
     }
 
-    fn image_with(&self, world: Vec<u8>) -> WorldImage {
+    fn image_with(&self, world: Vec<u8>, registry: Option<u64>) -> WorldImage {
         WorldImage {
             world,
             bodies: self.bodies.iter().map(|(&id, &b)| (id, b)).collect(),
             joints: self.joints.iter().map(|(&k, j)| (k, j.id, j.kind)).collect(),
             anchor: self.anchor,
+            registry,
         }
     }
 
@@ -354,12 +376,19 @@ impl PhysicsWorld {
     /// transfer): local rollback only. Images are trusted, so nothing here is hash-checked;
     /// state from another peer arrives as a [`Transfer`]. Box3D's world value is overwritten in
     /// place, so the worker threads and the configuration stay. An image whose settings differ
-    /// from this world's is refused before anything is written. If Box3D refuses the bytes
+    /// from this world's is refused before anything is written, and so is one saved against
+    /// another registry: another world's, or this world's before [`Self::compact_images`]
+    /// (review CMP-1; its geometry indices would name other blobs). If Box3D refuses the bytes
     /// after it has started writing, the world is poisoned ([`PhysicsError::Poisoned`]) until a
     /// good image is restored (the one call a poisoned world accepts).
     pub fn restore_image(&mut self, image: &WorldImage) -> Result<(), PhysicsError> {
         if self.world.locked {
             return Err(PhysicsError::Locked);
+        }
+        if image.registry.is_some_and(|r| r != self.images.id) {
+            return Err(PhysicsError::BadImage(
+                "image saved against another geometry registry (another world's, or before compact_images)",
+            ));
         }
         check_settings(&self.world, image)?;
         self.images.refresh_slots();
@@ -386,9 +415,15 @@ impl PhysicsWorld {
     /// stepped, so compacting at any frame is invisible to the simulation: `state_hash` and
     /// `check_hash` do not move.
     ///
-    /// Nothing changes if a kept image is refused (another world's, or other settings): the live
-    /// state is restored and the error returned. If even that restore fails, the world is
-    /// poisoned, as with [`Self::restore_image`]. Refused while stepping or poisoned.
+    /// Every image saved before the call and not passed in `kept` becomes unusable: restoring
+    /// it is refused, with nothing written (review CMP-1). Nothing changes if a kept image is
+    /// refused (another world's or registry's, or other settings): the live state is restored
+    /// and the error returned. If even that restore fails, the world is poisoned, as with
+    /// [`Self::restore_image`]. Refused while stepping or poisoned.
+    ///
+    /// Cost: one restore and one save per kept image, and two of each for the live state. When
+    /// to compact is the caller's choice; [`Self::registry_len`] tells how far the registry has
+    /// grown. A frame where no re-simulation is pending is the cheapest.
     pub fn compact_images(&mut self, kept: &mut [&mut WorldImage]) -> Result<(), PhysicsError> {
         self.usable()?;
         let live = self.save_image()?;
@@ -402,7 +437,7 @@ impl PhysicsWorld {
             }
             let mut buf = RecBuffer::new();
             serialize_world(&self.world, &mut buf, &mut fresh);
-            rewritten.push(WorldImage { world: buf.data, ..WorldImage::clone(image) });
+            rewritten.push(buf.data);
         }
         self.restore_image(&live)?;
         if let Some(e) = refused {
@@ -410,10 +445,11 @@ impl PhysicsWorld {
         }
         // The live world's own geometry, so the next save finds it.
         serialize_world(&self.world, &mut RecBuffer::new(), &mut fresh);
-        for (image, new) in kept.iter_mut().zip(rewritten) {
-            **image = new;
+        self.images = ImageRegistry::new(fresh);
+        for (image, world) in kept.iter_mut().zip(rewritten) {
+            image.world = world;
+            image.registry = Some(self.images.id);
         }
-        self.images = ImageRegistry { slots: fresh.to_slots(), registry: fresh };
         Ok(())
     }
 
@@ -434,7 +470,7 @@ impl PhysicsWorld {
         buf.data[flags].copy_from_slice(&word.to_le_bytes());
         Transfer {
             geometry: registry.entries.iter().map(|e| (e.kind as u8, e.bytes.clone())).collect(),
-            image: self.image_with(buf.data),
+            image: self.image_with(buf.data, None),
         }
     }
 
