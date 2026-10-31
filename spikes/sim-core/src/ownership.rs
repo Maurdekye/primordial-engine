@@ -343,7 +343,7 @@ pub enum OwnError {
 
 /// Unattested certificates (held or kept) charged to one key at most (OWNS-5, OWNU-2, OWNU-4,
 /// OWNV-1). A certificate is charged to its own signers that are owners or recovery keys at a current
-/// head; it gets in if one of them has room. Keys are charged one by one, never in groups, so
+/// head; it gets in if each of them has room. Keys are charged one by one, never in groups, so
 /// nobody's flood crowds out another key.
 pub const UNATTESTED_PER_KEY: usize = 64;
 /// Unattested certificates signed by nobody who matters at a head (a key invited or minted by an
@@ -634,12 +634,12 @@ impl Book {
         (!roots.is_empty()).then_some(Charge::Roots(roots))
     }
 
-    /// One of the keys (or certificates) charged has room.
+    /// Every key (or certificate) charged has room: each signer pays.
     fn has_room(&self, ch: &Charge) -> bool {
         let charged = self.inner.charged.values();
         match ch {
-            Charge::Keys(ks) => ks.iter().any(|k| charged.clone().filter(|c| matches!(c, Charge::Keys(x) if x.contains(k))).count() < UNATTESTED_PER_KEY),
-            Charge::Roots(rs) => rs.iter().any(|r| charged.clone().filter(|c| matches!(c, Charge::Roots(x) if x.contains(r))).count() < INHERITED_PER_CERT),
+            Charge::Keys(ks) => ks.iter().all(|k| charged.clone().filter(|c| matches!(c, Charge::Keys(x) if x.contains(k))).count() < UNATTESTED_PER_KEY),
+            Charge::Roots(rs) => rs.iter().all(|r| charged.clone().filter(|c| matches!(c, Charge::Roots(x) if x.contains(r))).count() < INHERITED_PER_CERT),
         }
     }
 
@@ -887,7 +887,7 @@ impl Book {
         match mode {
             Admit::Pool => {
                 // OWNT-2, OWNU-4, OWNV-1: charged to its own signers that matter at a head (or what it
-                // hangs from), one of which has room. Nobody to charge: it needs its attestation.
+                // hangs from), each of which has room. Nobody to charge: it needs its attestation.
                 let Some(ch) = self.charge_of(&c.prev, &signers, &self.inner.charged) else { return Err(OwnError::Unattested) };
                 if !self.has_room(&ch) {
                     return Err(OwnError::Quota);
@@ -1366,7 +1366,24 @@ impl Book {
                 needed.extend(self.inner.certs[id].prev.iter().copied());
             }
         }
+        // Charges change as the heads move, so a key can end up over its quota (a certificate charged
+        // to two keys lands on one): the oldest stay, in causal order, as admission would have kept.
         let mut charged = BTreeMap::new();
+        let mut per_key: BTreeMap<Key, usize> = BTreeMap::new();
+        let mut per_root: BTreeMap<CertId, usize> = BTreeMap::new();
+        let mut fits = |ch: &Charge, take: bool| -> bool {
+            let ok = match ch {
+                Charge::Keys(ks) => ks.iter().all(|k| per_key.get(k).copied().unwrap_or(0) < UNATTESTED_PER_KEY),
+                Charge::Roots(rs) => rs.iter().all(|r| per_root.get(r).copied().unwrap_or(0) < INHERITED_PER_CERT),
+            };
+            if ok || take {
+                match ch {
+                    Charge::Keys(ks) => ks.iter().for_each(|k| *per_key.entry(*k).or_default() += 1),
+                    Charge::Roots(rs) => rs.iter().for_each(|r| *per_root.entry(*r).or_default() += 1),
+                }
+            }
+            ok
+        };
         let mut drop: BTreeSet<CertId> = BTreeSet::new();
         for id in &order {
             let c = &self.inner.certs[id];
@@ -1374,11 +1391,16 @@ impl Book {
             if c.prev.is_empty() || self.inner.commits.contains_key(id) {
                 continue;
             }
+            let orphaned = c.prev.iter().any(|p| drop.contains(p));
             match self.charge_of(&c.prev, &c.signers(), &charged) {
-                Some(ch) if !c.prev.iter().any(|p| drop.contains(p)) => {
+                // One an attestation depends on stays, charged or not.
+                Some(ch) if needed.contains(id) => {
+                    fits(&ch, true);
                     charged.insert(*id, ch);
                 }
-                // One an attestation depends on stays, charged or not.
+                Some(ch) if !orphaned && fits(&ch, false) => {
+                    charged.insert(*id, ch);
+                }
                 _ if needed.contains(id) => {}
                 _ => {
                     drop.insert(*id);
@@ -1389,7 +1411,7 @@ impl Book {
         for (id, c) in &self.inner.parked {
             let held = c.prev.iter().all(|p| self.inner.certs.contains_key(p) && !drop.contains(p));
             match self.charge_of(&c.prev, &c.signers(), &charged) {
-                Some(ch) if held => {
+                Some(ch) if held && fits(&ch, false) => {
                     charged.insert(*id, ch);
                 }
                 _ => drop_parked.push(*id),

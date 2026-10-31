@@ -373,13 +373,17 @@ fn check_charges(v: &Book, ctx: &str) {
             None => assert!(needed.contains(id) && !v.inner.parked.contains_key(id), "{ctx}: an unattested certificate charged to nobody"),
         }
     }
+    // Each key, and each certificate carrying inherited ones, within its quota (those an attestation
+    // depends on aside).
     let mut own: BTreeMap<Key, usize> = BTreeMap::new();
     let mut inherited: BTreeMap<CertId, usize> = BTreeMap::new();
-    for ch in v.inner.charged.values() {
+    for (id, ch) in &v.inner.charged {
+        if needed.contains(id) {
+            continue;
+        }
         match ch {
-            Charge::Keys(ks) if ks.len() == 1 => *own.entry(*ks.iter().next().unwrap()).or_default() += 1,
-            Charge::Roots(rs) if rs.len() == 1 => *inherited.entry(*rs.iter().next().unwrap()).or_default() += 1,
-            _ => {}
+            Charge::Keys(ks) => ks.iter().for_each(|k| *own.entry(*k).or_default() += 1),
+            Charge::Roots(rs) => rs.iter().for_each(|r| *inherited.entry(*r).or_default() += 1),
         }
     }
     assert!(own.values().all(|&n| n <= UNATTESTED_PER_KEY), "{ctx}: a key over its quota: {own:?}");
