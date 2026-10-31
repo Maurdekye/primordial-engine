@@ -1,4 +1,4 @@
-pe-app: member 3 of session 46868e1ee042ef5d on <laptop address>:7133; 4 members, 1800 frames
+pe-app: member 3 of session 46868e1ee042ef5d on <laptop>:7133; 4 members, 1800 frames
 [m3 t=0ms f=0] session start received: epoch 1803605 (leader clock), my offset 585111 us, best rtt 15169 us
 [m3 t=781ms f=46] status: frame 46 now 46 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 64 faulted 0 recv 69 rejected {} bad entry sigs 0
 [m3 t=2787ms f=167] status: frame 167 now 167 conf 161 members {1, 2, 3, 4} rollbacks 2 | sent 213 faulted 0 recv 266 rejected {} bad entry sigs 0
