@@ -25,3 +25,4 @@ drop = true
 kind = "check"
 case = "vcscale"
 silent = 2
+from_ms = 1000

@@ -37,7 +37,7 @@ use pe_core::Frame;
 use pe_sim::{SimStore, Snapshot};
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES};
-pub use crate::sign::{sig_words, test_fact_sig, test_sign, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
+pub use crate::sign::{hash64, sig_words, test_fact_sig, test_join_sig, test_sign, Fact, FactKind, FactWriter, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
@@ -242,7 +242,8 @@ pub struct SimConfig {
     pub seed: u64,
     pub check_every: u64,
     /// Remote-hand dead reckoning: an active hand with no entry for a frame keeps its last
-    /// commanded velocity for up to this many frames, then holds. 0 = hold at once.
+    /// commanded velocity for up to this many frames, then holds. 0 = hold at once. The default is
+    /// D52's 6 frames (design 6.10, a world rule); a run that tests the hold opts out.
     pub hand_predict: u64,
     /// A member none of whose entries has arrived for this many frames is presumed crashed and
     /// voted out (review R3-2). 1.5x the speculation limit, so a congested member is not.
@@ -283,7 +284,7 @@ impl Default for SimConfig {
             horizon_slack: 2,
             seed: 0x5052_494D_4F52_4449,
             check_every: 30,
-            hand_predict: 0,
+            hand_predict: 6,
             suspect_after: 180,
             quorum: QuorumRule::Bft,
             vc_timeout: 20,
@@ -388,13 +389,21 @@ struct Vc {
     /// Round -> member -> value (0 = nil): each member's first prevote and first precommit.
     prevotes: BTreeMap<u32, BTreeMap<MemberId, u64>>,
     precommits: BTreeMap<u32, BTreeMap<MemberId, u64>>,
-    /// (round, member) -> the signature over that precommit's fact (S3c).
-    precommit_sigs: BTreeMap<(u32, MemberId), Sig>,
+    /// (round, value, member) -> the signature over that precommit's fact (S3c). Keyed by value too
+    /// (review P23-5): a proven forker's precommits for two values each keep their own signature.
+    precommit_sigs: BTreeMap<(u32, u64, MemberId), Sig>,
     /// Rounds whose proposal this replica already saw a quorum prevote.
     polka_done: BTreeSet<u32>,
     /// Armed timeouts: round -> clock frame armed.
     prevote_timer: BTreeMap<u32, u64>,
     precommit_timer: BTreeMap<u32, u64>,
+    /// Review VC3R-2: value -> my present when its proposal by the round's proposer first reached me.
+    seen_at: BTreeMap<u64, u64>,
+    /// Review VC4R-1: (round, value) -> every member a prevote for it is held from, in any version.
+    any_prevotes: BTreeMap<(u32, u64), BTreeSet<MemberId>>,
+    /// Review VC4R-1: (round, member) -> the id of that member's first prevote this replica holds, so a
+    /// precommitter can name the prevote ids of the polka it saw.
+    prevote_id: BTreeMap<(u32, MemberId), EntryId>,
 }
 
 pub struct WorldSim {
@@ -440,10 +449,10 @@ pub struct WorldSim {
     /// Cross-world effects of each simulated frame, kept outside the rollback state: a re-simulation
     /// of the frame replaces them, and they are acted on only once the frame is confirmed (P25-3,
     /// P25-4): (commit facts to attest, fork proofs found).
-    frame_effects: BTreeMap<u64, (Vec<u64>, Vec<ForkProof>)>,
+    frame_effects: BTreeMap<u64, (Vec<Fact>, Vec<ForkProof>)>,
     /// Confirmed commit facts not yet attested (P25-4: each attested once).
-    commits_due: Vec<u64>,
-    attested: BTreeSet<u64>,
+    commits_due: Vec<Fact>,
+    attested: BTreeSet<Fact>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
@@ -471,12 +480,49 @@ pub struct WorldSim {
     stable_hi: BTreeMap<MemberId, u32>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
+    /// Review PF-1: every signed precommit held for a value, any version, linked into its author's
+    /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
+    /// counted from it (`precommitters`); everyone else counts in chain order.
+    pc_held: BTreeMap<(u32, u32, u64), BTreeMap<MemberId, Sig>>,
+    /// Review VC4R-2: per pending joiner, its signed request (signature, expiry) with the latest expiry.
+    join_reqs: BTreeMap<MemberId, (Sig, u64)>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
     hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
     /// Test fixture: review fixes switched off (see [`fix`]).
-    pub fixes_off: u32,
+    pub fixes_off: u64,
+    /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
+    entry_backoff: BTreeMap<(MemberId, EntryId), (u64, u64)>,
+    /// Review VC4R-3 (and the generator's RG-1): (claimant, author) -> (the highest seq of the author's
+    /// chain the claimant has referenced that I hold in the named version, and my present when that last
+    /// rose). A member faking a reference advances its raw reference but not this verified one, so the
+    /// withholding rule catches it; a real backlog clears once I fetch the entries, advancing it.
+    ref_seen: BTreeMap<(MemberId, MemberId), (u32, u64)>,
+    /// Review VC4R-3: per member suspected silent or slow, my present when it first was, so the fetch
+    /// exemption that spares it while I chase another member's claim about it is bounded in time.
+    suspect_since: BTreeMap<MemberId, u64>,
+    /// Review VC3R-2: per member, its first capped precommit of this epoch: (round, value, my present
+    /// when I recorded it).
+    cap_seen: BTreeMap<MemberId, (u32, u64, u64)>,
+    /// Review VC4R-1: the prevote ids a member's capped precommit carried as its polka, and every id of
+    /// them asked for so far, so the justification is fetched once before the member is voted out.
+    cap_polka: BTreeMap<MemberId, Vec<EntryId>>,
+    /// Review VC3R-6: the epoch each member entered the session in (genesis members: 0).
+    admitted_epoch: BTreeMap<MemberId, u32>,
+    /// Review VC3R-2: per member, until when I cast no suspicion vote against it, because decisions
+    /// answered my last ones while no other member voted with me; and how many times in a row.
+    vote_hold: BTreeMap<MemberId, u64>,
+    hold_n: BTreeMap<MemberId, u32>,
+    /// Test fixture (round 4): this member's acks claim `n` more entries of `member`'s chain than it
+    /// holds, with an id nobody signed: (member, n).
+    pub fake_refs: Option<(MemberId, u32)>,
+    /// Test fixture (review VC3R-3): the change this member proposes in every round it is the
+    /// proposer of, whatever it holds.
+    pub byz_change: Option<Change>,
+    /// Test fixture (review VC3R-6): author no ack before this member is admitted, as a joiner that
+    /// starts from a state transfer rather than replaying the log would.
+    pub quiet_until_member: bool,
     wants: Vec<(MemberId, MemberId, u32, u32)>,
     pub conf: u64,
     /// My clock frame (my present), set by the harness each tick.
@@ -604,10 +650,10 @@ pub struct ViewChangeMembership {
     /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
     adopting: bool,
     /// Review VCR-4: per member, the epochs reached by resets that overruled one of its votes or caps.
-    strikes: BTreeMap<MemberId, Vec<u32>>,
-    /// Review VCR-8: admin entries a decided change lists and this replica lacks: (member to ask, id),
-    /// and every pair asked so far.
-    entry_wants: Vec<(MemberId, EntryId)>,
+    pub strikes: BTreeMap<MemberId, Vec<u32>>,
+    /// Review VCR-8: admin entries a decided change lists and this replica lacks: (member to ask, id,
+    /// how many predecessors too), and every pair asked so far.
+    entry_wants: Vec<(MemberId, EntryId, u8)>,
     entry_asked: BTreeSet<(MemberId, EntryId)>,
     /// Values decided by a quorum of precommits that this replica holds no proposal for:
     /// (member to ask, value), and every pair asked so far.
@@ -640,7 +686,19 @@ pub fn now_us() -> u64 {
 }
 
 impl WorldSim {
-    pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig, keys: KeyRing) -> Self {
+    /// Whether frame `f`'s outcomes are final here (review P23-7): confirmed, simulated, and no
+    /// re-simulation pending from `f` or earlier.
+    pub fn settled(&self, f: u64) -> bool {
+        f < self.conf && f < self.frame && self.dirty_from.is_none_or(|d| d > f)
+    }
+
+    pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig, mut keys: KeyRing) -> Self {
+        assert!(!members.contains(&LOGIC), "member id 0 is reserved for world logic (review P23-10)");
+        // This world's facts are signed in its own session (review P23-2). A ring without one (an
+        // offline replay's) keeps what its directory says.
+        if keys.session != [0; 32] {
+            keys.public.add_world(world_id, keys.session);
+        }
         let (world, objs) = build_scene(scene, world_id);
         let genesis_objects = objs.len() as u64;
         let hand_owners = match scene {
@@ -730,9 +788,22 @@ impl WorldSim {
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
+            pc_held: BTreeMap::new(),
             hidden: None,
+            join_reqs: BTreeMap::new(),
             genesis: members.to_vec(),
             fixes_off: 0,
+            entry_backoff: BTreeMap::new(),
+            ref_seen: BTreeMap::new(),
+            suspect_since: BTreeMap::new(),
+            cap_seen: BTreeMap::new(),
+            cap_polka: BTreeMap::new(),
+            admitted_epoch: BTreeMap::new(),
+            vote_hold: BTreeMap::new(),
+            hold_n: BTreeMap::new(),
+            fake_refs: None,
+            byz_change: None,
+            quiet_until_member: false,
             wants: Vec::new(),
             conf: 0,
             now: 0,

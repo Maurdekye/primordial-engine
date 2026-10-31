@@ -191,8 +191,7 @@ pub fn prepare_weld_joint(world: &World, base: &mut JointSim, context: &StepCont
     }
 
     if !context.enable_warm_starting {
-        joint.linear_impulse = VEC3_ZERO;
-        joint.angular_impulse = VEC3_ZERO;
+        joint.reset_impulses();
     }
 }
 

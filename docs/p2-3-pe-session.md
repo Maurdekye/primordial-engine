@@ -26,15 +26,20 @@ named here, **[I]** inferred.
 | S5e | Canonical encoding of the world-level tables (`encode_tables`/`decode_tables`); the check hash is `check_hash_of(physics, frame, store bytes, tables bytes)`, so it binds the exact bytes a transfer carries (the tables' earlier word projection was lossy) | 458c893 | 3 identical, 66 equal with ids masked, 0 different [V] |
 | S5f | State transfer to a joiner: `export_state`, `trusted_check` (P22S-1), `import_state` | 8940e78 | 69 of 69 identical; tests: a joiner that restores member 1's state has member 2's state hash every frame after it; donor-only vouching, a flipped byte in each part, trailing bytes, a relabelled frame and another world are each refused with the replica unchanged [V] |
 | S5g | `Msg::FetchState` / `Msg::State` and `SessionCore::request_state`, `Event::Transfer`; scenario `statejoin` | d3b221d | the 69 earlier logs identical; `statejoin`: a tampered state from member 2 refused (`Hash`), member 1's restored, frames 151..587 equal at all four replicas [V] |
+| P2-4 r4-6 | The landed view change (spike at main 5ba3eab) ported by the same per-module merge. Join requests (VC3R-4, VC4R-6) are Ed25519 by the joiner over `"pe-join\0" \| session id \| joiner \| expires` (`sign::join_message`, `PublicKeys::join_ok`, `KeyRing::sign_join`): the key ring's 32-byte session id replaces the spike's FNV `session_id`. Precommits carry their polka (VC4R-1) and the S3c signature; `FetchEntry { id, back }` (VC3R-7); entry-fetch backoff (VC4R-4) | be45e5e; main merged at 47aabe4, 7dd6453 | with the spike's claim rule vs 5ba3eab: 4 identical, 78 equal with ids masked, `claims.log` differs only in its D72 label. Default rule vs f634185: 45 identical, 1 equal with ids masked, 24 different, and each of the 24 also changed in the spike's own logs between round 3 and 5ba3eab (and no spike log that changed stayed the same here); 15 new scenario logs (8ded87a) [V] |
+| P2-4 r7 | Round 7 (spike at main de3dbf9): VC6R-1, VC6R-3, VC6R-4, PF-1. `pc_held` keeps each precommit's S3c signature, held only if it verifies at insert, so an epoch certificate carries a proven forker's precommit by its own signature | 99d47fe; main 5a71ca7 merged at b2dd57d | with the spike's claim rule vs de3dbf9: 4 identical, 81 equal with ids masked (the three new repros included); default rule: exactly the 5 logs the spike changed differ, 3 new (c035024) [V] |
+| P2-9 | `tools/session-sim` on pe-session (Cargo aliases keep its paths); its goldens are pe-session's logs (`spikes/out/session-sim-pe`); the three capped runs' caps scaled to pe-session's message sizes; `docs/p2-9-spike-comparison.md` gives each difference from the spike its cause | 6225195 ... 44a1b2f, b54b509 | `regress` 92 of 92 identical on Windows and Linux; 0 unexplained differences from the spike [V] |
+| Review | @design-reviewer's P23-1 to P23-15 (review-p2-3.md): a decoder with bounded nesting and no trailing bytes; state restored only on request, from that donor, never rewinding; requests answered for members and followers, one state per requester per second, every answer a repair; facts 256-bit BLAKE3 (`FactWriter`, a context per kind) signed as `"pe-fact\0" | world | session | fact`; certificate signatures by value; a non-holder's touch never places a held object (8.4); final outcomes only when simulated; member id 0 reserved; and the lows. The stall diagnosis: a fetch reply is sent or dropped whole (per-message yields starved repair). R18 on in `SessionCore` (test IO opts in); D52 default with span-then-coast; hand poses at a level change take the next aligned frame | 7aa4163, 649a77f, 7891209 | 41 tests; suite ALL EQUAL, 0 false checks; `regress` 92 of 92; pe-app's M1 loopback on it ALL EQUAL with R18 on [V]; Linux at 7891209: 41 of 41 tests, 88 of 88 harness logs equal Windows, regress 92 of 92 [V] |
 
 Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states` [V];
-29 unit and integration tests in pe-session [V].
+31 unit and integration tests in pe-session [V].
 
-**Linux** (at 1404a0c; static musl builds in WSL2, kernel 6.6.87.2, `scripts/p2-3/run_linux.sh`): 29 of 29
-tests pass, and every scenario's log equals the Windows log, timings masked (70 identical, SUMMARY ALL
-EQUAL) [V].
+**Linux** (static musl builds in WSL2, kernel 6.6.87.2, `scripts/p2-3/run_linux.sh`, `run_linux_regress.sh`):
+at 7891209 (the review round), 41 of 41 tests pass, every harness log equals the Windows log, timings
+masked (88 identical, SUMMARY ALL EQUAL), and the tool's `regress` is 92 of 92 identical [V]; earlier at
+3c7ec50/44a1b2f (31 tests, 88, 92), 8ded87a (85 identical) and 1404a0c (70) [V].
 
-**Still to do:** P2-4 rounds 4 to 6, P2-9's scenario files on this core.
+**Still to do:** the session id derived from a signed genesis entry with a random nonce (design 10.3, SX-1; today the caller supplies it); signed EpochCert proofs; the view-change value and the chain hash at 256 bits (64-bit BLAKE3 today: a proposer's birthday search, about 2^32, remains; with P2-5 on pe-session); the known limits P23-8, P23-9, P23-13 and P23-14 recorded in design 10.8.
 
 ## Engine state on pe-sim (S5)
 

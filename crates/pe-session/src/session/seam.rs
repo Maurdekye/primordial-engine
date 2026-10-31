@@ -119,7 +119,7 @@ impl ViewChangeMembership {
         self.ack_epoch_from.entry(m).or_default().entry(epoch).or_insert(seq);
     }
     /// The view-change fetch requests queued (by value and by id).
-    pub(super) fn take_fetch_wants(&mut self) -> (Vec<(MemberId, u64)>, Vec<(MemberId, EntryId)>) {
+    pub(super) fn take_fetch_wants(&mut self) -> (Vec<(MemberId, u64)>, Vec<(MemberId, EntryId, u8)>) {
         (std::mem::take(&mut self.value_wants), std::mem::take(&mut self.entry_wants))
     }
 }
@@ -186,7 +186,7 @@ mod tests {
             let _ = s.author_ack();
             assert!(s.suspects_due().is_empty() && s.view_change_due().is_empty());
         }
-        s.on_join(9, Vec::new());
+        s.on_join(9, Vec::new(), join_sig_in(&TEST_SESSION, 9, u64::MAX), u64::MAX);
         assert_eq!(s.membership().members().iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(s.membership().epoch(), 0);
         assert!(s.membership().removed().is_empty());

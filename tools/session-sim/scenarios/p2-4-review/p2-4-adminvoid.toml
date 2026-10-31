@@ -1,0 +1,40 @@
+description = """
+P2-4 review round 4, VC3R-3: every member is an admin. At 2 s, 9 signs a SetRole demoting 3 to the \
+guest role (1), backdated 30 frames past its own declared horizon, so every replica voids it; it \
+lists it in the change it proposes and starts a view change with a nil prevote so that its round \
+comes. Part 1 runs with VC3R-3's fix switched off, part 2 as shipped: the void entry is not applied."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+guests = { role = 1, admins = [1, 2, 3, 9] }
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of the run (frame 593): it never
+# fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[byzantine]]
+kind = "void_admin"
+member = 9
+at_ms = 2000
+target = 3
+role = 1
+back = 30
+to = [1, 2, 3]
+
+[[part]]
+world.1.fixes_off = ["VC3R3"]
+report = [
+    { kind = "line", text = "  3's role at m1: {role@1:3}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it)", fix = "VC3R-3's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "admin", honest = [1, 2, 3], label = "adminvoid", roles = true },
+    { kind = "check", case = "adminvoid", label = "adminvoid", at = 1, target = 3, honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3], label = "adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it)" },
+]

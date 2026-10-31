@@ -131,7 +131,20 @@ fn compare(got: &str, want: Option<&str>) -> Outcome {
 /// so a full run reports them instead of failing on them as orphans. The list only shrinks: a name
 /// with a scenario file, or with no committed log, is an error.
 pub fn spike_only(dir: &Path) -> Result<Vec<String>, String> {
-    let p = dir.join("spike-only.txt");
+    name_list(dir, "spike-only.txt")
+}
+
+/// The committed logs that are not scenarios at all: `not-scenarios.txt` in the scenarios folder,
+/// in `spike-only.txt`'s format. They are the output of the spike's property tests (`randsched`,
+/// a randomized schedule generator that checks its own invariants), which the spike suite runs and
+/// checks; the tool has no scenario for them and never will. A name with a scenario file, or with
+/// no committed log, is an error, as for `spike-only.txt`.
+pub fn not_scenarios(dir: &Path) -> Result<Vec<String>, String> {
+    name_list(dir, "not-scenarios.txt")
+}
+
+fn name_list(dir: &Path, file: &str) -> Result<Vec<String>, String> {
+    let p = dir.join(file);
     let Ok(text) = fs::read_to_string(&p) else { return Ok(vec![]) };
     let mut v: Vec<String> = Vec::new();
     for l in text.lines() {
@@ -165,7 +178,7 @@ fn logs_under(dir: &Path, prefix: &str, out: &mut Vec<String>) {
 pub fn regress(args: &[String]) -> i32 {
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let scenarios = get("--scenarios").map(PathBuf::from).unwrap_or_else(default_scenarios);
-    let expected = get("--expected").map(PathBuf::from).unwrap_or_else(|| repo().join("spikes/out/session-sim"));
+    let expected = get("--expected").map(PathBuf::from).unwrap_or_else(|| repo().join("spikes/out/session-sim-pe"));
     let out = get("--out").map(PathBuf::from).unwrap_or_else(|| repo().join("target/session-sim"));
     let jobs: usize = get("--jobs").map_or(1, |v| v.parse().unwrap_or(1)).max(1);
     let bless = args.iter().any(|a| a == "--bless");
@@ -218,9 +231,9 @@ pub fn regress(args: &[String]) -> i32 {
         .collect();
     // A committed log no scenario produces any more (only checked for a full run), apart from the
     // spike-only ones.
-    let spike_only = match spike_only(&scenarios) {
-        Ok(v) => v,
-        Err(e) => {
+    let (spike_only, not_scenarios) = match (spike_only(&scenarios), not_scenarios(&scenarios)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => {
             eprintln!("error: {e}");
             return 2;
         }
@@ -230,14 +243,18 @@ pub fn regress(args: &[String]) -> i32 {
         let goldens: std::collections::BTreeSet<&str> = meta.values().map(|(g, _, _)| g.as_str()).collect();
         let mut logs = Vec::new();
         logs_under(&expected, "", &mut logs);
-        for g in &spike_only {
-            if goldens.contains(g.as_str()) {
-                stale.push(format!("{g} is listed in spike-only.txt but has a scenario file: remove it from the list"));
-            } else if !logs.contains(g) {
-                stale.push(format!("{g} is listed in spike-only.txt but has no committed log"));
+        for (list, file) in [(&spike_only, "spike-only.txt"), (&not_scenarios, "not-scenarios.txt")] {
+            for g in list {
+                if goldens.contains(g.as_str()) {
+                    stale.push(format!("{g} is listed in {file} but has a scenario file: remove it from the list"));
+                } else if !logs.contains(g) {
+                    stale.push(format!("{g} is listed in {file} but has no committed log"));
+                } else if file == "not-scenarios.txt" && spike_only.contains(g) {
+                    stale.push(format!("{g} is listed in both spike-only.txt and not-scenarios.txt"));
+                }
             }
         }
-        logs.into_iter().filter(|g| !goldens.contains(g.as_str()) && !spike_only.contains(g)).collect()
+        logs.into_iter().filter(|g| !goldens.contains(g.as_str()) && !spike_only.contains(g) && !not_scenarios.contains(g)).collect()
     } else {
         vec![]
     };
@@ -300,6 +317,11 @@ pub fn regress(args: &[String]) -> i32 {
             println!("== {g}: spike-only (not mirrored as a scenario file yet; see spike-only.txt)");
         }
     }
+    for g in not_scenarios.iter().filter(|g| !stale.iter().any(|s| s.starts_with(&format!("{g} ")))) {
+        if only.is_none() {
+            println!("== {g}: not a scenario (a spike property test, run and checked by the spike suite; see not-scenarios.txt)");
+        }
+    }
     for e in &stale {
         println!("== ERROR: {e}");
     }
@@ -309,7 +331,7 @@ pub fn regress(args: &[String]) -> i32 {
             "SUMMARY: {} scenarios, {same} identical to the committed logs{}{}; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states ({secs:.0} s)",
             results.len(),
             if new > 0 { format!(", {new} new (blessed)") } else { String::new() },
-            if only.is_none() && !spike_only.is_empty() { format!("; {} committed logs spike-only, not mirrored yet", spike_only.len()) } else { String::new() }
+            if only.is_none() && !spike_only.is_empty() { format!("; {} committed logs spike-only, not mirrored yet", spike_only.len()) } else { String::new() },
         );
         0
     } else {

@@ -1,9 +1,10 @@
 //! P2-3 scenarios on pe-session's own additions.
 //!
-//! * `statejoin` (design 9.5, reviews P22R-1 and P22S-1): a joiner catches up by state transfer. Member
-//!   2 answers first with a tampered state, which the joiner refuses; member 1's state, vouched for by
-//!   a quorum's signed acks, is restored, and from its frame on the joiner's history equals the
-//!   members'.
+//! * `statejoin` (design 9.5, reviews P22R-1, P22S-1 and P23-3): a joiner catches up by state transfer.
+//!   It asks members 2 and 1 (`request_state`). Member 2 answers first with a tampered state, which the
+//!   joiner refuses (Hash); member 2's honest answer then arrives unrequested (its request was used)
+//!   and is refused too (Unrequested); member 1's state, vouched for by a quorum's signed acks, is
+//!   restored, and from its frame on the joiner's history equals the members'.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +24,10 @@ pub fn statejoin() {
     });
     let mut p = Peer::new(joiner, 0);
     p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
+    // The joiner does not simulate before its state arrives (a background world that never bursts):
+    // a state never rewinds a replica (review P23-3), so a joiner that had simulated past the state's
+    // frame would refuse it.
+    p.worlds.get_mut(&1).unwrap().core.throttle_us = Some(u64::MAX / 2);
     ps.push(p);
     let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 10_000_000);
     let relay = |sim: &mut Sim| {
@@ -40,7 +45,7 @@ pub fn statejoin() {
         if step == 0 && now >= 3_000_000 {
             // The joiner asks to join, and member 1 hands it the log (as latejoin).
             for m in ids {
-                sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                sim.net.send(1, joiner, m, &join_msg(&TEST_SESSION, joiner, vec![], u64::MAX));
             }
             relay(sim);
             step = 1;
@@ -52,9 +57,12 @@ pub fn statejoin() {
             let at = bad.physics.len() / 3;
             bad.physics[at] ^= 0x01;
             sim.net.send(1, 2, joiner, &Msg::State(Box::new(bad)));
-            sim.net.send(1, joiner, 1, &Msg::FetchState);
+            let r = sim.replica_mut(joiner, 1);
+            r.core.request_state(2);
+            r.core.request_state(1);
             step = 2;
         } else if step == 2 && sim.replica(joiner, 1).sim.stats.imports > 0 {
+            sim.replica_mut(joiner, 1).core.throttle_us = None;
             let st = sim.replica(1, 1).sim.export_state().expect("a confirmed check frame");
             sent_bytes = (st.physics.len(), st.store.len(), st.tables.len());
             step = 3;

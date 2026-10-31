@@ -163,8 +163,9 @@ impl WorldSim {
                 _ => held,
             };
             if s > 0 && q != self.me && self.cfg.ack_heads {
-                match self.hidden.as_ref().and_then(|h| h.get(&q)) {
-                    Some(&(hs, hid)) if hs < s => heads.push((q, hs, hid)),
+                match (self.hidden.as_ref().and_then(|h| h.get(&q)), self.fake_refs) {
+                    (_, Some((f, n))) if f == q => heads.push((q, s + n, EntryId::fake(fnv_u64s([41, q as u64, (s + n) as u64])))),
+                    (Some(&(hs, hid)), _) if hs < s => heads.push((q, hs, hid)),
                     _ => heads.push((q, s, self.by_author[&(q, s)])),
                 }
             }
@@ -214,12 +215,26 @@ impl WorldSim {
         if self.entries.contains_key(&id) || (!self.known.contains(&e.member) && e.member != LOGIC) {
             return vec![];
         }
+        // Review PF-1: every signed precommit for a value, any version, linked into its author's chain
+        // or not (a proven member's counts from here, `precommitters`), with its fact signature (S3c),
+        // which the epoch certificate then carries; one whose signature fails is not held.
+        if let Payload::Precommit { epoch, round, value, ref sig, .. } = e.payload {
+            if value != 0 && epoch >= self.vcm.epoch && self.keys.public.fact_ok(e.member, self.world_id, vc_fact(epoch, round, value), sig) {
+                self.pc_held.entry((epoch, round, value)).or_default().insert(e.member, *sig);
+            }
+        }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
             self.entries.insert(id, e.clone());
             self.disputed.insert(id);
             // Another version of a proposal still names a value someone may decide (P2-4).
             self.note_proposal(id);
+            // Review VC4R-1: another version of a prevote may be the one a capped precommit counted.
+            if let Payload::Prevote { epoch, round, value } = e.payload {
+                if epoch == self.vcm.epoch && self.vcm.members.contains(&e.member) {
+                    self.vcm.vc.any_prevotes.entry((round, value)).or_default().insert(e.member);
+                }
+            }
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
             // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
@@ -250,6 +265,11 @@ impl WorldSim {
         let (member, seq) = (e.member, e.seq);
         self.entries.insert(id, e);
         self.set_eff(id);
+        // Review PF-1: a proposal of a member proven to have forked may never link here; keep it by
+        // value now, as any other version of a proposal is kept.
+        if self.fixes_off & fix::PF1 == 0 && self.vcm.proofs.contains_key(&member) {
+            self.note_proposal(id);
+        }
         let mut out = Vec::new();
         self.extend_chain(member, &mut out);
         // An entry past a hole in its author's chain shows the hole: ask for it.
@@ -309,19 +329,21 @@ impl WorldSim {
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, epoch, .. } => {
-                // Review VC-5: an author's epoch never falls and rises by at most one per ack.
+                // Review VC-5: an author's epoch never falls and rises by at most one per ack. Review
+                // VC3R-6: a joiner's first acks may declare the epoch it was admitted into, so it need
+                // not have acked every epoch since genesis (its chain is validated only once admitted).
                 let prev = self.membership().last_ack_epoch(m);
-                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && *epoch <= prev + 1);
+                let adm = if self.fixes_off & fix::VC3R6 == 0 { self.admitted_epoch.get(&m).copied().unwrap_or(0) } else { 0 };
+                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && (*epoch <= prev + 1 || *epoch <= adm));
                 e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp && epoch_ok
             }
             // Review VC-4: a precommit's boundary caps its author's acks, so it must lie ahead of the
-            // horizon the author has declared, by at most two join leads.
-            // Review VCR-12: the upper bound counts from the entry's own stamp as well, so a member that
-            // has not acked yet, or lags, can still precommit a join.
+            // horizon the author has declared: a cap never takes back what its acks already confirmed.
+            // Reviews VCR-12 and VC3R-5: no upper bound. A far cap restrains only its own author, and
+            // round 2's bound (two join leads past that horizon) voided a lagging member's precommits.
             Payload::Precommit { boundary, .. } if *boundary > 0 && self.fixes_off & fix::VC4 == 0 => {
                 let h = max_h.unwrap_or(0);
-                let from = if self.fixes_off & fix::VCR12 == 0 { h.max(e.stamp) } else { h };
-                *boundary > h && *boundary <= from + 2 * self.cfg.join_lead
+                *boundary > h && (self.fixes_off & fix::VCR12 == 0 || *boundary <= h + 2 * self.cfg.join_lead)
             }
             // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
             // horizon like any entry: no backdating past what its author has declared.
@@ -410,8 +432,44 @@ impl WorldSim {
         };
         let mut s = mine;
         let members: Vec<MemberId> = self.membership().members().iter().copied().collect();
+        let matching = self.fixes_off & fix::VC4R3 == 0;
         for j in members {
             if j == self.me || j == m {
+                continue;
+            }
+            if matching {
+                // Review VC5R-2: j's contribution is the newest of m's chain it has referenced that I
+                // hold in the version it names. A reference to another version (a fake id, or a fork) is
+                // skipped and fetched for the proof, but it does not zero j's contribution, so a faulty
+                // member alternating a fake head with a stale real one cannot cap m's stability.
+                let Some(r) = self.refs.get(&(j, m)) else {
+                    s = 0;
+                    break;
+                };
+                let mut matched = None;
+                let unmatched: Vec<u32> = r
+                    .range(..=mine)
+                    .rev()
+                    .take_while(|(rs, (rid, _))| {
+                        if self.by_author.get(&(m, **rs)) == Some(rid) {
+                            matched = Some(**rs);
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|(rs, _)| *rs)
+                    .collect();
+                for rs in unmatched {
+                    self.want_from(j, m, rs, rs);
+                }
+                match matched {
+                    Some(rs) => s = s.min(rs),
+                    None => {
+                        s = 0;
+                        break;
+                    }
+                }
                 continue;
             }
             let Some((rs, rid)) = self.refs.get(&(j, m)).and_then(|r| r.range(..=mine).next_back()).map(|(a, b)| (*a, b.0)) else {

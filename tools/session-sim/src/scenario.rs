@@ -174,6 +174,10 @@ pub struct JoinReq {
     #[serde(default = "one")]
     pub world: u32,
     pub member: u32,
+    /// Sent by this member in `member`'s name (default: `member` itself).
+    pub from: Option<u32>,
+    /// The request's signature (default: `member`'s genuine one; 0 for a forged request).
+    pub sig: Option<u64>,
     pub to: Vec<u32>,
     #[serde(default)]
     pub attests: Vec<AttestCfg>,
@@ -201,7 +205,8 @@ pub struct ReplicaCfg {
     pub throttle_ms: Option<u64>,
     #[serde(default)]
     pub throttle_from_ms: u64,
-    /// R18 congestion control on this member's uplink.
+    /// R18 congestion control on this member's uplink (on by default in pe-session; the tool's test
+    /// IO opts in per member, as the harness does).
     #[serde(default)]
     pub adapt: bool,
     /// Ack every this many ms (default: the world's).
@@ -216,6 +221,9 @@ pub struct ReplicaCfg {
     /// Byzantine: prevotes but never precommits (session.rs `byz_no_precommit`).
     #[serde(default)]
     pub byz_no_precommit: bool,
+    /// A joiner that authors no ack before it is admitted (session.rs `quiet_until_member`).
+    #[serde(default)]
+    pub quiet_until_member: bool,
 }
 
 /// A planned action: at frame `at`, or `count` times from `at` every `every` frames.
@@ -342,7 +350,7 @@ pub struct NetCfg {
     pub cap: Option<CapCfg>,
     #[serde(default)]
     pub caps: Vec<PairCap>,
-    /// R18: one datagram per member, peer and tick (up to the MTU).
+    /// R18: one datagram per member, peer and tick (up to the MTU). Opt-in for the test IO.
     #[serde(default)]
     pub batching: bool,
     /// Count traffic only in [from, to) ms (the ball-pit sweep window).
@@ -445,11 +453,19 @@ pub struct FaultRule {
     /// Chain entries only: this stamp, this sequence number.
     pub stamp: Option<u64>,
     pub seq: Option<u32>,
+    /// `propose`, `prevote` or `precommit` entries of this round only.
+    pub round: Option<u32>,
+    /// `prevote` or `precommit` entries for nil (value 0), or (`false`) for a value.
+    pub nil: Option<bool>,
     /// Apply to at most this many messages, then stop matching.
     pub times: Option<u64>,
     #[serde(default)]
     pub drop: bool,
     pub delay_ms: Option<u64>,
+    /// With `delay_ms` and `after_ms`: the delay grows with the send time t, to
+    /// t - after_ms + delay_ms (a link growing slower).
+    #[serde(default)]
+    pub delay_grows: bool,
     /// Deliver it as is (so a later rule does not match it).
     #[serde(default)]
     pub deliver: bool,
@@ -594,6 +610,10 @@ pub enum Byzantine {
         #[serde(default)]
         every_epoch: bool,
         while_member_at: Option<u32>,
+        /// The precommit's polka (prevote ids), as hex strings ("0xDEADBEEF00000001": TOML integers
+        /// stop at i64): ids that need not exist (review VC6R-1).
+        #[serde(default)]
+        polka: Vec<String>,
     },
     /// From `from_ms` (while `member` is a member at `while_member_at`, if given), `member`'s acks
     /// claim epoch `epoch`, or `ahead` epochs past its own (session.rs `fake_ack_epoch`).
@@ -631,6 +651,110 @@ pub enum Byzantine {
         frozen: [u64; 2],
         to: Vec<u32>,
     },
+    /// From `from_ms`, `member` sends each of `to` only its own entries whose
+    /// sequence number modulo the length of `to` is that member's index in it.
+    RotateEntries {
+        member: u32,
+        from_ms: u64,
+        to: Vec<u32>,
+    },
+    /// From `from_ms` until `until_ms` (while a member at `while_member_at`), in every epoch it is
+    /// in, `member` votes against `target` (whom everyone hears), naming `target`'s head as it holds
+    /// it, so an honest proposer answers with a reset; sent to `to`.
+    ChurnVote {
+        member: u32,
+        target: u32,
+        from_ms: u64,
+        until_ms: Option<u64>,
+        while_member_at: Option<u32>,
+        to: Vec<u32>,
+    },
+    /// Review VC3R-3: at `at_ms`, `member` signs a SetRole giving `target` role `role`, backdated
+    /// `back` frames (so every replica voids it), proposes a change listing it in every round it
+    /// proposes (`byz_change`), and starts a view change with a nil prevote; sent to `to`.
+    VoidAdmin {
+        member: u32,
+        at_ms: u64,
+        target: u32,
+        role: u16,
+        back: u64,
+        to: Vec<u32>,
+    },
+    /// From `from_ms`, `member`'s acks claim `n` more entries of `of`'s chain than it holds
+    /// (session.rs `fake_refs`).
+    FakeRefs {
+        member: u32,
+        from_ms: u64,
+        of: u32,
+        n: u32,
+    },
+    /// From `from_ms`, once `member`'s replica holds an entry of its own of kind `holds_own`
+    /// (`prevote`, or `nonnil_prevote`), every message it sends is lost (the spike's crash after a
+    /// prevote: it still receives and ticks).
+    GoSilent {
+        member: u32,
+        from_ms: u64,
+        holds_own: String,
+    },
+    /// Review VC5R-2: from `from_ms`, every `every_ms` `member` alternates between acks naming a
+    /// fake id at its current seq of `of`'s chain (`fake_refs` with n = 0) and acks naming a stale
+    /// real head; the stale heads are re-frozen (`freeze_others`) at a fake turn at least
+    /// `refresh_ms` after the last freeze.
+    MixRefs {
+        member: u32,
+        of: u32,
+        from_ms: u64,
+        every_ms: u64,
+        refresh_ms: u64,
+    },
+    /// Review VC5R-1: at `at_ms`, faulty admin `member` forks one seq: a SetRole giving `target`
+    /// role `role`, sent to `a_to`, and an Attest in its place, sent to `b_to` (who never receive
+    /// the SetRole from it). It proposes a change listing the SetRole in every round it proposes
+    /// (`byz_change`) and sends a nil prevote to `prevote_to`.
+    AdminFork {
+        member: u32,
+        at_ms: u64,
+        target: u32,
+        role: u16,
+        a_to: Vec<u32>,
+        b_to: Vec<u32>,
+        prevote_to: Vec<u32>,
+    },
+    /// Review VC4R-1: `member`, the round-0 proposer, equivocates its round-0 prevote once it holds
+    /// it and its round-0 proposal (from `from_ms`): the proposal's value to `value_to`, nil to
+    /// `nil_to`. Its genuine round-0 prevotes reach nobody.
+    EquivocatePrevote {
+        member: u32,
+        from_ms: u64,
+        value_to: Vec<u32>,
+        nil_to: Vec<u32>,
+    },
+    /// Review VC6R-4: from `from_ms` (while a member at `while_member_at`, if given), every
+    /// `every_ms` `member` signs a no-op SetRole giving itself role `role`, sent to `to`.
+    NoopSetrole {
+        member: u32,
+        from_ms: u64,
+        every_ms: u64,
+        role: u16,
+        to: Vec<u32>,
+        while_member_at: Option<u32>,
+    },
+    /// Review VC6R-3 (session-sim p24r4.rs `adminwedge`): at `at_ms`, `member` signs a SetRole giving
+    /// itself role `role`, sent to `a_to`, and keeps a fork of it (an Attest at the same seq). Its
+    /// precommits are a fault rule's. At the next millisecond on which every one of `others` holds its
+    /// own precommit, every message it sends is lost (it crashes), apart from the fork, which it sends
+    /// `part` at `part_ms` and `others` at `others_ms`, through any fault. `part` must be the
+    /// spike's: 4, or 3 if 4 is the round-0 proposer.
+    AdminWedge {
+        member: u32,
+        at_ms: u64,
+        role: u16,
+        a_to: Vec<u32>,
+        part: u32,
+        others: Vec<u32>,
+        part_ms: u64,
+        others_ms: u64,
+    },
     /// Once `member`'s frame reaches `at_frame`, it signs a kick of `target` backdated `back`
     /// frames; sent to `to`.
     BackdatedKick {
@@ -643,11 +767,13 @@ pub enum Byzantine {
 }
 
 /// Who a report covers: a list of members, or `{ members_at = M }`, the membership member M's
-/// replica of world 1 holds at the end of the run.
+/// replica of world 1 holds at the end of the run, or `{ members_at = M, among = [...] }`, those of
+/// `among` in it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Honest {
     List(Vec<u32>),
+    Among { members_at: u32, among: Vec<u32> },
     At { members_at: u32 },
 }
 
@@ -782,7 +908,7 @@ pub enum Report {
     /// * `lastadmin`: `label`, `honest`, `members` (the admins expected at the end).
     /// * `adminclose`: `label`, `text`, `honest` (two members).
     /// * `joinrules`: `label`, `members` (friend, stranger, confidant, owner), `role` (guest).
-    /// * `vcscale`: `silent` (the last members, silent from 1 s).
+    /// * `vcscale`: `silent` (the last members), `from_ms` (when their silence starts).
     /// * `selfkickhead`, `capchurn`: `label`, `at`, `target` (when `at` removed it).
     /// * `joinattests`: `label`, `at`, `target` (the joiner), `role`, `honest` (for the frames).
     /// * `slowadmin`: `label`, `honest` (each one's role definitions).
@@ -791,6 +917,16 @@ pub enum Report {
     /// * `aheadlink`: `label`, `at` (whose votes), `members` (the members ahead, kept at the first
     ///   of `honest`), `honest`.
     /// * `onesided`: `members` (the two whose first decisions are compared).
+    /// * `removed`: `label`, `at`, `target` (when `at` removed it), `text` (the word for success).
+    /// * `strikeframe`: `text` (the timing), `at`, `target` (when `at` removed it), `members` (the
+    ///   member that must be kept). `strikeframe_total`: `runs`, `at`, `members`.
+    /// * `aheadshield`: `text` (the variant), `at`, `target`, `honest`, `expect` (`voted_out`, or
+    ///   `harmless`: not removed and `at`'s confirmed frame above `conf_min`).
+    /// * `fakeref`, `capstale`, `lagchurn`: `label`, `at`, `target`, `event`, `honest`.
+    /// * `votechurn`, `votechurn_off`: `at`, `target`, `from_ms` and `until_ms` (the churn),
+    ///   `honest`. `votechurn` samples `at`'s confirmation lag every 100 ms from 0.5 s.
+    /// * `adminvoid`: `label`, `at`, `target` (whose role stays ADMIN), `honest`.
+    /// * `joinskip`: `label`, `at`, `target` (the joiner), `honest`.
     Check {
         case: String,
         #[serde(default)]
@@ -808,6 +944,15 @@ pub enum Report {
         until_ms: Option<u64>,
         role: Option<u16>,
         silent: Option<u32>,
+        from_ms: Option<u64>,
+        /// Kept runs (a part's `keep`) the check counts over.
+        #[serde(default)]
+        runs: Vec<String>,
+        /// Text of an event the check counts at `at`.
+        event: Option<String>,
+        /// `aheadshield`: `voted_out` or `harmless`.
+        expect: Option<String>,
+        conf_min: Option<u64>,
     },
     /// A condition on member `at`'s replica of `world`: confirmed frame within bounds and/or this
     /// exact membership. Prints OK or FAIL.

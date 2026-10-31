@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs every session-protocol scenario file (tools/session-sim/scenarios) and compares each log
-# with the committed one in spikes/out/session-sim (CPU timings masked). Fails on any difference,
+# with the committed one in spikes/out/session-sim-pe (CPU timings masked; pe-session's logs, P2-3). Fails on any difference,
 # fork, replay mismatch, panic, false check or lost object. See tools/session-sim/README.md.
 # usage: scripts/regress_session_sim.sh [--only a,b] [--jobs N] [--bless]
 set -eu

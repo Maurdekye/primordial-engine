@@ -455,12 +455,7 @@ pub fn prepare_spherical_joint(world: &World, base: &mut JointSim, context: &Ste
     joint.spring_softness = make_soft(joint.hertz, joint.damping_ratio, context.h);
 
     if !context.enable_warm_starting {
-        joint.linear_impulse = VEC3_ZERO;
-        joint.motor_impulse = VEC3_ZERO;
-        joint.spring_impulse = VEC3_ZERO;
-        joint.swing_impulse = 0.0;
-        joint.lower_twist_impulse = 0.0;
-        joint.upper_twist_impulse = 0.0;
+        joint.reset_impulses();
     }
 }
 

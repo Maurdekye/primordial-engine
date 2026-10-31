@@ -71,6 +71,9 @@ fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, St
         faults::apply_crashes(&mut sim, &s.crash);
         byzantine::send_joins(&mut sim, &s.join, &mut joined)?;
         byzantine::before_step(&mut sim, &mut actors);
+        for p in probes.iter_mut() {
+            p.pre_sample(&sim);
+        }
         if catch_unwind(AssertUnwindSafe(|| sim.step_ms())).is_err() {
             ctx.panic_at_ms = Some(sim.net.now_us / 1000);
             break;
@@ -85,6 +88,8 @@ fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, St
         std::panic::set_hook(h);
     }
     ctx.fork_info = actors.iter().find_map(|a| a.fork_info());
+    ctx.silenced = actors.iter().filter_map(|a| a.silenced()).collect();
+    ctx.wedge = actors.iter().find_map(|a| a.wedge_info());
     if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
         println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
         return Ok(true);

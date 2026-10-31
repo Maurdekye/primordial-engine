@@ -29,7 +29,8 @@ live_ms = 1600
 detect_ms = 1500
 
 [[part]]
-world.1.fixes_off = ["VCR5"]
+# Round 4's fetch by id (VC3R-7) would fetch the branch as well.
+world.1.fixes_off = ["VCR5", "VC3R7"]
 report = [
     { kind = "before_fix", honest = [1, 2, 3], label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)", fix = "VCR-5's fix" },
 ]

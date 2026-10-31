@@ -27,7 +27,8 @@ to = [1, 2, 3]
 log_from = 1
 
 [[part]]
-world.1.fixes_off = ["VCR3"]
+# Round 4's admission-epoch floor (VC3R-6) would let the joiner through as well.
+world.1.fixes_off = ["VCR3", "VC3R6"]
 report = [
     { kind = "line", text = "  joiner admitted at m1: {member@1:5}" },
     { kind = "before_fix", honest = [1, 2, 3, 5], label = "latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2)", fix = "VCR-3's fix" },
