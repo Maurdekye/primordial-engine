@@ -256,10 +256,14 @@ fn plain_edits_do_not_depend_on_order() {
     // A plain move that would give a frame to an object with a non-zero chunk is refused.
     let r = z.create(1).unwrap();
     z.insert(r, Transform::at(WorldPos::new([1, 0, 0], [0.0; 3]))).unwrap();
-    assert!(matches!(z.set_parent(r, Some(p), None), Err(Error::InvalidValue { field, .. }) if field == "chunk"));
+    assert_eq!(z.set_parent(r, Some(p), None), Err(Error::ChunkUnderFrame { object: r }));
+    // The keep-world move recomputes the chunk instead (review P21S-2).
+    let mut z2 = z.clone();
+    z2.set_parent_keep_world(r, Some(p), None).unwrap();
+    assert_eq!(z2.get::<Transform>(r).unwrap().chunk, [0; 3]);
     let g = z.create(1).unwrap();
     z.set_parent(r, Some(g), None).unwrap();
-    assert!(matches!(z.insert(g, Transform::IDENTITY), Err(Error::InvalidValue { object, .. }) if object == r));
+    assert_eq!(z.insert(g, Transform::IDENTITY), Err(Error::ChunkUnderFrame { object: r }));
 }
 
 /// Review P21-2 and P21R-1: finite but absurd transforms are refused at the boundary, the stored form is
@@ -303,6 +307,11 @@ fn transform_limits() {
     assert!(w.pos.local.iter().all(|x| x.is_finite()) && w.rot.iter().all(|x| x.is_finite()));
     assert!(s.check_values().is_err());
     assert!(s.checked_state_hash().is_err());
+    assert!(s.maintain_transforms() >= 2);
+    assert_eq!(s.check_values(), Ok(()));
+    // Review P21S-1: a tiny garbage rotation (q.q subnormal in f32) is repaired to a valid one in one pass.
+    s.get_mut::<Transform>(a).unwrap().rot = [3e-23, 0.0, 0.0, 0.0];
+    s.get_mut::<Transform>(b).unwrap().rot = [1e-45, 1e-45, 0.0, 0.0];
     assert!(s.maintain_transforms() >= 2);
     assert_eq!(s.check_values(), Ok(()));
     assert_eq!(s.get::<Transform>(b).unwrap().chunk, [0; 3]);

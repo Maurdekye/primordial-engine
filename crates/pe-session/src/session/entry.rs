@@ -3,6 +3,21 @@
 use super::*;
 
 pub type MemberId = u32;
+/// The check hash members exchange at check frames (design 9.1, review P22R-1): BLAKE3 over the
+/// whole canonical state, so a donor cannot forge a state that matches it (XXH64 and FNV can be
+/// steered). The per-frame `state_hash` stays a 64-bit local diagnostic.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CheckHash(pub [u8; 32]);
+
+impl std::fmt::Debug for CheckHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for b in &self.0[..8] {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 /// An entry's identity: the SHA-256 of its canonical encoding, all 256 bits (S3b). Signatures cover
 /// it, so a shorter id would let an author grind two entries with one id. All zeros means "none"
 /// (the `prev` of a member's first entry).
@@ -39,37 +54,40 @@ pub const LOGIC: MemberId = 0;
 pub struct BodyState(pub [u32; 13]);
 
 impl BodyState {
-    pub fn read(world: &World, id: BodyId) -> Self {
-        let t = body_get_transform(world, id);
-        let v = body_get_linear_velocity(world, id);
-        let w = body_get_angular_velocity(world, id);
+    /// `id`'s state in `world`. Positions are f32 in this build (Box3D without double precision),
+    /// so the f64 pose narrows back exactly.
+    pub fn read(world: &PhysicsWorld, id: ObjectId) -> Self {
+        let p = world.pose(id).expect("a bound body");
+        let (v, w) = world.velocity(id).expect("a bound body");
+        let (x, q) = (p.position.map(|c| c as f32), p.rotation);
         BodyState([
-            t.p.x.to_bits(), t.p.y.to_bits(), t.p.z.to_bits(),
-            t.q.v.x.to_bits(), t.q.v.y.to_bits(), t.q.v.z.to_bits(), t.q.s.to_bits(),
-            v.x.to_bits(), v.y.to_bits(), v.z.to_bits(),
-            w.x.to_bits(), w.y.to_bits(), w.z.to_bits(),
+            x[0].to_bits(), x[1].to_bits(), x[2].to_bits(),
+            q[0].to_bits(), q[1].to_bits(), q[2].to_bits(), q[3].to_bits(),
+            v[0].to_bits(), v[1].to_bits(), v[2].to_bits(),
+            w[0].to_bits(), w[1].to_bits(), w[2].to_bits(),
         ])
     }
     pub(super) fn f(&self, i: usize) -> f32 {
         f32::from_bits(self.0[i])
     }
-    pub fn pos(&self) -> Pos {
-        Pos { x: self.f(0), y: self.f(1), z: self.f(2) }
+    pub fn pos(&self) -> [f32; 3] {
+        [self.f(0), self.f(1), self.f(2)]
     }
-    pub fn rot(&self) -> Quat {
-        Quat { v: Vec3 { x: self.f(3), y: self.f(4), z: self.f(5) }, s: self.f(6) }
+    /// `[x, y, z, w]`.
+    pub fn rot(&self) -> [f32; 4] {
+        [self.f(3), self.f(4), self.f(5), self.f(6)]
     }
-    pub fn lin(&self) -> Vec3 {
-        Vec3 { x: self.f(7), y: self.f(8), z: self.f(9) }
+    pub fn lin(&self) -> [f32; 3] {
+        [self.f(7), self.f(8), self.f(9)]
     }
-    pub fn ang(&self) -> Vec3 {
-        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
+    pub fn ang(&self) -> [f32; 3] {
+        [self.f(10), self.f(11), self.f(12)]
     }
-    /// Overwrite the body's state with these exact bits.
-    pub fn write(&self, world: &mut World, id: BodyId) {
-        body_set_transform(world, id, self.pos(), self.rot());
-        body_set_linear_velocity(world, id, self.lin());
-        body_set_angular_velocity(world, id, self.ang());
+    /// Overwrite the body's state with these exact bits, awake (pe-physics `set_state`: every peer
+    /// writes a touch's carried state, the toucher included, review SET-1/SET-2). Refused, and
+    /// nothing written, for a state outside pe-physics's limits.
+    pub fn write(&self, world: &mut PhysicsWorld, id: ObjectId) -> Result<(), pe_physics::PhysicsError> {
+        world.set_state(id, Pose { position: self.pos().map(f64::from), rotation: self.rot() }, self.lin(), self.ang())
     }
     pub fn hash(&self) -> u64 {
         fnv_u64s(self.0.iter().map(|&b| b as u64))
@@ -127,7 +145,7 @@ pub enum Payload {
     /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
     /// its author is in (design 10.8: an ack from a newer epoch than the reader's never counts
     /// toward the reader's confirmation).
-    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32 },
+    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, CheckHash)>, epoch: u32 },
     /// Vote, in membership epoch `epoch`, to remove `target`: it signed two versions of its entry
     /// `seq` (or another proof), or (`seq` = 0) it has gone silent or cannot keep up (reviews
     /// R3-2, R3-9). `frozen` is the head of target's chain this voter holds and will ever
@@ -273,7 +291,7 @@ impl Wr {
                 // their entry ids; a later epoch is tag 14 with the epoch appended.
                 self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.id(*id) }
-                match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
+                match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.0.extend_from_slice(&h.0) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
             }
             Payload::Vote { epoch, target, seq, frozen, kick } => {
@@ -443,7 +461,7 @@ impl Rd<'_> {
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
                 for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.id()?)) }
-                let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
+                let check = if self.u8()? == 1 { Some((self.u64()?, CheckHash(self.take(32)?.try_into().ok()?))) } else { None };
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
             }

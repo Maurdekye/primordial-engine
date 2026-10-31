@@ -1,0 +1,18 @@
+description = "As ballpit-60hz, at 90 Hz (speculation limit 2 s = 180 frames)."
+include = ["ballpit-60hz.toml"]
+
+[world.1]
+hz = 90
+window = 180
+
+[[report]]
+kind = "ballpit"
+baseline_ms = [1100, 2000]
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "check_world"
+frames = 765
+label = "ballpit 90Hz"

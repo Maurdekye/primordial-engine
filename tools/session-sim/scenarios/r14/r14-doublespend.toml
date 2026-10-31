@@ -1,0 +1,58 @@
+description = """
+P2-5 control, the measured residual: the worlds of r14-forge, but W's majority only \
+double-spends A:52, which it legitimately received, into A, which has not seen it since. A's own \
+last exit is on the chain, so A cannot tell: provenance chains do not stop this. Expected NOT \
+CONSERVED; A ends holding a fork proof against W. Only the log is compared."""
+include = ["r14-forge.toml"]
+golden = "p2-5-controls/r14-doublespend"
+control = true
+
+[world.1.plan]
+2 = [
+    { at = 140, touch = { obj = 33, impulse = [2.0, 4.0, 0.0] } },
+    { at = 175, touch = { obj = 60, impulse = [0.0, 6.0, 1.0] } },
+    { at = 230, touch = { obj = 12, impulse = [0.0, 5.0, 0.0] } },
+    { at = 100, carry = { transfer = 52, obj = 52, dest = 6 } },
+]
+
+[[byzantine]]
+kind = "r14_forgeries"
+attacks = [
+    { at_ms = 4600, attack = "w_doublespend" },
+    { at_ms = 5000, attack = "carry_back" },
+]
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "doublespend"
+[[report]]
+kind = "r14_forge_conservation"
+label = "doublespend"
+[[report]]
+kind = "stats"
+world = 6
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 doublespend A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 doublespend B"
+[[report]]
+kind = "check_world"
+world = 6
+frames = 480
+label = "r14 doublespend W"

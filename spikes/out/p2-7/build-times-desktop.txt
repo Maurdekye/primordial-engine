@@ -1,0 +1,11 @@
+# python -I scripts/guest_build_times.py --reps 3 on this PC through heavy.sh (idle priority, 4 jobs; the other lock slot may have been busy): noisy
+RESULT guest build times on this PC (Ryzen 7 9700X, Windows; idle priority via heavy.sh, other lock slot may be busy) (rustc 1.99.0 (b940084d7 2026-09-28); 16 logical CPUs, jobs 4); seconds, wall clock
+RESULT | module | cold (fresh target) | no-op | one-line edit, min / max of 6 |
+RESULT |---|---|---|---|
+RESULT | logic_v2 (spike guest, 1.1 KB) | 0.54 | 0.07 | 0.25 / 0.32 |
+RESULT | physics_in_wasm (Box3D, 0.5 MB) | 14.87 | 0.15 | n/a |
+RESULT | logic_mono (6.4k lines, one crate) | 3.24 | 0.10 | 2.31 / 3.42 |
+RESULT | logic_wasm (6.4k lines, 9 crates), leaf edit | 2.31 | 0.09 | 1.47 / 1.76 |
+RESULT | logic_mono, profile rel-fast (opt 3, no LTO, 16 CGUs, incremental) | 1.31 | 0.07 | 0.42 / 0.49 |
+RESULT | logic_mono, profile rel-s (opt s, LTO, 1 CGU) | 2.24 | 0.12 | 1.98 / 2.31 |
+RESULT | logic_wasm, core edit (every crate rebuilds) | 2.20 | 0.08 | 1.87 / 2.00 |

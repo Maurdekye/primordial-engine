@@ -1,0 +1,6 @@
+  m1 world 1: rollbacks 4 max depth 31 resim frames 80 (36.0 ms) overwrites 1 paused frames 359 violations 0 equivocations 0 checks ok 8 bad 0 nonfinite 0 conf 114 frame 234
+  m2 world 1: rollbacks 4 max depth 32 resim frames 79 (40.5 ms) overwrites 1 paused frames 360 violations 0 equivocations 0 checks ok 8 bad 0 nonfinite 0 conf 114 frame 234
+  m3 world 1: rollbacks 6 max depth 26 resim frames 89 (42.7 ms) overwrites 2 paused frames 359 violations 0 equivocations 0 checks ok 8 bad 0 nonfinite 0 conf 114 frame 234
+  bytes: entries 16 msgs 1600 B (avg 100 B), acks 1752 msgs 153504 B, dropped 784
+RESULT fault-capped-collapse (stall): m1 world 1 conf 114 members {1, 2, 3} evicted {} -> OK
+RESULT fault-capped-collapse (confirmed prefix) world 1: frames 0..95 digests m1=56f282117cd17045 m2=56f282117cd17045 m3=56f282117cd17045 | offline replay 56f282117cd17045 | ALL EQUAL

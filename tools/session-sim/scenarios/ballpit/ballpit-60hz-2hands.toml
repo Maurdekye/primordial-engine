@@ -1,0 +1,5 @@
+description = "As ballpit-60hz, with both members sweeping their hands through the pit at once, in opposite directions."
+include = ["ballpit-60hz.toml"]
+
+[world.1.plan]
+2 = [{ ballpit_sweep = { ahead = 0 } }]

@@ -5,16 +5,18 @@
 #        scripts/run_session_sim.sh --pe       the same scenarios on crates/pe-session through its fork
 #                                              of this harness, crates/pe-session-harness (P2-3); logs in
 #                                              spikes/out/session-sim-pe/
+# PE_BIN=<dir> runs a prebuilt binary from <dir> without building; PE_OUT=<dir> writes the logs under
+# <dir>/session-sim (or <dir>/session-sim-pe) instead of spikes/out (both used by scripts/run_matrix.sh).
 set -u
 cd "$(dirname "$0")/.."
 if [ "${1:-}" = --pe ]; then
-  cargo build --release -q -p pe-session-harness || exit 1
-  B=target/release/pe-session-harness
-  O=${PE_OUT:-spikes/out/session-sim-pe}
+  [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-session-harness || exit 1
+  B=${PE_BIN:-target/release}/pe-session-harness
+  O=${PE_OUT:-spikes/out}/session-sim-pe
 else
-  cargo build --release -q -p pe-spike-session-sim || exit 1
-  B=target/release/pe-spike-session-sim
-  O=spikes/out/session-sim
+  [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim || exit 1
+  B=${PE_BIN:-target/release}/pe-spike-session-sim
+  O=${PE_OUT:-spikes/out}/session-sim
 fi
 mkdir -p $O
 run() { local name=$1; shift; "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }

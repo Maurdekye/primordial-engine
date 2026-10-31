@@ -379,6 +379,18 @@ impl<'a> SnapReader<'a> {
         }
     }
 
+    /// Read an element count and check it against the bytes left: each element takes at least
+    /// `min_stream_bytes` in the image. A bad count clears `ok` and reads as 0, so no caller
+    /// sizes an allocation or a loop from unchecked image bytes.
+    pub fn count(&mut self, min_stream_bytes: i32) -> i32 {
+        let n = self.i32();
+        if !self.ok || !self.check_count(n, 1, min_stream_bytes) {
+            self.ok = false;
+            return 0;
+        }
+        n
+    }
+
     /// Bounds check before allocating from image. (b3SnapCheckCount)
     pub fn check_count(&self, count: i32, mem_size: i32, min_stream_bytes: i32) -> bool {
         if count < 0 || mem_size < 0 || min_stream_bytes < 0 {

@@ -26,7 +26,7 @@ impl WorldSim {
                 } else {
                     self.stats.checks_bad += 1;
                     self.events.push(format!(
-                        "[w{} m{}] NONDETERMINISM at confirmed frame {f}: mine {mine:016x} member {m} {h:016x}",
+                        "[w{} m{}] NONDETERMINISM at confirmed frame {f}: mine {mine:?} member {m} {h:?}",
                         self.world_id, self.me
                     ));
                 }
