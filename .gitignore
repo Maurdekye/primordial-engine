@@ -18,3 +18,4 @@ __pycache__/
 # Machine-specific settings (ssh routes, user names); the committed .example shows the format
 scripts/matrix.local.sh
 scripts/publish_terms.local
+scripts/publish_history_terms.local
