@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, WorldSim};
+use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, TransferError, WorldSim};
 
 /// R18: frames between hand poses, and between acks, at each congestion level. Review R3-9 added
 /// levels 4 and 5 for links of about 8-16 kbit/s; both are aligned to the same frame ticks, so a
@@ -66,6 +66,9 @@ pub enum Event {
     Resumed { frame: u64 },
     /// A canonical check hash differed from another member's: divergence. `total` counts them.
     CheckFailed { total: u64 },
+    /// A state transfer from `from` for check frame `frame` was restored, or refused (design 9.5). On a
+    /// refusal, ask another member ([`SessionCore::request_state`]).
+    Transfer { from: MemberId, frame: u64, result: Result<(), TransferError> },
 }
 
 /// Authoring refusals.
@@ -235,6 +238,13 @@ impl SessionCore {
         self.send_to_all(&to, class, msg);
     }
 
+    /// A joiner asks member `from` for its newest confirmed check-frame state (design 9.5). The answer
+    /// is restored only against a check hash a quorum signed in the acks this replica holds (P22S-1), so
+    /// it needs the log first; [`Event::Transfer`] reports the outcome.
+    pub fn request_state(&mut self, from: MemberId) {
+        self.send_to(from, Class::Control, Msg::FetchState);
+    }
+
     fn send_to(&mut self, to: MemberId, class: Class, msg: Msg) {
         if to != self.sim.me {
             self.out.push(Out { to: vec![to], class, msg });
@@ -279,6 +289,21 @@ impl SessionCore {
                 }
             }
             Msg::Join { member, attests } => self.sim.on_join(member, attests),
+            // Design 9.5: the state is large, so it travels as a repair (the IO may drop it under a
+            // long queue; the joiner asks again).
+            Msg::FetchState => {
+                if let Some(st) = self.sim.export_state() {
+                    self.send_to(from, Class::Repair, Msg::State(Box::new(st)));
+                }
+            }
+            Msg::State(st) => {
+                let result = self.sim.import_state(&st, from);
+                if let Err(e) = result {
+                    self.sim.stats.transfers_refused += 1;
+                    self.sim.stats.last_refusal = Some(e);
+                }
+                self.events.push(Event::Transfer { from, frame: st.frame, result });
+            }
             Msg::Batch(v) => {
                 for x in v {
                     self.receive_one(from, x, now_us, audience);
