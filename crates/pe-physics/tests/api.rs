@@ -491,7 +491,9 @@ fn forged_confirmations_still_refused() {
 
 /// A peer that rolled back in place and re-simulated has the check hash (and per-frame hash)
 /// of one that ran straight through, though its geometry registry and save history differ
-/// (review P22R-8).
+/// (review P22R-8). The rollback target is frame 10 of a shared history; after it, the
+/// mispredicted branch destroys a shared body (undone by the rollback), and the true inputs
+/// destroy another (re-simulated, review P22S-4).
 #[test]
 fn rolled_back_peer_has_the_straight_check_hash() {
     let tetra = |s: f32| Geometry::Hull { points: vec![[0.0; 3], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]] };
@@ -502,26 +504,39 @@ fn rolled_back_peer_has_the_straight_check_hash() {
         if f == 12 {
             pw.add_body(id(8), &BodyDesc::new(BodyKind::Dynamic, [1.0, 4.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.6)))).unwrap();
         }
+        if f == 25 {
+            // A shared body with a joint, destroyed after the rollback target.
+            pw.remove_body(id(4)).unwrap();
+        }
     };
     let mut straight = jointed();
     let mut rolled = jointed();
-    let mut ring = vec![rolled.save_image().unwrap()];
-    // A mispredicted branch: other pushes, a body (new hull geometry) created and destroyed,
-    // and a save every frame.
-    for f in 0..20 {
+    let mut ring = Vec::new();
+    for f in 0..10 {
+        inputs(&mut straight, f);
+        inputs(&mut rolled, f);
+        straight.step(DT).unwrap();
+        rolled.step(DT).unwrap();
+        ring.push(rolled.save_image().unwrap());
+    }
+    let target = ring.last().unwrap().clone();
+    // A mispredicted branch from frame 10: other pushes, a body (new hull geometry) created and
+    // destroyed, the shared grabbed body destroyed, and a save every frame.
+    for f in 10..30 {
         rolled.push(id(2), Push::Impulse([0.0, 3.0, 1.0])).unwrap();
-        if f == 5 {
-            rolled.add_body(id(9), &BodyDesc::new(BodyKind::Dynamic, [-1.0, 3.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.9)))).unwrap();
-        }
         if f == 15 {
+            rolled.add_body(id(9), &BodyDesc::new(BodyKind::Dynamic, [-1.0, 3.0, 0.0]).with_shape(ShapeDesc::new(tetra(0.9)))).unwrap();
+            rolled.remove_body(id(5)).unwrap();
+        }
+        if f == 25 {
             rolled.remove_body(id(9)).unwrap();
         }
         rolled.step(DT).unwrap();
         ring.push(rolled.save_image().unwrap());
     }
-    assert_ne!(rolled.check_hash().unwrap(), straight.check_hash().unwrap());
-    rolled.restore_image(&ring[0]).unwrap();
-    for f in 0..60 {
+    rolled.restore_image(&target).unwrap();
+    assert!(rolled.has_body(id(5)) && rolled.joint_kind(JointKey(30)) == Some(JointKind::Grab), "the destroy is undone");
+    for f in 10..70 {
         inputs(&mut straight, f);
         inputs(&mut rolled, f);
         straight.step(DT).unwrap();
@@ -532,7 +547,43 @@ fn rolled_back_peer_has_the_straight_check_hash() {
             assert_eq!(rolled.check_hash().unwrap(), straight.check_hash().unwrap(), "frame {f}");
         }
     }
-    println!("RESULT rollback check_hash after 60 frames {}", straight.check_hash().unwrap());
+    assert!(!rolled.has_body(id(4)) && rolled.joint_kind(JointKey(20)).is_none(), "the destroy is re-simulated");
+    println!("RESULT rollback check_hash after 70 frames {}", straight.check_hash().unwrap());
+}
+
+/// Geometry blobs in a transfer must be the ones its shapes use, each once. Confirmed for its
+/// own hash (as if forged), a transfer with one blob replaced by a copy of the other is
+/// refused. Swapped blobs are a different, consistent state (each shape gets the other's
+/// geometry): only the confirmation tells it apart, and it does.
+#[test]
+fn transfer_geometry_order_and_duplicates_refused() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    let tetra = Geometry::Hull { points: vec![[0.0; 3], [0.7, 0.0, 0.0], [0.0, 0.7, 0.0], [0.0, 0.0, 0.7]] };
+    pw.add_body(id(2), &BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0]).with_shape(ShapeDesc::new(tetra))).unwrap();
+    run(&mut pw, 5);
+    let bytes = pw.save_transfer().unwrap().to_bytes();
+    let (blobs, image_at) = geometry_end(&bytes);
+    assert_eq!(blobs, 2, "the ground box and the tetrahedron");
+    let len_at = |at: usize| u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
+    let first = bytes[12..17 + len_at(12)].to_vec();
+    let second = bytes[12 + first.len()..image_at].to_vec();
+    assert_eq!(second.len(), 5 + len_at(12 + first.len()), "two entries fill the geometry list");
+    let forged = |b: &[u8]| {
+        let t = Transfer::from_bytes(b).expect("well framed");
+        PhysicsWorld::from_transfer(PhysicsConfig::engine(), &t, &t.check_hash()).map(|_| ())
+    };
+    assert_eq!(forged(&bytes), Ok(()), "the honest transfer");
+    let with_blobs = |a: &[u8], b: &[u8]| [&bytes[..12], a, b, &bytes[image_at..]].concat();
+    let swapped = Transfer::from_bytes(&with_blobs(&second, &first)).unwrap();
+    let honest = Transfer::from_bytes(&bytes).unwrap().check_hash();
+    assert_ne!(swapped.check_hash(), honest);
+    assert!(matches!(PhysicsWorld::from_transfer(PhysicsConfig::engine(), &swapped, &honest), Err(PhysicsError::BadImage(_))), "swapped blobs, honest confirmation");
+    let mut other = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &swapped, &swapped.check_hash()).expect("a consistent state");
+    assert_ne!(other.check_hash().unwrap(), pw.check_hash().unwrap());
+    assert_ne!(run(&mut other, 30), run(&mut pw, 30), "a different state: it moves differently");
+    assert!(matches!(forged(&with_blobs(&first, &first)), Err(PhysicsError::BadImage(_))), "first blob twice");
+    assert!(matches!(forged(&with_blobs(&second, &second)), Err(PhysicsError::BadImage(_))), "second blob twice");
 }
 
 /// Hull point and shape counts are bounded (review P22R-6).

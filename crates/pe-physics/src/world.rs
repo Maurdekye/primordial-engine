@@ -676,6 +676,7 @@ impl PhysicsWorld {
 
 /// What [`PhysicsWorld::write_root_transforms`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[must_use = "refused objects keep their old transforms"]
 pub struct WriteBack {
     /// Transforms written.
     pub written: usize,
