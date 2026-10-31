@@ -370,6 +370,53 @@ impl PhysicsWorld {
         Ok(())
     }
 
+    /// How many geometry blobs this world's image registry holds. It only grows as images are
+    /// saved (each hull a body ever had stays interned) until [`Self::compact_images`].
+    pub fn registry_len(&self) -> usize {
+        self.images.registry.entries.len()
+    }
+
+    /// Rebuild the image registry from the images still kept, so that geometry only rolled-back
+    /// or destroyed state used is dropped (review P22-12; with P2-3's keyframe ring).
+    ///
+    /// Each kept image is restored and saved again against a fresh registry, in the order given;
+    /// then the live state is restored and saved into it too, so later saves intern into the new
+    /// registry. Afterwards every kept image restores exactly as before and the live world is in
+    /// the state it was in. Registry indices appear only in images, never in what is hashed or
+    /// stepped, so compacting at any frame is invisible to the simulation: `state_hash` and
+    /// `check_hash` do not move.
+    ///
+    /// Nothing changes if a kept image is refused (another world's, or other settings): the live
+    /// state is restored and the error returned. If even that restore fails, the world is
+    /// poisoned, as with [`Self::restore_image`]. Refused while stepping or poisoned.
+    pub fn compact_images(&mut self, kept: &mut [&mut WorldImage]) -> Result<(), PhysicsError> {
+        self.usable()?;
+        let live = self.save_image()?;
+        let mut fresh = GeometryRegistry::new();
+        let mut rewritten = Vec::with_capacity(kept.len());
+        let mut refused = None;
+        for image in kept.iter() {
+            if let Err(e) = self.restore_image(image) {
+                refused = Some(e);
+                break;
+            }
+            let mut buf = RecBuffer::new();
+            serialize_world(&self.world, &mut buf, &mut fresh);
+            rewritten.push(WorldImage { world: buf.data, ..WorldImage::clone(image) });
+        }
+        self.restore_image(&live)?;
+        if let Some(e) = refused {
+            return Err(e);
+        }
+        // The live world's own geometry, so the next save finds it.
+        serialize_world(&self.world, &mut RecBuffer::new(), &mut fresh);
+        for (image, new) in kept.iter_mut().zip(rewritten) {
+            **image = new;
+        }
+        self.images = ImageRegistry { slots: fresh.to_slots(), registry: fresh };
+        Ok(())
+    }
+
     /// The physics state for a joining peer (see [`Transfer`]). Refused while poisoned.
     pub fn save_transfer(&self) -> Result<Transfer, PhysicsError> {
         self.usable()?;

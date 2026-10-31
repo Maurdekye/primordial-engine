@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use pe_physics::{
-    BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig, PhysicsError,
+    BodyDesc, BodyKind, CheckHash, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig,
+    PhysicsError,
     PhysicsWorld, Pose, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
 };
 use pe_sim::{Registry, SimStore, Transform};
@@ -700,4 +701,168 @@ fn transfer_canonical_after_destroy() {
         assert!(joiner.is_ok(), "{frames} frames after the destroy: {:?}", joiner.err());
         assert_eq!(joiner.unwrap().check_hash().unwrap(), confirmed);
     }
+}
+
+/// A body with a hull no other body has, so each one adds a registry entry.
+fn unique_hull(n: u32, x: f64) -> BodyDesc {
+    let s = 0.3 + 0.001 * n as f32;
+    let points = vec![[0.0; 3], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s], [s * 0.3, s * 0.4, s * 0.5]];
+    BodyDesc::new(BodyKind::Dynamic, [x, 3.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Hull { points }))
+}
+
+/// Hull churn: frame `f`'s inputs. A unique hull body appears every 4 frames and the one from
+/// 16 frames earlier goes; a ball gets a push every 9 frames.
+fn churn(pw: &mut PhysicsWorld, f: u32) {
+    if f.is_multiple_of(4) {
+        pw.add_body(id(1000 + f), &unique_hull(f, (f % 7) as f64 - 3.0)).unwrap();
+        if f >= 16 {
+            pw.remove_body(id(1000 + f - 16)).unwrap();
+        }
+    }
+    if f % 9 == 4 {
+        pw.push(id(2), Push::Impulse([0.3, 1.0, 0.0])).unwrap();
+    }
+}
+
+fn churn_world() -> PhysicsWorld {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    pw.add_body(id(2), &ball(1.0)).unwrap();
+    pw
+}
+
+/// Compaction is exact: every kept image restores to the same state after it as before, the
+/// live world is unchanged, the registry shrinks to what the kept images and the live world
+/// use, and later saves and restores work.
+#[test]
+fn compact_images_is_exact() {
+    let mut pw = churn_world();
+    let mut ring = Vec::new();
+    for f in 0..120 {
+        churn(&mut pw, f);
+        pw.step(DT).unwrap();
+        ring.push(pw.save_image().unwrap());
+    }
+    let mut kept: Vec<WorldImage> = ring.split_off(100);
+    let hashes = |pw: &mut PhysicsWorld, images: &[WorldImage]| -> Vec<(u64, CheckHash)> {
+        let live = pw.save_image().unwrap();
+        let out = images.iter().map(|i| {
+            pw.restore_image(i).unwrap();
+            (pw.state_hash().unwrap(), pw.check_hash().unwrap())
+        });
+        let out = out.collect();
+        pw.restore_image(&live).unwrap();
+        out
+    };
+    let before = hashes(&mut pw, &kept);
+    let live_before = (pw.state_hash().unwrap(), pw.check_hash().unwrap());
+    let len_before = pw.registry_len();
+    pw.compact_images(&mut kept.iter_mut().collect::<Vec<_>>()).unwrap();
+    let len_after = pw.registry_len();
+    println!("RESULT compact registry {len_before} -> {len_after} blobs (20 kept images)");
+    assert!(len_after < len_before / 2, "{len_before} -> {len_after}");
+    assert_eq!((pw.state_hash().unwrap(), pw.check_hash().unwrap()), live_before, "live world unchanged");
+    assert_eq!(hashes(&mut pw, &kept), before, "each kept image restores as before");
+    // The world goes on, saving into the new registry and rolling back with the new images.
+    let reference = run(&mut pw, 20);
+    pw.restore_image(&kept[19]).unwrap();
+    run(&mut pw, 0);
+    assert_eq!(pw.check_hash().unwrap(), live_before.1);
+    assert_eq!(run(&mut pw, 20), reference);
+}
+
+/// A refused kept image (another configuration's) changes nothing: the images, the registry
+/// and the live world stay as they were, and the world is not poisoned.
+#[test]
+fn compact_images_refusal_changes_nothing() {
+    let mut pw = churn_world();
+    for f in 0..40 {
+        churn(&mut pw, f);
+        pw.step(DT).unwrap();
+    }
+    let mut mine = pw.save_image().unwrap();
+    let mut upstream = world(PhysicsConfig::upstream());
+    upstream.add_body(id(1), &ground()).unwrap();
+    let mut foreign = upstream.save_image().unwrap();
+    let (a, b, len, live) = (mine.clone(), foreign.clone(), pw.registry_len(), pw.check_hash().unwrap());
+    assert!(matches!(pw.compact_images(&mut [&mut mine, &mut foreign]), Err(PhysicsError::BadImage(_))));
+    assert_eq!((mine, foreign, pw.registry_len()), (a, b, len));
+    assert!(!pw.is_poisoned());
+    assert_eq!(pw.check_hash().unwrap(), live);
+}
+
+/// Compaction is invisible to the simulation (P22-12 condition 1): two peers with the same
+/// inputs but different save cadences, rollbacks at different frames (a late input reaches
+/// them 3 and 7 frames late) and compaction at different frames, through hull churn, keep
+/// `state_hash` equal every frame and `check_hash` equal every 10 frames.
+#[test]
+fn compaction_is_invisible_to_the_simulation() {
+    struct Peer {
+        pw: PhysicsWorld,
+        /// (frame, the state at the start of that frame)
+        ring: Vec<(u32, WorldImage)>,
+        save_every: u32,
+        compact_every: u32,
+        late_by: u32,
+        max_len: usize,
+    }
+    // A late input: a push at frames 11k + 5, applied only once the peer has heard of it.
+    let late = |f: u32| f % 11 == 5;
+    let step = |p: &mut Peer, f: u32, heard_up_to: u32| {
+        if f.is_multiple_of(p.save_every) {
+            let image = p.pw.save_image().unwrap();
+            p.ring.push((f, image));
+        }
+        churn(&mut p.pw, f);
+        if late(f) && f <= heard_up_to {
+            p.pw.push(id(2), Push::Impulse([0.0, 2.0, 0.4])).unwrap();
+        }
+        p.pw.step(DT).unwrap();
+    };
+    let mut peers = [3u32, 7].map(|late_by| Peer {
+        pw: churn_world(),
+        ring: Vec::new(),
+        save_every: if late_by == 3 { 1 } else { 3 },
+        compact_every: if late_by == 3 { 20 } else { 33 },
+        late_by,
+        max_len: 0,
+    });
+    let (mut compactions, mut rollbacks) = ([0; 2], [0; 2]);
+    for f in 0..300u32 {
+        let mut hashes = Vec::new();
+        for (k, p) in peers.iter_mut().enumerate() {
+            // Hear of the late input of frame f - late_by: roll back to before it and re-simulate.
+            if f >= p.late_by && late(f - p.late_by) {
+                let r = f - p.late_by;
+                let (from, image) = p.ring.iter().rev().find(|(g, _)| *g <= r).cloned().expect("a kept image at or before the input");
+                p.pw.restore_image(&image).unwrap();
+                rollbacks[k] += 1;
+                p.ring.retain(|(g, _)| *g <= from);
+                p.ring.pop();
+                for g in from..f {
+                    step(p, g, f);
+                }
+            }
+            step(p, f, f);
+            p.ring.retain(|(g, _)| *g + 30 > f);
+            p.max_len = p.max_len.max(p.pw.registry_len());
+            if f > 0 && f.is_multiple_of(p.compact_every) {
+                let mut kept: Vec<&mut WorldImage> = p.ring.iter_mut().map(|(_, i)| i).collect();
+                p.pw.compact_images(&mut kept).unwrap();
+                compactions[k] += 1;
+            }
+            hashes.push(p.pw.state_hash().unwrap());
+        }
+        assert_eq!(hashes[0], hashes[1], "state_hash at frame {f}");
+        if f % 10 == 9 {
+            assert_eq!(peers[0].pw.check_hash().unwrap(), peers[1].pw.check_hash().unwrap(), "check_hash at frame {f}");
+        }
+    }
+    // 75 unique hulls were created; uncompacted, the registry would hold every one of them.
+    for p in &peers {
+        println!("RESULT compaction peer late by {}: registry at most {} blobs (75 unique hulls made), now {}", p.late_by, p.max_len, p.pw.registry_len());
+        assert!(p.max_len < 40, "the registry stays bounded: {}", p.max_len);
+    }
+    assert!(compactions.iter().all(|&n| n >= 9), "{compactions:?}");
+    assert!(rollbacks.iter().all(|&n| n >= 25), "{rollbacks:?}");
 }
