@@ -1505,7 +1505,10 @@ is fixed once the author's chain is contiguous up to it.
     so they cannot link its later entries. If its precommit was in the quorum the others decided on,
     those members could never check that quorum and stayed in the old epoch for good. So the
     precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
-    in any version, and its proposals are kept by value the same way. This is Tendermint's commit rule,
+    in any version, and its proposals are kept by value the same way. That includes precommits chain
+    order would void: one whose boundary is at or below its author's horizon (VC-4), or a second
+    precommit in one round (review VC7R-4). Its proposals of a later epoch wait in an index for that
+    epoch, and its chain is scanned once per proof (VC7R-6). This is Tendermint's commit rule,
     which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
     member, and an honest member precommits one value per round. Honest members' entries always link,
     so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
@@ -1593,7 +1596,11 @@ is fixed once the author's chain is contiguous up to it.
     the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch; before the
     fix 3 never got it all and stopped at frame 116. V cutbackdate: the cut's branch holds a touch
     backdated 90 frames; before the fix 3 applied it below its confirmed frame and hit the rollback
-    assertion at 2.29 s].
+    assertion at 2.29 s]. They are validated from a clean chain state, the ack-epoch history included
+    (round 8, found while building `slowcapper`). The abandoned branch's history made every early ack
+    fail VC-5's epoch rule, so a replica that switched voided the removed member's acks while one that
+    had held the cut's branch kept them [V prevotefork: 28 such voids at the two replicas that switched,
+    now none, and the removed member stops counting from the same frame at all three].
   * A replica applies a decision only once it holds every admin entry the change lists; it asks those
     that precommitted it for the ones it lacks, by id (review VCR-8) [V slowadmin: an admin's entries
     reach follower 6 2.5 s late on every path; it decides at 3.60 s once it has the entry. Before the
@@ -1657,11 +1664,15 @@ is fixed once the author's chain is contiguous up to it.
     version per member; decisions count a proven forker's precommits in any version (PF-1, under
     Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
     3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
-  * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
-    round trip, so if ids the cap named are still missing a further half window after the cap ripened,
-    they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
-    polka id that exists nowhere; 9 is removed at 4.15 s. With the fix off the id is fetched for good, 9 is
-    never removed and confirmation stops at frame 143].
+  * The fetch has a budget (reviews VC6R-1, VC7R-2). An honest capper holds its own polka, but its
+    replies can be slow. If ids the cap named are still missing once the cap has ripened and a further
+    `suspect_after` (3 s, the allowance a slow member gets) has passed, they count as prevotes nobody
+    holds, and the capper is voted out. Every prevote the precommit named counts as soon as it is held,
+    linked into its author's chain or not. Round 7 gave the fetch a further half window (1 s) and
+    counted only prevotes it had linked or recorded as another version (VC7R-2) [V capfake: 9's capped
+    precommit names a polka id that exists nowhere. 9 is removed at 6.17 s (4.15 s on round 7's budget).
+    With the fix off, the id is fetched for good, 9 is never removed, and confirmation stops at frame
+    143]. A vote's frozen head gets the same allowance (below).
   * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
     member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
     prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
@@ -1748,7 +1759,10 @@ is fixed once the author's chain is contiguous up to it.
     110].
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
-  signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
+  signatures (exactly a quorum: the lowest member ids among those held, review VC7R-5), and the two
+  entries of every exclusion proof. Two replicas that decided on different quorums hold different,
+  equally valid certificates, so a certificate is checked by its signatures and never compared by its
+  bytes. Anyone holding the previous epoch's member
   list can check it, so another world can follow a world's membership from its genesis, one certificate
   at a time. P2-5's hops carry the source's certificates up to the epoch that signed them, so a world
   checks a hop from a world not on its route list too (P25-5).
@@ -1790,9 +1804,12 @@ is fixed once the author's chain is contiguous up to it.
   * Every fetch by id — a cut's branch, a listed admin entry, a vote's kick or frozen head — is retried
     with the same backoff as a range fetch, so one lost reply no longer stops a cut walk or a decision
     for good (review VC4R-4). A removal that a quorum has voted for waits only for entries this replica is
-    still fetching; a vote whose frozen head nobody delivers within half the speculation window counts
-    toward no cut and holds back no reset, and its voter is removed as a ghost kick's voter is (review
-    VC4R-5).
+    still fetching. A vote whose frozen head nobody delivers within half the speculation window counts
+    toward no cut and holds back no reset (review VC4R-5). Its voter is voted out, as a ghost kick's voter
+    is, but only once the head is still missing after `suspect_after` (review VC7R-2). An honest voter's
+    head may lie past a forker's fork, on a branch only it holds, so delivering it waits on that voter's
+    replies [V slowcapper: the forked prevote reaches 3 1.5 s late, and 3 keeps 2. With the fix off, 3
+    votes 2 out after 1 s, for its vote against the forker, whose head 3 cannot walk yet].
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
   * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
@@ -1829,9 +1846,18 @@ is fixed once the author's chain is contiguous up to it.
     refuses one that validation voided, so a faulty proposer cannot commit a backdated entry either
     (review VC3R-3) [V adminvoid: 9 signs a horizon-void SetRole demoting 3 and proposes a change that
     lists it; refused, and 3 stays Admin. Before the fix it applied].
-  * **An admin entry's validity is a pure function of the entry and its ancestry** (review VC6R-3):
-    held, its author's chain validated up to it, and not voided, the same at every replica once it holds
-    the entry. Listing a canonical, undisputed version is only the proposer's choice. Every replica
+  * **An admin entry's validity is a pure function of the entry and its ancestry** (reviews VC6R-3,
+    VC7R-1). The entry must be held and not void along its own ancestry. A validator walks back from the
+    listed version to the prefix of its author's chain that it has validated. It replays the chain-local
+    rules over the rest (only acks change that state), and judges the entry by its horizon rule (VCR-9).
+    That prefix is common to every branch through it, so the answer is the same at every replica that
+    holds the ancestry, whichever branch it linked. Round 7 judged by the replica's own linked branch
+    (how far it had linked the author's chain, and what it had voided itself). So a horizon-void version
+    held as a duplicate passed at replicas that had linked the other version, and failed where it was
+    linked (VC7R-1) [V voidfork: faulty proposer 1 lists a backdated SetRole that member 4 linked first
+    and the others hold as a duplicate. It is refused everywhere, and 1 is removed at 2.25 s. With the
+    fix off, 2 and 3 lock on it, 4 prevotes nil for it forever, and confirmation stops at frame 110].
+    Listing a canonical, undisputed version is only the proposer's choice. Every replica
     applies the version the change lists, with the outcome the change carries, so a fork cannot be
     committed at one replica and not another. Round 5 also required the listed version to be canonical
     and undisputed at the validator (VC3R-3's low), arguing that a member proposes only stable entries,
@@ -1839,7 +1865,7 @@ is fixed once the author's chain is contiguous up to it.
     validated, not what is stable. A fork that arrived after members had locked made their value invalid
     at them, and nothing releases a lock [V adminwedge: faulty admin 9 sends a SetRole to three members
     while a fourth is cut off, drops its precommits once they lock, crashes, and its fork of the same seq
-    arrives later; 9 is removed at 4.03 s. With the fix off, the locked members find their value's entry
+    arrives later; 9 is removed at 4.00 s. With the fix off, the locked members find their value's entry
     disputed, 9 is never removed and confirmation stops at frame 112]. A fork of a listed entry still
     proves its author equivocated and excludes it, which only shrinks the quorum.
   * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
@@ -5007,6 +5033,21 @@ Rules for every package:
     stops at frame 53]. The fixture had also lost 9's prevote for good, repairs included. That made 9 a
     second faulty member of four, beyond t = 1, so the loss now ends at 2.5 s. `fixes_off` is now 64 bits
     wide.
+  **Round 7's review** (changes requested: VC7R-1 High, VC7R-2 Medium, five lows) found that VC6R-3's
+  validity still followed the branch a replica had linked. **Round 8** answers it on a branch, landing
+  only after @design-reviewer's OK (the coordinator's review-before-landing rule):
+  * **VC7R-1** (`voidfork`): a listed admin entry is judged along its own ancestry (`fix::VC7R1`) [V:
+    the faulty proposer is removed at 2.25 s; off: confirmation stops at frame 110].
+  * **VC7R-2** (`slowcapper`): evidence an honest member must deliver (a cap's polka, a vote's frozen
+    head) gets the slow-member allowance, and a cap's named prevotes count once held, linked or not
+    (`fix::VC7R2`) [V: the slow capper is kept; off: it is voted against after 1 s]. capfake's faker
+    is now removed at 6.17 s.
+  * Lows: PF-1's exception named (VC7R-4); certificates carry exactly a quorum (VC7R-5); the scans
+    bounded (VC7R-6); adminfork's control switches round 5's check on again, `VC3R3S | VC6R3` (VC7R-7).
+    VC7R-3 (a lone vote resetting its own author's timer) is left as inferred: the reviewer's probe
+    removed the faker sooner.
+  * Found while building `slowcapper`: a re-pointed cut re-validates from a clean ack-epoch history
+    (`fix::RECUT`).
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**

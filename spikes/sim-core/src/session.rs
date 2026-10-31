@@ -267,6 +267,19 @@ pub mod fix {
     /// replica keeps the first version of a seq it receives, so a forker's chain past its fork may
     /// never link here, and its precommit in a quorum others decided on held this replica back.
     pub const PF1: u64 = 1 << 32;
+    /// VC7R-1: a listed admin entry is judged along its own ancestry (the chain-local rules replayed
+    /// from the prefix this replica validated), never by which branch of its author's chain this replica
+    /// linked: a horizon-void version held as a duplicate was valid here and void where it was linked.
+    pub const VC7R1: u64 = 1 << 33;
+    /// VC7R-2: evidence an honest member must deliver gets the slow-member allowance (`suspect_after`)
+    /// before its author is voted out: a cap's polka (VC6R-1) and a vote's frozen head (VC4R-5). The
+    /// cap's polka also counts every prevote the precommit named that is held, linked or not.
+    pub const VC7R2: u64 = 1 << 34;
+    /// Round 8 (found while building `slowcapper`): a cut that re-points a removed member's chain
+    /// re-validates the cut branch from a clean chain state, the ack-epoch history included. Without it
+    /// the history of the abandoned branch made every re-validated early ack fail VC-5's epoch rule, so
+    /// a replica that re-pointed voided the removed member's acks and one that did not kept them.
+    pub const RECUT: u64 = 1 << 35;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -1649,6 +1662,10 @@ pub struct WorldSim {
     chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
     /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
     ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
+    /// Per author: ack seq -> that valid ack's stamp. With `ack_hist` and `ack_epoch_from`, the chain
+    /// state at any seq of the validated prefix, from which a listed admin entry on another branch is
+    /// judged (review VC7R-1).
+    ack_stamps: BTreeMap<MemberId, BTreeMap<u32, u64>>,
     /// (referrer, author) -> seq -> (id, the referrer's ack that said so): what each member's acks
     /// said it holds of each chain, up to the referrer's vote against that author (review R3-1).
     /// Never pruned in the spike; production keeps only the newest reference per pair, because
@@ -1685,6 +1702,9 @@ pub struct WorldSim {
     vc_later: BTreeMap<u32, Vec<EntryId>>,
     /// Every proposal entry seen, by value (answers `Msg::FetchValue`).
     proposal_ids: BTreeMap<u64, EntryId>,
+    /// Review PF-1 and VC7R-6: proposal entries of later epochs kept by value before their epoch began
+    /// (another version, or a proven forker's past its fork), noted on entering it.
+    later_proposals: BTreeMap<u32, Vec<EntryId>>,
     /// Review PF-1: every signed precommit held for a value, any version, linked into its author's
     /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
     /// counted from it (`precommitters`); everyone else counts in chain order.
@@ -1894,6 +1914,7 @@ impl WorldSim {
             at_frame: BTreeMap::new(),
             chain_state: BTreeMap::new(),
             ack_hist: BTreeMap::new(),
+            ack_stamps: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
@@ -1908,6 +1929,7 @@ impl WorldSim {
             vc: Vc::default(),
             vc_later: BTreeMap::new(),
             proposal_ids: BTreeMap::new(),
+            later_proposals: BTreeMap::new(),
             pc_held: BTreeMap::new(),
             decided: Vec::new(),
             vc_log: Vec::new(),
@@ -2427,6 +2449,7 @@ impl WorldSim {
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
+                self.ack_stamps.entry(m).or_default().insert(e.seq, e.stamp);
                 for &(q, s, hid) in &heads {
                     if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);
@@ -2600,13 +2623,15 @@ impl WorldSim {
             self.stats.equivocations += 1;
             self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:016x} / {b:016x})"));
         }
+        let old_k = self.proofs.get(&m).map(|p| p.0);
         let (k0, a0, b0) = match self.proofs.get(&m) {
             Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
             _ => (k, a, b),
         };
         self.proofs.insert(m, (k0, a0, b0));
         // Review PF-1: m's proposals already held past its fork may never link here: keep them by value.
-        if self.fixes_off & fix::PF1 == 0 {
+        // Once per proof, or when it moves earlier (VC7R-6); later ones are kept as they arrive (insert).
+        if self.fixes_off & fix::PF1 == 0 && old_k.is_none_or(|ok| k0 < ok) {
             let held: Vec<EntryId> = self.by_author.range((m, k0)..=(m, u32::MAX)).map(|(_, &id)| id).collect();
             for id in held {
                 self.note_proposal(id);
@@ -2778,7 +2803,7 @@ impl WorldSim {
                     }
                     continue;
                 }
-                if self.polka_any(r, v) {
+                if self.cap_polka_holds(m, r, v) {
                     continue;
                 }
                 let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
@@ -2788,7 +2813,10 @@ impl WorldSim {
                     // round trip, so ids still missing a further half window after the cap ripened name
                     // prevotes nobody holds. The capper is voted out instead of the fetch being retried
                     // for good.
-                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                    // Review VC7R-2: the fetch gets the allowance a slow member gets (`suspect_after`), on
+                    // top of the cap's ripening, not a further half window.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { after };
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + after + budget {
                         if self.members.contains(&m) && !self.voted(m) && !self.held(m) {
                             self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
                             out.extend(self.freeze_and_vote(m, 0, 0));
@@ -2860,8 +2888,12 @@ impl WorldSim {
                 if r.frozen.0 > 0 && !self.head_held(y, r.frozen) {
                     self.want_entry(v, r.frozen.1, 15);
                     self.want_entry_all(r.frozen.1, 15);
-                    if v != self.me && self.now >= r.at + self.cfg.window / 2 && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
-                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {} frames: vote to remove it", r.frozen.0, self.cfg.window / 2));
+                    // Review VC7R-2: the vote stops blocking resets after half a window (`fresh`, VC4R-5),
+                    // but its voter gets the slow-member allowance to deliver the head before it is voted
+                    // out: an honest voter's head may lie on a branch of a forker's chain only it holds.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { self.cfg.window / 2 };
+                    if v != self.me && self.now >= r.at + budget && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
+                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {budget} frames: vote to remove it", r.frozen.0));
                         out.extend(self.freeze_and_vote(v, 0, 0));
                     }
                 }
@@ -3355,6 +3387,9 @@ impl WorldSim {
         let Payload::Propose { epoch, round, ref change, .. } = e.payload else { return };
         let v = change.value();
         self.proposal_ids.entry(v).or_insert(id);
+        if epoch > self.epoch && self.fixes_off & fix::PF1 == 0 {
+            self.later_proposals.entry(epoch).or_default().push(id);
+        }
         if epoch == self.epoch && change.epoch == epoch && e.member == self.proposer(epoch, round) {
             let c = change.clone();
             self.vc.changes.entry(v).or_insert(c);
@@ -3402,6 +3437,27 @@ impl WorldSim {
         let Some(xs) = self.excluded_of(v) else { return false };
         let (base, _, q) = self.base(&xs);
         self.vc.any_prevotes.get(&(round, v)).is_some_and(|ms| ms.iter().filter(|m| base.contains(m)).count() >= q)
+    }
+
+    /// Whether capper `m`'s polka for `v` in `round` holds here: the prevotes recorded for it in any
+    /// version, and (review VC7R-2) every prevote the cap's precommit named that is held, linked into its
+    /// author's chain or not. A fetched prevote sitting past a gap in its author's chain counted for
+    /// nothing, so the capper was voted out at once.
+    fn cap_polka_holds(&self, m: MemberId, round: u32, v: u64) -> bool {
+        if self.fixes_off & fix::VC7R2 != 0 {
+            return self.polka_any(round, v);
+        }
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        let mut ms: BTreeSet<MemberId> = self.vc.any_prevotes.get(&(round, v)).cloned().unwrap_or_default();
+        for id in self.cap_polka.get(&m).into_iter().flatten() {
+            if let Some(e) = self.entries.get(id) {
+                if matches!(e.payload, Payload::Prevote { epoch, round: r, value } if epoch == self.epoch && r == round && value == v) {
+                    ms.insert(e.member);
+                }
+            }
+        }
+        ms.iter().filter(|x| base.contains(x)).count() >= q
     }
 
     fn quorum_for(&self, votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, v: u64) -> bool {
@@ -3670,6 +3726,45 @@ impl WorldSim {
 
     /// Whether `c` is a valid change for this epoch. Deterministic once this replica holds every
     /// entry it names (and has validated the voters' chains up to their votes); None until then.
+    /// Review VC7R-1: whether admin entry `id` is valid along its own ancestry. It walks back from the
+    /// entry to the prefix of its author's chain this replica has validated, replays the chain-local
+    /// rules over the rest (only acks change chain state: `validate`), and judges the entry by VCR-9's
+    /// horizon rule. The prefix is common to every branch through it, so the answer is the same at every
+    /// replica that holds the entry's ancestry, whichever branch it linked. None while an ancestor is
+    /// missing (it is fetched).
+    fn valid_on_own_branch(&mut self, id: EntryId) -> Option<bool> {
+        let e = self.entries.get(&id)?.clone();
+        let m = e.member;
+        let linked = if m == self.me { self.my_seq } else { self.contiguous.get(&m).copied().unwrap_or(0) };
+        let mut seg: Vec<Entry> = Vec::new();
+        let (mut cur, mut k) = (e.prev, e.seq.saturating_sub(1));
+        while k > 0 && !(k <= linked && self.by_author.get(&(m, k)) == Some(&cur)) {
+            let Some(p) = self.entries.get(&cur).cloned() else {
+                self.want_entry_all(cur, 0);
+                return None;
+            };
+            cur = p.prev;
+            seg.push(p);
+            k -= 1;
+        }
+        // The chain state after seq k of the validated prefix.
+        let mut max_h = self.ack_hist.get(&m).and_then(|a| a.range(..=k).next_back()).map(|(_, h)| *h);
+        let mut last_ack = self.ack_stamps.get(&m).and_then(|a| a.range(..=k).next_back()).map_or(0, |(_, st)| *st);
+        let mut prev_epoch = self.ack_epoch_from.get(&m).and_then(|a| a.iter().filter(|&(_, &sq)| sq <= k).map(|(&ep, _)| ep).max()).unwrap_or(0);
+        let adm = if self.fixes_off & fix::VC3R6 == 0 { self.admitted_epoch.get(&m).copied().unwrap_or(0) } else { 0 };
+        for p in seg.iter().rev() {
+            if let Payload::Ack { horizon, epoch, .. } = p.payload {
+                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (epoch >= prev_epoch && (epoch <= prev_epoch + 1 || epoch <= adm));
+                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack >= p.stamp && epoch_ok {
+                    max_h = Some(max_h.map_or(horizon, |x| x.max(horizon)));
+                    last_ack = p.stamp;
+                    prev_epoch = prev_epoch.max(epoch);
+                }
+            }
+        }
+        Some(self.fixes_off & fix::VCR9 != 0 || max_h.is_none_or(|h| e.stamp > h))
+    }
+
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
         let timed = self.fixes_off & fix::VC3 != 0;
@@ -3705,6 +3800,12 @@ impl WorldSim {
             // Review VC3R-3: an admin entry counts only from a chain prefix this replica has validated,
             // and only if that validation did not void it (a backdated one is horizon-void, VCR-9).
             if self.fixes_off & fix::VC3R3 == 0 {
+                if self.fixes_off & fix::VC7R1 == 0 {
+                    if !self.valid_on_own_branch(id)? {
+                        return Some(false);
+                    }
+                    continue;
+                }
                 if e.member != self.me && self.contiguous.get(&e.member).copied().unwrap_or(0) < e.seq {
                     return None;
                 }
@@ -4151,8 +4252,13 @@ impl WorldSim {
     fn apply_change(&mut self, c: Change, round: u32, out: &mut Vec<Entry>) {
         let v = c.value();
         let xs: BTreeSet<MemberId> = c.excluded.iter().map(|(m, _)| *m).collect();
+        // Review VC7R-5: exactly a quorum of signers, the lowest member ids among the precommits held, so
+        // the certificate's size is bounded and replicas holding more than a quorum agree on it. Two
+        // replicas that decided on different quorums still sign different (equally valid) certificates:
+        // a certificate is checked by its signatures (`epoch_cert_ok`), never compared by its bytes.
+        let (_, _, q_sig) = self.base(&xs);
         let sigs: Vec<(MemberId, u64)> =
-            self.precommitters(round, v).into_iter().filter(|m| !xs.contains(m)).map(|m| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect();
+            self.precommitters(round, v).into_iter().filter(|m| !xs.contains(m)).take(q_sig).map(|m| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
         // D80: role entries in commit order (kicks are among the removals), then the removals, then
         // each joiner's starting role against the membership they leave.
@@ -4382,9 +4488,11 @@ impl WorldSim {
             }
         }
         // Review PF-1: proposals of the new epoch kept by value before it began (another version, or a
-        // proven forker's past its fork) name values it may decide.
+        // proven forker's past its fork) name values it may decide. Indexed by epoch (VC7R-6).
         if self.fixes_off & fix::PF1 == 0 {
-            let held: Vec<EntryId> = self.proposal_ids.values().copied().collect();
+            let mut keep = self.later_proposals.split_off(&self.epoch);
+            let held = keep.remove(&self.epoch).unwrap_or_default();
+            self.later_proposals = keep;
             for id in held {
                 self.note_proposal(id);
             }
@@ -4443,6 +4551,10 @@ impl WorldSim {
                 self.contiguous.insert(x, 0);
                 self.chain_state.remove(&x);
                 self.ack_hist.remove(&x);
+                self.ack_stamps.remove(&x);
+                if self.fixes_off & fix::RECUT == 0 {
+                    self.ack_epoch_from.remove(&x);
+                }
             }
             // Re-validating the cut's branch replays its acks, and each ack recomputes confirmation.
             // Confirming then, before that branch's entries act, would confirm frames whose
