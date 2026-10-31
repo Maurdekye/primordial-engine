@@ -10,18 +10,15 @@ from measured parts; **inferred** = design reasoning, not run.
 
 ## A. Still open
 
-Three places where the design goes beyond your 08:31Z words, each marked [proposal] in design.md:
-* **The last admin and the roles permission** (12.4): since a role that can give roles counts as Admin
-  (V2), recommended: a member holding it also counts as an admin when the session checks whether its
-  last admin has gone, so the session does not close while such a member remains.
+One place where the design goes beyond your 08:31Z words, marked [proposal] in design.md:
 * **A best-effort secret filter on open panels** (21.4): open panels stream everything (D86 (b)).
   Recommended: still mask key-like and token-like strings in what leaves, labelled best-effort. It
   narrows (b), so it is your call.
-* **World saves** (16.10, Q29): how often to autosave and how long autosaves are kept (recommended:
-  every few minutes while the world changes, thinned with age); who may load a backup (recommended:
-  admins); and whether a checkpoint can be deleted, and by whom.
 
-The firewall rule and the Gnosarium design's remaining questions are with @coordinator-opus.
+Following V2, @coordinator-opus settled that a member whose role can give roles counts as an admin when
+the session checks for its last admin (12.4). World saves follow the approved Gnosarium UX 8a.10, and
+the engine side is in design 16.10. The Gnosarium design's remaining questions are with
+@coordinator-opus.
 
 ## B. Your rulings
 
@@ -81,7 +78,7 @@ The firewall rule and the Gnosarium design's remaining questions are with @coord
 | D81-D85 agent-panel proposals | As recommended: a spike before the speech model is chosen (D81); a guest's or confidant's turn carries only their own gaze and pointing (D82); annotations last until their author clears them, are never saved, and admins may clear them (D83); everyday settings change at once with undo, sensitive ones need you (D84); spoken replies are made on the panel owner's peer and streamed (D85) | 08:31Z |
 | D86 what an open panel shows | (b): everything, including the detailed tool view, raw output and file contents | 08:31Z |
 | D89 confidants' tools | (b): full access as ruled, shell included on a Full panel; no Restricted-by-default setting | 08:31Z |
-| Q29 world saves | Autosave, plus saved checkpoints made by hand; every world keeps a list of backups that can be loaded at any time (storage: design 16.10) | 08:31Z |
+| Q29 world saves | Autosave, plus saved checkpoints made by hand; every world keeps a list of backups that can be loaded at any time (UI: Gnosarium UX 8a.10; storage and engine rules: design 16.10) | 08:31Z |
 | Cloth scope | Delegated to @coordinator-opus, who placed gameplay cloth and soft bodies in phase 4 (a pe-physics module) and cosmetic cloth in phase 5 (design 23.2) | 08:32Z |
 
 The times are yours; @coordinator-opus relayed most of these rulings.
