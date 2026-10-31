@@ -13,12 +13,12 @@
 //!   session attested it: one signed on an old copy and never committed changes nothing (round 2's
 //!   mitigation for the residual of forks). A session commits only certificates built on its current
 //!   head, so within one session the chain is linear.
-//! * **Rule A** (O1): adding needs every owner; anyone may leave, except the last owner. Removal is
-//!   only a 30-day objection window that every other owner opens (OB), and a recovery key only
-//!   replaces a lost key after 7 days (OC). Both count attested world frames, and an ownership
-//!   signature of the target attested between the window's start and its completion cancels it
-//!   (OWNR-2). Rules B (any owner adds; no removal) and C (k of n, instant removal) are kept for
-//!   comparison.
+//! * **Consent only** (user ruling 2026-10-31 08:31Z, OT = (a)): no owner is removed against its will
+//!   under rule A, and nothing depends on time. A recovery key is a plain backup of its owner's key: its
+//!   signature counts as the owner's. Bound session lineages (trusted attestations, and with them
+//!   removal of a vanished owner) are a later package.
+//! * **Rule A** (O1): adding needs every owner; anyone may leave, except the last owner; nobody is
+//!   removed. Rules B (any owner adds; no removal) and C (k of n, instant removal) are kept.
 //! * **The owner set** ([`Book::view`]) comes from an effective pass over the certificates held, in
 //!   causal order (OWNR-1): a certificate applies only if it counts at its parent's *effective* state;
 //!   otherwise its branch inherits the parent's state. After a fork the heads join as an
@@ -28,9 +28,9 @@
 //!   The rule after a fork is the newest by causality, the strictest among concurrent ones (OWNR-9).
 //!
 //! What remains [I]: keys that once held full authority can still add a co-owner by forking at that
-//! state, if they also run a session on an old copy to get it attested; and a private session can
-//! claim any frames, so it can age a window. Both are detected (an equivocation proof, "Ownership
-//! disputed"). Preventing them needs a global order, which the user rejected (D79).
+//! state, if they also run a session on an old copy to get it attested. That is detected (an
+//! equivocation proof, "Ownership disputed"). Preventing it needs bound session lineages (later) or a
+//! global order, which the user rejected (D79).
 //!
 //! Spike signatures are keyless hashes ([`key_sig`], `member_sig`) standing in for Ed25519.
 
@@ -47,10 +47,6 @@ pub type CertId = u64;
 /// A session lineage: the session that committed a certificate (spike: its world id).
 pub type Lineage = u32;
 
-/// The objection window before an owner can be removed: 30 days of world frames at 60 Hz.
-pub const OBJECTION_FRAMES: u64 = 30 * 24 * 3600 * 60;
-/// The delay before a recovery key's replacement of its owner's key completes: 7 days.
-pub const RECOVERY_FRAMES: u64 = 7 * 24 * 3600 * 60;
 /// Certificates one book holds at most (OWNR-6: no signer can grow it without bound). Ownership
 /// changes are rare; each insert re-runs the effective pass, O(N log N). Production compacts a long
 /// linear history into a checkpoint signed by the owners [I].
@@ -120,16 +116,9 @@ pub enum Change {
     Remove { key: Key },
     /// Every owner signs.
     SetRule { rule: SignRule },
-    /// `owner` (its own key) names, replaces or clears its recovery key.
+    /// `owner` (its own key, or its recovery key acting for it) names, replaces or clears its recovery
+    /// key: a plain backup of the owner's key (OT = (a)).
     SetRecovery { owner: Key, recovery: Option<Key> },
-    /// Every other owner (A; k of them under C) opens the objection window against `key`.
-    Challenge { key: Key },
-    /// The same signers remove `key` once its window has run with no signature from it.
-    RemoveDormant { key: Key },
-    /// `owner`'s recovery key starts replacing `owner` by `new_key`.
-    StartRecover { owner: Key, new_key: Key },
-    /// The same recovery key completes it once the delay has run with no signature from `owner`.
-    FinishRecover { owner: Key },
     /// Joins concurrent certificates: the chain is linear again. Its owner set is forced (the join).
     Merge,
 }
@@ -146,18 +135,15 @@ impl Change {
             Change::Remove { key } => v.extend([4, *key as u64]),
             Change::SetRule { rule } => v.extend([5, rule.code()]),
             Change::SetRecovery { owner, recovery } => v.extend([6, *owner as u64, recovery.map_or(0, |r| 1 + r as u64)]),
-            Change::Challenge { key } => v.extend([7, *key as u64]),
-            Change::RemoveDormant { key } => v.extend([8, *key as u64]),
+            // Codes 7, 8, 10 and 11 were the window and recovery changes, removed under OT = (a).
             Change::Merge => v.push(9),
-            Change::StartRecover { owner, new_key } => v.extend([10, *owner as u64, *new_key as u64]),
-            Change::FinishRecover { owner } => v.extend([11, *owner as u64]),
         }
     }
 
     /// The key a removal takes out.
     fn removes(&self) -> Option<Key> {
         match self {
-            Change::Remove { key } | Change::RemoveDormant { key } => Some(*key),
+            Change::Remove { key } => Some(*key),
             _ => None,
         }
     }
@@ -255,11 +241,7 @@ impl Cert {
                 };
                 Change::SetRecovery { owner, recovery }
             }
-            7 => Change::Challenge { key: key(next()?)? },
-            8 => Change::RemoveDormant { key: key(next()?)? },
             9 => Change::Merge,
-            10 => Change::StartRecover { owner: key(next()?)?, new_key: key(next()?)? },
-            11 => Change::FinishRecover { owner: key(next()?)? },
             _ => return None,
         };
         let ns = next()? as usize;
@@ -321,18 +303,14 @@ pub enum OwnError {
     NotOwner,
     /// The last owner can't leave or be removed.
     LastOwner,
-    /// Not under this rule (instant removal outside rule C, any removal under rule B), or no rule.
+    /// Not under this rule (removal outside rule C), or no rule.
     NotAllowed,
-    /// No open window, the window hasn't run, or the target cancelled it.
-    WindowOpen,
-    /// No session has attested the certificate (or, for a window, both of its ends in one session).
+    /// No session has attested the certificate, and nobody who matters at a head signed it.
     Unattested,
     /// A session commits only certificates built on the head of what it committed itself.
     Stale,
     /// Two concurrent counting removals each remove a signer of the other (OWNR-7).
     Conflict,
-    /// The recovery key had been replaced, attested in the same session earlier, before it acted.
-    Revoked,
     /// The book holds [`MAX_CERTS`] certificates.
     Full,
     /// Every key (or certificate) the certificate is charged to already carries its limit of
@@ -361,14 +339,6 @@ enum Charge {
     Roots(BTreeSet<CertId>),
 }
 
-/// A recovery in progress: `by` started replacing its owner with `new_key` at certificate `start`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Recovering {
-    pub start: CertId,
-    pub by: Key,
-    pub new_key: Key,
-}
-
 /// The owner set and its rules after some certificate (or the join of several heads).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Owners {
@@ -383,12 +353,8 @@ pub struct Owners {
     /// Observed-remove bookkeeping: each owner's live add tags (the certificates that added them).
     /// The tags a removal has seen are derived when heads join, from the removals in their past.
     tags: BTreeMap<Key, BTreeSet<CertId>>,
-    /// Each owner's recovery keys, with the certificate that named each.
+    /// Each owner's recovery keys (plain backups of its key), with the certificate that named each.
     pub recovery: BTreeMap<Key, BTreeMap<Key, CertId>>,
-    /// Open objection windows: target -> the `Challenge` that opened it.
-    pub challenges: BTreeMap<Key, CertId>,
-    /// Recoveries in progress, by owner.
-    pub recovering: BTreeMap<Key, Recovering>,
     /// Solo changes each owner signed (itself or through a recovery key) along this history
     /// (OWNU-6). Joined by maximum.
     pub solo: BTreeMap<Key, u32>,
@@ -412,8 +378,14 @@ impl Owners {
         self.owners.remove(&key);
         self.tags.remove(&key);
         self.recovery.remove(&key);
-        self.challenges.remove(&key);
-        self.recovering.remove(&key);
+    }
+
+    /// The keys acting in a signer set: the signers, plus every owner whose recovery key signed (a
+    /// recovery key is a plain backup of its owner's key, OT = (a)).
+    fn acting(&self, signers: &BTreeSet<Key>) -> BTreeSet<Key> {
+        let mut a = signers.clone();
+        a.extend(self.owners.iter().copied().filter(|o| self.recovery.get(o).is_some_and(|r| r.keys().any(|k| signers.contains(k)))));
+        a
     }
 
     /// Keys whose signatures matter on a certificate built on this state: owners and recovery keys.
@@ -431,8 +403,6 @@ impl Owners {
             v.extend([*o as u64, r.len() as u64]);
             v.extend(r.iter().flat_map(|(&k, &c)| [k as u64, c]));
         }
-        v.extend(self.challenges.iter().flat_map(|(&k, &c)| [k as u64 | 1 << 40, c]));
-        v.extend(self.recovering.iter().flat_map(|(&o, r)| [o as u64 | 1 << 41, r.start, r.by as u64, r.new_key as u64]));
         v.extend(self.solo.iter().flat_map(|(&o, &n)| [o as u64 | 1 << 42, n as u64]));
         v.extend(self.share.iter().flat_map(|(&o, &n)| [o as u64 | 1 << 43, n as u64]));
         fnv_u64s(v)
@@ -892,7 +862,7 @@ impl Book {
             if ps.len() < 2 || ps != c.prev || !concurrent || c.seq != p.seq + 1 {
                 return Err(OwnError::BadLink);
             }
-            if !SignRule::Any.met(&signers, &p.owners) {
+            if !SignRule::Any.met(&p.acting(&signers), &p.owners) {
                 return Err(OwnError::Signers);
             }
             let mut m = p.clone();
@@ -902,7 +872,7 @@ impl Book {
             if c.prev.len() != 1 {
                 return Err(OwnError::BadLink);
             }
-            self.step(&p, &c, id, &signers, false)?
+            self.step(&p, &c, id, &signers)?
         };
         match mode {
             Admit::Pool => {
@@ -951,56 +921,14 @@ impl Book {
         }
     }
 
-    fn frame_in(&self, id: CertId, lineage: Lineage) -> Option<u64> {
-        self.inner.commits.get(&id).and_then(|m| m.get(&lineage)).map(|(f, _)| *f)
-    }
-
-    /// The lineages in which the window from `start` to `end` ran `frames`, with both ends' frames
-    /// there. Frames are compared only within one lineage (OWNS-1c).
-    fn windows(&self, start: CertId, end: CertId, frames: u64) -> Result<Vec<(Lineage, u64, u64)>, OwnError> {
-        let (Some(s), Some(e)) = (self.inner.commits.get(&start), self.inner.commits.get(&end)) else { return Err(OwnError::Unattested) };
-        let common: Vec<(Lineage, u64, u64)> = s.iter().filter_map(|(l, (fs, _))| e.get(l).map(|(fe, _)| (*l, *fs, *fe))).collect();
-        if common.is_empty() {
-            return Err(OwnError::Unattested);
-        }
-        let ran: Vec<_> = common.into_iter().filter(|&(_, fs, fe)| fe >= fs.saturating_add(frames)).collect();
-        if ran.is_empty() {
-            return Err(OwnError::WindowOpen);
-        }
-        Ok(ran)
-    }
-
-    /// `k` signed a certificate outside `start`'s past that `lineage` attested at a frame in
-    /// `[from, to)`: the window was cancelled there (OWNR-2: unattested signatures, signatures after
-    /// the completion and signatures in other lineages never count).
-    fn signed_between(&self, k: Key, start: CertId, lineage: Lineage, from: u64, to: u64) -> bool {
-        self.inner.commits.iter().any(|(e, m)| {
-            *e != start
-                && !self.inner.anc[&start].contains(e)
-                && m.get(&lineage).is_some_and(|(f, s)| *f >= from && *f < to && s.contains(&k))
-        })
-    }
-
-    /// A completion counts if in some lineage the window ran and the target didn't cancel there.
-    fn completed(&self, target: Key, start: CertId, end: CertId, frames: u64) -> Result<(), OwnError> {
-        let ran = self.windows(start, end, frames)?;
-        if ran.iter().any(|&(l, fs, fe)| !self.signed_between(target, start, l, fs, fe)) {
-            Ok(())
-        } else {
-            Err(OwnError::WindowOpen)
-        }
-    }
-
-    /// The state after `c` (id `id`), whose single parent left state `p`. `effective`: also check what
-    /// depends on attestations (windows, cancellation, revocation).
-    fn step(&self, p: &Owners, c: &Cert, id: CertId, signers: &BTreeSet<Key>, effective: bool) -> Result<Owners, OwnError> {
+    /// The state after `c` (id `id`), whose single parent left state `p`. A recovery key's signature
+    /// counts as its owner's (OT = (a)). Nothing here depends on attestations or time.
+    fn step(&self, p: &Owners, c: &Cert, id: CertId, signers: &BTreeSet<Key>) -> Result<Owners, OwnError> {
         if c.seq != p.seq + 1 {
             return Err(OwnError::BadLink);
         }
+        let signers = &p.acting(signers);
         let mut s = p.clone();
-        // An owner's own signature cancels any window against it on this history.
-        s.challenges.retain(|k, _| !signers.contains(k));
-        s.recovering.retain(|k, _| !signers.contains(k));
         let removal = |key: Key| -> Result<(), OwnError> {
             if !p.owners.contains(&key) {
                 return Err(OwnError::NotOwner);
@@ -1086,73 +1014,11 @@ impl Book {
                     s.recovery.insert(owner, [(r, id)].into());
                 }
             }
-            Change::Challenge { key } => {
-                removal(key)?;
-                s.challenges.insert(key, id);
-            }
-            Change::RemoveDormant { key } => {
-                let Some(&ch) = p.challenges.get(&key) else { return Err(OwnError::WindowOpen) };
-                if signers.contains(&key) {
-                    return Err(OwnError::WindowOpen);
-                }
-                removal(key)?;
-                if effective {
-                    self.completed(key, ch, id, OBJECTION_FRAMES)?;
-                }
-                s.drop_owner(key);
-            }
-            Change::StartRecover { owner, new_key } => {
-                if !p.owners.contains(&owner) || p.owners.contains(&new_key) {
-                    return Err(OwnError::NotOwner);
-                }
-                let Some((&by, &named)) = p.recovery.get(&owner).and_then(|r| r.iter().find(|(k, _)| signers.contains(k))) else {
-                    return Err(OwnError::Signers);
-                };
-                // A recovery key the owner replaced or cleared, attested earlier in the same session,
-                // is dead there. It counts only if some session attested it before any such rotation.
-                if effective {
-                    let rotated_before = |l: Lineage, at: u64| {
-                        self.inner.certs.iter().any(|(e, x)| {
-                            matches!(x.change, Change::SetRecovery { owner: o, .. } if o == owner)
-                                && *e != named
-                                && self.inner.anc[e].contains(&named)
-                                && self.frame_in(*e, l).is_some_and(|f| f < at)
-                        })
-                    };
-                    let alive = self.inner.commits.get(&id).is_some_and(|m| m.iter().any(|(&l, (f, _))| !rotated_before(l, *f)));
-                    if !alive {
-                        return Err(OwnError::Revoked);
-                    }
-                }
-                s.recovering.insert(owner, Recovering { start: id, by, new_key });
-            }
-            Change::FinishRecover { owner } => {
-                let Some(r) = p.recovering.get(&owner).copied() else { return Err(OwnError::WindowOpen) };
-                if !signers.contains(&r.by) || p.owners.contains(&r.new_key) {
-                    return Err(OwnError::Signers);
-                }
-                if effective {
-                    self.completed(owner, r.start, id, RECOVERY_FRAMES)?;
-                }
-                s.drop_owner(owner);
-                s.add_owner(r.new_key, id);
-                // The replacement key takes over its owner's share and count.
-                for m in [&mut s.share, &mut s.solo] {
-                    if let Some(n) = m.get(&owner).copied() {
-                        m.insert(r.new_key, n);
-                    }
-                }
-            }
         }
         // OWNU-6, OWNV-3, OWNW-3: a solo change (not every owner at the parent signed it) needs one
-        // signing owner (itself or through a recovery key) with share left. Exempt: Leave, and
+        // signing owner (itself or through its recovery key) with share left. Exempt: Leave, and
         // clearing one's own recovery key, the way out of a stolen one (OWNV-2).
-        let by: Vec<Key> = p
-            .owners
-            .iter()
-            .copied()
-            .filter(|o| signers.contains(o) || p.recovery.get(o).is_some_and(|r| r.keys().any(|k| signers.contains(k))))
-            .collect();
+        let by: Vec<Key> = p.owners.iter().copied().filter(|o| signers.contains(o)).collect();
         let exempt = matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. });
         if !exempt && !p.owners.is_subset(signers) && !by.is_empty() {
             let room = |o: &Key| p.solo.get(o).copied().unwrap_or(0) < p.share.get(o).copied().unwrap_or(0);
@@ -1185,8 +1051,7 @@ impl Book {
             let Some(p) = self.parent(r) else { continue };
             let Some(ps) = states.get(&p) else { continue };
             let gone = match self.inner.certs[&r].change {
-                Change::Leave { key } | Change::Remove { key } | Change::RemoveDormant { key } => Some(key),
-                Change::FinishRecover { owner } => Some(owner),
+                Change::Leave { key } | Change::Remove { key } => Some(key),
                 Change::SetRecovery { owner, .. } => {
                     dead_rec.extend(ps.recovery.get(&owner).into_iter().flat_map(|m| m.values().copied()));
                     None
@@ -1225,28 +1090,6 @@ impl Book {
                 }
             }
         }
-        // A window stays open unless its target cancelled it in a lineage that attested its start.
-        let open = |k: Key, start: CertId| {
-            !self.inner.commits.get(&start).is_some_and(|m| m.iter().any(|(&l, (f, _))| self.signed_between(k, start, l, *f, u64::MAX)))
-        };
-        let mut challenges: BTreeMap<Key, CertId> = BTreeMap::new();
-        let mut recovering: BTreeMap<Key, Recovering> = BTreeMap::new();
-        for s in &st {
-            for (&k, &ch) in &s.challenges {
-                if owners.contains(&k) && open(k, ch) {
-                    let e = challenges.entry(k).or_insert(ch);
-                    *e = (*e).min(ch);
-                }
-            }
-            for (&o, r) in &s.recovering {
-                if owners.contains(&o) && open(o, r.start) && recovery.get(&o).is_some_and(|x| x.contains_key(&r.by)) {
-                    let e = recovering.entry(o).or_insert(*r);
-                    if r.start < e.start {
-                        *e = *r;
-                    }
-                }
-            }
-        }
         Owners {
             owners,
             // OWNS-4, OWNT-7: concurrent rules take the strictest in each dimension: who adds (Any <
@@ -1257,8 +1100,6 @@ impl Book {
             nobody_left: nobody_left || st.iter().any(|s| s.nobody_left),
             tags,
             recovery,
-            challenges,
-            recovering,
             solo: join_by(st.iter().map(|s| &s.solo), u32::max),
             share: join_by(st.iter().map(|s| &s.share), u32::min),
             seq: st.iter().map(|s| s.seq).max().unwrap_or(0),
@@ -1289,11 +1130,11 @@ impl Book {
                 None
             } else if c.change == Change::Merge {
                 let mut m = self.join(&c.prev, &linear, &|x| !invalid.contains(&x));
-                let ok = SignRule::Any.met(&signers[&id], &m.owners) && c.seq == m.seq + 1;
+                let ok = SignRule::Any.met(&m.acting(&signers[&id]), &m.owners) && c.seq == m.seq + 1;
                 m.seq = c.seq;
                 ok.then_some(m)
             } else {
-                self.step(&linear[&c.prev[0]], c, id, &signers[&id], false).ok()
+                self.step(&linear[&c.prev[0]], c, id, &signers[&id]).ok()
             };
             match s {
                 Some(s) => {
@@ -1322,7 +1163,8 @@ impl Book {
             .filter(|&a| {
                 removals.iter().any(|&b| {
                     let (ta, tb) = (self.inner.certs[&a].change.removes().unwrap(), self.inner.certs[&b].change.removes().unwrap());
-                    a != b && self.concurrent(a, b) && self.inner.signers[&b].contains(&ta) && self.inner.signers[&a].contains(&tb)
+                    let acting = |x: CertId| self.inner.linear[&self.inner.certs[&x].prev[0]].acting(&self.inner.signers[&x]);
+                    a != b && self.concurrent(a, b) && acting(b).contains(&ta) && acting(a).contains(&tb)
                 })
             })
             .collect();
@@ -1485,7 +1327,7 @@ impl Book {
                 let mut m = self.join(&c.prev, &eff, &|x| counted.contains(&x));
                 m.seq = c.seq;
                 // A merge counts like any certificate: attested, and signed by an owner of the join.
-                if inner.invalid.contains(&id) || !SignRule::Any.met(&inner.signers[&id], &m.owners) {
+                if inner.invalid.contains(&id) || !SignRule::Any.met(&m.acting(&inner.signers[&id]), &m.owners) {
                     refused.push((id, OwnError::Signers));
                 } else if uncommitted.contains(&id) {
                     refused.push((id, OwnError::Unattested));
@@ -1501,10 +1343,10 @@ impl Book {
                     Err(OwnError::Unattested)
                 } else if voided.contains(&id) {
                     Err(OwnError::Conflict)
-                } else if !self.approved_elsewhere(id, c, base, &counted, &eff) {
+                } else if !self.approved_elsewhere(id, c, base, &counted) {
                     Err(OwnError::Signers)
                 } else {
-                    self.step(base, c, id, &inner.signers[&id], true)
+                    self.step(base, c, id, &inner.signers[&id])
                 };
                 match r {
                     Ok(s) => {
@@ -1528,9 +1370,9 @@ impl Book {
     /// concurrent branches added since it split off (their parent is a strict ancestor of its
     /// parent). Additions don't: each copy's owners add independently, and the copies join
     /// (OWNS-3: an old-state fork never voids a later addition).
-    fn approved_elsewhere(&self, id: CertId, c: &Cert, base: &Owners, counted: &BTreeSet<CertId>, eff: &BTreeMap<CertId, Owners>) -> bool {
+    fn approved_elsewhere(&self, id: CertId, c: &Cert, base: &Owners, counted: &BTreeSet<CertId>) -> bool {
         let target = match c.change {
-            Change::Challenge { key } | Change::RemoveDormant { key } | Change::Remove { key } => key,
+            Change::Remove { key } => key,
             _ => return true,
         };
         let p = c.prev[0];
@@ -1541,7 +1383,6 @@ impl Book {
             .filter(|&d| self.parent(d).is_some_and(|dp| dp != p && self.inner.anc[&p].contains(&dp)))
             .filter_map(|d| match self.inner.certs[&d].change {
                 Change::Add { key } => Some(key),
-                Change::FinishRecover { owner } => eff[&self.parent(d).unwrap()].recovering.get(&owner).map(|r| r.new_key),
                 _ => None,
             })
             .collect();
@@ -1550,7 +1391,7 @@ impl Book {
         }
         let mut need: BTreeSet<Key> = base.owners.union(&added).copied().collect();
         need.remove(&target);
-        base.rule.met(&self.inner.signers[&id], &need)
+        base.rule.met(&base.acting(&self.inner.signers[&id]), &need)
     }
 
     /// The heads: counting certificates with no counting child.
