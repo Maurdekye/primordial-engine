@@ -1,0 +1,20 @@
+REPRO adminwedge fixed=false: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2213000) us; 9 removed at never; live at the end: false; m1 conf 112 of frame 232, m2 conf 112 of frame 232, m3 conf 112 of frame 232, m4 conf 112 of frame 232
+RESULT adminwedge: m1 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
+RESULT adminwedge: m2 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
+RESULT adminwedge: m3 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
+RESULT adminwedge: m4 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
+  m1: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 16 bad 0
+  m2: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
+  m3: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
+  m4: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
+RESULT adminwedge fixed=false: frames 0..231 honest m1=5a91c4264f2ead92 m2=5a91c4264f2ead92 m3=5a91c4264f2ead92 m4=5a91c4264f2ead92 | offline replay 5a91c4264f2ead92 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
+REPRO adminwedge fixed=true: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2213000) us; 9 removed at 4.03 s; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 206 (t=3.53 s) round 0 removed []; epoch 2 at frame 236 (t=4.03 s) round 1 removed [9]
+RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 206 (t=3.53 s) round 0 removed []; epoch 2 at frame 236 (t=4.03 s) round 1 removed [9]
+RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 206 (t=3.53 s) round 0 removed []; epoch 2 at frame 236 (t=4.03 s) round 1 removed [9]
+RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 201 (t=3.45 s) round 0 removed []; epoch 2 at frame 236 (t=4.03 s) round 1 removed [9]
+  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 79 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+RESULT adminwedge fixed=true: frames 0..832 honest m1=68564367bd91ba89 m2=68564367bd91ba89 m3=68564367bd91ba89 m4=68564367bd91ba89 | offline replay 68564367bd91ba89 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0

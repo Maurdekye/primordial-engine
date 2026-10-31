@@ -4,7 +4,8 @@
 #   scripts/run_p2_2_tests.sh              Windows debug and release (Git Bash)
 #   scripts/run_p2_2_tests.sh --linux      also Linux: static musl builds, run inside WSL
 #   scripts/run_p2_2_tests.sh --check-only compare the existing logs only
-# Every cargo job goes through the org-wide lock (heavy.sh). Never runs `wsl --shutdown`.
+# Set PE_HEAVY to a wrapper script (e.g. a lock that runs one job at a time at idle priority) and every
+# cargo job runs through it as `bash $PE_HEAVY <command>`. Never runs `wsl --shutdown`.
 # The fork's own suite (cargo test -p box3d-rust --release, Windows) is logged in
 # spikes/out/p2-2/fork-suite-windows-release.txt and must pass.
 # Logs: spikes/out/p2-2/{windows,linux-musl}-{debug,release}.txt, each starting with the commit, the
@@ -15,8 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 out=spikes/out/p2-2
 mkdir -p "$out"
-heavy="/c/Users/<user>/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh"
-low() { bash "$heavy" "$@"; }
+low() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }
 header() {
   echo "commit $(git rev-parse HEAD)"
   echo "working tree changes: $(git status --porcelain -- crates scripts | wc -l)"
