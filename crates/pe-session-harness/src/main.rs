@@ -66,11 +66,33 @@ fn scripted(member: MemberId) -> BTreeMap<u64, Vec<Action>> {
 }
 
 /// Every replica of world `w` agrees with every other and with an offline replay of its final log.
+/// P2-3 S4 comparison only (with PE_DUMP_OUTCOMES set): every touch at replica `r` of world `w`, by
+/// (member, seq), with its kind and outcome.
+fn dump_outcomes(r: &WorldSim, w: WorldId, label: &str) {
+    if std::env::var_os("PE_DUMP_OUTCOMES").is_none() {
+        return;
+    }
+    let mut v: Vec<(MemberId, u32, bool, String)> = Vec::new();
+    for e in r.all_entries() {
+        if let Payload::Touch { grab, .. } = e.payload {
+            let o = r.outcomes.get(&e.id()).map_or("none".to_string(), |(_, o)| format!("{o:?}"));
+            v.push((e.member, e.seq, grab, o));
+        }
+    }
+    v.sort();
+    for (m, s, g, o) in v {
+        println!("OUTCOME {label} w{w} m{m} s{s} {} {o}", if g { "grab" } else { "push" });
+    }
+}
+
 fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str) -> bool {
     check_world_except(sim, w, frames, label, &[])
 }
 
 fn check_world_except(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[MemberId]) -> bool {
+    if let Some(r) = sim.peers.iter().filter(|p| !skip.contains(&p.id)).find_map(|p| p.worlds.get(&w)) {
+        dump_outcomes(&r.sim, w, label);
+    }
     let mut digests = Vec::new();
     let mut first: Option<&Replica> = None;
     for p in sim.peers.iter().filter(|p| !skip.contains(&p.id)) {
@@ -332,6 +354,71 @@ fn ties() {
     check_world(&sim, 1, 6000, "ties");
 }
 
+fn grab(obj: u32) -> Action {
+    Action::Touch { obj, impulse: [0.0, 0.3, 0.0], grab: true }
+}
+
+/// P2-3 S4, D72 (8.4): only grabs claim and only grabs can lose. Members 1 and 2 grab object 50
+/// within one latency (60 ms links, about 4 frames), so each first sees its own grab applied:
+/// * round 0 (frame 100): 1 grabs, 2 grabs a frame later; round 1 (220): the other way round;
+/// * round 2 (340): both in the same frame, so the tie rank decides;
+/// * round 3 (460): 1 grabs and renews every 10 frames until 520 (held); member 3 pushes the held
+///   object at 480 (never refused) and 2 tries to grab it at 490 (refused: held);
+/// * round 4: 1's claim lapses at 550; 1 re-grabs at 555 (its cooldown runs to 560) and 2 grabs at 562.
+///
+/// Prints every grab and push with its outcome at each replica, and how each author first saw its
+/// own grab: a loser saw it accepted, then undone by re-simulation (the one stated exception).
+fn grabrace() {
+    let ids = [1, 2, 3];
+    let push = touch(50, 0.0, 0.0, 0.4);
+    let p1: Vec<(u64, Action)> = [100, 221, 340, 555].iter().map(|&f| (f, grab(50))).chain((460..=520).step_by(10).map(|f| (f, grab(50)))).collect();
+    let p2: Vec<(u64, Action)> = [101, 220, 340, 490, 562].iter().map(|&f| (f, grab(50))).collect();
+    let p3: Vec<(u64, Action)> = vec![(480, push)];
+    let peers = pile_peers(&ids, SceneKind::Pile { side: 8, layers: 2 }, cfg60(), |m| match m {
+        1 => plan(&p1),
+        2 => plan(&p2),
+        _ => plan(&p3),
+    });
+    let mut sim = Sim::new(Net::new(link(60, 0, 0), 21), peers, 13_000_000);
+    // The outcome each author's own replica first gave its own touch.
+    let mut first: BTreeMap<EntryId, Outcome> = BTreeMap::new();
+    while sim.net.now_us <= sim.end_us {
+        sim.step_ms();
+        sim.net.now_us += 1000;
+        for &m in &ids {
+            let r = &sim.replica(m, 1).sim;
+            for (id, (_, o)) in &r.outcomes {
+                if r.entry(*id).is_some_and(|e| e.member == m) {
+                    first.entry(*id).or_insert(*o);
+                }
+            }
+        }
+    }
+    let r1 = &sim.replica(1, 1).sim;
+    let mut touches: Vec<Entry> = r1.all_entries().into_iter().filter(|e| matches!(e.payload, Payload::Touch { .. })).collect();
+    touches.sort_by_key(|e| (e.stamp, e.member));
+    let mut same = true;
+    let mut undone = 0;
+    for e in &touches {
+        let id = e.id();
+        let grab = matches!(e.payload, Payload::Touch { grab: true, .. });
+        let at: Vec<Option<Outcome>> = ids.iter().map(|&m| sim.replica(m, 1).sim.outcomes.get(&id).map(|(_, o)| *o)).collect();
+        same &= at.iter().all(|o| *o == at[0]);
+        let own = first.get(&id).copied();
+        if own == Some(Outcome::Accepted) && at[0] != Some(Outcome::Accepted) {
+            undone += 1;
+        }
+        println!("  m{} {} @{}: {:?} at m1/m2/m3; its author first saw {:?}", e.member, if grab { "grab" } else { "push" }, e.stamp, at, own);
+    }
+    let lost = touches.iter().filter(|e| r1.outcomes.get(&e.id()).is_some_and(|(_, o)| *o != Outcome::Accepted)).count();
+    let pushes_refused = touches.iter().filter(|e| matches!(e.payload, Payload::Touch { grab: false, .. }) && r1.outcomes.get(&e.id()).is_some_and(|(_, o)| *o != Outcome::Accepted)).count();
+    println!(
+        "RESULT grabrace: {} touches, {lost} refused (all grabs), pushes refused {pushes_refused}, losers that first saw their grab accepted and then undone {undone}, outcomes equal at every replica: {same}",
+        touches.len()
+    );
+    check_world(&sim, 1, 700, "grabrace");
+}
+
 fn claims() {
     let ids = [1, 2];
     let p1: Vec<(u64, Action)> = (0..21).map(|k| (100 + 29 * k, touch(50, 0.0, 0.2, 0.0))).collect();
@@ -347,7 +434,7 @@ fn claims() {
             *tally.entry((e.member, k)).or_default() += 1;
         }
     }
-    println!("RESULT claims (member 1 nudges every 29 frames, member 2 every frame, impulses do not renew claims): {tally:?}");
+    println!("RESULT claims (member 1 nudges every 29 frames, member 2 every frame; D72: only grabs claim, so no push is refused): {tally:?}");
     check_world(&sim, 1, 750, "claims");
 }
 
@@ -1364,6 +1451,7 @@ fn main() {
         Some("join") => viewchange::join(),
         Some("refwithhold") => viewchange::refwithhold(),
         Some("handowner") => handowner(),
+        Some("grabrace") => grabrace(),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
         Some("bogusprecommit") => p24r::bogusprecommit(),

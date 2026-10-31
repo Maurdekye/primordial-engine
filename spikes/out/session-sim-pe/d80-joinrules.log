@@ -14,4 +14,4 @@ RESULT joinrules: admitted [1, 2, 4, 6, 7], roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0}
   m4: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 80 bad 0
   m6: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
   m7: conf 587 frame 593 members {1, 2, 4, 6, 7} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 80 bad 0
-RESULT joinrules (friends-of-admins as Guest, owners' confidants as Admin, row 0): frames 0..592 honest m1=ec5e142ab22ae021 m2=ec5e142ab22ae021 m4=ec5e142ab22ae021 m6=ec5e142ab22ae021 m7=ec5e142ab22ae021 | offline replay ec5e142ab22ae021 | ALL EQUAL, NO FALSE CHECKS ; checks ok 400 bad 0
+RESULT joinrules (friends-of-admins as Guest, owners' confidants as Admin, row 0): frames 0..592 honest m1=7bbef1b4ec5e54d0 m2=7bbef1b4ec5e54d0 m4=7bbef1b4ec5e54d0 m6=7bbef1b4ec5e54d0 m7=7bbef1b4ec5e54d0 | offline replay 7bbef1b4ec5e54d0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 400 bad 0
