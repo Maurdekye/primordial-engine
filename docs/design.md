@@ -1499,6 +1499,18 @@ is fixed once the author's chain is contiguous up to it.
   * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
     of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
     **decides** it.
+  * **A proven forker's precommit counts by its signature** (review PF-1, found by @ballpit-viz). Chain
+    order governs every other use of an entry. A replica keeps the first version of a seq it receives,
+    and a member that forks a seq may continue its chain from a version some honest members never hold,
+    so they cannot link its later entries. If its precommit was in the quorum the others decided on,
+    those members could never check that quorum and stayed in the old epoch for good. So the
+    precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
+    in any version, and its proposals are kept by value the same way. This is Tendermint's commit rule,
+    which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
+    member, and an honest member precommits one value per round. Honest members' entries always link,
+    so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
+    own version. Every member decides the join, 1 is removed at 4.23 s, and confirmation goes on. Before
+    the fix, 3, 9 and the joiner stayed in epoch 0 and confirmation stopped at frame 53].
   * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
     together leave in one change [V twosilent].
   * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
@@ -1641,10 +1653,10 @@ is fixed once the author's chain is contiguous up to it.
     and they would vote the honest capper out. So before a member votes a capper out for an unexplained
     cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
     either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
-    two versions of one prevote proves the proposer equivocated and removes it. Locks and decisions still
-    count one version per member [V prevotefork: proposer 1 sends its prevote for the join to capper 2
-    and nil to observer 3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps
-    2].
+    two versions of one prevote proves the proposer equivocated and removes it. Locks still count one
+    version per member; decisions count a proven forker's precommits in any version (PF-1, under
+    Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
+    3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
   * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
     round trip, so if ids the cap named are still missing a further half window after the cap ripened,
     they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
@@ -4974,9 +4986,11 @@ Rules for every package:
   behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
   windows), and the RG-1 control fails L1. **Landed on main at 5ba3eab (31 October)**, with the P2-9
   tool brought onto the landed API at f05324f.
-  **Round 7 on main fixed the three one-faulty-member liveness halts that round 6's review found** (none
-  touched safety: every replica still agreed). Each repro fails with its fix switched off and passes with
-  it:
+  **Round 7 on main fixed the three one-faulty-member liveness halts that round 6's review found, and a
+  fourth that @ballpit-viz found while mirroring `prevotefork`** (none touched safety: every replica
+  still agreed). Each repro fails with its fix switched off and passes with it, and each now checks that
+  confirmation is still live at the end of the run. Round 6's `prevotefork` checked only the vote it
+  targeted, and passed while the session had halted:
   * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, honest members lock on a change listing one
     version, and the fork arriving later disputed it, so the lock never cleared. Admin validity is now a
     pure function of the entry and its ancestry (`fix::VC6R3`) [V: 9 removed at 4.03 s; off: never,
@@ -4988,6 +5002,14 @@ Rules for every package:
     reference timers from ripening, because every decision cleared them all. A decision now resets only
     the timers its cleared votes made stale (`fix::VC6R4`) [V: 8 removed at 5.23 s; off: never, frame
     110].
+  * **PF-1** (`prevotefork`): a member that forks one seq continued its chain from a version that some
+    honest members never held. They could not link its later entries, so they could not count its
+    precommit in the quorum the others decided on, and they stayed in the old epoch. A proven forker's
+    precommits now count toward a decision wherever they sit in its chain (`fix::PF1`) [V: every member
+    decides, the forker is removed at 4.23 s; off: 3, 9 and the joiner stay in epoch 0, and confirmation
+    stops at frame 53]. The fixture had also lost 9's prevote for good, repairs included. That made 9 a
+    second faulty member of four, beyond t = 1, so the loss now ends at 2.5 s. `fixes_off` is now 64 bits
+    wide.
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**

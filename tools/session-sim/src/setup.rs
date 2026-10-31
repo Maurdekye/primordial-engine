@@ -16,7 +16,7 @@ pub fn scene(s: SceneCfg) -> SceneKind {
 }
 
 /// The review fixes by name (session.rs `fix`).
-pub const FIXES: &[(&str, u32)] = &[
+pub const FIXES: &[(&str, u64)] = &[
     ("VC2", fix::VC2),
     ("VC3", fix::VC3),
     ("VC4", fix::VC4),
@@ -41,7 +41,7 @@ pub const FIXES: &[(&str, u32)] = &[
     ("LAGKEEP", fix::LAGKEEP),
 ];
 
-pub fn fixes_off(w: &WorldCfg) -> Result<u32, String> {
+pub fn fixes_off(w: &WorldCfg) -> Result<u64, String> {
     w.fixes_off.iter().try_fold(0, |acc, n| {
         FIXES.iter().find(|(k, _)| k == n).map(|(_, b)| acc | b).ok_or_else(|| format!("fixes_off: unknown fix `{n}` (one of {:?})", FIXES.iter().map(|f| f.0).collect::<Vec<_>>()))
     })
