@@ -1017,10 +1017,22 @@ release build [V session-sim ballpit].
      returns to every 2 in the tick a new entry reaches it. Idle at 2 members falls to about 1.9 kB/s,
      and confirmation latency while anything happens is unchanged. 8 frames stays far inside the timers
      that read acks (half a window, 60 frames; `suspect_after`, 180). It moves the timing of every log
-     (re-bless), and needs a rule for "nothing unconfirmed" that each member judges from its own copy.
-     It combines with R18's ack thinning (10.9) by taking the longer interval: an idle member acks every
-     8 frames at any level, and an active one at its level's interval (every 2 frames uncongested, up
-     to 8 at the coarsest level).
+     (re-bless). It combines with R18's ack thinning (10.9) by taking the longer interval: an idle
+     member acks every 8 frames at any level, and an active one at its level's interval (every 2 frames
+     uncongested, up to 8 at the coarsest level).
+     * **"Nothing unconfirmed," judged from a member's own copy** [proposal]: a member is idle while
+       every entry it holds, other than acks, is stamped at or before its own confirmed frame. Acks
+       are left out, or each ack would keep every member busy.
+     * A new entry, its own or anyone's, is stamped after the confirmed frame. So a member acks in the
+       tick it authors or receives one, then at its level's interval until its confirmed frame passes
+       every such entry.
+     * The author stays busy until every member has acked its entry. Its acks carry the new head, so
+       gap detection for a new entry is as prompt as before.
+     * A member whose sim lags judges from its lagging copy and stays busy longer. That costs only
+       bandwidth.
+     * Idle acks fall on frames that are multiples of 8, the coarsest level's grid, so they share
+       datagrams with hand entries. The ack that leaves idle goes at once, off the grid. A check hash
+       due at a check frame rides the first ack after it, at most 7 frames later.
   3. **Compact heads** (the compact acks above). Each head is a (member, seq) pair as varints, plus one
      32-byte BLAKE3 digest over every (member, seq, id), as P23-2 moves facts to (review DS-4: 16 bytes
      would give evidence only 2^64 collision resistance). It saves about 4 bytes an ack at 2 members,
@@ -1086,7 +1098,9 @@ them identically, so they can never fork anyone.
      opened, member 3 removed, and members 1 and 2 equal to the replay].
 
 **What a cheater can still do:**
-* backdate within one ack interval plus the slack, about 4 frames (67 ms) at the defaults;
+* backdate within one ack interval plus the slack: about 4 frames (67 ms) at the defaults, and up to
+  about 10 frames (167 ms) while the session is idle (7.6, reduction 2: acks every 8 frames) or at
+  R18's coarsest level (10.9), so rollback budgets assume the larger figure (review IR-1);
 * claim a present that lags the true one. That looks exactly like a slow link: it is accountable (others
   see the member's stamps consistently trail their own clocks) but not provable.
 
