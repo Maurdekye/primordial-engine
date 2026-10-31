@@ -1418,7 +1418,35 @@ if our bulk transport proves weak.
 * **RTT is measured by the receiver, from its own send and receive times** (review H5). The remote's
   reported receive time is used only for the offset, never to excuse lateness. Since round 2 nothing is
   re-stamped (8.2): clocks only place an author's entries at its own present.
-* Continuous re-estimation, and a median across peers [I].
+* **Continuous sync to the median of the members** (@coordinator-opus, 2026-10-31, from @shader-lang's M1
+  finding). A sync done once at the start broke a Windows + WSL session: WSL2's monotonic clock ran 2.3%
+  slow when idle and up to about 9% under load. With R18 on, the skew read as a queue growing to 1.1 s,
+  and an honest member was removed. With R18 off, a 2-minute run made 215 empty view-change decisions,
+  against none with every member on Windows [V pe-app p2/app af58f53, spikes/out/m1/wsl-clock-skew].
+  Real machines drift about 10-100 ppm, so the VM is the case that matters, and M1 mixes the two.
+  1. Every member pings every live member about every 500 ms. For each peer it fits that peer's offset
+     against its own clock as a + b·t, over the recent lowest-RTT samples.
+  2. Its target offset is the **median of the predicted offsets to all members, its own (0) included**.
+     With an even count it takes the midpoint of the two middle values, so two members split the
+     difference. Only members count: not a joiner or a spectator before it is admitted, and not a
+     removed member. A joiner sets its offset once, before its first frame, and then slews like
+     everyone else.
+  3. It slews toward the target and never steps. The correction per tick must exceed the worst drift
+     (9% is 1.5 ms per 60 Hz tick), and it stays well under a frame, so no frame is skipped. One way is
+     to apply the fitted rate b as a frequency correction and cap only the residual.
+  4. R18's one-way delay stamps are in session time, so the sync removes skew from them (10.9, item 3).
+  * **Why not the leader** [I]: a faulty leader could give each member a different time. A member pushed
+    behind looks exactly like a slow link: its acks arrive late, confirmation stalls, and the slow-member
+    rule demotes it (10.9, item 7). So one faulty member could get honest ones removed. The leader also
+    changes at every view change.
+  * **Fault bound** [I, approximate agreement]: with fewer than a third of the members faulty, the
+    session's own bound (10.8), every honest member's median lies within the honest members' offsets.
+    A liar can only move it within that range, and repeated medians draw the honest clocks together.
+    Dropping the t highest and t lowest offsets and taking the midpoint (fault-tolerant averaging) is
+    the textbook variant and behaves the same here.
+  * **Evidence for the build:** the 2-minute Windows + WSL run with R18 on, all equal, with no empty view
+    change and no honest member removed; the 80 kbit/s R18 run unchanged; and a 3-member run in which
+    one member reports a skewed clock to one peer only, with no honest member removed.
 
 ### 10.5 NAT traversal without a central server [I]
 
