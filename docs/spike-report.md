@@ -693,14 +693,23 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
   earlier sim-frame measure could not fire on a halt (it is pinned one window behind the clock); the
   RG-1 control now fails L1 (lag 653 > 240), 80 seeds pass. The three halts were left for round 7 on
   main. P2-4 landed on main at 5ba3eab.
-* **Round 7** (on main) fixes the three halts, each behind a fix flag, and the reviewer's repros join the
-  suite. Each fails with its fix switched off and passes with it:
+* **Round 7** (on main) fixes the three halts, and a fourth that @ballpit-viz found while mirroring
+  `prevotefork` into the P2-9 tool (round 6's RESULT checked only the vote it targeted and passed a
+  halted session). Each fix is behind a flag, each repro fails with its fix switched off and passes with
+  it, and every round-7 repro now also checks that confirmation is live at the end:
 
   | Repro | Fix | With the fix | Fix off |
   |---|---|---|---|
   | `adminwedge` (VC6R-3) | admin validity a pure function of the entry and its ancestry, so a later fork cannot invalidate a locked value | 9 removed at 4.03 s, confirmation to 826 | 9 never removed, confirmation stops at 112 |
   | `capfake` (VC6R-1) | a cap's polka fetch has a budget of a further half window, then the capper is voted out | 9 removed at 4.15 s | never removed, stops at 143 |
   | `fakeadmin` (VC6R-4) | a decision resets only the timers its cleared votes made stale | 8 removed at 5.23 s (3 decisions) | never removed (6 decisions), stops at 110 |
+  | `prevotefork` (PF-1) | a proven forker's precommits count toward a decision wherever they sit in its chain, any version (Tendermint's commit rule); its proposals are kept by value the same way | every member decides the join, the forker removed at 4.23 s, confirmation to 587 | 3, 9 and the joiner stay in epoch 0 (they keep forged versions of 1's forked seq and cannot link its precommit); stops at 53 |
+
+  * `prevotefork`'s fixture also lost 9's round-0 prevote for good, repairs included, which made 9 a
+    second faulty member of four (beyond t = 1). The loss now ends at 2.5 s, past the cap's judgment.
+    The run keeps its VC4R-1 control and adds a PF-1 control.
+  * PF-1 changes no other scenario's log: beyond wall-clock timings, the suite differs only in the
+    round-7 repros' new liveness fields. `fixes_off` is now 64 bits wide (PF-1 is bit 32).
 
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
