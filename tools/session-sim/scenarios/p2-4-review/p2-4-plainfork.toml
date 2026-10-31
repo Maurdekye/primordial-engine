@@ -1,0 +1,51 @@
+description = """
+P2-4 review round 8, VC8R-1 (design-reviewer's probe `voiddeep plain`): every member an admin, \
+{1, 2, 3, 4}. At 2 s the round-0 proposer 1 forks seq s: two Attests (its real chain, s and s+1) \
+to 2 and 3, a third Attest at s to 4; at 2.1 s each gets the other branch. 1 proposes an empty \
+change, prevotes it, drops its precommits and crashes once 2 and 3 have precommitted (or at 6 s). \
+2 and 3 lock on the round-0 polka. With VC8R-1's fix off, 4 cannot count 1's prevote (it kept the \
+other version), never sees that polka, the locked members prevote nil on everything 4 proposes, \
+and the session halts with no admin entry at all. As shipped 1 is removed and confirmation goes \
+on. Part 1 runs with VC8R-1's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4]
+guests = { role = 1, admins = [1, 2, 3, 4] }
+
+[[byzantine]]
+kind = "fork_segment"
+member = 1
+at_ms = 2000
+swap_ms = 2100
+p = 4
+others = [2, 3]
+segment = "plain"
+crash_by_ms = 6000
+own_fixes_off = ["VC3R3"]
+
+[[fault]]
+from = 1
+msg = "precommit"
+drop = true
+
+[[part]]
+world.1.fixes_off = ["VC8R1"]
+# This part halts (frame 230 at the end), so the spike's touch by 1 at frame 700 never fires; the tool
+# refuses an action its member never reaches, so this part's plan leaves it out.
+world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+report = [
+    { kind = "check", case = "plainfork", label = "plainfork fixed=false", honest = [2, 3, 4] },
+    { kind = "view_changes", honest = [2, 3, 4], label = "plainfork" },
+    { kind = "verdict", honest = [2, 3, 4], label = "plainfork fixed=false" },
+]
+
+[[part]]
+world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+report = [
+    { kind = "check", case = "plainfork", label = "plainfork fixed=true", honest = [2, 3, 4] },
+    { kind = "view_changes", honest = [2, 3, 4], label = "plainfork" },
+    { kind = "verdict", honest = [2, 3, 4], label = "plainfork fixed=true" },
+]

@@ -1,0 +1,62 @@
+description = """
+P2-4 review round 8, PF-1 with VC8R-1 on: prevotefork, but 9 falls silent at 1 s, so the only \
+quorum is {1, 2, 3} and the forker's precommit is in it. 3 counts 1's prevote toward the polka \
+(VC8R-1), locks and precommits, but can decide only by counting 1's precommit, which sits past 1's \
+fork in 3's copy. With PF-1's fix off 3 and the joiner stay in epoch 0 while 1 and 2 decide, and \
+confirmation halts; as shipped every member decides on the forker's precommit. Part 1 runs with \
+PF-1's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+join_rules = { rules = [], fallback = 1 }
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of every part's run (frame 364 at
+# most): it never fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[join]]
+at_ms = 1000
+member = 5
+to = [1, 2, 3, 9]
+
+# 9 falls silent at 1 s: everything it sends is lost (the spike's first filter).
+[[fault]]
+from = 9
+after_ms = 1000
+drop = true
+
+[[byzantine]]
+kind = "equivocate_prevote"
+member = 1
+from_ms = 1000
+value_to = [2]
+nil_to = [3, 9]
+
+# 9's round-0 prevotes are lost until 2.5 s, past the cap's judgment, then repaired.
+[[fault]]
+from = 9
+msg = "prevote"
+round = 0
+before_ms = 2500
+drop = true
+
+[[part]]
+world.1.fixes_off = ["PF1"]
+report = [
+    { kind = "check", case = "pfsilent", label = "pfsilent fixed=false", target = 1, members = [1, 2, 3, 5], honest = [1, 2, 3] },
+    { kind = "view_changes", honest = [1, 2, 3], label = "pfsilent" },
+    { kind = "verdict", honest = [1, 2, 3], label = "pfsilent fixed=false" },
+]
+
+[[part]]
+report = [
+    { kind = "check", case = "pfsilent", label = "pfsilent fixed=true", target = 1, members = [1, 2, 3, 5], honest = [1, 2, 3] },
+    { kind = "view_changes", honest = [1, 2, 3], label = "pfsilent" },
+    { kind = "verdict", honest = [1, 2, 3], label = "pfsilent fixed=true" },
+]
