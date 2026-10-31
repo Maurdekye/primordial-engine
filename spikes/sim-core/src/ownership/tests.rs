@@ -638,3 +638,179 @@ fn wire_round_trip_and_one_encoding() {
     }
     assert_eq!(Cert::from_words(&[1, 2, 3]), None);
 }
+
+// ---- review round 3 (OWNS-*), from @design-reviewer's repros (runs13/own3-reviewer-tests.patch),
+// asserting the safe outcome. Failing first at 2daf8ab: see commit 'OWNS failing-first'.
+
+const L9: Lineage = 9;
+
+/// OWNS-5b: co-owner B alone floods the book with unattested forks; honest commits still go through.
+#[test]
+fn owns5b_unattested_flood_is_capped_per_signer() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    let mut refused = 0;
+    for i in 0..MAX_CERTS as u32 {
+        let c = next(&b, g, Change::SetRecovery { owner: B, recovery: Some(5000 + i) }, &[B]);
+        if b.insert(c).is_err() {
+            refused += 1;
+        }
+    }
+    assert!(refused > 0 && b.len() < 64, "B alone stored {} certs", b.len());
+    assert_eq!(b.commit_local(next(&b, g, Change::Add { key: X }, &[S, B]), L1, 10), Ok(Insert::Applied));
+}
+
+/// OWNS-5c: a relay's subsets of one cert's signatures are one certificate.
+#[test]
+fn owns5c_signature_subsets_are_one_certificate() {
+    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::Any, 1)).unwrap();
+    let g = b.genesis;
+    let full = next(&b, g, Change::Add { key: X }, &[S, B, C]);
+    let mut ids = BTreeSet::new();
+    for mask in 1u32..8 {
+        let mut c = full.clone();
+        c.sigs = full.sigs.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| *s).collect();
+        ids.insert(c.id());
+        assert!(b.insert(c).is_ok());
+    }
+    assert_eq!(ids.len(), 1);
+    assert_eq!(b.len(), 2);
+}
+
+/// OWNS-1c: after a recovery completed in L1, the old key's cancel attested by another lineage at a
+/// frame it picks changes nothing: frames are compared within one lineage only.
+#[test]
+fn owns1c_cross_lineage_cancel_does_not_undo_a_recovery() {
+    for at in [(L1, 3 + RF), (L2, 5)] {
+        let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+        commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+        commit(&mut b, Change::StartRecover { owner: S, new_key: N }, &[R], 2).unwrap();
+        let st = head(&b);
+        commit(&mut b, Change::FinishRecover { owner: S }, &[R], 2 + RF).unwrap();
+        put(&mut b, st, Change::SetRecovery { owner: S, recovery: Some(EVE) }, &[S], Some(at));
+        assert_eq!(owners(&b), [B, N], "cancel attested at {at:?}");
+    }
+}
+
+/// OWNS-1d: residual without a trust root (D87). An active co-owner removed through a window that the
+/// challenger ran in a session of its own.
+#[test]
+#[ignore = "residual until the trust root is decided (D87)"]
+fn owns1d_private_window_never_removes_an_active_co_owner() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::Challenge { key: B }, &[S], 1).unwrap();
+    let ch = head(&b);
+    commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], 2).unwrap();
+    b.record(ch, L2, 1_000_000);
+    let rd = put(&mut b, ch, Change::RemoveDormant { key: B }, &[S], Some((L2, 1_000_000 + W)));
+    put(&mut b, rd, Change::Add { key: EVE }, &[S], Some((L2, 1_000_001 + W)));
+    assert_eq!(owners(&b), [S, B]);
+}
+
+/// OWNS-1a: residual without a trust root (D87). A stolen recovery key replaces an active owner in a
+/// session of its own.
+#[test]
+#[ignore = "residual until the trust root is decided (D87)"]
+fn owns1a_stolen_recovery_key_never_replaces_an_active_owner() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    let r = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L1, 1)));
+    put(&mut b, r, Change::SetRule { rule: SignRule::All }, &[S], Some((L1, 1000)));
+    let st = put(&mut b, r, Change::StartRecover { owner: S, new_key: N }, &[R], Some((L9, 1 << 50)));
+    let fin = put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some((L9, (1 << 50) + RF)));
+    put(&mut b, fin, Change::Add { key: EVE }, &[N], Some((L9, (1 << 50) + RF + 1)));
+    assert_eq!(owners(&b), [S]);
+}
+
+/// OWNS-2: unattested removals void nothing.
+#[test]
+fn owns2_unattested_counter_removal_voids_nothing() {
+    let mut b = Book::new(Cert::genesis(&[A, K], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    let ch = put(&mut b, g, Change::Challenge { key: K }, &[A], Some((L1, 1)));
+    put(&mut b, ch, Change::RemoveDormant { key: K }, &[A], Some((L1, 1 + W)));
+    let c2 = put(&mut b, g, Change::Challenge { key: A }, &[K], None);
+    put(&mut b, c2, Change::RemoveDormant { key: A }, &[K], None);
+    assert_eq!(owners(&b), [A]);
+}
+
+/// OWNS-3: an old-state fork doesn't void a later addition (the fork's own addition joins the union:
+/// the stated residual, shown as disputed).
+#[test]
+fn owns3_old_fork_does_not_void_later_additions() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    commit(&mut b, Change::Add { key: A }, &[S], 1).unwrap();
+    commit(&mut b, Change::Add { key: K }, &[S, A], 2).unwrap();
+    commit(&mut b, Change::Leave { key: S }, &[S], 3).unwrap();
+    put(&mut b, g, Change::Add { key: Z }, &[S], Some((L2, 1)));
+    let v = b.view();
+    assert!(v.owners.owners.contains(&A) && v.owners.owners.contains(&K));
+    assert!(v.disputed);
+}
+
+/// OWNS-4: an old-state fork doesn't loosen the rule; after a merge, one co-owner still can't add alone.
+#[test]
+fn owns4_old_fork_does_not_loosen_the_rule() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    commit(&mut b, Change::Add { key: B }, &[S], 1).unwrap();
+    commit(&mut b, Change::Add { key: C }, &[S, B], 2).unwrap();
+    commit(&mut b, Change::Leave { key: S }, &[S], 3).unwrap();
+    put(&mut b, g, Change::SetRule { rule: SignRule::Any }, &[S], Some((L2, 1)));
+    assert_eq!(b.view().owners.rule, SignRule::All);
+    let m = merge(&b, &[B]);
+    b.insert(m.clone()).unwrap();
+    b.record(m.id(), L1, 9);
+    assert_eq!(commit(&mut b, Change::Add { key: EVE }, &[B], 10), Err(OwnError::Signers));
+}
+
+/// OWNS-5: padding a certificate with signatures of keys that aren't owners makes no new certificate.
+#[test]
+fn owns5_signature_padding_makes_no_copies() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    let c = next(&b, g, Change::Add { key: B }, &[S]);
+    for i in 0..64u32 {
+        assert!(b.insert(c.clone().signed(&[10_000 + i])).is_ok());
+    }
+    assert_eq!(b.len(), 2);
+    assert_eq!(b.insert(next(&b, g, Change::Add { key: C }, &[S])), Ok(Insert::Applied));
+}
+
+/// OWNS-8: "disputed" comes from the fork history, so the residual's sock can't merge it away.
+#[test]
+fn owns8_sock_merge_does_not_clear_the_dispute() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    let c1 = put(&mut b, g, Change::Add { key: B }, &[S], Some((L1, 1)));
+    put(&mut b, c1, Change::Leave { key: S }, &[S], Some((L1, 2)));
+    let eve = put(&mut b, g, Change::Add { key: EVE }, &[S], None);
+    b.record(eve, L2, 1);
+    assert!(b.view().disputed);
+    let m = merge(&b, &[EVE]);
+    b.insert(m.clone()).unwrap();
+    b.record(m.id(), L2, 2);
+    assert!(b.view().disputed);
+}
+
+/// OWNS-10, OWNS-11: junk in a chain is skipped, not fatal; an unknown id has an empty prefix.
+#[test]
+fn junk_is_skipped_and_unknown_prefix_is_empty() {
+    let g = Cert::genesis(&[S], SignRule::All, 9);
+    let b = Book::new(g.clone()).unwrap();
+    let c1 = next(&b, b.genesis, Change::Add { key: B }, &[S]);
+    let junk = next(&b, b.genesis, Change::Add { key: EVE }, &[EVE]);
+    assert!(verify_chain(&g, &[junk, c1], &[], &sessions()).is_ok());
+    assert!(b.prefix_of(12345).is_empty());
+}
+
+/// OWNS-12: a session builds only on certificates it committed itself.
+#[test]
+fn owns12_session_builds_only_on_its_own_commits() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let g = b.genesis;
+    let other = put(&mut b, g, Change::Add { key: B }, &[S], Some((L2, 1)));
+    let c = next(&b, other, Change::Add { key: C }, &[S, B]);
+    assert_eq!(b.commit_local(c, L1, 2), Err(OwnError::Stale));
+}
