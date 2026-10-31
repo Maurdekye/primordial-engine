@@ -171,7 +171,7 @@ fn double_sale() -> (Book, Vec<Cert>) {
 /// Session `l`'s attestation of `c` at frame `f`, signed by its members in `sessions()`.
 fn attest_of(b: &Book, c: &Cert, l: Lineage, f: u64) -> Attest {
     let members: &[MemberId] = if l == L2 { &[4, 5] } else { &[1, 2, 3] };
-    Attest::make(b.world, c.id(), l, f, &c.signers(), members)
+    Attest::make(b.world, c.id(), l, f, &c.sigs, members)
 }
 
 /// The double sale's attestations: L1 committed the sale to B, L2 the sale to C.
@@ -804,8 +804,9 @@ fn rv4_owt6_equal_frame_attests() {
     commit(&mut b0, Change::SetRecovery { owner: C, recovery: Some(R2) }, &[C], 5).unwrap();
     let x = next(&b0, head(&b0), Change::SetRecovery { owner: B, recovery: Some(R) }, &[B, S]);
     b0.insert(x.clone()).unwrap();
-    let a1 = Attest::make(b0.world, x.id(), L9, 7, &[B].into(), &[99]);
-    let a2 = Attest::make(b0.world, x.id(), L9, 7, &[B, S].into(), &[99]);
+    let only_b: Vec<(Key, u64)> = x.sigs.iter().copied().filter(|s| s.0 == B).collect();
+    let a1 = Attest::make(b0.world, x.id(), L9, 7, &only_b, &[99]);
+    let a2 = Attest::make(b0.world, x.id(), L9, 7, &x.sigs, &[99]);
     let (mut p, mut q) = (b0.clone(), b0.clone());
     p.attest(&a1, &s9());
     p.attest(&a2, &s9());
@@ -980,7 +981,7 @@ fn rv5_ownu7_record_of_unheld_changes_nothing() {
     let before = b.clone();
     for id in 0..1000 {
         b.record(id, L1, 5);
-        b.attest(&Attest::make(b.world, id, L1, 5, &[S].into(), &[1, 2, 3]), &sessions());
+        b.attest(&Attest::make(b.world, id, L1, 5, &[(S, key_sig(S, id))], &[1, 2, 3]), &sessions());
     }
     assert_eq!(b, before);
 }
@@ -1218,7 +1219,10 @@ fn rv8_ownx1a_attested_signer_list_does_not_bypass_own3() {
     b.record(c1, L2, 1);
     let x = put(&mut b, c1, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 2)));
     let rm = next(&b, x, Change::Remove { key: I }, &[S]);
-    let att = Attest::make(b.world, rm.id(), L2, 3, &[S, J].into_iter().collect(), &[4, 5]);
+    // The session lists J too, with a signature J never made.
+    let mut listed = rm.sigs.clone();
+    listed.push((J, 0xBAD));
+    let att = Attest::make(b.world, rm.id(), L2, 3, &listed, &[4, 5]);
     b.insert_attested(&[rm], &[att], &sessions());
     assert_eq!(owners(&b), [S, I, J]);
 }
@@ -1229,7 +1233,9 @@ fn rv8_ownx1b_attested_signer_list_does_not_drain_b() {
     let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
     for i in 0..60u32 {
         let c = next(&b, head(&b), Change::SetRecovery { owner: S, recovery: Some(9000 + i) }, &[S]);
-        let att = Attest::make(b.world, c.id(), L1, 1 + i as u64, &[S, B].into_iter().collect(), &[1, 2, 3]);
+        let mut listed = c.sigs.clone();
+        listed.push((B, 0xBAD));
+        let att = Attest::make(b.world, c.id(), L1, 1 + i as u64, &listed, &[1, 2, 3]);
         b.insert_attested(&[c], &[att], &sessions());
     }
     assert_eq!(b.view().owners.solo.get(&B).copied().unwrap_or(0), 0, "B charged for certificates it never signed");
