@@ -38,8 +38,9 @@ Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-f
 31 unit and integration tests in pe-session [V].
 
 **Linux** (static musl builds in WSL2, kernel 6.6.87.2, `scripts/p2-3/run_linux.sh`, `run_linux_regress.sh`):
-at 87410b6 (round 8), every test passes and every harness log equals the Windows log, timings masked
-(93 identical, SUMMARY ALL EQUAL); the tool's `regress` is 97 of 97 identical [V]; earlier at 90e0c22/5881aae
+at 73bcbc6 (D73(a)), every test passes and every harness log equals the Windows log, timings masked
+(93 identical, SUMMARY ALL EQUAL); the tool's `regress` is 97 of 97 identical [V]; earlier at 87410b6 (round 8:
+93, 97), 90e0c22/5881aae
 (D58: 88, 92), 7891209 (41 tests, 88, 92), 3c7ec50/44a1b2f (31 tests, 88, 92), 8ded87a (85 identical) and 1404a0c (70) [V].
 
 **Still to do:** the session id derived from a signed genesis entry with a random nonce (design 10.3, SX-1; today the caller supplies it); signed EpochCert proofs; the view-change value and the chain hash at 256 bits (64-bit BLAKE3 today: a proposer's birthday search, about 2^32, remains; in the P2-5 port's scope, coordinator 2026-10-31); the R14 facts gaining frame and epoch (VC-7, review P23R-4; also with the P2-5 port, in the `FactWriter` layout); each partner world's session id in the route list, so a partner's R14 facts verify with real keys (today only the own world's session is registered; review P23R-3, design 22.7); the core holding a joiner's simulation while a state request is outstanding (P23R-1); the known limits P23-8, P23-9, P23-13 and P23-14 recorded in design 10.8.
