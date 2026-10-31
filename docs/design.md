@@ -979,20 +979,26 @@ release build [V session-sim ballpit].
   | Touch with carried state | 188 | 100 |
   | Vote | 163 (195 naming a kick) | - |
 
-  Each datagram adds about 44 bytes: 28 for IPv4 and UDP, and Noise's 16-byte tag [I].
+  Each datagram adds about 44 bytes: 28 for IPv4 and UDP, and Noise's 16-byte tag [I]. Measured on the
+  wire, an idle ack's datagram is about 299 bytes, with the transport's framing [V @world-chunks].
 * **Measured** [V @ballpit-viz, pe-session at p2/session e98261f, the 2026-10-30 matrix's config with R18
   off]: idle, 7.8 kB/s each way at 2 members (the spike, 3.1). During the 500-ball sweep, 18.4 kB/s (the
   spike, 8.3). The sizes above predict both. Idle is 30 acks/s at 208 bytes plus 30 datagrams, about 7.6
   kB/s; the sweep adds 60 hand entries/s.
 * **Against the links:**
   * At 64 kbit/s (8 kB/s), idle traffic alone takes about 95% of the link and the sweep about 230%.
-    Without R18's thinning (10.9) no room is left for repairs. That fits the R18-off run that never
-    recovered [I; @world-chunks is diagnosing it]. R18 ships on (@coordinator-opus, 14:02Z).
+    Without R18's thinning (10.9) no room is left for repairs. @world-chunks measured the R18-off run
+    that never recovered as overload: 62.5 kbit/s of idle acks against the 64 kbit/s cap, which starves
+    repairs (10.9, item 5). Separately, R1's pauses were a port regression in the repair yield
+    (pe-session cut a reply per message instead of per reply); it is fixed [V @world-chunks]. R18 ships
+    on (@coordinator-opus, 14:02Z).
   * At 256 kbit/s (32 kB/s), idle takes about 24% and the sweep 57%.
   * Each member's idle upload is about 30 kB/s at 4 members (3 peers, 30 acks/s each, 288 bytes, plus
     datagrams) and about 103 kB/s at 8: over the budget, as the spike already was from 3 members.
-* **Four reductions** [proposals for @coordinator-opus's decision; none built; I: estimates from the sizes
-  above]:
+* **Four reductions** (I: estimates from the sizes above). **Decided** (@coordinator-opus, about 15:05Z):
+  build 1 and 2 in pe-session (@item:primordial-engine/ack-bandwidth-reductions-in-pe-session-check-on-c,
+  @world-chunks's, after P2-3 merges), and the spike mirrors 2. 3 and 4 wait until after M1. None is
+  built yet:
   1. **The check hash only when it changes.** It changes once per check interval (30 frames) but rides on
      every ack. Sending it once saves 40 bytes on 14 acks of 15: idle at 2 members falls from 7.6 to
      about 6.4 kB/s. It changes the ack encoding, so every entry id moves and pe-session's goldens are
@@ -1002,9 +1008,13 @@ release build [V session-sim ballpit].
      and confirmation latency while anything happens is unchanged. 8 frames stays far inside the timers
      that read acks (half a window, 60 frames; `suspect_after`, 180). It moves the timing of every log
      (re-bless), and needs a rule for "nothing unconfirmed" that each member judges from its own copy.
+     It combines with R18's ack thinning (10.9) by taking the longer interval: an idle member acks every
+     8 frames at any level, and an active one at its level's interval (every 2 frames uncongested, up
+     to 8 at the coarsest level).
   3. **Compact heads** (the compact acks above). Each head is a (member, seq) pair as varints, plus one
-     16-byte digest over every (member, seq, id). It saves about 20 bytes an ack at 2 members (10%),
-     about 236 at 8 (half), and about 524 at 16. It touches the evidence rules. A lying-vote proof (R3-1)
+     32-byte BLAKE3 digest over every (member, seq, id), as P23-2 moves facts to (review DS-4: 16 bytes
+     would give evidence only 2^64 collision resistance). It saves about 4 bytes an ack at 2 members,
+     about 220 at 8 (half), and about 508 at 16. It touches the evidence rules. A lying-vote proof (R3-1)
      and the reference checks compare the ids an ack named. So the digest must be checkable by a third
      party from the entries it covers, and a proof must carry those entries. It needs a design review
      of its own.
@@ -1014,9 +1024,10 @@ release build [V session-sim ballpit].
      entry format: any entry may then carry a horizon and heads, and the horizon rule applies to each.
      Every golden moves.
   * **All four together:**
-    * idle at 2 members: about 1.5 kB/s, 80% less;
+    * idle at 2 members: about 1.6 kB/s, 79% less;
     * a sweep: about 13 kB/s, 29% less;
-    * idle at 8 members: about 11 kB/s instead of 103.
+    * idle at 8 members: about 12 kB/s instead of 103.
+    With the decided two (1 and 2), idle at 2 members is about 1.6-1.9 kB/s and a sweep is unchanged.
     A sweep still needs R18's thinning at 64 kbit/s: the hand stream alone is 8 kB/s.
   * **Whether the spike mirrors them:** (1), (3) and (4) are encodings, which the spike can leave out, as
     it keeps FNV (P23-2). (2) changes timing, so the reference should mirror it.
@@ -2034,7 +2045,10 @@ and the engager's hand replayed after the gesture had ended.
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
      * A thinned hand entry carries a `span`: its target is reached over that many frames, and dead
-       reckoning (6.10) covers the gaps.
+       reckoning (6.10) covers the gaps. Every peer, the author included, follows a thinned entry over
+       its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
+       most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
+       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
@@ -2052,6 +2066,12 @@ and the engager's hand replayed after the gesture had ended.
    * a reply holds at most 16 entries, and the requester asks again for the rest;
    * a member answers a fetch only while its uplink to the requester holds under 100 ms;
    * every batch is split into datagrams of at most 1,200 bytes.
+   * **The weakness this leaves:** repairs only yield. On a link whose steady traffic sits just under
+     its cap, a repair waits behind the steady stream, its re-asks back off to 2 s, and confirmation
+     crawls or stalls for good. pe-session with R18 off showed it: idle acks at 62.5 kbit/s on a 64
+     kbit/s link, and a session that never recovered [V @world-chunks]. R18's thinning, which ships on,
+     is the defence: it holds the uplink queue near 40 ms, which leaves headroom for repairs. The ack
+     reductions decided in 7.6 widen that headroom [I].
 6. **Leaving a stall.**
    * A member that fell behind re-simulates in the background, at up to 8 ms per tick (6.5), and draws
      only its present. The catch-up is never shown as a replay.
@@ -2943,26 +2963,44 @@ on storage space, in a similar manner to how resonite works"):
 * **The runtime image is stored as deltas:**
   * Runtime state is stored per chunk (the dormant records above; SW-6). An unchanged chunk is the same
     blob, so a backup stores only the chunks that changed since the one before.
-  * A changed chunk's record is stored as a zstd delta against the previous version of that chunk
-    (patch-from style), with a full copy every 8 versions, so a read never chains more than 8 deltas
-    [proposal]. A blob is still named by the hash of its full content and checked against it after
-    decoding.
+  * A changed chunk's record is stored as a zstd delta against that chunk's record in the previous
+    *kept* backup (patch-from style), with a full copy every 8 versions, so a read never chains more
+    than 8 deltas [proposal]. When thinning drops a backup that a later delta was based on, that delta is
+    re-based onto its new previous kept version, or stored full; thinned versions are never kept alive
+    as bases (review DS-2). A blob is still named by the hash of its full content and checked against
+    it after decoding.
+  * A before-merge backup stores its changed chunk records as full copies, never as deltas, so no
+    damaged base can break a version that nothing may lose (review DS-3).
   * So there is no world-wide keyframe: every manifest is complete, and only chunk records have
     keyframes.
 * **Collection is mark-and-sweep, never reference counts** [proposal]. A count drifts after a crash; a
   sweep starts over each time.
   * The roots are every kept backup's manifest (by the schedule above), every head, every checkpoint and
     before-merge backup, and every other world's roots on the machine.
-  * A blob stored as a delta keeps its base chain reachable.
+  * **What a sweep must never take** (review DS-1):
+    * writes in flight: a blob is written before the manifest that names it, so a sweep spares every
+      blob newer than its own start;
+    * running sessions: each pins what it uses, its snapshot ring, its unsaved runtime state, and the
+      assets it fetched for a joined world this machine holds no backup of; caches pin theirs the same
+      way, until they release them;
+    * pending deltas: a delta being written pins the base it shares;
+    * a blob stored as a delta keeps its base chain reachable.
+  * Nothing the protocol needs lives as a loose blob: the cross-world tables (22.7) and the ownership
+    chain (12.5) are part of every manifest's authority data, so any kept manifest reaches them.
   * The sweep runs at idle priority, about daily. Thinning only drops manifests; the sweep then deletes
-    what no root reaches, never a blob a kept backup reaches.
+    what no root and no pin reaches, never a blob a kept backup reaches.
 * **A rough estimate** [I; assumptions stated, to measure]:
   * The assumptions: a busy world with 50 MB of assets and 20 MB of chunk files, a 1.5 MB runtime image
-    (9.1), and 10-20% of its chunks changing per 5-minute autosave, about 0.2-0.3 MB compressed.
-  * Over a month of daily play, the schedule keeps about 66 autosaves (12 for the last hour, 24 hourly,
-    30 daily). That is about 20 MB of deltas, plus the 70 MB of base content stored once.
-  * In total, about 100 MB per world-month, more with heavy checkpointing. An idle world writes nothing,
-    since autosave runs only while the world changes.
+    (9.1), and 10-20% of its chunks changing per 5-minute autosave, about 0.2-0.3 MB before
+    compression.
+  * The schedule keeps about 66 autosaves over a month of daily play: 12 for the last hour, 24 hourly
+    and 30 daily. Kept versions differ by more than one autosave's change: an hourly keeper by an hour
+    of it (about 0.5 MB), a daily one by a day's (up to most of the image, about 0.75-1.5 MB). Deltas
+    against the previous kept version therefore come to about 40 MB, plus the 70 MB of base content
+    stored once.
+  * In total, about 110 MB per busy world-month, and up to about 200 MB if a day's play touches most
+    chunks (@design-reviewer's worst case); more with heavy checkpointing. An idle world writes
+    nothing, since autosave runs only while the world changes.
 
 **Loading a backup:**
 * It is a human action: no agent certificate can carry it (12.3). It needs the Load backups permission,
