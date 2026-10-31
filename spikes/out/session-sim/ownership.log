@@ -1,0 +1,32 @@
+RESULT ownership world 1: offline reference owners {3, 10, 40} rule All heads 1 recovery {40: [60]} | ALL EQUAL
+  m1: owners {3, 10, 40} rule All heads 1 recovery {40: [60]} digest b58249013011b48e
+  m2: owners {3, 10, 40} rule All heads 1 recovery {40: [60]} digest b58249013011b48e
+  m3: owners {3, 10, 40} rule All heads 1 recovery {40: [60]} digest b58249013011b48e
+  epoch 1 boundary 61: cert m1s31 stamped 60: seq 1 Add { key: 20 } by {10} -> applied
+  epoch 2 boundary 150: cert m1s80 stamped 150: seq 2 SetRecovery { owner: 10, recovery: Some(50) } by {10} -> applied
+  epoch 3 boundary 180: cert m2s97 stamped 180: seq 3 Add { key: 30 } by {20, 50} -> applied
+  epoch 4 boundary 222: cert m1s122 stamped 220: seq 4 SetRecovery { owner: 30, recovery: Some(52) } by {30} -> applied
+  epoch 5 boundary 232: cert m2s131 stamped 230: seq 5 Leave { key: 20 } by {20} -> applied
+  epoch 6 boundary 242: cert m3s137 stamped 240: seq 6 Leave { key: 30 } by {52} -> applied
+  epoch 7 boundary 300: cert m1s174 stamped 300: seq 7 Add { key: 40 } by {10} -> applied
+  epoch 8 boundary 341: cert m2s197 stamped 340: seq 8 SetRecovery { owner: 10, recovery: None } by {50} -> applied
+  epoch 9 boundary 352: cert m3s203 stamped 350: seq 9 SetRecovery { owner: 40, recovery: Some(60) } by {40} -> applied
+  epoch 10 boundary 362: cert m2s215 stamped 362: seq 10 Add { key: 3 } by {10, 40} -> applied
+  cert m2s49 stamped 90: seq 2 Add { key: 66 } by {66} -> never committed (Signers)
+  cert m3s64 stamped 120: seq 2 Add { key: 66 } by {20} -> never committed (Signers)
+  cert m3s111 stamped 200: seq 4 Remove { key: 30 } by {10, 20} -> never committed (NotAllowed)
+  cert m1s168 stamped 290: seq 7 Leave { key: 10 } by {10} -> never committed (LastOwner)
+  cert m2s174 stamped 300: seq 7 Add { key: 41 } by {10} -> never committed (Stale)
+  cert m3s188 stamped 330: seq 8 Merge by {40} -> never committed (BadLink)
+  cert m1s215 stamped 360: seq 10 Add { key: 66 } by {10} -> never committed (Signers)
+  after the decisions up to frame 210: owners {10, 20, 30} rule All heads 1 recovery {10: [50]}
+  after the decisions up to frame 250: owners {10} rule All heads 1 recovery {10: [50]}
+  after the decisions up to frame 320: owners {10, 40} rule All heads 1 recovery {10: [50]}
+  after the decisions up to frame 345: owners {10, 40} rule All heads 1
+RESULT ownership: m1: 1 kicks 3 @375: refused
+  m1: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
+RESULT ownership: m2: 1 kicks 3 @375: refused
+  m2: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
+RESULT ownership: m3: 1 kicks 3 @375: refused
+  m3: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
+RESULT ownership world 1: frames 0..380 digests m1=43869fd42d13a8dc m2=43869fd42d13a8dc m3=43869fd42d13a8dc | offline replay 43869fd42d13a8dc | ALL EQUAL
