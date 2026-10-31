@@ -2427,20 +2427,30 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
 
 **In the session log [V: spike].**
 
-* A certificate is published as a `Payload::Ownership` entry (wire tag 20).
-* **Without P2-4 (the spike on main).** It applies at its frame, in canonical order, through
-  `Book::commit_local`, which records the session's attestation at that frame. The book is part of the
-  rollback state and of the state hash. Cloning it into a keyframe is free until the next change
-  (OWNR-6).
-* **With P2-4 (agreed with @engine-architect for 10.8).**
-  * An ownership certificate is an admin-layer entry, decided in `Change.admin` and committed at the
-    deciding boundary, which is also its attested frame.
-  * The admin run holds the `Book`.
-  * The Membership seam carries the book at epoch start, plus the ordered certificates.
-  * No verdict depends on a validator's clock (VC-3).
-* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) all
-  ask whether the member's identity key is in `book.view().owners` at that step. A relationship
-  record's expiry (O5) is checked against the session's agreed time at the same step [I].
+* A certificate is published as `Payload::Ownership { epoch, cert }` (wire tag 20), an **admin entry
+  of 12.4's layer**, like a kick (seam agreed with @engine-architect). Any member may publish one: the
+  owners' signatures inside are its authority, so it needs no permission. It obeys its author's horizon
+  (VCR-9), waits across epochs until a decision judges it, and a closed session commits none.
+* **Pending only while it would apply** to the book as decided: owners' signatures that check, built on
+  the current heads. One that can't apply is not pending and starts no view change, so junk can't force
+  decisions (V1's receipt rule, VC6R-4). A decision that makes a pending one unable to apply drops it
+  unjudged. Sent again later, it is a new entry.
+* **Decided in `Change.admin`**, in commit order (stamp, author, seq) with the other admin entries. The
+  admin run holds the `Book` (copy on write) and applies a certificate if `Book::commit_local` does.
+  The outcome depends only on the book, the certificate and that order, never on the boundary, which
+  is computed after the admin entries. The session then commits it at the deciding boundary, its
+  attested frame. Proposer and validators reach the same outcome, and a validator refuses a change that
+  lists a different one.
+* **Governance, like roles.** The book lives beside roles and owners, outside the simulation's tables: a
+  rollback never rewinds it and the check hash doesn't cover it. Agreement on each decision covers it,
+  as it covers roles. No verdict depends on a validator's clock (VC-3).
+* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) ask
+  whether the member's key is an owner in the book, as the admin entries before them in the change left
+  it, so a kick listed after a certificate that made its target an owner is refused. `key_of` is the one
+  place that maps a member to its key: in the spike the member id is the key (10.3); production reads
+  it from the member's signed genesis or join entry. A world without a chain keeps 12.4's owner list.
+  A relationship record's expiry (O5) is checked against the session's agreed time at the same step
+  [I].
 * **Cost.** A book holds at most 1,024 attested certificates. It holds 64 unattested ones per key at
   a head, plus 16 per such certificate for keys it invited.
   * A batch is sorted by seq, and each certificate's linear state is computed as it arrives, so an
@@ -2559,9 +2569,13 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * fc83412, 6 from round 6;
   * 1660b92, 3 from round 7;
   * 4f13228, 4 from round 8 (OWNX-1a, OWNX-1b, OWNX-4, OWNX-6).
-* **The session scenario** gives ALL EQUAL, and the full regress has 42 of 42 identical. The ownership
-  scenario was rewritten for consent only (f73354b): a removal under rule A is refused, and backup keys
-  co-sign an addition, make their owner leave and clear themselves.
+* **The session scenario** runs on the admin layer: every replica's book and outcomes equal an offline
+  reference that applies the decided changes' certificates in order, and the full regress (93) is
+  identical to main's logs apart from the ownership log [V: ownership scenario]. Under consent only, a
+  removal under rule A is refused, and backup keys co-sign an addition, make their owner leave and clear
+  themselves. Of a double sale, the first in commit order is committed and the second is stale and never
+  committed. A certificate makes member 3's key an owner, and a non-owner admin's kick of member 3 is
+  then refused. A control without that certificate lets the kick through [V: control run].
 
 ---
 
