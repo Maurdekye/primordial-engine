@@ -1057,7 +1057,20 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   non-empty column with its schema hash. State reached through different operation orders hashes and
   serializes identically. The spikes used byte-wise FNV-1a, which is several times slower on whole
   columns. `checked_state_hash()` scans the values first, so a stray NaN is a deterministic error on
-  every peer, not a hash of platform-specific NaN bits; sync checks use it.
+  every peer, not a hash of platform-specific NaN bits; the per-frame hash uses it.
+* **Which hash decides what a peer accepts** (review P22R-1, design-wide) [I]. XXH64 is not a security
+  boundary: its lane steps are invertible, so a peer that sends state bytes can change them and then
+  choose one 32-byte stripe that restores the hash. So:
+  * the **check hash** that acks carry at check frames, and that a member compares before it accepts
+    state from another peer (9.5, 25.5), is **BLAKE3** (pure, as D16 uses for content), 256 bits, over the
+    canonical bytes of the check-frame image plus tables. It is one hash, so divergence detection and
+    transfer trust use the same value;
+  * XXH64 stays for the per-frame hash and local diagnostics, where nobody else chooses the bytes;
+  * the reader of a state transfer consumes it completely: no trailing bytes, no unreferenced blobs,
+    and free fields (names, bounding boxes) canonical or refused, so the hash binds exactly the state
+    it restores;
+  * the cost, about a millisecond or two of BLAKE3 per check frame for a 1.5 MB image, is to be measured
+    in P2-3.
 
 ### 9.2 Cadence
 
@@ -1152,6 +1165,10 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * The donor sends a snapshot at a **confirmed** frame *F*: world image, tables, sync state of the logic
   modules, module set, claims and asset manifest. It follows with the session log from *F*.
 * The receiver restores and fast-forwards. Restoring a world image into a fresh `World` works [V b4].
+* **It verifies before it restores** (review P22R-1): it restores only bytes whose BLAKE3 equals the check
+  hash a quorum of the epoch's members published for frame *F* (9.1), and only if it consumes them
+  completely. So a hostile donor cannot pass off another state; it can only fail to deliver, and the
+  receiver asks another member [I].
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
 * Region- or island-scoped transfer is a later optimization.
@@ -5663,8 +5680,8 @@ it. The gaps in this table are between *footprints*; the anchors are about 6 km 
   * A late joiner, a warp or a respawn joins `R` directly; nothing waits on the world log.
 * **To sync, a joiner needs `R`'s state at a confirmed frame.** It gets it in one of two ways:
   * a **region state transfer** from any synced member: box3d image + tables + logic sync state,
-    compressed, about 0.9 MB per 1,000 bodies with lz4 [V], verified against the check hash the group
-    published in `R`'s log;
+    compressed, about 0.9 MB per 1,000 bodies with lz4 [V], verified against the BLAKE3 check hash the
+    group published in `R`'s log, and consumed completely (9.1, 9.5);
   * if nobody has simulated `R`'s chunks since they froze, it builds `R` itself from dormant records:
     procedural content, SCM content, and frozen-chunk records fetched by their hash.
 * **Confirmation of region frame `f`.** Every synced member of `Group(R, f)` has published a horizon of at
