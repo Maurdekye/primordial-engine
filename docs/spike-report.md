@@ -688,9 +688,11 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
 * **Round 6 review** closed VC5R-2 and VC4R-1 but found three one-faulty-member liveness halts
   (`adminwedge`/VC6R-3, `capfake`/VC6R-1, `fakeadmin`/VC6R-4) and VC6R-2 (a capped precommit listed every
   prevoting member, so honest code panicked above 64 ids in a large session). Before landing: VC6R-2 is
-  fixed (at most a quorum of ids, `MAX_POLKA` = 512; a 300-id polka round-trips, unit test) and the L1
-  bound tightened. The three halts are known open, fixed as round 7 on main (design 10.8); each has a
-  reviewer repro (not in the suite until fixed).
+  fixed (at most a quorum of ids, `MAX_POLKA` = 512; a 300-id polka round-trips, unit test) and L1 fixed
+  to measure the clock-frame present (`now - conf`, two windows) after the delta re-check found the
+  earlier sim-frame measure could not fire on a halt (it is pinned one window behind the clock); the
+  RG-1 control now fails L1 (lag 653 > 240), 80 seeds pass. The three halts are known open, fixed as
+  round 7 on main (design 10.8); each has a reviewer repro (not in the suite until fixed).
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
   (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be

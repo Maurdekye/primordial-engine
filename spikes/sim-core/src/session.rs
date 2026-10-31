@@ -3788,7 +3788,9 @@ impl WorldSim {
             // `v` in `round`, so a member that lacks one (an equivocated prevote sent only to me) can
             // fetch it before it holds my cap unjustified.
             // Review VC6R-2: at most a quorum of prevote ids; more is never needed to justify the cap,
-            // and listing every prevoting member overran the encoding in a large session.
+            // and listing every prevoting member overran the encoding in a large session. Capped at
+            // MAX_POLKA as well (review 6.1 low): a quorum passes MAX_POLKA only past ~768 members (3x
+            // the 256-player target), where the proof is truncated rather than overrunning the encoding.
             let polka = if boundary > 0 {
                 let (_, q) = quorum(self.cfg.quorum, self.members.len());
                 let mut ids: Vec<EntryId> = self
@@ -3797,7 +3799,7 @@ impl WorldSim {
                     .get(&round)
                     .map(|ms| ms.iter().filter(|&(_, &x)| x == v).filter_map(|(k, _)| self.vc.prevote_id.get(&(round, *k)).copied()).collect())
                     .unwrap_or_default();
-                ids.truncate(q);
+                ids.truncate(q.min(MAX_POLKA));
                 ids
             } else {
                 Vec::new()
