@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state write (always, SET-1) -> hashes             |  |
+ |  | Box3D step -> carried-state write (always*) -> hashes                  |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -180,6 +180,9 @@ Rulings that shape the design:
  |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
  +------------------------------------------------------------------------------+
 ```
+
+\* Always (review SET-1) in pe-session. The spike writes carried state only when its bits differ, until
+p2/spike-reset lands (review PT-1).
 
 * **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
 * **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
