@@ -446,7 +446,11 @@ impl SessionCore {
                 let k = if self.adapt { HAND_STRIDE[self.level.min(HAND_STRIDE.len() - 1)] } else { 1 };
                 if active {
                     let f = self.tick.as_ref().map_or(self.sim.now, |t| t.clock_frame);
-                    if f % k != 0 || self.hand_last.get(&obj).is_some_and(|&l| f < l + k) {
+                    // Poses fall on frames aligned to the stride, which spaces them k apart within a
+                    // level. At a level change the next aligned frame is taken even if it is closer
+                    // than k to the last pose: waiting for last + k too left gaps (14 frames at the
+                    // 4 -> 5 switch) longer than a hand's span plus its coast (shader-reviewer M1).
+                    if f % k != 0 || self.hand_last.get(&obj).is_some_and(|&l| f <= l) {
                         return Err(AuthorError::Stride);
                     }
                     self.hand_last.insert(obj, f);

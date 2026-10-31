@@ -162,7 +162,7 @@ join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallbac
 [world.1.member.1]
 throttle_ms = 250                   # background world from throttle_from_ms (design 22.3)
 throttle_from_ms = 3000
-adapt = true                        # R18 congestion control
+adapt = true                        # R18 congestion control (opt-in here; see the note below)
 ack_every_ms = 1000                 # this member acks this often
 withhold_vc = true                  # Byzantine: casts no view-change entry
 byz_ally = true                     # Byzantine: backs every vote and proposal, applies no decision
@@ -175,7 +175,7 @@ link = { delay_ms = 30, jitter_ms = 10, loss_pct = 1 }      # every link not in 
 links = [{ from = 1, to = 2, delay_ms = 150, jitter_ms = 30 }]  # asymmetric or per pair
 cap = { kbps = 64 }                 # token bucket on every link; burst_bytes 4000, max_queue_ms 500
 caps = [{ from = 3, to = 1, kbps = 12 }]
-batching = true                     # R18: one datagram per member, peer and tick
+batching = true                     # R18: one datagram per member, peer and tick (opt-in here)
 count_ms = [2100, 5760]             # count traffic in this window only
 
 [sim]
@@ -195,6 +195,15 @@ log_from = 1                        # then member 1 sends the joiner every entry
 
 [[part]]                            # several runs in one log, each merged onto the rest of the file
 ```
+
+**R18 in the test IO (coordinator ruling 2026-10-31).** pe-session ships with R18 on: `SessionCore`
+starts with `adapt` and `ack_on_frames` true, which is what a production IO (the LAN peer, pe-app)
+gets. This tool's IO, like the harness's, sends one datagram per message with the controller off
+unless a scenario opts in (`adapt` per member, `batching` in `[net]`): the scenarios reproduce
+protocol situations under the spike's transport, and R18 removes some of their premises (a member
+falling behind on a slow link). The R18 runs (`fault-capped-r18`, the harness's `capped` runner and
+the ball-pit matrix) opt in. An R18-on pass over the whole suite is a follow-up
+(r18-on-scenario-suite-pass).
 
 ### Fault rules: `[[fault]]`
 

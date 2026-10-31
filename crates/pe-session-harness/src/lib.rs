@@ -3,6 +3,11 @@
 //! In-process session simulator: N peers, M worlds, a virtual clock and virtual links with delay,
 //! jitter, loss and scripted faults. Every message is encoded to bytes, so byte counts are real.
 //! The same peer logic drives the UDP spike (spikes/p2p) with a real clock and sockets.
+//!
+//! R18 here (coordinator ruling 2026-10-31): pe-session's `SessionCore` defaults to R18 on (`adapt`,
+//! `ack_on_frames`), but this test IO sends one datagram per message and turns the controller off
+//! unless a run opts in (`Net::batching`, `Replica::adapt`), so the scenarios keep the transport
+//! they were written for. The R18 runs (`capped`, the capped faults, the matrix) opt in.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
