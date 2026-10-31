@@ -10,6 +10,20 @@ from measured parts; **inferred** = design reasoning, not run.
 
 ## A. Still open
 
+From the protocol: three questions about admin permissions, raised by the P2-4 review (VCR-10) and put to
+you as V1-V3 by @coordinator-opus. A role holding only the kick permission can kick the last admin, which
+closes the session; the roles permission can grant Admin, so it equals Admin; and removing an honest but
+slow sole admin closes the session for good. Recommended: only admins kick admins; only admins grant
+Admin, and the roles permission grants only lesser roles; keep closing on the last admin's timeout, with a
+longer grace period. The Gnosarium design's open questions are with @coordinator-opus too.
+
+Also from the protocol, raised by P2-4's round-3 review (VC3R-2), as V4: a member that keeps forcing view
+changes, by voting against members everyone hears or by staying silent just under every timer, is not
+removed automatically. It costs latency, not safety: in the measured case the median confirmation lag rises
+from 7 to 16 frames, at 2.5 resets a second. An admin can kick it, and the session can show admins which
+member keeps forcing them. Recommended: leave it to admins. The alternative, an automatic rule, can be
+turned against honest members by a member that times its messages, as round 3's rule was (design 10.8).
+
 Seven proposals from your agent-panel rulings of 21:50Z-22:54Z, with @coordinator-opus. Each has options and
 a recommendation in design.md section 24:
 * **D81** the built-in speech models: which pure-Rust runtime, which model size, CPU or GPU (a spike first);
@@ -65,6 +79,7 @@ a recommendation in design.md section 24:
 | D77 Linux voice | None in the MVP (the VR keyboard instead); **superseded at 21:51Z** by the built-in speech model on both systems (D33, below) | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
 | D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
+| D80 who may change a session's member list | Session admins: an admin's signed kick removes anyone; the view change's two-thirds quorum only commits and orders changes. Always at least one admin, and the last cannot step down without handing on; everyone is an admin by default; the session closes when no admin is left. Admin is the only built-in role; join rules are an ordered matrix with the fixed row "an owner joins as Admin" | 22:11-22:51Z |
 | D33, D77 voice | Voice prompting with one local, offline Whisper-class model built into the engine, on Windows and Linux; Windows speech recognition only as a lighter fallback. The models ship in the installer | 21:50-21:51Z, 22:23Z |
 | Spatial context and guidance tools | Panels know where you look, what you look at and where you point; tools to point at objects, select areas and draw shapes for the agent | 21:52Z |
 | D25 launch harnesses | Claude Code, Codex and Antigravity, through one generic harness layer, as Orgtree supports them | 21:54-21:55Z |
@@ -111,9 +126,12 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 * Deterministic Box3D in Rust, with our van der Waals fork on by default: reference goldens, a 600-frame
   trace equal across release, debug and other build settings, snapshot and rollback. Byte-identical on
   this PC, on <laptop> (Intel) and as a Linux build, the wasm modules included.
-* The session protocol: signed entries, confirmation, cheater proofs and eviction, removal of one crashed
-  member, demotion, transfers between two worlds, congestion control. 30 scenarios in the session
-  simulator all match their offline replays; a two-process UDP version also matches.
+* The session protocol: signed entries, confirmation, cheater proofs, transfers between two worlds,
+  congestion control, and (phase 2) the view change: several members removed at once, withheld or
+  forked votes, colluders, a cheating proposer, a member that withholds references, and joins. Every
+  scenario in the session simulator matches its offline replay; a two-process UDP version also matches.
+* Per-object provenance for transfers between worlds (P2-5), checked against each world's epoch
+  certificates.
 * The ball pit (500 balls and a hand), the snapshot study behind the slider, and the ball-pit video
   matrix renderer.
 * Live game logic in WebAssembly (wasmi): hot swap at a fixed frame, rollback across it, and runaway code
@@ -138,8 +156,8 @@ The times are yours; @coordinator-opus relayed most of these rulings.
   Orgtree bridge, multi-world rendering and portals (R14), physics layers beyond hooks (R15).
 * Regions with provisional arrival and following (R16): modelled, not built.
 * Every-peer builds (D11), logic-state snapshots (D57), compact acks, and relaying for larger sessions.
-* **First in phase 2 (MVP prerequisites since D21):** the proposer-based view change and per-object
-  provenance chains.
+* **Built in the spike, not yet in the engine:** the view change and provenance chains, both MVP
+  prerequisites since D21; they move into `pe-session` next (P2-3).
 
 ## Top 5 risks
 
@@ -149,8 +167,10 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 2. **CPU at 90 Hz and at scale:** the ball pit already needs about 2.8 ms of re-simulation per 60 Hz frame;
    90 Hz costs 1.5x that. Parallel physics is the chosen answer, and its feasibility is still being
    studied.
-3. **Strangers from day one:** until the phase-2 view change is built, two colluders or two members
-   failing at once stall a session (safely); cheating stays bounded, not prevented.
+3. **Strangers from day one:** the view change now removes several failed members, colluders and
+   cheaters in the simulator, and with D80 settled a session cannot fork while at most about a third of
+   its members cheat, proven or not. Above that, a partition plus one-sided proofs can fork it (measured
+   as a control). Cheating stays bounded, not prevented.
 4. **Every peer compiles:** byte-identical builds across machines and operating systems are unproven,
    joining a world means building its code, and every peer compiles other people's code (in a sandbox).
 5. **Unlocked panels:** guests act with your rights and your AI account, which you accepted; prompt
