@@ -54,37 +54,40 @@ pub const LOGIC: MemberId = 0;
 pub struct BodyState(pub [u32; 13]);
 
 impl BodyState {
-    pub fn read(world: &World, id: BodyId) -> Self {
-        let t = body_get_transform(world, id);
-        let v = body_get_linear_velocity(world, id);
-        let w = body_get_angular_velocity(world, id);
+    /// `id`'s state in `world`. Positions are f32 in this build (Box3D without double precision),
+    /// so the f64 pose narrows back exactly.
+    pub fn read(world: &PhysicsWorld, id: ObjectId) -> Self {
+        let p = world.pose(id).expect("a bound body");
+        let (v, w) = world.velocity(id).expect("a bound body");
+        let (x, q) = (p.position.map(|c| c as f32), p.rotation);
         BodyState([
-            t.p.x.to_bits(), t.p.y.to_bits(), t.p.z.to_bits(),
-            t.q.v.x.to_bits(), t.q.v.y.to_bits(), t.q.v.z.to_bits(), t.q.s.to_bits(),
-            v.x.to_bits(), v.y.to_bits(), v.z.to_bits(),
-            w.x.to_bits(), w.y.to_bits(), w.z.to_bits(),
+            x[0].to_bits(), x[1].to_bits(), x[2].to_bits(),
+            q[0].to_bits(), q[1].to_bits(), q[2].to_bits(), q[3].to_bits(),
+            v[0].to_bits(), v[1].to_bits(), v[2].to_bits(),
+            w[0].to_bits(), w[1].to_bits(), w[2].to_bits(),
         ])
     }
     pub(super) fn f(&self, i: usize) -> f32 {
         f32::from_bits(self.0[i])
     }
-    pub fn pos(&self) -> Pos {
-        Pos { x: self.f(0), y: self.f(1), z: self.f(2) }
+    pub fn pos(&self) -> [f32; 3] {
+        [self.f(0), self.f(1), self.f(2)]
     }
-    pub fn rot(&self) -> Quat {
-        Quat { v: Vec3 { x: self.f(3), y: self.f(4), z: self.f(5) }, s: self.f(6) }
+    /// `[x, y, z, w]`.
+    pub fn rot(&self) -> [f32; 4] {
+        [self.f(3), self.f(4), self.f(5), self.f(6)]
     }
-    pub fn lin(&self) -> Vec3 {
-        Vec3 { x: self.f(7), y: self.f(8), z: self.f(9) }
+    pub fn lin(&self) -> [f32; 3] {
+        [self.f(7), self.f(8), self.f(9)]
     }
-    pub fn ang(&self) -> Vec3 {
-        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
+    pub fn ang(&self) -> [f32; 3] {
+        [self.f(10), self.f(11), self.f(12)]
     }
-    /// Overwrite the body's state with these exact bits.
-    pub fn write(&self, world: &mut World, id: BodyId) {
-        body_set_transform(world, id, self.pos(), self.rot());
-        body_set_linear_velocity(world, id, self.lin());
-        body_set_angular_velocity(world, id, self.ang());
+    /// Overwrite the body's state with these exact bits (pe-physics keeps them: S2). Refused, and
+    /// nothing written, for a state outside pe-physics's limits.
+    pub fn write(&self, world: &mut PhysicsWorld, id: ObjectId) -> Result<(), pe_physics::PhysicsError> {
+        world.set_pose(id, Pose { position: self.pos().map(f64::from), rotation: self.rot() })?;
+        world.set_velocity(id, self.lin(), self.ang())
     }
     pub fn hash(&self) -> u64 {
         fnv_u64s(self.0.iter().map(|&b| b as u64))
