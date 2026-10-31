@@ -6,4 +6,4 @@ RESULT badvote: m1 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 46
 RESULT badvote: m2 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 469 frame 473 paused frames 0 lying votes found 1
   m1: conf 467 frame 473 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 30 bad 0
   m2: conf 469 frame 473 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} rollbacks 1 max depth 1 violations 0 equivocations 2 checks ok 30 bad 0
-RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0
+RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..472 honest m1=6c2798a02fe7ff64 m2=6c2798a02fe7ff64 | offline replay 6c2798a02fe7ff64 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0

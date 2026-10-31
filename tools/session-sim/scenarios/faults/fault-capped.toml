@@ -21,5 +21,7 @@ kind = "traffic"
 
 [[report]]
 kind = "check_world"
-frames = 530
+# D58: carried states are 16 words (12 B more per entry), so the capped member confirms to 516,
+# not 538; the check stays inside the confirmed history.
+frames = 510
 label = "fault-capped"

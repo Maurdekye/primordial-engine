@@ -1,12 +1,12 @@
-[PASS] T1 restore-in-place replays identically: restore ok=true, body ids valid=true, 100 frames: replay==first true , ==reference true (image 578844 bytes)
-[PASS] T2 late interaction (frame 200 learned at 260) rolls back and converges: pre-rollback diverged=true, rollbacks=1 depth=60 resim=60 frames in 29.4241ms (490 us/frame), first mismatch vs reference: None
-[PASS] T3 all interactions late by 1..45 frames converge to reference: rollbacks=11 max depth=41 resimulated=310 frames, total 430.2389ms for 600 frames incl. per-frame snapshots, first mismatch: None
+[PASS] T1 restore-in-place replays identically: restore ok=true, body ids valid=true, 100 frames: replay==first true , ==reference true (image 590548 bytes)
+[PASS] T2 late interaction (frame 200 learned at 260) rolls back and converges: pre-rollback diverged=true, rollbacks=1 depth=60 resim=60 frames in 74.5082ms (1242 us/frame), first mismatch vs reference: None
+[PASS] T3 all interactions late by 1..45 frames converge to reference: rollbacks=11 max depth=41 resimulated=310 frames, total 896.7478ms for 600 frames incl. per-frame snapshots, first mismatch: None
        frame 120: peer 1 seq 1 on object 50 -> Accepted
        frame 120: peer 2 seq 1 on object 50 -> RejectedClaimed { by_peer: 1, until_frame: 150 }
        frame 125: peer 2 seq 2 on object 50 -> RejectedClaimed { by_peer: 1, until_frame: 150 }
        frame 126: peer 1 seq 2 on object 50 -> Accepted
 [PASS] T4 snapshot restored into a fresh World continues identically: 300 frames after restore, first mismatch: None
 [PASS] T5 interaction older than the 120-frame window is refused: Err(TooLate { frame: 100, oldest: 280 })
-       timings @256 bodies (frames 120-320, pile settling): save 176.397µs, restore 145.404µs, step 284.48µs, image 565926 bytes
-build: release profile, target x86_64, contact recycling: upstream fixed (--upstream)
+       timings @256 bodies (frames 120-320, pile settling): save 288.498µs, restore 251.033µs, step 413.227µs, image 576376 bytes
+build: release profile, target x86_64, contact recycling: upstream fixed (--upstream), worker threads: 1
 RESULT: PASS
