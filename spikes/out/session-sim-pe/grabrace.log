@@ -16,4 +16,4 @@
   m1 grab @555: [Some(RejectedCooldown { until: 560 }), Some(RejectedCooldown { until: 560 }), Some(RejectedCooldown { until: 560 })] at m1/m2/m3; its author first saw Some(RejectedCooldown { until: 560 })
   m2 grab @562: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
 RESULT grabrace: 17 touches, 5 refused (all grabs), pushes refused 0, losers that first saw their grab accepted and then undone 3, outcomes equal at every replica: true
-RESULT grabrace world 1: frames 0..700 digests m1=2828e963bb8adb5d m2=2828e963bb8adb5d m3=2828e963bb8adb5d | offline replay 2828e963bb8adb5d | ALL EQUAL
+RESULT grabrace world 1: frames 0..700 digests m1=bafb3bafcd227ebd m2=bafb3bafcd227ebd m3=bafb3bafcd227ebd | offline replay bafb3bafcd227ebd | ALL EQUAL

@@ -55,6 +55,10 @@ impl WorldSim {
     }
 
     pub(super) fn mark_dirty(&mut self, f: u64) {
+        // Entries stamped before a transferred state's frame are already in it (design 9.5).
+        if f < self.floor {
+            return;
+        }
         // Review NEW-2: confirmed frames are final. Getting here below `conf` is a protocol bug,
         // never a rollback.
         assert!(

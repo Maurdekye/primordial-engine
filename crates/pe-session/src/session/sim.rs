@@ -24,6 +24,8 @@ pub struct Obj {
 
 pub(super) const BALL_R: f32 = 0.06;
 pub const CLAIM_COOLDOWN: u64 = 10;
+/// Seed of the per-frame state hash's XXH64 ("PESESSN1").
+const STATE_HASH_SEED: u64 = 0x5045_5345_5353_4E31;
 pub(super) const HAND_R: f32 = 0.09;
 /// Dead-reckoning speed cap for a hand without an entry (m/s).
 pub(super) const HAND_COAST_VMAX: f32 = 3.0;
@@ -125,12 +127,13 @@ impl WorldSim {
         let image = self.world.save_image().expect("a usable physics world");
         self.stats.saves += 1;
         self.stats.save_us += now_us() - t0;
-        Keyframe { image, t: self.t.clone() }
+        Keyframe { image, store: self.store.snapshot(), t: self.t.clone() }
     }
 
     pub(super) fn restore(&mut self, k: &Keyframe, frame: u64) {
         let t0 = now_us();
         self.world.restore_image(&k.image).expect("restore failed");
+        self.store.restore(&k.store).expect("a snapshot of this store");
         self.t = k.t.clone();
         self.frame = frame;
         self.stats.restore_us += now_us() - t0;
@@ -175,67 +178,26 @@ impl WorldSim {
         }
     }
 
-    /// Hash of the full world image plus tables: used at confirmed check frames (review H4).
-    /// The check hash at this frame (design 9.1, P22R-1): BLAKE3 over pe-physics's full-state check
-    /// hash (canonical whichever way the state was reached: review NEW-7, tests/physics_check_hash.rs)
-    /// and every engine table.
+    /// The check hash at this frame (design 9.1, P22R-1), used at confirmed check frames (review H4):
+    /// [`check_hash_of`] the state's canonical parts. pe-physics's part is canonical whichever way the
+    /// state was reached (review NEW-7, tests/physics_check_hash.rs).
     pub fn check_hash(&mut self) -> CheckHash {
-        let physics = self.world.check_hash().expect("a usable physics world");
-        let mut h = blake3::Hasher::new();
-        h.update(b"pe-check");
-        h.update(&physics.0);
-        for w in self.tables_words() {
-            h.update(&w.to_le_bytes());
-        }
-        CheckHash(*h.finalize().as_bytes())
+        self.check_state(self.frame.saturating_sub(1)).0
     }
 
-    pub(super) fn tables_hash(&self) -> u64 {
-        fnv_u64s(self.tables_words())
-    }
-
-    /// Every engine table, canonically, as 64-bit words.
-    pub(super) fn tables_words(&self) -> Vec<u64> {
-        let mut v = vec![self.frame];
-        for (i, o) in self.t.objs.iter().enumerate() {
-            if let Some(o) = o {
-                v.extend([i as u64, o.global, o.kind as u64]);
-            }
-        }
-        for (o, c) in &self.t.claims {
-            v.extend([*o as u64, c.member as u64, c.until]);
-        }
-        for (o, (m, u)) in &self.t.cooldown {
-            v.extend([*o as u64, *m as u64, *u, 7]);
-        }
-        for (t, e) in &self.t.escrow {
-            v.extend([*t, e.obj as u64, e.status as u64, e.depart_frame, e.record.map_or(0, |r| r.state.hash())]);
-        }
-        for (t, a) in &self.t.arrivals {
-            match a {
-                Arrival::Accepted { obj, frame } => v.extend([*t, 1, *obj as u64, *frame]),
-                Arrival::Rejected { frame, until } => v.extend([*t, 2, *frame, *until]),
-            }
-        }
-        for (g, s) in &self.t.seen {
-            s.hash_into(*g, &mut v);
-        }
-        v.push(self.t.portal_open as u64);
-        if self.cfg.hand_predict > 0 {
-            for (o, n) in &self.t.hand_idle {
-                v.extend([*o as u64, *n, 11]);
-            }
-        }
-        v
-    }
-
-    /// Per-frame hash: Box3D body transforms + velocities, plus every engine table.
+    /// The per-frame state hash (design 9.1): XXH64 over pe-physics's per-frame hash (body transforms,
+    /// velocities, bindings and joints), the sim store's hash and the world-level tables.
     pub fn state_hash(&self) -> u64 {
-        self.world.box3d_hash().expect("a usable physics world") ^ self.tables_hash().rotate_left(29)
+        let mut h = pe_core::hash::Hasher::new(STATE_HASH_SEED);
+        h.write_u64(self.world.state_hash().expect("a usable physics world"));
+        h.write_u64(self.store.checked_state_hash().expect("no invalid value in the engine tables"));
+        h.write_u64(self.frame);
+        h.write(&encode_tables(&self.t));
+        h.finish()
     }
 
     pub fn obj_state(&self, obj: u32) -> Option<BodyState> {
-        self.t.objs.get(obj as usize).copied().flatten().map(|o| BodyState::read(&self.world, o.id))
+        self.live(obj).map(|o| BodyState::read(&self.world, o.id))
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -250,10 +212,6 @@ impl WorldSim {
         let seed = self.cfg.seed;
         v.sort_by_key(|(_, e)| (tie_rank(seed, f, e.member), e.member, e.seq));
         v
-    }
-
-    pub(super) fn live(&self, obj: u32) -> Option<Obj> {
-        self.t.objs.get(obj as usize).copied().flatten()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -285,14 +243,14 @@ impl WorldSim {
                 let spike = self.cfg.claim_rule == ClaimRule::Spike;
                 let claims = (*grab || spike) && e.member != LOGIC;
                 if claims {
-                    if let Some(c) = self.t.claims.get(obj) {
+                    if let Some(c) = self.claim(*obj) {
                         if c.member != e.member && c.until > f {
                             return Outcome::RejectedClaimed { by: c.member, until: c.until };
                         }
                     }
-                    if let Some(&(m, u)) = self.t.cooldown.get(obj) {
-                        if m == e.member && u > f && !self.t.claims.contains_key(obj) {
-                            return Outcome::RejectedCooldown { until: u };
+                    if let Some(c) = self.store.get::<CooldownRow>(object_id(*obj as usize)) {
+                        if c.member == e.member && c.until > f && self.claim(*obj).is_none() {
+                            return Outcome::RejectedCooldown { until: c.until };
                         }
                     }
                 }
@@ -304,9 +262,10 @@ impl WorldSim {
                     // Takes the claim, or renews the holder's: held while the grab keeps renewing it,
                     // it lapses CLAIM_FRAMES after the last renewal, then the holder's cooldown starts.
                     // (The spike rule renewed only on a grab.)
-                    let held = self.t.claims.get(obj).is_some_and(|c| c.member == e.member && c.until > f);
+                    let held = self.claim(*obj).is_some_and(|c| c.member == e.member && c.until > f);
                     if *grab || !held {
-                        self.t.claims.insert(*obj, Claim { member: e.member, until: f + CLAIM_FRAMES });
+                        let row = ClaimRow { member: e.member, _pad: 0, until: f + CLAIM_FRAMES };
+                        self.store.insert(o.id, row).expect("a live object");
                     }
                 }
                 if let Some((cobj, st)) = e.carried {
@@ -334,9 +293,9 @@ impl WorldSim {
                 }
                 hands_set.insert(*obj);
                 if *active {
-                    self.t.hand_idle.insert(*obj, 0);
+                    self.store.insert(o.id, HandIdle { frames: 0 }).expect("a live hand");
                 } else {
-                    self.t.hand_idle.remove(obj);
+                    self.store.remove::<HandIdle>(o.id).expect("a registered component");
                 }
                 Outcome::Accepted
             }
@@ -368,7 +327,7 @@ impl WorldSim {
                     self.t.escrow.insert(*transfer, gone);
                     return Outcome::RejectedGone;
                 };
-                if let Some(c) = self.t.claims.get(obj) {
+                if let Some(c) = self.claim(*obj) {
                     if c.member != e.member && c.until > f {
                         self.t.escrow.insert(*transfer, gone);
                         return Outcome::RejectedClaimed { by: c.member, until: c.until };
@@ -400,8 +359,8 @@ impl WorldSim {
                 let record =
                     ObjRecord { global: o.global, kind: o.kind, state: BodyState::read(&self.world, o.id), src_world: self.world_id, src_frame: f, via };
                 self.world.remove_body(o.id).expect("a bound body");
-                self.t.objs[*obj as usize] = None;
-                self.t.claims.remove(obj);
+                // Its claim, cooldown and hand rows go with it.
+                self.store.destroy(o.id).expect("a live object");
                 self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
                 Outcome::Accepted
             }
@@ -485,7 +444,7 @@ impl WorldSim {
                     return Outcome::RejectedPortalClosed;
                 }
                 // Review R3-5: never a second live copy of one global id in a world.
-                if self.t.objs.iter().flatten().any(|o| o.global == record.global) {
+                if self.objects().any(|(_, o)| o.global == record.global) {
                     self.t.arrivals.insert(*transfer, Arrival::Rejected { frame: f, until: *deadline });
                     return Outcome::RejectedLiveId;
                 }
@@ -520,7 +479,7 @@ impl WorldSim {
                 } else {
                     let rec = esc.record.expect("pending escrow holds its record");
                     let back = self.spawn(&rec, rec.state.pos());
-                    debug_assert_eq!(back as usize, self.t.objs.len() - 1);
+                    debug_assert_eq!(back + 1, self.obj_slots());
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Returned, ..esc });
                 }
                 Outcome::Accepted
@@ -545,14 +504,14 @@ impl WorldSim {
 
     /// Recreate an object from a record at `at`, keeping its rotation and velocities.
     pub(super) fn spawn(&mut self, r: &ObjRecord, at: [f32; 3]) -> u32 {
-        let i = self.t.objs.len();
+        let i = self.obj_slots() as usize;
         let d = BodyDesc::new(BodyKind::Dynamic, at.map(f64::from))
             .with_rotation(r.state.rot())
             .with_velocity(r.state.lin(), r.state.ang())
             .with_shape(shape_desc(r.kind));
         // The arrival checks (NEW-21) keep the record within pe-physics's limits.
         self.world.add_body(object_id(i), &d).expect("a checked record");
-        self.t.objs.push(Some(Obj { id: object_id(i), global: r.global, kind: r.kind }));
+        add_obj(&mut self.store, Obj { id: object_id(i), global: r.global, kind: r.kind });
         i as u32
     }
 
@@ -590,16 +549,15 @@ impl WorldSim {
         // keeps its last commanded velocity for up to that many frames (dead reckoning). Both are
         // deterministic rules of the sim: a speculative frame that lacks the author's entry
         // predicts with them, and the entry's arrival replaces the prediction by rollback.
-        let hands: Vec<(u32, Obj)> =
-            self.t.objs.iter().enumerate().filter_map(|(i, o)| o.filter(|o| o.kind == 4).map(|o| (i as u32, o))).collect();
+        let hands: Vec<(u32, Obj)> = self.objects().filter(|(_, o)| o.kind == 4).collect();
         for (i, o) in hands {
             if hands_set.contains(&i) {
                 continue;
             }
-            let coast = match self.t.hand_idle.get_mut(&i) {
+            let coast = match self.store.get_mut::<HandIdle>(o.id) {
                 Some(n) if self.cfg.hand_predict > 0 => {
-                    *n += 1;
-                    *n <= self.cfg.hand_predict
+                    n.frames += 1;
+                    n.frames <= self.cfg.hand_predict
                 }
                 _ => false,
             };
@@ -639,13 +597,18 @@ impl WorldSim {
         }
         // Expire claims; their holders enter a short cooldown on that object.
         let next = f + 1;
-        let expired: Vec<(u32, MemberId)> = self.t.claims.iter().filter(|(_, c)| c.until <= next).map(|(o, c)| (*o, c.member)).collect();
-        for (o, m) in expired {
-            self.t.claims.remove(&o);
-            self.t.cooldown.insert(o, (m, next + CLAIM_COOLDOWN));
+        let expired: Vec<(ObjectId, MemberId)> =
+            self.store.iter::<ClaimRow>().filter(|(_, c)| c.until <= next).map(|(id, c)| (id, c.member)).collect();
+        for (id, m) in expired {
+            self.store.remove::<ClaimRow>(id).expect("a registered component");
+            self.store.insert(id, CooldownRow { member: m, _pad: 0, until: next + CLAIM_COOLDOWN }).expect("a live object");
         }
-        self.t.cooldown.retain(|_, (_, u)| *u > next);
+        let cooled: Vec<ObjectId> = self.store.iter::<CooldownRow>().filter(|(_, c)| c.until <= next).map(|(id, _)| id).collect();
+        for id in cooled {
+            self.store.remove::<CooldownRow>(id).expect("a registered component");
+        }
         self.frame = next;
+        self.store.set_frame(Frame(next));
         if record {
             self.hashes.insert(f, self.state_hash());
             for &obj in &self.watched.clone() {
@@ -654,11 +617,12 @@ impl WorldSim {
                 }
             }
             if f % self.cfg.check_every == 0 {
-                let h = self.check_hash();
+                let (h, st) = self.check_state(f);
                 self.check_hashes.insert(f, h);
+                self.served.insert(f, st);
                 // Review L2: a release-build finite check at every check frame. NaN payload bits differ
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
-                let bad = self.t.objs.iter().flatten().find(|o| {
+                let bad = self.objects().map(|(_, o)| o).find(|o| {
                     let st = BodyState::read(&self.world, o.id);
                     st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
                 });
@@ -669,11 +633,8 @@ impl WorldSim {
                 }
             }
             if self.track {
-                let p: Vec<[f32; 3]> = self
-                    .t
-                    .objs
-                    .iter()
-                    .map(|o| o.map_or([f32::NAN; 3], |o| {
+                let p: Vec<[f32; 3]> = (0..self.obj_slots())
+                    .map(|i| self.live(i).map_or([f32::NAN; 3], |o| {
                         self.world.pose(o.id).expect("a bound body").position.map(|c| c as f32)
                     }))
                     .collect();
@@ -757,16 +718,45 @@ impl WorldSim {
         for f in drop {
             self.ring.remove(&f);
         }
+        // Keep the newest confirmed check-frame state (what a joiner gets) and the later ones.
+        if let Some(&keep) = self.served.range(..fin).next_back().map(|(f, _)| f) {
+            self.served = self.served.split_off(&keep);
+        }
+        self.compact_registry();
+    }
+
+    /// Review P22-12: rebuild the physics world's geometry registry from the keyframes the ring still
+    /// holds (the oldest is the base, at or before min(confirmed frame, simulated frame)) and the live
+    /// state, so geometry only dropped or rolled-back state used goes. Runs right after a trim, so no
+    /// re-simulation is pending. Every image this replica keeps is in the ring; an image saved before
+    /// and kept anywhere else would be refused by `restore_image` (review CMP-1), never misread.
+    fn compact_registry(&mut self) {
+        let n = self.world.registry_len();
+        self.stats.max_registry_len = self.stats.max_registry_len.max(n as u64);
+        let due = match self.cfg.compact {
+            CompactPolicy::Never => false,
+            CompactPolicy::Grown { at } => n >= at.max(2 * self.compacted_len),
+            CompactPolicy::EveryTrim => true,
+        };
+        if !due {
+            return;
+        }
+        let t0 = now_us();
+        let mut kept: Vec<&mut WorldImage> = self.ring.values_mut().map(|k| &mut k.image).collect();
+        self.world.compact_images(&mut kept).expect("the ring holds this world's own images");
+        self.compacted_len = self.world.registry_len();
+        self.stats.compactions += 1;
+        self.stats.compact_us += now_us() - t0;
     }
 
     pub fn ring_len(&self) -> usize {
         self.ring.len()
     }
 
-    /// Bytes of rollback snapshot data held: every keyframe's world image plus its object table
-    /// (ballpit-viz; `ring_bytes` counts the world images only).
+    /// Bytes of rollback snapshot data held: every keyframe's world image plus its store snapshot, counted
+    /// unshared (ballpit-viz; `ring_bytes` counts the world images only).
     pub fn ring_bytes_with_objs(&self) -> usize {
-        self.ring.values().map(|k| k.image.world_bytes().len() + k.t.objs.len() * std::mem::size_of::<Option<Obj>>()).sum()
+        self.ring.values().map(|k| k.image.world_bytes().len() + k.store.data_bytes()).sum()
     }
 
     pub fn caught_up(&self) -> bool {
