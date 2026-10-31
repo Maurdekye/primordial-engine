@@ -7,3 +7,13 @@ spikes/iter-bench/guests-x8/
 # Determinism matrix (scripts/run_matrix.sh): full per-machine outputs stay local; digests are committed.
 spikes/out/matrix/*/o/*
 !spikes/out/matrix/*/o/digests.txt
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Agent worktrees of this repository (git worktree add .worktrees/<name>)
+.worktrees/
+
+# Machine-specific settings (ssh routes, user names); the committed .example shows the format
+scripts/matrix.local.sh
