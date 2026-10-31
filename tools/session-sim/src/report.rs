@@ -77,6 +77,8 @@ fn var(name: &str, v: &Vars) -> String {
         "member_list" => format!("{:?}", r().members.iter().copied().collect::<Vec<_>>()),
         "removed" => format!("{:?}", removed_at(v.sim, member(m), member(x))),
         "votes" => format!("{:?}", own_votes(v.sim, member(m))),
+        "removed_s" => secs(removed_at(v.sim, member(m), member(x))),
+        "strikes" => format!("{:?}", r().strikes),
         _ => panic!("template: unknown variable `{{{name}}}`"),
     }
 }
@@ -98,6 +100,17 @@ pub const CHECKS: &[&str] = &[
     "lagprecommit",
     "aheadlink",
     "onesided",
+    "removed",
+    "strikeframe",
+    "strikeframe_total",
+    "aheadshield",
+    "fakeref",
+    "capstale",
+    "lagchurn",
+    "votechurn",
+    "votechurn_off",
+    "adminvoid",
+    "joinskip",
 ];
 
 /// What the run left for the reports besides the simulator.
@@ -119,6 +132,10 @@ pub fn honest(h: &Honest, sim: &Sim) -> Vec<MemberId> {
     match h {
         Honest::List(v) => v.clone(),
         Honest::At { members_at } => sim.replica(*members_at, 1).sim.members.iter().copied().collect(),
+        Honest::Among { members_at, among } => {
+            let ms = &sim.replica(*members_at, 1).sim.members;
+            among.iter().copied().filter(|m| ms.contains(m)).collect()
+        }
     }
 }
 
@@ -172,6 +189,18 @@ impl Probe {
         }
         let pit = Pit { prev: vec![None; pit_params.4], ..Default::default() };
         Ok(Probe { spec, lag: Vec::new(), pit, pit_params })
+    }
+
+    /// Before every 1 ms step (where the spike's loops sampled): `votechurn`'s confirmation lag at
+    /// `at`, every 100 ms from 0.5 s.
+    pub fn pre_sample(&mut self, sim: &Sim) {
+        if let Report::Check { case, at: Some(a), .. } = &self.spec {
+            let t = sim.net.now_us;
+            if case == "votechurn" && t % 100_000 == 0 && t >= 500_000 {
+                let r = &sim.replica(*a, 1).sim;
+                self.lag.push((t, r.now.saturating_sub(r.conf)));
+            }
+        }
     }
 
     /// After every 1 ms step.
@@ -323,9 +352,7 @@ impl Probe {
             Report::Confs { honest, label } => println!("RESULT {label}: {}", confs(sim, honest)),
             Report::BeforeFix { honest: h, label, fix } => before_fix(sim, &honest(h, sim), label, fix, ctx.panic_at_ms),
             Report::ForkInfo => println!("  {}", ctx.fork_info.as_deref().unwrap_or("no fork_branch behaviour")),
-            Report::Check { case, label, text, honest, sides, at, members, target, until_ms, role, silent } => {
-                check(sim, ctx, case, label, text, honest, sides, *at, members, *target, *until_ms, *role, *silent)
-            }
+            Report::Check { .. } => check(sim, ctx, kept, &self.spec, &self.lag),
             Report::Membership { honest: h, label } => {
                 for m in honest(h, sim) {
                     let r = &sim.replica(m, 1).sim;
@@ -555,26 +582,21 @@ fn own_votes(sim: &Sim, m: MemberId) -> Vec<MemberId> {
         .collect()
 }
 
+/// The spike's `secs`: a time in seconds, or "never".
+fn secs(t: Option<f64>) -> String {
+    t.map_or("never".to_string(), |t| format!("{t:.2} s"))
+}
+
 fn need<T: Copy>(v: Option<T>, case: &str, field: &str) -> T {
     v.unwrap_or_else(|| panic!("check {case}: needs `{field}`"))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn check(
-    sim: &Sim,
-    ctx: &Ctx,
-    case: &str,
-    label: &str,
-    text: &str,
-    honest: &[MemberId],
-    sides: &[Vec<MemberId>],
-    at: Option<MemberId>,
-    members: &[MemberId],
-    target: Option<MemberId>,
-    until_ms: Option<u64>,
-    role: Option<RoleId>,
-    silent: Option<u32>,
-) {
+/// The spike's one-off checks (see scenario.rs `Report::Check`); `samples` are `votechurn`'s.
+fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)]) {
+    let Report::Check { case, label, text, honest, sides, at, members, target, until_ms, role, silent, from_ms, runs, event, expect, conf_min } = spec else { unreachable!() };
+    let (case, label, text) = (case.as_str(), label.as_str(), text.as_str());
+    let (at, target, until_ms, role, silent, from_ms) = (*at, *target, *until_ms, *role, *silent, *from_ms);
+    let events = |m: MemberId, what: &str| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains(what)).count();
     match case {
         "bridge" => {
             let a = sim.replica(sides[0][0], 1).sim.members.clone();
@@ -642,6 +664,7 @@ fn check(
         }
         "vcscale" => {
             let silent = need(silent, case, "silent");
+            let from_s = need(from_ms, case, "from_ms") as f64 / 1000.0;
             // Every peer is a genesis member here, in id order (the spike's 1..=n).
             let ids: Vec<MemberId> = sim.peers.iter().map(|p| p.id).collect();
             let n = ids.len();
@@ -655,7 +678,7 @@ fn check(
                 let rep = sim.replica(m, 1);
                 let r = &rep.sim;
                 match r.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
-                    Some(d) => at.push(sim_secs(rep, d.1) - 1.0),
+                    Some(d) => at.push(sim_secs(rep, d.1) - from_s),
                     None => undecided += 1,
                 }
                 members_after.insert(r.members.len());
@@ -710,7 +733,7 @@ fn check(
         }
         "kickbackdate" => {
             let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.members.iter().copied().collect();
-            let ok = left == members;
+            let ok = left == *members;
             println!("RESULT {label}: members left {left:?} -> {}", if ok { "THE BACKDATED KICK IS VOID: 2 removed" } else { "FAIL" });
         }
         "lagprecommit" => {
@@ -718,15 +741,31 @@ fn check(
             println!("RESULT {label}: joiner admitted {admitted} -> {}; {}", if admitted { "JOINED" } else { "FAIL" }, confs(sim, honest));
         }
         "aheadlink" => {
-            // Its votes are cast in an epoch the others have left, so none of the members ahead is removed.
-            let votes = own_votes(sim, need(at, case, "at"));
+            // Its votes are cast in an epoch the others have left, and an epoch decides once, so none
+            // of the members ahead is removed.
+            let a = need(at, case, "at");
+            let votes: Vec<(u32, MemberId)> = sim
+                .replica(a, 1)
+                .sim
+                .all_entries()
+                .into_iter()
+                .filter(|e| e.member == a)
+                .filter_map(|e| match e.payload {
+                    Payload::Vote { epoch, target, kick: 0, .. } => Some((epoch, target)),
+                    _ => None,
+                })
+                .collect();
             let ms = sim.replica(honest[0], 1).sim.members.clone();
             let kept = members.iter().all(|m| ms.contains(m));
             println!(
-                "RESULT {label}: {}'s votes against the members ahead {votes:?}; members {ms:?} -> {}",
-                need(at, case, "at"),
-                if kept { "THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
+                "RESULT {label}: {a}'s votes against the members ahead, by (epoch, target): {votes:?}; members {ms:?} -> {}",
+                if kept && !votes.is_empty() { "CAST, AND THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
             );
+        }
+        "removed" => {
+            let t = need(target, case, "target");
+            let removed = removed_at(sim, need(at, case, "at"), t);
+            println!("RESULT {label}: {t} removed at {} -> {}", secs(removed), if removed.is_some() { text } else { "FAIL" });
         }
         "onesided" => {
             let first = |m: MemberId| sim.replica(m, 1).sim.vc_log.first().map(|d| d.3.clone());
@@ -742,6 +781,125 @@ fn check(
                 }
             );
         }
+        "strikeframe" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let r = &sim.replica(a, 1).sim;
+            let ok = r.members.contains(&members[0]);
+            println!(
+                "RESULT strikeframe {text}: at m{a} members {:?}, resets {}, {t} removed at {} -> {}",
+                r.members,
+                r.stats.resets,
+                secs(removed_at(sim, a, t)),
+                if ok { format!("{} KEPT", members[0]) } else { "FAIL".to_string() }
+            );
+        }
+        "strikeframe_total" => {
+            let a = need(at, case, "at");
+            let kept_n = runs.iter().filter(|k| kept.get(*k).unwrap_or_else(|| panic!("check: no kept run `{k}`")).0.replica(a, 1).sim.members.contains(&members[0])).count();
+            println!("RESULT strikeframe: {} kept in {kept_n} of {} timings -> {}", members[0], runs.len(), if kept_n == runs.len() { "OK" } else { "FAIL" });
+        }
+        "aheadshield" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let voted_out = expect.as_deref() == Some("voted_out");
+            let ok = if voted_out { removed.is_some() } else { removed.is_none() && sim.replica(a, 1).sim.conf > need(*conf_min, case, "conf_min") };
+            println!(
+                "RESULT aheadshield {text}: {t} removed at {}; {} -> {}",
+                secs(removed),
+                confs(sim, honest),
+                match (ok, voted_out) {
+                    (false, _) => "FAIL",
+                    (true, true) => "VOTED OUT",
+                    (true, false) => "HARMLESS",
+                }
+            );
+        }
+        "fakeref" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!(
+                "RESULT {label}: {t} removed at {} ({n} withholding vote at m{a}) -> {}; {}",
+                secs(removed),
+                if removed.is_some() { "VOTED OUT" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "capstale" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let resets = sim.replica(a, 1).sim.stats.resets;
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!(
+                "RESULT {label}: {resets} resets, {t} removed at {} ({n} cap vote at m{a}) -> {}; {}",
+                secs(removed),
+                if removed.is_some() && resets == 0 { "VOTED OUT, NO RESET" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "lagchurn" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let resets = sim.replica(a, 1).sim.stats.resets;
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!(
+                "RESULT {label}: {resets} resets, {t} removed at {} ({n} demotion vote at m{a}) -> {}; {}",
+                secs(removed),
+                if removed.is_some() && n > 0 { "DEMOTED" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "votechurn" | "votechurn_off" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let (from, until) = (need(from_ms, case, "from_ms") as f64 / 1000.0, need(until_ms, case, "until_ms") as f64 / 1000.0);
+            let r1 = sim.replica(a, 1);
+            let removed = removed_at(sim, a, t);
+            let during = r1.sim.vc_log.iter().filter(|d| (from..until).contains(&sim_secs(r1, d.1)) && d.3.is_empty()).count();
+            if case == "votechurn_off" {
+                println!("  with round 3's strikes: {t} removed at {}; {during} resets during the churn", secs(removed));
+                return;
+            }
+            let after = r1.sim.vc_log.iter().filter(|d| sim_secs(r1, d.1) > until + 0.5 && d.3.is_empty()).count();
+            // The samples: (time, lag), bucketed before, during and from 2 s after the churn.
+            let (f_us, u_us) = ((from * 1e6) as u64, (until * 1e6) as u64);
+            let mut lag: [Vec<u64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            for &(t_us, l) in samples {
+                let k = if t_us < f_us { 0 } else if t_us < u_us { 1 } else if t_us >= u_us + 2_000_000 { 2 } else { continue };
+                lag[k].push(l);
+            }
+            let mm = |mut v: Vec<u64>| {
+                v.sort_unstable();
+                (v.get(v.len() / 2).copied().unwrap_or(0), v.last().copied().unwrap_or(0))
+            };
+            let [b, d, af] = lag.map(mm);
+            println!(
+                "RESULT votechurn: {during} resets in the {:.0} s of churn ({:.1} per s); m{a}'s confirmation lag in frames, median/max: {}/{} before, {}/{} during, {}/{} after; {t} kicked at {}, {after} resets after -> {}",
+                until - from,
+                during as f64 / (until - from),
+                b.0,
+                b.1,
+                d.0,
+                d.1,
+                af.0,
+                af.1,
+                secs(removed),
+                if removed.is_some() && after == 0 { "THE KICK ENDS IT" } else { "FAIL" }
+            );
+        }
+        "adminvoid" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let role = sim.replica(a, 1).sim.roles.get(&t).copied();
+            println!(
+                "RESULT {label}: {t}'s role at m{a} {role:?} -> {}; {}",
+                if role == Some(ADMIN) { "THE VOID ENTRY IS NOT APPLIED" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "joinskip" => {
+            let (a, j) = (need(at, case, "at"), need(target, case, "target"));
+            let ms = sim.replica(a, 1).sim.members.clone();
+            println!("RESULT {label}: members at m{a} {ms:?} -> {}; {}", if ms.contains(&j) { format!("{j} STAYS") } else { "FAIL".to_string() }, confs(sim, honest));
+        }
         _ => panic!("check: unknown case `{case}`"),
     }
 }
@@ -751,7 +909,10 @@ fn check(
 /// HO-1's fix switched off.
 fn handowner((a, pa): &(Sim, Option<u64>), (b, pb): &(Sim, Option<u64>), (c, pc): &(Sim, Option<u64>), member: MemberId, h1: u32, label: &str) {
     let ids = [1, 2];
-    let frames = [a, b].iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    // Only frames every compared replica has confirmed: past its confirmed frame a replica may still
+    // roll back.
+    let lowest = |ss: [&Sim; 2]| ss.iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame.saturating_sub(1).min(s.replica(m, 1).sim.conf))).min().unwrap_or(0);
+    let frames = lowest([a, b]);
     let mut all_refused = true;
     for m in ids {
         let r = &a.replica(m, 1).sim;
@@ -775,7 +936,7 @@ fn handowner((a, pa): &(Sim, Option<u64>), (b, pb): &(Sim, Option<u64>), (c, pc)
         all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
         println!("  m{m}: member {member}'s touch of a ball carrying a state for member 1's hand: {planted:?}");
     }
-    let frames_c = [c, b].iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let frames_c = lowest([c, b]);
     let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
     println!(
         "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",

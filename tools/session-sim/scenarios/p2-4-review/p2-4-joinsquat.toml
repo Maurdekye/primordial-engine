@@ -1,0 +1,52 @@
+description = """
+P2-4 review round 4, VC3R-4: friends-only join rules (a friend of an admin joins as guest, role \
+1); every member is an admin. At 1.9 s, 9 asks to join in 5's name, with no attestation and no \
+valid signature; at 2.0 s 5 asks with no attestation, and at 2.5 s as admin 1's friend. Part 1 runs \
+with VC3R-4's fix switched off, part 2 as shipped: 5 admitted as a guest."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+guests = { role = 1, admins = [1, 2, 3, 9] }
+join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }] }
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of the run (frame 593): it never
+# fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[join]]
+at_ms = 1900
+member = 5
+from = 9
+sig = 0
+to = [1, 2, 3]
+
+[[join]]
+at_ms = 2000
+member = 5
+to = [1, 2, 3, 9]
+
+[[join]]
+at_ms = 2500
+member = 5
+to = [1, 2, 3, 9]
+attests = [{ rel = "friend", with = 1 }]
+
+[[part]]
+world.1.fixes_off = ["VC3R4"]
+report = [
+    { kind = "line", text = "  5's role at m3: {role@3:5}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend)", fix = "VC3R-4's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "joinsquat" },
+    { kind = "check", case = "joinattests", label = "joinsquat", at = 3, target = 5, role = 1, honest = [1, 2, 3, 5] },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend)" },
+]

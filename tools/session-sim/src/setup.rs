@@ -32,6 +32,13 @@ pub const FIXES: &[(&str, u32)] = &[
     ("VCR9", fix::VCR9),
     ("VCR12", fix::VCR12),
     ("HO1", fix::HO1),
+    ("VC3R1", fix::VC3R1),
+    ("VC3R2", fix::VC3R2),
+    ("VC3R3", fix::VC3R3),
+    ("VC3R4", fix::VC3R4),
+    ("VC3R6", fix::VC3R6),
+    ("VC3R7", fix::VC3R7),
+    ("LAGKEEP", fix::LAGKEEP),
 ];
 
 pub fn fixes_off(w: &WorldCfg) -> Result<u32, String> {
@@ -231,6 +238,7 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 r.sim.withhold_vc = rc.withhold_vc;
                 r.sim.byz_ally = rc.byz_ally;
                 r.sim.byz_no_precommit = rc.byz_no_precommit;
+                r.sim.quiet_until_member = rc.quiet_until_member;
             }
             if !joiner && w.follow_joiners != Some(false) {
                 for &j in &w.joiners {

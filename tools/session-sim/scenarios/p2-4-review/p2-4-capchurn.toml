@@ -30,7 +30,8 @@ while_member_at = 1
 to = [1, 2, 3]
 
 [[part]]
-world.1.fixes_off = ["VCR4"]
+# Round 4's cap rule (VC3R-2) would vote 9 out as well.
+world.1.fixes_off = ["VCR4", "VC3R2"]
 report = [
     { kind = "line", text = "  9 removed: {removed@1:9} s; resets {resets@1}" },
     { kind = "before_fix", honest = [1, 2, 3], label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one)", fix = "VCR-4's fix" },

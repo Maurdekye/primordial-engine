@@ -611,9 +611,92 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     (four new sim-core unit tests).
   * Every other scenario keeps its outcome; decision times and confirmed frames move by a frame or two,
     because members now ack on entering an epoch.
+* **Round 4** (@design-reviewer's review of a9286fc asked for changes: VC3R-1 to VC3R-8). Round 3's strike
+  rule and its ahead exemption are gone; the levers they guarded get rules of their own (design 10.8):
+
+    | Repro | With the fix switched off | With the fix |
+    |---|---|---|
+    | `strikeframe` (VC3R-2, the reviewer's) | round 3's strikes vote honest 1 out in two of five timings | 1 kept in all five |
+    | `aheadshield` (VC3R-1, the reviewer's) | the climber, sending each entry to one member in turn, is never removed; stuck at frame 112 | voted out at 5.30 s |
+    | `lagchurn` (VC3R-2) | timers restarting at each decision: the lagging member is never demoted, after 8 resets | demoted at 6.48 s |
+    | `adminvoid` (VC3R-3) | a faulty proposer commits its own horizon-void SetRole | refused |
+    | `joinsquat` (VC3R-4) | a request in the joiner's name pre-empts it: never admitted | joins as Guest at 2.63 s |
+    | `joinskip` (VC3R-6) | a joiner that acked nothing before admission: acks void, voted out | it stays |
+
+  * `capstale` and `capchurn`: a stale cap now gets its author voted out, with no reset (3.17 s). `ghostkick`:
+    a kick vote whose kick nobody delivers gets its voter voted out (3.17 s); round 3 reset and kept it.
+  * `votechurn` measures what is left: a member voting against an honest one in every epoch causes 2.5
+    resets a second and raises the median confirmation lag from 7 to 16 frames, until an admin kicks it.
+    Whether such a member should be voted out automatically is the user's question V4.
+  * `fakeref` and `aheadlink` are checks, not repros: fake references do not spare a silent member (the
+    withholding rule removes it), and a member behind casts votes against the members ahead harmlessly.
+  * VC3R-5: a cap has no upper bound now (`lagprecommit` still passes); VC3R-7: a cut's branch is fetched
+    by id (`deepfork` still passes); two new sim-core unit tests for the signed join and the branch fetch.
+  * `handowner` now checks and digests only frames both replicas have confirmed (0..346), as
+    @ballpit-viz's tool port found it should; the history is still the same with and without member 2's
+    entries.
+  * Every other scenario keeps its outcome: `kickpartition` decides 2 frames sooner, `bridge` under (b)
+    ends with two resets after the heal instead of one, and timings move by a frame or two.
+* **Round 5** (@design-reviewer's review of 452e1f7 asked for changes: VC4R-1 to VC4R-6, two of them
+  halting the session). All are fixed on `viewchange`:
+
+    | Repro | With the fix switched off | With the fix |
+    |---|---|---|
+    | `joinwedge` (VC4R-2, the reviewer's) | a join seen by only part of the session, plus a crash, wedges it; stuck at frame 114 | 5 admitted at 2.6 s, 9 removed at 5.6 s |
+    | `slowref` (VC4R-3, the reviewer's) | fake references shield a slow member; stuck at frame 108 | the slow member removed at 7.4 s |
+
+  * VC4R-1 [V prevotefork]: a capped precommit carries its polka's prevote ids; a member fetches them
+    and counts any version (completing the polka, or proving the proposer equivocated) before voting the
+    capper out, so an equivocated prevote cannot get an honest capper voted out. VC4R-4: fetches by id
+    retry with backoff.
+    VC4R-5: a vote whose frozen head nobody delivers blocks no reset and removes its voter. VC4R-6: a join
+    signature names the session and an expiry. VC3R-3's low: a listed admin entry must be the canonical,
+    undisputed version.
+  * **A reference now counts only once the entry it names is held**, both toward stability and against a
+    withholder (VC4R-3). This is also what caught the generator's finding below.
+* **A randomized Byzantine schedule generator** (`randsched`, coordinator's request). Each seed draws a
+  membership of 4 to 7, a faulty set within `t`, a behaviour per faulty member (crash, delay, selective
+  delivery, fake references, a climbing epoch, a withheld vote, a bogus cap, suspicion churn, a ghost
+  vote), an optional partial-delivery joiner, and a GST, then checks the written invariants S1-S5 and L1
+  (`spikes/out/session-sim/INVARIANTS.md`). 80 seeds hold every invariant on the round-5 protocol.
+  * **It found RG-1**, a hole the four hand reviews had not: a faulty member that references a healthy
+    member's chain a little beyond what it holds, so the fake hides inside normal lag, caps that chain's
+    stability without being caught as a withholder. `randsched --fixes-off 0x800000` reproduces it
+    (seed 1); the verified-reference rule fixes it.
+  * **Coverage of the earlier rounds' holes, measured** by running the generator with each fix switched
+    off: 40 seeds find VC4R-3/RG-1 at once, but do not reproduce VC4R-2 (`joinwedge` needs a crash timed
+    to a particular prevote), VCR-12 or VC-5 within that budget, and the generator does not yet craft
+    equivocated view-change votes (VC4R-1). So it complements the hand repros rather than replacing them
+    yet; strengthening its join and equivocation draws is the next step.
+* **Round 6** (@design-reviewer's review of round 5 asked for changes: the real VC4R-1 fix, VC5R-2, and
+  an L1 lag bound). All in:
+
+    | Repro | With the fix off | With the fix |
+    |---|---|---|
+    | `prevotefork` (VC4R-1) | an equivocated prevote gets honest capper 2 voted out by observer 3 | 3 fetches the cited prevote and keeps 2 |
+    | `fakemix` (VC5R-2) | a fake head alternated with a stale real one caps a healthy chain; stuck at 471 of 591 | the chain stabilises on the newest matching reference; confirmation keeps up |
+
+  * VC4R-1's real fix: the capped precommit carries its polka's prevote ids, fetched and counted in any
+    version (or proving the proposer equivocated) before the capper is voted out. VC5R-2: `stable_seq`
+    takes the newest matching reference instead of zero. VC5R-4: the verified-reference timers reset on a
+    decision. VC5R-5: the "members removed unchanged" note is corrected (fakeref and strikeframe now
+    remove the faulty member). VC5R-1 (a forked admin entry wedging a lock) is argued, not reproduced
+    (`adminfork` removes the faulty admin either way); the argument is in design 10.8.
+  * L1 in `randsched` is a lag bound (two windows at the end, well under the post-GST tail so a halt that
+    begins just after GST fails); the generator runs as a seed range in `scripts/run_session_sim.sh`.
+    80 seeds hold every invariant.
+* **Round 6 review** closed VC5R-2 and VC4R-1 but found three one-faulty-member liveness halts
+  (`adminwedge`/VC6R-3, `capfake`/VC6R-1, `fakeadmin`/VC6R-4) and VC6R-2 (a capped precommit listed every
+  prevoting member, so honest code panicked above 64 ids in a large session). Before landing: VC6R-2 is
+  fixed (at most a quorum of ids, `MAX_POLKA` = 512; a 300-id polka round-trips, unit test) and L1 fixed
+  to measure the clock-frame present (`now - conf`, two windows) after the delta re-check found the
+  earlier sim-frame measure could not fire on a halt (it is pinned one window behind the clock); the
+  RG-1 control now fails L1 (lag 653 > 240), 80 seeds pass. The three halts are known open, fixed as
+  round 7 on main (design 10.8); each has a reviewer repro (not in the suite until fixed).
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
-  (22.7); VCR-10 waits for the user.
+  (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
+  widened.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 

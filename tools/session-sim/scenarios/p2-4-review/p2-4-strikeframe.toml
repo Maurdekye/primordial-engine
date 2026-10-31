@@ -1,0 +1,186 @@
+description = """
+P2-4 review round 4, VC3R-2 (the reviewer's repro): 9 runs honest code and only its network timing \
+is hostile, in five timings. In each of four windows (from 2, 7, 12 and 17 s) 9 is silent for a \
+while, and its entries of the stretch before each window reach 2 and 3 late. Round 3's strikes got \
+1 voted out in two of the timings. Parts 1-5 run the five timings with VC3R-2's fix switched off, \
+parts 6-10 as shipped; the last counts the timings in which 1 was kept, over the kept runs."""
+include = ["../common/review.toml"]
+end_ms = 26000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+2 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 1300, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1700, before_ms = 2000, delay_ms = 300 },
+    { from = 9, after_ms = 7000, before_ms = 10050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6700, before_ms = 7000, delay_ms = 300 },
+    { from = 9, after_ms = 12000, before_ms = 15050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11700, before_ms = 12000, delay_ms = 300 },
+    { from = 9, after_ms = 17000, before_ms = 20050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16700, before_ms = 17000, delay_ms = 300 },
+]
+report = [
+    { kind = "line", text = "  strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late): at m2: members {members@2}, resets {resets@2}, strikes {strikes@2}" },
+    { kind = "before_fix", honest = { members_at = 2, among = [1, 2, 3] }, label = "strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1000, before_ms = 2000, delay_ms = 1000 },
+    { from = 9, after_ms = 7000, before_ms = 10050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6000, before_ms = 7000, delay_ms = 1000 },
+    { from = 9, after_ms = 12000, before_ms = 15050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11000, before_ms = 12000, delay_ms = 1000 },
+    { from = 9, after_ms = 17000, before_ms = 20050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16000, before_ms = 17000, delay_ms = 1000 },
+]
+report = [
+    { kind = "line", text = "  strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {members@2}, resets {resets@2}, strikes {strikes@2}" },
+    { kind = "before_fix", honest = { members_at = 2, among = [1, 2, 3] }, label = "strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1400, before_ms = 2000, delay_ms = 600 },
+    { from = 9, after_ms = 7000, before_ms = 10020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6400, before_ms = 7000, delay_ms = 600 },
+    { from = 9, after_ms = 12000, before_ms = 15020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11400, before_ms = 12000, delay_ms = 600 },
+    { from = 9, after_ms = 17000, before_ms = 20020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16400, before_ms = 17000, delay_ms = 600 },
+]
+report = [
+    { kind = "line", text = "  strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late): at m2: members {members@2}, resets {resets@2}, strikes {strikes@2}" },
+    { kind = "before_fix", honest = { members_at = 2, among = [1, 2, 3] }, label = "strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1000, before_ms = 2000, delay_ms = 1000 },
+    { from = 9, after_ms = 7000, before_ms = 10080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6000, before_ms = 7000, delay_ms = 1000 },
+    { from = 9, after_ms = 12000, before_ms = 15080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11000, before_ms = 12000, delay_ms = 1000 },
+    { from = 9, after_ms = 17000, before_ms = 20080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16000, before_ms = 17000, delay_ms = 1000 },
+]
+report = [
+    { kind = "line", text = "  strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {members@2}, resets {resets@2}, strikes {strikes@2}" },
+    { kind = "before_fix", honest = { members_at = 2, among = [1, 2, 3] }, label = "strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 4980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1000, before_ms = 2000, delay_ms = 1000 },
+    { from = 9, after_ms = 7000, before_ms = 9980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6000, before_ms = 7000, delay_ms = 1000 },
+    { from = 9, after_ms = 12000, before_ms = 14980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11000, before_ms = 12000, delay_ms = 1000 },
+    { from = 9, after_ms = 17000, before_ms = 19980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16000, before_ms = 17000, delay_ms = 1000 },
+]
+report = [
+    { kind = "line", text = "  strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {members@2}, resets {resets@2}, strikes {strikes@2}" },
+    { kind = "before_fix", honest = { members_at = 2, among = [1, 2, 3] }, label = "strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+keep = "t1"
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1700, before_ms = 2000, delay_ms = 300 },
+    { from = 9, after_ms = 7000, before_ms = 10050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6700, before_ms = 7000, delay_ms = 300 },
+    { from = 9, after_ms = 12000, before_ms = 15050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11700, before_ms = 12000, delay_ms = 300 },
+    { from = 9, after_ms = 17000, before_ms = 20050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16700, before_ms = 17000, delay_ms = 300 },
+]
+report = [
+    { kind = "check", case = "strikeframe", text = "silent 3.05 s, 300 ms late", at = 2, target = 9, members = [1] },
+    { kind = "verdict", honest = [1, 2, 3], label = "strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late)" },
+]
+
+[[part]]
+keep = "t2"
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1000, before_ms = 2000, delay_ms = 1000 },
+    { from = 9, after_ms = 7000, before_ms = 10050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6000, before_ms = 7000, delay_ms = 1000 },
+    { from = 9, after_ms = 12000, before_ms = 15050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11000, before_ms = 12000, delay_ms = 1000 },
+    { from = 9, after_ms = 17000, before_ms = 20050, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16000, before_ms = 17000, delay_ms = 1000 },
+]
+report = [
+    { kind = "check", case = "strikeframe", text = "silent 3.05 s, 1000 ms late", at = 2, target = 9, members = [1] },
+    { kind = "verdict", honest = [1, 2, 3], label = "strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late)" },
+]
+
+[[part]]
+keep = "t3"
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1400, before_ms = 2000, delay_ms = 600 },
+    { from = 9, after_ms = 7000, before_ms = 10020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6400, before_ms = 7000, delay_ms = 600 },
+    { from = 9, after_ms = 12000, before_ms = 15020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11400, before_ms = 12000, delay_ms = 600 },
+    { from = 9, after_ms = 17000, before_ms = 20020, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16400, before_ms = 17000, delay_ms = 600 },
+]
+report = [
+    { kind = "check", case = "strikeframe", text = "silent 3.02 s, 600 ms late", at = 2, target = 9, members = [1] },
+    { kind = "verdict", honest = [1, 2, 3], label = "strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late)" },
+]
+
+[[part]]
+keep = "t4"
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 5080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1000, before_ms = 2000, delay_ms = 1000 },
+    { from = 9, after_ms = 7000, before_ms = 10080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6000, before_ms = 7000, delay_ms = 1000 },
+    { from = 9, after_ms = 12000, before_ms = 15080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11000, before_ms = 12000, delay_ms = 1000 },
+    { from = 9, after_ms = 17000, before_ms = 20080, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16000, before_ms = 17000, delay_ms = 1000 },
+]
+report = [
+    { kind = "check", case = "strikeframe", text = "silent 3.08 s, 1000 ms late", at = 2, target = 9, members = [1] },
+    { kind = "verdict", honest = [1, 2, 3], label = "strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late)" },
+]
+
+[[part]]
+keep = "t5"
+fault = [
+    { from = 9, after_ms = 2000, before_ms = 4980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 1000, before_ms = 2000, delay_ms = 1000 },
+    { from = 9, after_ms = 7000, before_ms = 9980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 6000, before_ms = 7000, delay_ms = 1000 },
+    { from = 9, after_ms = 12000, before_ms = 14980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 11000, before_ms = 12000, delay_ms = 1000 },
+    { from = 9, after_ms = 17000, before_ms = 19980, drop = true },
+    { from = 9, to = [2, 3], after_ms = 16000, before_ms = 17000, delay_ms = 1000 },
+]
+report = [
+    { kind = "check", case = "strikeframe", text = "silent 2.98 s, 1000 ms late", at = 2, target = 9, members = [1] },
+    { kind = "verdict", honest = [1, 2, 3], label = "strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late)" },
+    { kind = "check", case = "strikeframe_total", at = 2, members = [1], runs = ["t1", "t2", "t3", "t4", "t5"] },
+]
