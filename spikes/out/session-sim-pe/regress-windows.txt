@@ -1,4 +1,4 @@
-# pe-session-sim regress at b2dd57d (pe-session with P2-4 round 7, main 5a71ca7 incl. P2-9 delta 5), Windows 11 x64, rustc 1.99.0, release, --jobs 2, 2026-10-31
+# pe-session-sim regress at 44a1b2f (built from this tree; pe-session with P2-4 round 7, main 5a71ca7 incl. P2-9 delta 5), Windows 11 x64, rustc 1.99.0, release, --jobs 2, 2026-10-31
 regress: 92 scenarios from E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\tools\session-sim\scenarios, logs to E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\target/session-sim, expected E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\spikes/out/session-sim-pe
 == backdate: identical
 RESULT backdate part 1 world 1: frames 0..600 digests m1=2b47db364a252e1b m2=2b47db364a252e1b m3=2b47db364a252e1b | offline replay 2b47db364a252e1b | ALL EQUAL
