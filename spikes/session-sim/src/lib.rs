@@ -566,9 +566,9 @@ impl Sim {
                         self.net.post(w, to, from, &e);
                     }
                 }
-                Msg::Join { member, attests } => r.sim.on_join(member, attests),
-                Msg::FetchEntry { id } => {
-                    for e in r.sim.on_fetch_entry(id) {
+                Msg::Join { member, attests, sig } => r.sim.on_join(member, attests, sig),
+                Msg::FetchEntry { id, back } => {
+                    for e in r.sim.on_fetch_entry(id, back) {
                         self.net.post(w, to, from, &e);
                     }
                 }
@@ -717,7 +717,7 @@ impl Sim {
             } else {
                 now >= r.next_ack_us
             };
-            if ack_due {
+            if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
                 r.next_ack_us = now + r.ack_every_us;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
