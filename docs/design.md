@@ -1618,8 +1618,12 @@ no blockchain"). The chain travels with the world, in its genesis document, ever
 session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
 single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
 
-The rules below follow two rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to OWNR-9).
-What the user still has to decide is D87.
+The rules below follow three rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
+OWNR-9, OWNS-1 to OWNS-12).
+
+They are checked against written security invariants and an attacker model, by named tests and by an
+adversarial harness (see "What the spike shows"). The trust root, meaning which sessions' attestations
+count, is with the user in D87, and so are the residual risks that hold without one.
 
 * **Owners are keys.** Each owner is a player's long-term Ed25519 identity key (10.3), never a session
   `MemberId`. A session maps members to keys through their join certificates. Owners are equals.
@@ -1629,9 +1633,12 @@ What the user still has to decide is D87.
   * `prev`: the parent, or several pairwise-concurrent parents for a merge;
   * `change`;
   * `sigs`.
-  Keys sign the hash of everything but the signatures. The id also covers the set of valid signers,
-  so two copies with different signatures are two certificates (OWNR-4). The encoding has exactly one
-  form.
+  Keys sign the hash of everything but the signatures, and that hash is the certificate's id.
+  * Copies with different signatures are one certificate. A book merges the signatures that matter
+    (owners' and recovery keys' at the parent) until a session attests it.
+  * The attestation carries the committed signer set, which is frozen from then on (OWNR-4, OWNS-5).
+  * Padding a certificate with other keys' signatures creates nothing.
+  * The encoding has exactly one form.
 * **The changes:** `Genesis{owners, rule, nonce}`, `Add`, `Leave`, `Remove` (rule C only), `SetRule`,
   `SetRecovery`, `Challenge`, `RemoveDormant`, `StartRecover`, `FinishRecover` and `Merge`.
 * **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
@@ -1646,10 +1653,14 @@ What the user still has to decide is D87.
   * **Counting:** a certificate counts only if it is attested and it applies at its parent's
     *effective* state (below). A certificate signed on an old copy that no session committed changes
     nothing. That is @design-reviewer's mitigation for forks.
-* **A session commits only certificates built on its current head** (or a merge of its heads), and only
-  if they count. So within one session the chain is linear: the first of two conflicting
-  certificates wins, and the second is refused as stale (OWNR-2). Forks arise only between disconnected
-  copies of the world, each with its own sessions.
+* **A session commits only certificates built on the head of what it committed itself** (OWNS-12), and
+  only if they count.
+  * So within one session the chain is linear: the first of two conflicting certificates wins, and the
+    second is refused as stale (OWNR-2).
+  * Nothing someone else inserted can block a session. That includes an unattested child of its head.
+  * Forks arise only between disconnected copies of the world, each with its own sessions.
+* **Quota:** each key may have at most 16 unattested certificates in a book, so nobody floods it
+  (OWNS-5). The book cap is 1,024 certificates.
 
 **Signing rule A (22:54Z, O1; removal and recovery per D87, recommended).**
 
@@ -1676,11 +1687,10 @@ What the user still has to decide is D87.
   * It only replaces a lost key, after 7 days, and the owner cancels by signing anything.
   * A recovery key that the owner replaced or cleared, attested before it started, is dead on every
     branch (`Revoked`).
-* **Windows count attested world frames** (OWN-7, OWNR-3).
-  * Both ends of a window must be attested by one session lineage, and the gap is measured there.
-  * Offline, the certificates and their attestations are enough to check it.
-  * Frames are world frames, which continue across the saves a session starts from, so a
-    cancellation attested in another lineage is compared on the same clock.
+* **Windows count attested frames of one session lineage** (OWN-7, OWNR-3, OWNS-1c).
+  * Both ends of a window, and any cancellation or revocation, must be attested by the same lineage,
+    and frames are never compared across lineages: two copies' frames are no common clock.
+  * Offline, the certificates and their attestations are enough to check a window.
 * **Kept for comparison** (the spike implements both):
   * rule B: any one owner adds, and nobody can be removed;
   * rule C: k of n, with instant `Remove`. Concurrent mutual removals void each other (OWNR-7).
@@ -1701,26 +1711,27 @@ What the user still has to decide is D87.
     removal of them.
   * So a Leave or a removal sticks across forks unless the same history adds the person back (OWN-2).
   * Recovery keys merge the same way.
-* **A change on one branch counts only if the owners added by counting changes on concurrent branches
-  since it split off approve it too** (OWN-3).
-  * As a result, a former sole owner can't evict owners added later, and a co-owner can't add people
-    alone on an old branch.
-  * A double sale still makes both buyers co-owners: additions made right at a fork point don't need
-    each other.
+* **A removal on one branch counts only if the owners added by counting changes on concurrent branches
+  since it split off approve it too** (OWN-3). So a former sole owner can't evict owners added later.
+* **Additions on different copies don't need each other** (OWNS-3).
+  * Each copy's owners add independently while disconnected, and the copies join. A double sale makes
+    both buyers co-owners, and an old-state fork never voids a later addition.
   * Unattested additions block nothing and revive nothing (OWNR-5).
-* **The rule after a fork** is the newest by causality, and the strictest among concurrent ones
-  (OWNR-9).
+* **Concurrent rules take the strictest** (OWNS-4). The owners loosen it again after a merge.
 * **A merge certificate** joins pairwise-concurrent certificates only, so it can't roll anything back
   (OWN-1). It invalidates nothing, and any owner of the join may sign it.
-* **"Ownership disputed"** is shown while a peer holds more than one head. Joins use the join.
-* **What remains [I]:**
-  * Keys that once held full authority can still add a co-owner through a fork at that old state, if
-    they also run a session on a saved copy from back then to get it attested.
-  * A private session can claim any frames, so the owners who colluded to open a window can also age
-    it, and a stolen recovery key can rush a recovery, unless the owner signed something that a session
-    attested within the window.
-  * Both are detected: there is a fork proof, and the world shows as disputed.
-  * Preventing them needs a global order, which D79 rejected.
+* **"Ownership disputed"** is shown once two counting certificates have ever shared a parent. It comes
+  from the fork history, so no merge, not even one by the residual's sock, clears it (OWNS-8). Joins use
+  the join.
+* **What remains without a trust root** [V: harness]. Anyone can run a one-member session, so attestations
+  can be minted. An attacker with a session of its own (A2) can:
+  * replace an active owner with a stolen recovery key;
+  * remove an active owner through a private window;
+  * return a former owner, or add a co-owner, through a fork at an old state.
+  In the harness's 50,000 random histories, A2 removed an honest owner in 1,202 and added an owner in
+  3,582. It never loosened the rule except after such a takeover. Every case is detected: there is a
+  fork proof, and the world shows as disputed. D87 asks the user how to close this (a host binding), or
+  to accept it.
 
 **In the session log [V: spike].**
 
@@ -1738,8 +1749,9 @@ What the user still has to decide is D87.
 * **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) all
   ask whether the member's identity key is in `book.view().owners` at that step. A relationship
   record's expiry (O5) is checked against the session's agreed time at the same step [I].
-* **Cost.** A book holds at most 1,024 certificates. Each change re-runs the effective pass,
-  O(N log N). Production compacts a long linear history into a checkpoint that the owners sign [I].
+* **Cost.** A book holds at most 1,024 certificates, and each key at most 16 unattested ones. Each change
+  re-runs the pass, and a batch runs it once per round of parents (OWNS-9). Production compacts a long
+  linear history into a checkpoint that the owners sign [I].
 
 **Joins, relationship records and discovery.**
 
@@ -1759,34 +1771,32 @@ What the user still has to decide is D87.
 
 **What the spike shows** [V, Windows].
 
-* **Tests.** `spikes/sim-core/src/ownership/tests.rs` has 34 tests. The scenario
-  `tools/session-sim/scenarios/ownership/ownership.toml` runs 3 replicas plus an offline replay, ALL
-  EQUAL.
-* **Regression tests for the review.** Commit cbcdadb holds them against round 1's code and commit
-  5083c64 against round 2's: all 12 and all 10 fail there. They pass in their new form.
-* **Refused or powerless:**
-  * a stranger's transfer, a forged signature, and a forged or minority attestation;
-  * a co-owner adding alone;
-  * a recovery key signing for its owner;
-  * an instant removal under A;
-  * a removal or recovery the target cancelled;
-  * one completed too early;
-  * a completed one undone later by an unattested or late signature;
-  * a revoked recovery key;
-  * a rolled-back merge;
-  * a seller returning;
-  * an old-state fork without the owners added since;
-  * an unattested fork;
-  * a stale certificate in a session;
-  * the last owner leaving;
-  * a tampered, gapped or mis-sequenced chain;
-  * an orphan;
-  * a malleable encoding;
-  * a book past its cap.
-* **Detected:** a double sale across two sessions. The proof verifies for a third party, both buyers
-  become co-owners in every arrival order, and one buyer's merge ends the dispute.
-* **In a session:** the second of two concurrent sales is refused as stale. A recovery that starts
-  can't finish before its delay. All replicas equal the offline replay.
+* **The invariants and the attacker model** are in the design draft (provenance-eng
+  world-ownership-draft.md, section 0).
+  * The attackers: A1 holds former owners', removed owners', stolen recovery and stranger keys, and
+    can fork, pad, strip, replay and reorder. A2 is A1 plus sessions of its own.
+  * Must hold:
+    * 1, authority;
+    * 2, unattested changes change nothing (A1);
+    * 3, honest liveness (A1);
+    * 4, the view is independent of arrival order;
+    * 5, bounded storage, and no panic;
+    * 6, removals stick;
+    * 7, disputes stay visible.
+  * 8 is the residual for A2.
+* **The adversarial harness** (`ownership/harness.rs`) plays random honest histories through a session,
+  then random A1 and A2 attacks.
+  * It checks invariants 2 to 5 on every book. Determinism is checked by rebuilding each book in a
+    shuffled order.
+  * It measures 8, and asserts that A2 never loosens the rule without a takeover.
+  * With 50,000 histories, all of that held. While it was being built, it found three holes before
+    review, now fixed: an unattested merge counted, honest certificates hit the quota during an offline
+    rebuild, and the genesis certificate's attestations were lost in a rebuild.
+* **Tests:** 48 pass, and 3 are ignored: the two residual tests OWNS-1a and OWNS-1d, plus a debug
+  helper.
+* **Regression tests for the reviews:** cbcdadb (12 of round 1), 5083c64 (10 of round 2) and dc3c1cd (10
+  of round 3) each fail on the code before their fix.
+* **The session scenario** gives ALL EQUAL, and the full regress has 42 of 42 identical.
 
 ---
 
@@ -4919,32 +4929,49 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
-* **D87. World ownership: what the user decides (12.5; after @design-reviewer's two review rounds).**
-  * One consolidated set, replacing OA, OB, OC and D88. Each is recommended as written in 12.5 and
-    built in the spike.
-  * **1. Forks of the ownership chain (refines O4).**
-    * Recommended: a change counts only once a session of the world committed it; within a session
-      the first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
-      both buyers of a double sale become co-owners, a Leave or removal sticks, and a change on one
-      copy needs the owners the other copy added since they split.
-    * What remains: someone who once held full authority can still add a co-owner by running a
-      session on an old saved copy. It is always detected and shown as "Ownership disputed".
+* **D87. World ownership: what the user decides (12.5; after @design-reviewer's three review rounds).**
+  * One consolidated set, replacing OA, OB, OC and D88. Each question gives the recommendation, its
+    consequence, the residual risk and an alternative. The spike is built to recommendation 1 (B) and
+    to the other recommendations.
+  * **1. The trust root: which sessions may change ownership** (sent to the user by @coordinator-opus
+    at 02:14Z).
+    * **(B), recommended for now: consent only.** No removal of a vanished owner. A recovery key is a
+      backup with the owner's full power. No time-based protections, since without a trust root none
+      of them can hold.
+      * Consequence: a co-owner who vanishes stays an owner, and under rule A additions then need
+        them. Groups that want removability pick rule C. A stolen backup key equals a stolen key.
+      * Residual: anyone who once held full authority can add a co-owner through a fork at an old
+        state. It is always detected and shown as disputed.
+    * **(A), later: host sessions.** The owners name, in the chain, the session lineages that may
+      change ownership. Only their attestations count for windows, cancels, recoveries and fork
+      branches. This needs P2-4 to define a persistent session lineage for a world.
+      * Residual: a host session's majority colluding.
+    * **What happens if neither, as the spike stands today** [V: harness, 50,000 histories]: anyone who
+      runs a session of their own defeats the windows and delays. A stolen recovery key replaced an
+      active owner, a private window removed an active co-owner, and a former owner returned. An
+      honest owner was lost in 1,202 histories and an owner gained in 3,582, always detected.
+  * **2. Forks of the ownership chain (refines O4).**
+    * Recommended: a change counts only once a session of the world committed it; within a session the
+      first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
+      * both buyers of a double sale become co-owners;
+      * each copy's additions stand;
+      * a Leave or a removal sticks;
+      * a removal on one copy needs the owners the other copy added since they split;
+      * concurrent rules take the strictest.
+    * Residual: as in 1.
     * Alternative: a change counts only if every other copy's owners signed it too. Nobody gains
       through a fork, but a double sale cancels both sales, so the seller keeps the world.
-  * **2. Removing an owner (refines O1).**
+  * **3. Removing an owner (refines O1).** Only under 1 (A).
     * Recommended: only through the 30-day window, which the target cancels by signing anything that
-      a session records within the window.
-    * What remains: owners who collude in a private session of their own can claim the time passed.
+      the same session records within the window.
     * Alternative: instant removal by every other owner, which lets either of two owners remove the
       other.
-  * **3. Recovery keys (refines O2).**
-    * Recommended: a recovery key only replaces its owner's lost key, after 7 days, and the owner
-      cancels by signing anything. A replaced recovery key is dead.
-    * What remains: a stolen recovery key run in a private session can rush the delay, unless the
-      owner signed something that a session recorded meanwhile.
-    * Alternative: the recovery key signs in the owner's place, which lets a stolen recovery key take
-      the world.
-  * **4. Locking session rules (was D88).**
+  * **4. Recovery keys (refines O2).**
+    * Under 1 (A), recommended: a recovery key only replaces its owner's lost key, after 7 days, and
+      the owner cancels by signing anything. A replaced recovery key is dead.
+    * Under 1 (B): a backup key with full power.
+    * Alternative: no recovery keys at all.
+  * **5. Locking session rules (was D88).**
     * Recommended: a lock is an ownership-chain entry that every current owner signs, so a lone
       co-owner can't impose or lift one.
     * Alternative: any one owner may lock and unlock.

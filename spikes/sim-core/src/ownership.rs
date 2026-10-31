@@ -487,14 +487,29 @@ impl Book {
     /// Insert many, in any order, then run the pass once (OWNS-9). Returns what was refused
     /// (OWNS-10: junk is skipped, not fatal).
     pub fn insert_all(&mut self, certs: &[Cert]) -> Vec<(CertId, OwnError)> {
+        self.insert_attested(certs, &[], &crate::provenance::StaticEpochs::default())
+    }
+
+    /// As [`Book::insert_all`], applying each certificate's attestations as soon as it is held, so an
+    /// attested certificate never counts against its signers' quota of unattested ones.
+    pub fn insert_attested(&mut self, certs: &[Cert], attests: &[Attest], sessions: &dyn EpochCerts) -> Vec<(CertId, OwnError)> {
+        let mut by_cert: BTreeMap<CertId, Vec<&Attest>> = BTreeMap::new();
+        for a in attests {
+            by_cert.entry(a.cert).or_default().push(a);
+        }
         let mut todo: Vec<&Cert> = certs.iter().collect();
         let mut refused = Vec::new();
         loop {
             let n = todo.len();
             let mut rest = Vec::new();
             for c in todo {
-                match self.insert_raw(c.clone(), true) {
-                    Ok(_) => {}
+                let attested = by_cert.get(&c.id()).is_some_and(|v| v.iter().any(|a| a.verify(self.world, sessions)));
+                match self.insert_raw(c.clone(), !attested) {
+                    Ok(_) => {
+                        for a in by_cert.get(&c.id()).into_iter().flatten() {
+                            self.attest_raw(a, sessions);
+                        }
+                    }
                     Err(OwnError::MissingParent) => rest.push(c),
                     Err(e) => refused.push((c.id(), e)),
                 }
@@ -506,6 +521,10 @@ impl Book {
             // Parents may have arrived; the linear states are refreshed for the next round.
             self.recompute();
             todo = rest;
+        }
+        // Attestations of certificates held before this batch (genesis included).
+        for a in attests {
+            self.attest_raw(a, sessions);
         }
         self.recompute();
         refused
@@ -1059,13 +1078,16 @@ impl Book {
                 counted.insert(id);
                 inner.linear[&id].clone()
             } else if c.change == Change::Merge {
-                if inner.invalid.contains(&id) {
+                let mut m = self.join(&c.prev, &eff, &|x| counted.contains(&x));
+                m.seq = c.seq;
+                // A merge counts like any certificate: attested, and signed by an owner of the join.
+                if inner.invalid.contains(&id) || !SignRule::Any.met(&inner.signers[&id], &m.owners) {
                     refused.push((id, OwnError::Signers));
+                } else if !inner.commits.contains_key(&id) {
+                    refused.push((id, OwnError::Unattested));
                 } else {
                     counted.insert(id);
                 }
-                let mut m = self.join(&c.prev, &eff, &|x| counted.contains(&x));
-                m.seq = c.seq;
                 m
             } else {
                 let base = &eff[&c.prev[0]];
@@ -1181,11 +1203,7 @@ impl Book {
 /// doesn't count, and may be disputed.
 pub fn verify_chain(genesis: &Cert, rest: &[Cert], attests: &[Attest], sessions: &dyn EpochCerts) -> Result<View, OwnError> {
     let mut b = Book::new(genesis.clone())?;
-    b.insert_all(rest);
-    for a in attests {
-        b.attest_raw(a, sessions);
-    }
-    b.recompute();
+    b.insert_attested(rest, attests, sessions);
     Ok(b.view())
 }
 
@@ -1227,3 +1245,5 @@ impl ForkProof {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod harness;
