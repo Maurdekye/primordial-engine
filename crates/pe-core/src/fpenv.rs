@@ -6,8 +6,13 @@
 //! change these thread-local flags. The sim thread calls [`check_and_reset`] every tick, which compares
 //! the whole control register against the default (review P21-5), not selected bits.
 
-/// Restores the default environment on this thread. Returns `true` if it already was the default, and
-/// `false` if something had changed it (the caller should log that).
+/// Restores the default environment on **the calling thread**. Returns `true` if it already was the
+/// default, and `false` if something had changed it (the caller should log that).
+///
+/// The environment is per thread, so every thread that runs simulation code must call this: the sim thread
+/// every tick, and each physics worker at the start of each job (review of D2: a worker with flush-to-zero
+/// set would make results depend on which worker took which block). It costs one register read and a
+/// compare, and writes only when something changed.
 pub fn check_and_reset() -> bool {
     imp::check_and_reset()
 }

@@ -151,15 +151,20 @@ impl SimStore {
     /// last), or makes it a root (`parent = None`). Refuses a move that would create a cycle.
     ///
     /// A data edit (review P21R-3): local transforms stay as they are, so world transforms follow the new
-    /// frame. Refused if a moved object without a frame has a non-zero `chunk` and would gain one. For an
-    /// edit that keeps world transforms, use [`SimStore::set_parent_keep_world`].
+    /// frame. Refused with [`Error::ChunkUnderFrame`] if a moved object without a frame has a non-zero
+    /// `chunk` and would gain one: that includes any root `maintain_transforms` has rebased (any negative
+    /// coordinate, or one past 1,024 m), so such a move needs [`SimStore::set_parent_keep_world`] (review
+    /// P21S-2).
+    ///
+    /// Cost: O(depth) for the frame lookups plus the objects moved (review P21S-4). Loaders that build a long
+    /// chain should link it top-down or from the bottom up while its parents are still roots.
     pub fn set_parent(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
         self.check_move(child, parent)?;
         let new_frame = parent.and_then(|p| self.frame_or_self(p));
         if new_frame.is_some() && self.frame_of(child).is_none() {
             for o in self.moved_by(child) {
                 if self.get::<crate::Transform>(o).unwrap().chunk != [0; 3] {
-                    return Err(Error::InvalidValue { component: ComponentId::TRANSFORM.0, object: o, field: "chunk".into() });
+                    return Err(Error::ChunkUnderFrame { object: o });
                 }
             }
         }

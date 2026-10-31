@@ -1,0 +1,99 @@
+description = """
+P2-5 provenance chain, A -> B -> C -> A. Worlds A (60 Hz, members 1 and 2), B (50 Hz, 1 and 3) \
+and C (60 Hz, 1 and 4) route to each other. Member 1 is in all three and carries A's object 40 \
+round the loop; each arrival checks the chain back to A, and the return into A passes A's own \
+last exit."""
+end_ms = 9000
+
+[peer.1]
+skew_us = 1200
+[peer.2]
+skew_us = -900
+[peer.3]
+skew_us = 400
+[peer.4]
+skew_us = -300
+
+[world.1]
+members = [1, 2]
+scene = { pile = { side = 6, layers = 3 } }
+epoch_ms = 100
+seed = 0xA
+routes = [2, 3]
+
+[world.1.plan]
+1 = [
+    { at = 100, every = 5, count = 12, touch = { obj = 40, impulse = [0.0, 0.3, 0.0], grab = true } },
+    { at = 160, carry = { transfer = 1, obj = 40, dest = 2 } },
+]
+2 = [
+    { at = 140, touch = { obj = 33, impulse = [2.0, 4.0, 0.0] } },
+    { at = 230, touch = { obj = 12, impulse = [0.0, 5.0, 0.0] } },
+]
+
+# A:40 arrives in B as local 75 (B has 75 bodies) and in C as local 48 (C has 48). Those objects
+# do not exist when the run starts, so their carries are marked missing_ok.
+[world.2]
+members = [1, 3]
+scene = { pile = { side = 5, layers = 3 } }
+epoch_ms = 150
+hz = 50
+seed = 0xB
+routes = [1, 3]
+
+[world.2.plan]
+1 = [{ at = 217, carry = { transfer = 2, obj = 75, dest = 3 }, missing_ok = true }]
+3 = [
+    { at = 120, touch = { obj = 30, impulse = [0.0, 6.0, 0.0] } },
+    { at = 260, touch = { obj = 8, impulse = [3.0, 3.0, 0.0] } },
+]
+
+[world.3]
+members = [1, 4]
+scene = { pile = { side = 4, layers = 3 } }
+epoch_ms = 130
+seed = 0xC
+routes = [1, 2]
+
+[world.3.plan]
+1 = [{ at = 370, carry = { transfer = 3, obj = 48, dest = 1 }, missing_ok = true }]
+4 = [
+    { at = 150, touch = { obj = 20, impulse = [0.0, 6.0, 0.0] } },
+    { at = 400, touch = { obj = 5, impulse = [2.0, 5.0, 0.0] } },
+]
+
+[net]
+seed = 23
+link = { delay_ms = 50, jitter_ms = 15, loss_pct = 1 }
+
+[[report]]
+kind = "r14_chain_jobs"
+[[report]]
+kind = "r14_chain_outcomes"
+[[report]]
+kind = "r14_chain_conservation"
+label = "r14 chain"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "stats"
+world = 3
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 chain A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 chain B"
+[[report]]
+kind = "check_world"
+world = 3
+frames = 480
+label = "r14 chain C"
