@@ -6,8 +6,9 @@
 # usage: scripts/p2-3/run_linux.sh   (from Git Bash on Windows, with WSL)
 set -u
 cd "$(dirname "$0")/../.."
-heavy="<notes>"
-low() { bash "$heavy" "$@"; }
+# The org-wide build lock (heavy.sh): PE_HEAVY, else the team folder under $HOME; without it, run directly.
+heavy=${PE_HEAVY:-"<notes>"}
+low() { if [ -f "$heavy" ]; then bash "$heavy" "$@"; else "$@"; fi; }
 target=x86_64-unknown-linux-musl
 root=$(pwd -W 2>/dev/null || pwd)
 cfg="target.$target.linker=\"rust-lld\""
