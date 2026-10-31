@@ -611,9 +611,35 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     (four new sim-core unit tests).
   * Every other scenario keeps its outcome; decision times and confirmed frames move by a frame or two,
     because members now ack on entering an epoch.
+* **Round 4** (@design-reviewer's review of a9286fc asked for changes: VC3R-1 to VC3R-8). Round 3's strike
+  rule and its ahead exemption are gone; the levers they guarded get rules of their own (design 10.8):
+
+    | Repro | With the fix switched off | With the fix |
+    |---|---|---|
+    | `strikeframe` (VC3R-2, the reviewer's) | round 3's strikes vote honest 1 out in two of five timings | 1 kept in all five |
+    | `aheadshield` (VC3R-1, the reviewer's) | the climber, sending each entry to one member in turn, is never removed; stuck at frame 112 | voted out at 5.30 s |
+    | `lagchurn` (VC3R-2) | timers restarting at each decision: the lagging member is never demoted, after 8 resets | demoted at 6.48 s |
+    | `adminvoid` (VC3R-3) | a faulty proposer commits its own horizon-void SetRole | refused |
+    | `joinsquat` (VC3R-4) | a request in the joiner's name pre-empts it: never admitted | joins as Guest at 2.63 s |
+    | `joinskip` (VC3R-6) | a joiner that acked nothing before admission: acks void, voted out | it stays |
+
+  * `capstale` and `capchurn`: a stale cap now gets its author voted out, with no reset (3.17 s). `ghostkick`:
+    a kick vote whose kick nobody delivers gets its voter voted out (3.17 s); round 3 reset and kept it.
+  * `votechurn` measures what is left: a member voting against an honest one in every epoch causes 2.5
+    resets a second and raises the median confirmation lag from 7 to 16 frames, until an admin kicks it.
+    Whether such a member should be voted out automatically is the user's question V4.
+  * `fakeref` and `aheadlink` are checks, not repros: fake references do not spare a silent member (the
+    withholding rule removes it), and a member behind casts votes against the members ahead harmlessly.
+  * VC3R-5: a cap has no upper bound now (`lagprecommit` still passes); VC3R-7: a cut's branch is fetched
+    by id (`deepfork` still passes); two new sim-core unit tests for the signed join and the branch fetch.
+  * `handowner` now checks and digests only frames both replicas have confirmed (0..346), as
+    @ballpit-viz's tool port found it should; the history is still the same with and without member 2's
+    entries.
+  * Every other scenario keeps its outcome: `kickpartition` decides 2 frames sooner, `bridge` under (b)
+    ends with two resets after the heal instead of one, and timings move by a frame or two.
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
-  (22.7); VCR-10 waits for the user.
+  (22.7); VCR-10 and V4 wait for the user.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 

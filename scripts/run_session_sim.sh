@@ -47,6 +47,8 @@ for v in fork9 jointiming bogusprecommit futureack; do run p2-4-$v $v; done
 for v in kickwar kickpartition lastadmin adminclose joinrules; do run d80-$v $v; done
 # P2-4 review round 3 (design 10.8): each repro also reports its run with the fix switched off.
 for v in ghostkick selfkickhead ackgap latejoin capchurn deepfork cutbackdate joinattests slowadmin kickbackdate lagprecommit aheadlink; do run p2-4-$v $v; done
+# P2-4 review round 4 (design 10.8): the same, for the round-3 findings and round 4's own changes.
+for v in strikeframe aheadshield fakeref capstale lagchurn votechurn adminvoid joinsquat joinskip; do run p2-4-$v $v; done
 # Review VC-1, a control outside the check below (expected to fork): three of six collude, above the
 # bound of t(6) = 1 faulty member.
 mkdir -p $O/p2-4-controls
