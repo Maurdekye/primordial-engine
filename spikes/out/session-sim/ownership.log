@@ -1,7 +1,7 @@
 RESULT ownership world 1: offline replay owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} | ALL EQUAL
-  m1: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 89612d9881980618
-  m2: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 89612d9881980618
-  m3: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 89612d9881980618
+  m1: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9ae528adfd3d870e
+  m2: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9ae528adfd3d870e
+  m3: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9ae528adfd3d870e
   cert m1s31@60: seq 1 Add { key: 20 } by {10} -> applied
   cert m2s46@90: seq 2 Add { key: 66 } by {66} -> refused Some(RejectedOwnership(Signers))
   cert m3s60@120: seq 2 Add { key: 66 } by {20} -> refused Some(RejectedOwnership(Signers))
@@ -24,4 +24,4 @@ RESULT ownership world 1: offline replay owners {10, 41} rule All heads 1 recove
   after frame 249: owners {10, 20, 30} rule All heads 1 recovery {10: [50], 30: [52]}
   after frame 319: owners {10, 41} rule All heads 1 recovery {10: [50]}
   after frame 344: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60}
-RESULT ownership world 1: frames 0..380 digests m1=15c7ea13cf3e39a5 m2=15c7ea13cf3e39a5 m3=15c7ea13cf3e39a5 | offline replay 15c7ea13cf3e39a5 | ALL EQUAL
+RESULT ownership world 1: frames 0..380 digests m1=85393f058a4174e9 m2=85393f058a4174e9 m3=85393f058a4174e9 | offline replay 85393f058a4174e9 | ALL EQUAL
