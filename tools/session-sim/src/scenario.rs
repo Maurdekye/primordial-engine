@@ -205,7 +205,8 @@ pub struct ReplicaCfg {
     pub throttle_ms: Option<u64>,
     #[serde(default)]
     pub throttle_from_ms: u64,
-    /// R18 congestion control on this member's uplink.
+    /// R18 congestion control on this member's uplink (on by default in pe-session; the tool's test
+    /// IO opts in per member, as the harness does).
     #[serde(default)]
     pub adapt: bool,
     /// Ack every this many ms (default: the world's).
@@ -349,7 +350,7 @@ pub struct NetCfg {
     pub cap: Option<CapCfg>,
     #[serde(default)]
     pub caps: Vec<PairCap>,
-    /// R18: one datagram per member, peer and tick (up to the MTU).
+    /// R18: one datagram per member, peer and tick (up to the MTU). Opt-in for the test IO.
     #[serde(default)]
     pub batching: bool,
     /// Count traffic only in [from, to) ms (the ball-pit sweep window).

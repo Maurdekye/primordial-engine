@@ -178,7 +178,7 @@ fn logs_under(dir: &Path, prefix: &str, out: &mut Vec<String>) {
 pub fn regress(args: &[String]) -> i32 {
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let scenarios = get("--scenarios").map(PathBuf::from).unwrap_or_else(default_scenarios);
-    let expected = get("--expected").map(PathBuf::from).unwrap_or_else(|| repo().join("spikes/out/session-sim"));
+    let expected = get("--expected").map(PathBuf::from).unwrap_or_else(|| repo().join("spikes/out/session-sim-pe"));
     let out = get("--out").map(PathBuf::from).unwrap_or_else(|| repo().join("target/session-sim"));
     let jobs: usize = get("--jobs").map_or(1, |v| v.parse().unwrap_or(1)).max(1);
     let bless = args.iter().any(|a| a == "--bless");

@@ -16,8 +16,11 @@ mkdir -p "$out"
 low() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }
 header() {
   echo "commit $(git rev-parse HEAD)"
-  echo "working tree changes: $(git status --porcelain -- crates scripts | wc -l)"
+  # Review (P2-1 follow-up): the whole tree counts (root Cargo.toml, rust-toolchain.toml), not
+  # only crates and scripts; logs under spikes/out are what this run writes.
+  echo "working tree changes: $(git status --porcelain -- . ':!spikes/out' | wc -l)"
   rustc -vV | grep -E "^(rustc|host|LLVM)"
+  echo "RUSTFLAGS=${RUSTFLAGS:-}"
 }
 mode="${1:-}"
 linux=no; wasm=no
@@ -69,9 +72,9 @@ ref=""; ref_commit=""; ref_passed=""
 for f in "$out"/windows-*.txt "$out"/linux-*.txt; do
   [ -e "$f" ] || continue
   commit=$(head -1 "$f")
-  passed=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '{s += $4} END {print s + 0}')
+  passed=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '{s += $4} END {print s + 0}' || true)
   # Test binaries that ran at least one test (doc-test binaries with 0 tests do not count; review P21S-5).
-  binaries=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '$4 > 0' | wc -l)
+  binaries=$(grep -oE "^test result: ok\. [0-9]+ passed" "$f" | awk '$4 > 0' | wc -l || true)
   if grep -qE "FAILED|panicked|^error" "$f" || [ "$binaries" -lt 4 ]; then
     echo "TESTS FAILED in $f ($binaries passing test binaries)"; status=1
   fi
@@ -88,7 +91,8 @@ for f in "$out"/windows-*.txt "$out"/linux-*.txt; do
     else echo "same digests: $f ($commit, $passed tests passed)"; fi
   fi
 done
-if [ "$wasm" = yes ]; then
+# The wasm32 log is checked whenever it is there, not only in the modes that write it (review).
+if [ "$wasm" = yes ] || [ -f "$out/wasm32-build.txt" ]; then
   if ! grep -q "^    Finished" "$out/wasm32-build.txt"; then echo "WASM BUILD FAILED"; status=1; fi
   if [ "$(head -1 "$out/wasm32-build.txt")" != "$ref_commit" ]; then echo "WASM LOG FROM ANOTHER COMMIT"; status=1; fi
   if [ "$(sed -n 2p "$out/wasm32-build.txt")" != "working tree changes: 0" ]; then echo "DIRTY TREE in the wasm32 log"; status=1; fi

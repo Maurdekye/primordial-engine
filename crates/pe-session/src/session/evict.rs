@@ -1,0 +1,531 @@
+//! Suspicion, frozen heads, eviction votes and lying-vote checks (design 10.8, review rounds 2-3).
+
+use super::*;
+
+impl WorldSim {
+    /// Two signed entries of `m` contradict each other (`a` at seq `k`, `b` another version of it
+    /// or a successor that names another version): record the proof, withdraw what it disputes,
+    /// and vote to remove `m` in this epoch (design 9.3, 10.8).
+    pub(super) fn on_proof(&mut self, m: MemberId, k: u32, a: EntryId, b: EntryId) -> Vec<Entry> {
+        if !self.vcm.proofs.contains_key(&m) {
+            self.stats.equivocations += 1;
+            self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:?} / {b:?})"));
+        }
+        let (k0, a0, b0) = match self.vcm.proofs.get(&m) {
+            Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
+            _ => (k, a, b),
+        };
+        self.vcm.proofs.insert(m, (k0, a0, b0));
+        // Review PF-1: m's proposals already held past its fork may never link here: keep them by value.
+        if self.fixes_off & fix::PF1 == 0 {
+            let held: Vec<EntryId> = self.by_author.range((m, k0)..=(m, u32::MAX)).map(|(_, &id)| id).collect();
+            for id in held {
+                self.note_proposal(id);
+            }
+        }
+        let mut out = Vec::new();
+        // Review P23-11: under static membership nobody is voted out (and `voted` is never true, so
+        // each later entry of the forker would author another vote).
+        if m != self.me && self.vcm.members.contains(&m) && !self.is_static() && !self.voted(m) {
+            out.extend(self.freeze_and_vote(m, k0, EntryId::NONE));
+        }
+        self.reconcile(m);
+        out
+    }
+
+    /// Whether this replica has voted against `m` in the current epoch.
+    pub(super) fn voted(&self, m: MemberId) -> bool {
+        self.vcm.votes.get(&m).is_some_and(|v| v.contains_key(&self.me))
+    }
+
+    /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
+    /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
+    pub(super) fn freeze_and_vote(&mut self, m: MemberId, k0: u32, kick: EntryId) -> Option<Entry> {
+        if self.vcm.withhold_vc {
+            return None;
+        }
+        let f = self.contiguous.get(&m).copied().unwrap_or(0);
+        // A faulty member (fixture) votes without freezing: it keeps processing that chain.
+        if !self.vcm.byz_ally {
+            self.vcm.frozen.insert(m, f);
+        }
+        let (f, fid) = match self.hidden.as_ref().and_then(|h| h.get(&m)) {
+            Some(&(hs, hid)) if hs < f => (hs, hid),
+            _ => (f, if f == 0 { EntryId::NONE } else { self.by_author[&(m, f)] }),
+        };
+        let (f, fid) = if self.lie_in_votes { (0, EntryId::NONE) } else { (f, fid) };
+        let v = Entry {
+            member: self.me,
+            seq: self.my_seq + 1,
+            prev: self.my_last,
+            stamp: self.frame.max(self.now),
+            payload: Payload::Vote { epoch: self.vcm.epoch, target: m, seq: k0, frozen: (f, fid), kick },
+            carried: None,
+        };
+        Some(self.publish(v))
+    }
+
+    /// Review R3-2 (a silent member) and R3-9 (a member too slow to keep up), and proofs carried
+    /// into a new epoch: vote to remove members. A member none of whose entries has reached this
+    /// replica, directly or fetched, for `suspect_after` frames is presumed crashed, unless another
+    /// member's acks show more of its chain than this replica holds (then this replica is behind,
+    /// and fetches). The view change (10.8) then decides which removals happen and their cuts. A
+    /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
+    /// Returns the votes to broadcast.
+    pub fn suspects_due(&mut self) -> Vec<SignedEntry> {
+        if self.is_static() {
+            return Vec::new();
+        }
+        let out = self.suspects_due_entries();
+        self.signed_all(out)
+    }
+
+    fn suspects_due_entries(&mut self) -> Vec<Entry> {
+        if !self.vcm.members.contains(&self.me) || self.vcm.closed_at.is_some() {
+            return vec![];
+        }
+        let mut out = Vec::new();
+        // D80: a pending kick outlives an epoch that did not carry it out: freeze its target again.
+        let kicks: Vec<(EntryId, MemberId, MemberId)> = self
+            .vcm.admin_pending
+            .iter()
+            .filter_map(|id| {
+                let e = self.entries.get(id)?;
+                match e.payload {
+                    Payload::Kick { target, .. } => Some((*id, e.member, target)),
+                    _ => None,
+                }
+            })
+            .collect();
+        for (id, author, t) in kicks {
+            if self.vcm.members.contains(&t) && self.vcm.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.vcm.withhold_vc {
+                if t == self.me {
+                    out.extend(self.self_kick_vote(id));
+                } else {
+                    out.extend(self.freeze_and_vote(t, 0, id));
+                }
+            }
+        }
+        // A proof outlives an epoch that did not remove its member: vote again.
+        let proven: Vec<(MemberId, u32)> = self
+            .vcm.proofs
+            .iter()
+            .map(|(m, p)| (*m, p.0))
+            .chain(self.vcm.liars.iter().map(|(m, p)| (*m, self.entries.get(&p.b).map_or(1, |e| e.seq))))
+            .collect();
+        for (m, k) in proven {
+            if m != self.me && self.vcm.members.contains(&m) && !self.voted(m) {
+                out.extend(self.freeze_and_vote(m, k.max(1), EntryId::NONE));
+            }
+        }
+        if self.vcm.byz_ally {
+            let targets: Vec<MemberId> = self.vcm.votes.keys().copied().filter(|t| *t != self.me && self.vcm.members.contains(t)).collect();
+            for t in targets {
+                if !self.voted(t) {
+                    out.extend(self.freeze_and_vote(t, 0, EntryId::NONE));
+                }
+            }
+            return out;
+        }
+        // Review VC-5: a member whose acks declare an epoch newer than mine, without my reaching it,
+        // caps what I count of its chain; for as long as a silent member is given, I vote it out.
+        if self.fixes_off & fix::VC5 == 0 {
+            let members: Vec<MemberId> = self.vcm.members.iter().copied().filter(|&j| j != self.me).collect();
+            for j in members {
+                let newer = self.vcm.ack_epoch_from.get(&j).is_some_and(|a| a.range(self.vcm.epoch + 1..).next().is_some());
+                if !newer {
+                    self.vcm.newer_since.remove(&j);
+                    continue;
+                }
+                // Round 3 (VCR-12), kept only to show VC3R-1: while another member's acks showed more
+                // of some chain than I held, I took myself to be behind and started the timer over. A
+                // climbing member that keeps one chain a step ahead somewhere kept it from ever
+                // completing. Without it, a replica that really is behind may vote against a member
+                // that is legitimately ahead, and that vote is harmless: the member can be ahead only
+                // if this epoch has decided, an epoch decides once, and the vote ends with the epoch
+                // when this replica applies that decision.
+                if self.fixes_off & fix::VC3R1 != 0 {
+                    let behind: Vec<(MemberId, MemberId, u32, u32)> = self
+                        .refs
+                        .iter()
+                        .filter(|((k, y), _)| *k != self.me && *k != j && *y != self.me)
+                        .filter_map(|((k, y), r)| {
+                            let mine = self.contiguous.get(y).copied().unwrap_or(0);
+                            r.keys().next_back().filter(|&&top| top > mine).map(|&top| (*k, *y, mine + 1, top))
+                        })
+                        .collect();
+                    if !behind.is_empty() {
+                        for (k, y, a, b) in behind {
+                            self.want_from(k, y, a, b);
+                        }
+                        self.vcm.newer_since.insert(j, self.now);
+                        continue;
+                    }
+                }
+                let since = *self.vcm.newer_since.entry(j).or_insert(self.now);
+                if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.held(j) && !self.vcm.withhold_vc {
+                    self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.vcm.epoch));
+                    out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
+                }
+            }
+        }
+        // Review VC3R-2: a cap stands until its epoch decides, and holds every reader's confirmation
+        // below its boundary. Honest caps follow a quorum of prevotes, which acks and fetches bring
+        // every member; a member whose capped precommit has stood here, for a value no quorum here
+        // prevoted, holds confirmation the way a silent member does, and is voted out the same way.
+        // Likewise a kick vote whose kick nobody delivers (it is fetched from everyone): its voter
+        // froze a chain for nothing (VCR-1).
+        if self.fixes_off & fix::VC3R2 == 0 && !self.vcm.withhold_vc {
+            // Half the speculation window, not a silence limit: an honest cap or kick vote comes with its
+            // evidence (the prevotes, the kick), which reaches every member within a few round trips,
+            // and the cap holds everyone's confirmation meanwhile.
+            let after = self.cfg.window / 2;
+            // Review VC4R-1: a cap is justified by its polka counted in any prevote version I hold. A
+            // member faking the cap would be voted out, so I first fetch the prevote ids its precommit
+            // named (fetching a forked one records it, or proves the proposer equivocated), and vote it
+            // out only once I hold them all and they are still no quorum.
+            let ripe: Vec<(MemberId, u32, u64, u64, u64)> = self
+                .cap_seen
+                .iter()
+                .filter(|(m, (_, _, at))| **m != self.me && self.now >= *at + after)
+                .map(|(m, (r, v, at))| (*m, *r, *v, self.vcm.join_caps.get(m).map_or(0, |c| c.1), *at))
+                .collect();
+            for (m, r, v, b, at) in ripe {
+                let old_rule = self.fixes_off & fix::VC4R1 != 0;
+                if old_rule {
+                    if !self.quorum_for(&self.vcm.vc.prevotes, r, v) && self.vcm.members.contains(&m) && !self.voted(m) && !self.held(m) {
+                        self.ev(format!("member {m}'s precommit caps confirmation from frame {b} for a value no quorum here prevoted, for {after} frames: vote to remove it"));
+                        out.extend(self.freeze_and_vote(m, 0, EntryId::NONE));
+                    }
+                    continue;
+                }
+                if self.polka_any(r, v) {
+                    continue;
+                }
+                let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
+                let missing: Vec<EntryId> = ids.iter().copied().filter(|id| !self.entries.contains_key(id)).collect();
+                if !missing.is_empty() {
+                    // Review VC6R-1: an honest capper holds its own polka and answers a fetch within a
+                    // round trip, so ids still missing a further half window after the cap ripened name
+                    // prevotes nobody holds. The capper is voted out instead of the fetch being retried
+                    // for good.
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                        if self.vcm.members.contains(&m) && !self.voted(m) && !self.held(m) {
+                            self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
+                            out.extend(self.freeze_and_vote(m, 0, EntryId::NONE));
+                        }
+                        continue;
+                    }
+                    for id in missing {
+                        self.want_entry_all(id, 0);
+                    }
+                    continue;
+                }
+                if self.vcm.members.contains(&m) && !self.voted(m) && !self.held(m) {
+                    self.ev(format!("member {m}'s precommit caps confirmation from frame {b} for a value no quorum here prevoted, for {after} frames: vote to remove it"));
+                    out.extend(self.freeze_and_vote(m, 0, EntryId::NONE));
+                }
+            }
+            let ghosts: Vec<(MemberId, EntryId)> = self
+                .vcm.votes
+                .iter()
+                .flat_map(|(y, vs)| vs.iter().map(move |(v, r)| (*y, *v, *r)))
+                .filter(|(y, v, r)| self.fixes_off & fix::VCR1 == 0 && r.kick != EntryId::NONE && *v != self.me && self.now >= r.at + after && !self.kick_live(*y, r.kick))
+                .map(|(_, v, r)| (v, r.kick))
+                .collect();
+            for (v, kick) in ghosts {
+                if self.vcm.members.contains(&v) && !self.voted(v) && !self.held(v) {
+                    self.ev(format!("member {v}'s vote names kick {kick:?}, which nobody has delivered in {after} frames: vote to remove it"));
+                    out.extend(self.freeze_and_vote(v, 0, EntryId::NONE));
+                }
+            }
+        }
+        // Review VC4R-3, and the generator's RG-1: a member whose acks reference more of some chain
+        // than I hold, I fetch the difference from. The references that count toward stability
+        // (`stable_seq`) and against a withholder (`withholders_due`) are only the verified ones: a
+        // seq I hold in the version the reference names. A faulty member that references entries
+        // nobody has (a fake head, with or without a small live offset) advances its raw reference
+        // but not its verified one, so it is caught as a withholder, and its fake head never caps
+        // confirmation. Here I only issue the fetches; the counting is in those two functions.
+        if self.fixes_off & fix::VC4R3 == 0 {
+            let members: Vec<MemberId> = self.vcm.members.iter().copied().collect();
+            let want: Vec<(MemberId, MemberId, u32, u32)> = self
+                .refs
+                .iter()
+                .filter(|((k, y), _)| *k != self.me && *k != *y && members.contains(k) && members.contains(y))
+                .filter_map(|((k, y), r)| {
+                    let mine = self.contiguous.get(y).copied().unwrap_or(0);
+                    r.keys().next_back().filter(|&&top| top > mine).map(|&top| (*k, *y, mine + 1, top))
+                })
+                .collect();
+            for (k, y, from, to) in want {
+                self.want_from(k, y, from, to);
+            }
+        }
+        // Review VC4R-4 and VC4R-5: what is still missing is asked for again. A removed member's cut
+        // branch is walked again; a standing kick vote's kick and a standing vote's frozen head are
+        // fetched by id; a vote whose frozen head nobody delivers within half the window froze a chain
+        // for nothing, and its voter is voted out, as a ghost kick's is.
+        if self.fixes_off & fix::VC4R4 == 0 {
+            let pending: Vec<MemberId> = self.vcm.evicted.keys().copied().filter(|x| !self.vcm.cut_done.contains(x)).collect();
+            for x in pending {
+                self.adopt_cut(x);
+            }
+        }
+        if self.fixes_off & (fix::VC4R4 | fix::VC4R5) == 0 {
+            let standing: Vec<(MemberId, MemberId, VoteRec)> = self.vcm.votes.iter().flat_map(|(y, vs)| vs.iter().map(move |(v, r)| (*y, *v, *r))).collect();
+            for (y, v, r) in standing {
+                if r.kick != EntryId::NONE && !self.entries.contains_key(&r.kick) {
+                    self.want_entry_all(r.kick, 0);
+                }
+                if r.frozen.0 > 0 && !self.head_held(y, r.frozen) {
+                    self.want_entry(v, r.frozen.1, 15);
+                    self.want_entry_all(r.frozen.1, 15);
+                    if v != self.me && self.now >= r.at + self.cfg.window / 2 && self.vcm.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.vcm.withhold_vc {
+                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {} frames: vote to remove it", r.frozen.0, self.cfg.window / 2));
+                        out.extend(self.freeze_and_vote(v, 0, EntryId::NONE));
+                    }
+                }
+            }
+        }
+        // Round 3 (VCR-4), kept only to show VC3R-2: a member whose votes or caps resets kept
+        // overruling was struck, and voted out at three strikes. Hostile timing by another member
+        // could make that an honest one.
+        if self.fixes_off & fix::VCR4 == 0 && self.fixes_off & fix::VC3R2 != 0 {
+            let struck: Vec<MemberId> = self.vcm.members.iter().copied().filter(|&j| j != self.me && !self.voted(j) && self.struck_out(j)).collect();
+            for j in struck {
+                if !self.vcm.withhold_vc {
+                    self.ev(format!("member {j}'s votes or caps were overruled in {STRIKES_OUT} of the last {STRIKE_EPOCHS} epochs: vote to remove it"));
+                    out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
+                }
+            }
+        }
+        // Removal on silence needs a quorum without the removed member, so a two-member world
+        // never suspects: both members pause instead (D7).
+        if self.vcm.members.len() < 3 {
+            return out;
+        }
+        let members: Vec<MemberId> = self.vcm.members.iter().copied().collect();
+        for j in members {
+            if j == self.me || self.voted(j) || self.held(j) {
+                continue;
+            }
+            let heard = self.heard.get(&j).copied().unwrap_or(0);
+            // Review R3-9 (demotion, 10.9 item 6): a member whose newest validated horizon trails
+            // this replica's present by more than half the speculation limit, for as long as a
+            // silent member is given, is voted out the same way. Its link cannot carry the session;
+            // it can follow as a spectator. A short congestion (c1: about 2 s) does not qualify.
+            let h = self.chain_state.get(&j).and_then(|c| c.0).unwrap_or(0);
+            let since = if self.now > h + self.cfg.window / 2 {
+                *self.vcm.lagging.entry(j).or_insert(self.now)
+            } else {
+                self.vcm.lagging.remove(&j);
+                self.now
+            };
+            let silent = self.now >= heard + self.cfg.suspect_after;
+            let slow = self.now >= since + self.cfg.suspect_after;
+            if !silent && !slow {
+                self.suspect_since.remove(&j);
+                continue;
+            }
+            let suspect_first = *self.suspect_since.entry(j).or_insert(self.now);
+            let mine = self.contiguous.get(&j).copied().unwrap_or(0);
+            let ahead: Vec<(MemberId, u32)> = self
+                .refs
+                .iter()
+                .filter(|((k, a), _)| *a == j && *k != self.me && *k != j)
+                .filter_map(|((k, _), r)| r.keys().next_back().filter(|&&s| s > mine).map(|&s| (*k, s)))
+                .collect();
+            if !ahead.is_empty() {
+                // Review VC4R-3: another member's reference to more of j's chain than I hold spares j
+                // while I fetch the difference, but only for a silence limit from when j first fell
+                // behind. Round 4 spared j for as long as any such reference stood, so a faulty member's
+                // fake reference could spare a slow colluder for good; the bound is now a fixed time, so
+                // references that never deliver stop sparing it.
+                let bounded = self.fixes_off & fix::VC4R3 == 0;
+                for (k, s) in ahead {
+                    self.want_from(k, j, mine + 1, s);
+                }
+                if !bounded || self.now < suspect_first + self.cfg.suspect_after {
+                    continue;
+                }
+            }
+            if self.vcm.withhold_vc {
+                continue;
+            }
+            if silent {
+                self.stats.suspicions += 1;
+                self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
+            } else {
+                self.stats.demotions += 1;
+                self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
+            }
+            out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
+        }
+        out.extend(self.withholders_due());
+        out
+    }
+
+    /// P2-4: a member whose acks have referenced no more of some chain for `suspect_after` frames,
+    /// while every other member (this replica included) holds and references more of it, stalls that
+    /// chain's stability, and so everyone's confirmation, as surely as a silent member. It is voted
+    /// out the same way. A member that acks slowly still advances, and is not.
+    pub(super) fn withholders_due(&mut self) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if self.now < self.vcm.withhold_checked + 30 || self.vcm.withhold_vc || !self.cfg.ack_heads {
+            return out;
+        }
+        self.vcm.withhold_checked = self.now;
+        let members: Vec<MemberId> = self.vcm.members.iter().copied().collect();
+        // Review VC4R-3: a reference counts only once I hold the entry it names (`verified_ref`). A
+        // member's verified reference, and my present when it last rose, are kept so the timer measures
+        // real stalling, not the raw head a faulty member can advance with fakes.
+        let verified = self.fixes_off & fix::VC4R3 == 0;
+        let now = self.now;
+        if verified {
+            for &k in &members {
+                for &y in &members {
+                    if k == y || k == self.me {
+                        continue;
+                    }
+                    let v = self.verified_ref(k, y);
+                    let rec = self.ref_seen.entry((k, y)).or_insert((v, now));
+                    if v > rec.0 {
+                        *rec = (v, now);
+                    }
+                }
+            }
+        }
+        let newest = |s: &Self, k: MemberId, y: MemberId| {
+            if verified {
+                s.verified_ref(k, y)
+            } else {
+                s.refs.get(&(k, y)).and_then(|r| r.keys().next_back()).copied().unwrap_or(0)
+            }
+        };
+        // Per chain y: the two lowest references to it among the other members, so "every member but
+        // j" is one comparison (O(n^2) per check, not O(n^3)).
+        let mut low: BTreeMap<MemberId, ((u32, MemberId), u32)> = BTreeMap::new();
+        for &y in &members {
+            if self.voted(y) {
+                continue;
+            }
+            let mut best = (u32::MAX, 0);
+            let mut second = u32::MAX;
+            for &k in &members {
+                if k == y || k == self.me {
+                    continue;
+                }
+                let r = newest(self, k, y);
+                if r < best.0 {
+                    second = best.0;
+                    best = (r, k);
+                } else if r < second {
+                    second = r;
+                }
+            }
+            low.insert(y, (best, second));
+        }
+        for &j in &members {
+            if j == self.me || self.voted(j) || self.held(j) {
+                continue;
+            }
+            let mut blocks = None;
+            for (&y, &((min1, who), min2)) in &low {
+                // Review VC-9: once j has voted against y, its acks no longer reference y's chain.
+                if y == j || self.vcm.votes.get(&y).is_some_and(|v| v.contains_key(&j)) {
+                    continue;
+                }
+                let mine = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
+                let others = mine.min(if who == j { min2 } else { min1 });
+                let theirs = newest(self, j, y);
+                let since = if verified {
+                    self.ref_seen.get(&(j, y)).map(|&(_, t)| t)
+                } else {
+                    self.vcm.ref_advanced.get(&(j, y)).copied()
+                };
+                let still = since.map_or(self.now >= self.cfg.suspect_after, |t| self.now >= t + self.cfg.suspect_after);
+                if theirs < others && still {
+                    blocks = Some(y);
+                    break;
+                }
+            }
+            if let Some(y) = blocks {
+                self.stats.withholders += 1;
+                self.ev(format!("member {j} has referenced no more of member {y}'s chain for {} frames while every other member has: vote to remove it", self.cfg.suspect_after));
+                out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
+            }
+        }
+        out
+    }
+
+    /// Review VC4R-3: the highest seq of `y`'s chain that `k`'s acks referenced and that I hold in the
+    /// version the reference names. References to entries I do not hold, or to a fork, do not count;
+    /// a faulty member that references what nobody has cannot advance this, so it is caught as a
+    /// withholder and its reference never caps `y`'s stability.
+    pub(super) fn verified_ref(&self, k: MemberId, y: MemberId) -> u32 {
+        let held = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
+        self.refs
+            .get(&(k, y))
+            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, _))| self.by_author.get(&(y, **s)) == Some(hid)).map(|(s, _)| *s))
+            .unwrap_or(0)
+    }
+
+    /// Which of `m`'s entries count after an equivocation proof (review NEW-2): until a view change
+    /// removes it, every entry from the disputed seq on is withdrawn unless it is stable (held
+    /// identically by every member, so possibly confirmed somewhere); after it, exactly the cut.
+    pub(super) fn reconcile(&mut self, m: MemberId) {
+        let k = self.vcm.proofs.get(&m).map(|p| p.0);
+        let decided = self.vcm.evicted.get(&m).map(|p| p.0);
+        let stable = self.stable_seq(m);
+        let ids: Vec<(u32, EntryId)> = self.entries.iter().filter(|(_, e)| e.member == m).map(|(id, e)| (e.seq, *id)).collect();
+        for (seq, id) in ids {
+            let mine = self.by_author.get(&(m, seq)) == Some(&id);
+            let keep = match (decided, k) {
+                (Some(cut), _) => mine && seq <= cut,
+                (None, Some(k)) => mine && (seq < k || seq <= stable),
+                (None, None) => mine,
+            };
+            let changed = if keep { self.disputed.remove(&id) } else { self.disputed.insert(id) };
+            if changed {
+                self.set_eff(id);
+            }
+        }
+    }
+
+    /// Review R3-1: whether `voter`'s frozen head of `target`'s chain extends every reference to
+    /// that chain the voter published before its vote. A vote that drops one is a lie, and the
+    /// ack it contradicts plus the vote prove its voter faulty.
+    pub(super) fn vote_check(&mut self, target: MemberId, voter: MemberId, frozen: (u32, EntryId)) -> VoteCheck {
+        let refs: Vec<(u32, EntryId, EntryId)> =
+            self.refs.get(&(voter, target)).map(|r| r.iter().rev().map(|(s, (id, ack))| (*s, *id, *ack)).collect()).unwrap_or_default();
+        let (mut s, mut id) = frozen;
+        for (rs, rid, ack) in refs {
+            if rs > frozen.0 {
+                return VoteCheck::Lie(ack);
+            }
+            while s > rs {
+                let Some(e) = self.entries.get(&id) else {
+                    self.want_from(voter, target, s, s);
+                    return VoteCheck::Missing;
+                };
+                id = e.prev;
+                s -= 1;
+            }
+            if id != rid {
+                return VoteCheck::Lie(ack);
+            }
+        }
+        VoteCheck::Valid
+    }
+
+    /// `voter`'s vote `vote` contradicts its own earlier ack `ack`: it is proven faulty.
+    pub(super) fn on_lie(&mut self, voter: MemberId, ack: EntryId, vote: EntryId) {
+        if self.vcm.liars.contains_key(&voter) || voter == self.me {
+            return;
+        }
+        self.vcm.liars.insert(voter, Proof { a: ack, b: vote });
+        self.stats.lying_votes += 1;
+        self.ev(format!("LYING VOTE: member {voter}'s vote drops entries its own ack referenced: proven faulty"));
+    }
+}

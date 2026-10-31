@@ -14,6 +14,8 @@ members = [
     "crates/pe-sim",
     "crates/pe-physics",
     "tools/session-sim",
+    "crates/pe-session",
+    "crates/pe-session-harness",
 ]
 # Guest game-logic crates build for wasm32-unknown-unknown separately.
 exclude = ["spikes/wasm-guests", "spikes/stack-audit", "spikes/iter-bench", "spikes/chunks"]
