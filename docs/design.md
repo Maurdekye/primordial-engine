@@ -1098,7 +1098,9 @@ them identically, so they can never fork anyone.
      opened, member 3 removed, and members 1 and 2 equal to the replay].
 
 **What a cheater can still do:**
-* backdate within one ack interval plus the slack, about 4 frames (67 ms) at the defaults;
+* backdate within one ack interval plus the slack: about 4 frames (67 ms) at the defaults, and up to
+  about 10 frames (167 ms) while the session is idle (7.6, reduction 2: acks every 8 frames) or at
+  R18's coarsest level (10.9), so rollback budgets assume the larger figure (review IR-1);
 * claim a present that lags the true one. That looks exactly like a slow link: it is accountable (others
   see the member's stamps consistently trail their own clocks) but not provable.
 
