@@ -135,12 +135,14 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
-            Payload::Vote { .. } | Payload::Unvote { .. } => "vote",
+            Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } => "admin",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
         },
-        Msg::Fetch { .. } => "fetch",
+        Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } => "fetch",
+        Msg::Join { .. } => "join",
         Msg::Batch(_) => "batch",
     }
 }
@@ -305,6 +307,10 @@ pub enum Action {
     /// Start a cross-world transfer: depart `obj` from this world towards `dest`.
     Carry { transfer: u64, obj: u32, dest: WorldId },
     Backdated { obj: u32, impulse: [f32; 3], back: u64 },
+    /// D80: kick a member, give a member a role, define a role (admin entries).
+    Kick { target: MemberId },
+    SetRole { member: MemberId, role: RoleId },
+    DefineRole { role: RoleId, perms: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -478,10 +484,13 @@ impl Sim {
         }
         // P2-5: epoch certificates (static stub of P2-4's interface) of every world, standing in for
         // self-certifying world ids: a chain may pass through worlds off this world's route list.
-        let mut epochs = StaticEpochs::default();
+        let mut epochs = EpochBook::default();
         for p in &peers {
             for (w, r) in &p.worlds {
-                epochs.worlds.entry(*w).or_insert_with(|| (worlds[w].clone(), r.sim.genesis_objects));
+                epochs.rule = r.sim.cfg.quorum;
+                if !epochs.worlds.contains_key(w) {
+                    epochs.genesis(*w, &worlds[w], r.sim.genesis_objects);
+                }
             }
         }
         for p in &mut peers {
@@ -520,7 +529,7 @@ impl Sim {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+            let members: Vec<MemberId> = r.sim.audience();
             match m {
                 Msg::Entry(e) => {
                     let carried = e.carried.map(|(o, _)| o);
@@ -549,6 +558,17 @@ impl Sim {
                         continue;
                     }
                     for e in r.sim.on_fetch(author, a, b) {
+                        self.net.post(w, to, from, &e);
+                    }
+                }
+                Msg::FetchValue { value } => {
+                    for e in r.sim.on_fetch_value(value) {
+                        self.net.post(w, to, from, &e);
+                    }
+                }
+                Msg::Join { member, attests, sig, expires } => r.sim.on_join(member, attests, sig, expires),
+                Msg::FetchEntry { id, back } => {
+                    for e in r.sim.on_fetch_entry(id, back) {
                         self.net.post(w, to, from, &e);
                     }
                 }
@@ -588,7 +608,7 @@ impl Sim {
             }
             let clock_frame = (clock - r.epoch_us) / r.dt_us;
             r.sim.now = clock_frame;
-            let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+            let members: Vec<MemberId> = r.sim.audience();
             if r.adapt {
                 // R18 congestion control. Signal: this member's own uplink queue delay (the spike
                 // reads the bottleneck directly; production estimates it from the one-way delay
@@ -659,6 +679,9 @@ impl Sim {
                                 Action::Backdated { obj, impulse, back } => {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
+                                Action::Kick { target } => r.sim.kick(target),
+                                Action::SetRole { member, role } => r.sim.set_role(member, role),
+                                Action::DefineRole { role, perms } => r.sim.define_role(role, perms),
                                 Action::Carry { obj, dest, .. } => {
                                     let deadline = presents.get(&dest).map_or(u64::MAX, |p| p + deadline_frames);
                                     let hop = r.sim.pending_hop(obj);
@@ -694,7 +717,7 @@ impl Sim {
             } else {
                 now >= r.next_ack_us
             };
-            if ack_due {
+            if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
                 r.next_ack_us = now + r.ack_every_us;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
@@ -702,8 +725,11 @@ impl Sim {
             for e in r.sim.attest_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
-            // Review R3-2: vote out members that have gone silent.
+            // Review R3-2: vote out members that have gone silent; P2-4: decide removals.
             for e in r.sim.suspects_due() {
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+            }
+            for e in r.sim.view_change_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
@@ -819,8 +845,12 @@ impl Sim {
                     let rec = j.record.expect("relayed record");
                     let src = &self.peers[pi].worlds[&j.src].sim;
                     let fact = fact_committed(j.src, j.transfer, rec.global, j.dst, rec.via);
-                    let Some(cert) = src.cert(fact) else { continue };
-                    let hop = Hop { src: j.src, dest: j.dst, transfer: j.transfer, via: rec.via, epoch: 0, cert };
+                    // P25-5: signed by the epoch active at the commit frame, with A's certificates
+                    // up to it, so any world can check the hop from A's genesis.
+                    let Some(Seen::Left { frame, .. }) = src.t.seen.get(&rec.global).filter(|s| matches!(s, Seen::Left { transfer, .. } if *transfer == j.transfer)).cloned() else { continue };
+                    let Some((epoch, cert)) = src.cert_at(fact, frame) else { continue };
+                    let Some(certs) = src.epoch_certs_upto(epoch) else { continue };
+                    let hop = Hop { src: j.src, dest: j.dst, transfer: j.transfer, via: rec.via, epoch, frame, certs, cert };
                     let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
                     let e = dst.sim.author(Payload::Provenance { hop }, None);
                     j.log.push(format!("t={}ms commit certified in world {}; hop relayed into world {} at frame {}", now / 1000, j.src, j.dst, e.stamp));

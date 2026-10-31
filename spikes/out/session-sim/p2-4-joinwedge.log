@@ -1,0 +1,20 @@
+  5 admitted at m1: false
+  joinwedge (request reaches 3: false; 9 crashes after its first prevote) with VC4R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 114 of frame 234, m2 conf 114 of frame 234, m3 conf 114 of frame 234; at m1: members {1, 2, 3, 9}, evicted []
+RESULT joinwedge: m1 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 332 (t=5.63 s) round 1 removed [9]
+RESULT joinwedge: m2 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 332 (t=5.63 s) round 1 removed [9]
+RESULT joinwedge: m3 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 332 (t=5.63 s) round 1 removed [9]
+RESULT joinwedge reach3=false: 5 admitted true, 9 removed at 5.63 s -> ADMITTED; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+  m1: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 73 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 73 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 73 bad 0
+  m5: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 73 bad 0
+RESULT joinwedge (request reaches 3: false; 9 crashes after its first prevote): frames 0..832 honest m1=fb7310c3c276f7e3 m2=fb7310c3c276f7e3 m3=fb7310c3c276f7e3 m5=fb7310c3c276f7e3 | offline replay fb7310c3c276f7e3 | ALL EQUAL, NO FALSE CHECKS ; checks ok 292 bad 0
+RESULT joinwedge: m1 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
+RESULT joinwedge: m2 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
+RESULT joinwedge: m3 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
+RESULT joinwedge reach3=true: 5 admitted true, 9 removed at 5.62 s -> ADMITTED; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+  m1: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 73 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 73 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 73 bad 0
+  m5: conf 826 frame 833 members {1, 2, 3, 5} evicted {9: (60, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 73 bad 0
+RESULT joinwedge (request reaches 3: true; 9 crashes after its first prevote): frames 0..832 honest m1=fb7310c3c276f7e3 m2=fb7310c3c276f7e3 m3=fb7310c3c276f7e3 m5=fb7310c3c276f7e3 | offline replay fb7310c3c276f7e3 | ALL EQUAL, NO FALSE CHECKS ; checks ok 292 bad 0
