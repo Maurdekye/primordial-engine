@@ -9,3 +9,7 @@ p2-4-slowcapper     # VC7R-2: a capper's fetch budget at the slow-member allowan
 p2-4-voiddeep       # VC8R-1/RECUT
 p2-4-plainfork      # VC8R-1: a forker's prevotes count toward a polka in any version
 p2-4-pfsilent       # VC8R-1 with PF-1
+#
+# World ownership (main ae21dbd, design 12.5, D87): Payload::Ownership is spike-only so far; its port
+# to pe-session (an ownership FactKind in the FactWriter layout, agreed with provenance-eng) follows.
+ownership           # signed ownership-certificate chains as D80 admin entries

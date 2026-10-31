@@ -6,6 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use pe_sim_core::session::*;
+use pe_sim_core::ownership::{Change, Key};
 use pe_sim_core::splitmix64;
 
 pub type WorldId = u32;
@@ -136,7 +137,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } => "admin",
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } => "admin",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
@@ -311,6 +312,9 @@ pub enum Action {
     Kick { target: MemberId },
     SetRole { member: MemberId, role: RoleId },
     DefineRole { role: RoleId, perms: u64 },
+    /// World ownership: publish a certificate for `change` on this replica's ownership head,
+    /// signed by `keys`.
+    Owner { change: Change, keys: Vec<Key> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -678,6 +682,10 @@ impl Sim {
                                     r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span }, ahead)
                                 }
                                 Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
+                                Action::Owner { change, keys } => {
+                                    let Some(cert) = r.sim.owner_cert(change, &keys) else { continue };
+                                    r.sim.publish_ownership(cert)
+                                }
                                 Action::Backdated { obj, impulse, back } => {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
