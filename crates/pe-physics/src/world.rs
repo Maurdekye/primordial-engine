@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
     body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity,
-    body_get_linear_velocity, body_get_transform, body_is_awake, body_is_valid, create_body, destroy_body,
+    body_get_linear_velocity, body_get_transform, body_get_type, body_is_awake, body_is_valid,
+    body_set_angular_velocity, body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body,
+    destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
 use box3d_rust::geometry::{Capsule, Sphere};
@@ -15,7 +17,7 @@ use box3d_rust::joint::{
     create_distance_joint, create_motor_joint, create_spherical_joint, create_weld_joint, destroy_joint,
     joint_is_valid, joint_wake_bodies, JointType, motor_joint_set_angular_velocity, motor_joint_set_linear_velocity,
 };
-use box3d_rust::math_functions::{Pos, Quat, Transform as BoxTransform, Vec3};
+use box3d_rust::math_functions::{is_normalized_quat, Pos, Quat, Transform as BoxTransform, Vec3, WorldTransform as BoxWorldTransform};
 use box3d_rust::recording::hash_world_state;
 use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
 use box3d_rust::types::{
@@ -28,7 +30,7 @@ use pe_sim::{SimStore, Transform, WorldTransform};
 
 use crate::config::PhysicsConfig;
 use crate::desc::limits::{MAX_DAMPING, MAX_PUSH, MAX_SIZE, MAX_SPEED};
-use crate::desc::{bounded, position, BodyDesc, BodyKind, Geometry};
+use crate::desc::{bounded, position, unit_quat, BodyDesc, BodyKind, Geometry};
 use crate::error::PhysicsError;
 
 pub(crate) fn vec3(v: [f32; 3]) -> Vec3 {
@@ -414,6 +416,64 @@ impl PhysicsWorld {
                 body_apply_torque(w, body, vec3(t), true);
             }
         }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Carried state and targets (P2-3: a touch entry's resulting body state, hands)
+    // ---------------------------------------------------------------------------------------
+
+    /// A bound kinematic or dynamic body, for a setter.
+    fn moving_body(&self, id: ObjectId) -> Result<BodyId, PhysicsError> {
+        self.usable()?;
+        let body = self.body(id)?;
+        if body_get_type(&self.world, body) == BodyType::Static {
+            return Err(PhysicsError::InvalidValue("a static body cannot be moved"));
+        }
+        Ok(body)
+    }
+
+    /// Overwrite a body's pose with exactly these bits, as a peer receiving carried state does.
+    /// The rotation must be unit length as Box3D judges it (`is_normalized_quat`); it is taken as
+    /// it is, never renormalized, so a pose read from one world lands bit for bit in another.
+    /// Like Box3D's `body_set_transform`, this does not wake the body. Refused for static bodies.
+    pub fn set_pose(&mut self, id: ObjectId, pose: Pose) -> Result<(), PhysicsError> {
+        let body = self.moving_body(id)?;
+        position(&pose.position, "pose position")?;
+        let q = quat(pose.rotation);
+        if !pose.rotation.iter().all(|c| c.is_finite()) || !is_normalized_quat(q) {
+            return Err(PhysicsError::InvalidValue("pose rotation is not unit length"));
+        }
+        body_set_transform(&mut self.world, body, pos(pose.position), q);
+        Ok(())
+    }
+
+    /// Overwrite a body's linear and angular velocity with exactly these values (bounded by
+    /// [`crate::limits::MAX_SPEED`]). Like Box3D's setters, a non-zero velocity wakes the body.
+    /// Both are checked before either is written. Refused for static bodies.
+    pub fn set_velocity(&mut self, id: ObjectId, linear: [f32; 3], angular: [f32; 3]) -> Result<(), PhysicsError> {
+        let body = self.moving_body(id)?;
+        bounded(&linear, MAX_SPEED, "linear velocity")?;
+        bounded(&angular, MAX_SPEED, "angular velocity")?;
+        body_set_linear_velocity(&mut self.world, body, vec3(linear));
+        body_set_angular_velocity(&mut self.world, body, vec3(angular));
+        Ok(())
+    }
+
+    /// Set a body's velocities so that it reaches `target` after `dt` seconds (Box3D's
+    /// `body_set_target_transform`, for hands). `dt` is in [1 ms, 1 s], so the velocities stay
+    /// finite. A sleeping body is woken only if `wake`. The rotation is normalized as in a
+    /// [`BodyDesc`]; Box3D turns a body by at most a quarter of pi (45 degrees) per step, so a
+    /// larger turn takes more than one step. Refused for static bodies.
+    pub fn set_target(&mut self, id: ObjectId, target: Pose, dt: f32, wake: bool) -> Result<(), PhysicsError> {
+        let body = self.moving_body(id)?;
+        position(&target.position, "target position")?;
+        let rotation = unit_quat(target.rotation, "target rotation is not a unit quaternion")?;
+        if !(1.0e-3..=1.0).contains(&dt) {
+            return Err(PhysicsError::InvalidValue("target time step"));
+        }
+        let target = BoxWorldTransform { p: pos(target.position), q: quat(rotation) };
+        body_set_target_transform(&mut self.world, body, target, dt, wake);
         Ok(())
     }
 
