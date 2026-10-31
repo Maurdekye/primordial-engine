@@ -53,6 +53,11 @@ impl PhysicsConfig {
         self
     }
 
+    /// Refuse a gravity that is not finite or beyond [`crate::limits::MAX_GRAVITY`].
+    pub fn validate(&self) -> Result<(), crate::PhysicsError> {
+        crate::desc::bounded(&self.gravity, crate::limits::MAX_GRAVITY, "gravity")
+    }
+
     /// The Box3D world definition for this configuration.
     pub fn world_def(&self) -> WorldDef {
         let mut def = default_world_def();

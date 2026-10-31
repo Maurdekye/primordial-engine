@@ -25,12 +25,12 @@ struct Golden {
 fn goldens(config: PhysicsConfig) -> Vec<(&'static str, Golden)> {
     let dt = 1.0 / 60.0;
     let mut out = Vec::new();
-    let new = || PhysicsWorld::new(config);
+    let new = || PhysicsWorld::new(config).unwrap();
     {
         let mut pw = new();
         let mut d = create_falling_ragdolls(pw.raw_mut());
         for _ in 0..1000 {
-            pw.step(dt);
+            pw.step(dt).unwrap();
             if update_falling_ragdolls(pw.raw(), &mut d) {
                 break;
             }
@@ -41,7 +41,7 @@ fn goldens(config: PhysicsConfig) -> Vec<(&'static str, Golden)> {
         let mut pw = new();
         let mut d = create_wave_pile(pw.raw_mut());
         for _ in 0..1000 {
-            pw.step(dt);
+            pw.step(dt).unwrap();
             if update_wave_pile(pw.raw(), &mut d) {
                 break;
             }
@@ -52,7 +52,7 @@ fn goldens(config: PhysicsConfig) -> Vec<(&'static str, Golden)> {
         let mut pw = new();
         let mut d = create_query_spawn(pw.raw_mut());
         for _ in 0..1000 {
-            pw.step(dt);
+            pw.step(dt).unwrap();
             if update_query_spawn(pw.raw_mut(), &mut d) {
                 break;
             }
@@ -64,7 +64,7 @@ fn goldens(config: PhysicsConfig) -> Vec<(&'static str, Golden)> {
         let mut pw = new();
         let mut d = create_mesh_drop(pw.raw_mut(), POS_ZERO);
         for _ in 0..1000 {
-            pw.step(dt);
+            pw.step(dt).unwrap();
             if update_mesh_drop(pw.raw(), &mut d) {
                 break;
             }
@@ -215,21 +215,31 @@ fn rollback_t1_to_t5() {
                 assert_eq!(first_mismatch(&got, &reference), None, "T3 converges, {ctx}");
             }
 
-            // T4: the frame-300 image restored into a brand-new world (a late joiner), which
-            // gets the image and the geometry, as it would over the network.
+            // T4: a late joiner. The donor (a rollback sim, which saved an image every frame)
+            // sends its frame-300 state as transfer bytes; the joiner restores them into a
+            // brand-new world only because their check hash equals the one a second peer
+            // computed for the same frame (that peer never saved an image, so the hash does not
+            // depend on save history).
             {
                 let mut sim = RollbackSim::new(Game::pile(config), 120);
                 for i in &inputs {
                     sim.add_input(*i).unwrap();
                 }
                 sim.advance_to(300);
-                let snap = sim.game.save();
-                let image = pe_physics::WorldImage::from_bytes(&snap.image.to_bytes()).unwrap();
-                let geometry = pe_physics::GeometryBlobs::from_bytes(&sim.game.pw.geometry().to_bytes()).unwrap();
+                let mut other = Game::pile(config);
+                other.step_scripted(&inputs, 300);
+                let confirmed = other.pw.check_hash();
+                let bytes = sim.game.pw.save_transfer().to_bytes();
+                let transfer = pe_physics::Transfer::from_bytes(&bytes).unwrap();
+                assert_eq!(transfer.to_bytes(), bytes, "T4 transfer bytes round trip, {ctx}");
+                assert_eq!(transfer.check_hash(), confirmed, "T4 check hash independent of save history, {ctx}");
+                println!("RESULT transfer {mode} frame=300 workers={workers} check_hash {confirmed:016x} bytes {}", bytes.len());
                 // The joiner may run a different worker count.
-                let pw = PhysicsWorld::from_image(PhysicsConfig::engine().with_workers(9 - workers), &geometry, &image)
-                    .expect("fresh restore");
-                let mut g = Game { pw, objects: sim.game.objects.clone(), frame: snap.frame, claims: snap.claims.clone(), seed: SEED };
+                let joiner = config.with_workers(9 - workers);
+                assert!(PhysicsWorld::from_transfer(joiner, &transfer, confirmed ^ 1).is_err(), "T4 unconfirmed, {ctx}");
+                let pw = PhysicsWorld::from_transfer(joiner, &transfer, confirmed).expect("fresh restore");
+                assert_eq!(pw.check_hash(), confirmed, "T4 joiner's check hash, {ctx}");
+                let mut g = Game { pw, objects: sim.game.objects.clone(), frame: 300, claims: sim.game.claims.clone(), seed: SEED };
                 assert!(g.pw.all_bodies_valid(), "T4 body ids, {ctx}");
                 let hs = g.step_scripted(&inputs, FRAMES);
                 assert_eq!(first_mismatch(&hs, &reference[300..]), None, "T4 continues identically, {ctx}");

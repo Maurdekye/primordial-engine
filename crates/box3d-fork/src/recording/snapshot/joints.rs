@@ -92,6 +92,9 @@ pub fn des_joint(r: &mut SnapReader<'_>) -> Joint {
     }
 }
 
+/// Lower bound on a joint sim's image size, for count checks.
+pub(crate) const JOINT_SIM_MIN_BYTES: i32 = 100;
+
 pub fn ser_joint_sim(buf: &mut RecBuffer, s: &JointSim) {
     buf.append_i32(s.joint_id);
     buf.append_i32(s.body_id_a);

@@ -20,7 +20,7 @@ pub fn pile_object(n: usize) -> ObjectId {
 /// Ground plus `side * side * layers` mixed bodies, created in the spike's order with the
 /// spike's shapes (`pe_sim_core::build_pile_scene_def`).
 pub fn pile_world(config: PhysicsConfig, side: usize, layers: usize) -> (PhysicsWorld, Vec<ObjectId>) {
-    let mut pw = PhysicsWorld::new(config);
+    let mut pw = PhysicsWorld::new(config).unwrap();
     let ground = BodyDesc::new(BodyKind::Static, [0.0, -1.0, 0.0])
         .with_shape(ShapeDesc::new(Geometry::Box { half_extents: [40.0, 1.0, 40.0] }));
     pw.add_body(ObjectId::new(0, 1), &ground).unwrap();
@@ -31,11 +31,13 @@ pub fn pile_world(config: PhysicsConfig, side: usize, layers: usize) -> (Physics
             for iz in 0..side {
                 let n = objects.len();
                 let jitter = (n as f32 * 0.618_034).fract() * 0.2 - 0.1;
+                // Computed in f32 like the spike, then widened: the same bits reach Box3D.
                 let position = [
                     (ix as f32 - side as f32 * 0.5) * 1.1 + jitter,
                     0.5 + layer as f32 * 1.2,
                     (iz as f32 - side as f32 * 0.5) * 1.1 - jitter,
-                ];
+                ]
+                .map(f64::from);
                 let geometry = match n % 3 {
                     0 => Geometry::Box { half_extents: [0.4, 0.4, 0.4] },
                     1 => Geometry::Sphere { center: [0.0; 3], radius: 0.45 },
@@ -152,7 +154,7 @@ impl Game {
         }
         let next = self.frame + 1;
         self.claims.retain(|_, (_, until)| *until > next);
-        self.pw.step(DT);
+        self.pw.step(DT).unwrap();
         self.frame += 1;
     }
 
