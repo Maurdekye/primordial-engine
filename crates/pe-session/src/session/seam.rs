@@ -4,6 +4,11 @@
 //!   written by the view change (membership.rs, evict.rs), which is the only code that does.
 //! * [`StaticMembership`]: a fixed member list, epoch 0 forever, every member an admin, no votes
 //!   and no joins. M1 and pe-app's first node ([`WorldSim::with_static_membership`]).
+//!
+//! WorldSim holds the view change's state concretely (`vcm`) next to an optional static list, and
+//! [`WorldSim::membership`] returns `&dyn Membership`: the view change's code then borrows its
+//! state and the rest of the sim disjointly. A third implementation would need a
+//! `Box<dyn Membership>` there instead.
 
 use super::*;
 

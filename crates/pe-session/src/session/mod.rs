@@ -466,8 +466,8 @@ pub struct WorldSim {
     fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
-    pub check_hashes: BTreeMap<u64, u64>,
-    remote_checks: BTreeMap<u64, BTreeMap<MemberId, u64>>,
+    pub check_hashes: BTreeMap<u64, CheckHash>,
+    remote_checks: BTreeMap<u64, BTreeMap<MemberId, CheckHash>>,
     evaluated: BTreeSet<(u64, MemberId)>,
     pub outcomes: BTreeMap<EntryId, (u64, Outcome)>,
     pub watched: BTreeSet<u32>,
