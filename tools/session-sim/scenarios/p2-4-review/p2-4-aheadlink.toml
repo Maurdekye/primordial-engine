@@ -1,0 +1,66 @@
+description = """
+P2-4 review round 3, VCR-12: from 1.9 s to 7 s, 3 hears only 4's own acks on time; everything else \
+reaches it 5 s late, while the others decide an epoch. 3 is removed for not keeping up, and its \
+votes, cast in an epoch the others have left, remove none of the members ahead. A check since \
+round 4 (VC3R-8): round 3's exemption is gone, so there is no fix to switch off."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4]
+
+[world.1.plan]
+2 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, define_role = { role = 1, perms = 0 } },
+    { at = 600, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+# 4's own acks, from 4, reach 3 on time; every other entry 5 s late; of the rest, only 4's on time.
+[[fault]]
+after_ms = 1900
+before_ms = 7000
+to = 3
+from = 4
+author = 4
+msg = "ack"
+deliver = true
+
+[[fault]]
+after_ms = 1900
+before_ms = 7000
+to = 3
+msg = "entry"
+delay_ms = 5000
+
+[[fault]]
+after_ms = 1900
+before_ms = 7000
+to = 3
+from = 4
+deliver = true
+
+[[fault]]
+after_ms = 1900
+before_ms = 7000
+to = 3
+delay_ms = 5000
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3, 4]
+label = "aheadlink"
+
+[[report]]
+kind = "check"
+case = "aheadlink"
+label = "aheadlink"
+at = 3
+members = [1, 2, 4]
+honest = [1, 2, 3, 4]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4]
+label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)"
