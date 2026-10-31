@@ -7,7 +7,7 @@ RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, high
 RESULT slowadmin: role definitions m1 {1: 0}, m2 {1: 0}, m3 {1: 0}, m4 {1: 0}, m6 {1: 0}
   m1: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m2: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 54 bad 0
-  m3: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 54 bad 0
+  m3: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m4: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m6: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 72 bad 0
 RESULT slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first): frames 0..532 honest m1=80ad2c32a491612f m2=80ad2c32a491612f m3=80ad2c32a491612f m4=80ad2c32a491612f m6=80ad2c32a491612f | offline replay 80ad2c32a491612f | ALL EQUAL, NO FALSE CHECKS ; checks ok 288 bad 0

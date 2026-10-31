@@ -1,0 +1,10 @@
+  m3 votes to remove capper 2: true
+  prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it) with VC4R-1's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 53 of frame 173, m2 conf 53 of frame 173, m3 conf 50 of frame 170; at m1: members {1, 2, 3, 9}, evicted []
+RESULT prevotefork: m1 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 6) | no decision
+RESULT prevotefork: m2 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 6) | no decision
+RESULT prevotefork: m3 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 6) | no decision
+RESULT prevotefork: m3 votes to remove capper 2: false; 2 kept: true -> THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE
+  m1: conf 53 frame 173 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 6 bad 0
+  m2: conf 53 frame 173 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 6 bad 0
+  m3: conf 50 frame 170 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 6 bad 0
+RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..169 honest m1=8789eb4503c6c337 m2=8789eb4503c6c337 m3=8789eb4503c6c337 | offline replay 8789eb4503c6c337 | ALL EQUAL, NO FALSE CHECKS ; checks ok 18 bad 0

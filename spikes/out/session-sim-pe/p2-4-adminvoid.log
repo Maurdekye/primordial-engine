@@ -1,0 +1,10 @@
+  3's role at m1: Some(1)
+  adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it) with VC3R-3's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593; at m1: members {1, 2, 3, 9}, evicted []
+  m1: members {1, 2, 3, 9} roles {1: 0, 2: 0, 3: 0, 9: 0} admins [1, 2, 3, 9] closed at None
+  m2: members {1, 2, 3, 9} roles {1: 0, 2: 0, 3: 0, 9: 0} admins [1, 2, 3, 9] closed at None
+  m3: members {1, 2, 3, 9} roles {1: 0, 2: 0, 3: 0, 9: 0} admins [1, 2, 3, 9] closed at None
+RESULT adminvoid: 3's role at m1 Some(0) -> THE VOID ENTRY IS NOT APPLIED; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593
+  m1: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 1 equivocations 0 checks ok 60 bad 0
+  m2: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 2 violations 1 equivocations 0 checks ok 60 bad 0
+  m3: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 1 max depth 2 violations 1 equivocations 0 checks ok 60 bad 0
+RESULT adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it): frames 0..592 honest m1=e7d9480867ba0841 m2=e7d9480867ba0841 m3=e7d9480867ba0841 | offline replay e7d9480867ba0841 | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
