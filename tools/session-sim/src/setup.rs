@@ -31,6 +31,7 @@ pub const FIXES: &[(&str, u32)] = &[
     ("VCR8", fix::VCR8),
     ("VCR9", fix::VCR9),
     ("VCR12", fix::VCR12),
+    ("HO1", fix::HO1),
 ];
 
 pub fn fixes_off(w: &WorldCfg) -> Result<u32, String> {
@@ -109,14 +110,28 @@ fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, St
         a.kick.is_some(),
         a.set_role.is_some(),
         a.define_role.is_some(),
+        a.hand_path.is_some(),
     ];
     if kinds.iter().filter(|&&k| k).count() != 1 {
         return Err(format!(
-            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, kick, set_role, define_role: {a:?}"
+            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, hand_path, kick, set_role, define_role: {a:?}"
         ));
     }
     if let Some(s) = &a.ballpit_sweep {
         return Ok(ballpit_sweep(hz, member, s.ahead));
+    }
+    if let Some(p) = &a.hand_path {
+        if p.to_frame <= p.from_frame {
+            return Err(format!("member {member}: hand_path: to_frame must be after from_frame"));
+        }
+        // session-sim `handowner`'s `path`.
+        return Ok((p.from_frame..=p.to_frame)
+            .map(|fr| {
+                let u = (fr - p.from_frame) as f64 / (p.to_frame - p.from_frame) as f64;
+                let target_mm = [((p.from_x + (p.to_x - p.from_x) * u) * 1000.0).round() as i32, p.y_mm, (p.z * 1000.0).round() as i32];
+                (fr, Action::Hand { obj: p.obj, target_mm, active: true, ahead: 0 })
+            })
+            .collect());
     }
     let act = if let Some(t) = &a.touch {
         Action::Touch { obj: t.obj, impulse: t.impulse, grab: t.grab }
@@ -288,6 +303,26 @@ epoch_ms = 0
         assert_eq!(p.keys().copied().collect::<Vec<_>>(), vec![10, 15, 20]);
         assert!(matches!(p[&15][..], [Action::Touch { obj: 1, .. }, Action::Portal { open: false }]));
         assert!(plan(&w, 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hand_path_matches_the_spike() {
+        // session-sim `handowner`'s `path` for member 2: x from 0.6 to -0.6 m over frames 60..=240.
+        let w: WorldCfg = toml::from_str(
+            "members = [1]\nscene = { ballpit = { balls = 10, hands = 2 } }\nepoch_ms = 0\n[plan]\n1 = [{ hand_path = { obj = 11, from_frame = 60, to_frame = 240, from_x = 0.6, to_x = -0.6, y_mm = 400, z = 0.5 } }]\n",
+        )
+        .unwrap();
+        let p = plan(&w, 1).unwrap();
+        assert_eq!(p.len(), 181);
+        let at = |f: u64| match &p[&f][..] {
+            [Action::Hand { obj: 11, target_mm, active: true, ahead: 0 }] => *target_mm,
+            a => panic!("{a:?}"),
+        };
+        assert_eq!(at(60), [600, 400, 500]);
+        assert_eq!(at(150), [0, 400, 500]);
+        assert_eq!(at(240), [-600, 400, 500]);
+        let u = (77 - 60) as f64 / 180.0;
+        assert_eq!(at(77)[0], ((0.6 + (-0.6 - 0.6) * u) * 1000.0).round() as i32);
     }
 
     #[test]
