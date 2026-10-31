@@ -33,6 +33,12 @@ use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, Tran
 /// tick's hand pose shares the ack's datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// R18's thresholds (design 10.9): raise above 40 ms at most every 100 ms; lower after 300 ms below
+/// 10 ms.
+const RAISE_US: u64 = 40_000;
+const CALM_US: u64 = 10_000;
+const RAISE_EVERY_US: u64 = 100_000;
+const LOWER_AFTER_US: u64 = 300_000;
 
 /// What an outgoing message is, so the IO can prioritise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +123,17 @@ pub struct SessionCore {
     pub level: usize,
     level_t: u64,
     calm_since: u64,
-    queue_delay_us: u64,
+    queue_delay_us: Option<u64>,
+    /// D56's memory (design 10.9): after congestion began at level L, lowering into L or below
+    /// needs `recall_calm_us` of calm instead of 300 ms, until `forget_us` pass with a signal and no
+    /// congestion. [proposal: 5 s and 30 s, tuned by the 80 kbit/s run.]
+    pub recall_calm_us: u64,
+    pub forget_us: u64,
+    /// The highest level at which congestion began (the signal crossed 40 ms upward), if remembered.
+    pub congested_at: Option<usize>,
+    over: bool,
+    quiet_us: u64,
+    last_adapt_us: Option<u64>,
     hand_last: BTreeMap<u32, u64>,
     /// Ticks spent at each congestion level.
     pub level_ms: [u64; 6],
@@ -160,7 +176,13 @@ impl SessionCore {
             level: 0,
             level_t: 0,
             calm_since: 0,
-            queue_delay_us: 0,
+            queue_delay_us: None,
+            recall_calm_us: 5_000_000,
+            forget_us: 30_000_000,
+            congested_at: None,
+            over: false,
+            quiet_us: 0,
+            last_adapt_us: None,
             hand_last: BTreeMap::new(),
             level_ms: [0; 6],
             tick: None,
@@ -198,8 +220,10 @@ impl SessionCore {
         self.offset_us = offset_us;
     }
 
-    /// R18: the uplink queue delay the IO measured (the longest towards any member), µs.
-    pub fn set_link(&mut self, queue_delay_us: u64) {
+    /// R18: the uplink queue delay the IO measured (the longest towards any member), µs, or `None`
+    /// when it has no fresh measurement. `None` holds the level: it is neither congestion nor calm,
+    /// and D56's forget timer stops (review of the pe-app link signal, question 1).
+    pub fn set_link(&mut self, queue_delay_us: Option<u64>) {
         self.queue_delay_us = queue_delay_us;
     }
 
@@ -360,22 +384,48 @@ impl SessionCore {
             // R18: up fast, down slowly. The signal is this member's own uplink queue delay. `level`
             // is public: an out-of-range value is clamped, never indexed (review P23-14).
             self.level = self.level.min(HAND_STRIDE.len() - 1);
-            let b = self.queue_delay_us;
-            if b > 40_000 && now_us >= self.level_t + 100_000 && self.level < HAND_STRIDE.len() - 1 {
-                self.level += 1;
-                self.level_t = now_us;
+            let dt = self.last_adapt_us.map_or(0, |t| now_us.saturating_sub(t));
+            self.last_adapt_us = Some(now_us);
+            match self.queue_delay_us {
+                Some(b) if b > RAISE_US => {
+                    // D56: remember the level at which congestion began, not the levels the
+                    // controller climbs through while the queue drains.
+                    if !self.over {
+                        self.over = true;
+                        self.congested_at = self.congested_at.max(Some(self.level));
+                    }
+                    self.quiet_us = 0;
+                    self.calm_since = 0;
+                    if now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
+                        self.level += 1;
+                        self.level_t = now_us;
+                    }
+                }
+                Some(b) => {
+                    self.over = false;
+                    self.quiet_us += dt;
+                    if self.quiet_us >= self.forget_us {
+                        self.congested_at = None;
+                    }
+                    if b < CALM_US {
+                        if self.calm_since == 0 {
+                            self.calm_since = now_us;
+                        }
+                    } else {
+                        self.calm_since = 0;
+                    }
+                }
+                // No signal: hold. Not calm, and the forget timer stops.
+                None => self.calm_since = 0,
             }
-            if b < 10_000 {
-                if self.calm_since == 0 {
+            if self.level > 0 && self.calm_since > 0 {
+                let into = self.level - 1;
+                let calm = if self.congested_at.is_some_and(|c| into <= c) { self.recall_calm_us } else { LOWER_AFTER_US };
+                if now_us >= self.calm_since + calm && now_us >= self.level_t + LOWER_AFTER_US {
+                    self.level = into;
+                    self.level_t = now_us;
                     self.calm_since = now_us;
                 }
-            } else {
-                self.calm_since = 0;
-            }
-            if self.level > 0 && self.calm_since > 0 && now_us >= self.calm_since + 300_000 && now_us >= self.level_t + 300_000 {
-                self.level -= 1;
-                self.level_t = now_us;
-                self.calm_since = now_us;
             }
             self.ack_every_us = ACK_FRAMES[self.level] * self.dt_us;
             self.level_ms[self.level] += 1;
