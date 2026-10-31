@@ -1,29 +1,36 @@
-commit 3b5438b3acdfdcb2587e1e0c49ffd7bf321712e9
+commit 4f66da5e8adfd073354e6261afd553d651846e63
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling box3d-rust v0.5.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\box3d-fork)
+   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-core)
+   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-sim)
    Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-physics)
-    Finished `release` profile [optimized] target(s) in 11.58s
-     Running unittests src\lib.rs (target\release\deps\pe_physics-5ab1195ba208cd47.exe)
+    Finished `release` profile [optimized] target(s) in 3.56s
+     Running unittests src\lib.rs (target\release\deps\pe_physics-4f54a41e170b11a4.exe)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests\api.rs (target\release\deps\api-e78d0800264874a0.exe)
+     Running tests\api.rs (target\release\deps\api-97a19317d935e5ab.exe)
 
-running 5 tests
+running 10 tests
+test check_hash_is_canonical ... ok
+test foreign_and_corrupt_images ... ok
+test grabs ... RESULT grab spring gap after 3 s: 0.0000 m (hand at x = 3.000)
+ok
+test hostile_transfers ... ok
 test hull_bodies_and_pushes ... ok
-test images_round_trip_with_joints ... ok
+test images_and_transfers_round_trip_with_joints ... ok
 test poses_reach_the_sim_store ... ok
 test refusals_change_nothing ... ok
+test rotations_are_normalized ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running tests\spike_records.rs (target\release\deps\spike_records-e32973255317869b.exe)
+     Running tests\spike_records.rs (target\release\deps\spike_records-c932b4c9b0509c3e.exe)
 
 running 5 tests
 test goldens_match ... RESULT golden falling ragdolls recycle_scaling=true workers=1 Golden { sleep_step: 358, hash: 2984986542, query: None }
@@ -58,11 +65,17 @@ RESULT images off release workers=1 digest ba9815276c0473fa
 RESULT images off release workers=3 digest ba9815276c0473fa
 RESULT images off release workers=8 digest ba9815276c0473fa
 ok
-test rollback_t1_to_t5 ... RESULT rollback T1-T5 vdw workers=1 PASS
+test rollback_t1_to_t5 ... RESULT transfer vdw frame=300 workers=1 check_hash fc3999792b45a32f bytes 584542
+RESULT rollback T1-T5 vdw workers=1 PASS
+RESULT transfer vdw frame=300 workers=3 check_hash fc3999792b45a32f bytes 584542
 RESULT rollback T1-T5 vdw workers=3 PASS
+RESULT transfer vdw frame=300 workers=8 check_hash fc3999792b45a32f bytes 584542
 RESULT rollback T1-T5 vdw workers=8 PASS
+RESULT transfer off frame=300 workers=1 check_hash 27d8dd7d28d065de bytes 584391
 RESULT rollback T1-T5 off workers=1 PASS
+RESULT transfer off frame=300 workers=3 check_hash 27d8dd7d28d065de bytes 584391
 RESULT rollback T1-T5 off workers=3 PASS
+RESULT transfer off frame=300 workers=8 check_hash 27d8dd7d28d065de bytes 584391
 RESULT rollback T1-T5 off workers=8 PASS
 ok
 test several_worlds_per_process ... ok
@@ -74,7 +87,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.81s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.01s
 
    Doc-tests pe_physics
 
