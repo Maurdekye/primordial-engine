@@ -1,0 +1,50 @@
+backdate.log: same 2
+c1.log: same 3
+c2.log: same 1
+claims.log: push refused -> accepted 252, same 369
+d80-adminclose.log: same 1
+d80-joinrules.log: same 1
+d80-kickpartition.log: same 1
+d80-kickwar.log: same 1
+d80-lastadmin.log: same 1
+diverged.log: push refused -> accepted 3, same 12
+grabrace.log: push refused -> accepted 1, same 16
+handowner.log: same 1
+loss.log: push refused -> accepted 3, same 12
+p2-4-badproposer.log: same 1
+p2-4-bogusprecommit.log: same 2
+p2-4-bridge.log: same 3
+p2-4-colluders.log: same 1
+p2-4-fork9.log: same 1
+p2-4-futureack.log: same 2
+p2-4-join.log: same 1
+p2-4-jointiming.log: same 1
+p2-4-refwithhold.log: same 1
+p2-4-twosilent.log: same 1
+p2-4-twosilent5.log: same 2
+p2-4-withheld.log: same 1
+p2-5-controls\r14-doublespend.log: same 2
+p2-5-controls\r14-forge-no-provenance.log: same 2
+r14-abort-reverse.log: same 2
+r14-abort.log: same 2
+r14-chain-epoch.log: same 3
+r14-chain-reverse.log: same 3
+r14-chain.log: same 3
+r14-crash.log: same 2
+r14-forge.log: same 2
+r14-late.log: same 2
+r14-ok-reverse.log: same 2
+r14-ok.log: same 2
+r14-reject-reverse.log: same 2
+r14-reject.log: same 2
+r14-throttle.log: same 2
+review2-ackfork.log: same 1
+review2-evict.log: same 1
+review2-lateequiv.log: same 1
+review2-outage.log: same 1
+review3-badvote.log: same 1
+review3-crashstall.log: same 1
+review3-liar.log: same 1
+state-frame.log: push refused -> accepted 3, same 12
+ties.log: push refused -> accepted 300, same 150
+TOTAL: push refused -> accepted 562, same 640

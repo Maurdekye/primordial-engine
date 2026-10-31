@@ -1,0 +1,34 @@
+  m1: t=2766ms depart authored in world 1 at frame 160
+  m1: t=2966ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 140
+  m1: t=3187ms arrival confirmed in world 2 (frame 140, accepted=true); verdict authored in world 1 at frame 185 (its sim there at frame 185)
+  m1: t=3352ms verdict confirmed in world 1; transfer 2216526134196291410 resolved
+  m1: t=3411ms commit certified in world 1; hop relayed into world 2 at frame 163
+  m1: transfer 2216526134196291410 world 1 -> 2: phase Done accepted Some(true)
+  m1: t=4489ms depart authored in world 2 at frame 217
+  m1: t=4705ms depart confirmed in world 2 (frame 217); arrive authored in world 3 at frame 274
+  m1: t=4909ms arrival confirmed in world 3 (frame 274, accepted=true); verdict authored in world 2 at frame 238 (its sim there at frame 238)
+  m1: t=5094ms verdict confirmed in world 2; transfer 13724005305037485269 resolved
+  m1: t=5136ms commit certified in world 2; hop relayed into world 3 at frame 300
+  m1: transfer 13724005305037485269 world 2 -> 3: phase Done accepted Some(true)
+  m1: t=6296ms depart authored in world 3 at frame 370
+  m1: t=6503ms depart confirmed in world 3 (frame 370); arrive authored in world 1 at frame 384
+  m1: t=6716ms arrival confirmed in world 1 (frame 384, accepted=true); verdict authored in world 3 at frame 395 (its sim there at frame 395)
+  m1: t=6888ms verdict confirmed in world 3; transfer 5170095643620187419 resolved
+  m1: t=6930ms commit certified in world 3; hop relayed into world 1 at frame 409
+  m1: transfer 5170095643620187419 world 3 -> 1: phase Done accepted Some(true)
+RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
+RESULT r14 chain: departure of local 40 from A to world 2 (hop in carried: false) -> Some(Accepted)
+RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
+RESULT r14 chain: departure of local 75 from B to world 3 (hop in carried: true) -> Some(Accepted)
+RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
+RESULT r14 chain: departure of local 48 from C to world 1 (hop in carried: true) -> Some(Accepted)
+RESULT r14 chain (reverse order): A:40 live copies A 1 (Some("here, chain 2 hops, settled false")), B 0 (Some("left for 3")), C 0 (Some("left for 1")) ; pending escrows 0 -> CONSERVED (back in A, nothing in limbo)
+  m1 world 1: rollbacks 2 max depth 3 resim frames 8 (1.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
+  m2 world 1: rollbacks 15 max depth 3 resim frames 63 (9.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 2 max depth 3 resim frames 6 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 11 (1.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
+  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
+  m4 world 3: rollbacks 3 max depth 4 resim frames 17 (1.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
+RESULT r14 chain A world 1: frames 0..500 digests m1=e0e5c515726faaba m2=e0e5c515726faaba | offline replay e0e5c515726faaba | ALL EQUAL
+RESULT r14 chain B world 2: frames 0..400 digests m1=c844438dceaedd3d m3=c844438dceaedd3d | offline replay c844438dceaedd3d | ALL EQUAL
+RESULT r14 chain C world 3: frames 0..480 digests m1=3eff8e27d294cdb4 m4=3eff8e27d294cdb4 | offline replay 3eff8e27d294cdb4 | ALL EQUAL

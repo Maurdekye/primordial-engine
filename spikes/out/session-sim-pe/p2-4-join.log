@@ -1,0 +1,17 @@
+RESULT join: m1 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT join: m2 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT join: m3 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT join: m4 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT join: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
+RESULT join: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 119 (t=2.08 s) round 0 removed []
+RESULT join: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
+RESULT join: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
+  m1: admitted {4: 175}; 4's touches: m4s208@420 eff=Some(420) void=false
+  m2: admitted {4: 175}; 4's touches: m4s208@420 eff=Some(420) void=false
+  m3: admitted {4: 175}; 4's touches: m4s208@420 eff=Some(420) void=false
+  m4: admitted {4: 175}; 4's touches: m4s208@420 eff=Some(420) void=false
+  m1: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 60 bad 0
+  m2: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 60 bad 0
+  m3: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 60 bad 0
+  m4: conf 587 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 60 bad 0
+RESULT join (member 4 asks to join at t=2 s and touches an object at frame 420): frames 0..592 honest m1=254e9b114f9cbb8e m2=254e9b114f9cbb8e m3=254e9b114f9cbb8e m4=254e9b114f9cbb8e | offline replay 254e9b114f9cbb8e | ALL EQUAL, NO FALSE CHECKS ; checks ok 240 bad 0

@@ -100,7 +100,7 @@ impl V<'_> {
 
     fn object(&mut self, w: u32, obj: u32, what: &str) {
         let r = self.sim.peers.iter().find_map(|p| p.worlds.get(&w));
-        let ok = r.is_some_and(|r| r.sim.t.objs.get(obj as usize).is_some_and(|o| o.is_some()));
+        let ok = r.is_some_and(|r| r.sim.live(obj).is_some());
         if !ok {
             self.err(format!("{what}: world {w} has no object {obj}"));
         }
