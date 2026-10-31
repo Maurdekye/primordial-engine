@@ -374,7 +374,7 @@ mod tests {
 
     fn sample() -> Tables {
         let hop = Hop { src: 2, dest: 1, transfer: 77, via: 0, epoch: 0, frame: 140, certs: vec![], cert: vec![(1, [5; 64]), (2, [6; 64])] };
-        let record = ObjRecord { global: (2 << 32) | 9, kind: 1, state: BodyState([7; 13]), src_world: 2, src_frame: 130, via: 0 };
+        let record = ObjRecord { global: (2 << 32) | 9, kind: 1, state: BodyState([7; 16]), src_world: 2, src_frame: 130, via: 0 };
         let mut t = Tables { portal_open: true, ..Tables::default() };
         let esc = Escrow { obj: 3, record: Some(record), status: EscrowStatus::Pending, depart_frame: 150, depart: EntryId([4; 32]), dest: 2, deadline: 900 };
         t.escrow.insert(91, esc);

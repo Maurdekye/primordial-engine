@@ -55,44 +55,64 @@ pub const LOGIC: MemberId = 0;
 // ---- object state ------------------------------------------------------------------------------
 
 /// Exact bit pattern of a rigid body's sim state: position, rotation, linear and angular velocity.
+/// 16 words (D58, design 7.3): the position as three f64, each two words, low word first; then the
+/// rotation `[x, y, z, w]` and both velocities as f32 bits (the spike's sim-core layout).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BodyState(pub [u32; 13]);
+pub struct BodyState(pub [u32; 16]);
 
 impl BodyState {
-    /// `id`'s state in `world`. Positions are f32 in this build (Box3D without double precision),
-    /// so the f64 pose narrows back exactly.
+    /// `id`'s state in `world`, exactly: pe-physics poses are f64 (Box3D with double precision).
     pub fn read(world: &PhysicsWorld, id: ObjectId) -> Self {
         let p = world.pose(id).expect("a bound body");
         let (v, w) = world.velocity(id).expect("a bound body");
-        let (x, q) = (p.position.map(|c| c as f32), p.rotation);
-        BodyState([
-            x[0].to_bits(), x[1].to_bits(), x[2].to_bits(),
-            q[0].to_bits(), q[1].to_bits(), q[2].to_bits(), q[3].to_bits(),
-            v[0].to_bits(), v[1].to_bits(), v[2].to_bits(),
-            w[0].to_bits(), w[1].to_bits(), w[2].to_bits(),
-        ])
+        Self::new(p.position, p.rotation, v, w)
+    }
+    /// A state from its parts: position, rotation `[x, y, z, w]`, linear and angular velocity.
+    pub fn new(p: [f64; 3], q: [f32; 4], v: [f32; 3], w: [f32; 3]) -> Self {
+        let mut s = [0u32; 16];
+        for (k, x) in p.into_iter().enumerate() {
+            s[2 * k] = x.to_bits() as u32;
+            s[2 * k + 1] = (x.to_bits() >> 32) as u32;
+        }
+        for (k, x) in q.into_iter().chain(v).chain(w).enumerate() {
+            s[6 + k] = x.to_bits();
+        }
+        BodyState(s)
+    }
+    /// This state at another position.
+    pub fn with_pos(&self, p: [f64; 3]) -> Self {
+        let mut s = Self::new(p, [0.0; 4], [0.0; 3], [0.0; 3]);
+        s.0[6..].copy_from_slice(&self.0[6..]);
+        s
     }
     pub(super) fn f(&self, i: usize) -> f32 {
         f32::from_bits(self.0[i])
     }
-    pub fn pos(&self) -> [f32; 3] {
-        [self.f(0), self.f(1), self.f(2)]
+    fn d(&self, i: usize) -> f64 {
+        f64::from_bits(self.0[i] as u64 | (self.0[i + 1] as u64) << 32)
+    }
+    pub fn pos(&self) -> [f64; 3] {
+        [self.d(0), self.d(2), self.d(4)]
     }
     /// `[x, y, z, w]`.
     pub fn rot(&self) -> [f32; 4] {
-        [self.f(3), self.f(4), self.f(5), self.f(6)]
+        [self.f(6), self.f(7), self.f(8), self.f(9)]
     }
     pub fn lin(&self) -> [f32; 3] {
-        [self.f(7), self.f(8), self.f(9)]
+        [self.f(10), self.f(11), self.f(12)]
     }
     pub fn ang(&self) -> [f32; 3] {
-        [self.f(10), self.f(11), self.f(12)]
+        [self.f(13), self.f(14), self.f(15)]
+    }
+    /// Every component finite (no NaN or infinity).
+    pub fn is_finite(&self) -> bool {
+        self.pos().iter().all(|x| x.is_finite()) && self.0[6..].iter().all(|&b| f32::from_bits(b).is_finite())
     }
     /// Overwrite the body's state with these exact bits, awake (pe-physics `set_state`: every peer
     /// writes a touch's carried state, the toucher included, review SET-1/SET-2). Refused, and
     /// nothing written, for a state outside pe-physics's limits.
     pub fn write(&self, world: &mut PhysicsWorld, id: ObjectId) -> Result<(), pe_physics::PhysicsError> {
-        world.set_state(id, Pose { position: self.pos().map(f64::from), rotation: self.rot() }, self.lin(), self.ang())
+        world.set_state(id, Pose { position: self.pos(), rotation: self.rot() }, self.lin(), self.ang())
     }
     pub fn hash(&self) -> u64 {
         fnv_u64s(self.0.iter().map(|&b| b as u64))
@@ -477,7 +497,7 @@ impl<'a> Rd<'a> {
         RoleId::try_from(self.u32()?).ok()
     }
     pub(super) fn state(&mut self) -> Option<BodyState> {
-        let mut s = [0u32; 13];
+        let mut s = [0u32; 16];
         for b in &mut s { *b = self.u32()? }
         Some(BodyState(s))
     }
