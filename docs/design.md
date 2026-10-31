@@ -816,7 +816,9 @@ every player, perfectly synced, and optimized for CPU and memory.
 ### 7.3 Resulting state, and the acceptance criterion
 
 * **Contents:** for each body the entry touched, its exact post-frame state as bit patterns: position,
-  rotation, linear and angular velocity, 13 × 32 bits = 52 bytes [V session-sim encoding].
+  rotation, linear and angular velocity, 16 words = 64 bytes. The position is three f64 (D58's double
+  precision), the rest f32 bits; it was 13 words (52 bytes) before D58 [V by reading `BodyState` at
+  p2/double-precision 1ae64e6; review D58-2].
 * **Application rule** (applied identically by every peer, the author included, whenever frame *f* is
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
@@ -865,7 +867,7 @@ every player, perfectly synced, and optimized for CPU and memory.
   (9.3), and a state transfer covers true nondeterminism (9.3, 9.5).
 * **Contact island scope (D40):**
   * carrying the whole contact island of each touched body would make the local neighbourhood exact
-    sooner, at 52 bytes per island body;
+    sooner, at 64 bytes per island body;
   * the recommendation is touched bodies only, plus an island digest so a mismatch can trigger a scoped
     state transfer.
 * **Overwrites can erase late indirect effects.** An earlier-stamped entry that arrives late and pushed the
@@ -940,7 +942,7 @@ release build [V session-sim ballpit].
   small entry: the hand's state plus the canonical frame, quantized to 1 mm. Every peer simulates the balls
   from it. Start and end are ordinary entries, and the touched island's state is sent only when a sync
   check flags divergence [I; the spike compared end-state hashes instead]. This satisfies the ruling, because the perturbation (the hand) carries its state
-  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1 MB/s one way for naive exact state streaming: roughly 1/70 of the volume. The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
+  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1.2 MB/s one way for naive exact state streaming at D58's 64 bytes a state: roughly 1/80 of the volume (the logs price a state at 52 bytes and show 989 kB/s until review D58-3's re-bless). The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
 * **(b) Batch, delta-code and quantize island state.** This cuts naive streaming several-fold (measured
   above). But quantized state is not bit-exact unless the sender also snaps its own copy to the quantized
   values, and it still scales with the number of balls moving.
@@ -956,7 +958,7 @@ release build [V session-sim ballpit].
 ### 7.6 Bandwidth per interaction
 
 * **An entry is about 100-170 bytes before transport overhead** [V session-sim encoding]:
-  * a touch with carried state is 100 bytes;
+  * a touch with carried state is 112 bytes (100 with the 13-word state before D58);
   * a hand target without state is 44 bytes.
 * **Acks** grow with the member count (review R3-11): 56 + 16(N-1) bytes with a check hash, that is 72, 88,
   104, 168, 296 and 1,064 bytes for N = 2, 3, 4, 8, 16 and 64 [V reviewer]. Every member sends one to
@@ -981,7 +983,7 @@ release build [V session-sim ballpit].
   | Ack, 2 members, with its check hash | 208 (168 without the check) | 72 |
   | Ack, each further member | +40 (member, seq, 32-byte id) | +16 |
   | Hand target | 133 | 44 |
-  | Touch with carried state | 188 | 100 |
+  | Touch with carried state | 188 (200 once pe-session takes D58's 16-word state) | 112 |
   | Vote | 163 (195 naming a kick) | - |
 
   Each datagram adds about 44 bytes: 28 for IPv4 and UDP, and Noise's 16-byte tag [I]. Measured on the
@@ -5710,7 +5712,7 @@ entry says so.
   * **Settled (user, 19:11Z): as recommended.**
   * Recommend: the touched bodies' exact state, plus a digest of their contact island; a mismatch triggers
     a scoped state transfer.
-  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 52 bytes per island body;
+  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 64 bytes per island body;
     a resting pile is one large island).
 * **D41. Continuous perturbations: hands in a ball pit (7.5; the main question).**
   * Recommend: a continuous interaction is a **perturbation source**. Its pose streams as small entries
