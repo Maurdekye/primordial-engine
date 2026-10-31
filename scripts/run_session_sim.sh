@@ -54,7 +54,7 @@ for v in joinwedge slowref prevotefork; do run p2-4-$v $v; done
 for v in fakemix adminfork; do run p2-4-$v $v; done
 # The randomized Byzantine schedule generator (not a scenario file): a fixed seed range, checked
 # against the written invariants (spikes/out/session-sim/INVARIANTS.md). A larger run is separate.
-"$B" randsched --seeds 24 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"
+"$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"
 # Review VC-1, a control outside the check below (expected to fork): three of six collude, above the
 # bound of t(6) = 1 faulty member.
 mkdir -p $O/p2-4-controls

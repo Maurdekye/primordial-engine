@@ -4257,8 +4257,22 @@ Rules for every package:
   repros and a randomized Byzantine schedule generator (`randsched`) that checks the written invariants
   (`spikes/out/session-sim/INVARIANTS.md`) on every run; it found one further hole (RG-1), now fixed.
   Review round 5 (changes requested: VC4R-1's stronger fix, VC5R-2, an L1 lag bound) is answered in
-  round 6, with the reviewer's `prevotefork` and `fakemix` repros; VC5R-1 is argued, not reproduced. The
-  port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
+  round 6, with the reviewer's `prevotefork` and `fakemix` repros; VC5R-1 is reopened as VC6R-3 below.
+  Round 6's review bounded the polka ids a precommit carries (VC6R-2, honest code panicked above 64 in a
+  large session) and tightened the generator's lag bound; with those two in, the branch lands.
+  **Three one-faulty-member liveness halts are known open, to be fixed as round 7 on main** (they do not
+  touch safety — every replica still agrees — only liveness):
+  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, proposes a change listing the honest
+    version, and crashes; honest members lock on it and the fork that arrives later disputes the version
+    they hold, so the lock never clears. The round-5 argument (a proposer lists only stable entries) was
+    wrong: `admin_pending` fills at validation. Fix: admin validity a pure function of the change's
+    bytes, or listed admin entries must be stable at the validator.
+  * **VC6R-1** (`capfake`): a capped precommit whose polka lists an id that exists nowhere is retried
+    forever and never votes the capper out. Fix: after one fetch budget, vote it out.
+  * **VC6R-4** (`fakeadmin`): a member authoring a no-op admin entry every epoch, plus a pure fake
+    reference, has its reference timers cleared by every decision (VC5R-4 clears them all). Fix: clear
+    only the pairs whose vote a decision answered.
+  The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
 * What: every global id bound to its birth world; each `Arrive` certificate references the certified

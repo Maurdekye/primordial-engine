@@ -398,7 +398,10 @@ fn check(
         })
         .max()
         .unwrap_or(0);
-    let bound = 3 * sim.replica(live.first().copied().unwrap_or(honest[0]), 1).sim.cfg.window;
+    // The bound must be well under the post-GST tail (6 s), so a halt that begins just after GST --
+    // whose end lag is about the whole tail -- fails, while a removal's pause clears within it (review
+    // VC6R-2 note): two windows (about 4 s).
+    let bound = 2 * sim.replica(live.first().copied().unwrap_or(honest[0]), 1).sim.cfg.window;
     if !live.is_empty() && lag > bound {
         let at_gst = conf_at_gst.unwrap_or(0);
         fails.push(format!("confirmation lag {lag} > {bound} frames at the end (min honest conf {end_conf}, was {at_gst} at GST): not keeping up"));

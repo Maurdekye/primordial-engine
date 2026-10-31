@@ -814,3 +814,166 @@ pub fn prevotefork() {
         verdict(&sim, &honest, label, stopped);
     }
 }
+
+// ---- design-reviewer round-6 repros (reviewer's worktree only) ------------------------------------
+
+/// VC6R-1: capstale, but 9's capped precommit names a polka id that exists nowhere.
+pub fn capfake() {
+    for fake in [false, true] {
+        let ids = [1, 2, 3, 9];
+        let ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
+        let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
+        let mut capped: BTreeSet<u32> = BTreeSet::new();
+        let stopped = run_quiet(&mut sim, |sim| {
+            if sim.net.now_us < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&9) {
+                return;
+            }
+            let r9 = sim_mut(sim, 9);
+            let epoch = r9.epoch;
+            if capped.insert(epoch) {
+                let boundary = r9.now + 30;
+                let polka = if fake { vec![0xDEAD_BEEF_0000_0001] } else { vec![] };
+                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka }, None);
+                send_all(sim, 9, &ids, &e);
+            }
+        });
+        let honest = [1, 2, 3];
+        println!("REPRO capfake fake_polka_id={fake}: 9 removed at {}; {}", secs(removed_at(&sim, 1, 9)), confs(&sim, &honest));
+        verdict(&sim, &honest, &format!("capfake fake={fake}"), stopped);
+    }
+}
+
+/// VC6R-4: fakemix's pure fake (8 removed at about 5 s), but 8 also authors a no-op SetRole every
+/// 2 s, so a decision comes every 2 s.
+pub fn fakeadmin() {
+    for setrole in [false, true] {
+        let ids = [1, 2, 3, 4, 8];
+        let ps = peers_of(&ids, |m| if m == 1 { plan(&(0..40).map(|k| (60 + 20 * k, touch(10 + (k % 3) as u32, 1.0))).collect::<Vec<_>>()) } else { BTreeMap::new() });
+        let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
+        let mut last = 0u64;
+        let stopped = run_quiet(&mut sim, |sim| {
+            let t = sim.net.now_us;
+            if t < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&8) {
+                return;
+            }
+            sim_mut(sim, 8).fake_refs = Some((1, 0));
+            if setrole && t >= last + 2_000_000 {
+                last = t;
+                let r8 = sim_mut(sim, 8);
+                let epoch = r8.epoch;
+                let e = r8.author(Payload::SetRole { epoch, member: 8, role: ADMIN }, None);
+                send_all(sim, 8, &ids, &e);
+            }
+        });
+        let honest = [1, 2, 3, 4];
+        let vcs = sim.replica(1, 1).sim.vc_log.len();
+        println!("REPRO fakeadmin setrole_every_2s={setrole}: 8 removed at {}; decisions at m1 {vcs}; {}", secs(removed_at(&sim, 1, 8)), confs(&sim, &honest));
+        verdict(&sim, &honest, &format!("fakeadmin setrole={setrole}"), stopped);
+    }
+}
+
+/// VC6R-2: a join into a session of n members (64 and 72), admitted by quorum.
+pub fn bigjoin() {
+    for n in [64u32, 72] {
+        let ids: Vec<MemberId> = (1..=n).collect();
+        let joiner: MemberId = 500;
+        let mut ps = peers_of(&ids, |_| BTreeMap::new());
+        let mut p = Peer::new(joiner, 0);
+        p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
+        ps.push(p);
+        for p in ps.iter_mut().filter(|p| p.id != joiner) {
+            p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
+        }
+        let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 6_000_000);
+        let mut sent = false;
+        let stopped = run_quiet(&mut sim, |sim| {
+            if !sent && sim.net.now_us >= 1_000_000 {
+                for &m in &ids {
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
+                }
+                sent = true;
+            }
+        });
+        let admitted = sim.replica(1, 1).sim.members.contains(&joiner);
+        println!("REPRO bigjoin n={n}: run stopped early (panic or assertion) at {stopped:?} us; joiner admitted at m1 {admitted}");
+    }
+}
+
+/// VC6R-3: the admin-fork wedge, after the subagent's schedule. {1,2,3,4,9}, all admins. An honest
+/// member P (not the round-0 proposer) is cut off 2.0-3.2 s. At 2.1 s faulty 9 sends a SetRole A to
+/// the three others and drops its own precommits; once they have precommitted it crashes. Its fork
+/// A' (same seq, an Attest) reaches P at 3.1 s and the others at 3.2 s. Fix off (VC3R3S) as control.
+pub fn adminwedge() {
+    for fixed in RUNS {
+        let ids = [1, 2, 3, 4, 9];
+        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
+        let p0 = ps[0].worlds[&1].sim.proposer_of(0, 0).unwrap();
+        let part: MemberId = if p0 != 4 { 4 } else { 3 };
+        let others: Vec<MemberId> = [1, 2, 3, 4].into_iter().filter(|&m| m != part).collect();
+        if !fixed {
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC3R3S);
+        }
+        let fork_id = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let crashed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (ff, fc) = (fork_id.clone(), crashed.clone());
+        let mut net = Net::new(link(30, 10, 0), 7);
+        net.filter = Some(Box::new(move |t, _w, from, to, m| {
+            let whitelisted = matches!(m, Msg::Entry(e) if ff.get() != 0 && e.id() == ff.get());
+            if whitelisted {
+                return Fate::Deliver;
+            }
+            if (from == part || to == part) && (2_000_000..3_200_000).contains(&t) {
+                return Fate::Drop;
+            }
+            if from == 9 && t >= 2_000_000 {
+                if fc.get() {
+                    return Fate::Drop;
+                }
+                if matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Precommit { .. })) {
+                    return Fate::Drop;
+                }
+            }
+            Fate::Deliver
+        }));
+        let mut sim = Sim::new(net, ps, 14_000_000);
+        let mut step = 0;
+        let mut fork: Option<Entry> = None;
+        let mut crash_at = None;
+        let stopped = run_quiet(&mut sim, |sim| {
+            let t = sim.net.now_us;
+            if step == 0 && t >= 2_100_000 {
+                let r9 = sim_mut(sim, 9);
+                let epoch = r9.epoch;
+                let a = r9.author(Payload::SetRole { epoch, member: 9, role: ADMIN }, None);
+                let b = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..a.clone() };
+                fork_id.set(b.id());
+                fork = Some(b);
+                send_all(sim, 9, &[1, 2, 3, 4], &a);
+                step = 1;
+            } else if step == 1 {
+                let all_pc = others.iter().all(|&m| sim.replica(m, 1).sim.all_entries().iter().any(|e| e.member == m && matches!(e.payload, Payload::Precommit { .. })));
+                if all_pc {
+                    crashed.set(true);
+                    crash_at = Some(t);
+                    step = 2;
+                }
+            } else if step == 2 && t >= 3_100_000 {
+                sim.net.send(1, 9, part, &Msg::Entry(fork.clone().unwrap()));
+                step = 3;
+            } else if step == 3 && t >= 3_200_000 {
+                for &m in &others {
+                    sim.net.send(1, 9, m, &Msg::Entry(fork.clone().unwrap()));
+                }
+                step = 4;
+            }
+        });
+        let honest = [1, 2, 3, 4];
+        println!(
+            "REPRO adminwedge fixed={fixed}: proposer(0,0)={p0}, partitioned {part}; step reached {step}, 9 crashed at {crash_at:?} us; 9 removed at {}; {}",
+            secs(removed_at(&sim, 1, 9)),
+            confs(&sim, &honest)
+        );
+        vc_report(&sim, &honest, "adminwedge");
+        verdict(&sim, &honest, &format!("adminwedge fixed={fixed}"), stopped);
+    }
+}
