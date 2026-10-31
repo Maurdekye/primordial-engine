@@ -64,6 +64,9 @@ for v in fork9 jointiming bogusprecommit futureack; do run p2-4-$v $v; done
 # D80 admins and roles (design 10.8, 12.1): kicks in commit order, a kick across a partition, the last
 # admin, closing a session with no admin, the join rules.
 for v in kickwar kickpartition lastadmin adminclose joinrules; do run d80-$v $v; done
+# V1 and V2 (user 08:31Z, design 12.4): kicking an admin needs its own permission; a roles-holder
+# counts as an admin, so it keeps the session open when the last Admin leaves.
+run d80-kickadmin kickadmin
 # P2-4 review round 3 (design 10.8): each repro also reports its run with the fix switched off.
 for v in ghostkick selfkickhead ackgap latejoin capchurn deepfork cutbackdate joinattests slowadmin kickbackdate lagprecommit aheadlink; do run p2-4-$v $v; done
 # P2-4 review round 4 (design 10.8): the same, for the round-3 findings and round 4's own changes.

@@ -2079,9 +2079,23 @@ is fixed once the author's chain is contiguous up to it.
   * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
     admin is a permission of its own, held by default only by admins (V1); the roles permission counts
     as Admin, since it can grant Admin (V2 = (b)); and when the last admin times out the session closes,
-    with no longer grace period and no automatic handover (V3). The spike still lets a role with the
-    kick permission kick an admin; V1's separate permission and V3's closing behaviour are not built yet
-    (tracked on P2-4) [I].
+    with no longer grace period and no automatic handover (V3). In the spike:
+    * Kicking a member who counts as an admin (Admin, or a role holding the roles permission) needs the
+      kick-admins permission, which by default only Admin holds.
+    * A replica judges a kick it receives by the same rule as the commit order, against its current
+      state. So a kick that would be refused (an admin by a kick-only role, or an owner by a non-owner)
+      is not pending and freezes no one; it can be sent again once the state allows it. Before, such a
+      kick froze its target for a change, until the commit refused it.
+    * The last-admin rules count roles-holders. The session stays open while one remains, and taking the
+      roles permission from the last such role is refused, as the last admin's release is
+      [V kickadmin: a kick-only role kicks Admin 1, roles-holder 3 and guest 4. Only 4 is removed, and
+      no one is frozen for the other two kicks. 1 then goes silent and is removed at 7.47 s, and the
+      session stays open. 3 cannot drop the roles permission from its own role; it makes itself Admin,
+      and then can. With the receipt check as before (a manual run), both refused kicks froze their
+      targets].
+    * A close records every member left as removed (`closed_members`) and says so in its event; nothing
+      stamped at or after its boundary acts [V adminclose: closed at frame 432 everywhere, members 2 and
+      3 removed]. The port into pe-session (P2-3) is to empty the member list and tell the players.
   * **Kicks wait out a partition** instead of forking: under the two-thirds quorum neither side of
     {1,2} | {3,4} commits anything, and after the heal the kick holds [V kickpartition].
   * **The last admin** cannot give the role up without handing it on: such an entry is refused [V lastadmin].
@@ -2122,7 +2136,8 @@ is fixed once the author's chain is contiguous up to it.
 | `kickwar` | admins 1 and 2 kick each other at frame 120 | 1's kick applies first in commit order: 2 removed at 2.30 s, 2's kick refused; all equal |
 | `kickpartition` | partition {1,2} / {3,4} from 2 to 6 s; admin 1 kicks 3 at 3 s | nothing decided during it; 3 removed at 6.80 s after the heal; one session |
 | `lastadmin` | the only admin releases the role; later hands it to 2, then releases | release refused (2.17 s); hand-over and release applied (4.17 s, 4.23 s); admins {2} |
-| `adminclose` | the only admin silent from 3 s | removed at 6.4 s; the session closes at frame 432 on both remaining members; all equal |
+| `adminclose` | the only admin silent from 3 s | removed at 6.4 s; the session closes at frame 432 on both remaining members, which the close removes (V3); all equal |
+| `kickadmin` | 2 holds only the kick permission, 3 only the roles permission, 4 is a guest; 2 kicks 1 (Admin), 3 and 4; the Admin silent from 4 s | only 4 removed (2.93 s), no one frozen for the refused kicks (V1); 1 removed at 7.47 s and the session stays open (V2); 3's release of the roles permission refused, then it makes itself Admin; all equal |
 | `joinrules` | rules: friends of an admin join as Guest, confidants of an owner as Admin; four ask | the friend joins as Guest, the confidant and the owner (row 0) as Admin, the stranger is refused |
 | `onesided` (control) | 3 of 6 collude, above the bound; partition {1,2} / {3}; proofs only for 1 and 2 | two different epoch-1 decisions: the session forks, as the restated bound allows |
 | `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | nobody delivers the kick, and 9 is voted out at 3.15 s (round 3: a reset at 5.13 s kept it; before the VCR-1 fix: stuck at frame 102) |
@@ -2578,7 +2593,8 @@ entries that the view change commits (10.8).
   * The catalogue [proposal]: kick; kick admins (V1: admins only by default); define and give roles,
     which counts as Admin because it can grant Admin (V2 = (b), 08:31Z); change the join rules; interact (touch, grab,
     hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn;
-    save checkpoints, load backups and copy world (16.10); use agent panels. The spike checks the first two (10.8).
+    save checkpoints, load backups and copy world (16.10); use agent panels. The spike checks the first
+    three (10.8).
   * How 12.2's repository roles (`owner`, `builder`, `editor`, `player`, `spectator`) relate to session
     roles is open [proposal: the world's ACL caps what any session role can grant; world owners are
     the ownership chain's, below].
