@@ -2512,8 +2512,8 @@ entries that the view change commits (10.8).
 ### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
 
 World ownership is a **lasting property of a world**, separate from a session's admins (12.4). Several people can share it (22:37Z). It is held as a **chain of signed ownership
-certificates**: each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain,
-no blockchain"). The chain travels with the world, in its genesis document, every save and each
+certificates**: each one is signed under the rule of the owner set before it, with no blockchain,
+registry or service of ours (22:39Z, "Signed chain, no blockchain"). The chain travels with the world, in its genesis document, every save and each
 session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
 single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
 
