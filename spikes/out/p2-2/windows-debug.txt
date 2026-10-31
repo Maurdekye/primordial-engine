@@ -1,27 +1,9 @@
-commit bcde5bbb2bede84976e8d446707fb391d88445ec
+commit faf3c7ca03091b725b2c306eb606559a65dc5f48
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling proc-macro2 v1.0.107
-   Compiling unicode-ident v1.0.27
-   Compiling quote v1.0.47
-   Compiling find-msvc-tools v0.1.15
-   Compiling shlex v2.0.1
-   Compiling cpufeatures v0.3.1
-   Compiling cc v1.10.0
-   Compiling constant_time_eq v0.4.2
-   Compiling cfg-if v1.0.5
-   Compiling arrayvec v0.7.8
-   Compiling box3d-rust v0.5.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\land-p23\crates\box3d-fork)
-   Compiling syn v3.0.9
-   Compiling blake3 v1.8.7
-   Compiling bytemuck_derive v1.12.1
-   Compiling bytemuck v1.25.2
-   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\land-p23\crates\pe-core)
-   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\land-p23\crates\pe-sim)
-   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\land-p23\crates\pe-physics)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.89s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
      Running unittests src\lib.rs (target\debug\deps\pe_physics-a4fda86fcbcbb18c.exe)
 
 running 0 tests
@@ -74,7 +56,7 @@ test transfer_canonical_after_destroy ... ok
 test transfer_geometry_order_and_duplicates_refused ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.88s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.82s
 
      Running tests\spike_records.rs (target\debug\deps\spike_records-c9f5799953185a75.exe)
 
@@ -133,7 +115,7 @@ RESULT trace off workers=3 digest e8a2386a0f2ed7d6
 RESULT trace off workers=8 digest e8a2386a0f2ed7d6
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 205.02s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 199.44s
 
    Doc-tests pe_physics
 

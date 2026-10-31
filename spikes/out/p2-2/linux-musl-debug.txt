@@ -1,14 +1,8 @@
-commit bcde5bbb2bede84976e8d446707fb391d88445ec
+commit faf3c7ca03091b725b2c306eb606559a65dc5f48
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
 
 running 22 tests
@@ -55,7 +49,13 @@ test transfer_canonical_after_destroy ... ok
 test transfer_geometry_order_and_duplicates_refused ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.55s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.22s
+
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
 
@@ -114,5 +114,5 @@ RESULT trace off workers=3 digest e8a2386a0f2ed7d6
 RESULT trace off workers=8 digest e8a2386a0f2ed7d6
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 297.57s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 309.60s
 
