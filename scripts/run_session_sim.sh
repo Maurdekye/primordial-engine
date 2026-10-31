@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 if [ "${1:-}" = --pe ]; then
   cargo build --release -q -p pe-session-harness || exit 1
   B=target/release/pe-session-harness
-  O=spikes/out/session-sim-pe
+  O=${PE_OUT:-spikes/out/session-sim-pe}
 else
   cargo build --release -q -p pe-spike-session-sim || exit 1
   B=target/release/pe-spike-session-sim
@@ -25,6 +25,8 @@ run diverged diverged
 run loss loss
 run ties ties
 run claims claims
+# P2-3 S4: grab races under D72 (only grabs claim; --pe only, the spike core has the earlier rule).
+if [ "${1:-}" = --pe ]; then run grabrace grabrace; fi
 run backdate backdate
 for v in ok abort reject throttle forge late crash chain chain-epoch; do run r14-$v r14 $v; done
 for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done

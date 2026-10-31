@@ -11,4 +11,4 @@ RESULT withheld: m3 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highe
   m1: conf 467 frame 473 members {1, 2, 3, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 55 bad 0
   m2: conf 467 frame 473 members {1, 2, 3, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 55 bad 0
   m3: conf 467 frame 473 members {1, 2, 3, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 55 bad 0
-RESULT withheld (9 equivocates on a confirmed touch; 8 casts no view-change entry): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 m3=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 165 bad 0
+RESULT withheld (9 equivocates on a confirmed touch; 8 casts no view-change entry): frames 0..472 honest m1=1cc88e9ecb710261 m2=1cc88e9ecb710261 m3=1cc88e9ecb710261 | offline replay 1cc88e9ecb710261 | ALL EQUAL, NO FALSE CHECKS ; checks ok 165 bad 0

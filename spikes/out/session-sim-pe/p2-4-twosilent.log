@@ -10,4 +10,4 @@ RESULT twosilent: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, high
   m2: conf 887 frame 893 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 87 bad 0
   m3: conf 887 frame 893 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 87 bad 0
   m4: conf 887 frame 893 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 87 bad 0
-RESULT twosilent (members 5 and 6 of 6 silent from t=3 s): frames 0..892 honest m1=1dd44f33b4c1d266 m2=1dd44f33b4c1d266 m3=1dd44f33b4c1d266 m4=1dd44f33b4c1d266 | offline replay 1dd44f33b4c1d266 | ALL EQUAL, NO FALSE CHECKS ; checks ok 348 bad 0
+RESULT twosilent (members 5 and 6 of 6 silent from t=3 s): frames 0..892 honest m1=a1b1b3142cf7c078 m2=a1b1b3142cf7c078 m3=a1b1b3142cf7c078 m4=a1b1b3142cf7c078 | offline replay a1b1b3142cf7c078 | ALL EQUAL, NO FALSE CHECKS ; checks ok 348 bad 0

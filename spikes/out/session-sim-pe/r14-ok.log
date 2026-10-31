@@ -10,12 +10,12 @@
   m1 world B: object 40 live copies 1; escrow []; arrivals ["T16817996328531130808:Accepted { obj: 75, frame: 140 }"]
   m3 world B: object 40 live copies 1; escrow []; arrivals ["T16817996328531130808:Accepted { obj: 75, frame: 140 }"]
 RESULT r14 ok: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (2.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (7.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (7.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
   m1 world 2: rollbacks 2 max depth 8 resim frames 11 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-RESULT r14 ok A world 1: frames 0..500 digests m1=c560c19c0b9f7c8d m2=c560c19c0b9f7c8d | offline replay c560c19c0b9f7c8d | ALL EQUAL
-RESULT r14 ok B world 2: frames 0..400 digests m1=4115490268efc88a m3=4115490268efc88a | offline replay 4115490268efc88a | ALL EQUAL
+  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+RESULT r14 ok A world 1: frames 0..500 digests m1=d522c9189140dca6 m2=d522c9189140dca6 | offline replay d522c9189140dca6 | ALL EQUAL
+RESULT r14 ok B world 2: frames 0..400 digests m1=d103c903221b89ca m3=d103c903221b89ca | offline replay d103c903221b89ca | ALL EQUAL
 RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.9 after (member 1 not throttled from t=3 s)
 RESULT r14 ok: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
 RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 10.2, max 15 over 12 check frames; member 2 avg 10.7, max 19 over 12 check frames
