@@ -91,6 +91,8 @@ fn init(mut a: Args) -> Result<(), String> {
     }
     let mut session_id = [0u8; 8];
     getrandom::fill(&mut session_id).map_err(|e| e.to_string())?;
+    let mut nonce = [0u8; 32];
+    getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let mut members = vec![];
     for (i, addr) in addrs.into_iter().enumerate() {
@@ -101,6 +103,7 @@ fn init(mut a: Args) -> Result<(), String> {
     }
     let f = SessionFile {
         session: u64::from_le_bytes(session_id),
+        nonce: hex(&nonce),
         name: a.take("--name").unwrap_or_else(|| "m1".into()),
         scene: a.take("--scene").unwrap_or_else(|| "pile".into()),
         size: a.num("--size", 4)?,

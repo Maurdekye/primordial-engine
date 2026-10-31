@@ -9,7 +9,6 @@ use std::path::Path;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use pe_session::session::{KeyRing, PublicKeys, SceneKind, SessionId, SimConfig};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -22,8 +21,11 @@ pub struct MemberEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SessionFile {
-    /// Random per session: datagrams and entry signatures from another session never verify here.
+    /// Random per session, in every datagram header: a quick filter for another session's traffic.
     pub session: u64,
+    /// A fresh random 256-bit nonce (64 hex digits) in the genesis (design 10.3, review SX-1): two
+    /// sessions with the same members and scene still get different ids.
+    pub nonce: String,
     pub name: String,
     /// "pile" (size x size x 2 objects) or "ballpit" (size balls, one hand per member).
     pub scene: String,
@@ -83,6 +85,7 @@ impl SessionFile {
         for m in &self.members {
             VerifyingKey::from_bytes(&unhex32(&m.key)?).map_err(|e| format!("member {}: bad key: {e}", m.id))?;
         }
+        unhex32(&self.nonce).map_err(|e| format!("nonce: {e}"))?;
         self.scene_kind()?;
         if self.frames == 0 || !(30..=600).contains(&self.window) {
             return Err("frames must be positive and window in 30..=600".into());
@@ -113,13 +116,15 @@ impl SessionFile {
         VerifyingKey::from_bytes(&unhex32(&m.key).ok()?).ok()
     }
 
-    /// The session's 32-byte genesis id: SHA-256 of this file's canonical JSON (members, addresses,
-    /// keys, scene, config and the random session number). pe-session binds every entry signature
-    /// to it, so no entry verifies in another session.
+    /// The session's 32-byte id (design 10.3): the BLAKE3 hash of its genesis, this file's canonical
+    /// JSON, which names the world (name and scene), the genesis members with their addresses and
+    /// keys, the config and the 256-bit nonce. pe-session binds every entry signature to it, so no
+    /// entry verifies in another session. In M1 the genesis is this file, handed out before the
+    /// session, not a signed genesis entry (that comes with joins, phase 3).
     pub fn genesis_id(&self) -> SessionId {
-        let mut h = Sha256::new();
+        let mut h = blake3::Hasher::new();
         h.update(b"pe-app-genesis\0");
-        h.update(serde_json::to_vec(self).expect("serialisable"));
+        h.update(&serde_json::to_vec(self).expect("serialisable"));
         h.finalize().into()
     }
 

@@ -9,7 +9,7 @@ in phase 3.
 | File | What |
 |---|---|
 | `src/wire.rs` | Datagrams: `"PE" v2, session id, sender, items, Ed25519 signature`, which authenticates the sender. An item is a pe-session protocol message; an entry carries its author's own signature inside it, so entries relayed in repair stay verifiable |
-| `src/config.rs` | `session.json` (session id, scene, length, every member's id, UDP address and public key) and `member-<id>.key` (that member's secret key). The session's 32-byte genesis id is the SHA-256 of the file's canonical JSON; pe-session binds every entry signature to it |
+| `src/config.rs` | `session.json` (session id, scene, length, every member's id, UDP address and public key) and `member-<id>.key` (that member's secret key). The session's 32-byte id is the BLAKE3 hash of the file's canonical JSON, which carries a fresh 256-bit nonce (design 10.3); pe-session binds every entry signature to it |
 | `src/node.rs` | The IO around pe-session's sans-IO `SessionCore` (P2-3): socket, clock sync (`set_offset`; the core takes local time), faults, background touches, results, and pe-mcp's `DrivenPeer`. Membership is the view-change one, so a member that drops out is removed. The core verifies entry signatures (and skips entries it already holds) |
 | `src/main.rs` | The CLI |
 
