@@ -7,7 +7,8 @@ usage: python -I scripts/publish_history.py <terms file> <fail-terms file> <revi
 Both files use publish_check.sh's format (`fixed <text>` / `word <text>`, # comments). Every term of
 either file is reported with its counts. Only the terms of the fail-terms file fail the check (exit
 1, each hit printed); a missing fail-terms file is an empty list. Exit 2 on an error. Python rather
-than grep: msys grep aborts on input as large as `git log -p`.
+than grep: msys grep aborts on input as large as `git log -p`. Text diffs only: binary blobs are not
+scanned.
 """
 
 import re
@@ -83,7 +84,8 @@ def main():
                     meta[t].append((sha, field))
 
     # Added lines. A hunk header of k '@' has k-1 prefix columns (2 for a diff, 3 for a two-parent
-    # combined diff); a line is added when its prefix holds a '+'.
+    # combined diff), one per parent. A line is added when every column is '+': a merge line with a
+    # ' ' in some column already exists in that parent (--cc shows it only as conflict context).
     diff = git(["log", "-p", "--cc", "--no-color", "--no-ext-diff", "--no-textconv", "--format=%x1e%H", *revs])
     sha = path = None
     width = 0
@@ -97,7 +99,7 @@ def main():
             path = path[2:] if path.startswith("b/") else path
         elif line.startswith("@@"):
             width = len(line) - len(line.lstrip("@")) - 1
-        elif width and "+" in line[:width] and "-" not in line[:width]:
+        elif width and line[:width] == "+" * width:
             text = line[width:]
             for t in terms:
                 if match[t](text):
