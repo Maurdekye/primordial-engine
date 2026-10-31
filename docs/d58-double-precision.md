@@ -2,7 +2,7 @@
 
 Author: @vdw-physics. Follow-up to P2-2, docket
 @item:primordial-engine/p2-2-follow-up-turn-box3d-double-precision-on-d5. Branch
-`p2/double-precision`. Status: in progress (the sim-core part waits for `viewchange` on main).
+`p2/double-precision`. Status: records re-blessed; P2-6 matrix next.
 
 Tags: **[V]** tested here, **[I]** inferred or proposed.
 
@@ -29,13 +29,41 @@ determinism tests already carry both sets.
 
 ## Records
 
-<!-- filled from the re-bless run -->
+Re-recorded 2026-10-31 by one run of `scripts/rebless_physics_records.sh` on the merged tree
+(main f65851e merged into this branch), Windows release and debug plus WSL Linux; no log edited by
+hand. Results [V]:
+
+* `spikes/out/vdw/`: goldens and rollback T1-T5 PASS; 600-frame trace digest
+  `cc60208f048dd6d7` (vdW branch) and `e8a2386a0f2ed7d6` (upstream configuration), release ==
+  debug; snapshot images digest `c6f338649541031d`. `check_par_determinism.sh` PASS at 1 and 4
+  threads, release and debug.
+* `run_determinism.sh`, every part PASS: `integration/`, `session-sim/` (suite), `r18/`,
+  `p2p-v2/` (three UDP runs, peers and offline replays equal), `r15/hooks.log`,
+  `perturbation-history/`, guest module hashes (each of the 6 modules byte-identical at two
+  checkout paths; they change because the guests link sim-core's 16-word state), MCP session 10/10.
+  `wasm-hotswap-lazy.log` keeps its two FAILs (D1b, D3: fuel under lazy compilation); main has the
+  same two, so they predate D58.
+* `p2-2/`: 68 RESULT lines on each of Windows/Linux x debug/release, all equal and matching
+  `spikes/out/vdw`; fork suite 573 + 2 pass (`fork-suite-windows-release.txt`).
+* `session-sim/`: 92 of 92 scenario logs reproduce, every one ALL EQUAL, 0 false checks, 0
+  non-finite states.
+
+One scenario moved its check window. A carried state is 16 words instead of 13, so an entry that
+carries one is 12 bytes larger (fault-capped: 34 entries, 100 B to 112 B on average). On
+fault-capped's 12 kbit/s link the capped member now confirms to frame 516 instead of 538, so its
+`check_world` covers frames 0..510 (it was 0..530, past the confirmed history). The other fault
+scenarios keep their windows. Bandwidth cost [V]: +12 B per carried state on the wire, nothing
+else.
+
+Not re-recorded: records that are evidence of a named earlier commit and were built in f32 (the
+phase-1 files at the top of `spikes/out/`, `chunks/`, `fork/`, `p2-1/`, `p2-7/`, `par/`,
+`iter-bench/`, `mcp/`, `d58/`). `matrix/` is rewritten by the P2-6 matrix run that follows.
 
 ## Code that assumed f32 positions
 
 * `spikes/sim-core`: `BodyState([u32; 13])` held position bits as f32. It becomes 16 words: the
   position as three f64, each two u32 words, low word first, then rotation and velocities as f32
-  bits (agreed with @engine-architect; pe-session follows). Waits for `viewchange` on main.
+  bits (agreed with @engine-architect; pe-session follows).
 * Position constructors computed in f32 widen with `as _`; widening is exact, so f32 inputs give
   the same bits in both precisions.
 
