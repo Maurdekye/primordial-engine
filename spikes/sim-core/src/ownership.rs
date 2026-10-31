@@ -1035,3 +1035,165 @@ mod tests {
         assert_eq!(owners(&b), [S, B, X]);
     }
 }
+
+/// Review OWN-1..12 attacks, written against ade1ba6's API to show they fail before the fix.
+#[cfg(test)]
+mod attacks_before {
+    use super::*;
+    const S: Key = 10;
+    const B: Key = 20;
+    const C: Key = 30;
+    const I: Key = 31;
+    const J: Key = 32;
+    const R: Key = 50;
+    const R2: Key = 51;
+    const EVE: Key = 66;
+
+    fn next(book: &Book, prev: CertId, change: Change, time: u64, keys: &[Key]) -> Cert {
+        let seq = book.cert(prev).unwrap().seq + 1;
+        Cert { world: book.world, seq, prev: vec![prev], change, time, sigs: vec![] }.signed(keys)
+    }
+    fn owners(b: &Book) -> Vec<Key> {
+        b.view().owners.owners.into_iter().collect()
+    }
+    fn chain(b: &mut Book, prev: CertId, change: Change, keys: &[Key]) -> CertId {
+        let t = b.cert(prev).unwrap().time + 1;
+        let c = next(b, prev, change, t, keys);
+        let id = c.id();
+        assert_eq!(b.insert(c), Ok(Insert::Applied));
+        id
+    }
+
+    #[test]
+    fn own1_merge_rolls_back() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let c1 = chain(&mut b, g, Change::Add { key: B }, &[S]);
+        chain(&mut b, c1, Change::Leave { key: S }, &[S]);
+        let mut p = vec![g, c1];
+        p.sort_unstable();
+        let m = Cert { world: b.world, seq: 2, prev: p, change: Change::Merge, time: 9, sigs: vec![] }.signed(&[S]);
+        let _ = b.insert(m);
+        assert_eq!(owners(&b), [B]);
+    }
+
+    #[test]
+    fn own2_leave_revived_by_fork() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let c1 = chain(&mut b, g, Change::Add { key: B }, &[S]);
+        chain(&mut b, c1, Change::Leave { key: S }, &[S]);
+        let _ = b.insert(next(&b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, 0, &[S]));
+        assert_eq!(owners(&b), [B]);
+    }
+
+    #[test]
+    fn own3_old_state_fork_bypasses_later_owner() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let c1 = chain(&mut b, g, Change::Add { key: I }, &[S]);
+        chain(&mut b, c1, Change::Add { key: J }, &[S, I]);
+        // S forks at c1 and removes I alone: J never agreed.
+        let _ = b.insert(next(&b, c1, Change::Remove { key: I }, 2, &[S]));
+        assert!(owners(&b).contains(&I));
+    }
+
+    #[test]
+    fn own3_stale_branch_owner_adds_alone() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let tb = chain(&mut b, g, Change::Add { key: B }, &[S]);
+        let hb = chain(&mut b, tb, Change::Leave { key: S }, &[S]);
+        let _ = b.insert(next(&b, g, Change::Add { key: C }, 1, &[S]));
+        // B, sole owner on its branch, adds EVE without C.
+        let _ = b.insert(next(&b, hb, Change::Add { key: EVE }, 3, &[B]));
+        assert!(!owners(&b).contains(&EVE));
+    }
+
+    #[test]
+    fn own4_two_owners_remove_each_other() {
+        let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let _ = b.insert(next(&b, g, Change::Remove { key: S }, 1, &[B]));
+        assert_eq!(owners(&b), [S, B]);
+    }
+
+    #[test]
+    fn own5_arrival_order_changes_owners() {
+        let g = Cert::genesis(&[S], SignRule::All, 1);
+        let b0 = Book::new(g).unwrap();
+        let tb = next(&b0, b0.genesis, Change::Add { key: B }, 1, &[S]);
+        let tc = next(&b0, b0.genesis, Change::Add { key: C }, 1, &[S]);
+        let x = next(&b0, b0.genesis, Change::Add { key: EVE }, 1, &[S]);
+        let mut p = vec![tb.id(), tc.id()];
+        p.sort_unstable();
+        let m = Cert { world: b0.world, seq: 2, prev: p, change: Change::Merge, time: 2, sigs: vec![] }.signed(&[B]);
+        let ext = Cert { world: b0.world, seq: 2, prev: vec![tb.id()], change: Change::SetRecovery { owner: B, recovery: Some(R) }, time: 2, sigs: vec![] }.signed(&[B]);
+        let mut a = b0.clone();
+        let mut z = b0.clone();
+        for c in [&tb, &tc, &x, &ext, &m] {
+            let _ = a.insert(c.clone());
+        }
+        for c in [&tb, &tc, &x, &m, &ext] {
+            let _ = z.insert(c.clone());
+        }
+        assert_eq!(a.view(), z.view());
+        assert_eq!(a.digest(), z.digest());
+    }
+
+    #[test]
+    fn own6_recovery_key_takes_over() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let c1 = chain(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S]);
+        assert!(b.insert(next(&b, c1, Change::Add { key: R2 }, 2, &[R])).is_err());
+    }
+
+    #[test]
+    fn own6_rotated_recovery_key_survives() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let c1 = chain(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S]);
+        chain(&mut b, c1, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S]);
+        let _ = b.insert(next(&b, c1, Change::Add { key: EVE }, 2, &[R]));
+        assert!(!owners(&b).contains(&EVE));
+    }
+
+    #[test]
+    fn own7_backdated_window() {
+        let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let ch = chain(&mut b, g, Change::Challenge { key: S }, &[B, C]);
+        // No session time ever passed: the signers just claim it.
+        let r = b.insert(next(&b, ch, Change::RemoveDormant { key: S }, 2 + OBJECTION_FRAMES, &[B, C]));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn own9_fork_proof_prefix_order_and_merges() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let c1 = chain(&mut b, g, Change::Add { key: B }, &[S]);
+        let c2 = chain(&mut b, c1, Change::Add { key: C }, &[S, B]);
+        let x = next(&b, c2, Change::Add { key: I }, 5, &[S, B, C]);
+        let y = next(&b, c2, Change::Add { key: J }, 5, &[S, B, C]);
+        let p = ForkProof { world: b.world, a: x, b: y };
+        let mut prefix = b.path_to(c2);
+        prefix.reverse();
+        assert!(p.verify(&prefix));
+    }
+
+    #[test]
+    fn own10_orphans_are_not_stored() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let orphan = Cert { world: b.world, seq: 5, prev: vec![12345], change: Change::Add { key: EVE }, time: 1, sigs: vec![] };
+        assert_eq!(b.insert(orphan), Err(OwnError::MissingParent));
+    }
+
+    #[test]
+    fn own11_trailing_words_refused() {
+        let mut w = Cert::genesis(&[S], SignRule::All, 1).to_words();
+        w.push(7);
+        assert_eq!(Cert::from_words(&w), None);
+    }
+}
