@@ -8,4 +8,4 @@ RESULT joinsquat: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 587 of fr
   m2: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 80 bad 0
   m5: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
-RESULT joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend): frames 0..592 honest m1=d4e1b4397fad782e m2=d4e1b4397fad782e m3=d4e1b4397fad782e m5=d4e1b4397fad782e | offline replay d4e1b4397fad782e | ALL EQUAL, NO FALSE CHECKS ; checks ok 320 bad 0
+RESULT joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend): frames 0..592 honest m1=03f70a77b88894cf m2=03f70a77b88894cf m3=03f70a77b88894cf m5=03f70a77b88894cf | offline replay 03f70a77b88894cf | ALL EQUAL, NO FALSE CHECKS ; checks ok 320 bad 0

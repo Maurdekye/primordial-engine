@@ -127,7 +127,9 @@ fn hash_set_consistent(set: &HashSet) -> bool {
             continue;
         }
         occupied += 1;
-        // Some empty slot exists (count <= capacity / 2), so `find_slot` terminates.
+        // `find_slot` for a present key stops at the key's own slot at the latest; requiring
+        // that slot to be `i` proves every key is found. Lookups of absent keys stop at an
+        // empty slot, and at least half the slots are empty (count <= capacity / 2).
         if item.key == 0 || item.hash != crate::table::key_hash(item.key) || set.find_slot(item.key, item.hash) != i {
             return false;
         }

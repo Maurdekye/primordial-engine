@@ -12,4 +12,4 @@ RESULT colluders: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest
   m1: conf 467 frame 473 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 46 bad 0
   m2: conf 467 frame 473 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 46 bad 0
   m3: conf 467 frame 473 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 46 bad 0
-RESULT colluders (two of five: 9 equivocates on a confirmed touch; 8 forks its vote): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 m3=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT colluders (two of five: 9 equivocates on a confirmed touch; 8 forks its vote): frames 0..472 honest m1=6c2798a02fe7ff64 m2=6c2798a02fe7ff64 m3=6c2798a02fe7ff64 | offline replay 6c2798a02fe7ff64 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
