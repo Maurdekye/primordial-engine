@@ -1282,3 +1282,154 @@ mod tests {
         assert_eq!(Cert::from_words(&[1, 2, 3]), None);
     }
 }
+
+/// Review round 2 (OWNR-1..9), written against 61ab504's API to show each fails before the fix.
+#[cfg(test)]
+mod round2_before {
+    use super::*;
+    const S: Key = 10;
+    const A: Key = 11;
+    const B: Key = 20;
+    const C: Key = 30;
+    const K: Key = 33;
+    const X: Key = 40;
+    const Z: Key = 41;
+    const R: Key = 50;
+    const N: Key = 60;
+    const EVE: Key = 66;
+
+    fn next(book: &Book, prev: CertId, change: Change, keys: &[Key]) -> Cert {
+        let seq = book.cert(prev).unwrap().seq + 1;
+        Cert { world: book.world, seq, prev: vec![prev], change, sigs: vec![] }.signed(keys)
+    }
+    fn put(b: &mut Book, prev: CertId, change: Change, keys: &[Key], at: Option<u64>) -> CertId {
+        let c = next(b, prev, change, keys);
+        let id = c.id();
+        assert_eq!(b.insert_at(c, at), Ok(Insert::Applied));
+        id
+    }
+    fn owners(b: &Book) -> Vec<Key> {
+        b.view().owners.owners.into_iter().collect()
+    }
+
+    #[test]
+    fn ownr1a_add_after_a_cancelled_removal() {
+        let mut b = Book::new(Cert::genesis(&[A, B], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let ch = put(&mut b, g, Change::Challenge { key: B }, &[A], Some(1));
+        put(&mut b, ch, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], Some(2));
+        let rd = put(&mut b, ch, Change::RemoveDormant { key: B }, &[A], Some(1 + OBJECTION_FRAMES));
+        put(&mut b, rd, Change::Add { key: X }, &[A], Some(2 + OBJECTION_FRAMES));
+        assert_eq!(owners(&b), [A, B]);
+    }
+
+    #[test]
+    fn ownr1b_add_after_a_cancelled_recovery() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let r = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some(1));
+        let st = put(&mut b, r, Change::StartRecover { owner: S, new_key: N }, &[R], Some(2));
+        put(&mut b, st, Change::SetRule { rule: SignRule::All }, &[S], Some(3));
+        let fin = put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some(2 + RECOVERY_FRAMES));
+        put(&mut b, fin, Change::Add { key: EVE }, &[N], Some(3 + RECOVERY_FRAMES));
+        assert_eq!(owners(&b), [S]);
+    }
+
+    #[test]
+    fn ownr2_completed_removal_not_undone_by_a_stale_signature() {
+        let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let ch = put(&mut b, g, Change::Challenge { key: S }, &[B, C], Some(1));
+        put(&mut b, ch, Change::RemoveDormant { key: S }, &[B, C], Some(1 + OBJECTION_FRAMES));
+        // Months later the old key signs on a stale fork (never committed by any session).
+        put(&mut b, ch, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], None);
+        assert_eq!(owners(&b), [B, C]);
+    }
+
+    #[test]
+    fn ownr3_offline_verification_of_a_completed_window() {
+        let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let ch = put(&mut b, g, Change::Challenge { key: S }, &[B, C], Some(1));
+        put(&mut b, ch, Change::RemoveDormant { key: S }, &[B, C], Some(1 + OBJECTION_FRAMES));
+        let certs: Vec<Cert> = b.prefix_of(b.heads()[0]).into_iter().filter(|c| c.seq > 0).collect();
+        assert!(verify_chain(b.cert(g).unwrap(), &certs).is_ok());
+    }
+
+    #[test]
+    fn ownr4_signature_copies_converge() {
+        let b0 = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+        let x = next(&b0, b0.genesis, Change::Challenge { key: S }, &[B, C]);
+        let mut x2 = x.clone();
+        x2.sigs.push((S, key_sig(S, x.id())));
+        let (mut b1, mut b2) = (b0.clone(), b0.clone());
+        let _ = b1.insert(x.clone());
+        let _ = b1.insert(x2.clone());
+        let _ = b2.insert(x2);
+        let _ = b2.insert(x);
+        assert_eq!(b1.digest(), b2.digest());
+    }
+
+    #[test]
+    fn ownr5_unattested_fork_add_cannot_revive_a_removed_owner() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        let a = put(&mut b, g, Change::Add { key: A }, &[S], Some(1));
+        let k = put(&mut b, a, Change::Add { key: K }, &[S, A], Some(2));
+        let l = put(&mut b, k, Change::Leave { key: S }, &[S], Some(3));
+        let ch = put(&mut b, l, Change::Challenge { key: K }, &[A], Some(4));
+        put(&mut b, ch, Change::RemoveDormant { key: K }, &[A], Some(4 + OBJECTION_FRAMES));
+        assert_eq!(owners(&b), [A]);
+        // The former sole owner signs a sock Add at G offline; no session ever committed it.
+        put(&mut b, g, Change::Add { key: Z }, &[S], None);
+        assert_eq!(owners(&b), [A]);
+    }
+
+    #[test]
+    fn ownr6_cert_count_is_capped() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let mut h = b.genesis;
+        let mut refused = false;
+        for i in 0..5000u32 {
+            let c = next(&b, h, Change::SetRecovery { owner: S, recovery: Some(1000 + i) }, &[S]);
+            let id = c.id();
+            if b.insert(c).is_err() {
+                refused = true;
+                break;
+            }
+            h = id;
+        }
+        assert!(refused);
+    }
+
+    #[test]
+    fn ownr7_mutual_removal_under_rule_c_keeps_both() {
+        let g = Cert::genesis(&[A, B], SignRule::Threshold(1), 1);
+        let mut b = Book::new(g).unwrap();
+        let gid = b.genesis;
+        put(&mut b, gid, Change::Remove { key: B }, &[A], None);
+        let c = put(&mut b, gid, Change::Remove { key: A }, &[B], None);
+        put(&mut b, c, Change::Add { key: EVE }, &[B], None);
+        let o = owners(&b);
+        assert!(o.contains(&A) && o.contains(&B));
+    }
+
+    #[test]
+    fn ownr8_duplicate_changes_nothing() {
+        let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+        let c = next(&b, b.genesis, Change::Add { key: B }, &[S]);
+        b.insert(c.clone()).unwrap();
+        let d = b.digest();
+        assert_eq!(b.insert_at(c, Some(5)), Ok(Insert::Duplicate));
+        assert_eq!(b.digest(), d);
+    }
+
+    #[test]
+    fn ownr9_old_fork_doesnt_revert_an_agreed_rule() {
+        let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+        let g = b.genesis;
+        put(&mut b, g, Change::SetRule { rule: SignRule::Threshold(1) }, &[S, B], Some(1));
+        put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some(2));
+        assert_eq!(b.view().owners.rule, SignRule::Threshold(1));
+    }
+}
