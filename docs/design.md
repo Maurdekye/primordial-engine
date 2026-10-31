@@ -2435,6 +2435,10 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   the current heads. One that can't apply is not pending and starts no view change, so junk can't force
   decisions (V1's receipt rule, VC6R-4). A decision that makes a pending one unable to apply drops it
   unjudged. Sent again later, it is a new entry.
+  * One whose parent is not in the book yet (built on a pending certificate's head) is held, not dropped,
+    and judged again after each decision: pending once it applies, dropped once it never can (review
+    OWNY-2) [V unit test, with a control that loses it].
+  * Tag 20 carries at most 4,096 words (`MAX_CERT_WORDS`); a decode of more is refused (OWNY-3).
 * **Decided in `Change.admin`**, in commit order (stamp, author, seq) with the other admin entries. The
   admin run holds the `Book` (copy on write) and applies a certificate if `Book::commit_local` does.
   The outcome depends only on the book, the certificate and that order, never on the boundary, which
@@ -2446,7 +2450,9 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   as it covers roles. No verdict depends on a validator's clock (VC-3).
 * **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) ask
   whether the member's key is an owner in the book, as the admin entries before them in the change left
-  it, so a kick listed after a certificate that made its target an owner is refused. `key_of` is the one
+  it, so a kick listed after a certificate that made its target an owner is refused. The same holds
+  for a join in that change: an owner whose Leave the change lists joins under the rules, and one it
+  adds joins as Admin (review OWNY-1) [V unit tests; both fail when row 0 reads the decided book]. `key_of` is the one
   place that maps a member to its key: in the spike the member id is the key (10.3); production reads
   it from the member's signed genesis or join entry. A world without a chain keeps 12.4's owner list.
   A relationship record's expiry (O5) is checked against the session's agreed time at the same step

@@ -55,6 +55,10 @@ pub type Lineage = u32;
 /// changes are rare; each insert re-runs the effective pass, O(N log N). Production compacts a long
 /// linear history into a checkpoint signed by the owners [I].
 pub const MAX_CERTS: usize = 1024;
+
+/// Review OWNY-3: the most words a certificate's encoding holds (a genesis of about 1,360 owners,
+/// each signing); [`Cert::from_words`] and the session's decoder refuse more.
+pub const MAX_CERT_WORDS: usize = 4096;
 /// The solo changes (not signed by every owner at their parent) a world's history may hold, split into
 /// per-owner shares (OWNU-6, OWNV-3, OWNV-4, OWNW-3). The genesis owners split it evenly. A newcomer's
 /// share comes out of the remaining shares of the owners who signed its addition, and a leaver's
@@ -226,6 +230,9 @@ impl Cert {
     /// The inverse of [`Cert::to_words`]. Refuses trailing words, so each certificate has one
     /// encoding (OWN-11).
     pub fn from_words(w: &[u64]) -> Option<Cert> {
+        if w.len() > MAX_CERT_WORDS {
+            return None;
+        }
         let mut it = w.iter().copied();
         let mut next = || it.next();
         let (world, seq, np) = (next()?, u32::try_from(next()?).ok()?, next()? as usize);
