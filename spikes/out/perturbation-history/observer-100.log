@@ -3,9 +3,9 @@ RESULT   hand rule HOLD (3d0f98a): remote hand shown vs true during the sweep pr
 RESULT     remote hand in the 0.25 s after each change of motion (review PH-6): mean 322.7 mm, p95 733.0, max 758.3
 RESULT     balls: corrections >1 mm 1473/s (24.6 balls/frame), per-frame worst correction p50 22.6 mm p99 132.1 max 1524.9; balls off by >1 mm vs truth 43.2/frame
 RESULT     ball error vs truth (all balls x frames) raw: p99 62.3 mm, max 1571.1; smoothed tau 50 ms: p99 86.4 max 1571.1 (max drain 26.56 m/s); tau 100 ms: p99 109.5 max 1571.1 (max drain 14.45 m/s)
-RESULT     rollbacks 58.2/s, sim CPU 8.96 ms per frame (step + re-sim + snapshots), worst tick 26.39 ms; end 46e1d51eb0793e8b members equal
+RESULT     rollbacks 58.2/s, sim CPU 6.20 ms per frame (step + re-sim + snapshots), worst tick 18.50 ms; end 46e1d51eb0793e8b members equal
 RESULT   hand rule DEAD-RECKON <=6 frames, <=3 m/s: remote hand shown vs true during the sweep proper: mean 40.7 mm, p95 37.0, max 796.9
 RESULT     remote hand in the 0.25 s after each change of motion (review PH-6): mean 171.4 mm, p95 753.1, max 796.9
 RESULT     balls: corrections >1 mm 984/s (16.4 balls/frame), per-frame worst correction p50 5.8 mm p99 92.8 max 1475.2; balls off by >1 mm vs truth 29.9/frame
 RESULT     ball error vs truth (all balls x frames) raw: p99 12.7 mm, max 1478.2; smoothed tau 50 ms: p99 22.4 max 1481.7 (max drain 25.13 m/s); tau 100 ms: p99 31.5 max 1484.9 (max drain 13.64 m/s)
-RESULT     rollbacks 58.2/s, sim CPU 8.69 ms per frame (step + re-sim + snapshots), worst tick 26.84 ms; end 46e1d51eb0793e8b members equal
+RESULT     rollbacks 58.2/s, sim CPU 6.69 ms per frame (step + re-sim + snapshots), worst tick 39.57 ms; end 46e1d51eb0793e8b members equal

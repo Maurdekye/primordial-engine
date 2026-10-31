@@ -1,3 +1,3 @@
-trace: 600 frames, 256 bodies, release profile, 363.0748ms total (605.1 us/frame), digest e8a2386a0f2ed7d6, final world hash ac5ab5ed7b831a9e -> spikes/out/vdw/trace-off-win-release.txt
+trace: 600 frames, 256 bodies, release profile, 183.8611ms total (306.4 us/frame), digest e8a2386a0f2ed7d6, final world hash ac5ab5ed7b831a9e -> spikes/out/vdw/trace-off-win-release.txt
 build: release profile, target x86_64, contact recycling: upstream fixed (--upstream), worker threads: 1
 RESULT: PASS

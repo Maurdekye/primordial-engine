@@ -1,4 +1,4 @@
-commit c05887f7c3699d3db57bf6597e76cfbf377ecf7e
+commit c59092254b0b5f61de55692cecdb1884542e41bb
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
@@ -66,7 +66,7 @@ RESULT trace off workers=3 digest e8a2386a0f2ed7d6
 RESULT trace off workers=8 digest e8a2386a0f2ed7d6
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.28s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.68s
 
 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
 
@@ -114,5 +114,5 @@ test transfer_canonical_after_destroy ... ok
 test transfer_geometry_order_and_duplicates_refused ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
 

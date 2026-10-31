@@ -1,31 +1,31 @@
 RESULT snap 1024 balls, 3 members, member 3's acks dropped 3.0-4.6 s (confirmation stalls), 60 Hz, 60+-10 ms, 2% loss; member 2 observes member 1's hand; window = the 3.66 s sweep; timings = fastest of 1
 RESULT   policy     | image MB held mean / max | images mean / max | CPU ms per frame (save / restore) | saves/s | worst tick ms (p99) | rollbacks/s | re-sim frames/s | max lag | end hash
-RESULT   every1     | 173.92 / 427.41 |  48.6 / 118 |  20.54 ( 7.36 /  1.96) |  202.5 |  88.97 (50.48) |  59.0 |  201.4 | 118 | f5ff6241644c9678 all members equal
+RESULT   every1     | 173.92 / 427.41 |  48.6 / 118 |  15.09 ( 5.59 /  1.52) |  202.5 |  56.60 (30.94) |  59.0 |  201.4 | 118 | f5ff6241644c9678 all members equal
 RESULT     every1: ring as base + 64 B block deltas: full 174.48 MB -> vs base 188.57 MB (108%), vs previous 185.23 MB (106%)
-RESULT   every2     |  88.99 / 217.25 |  24.9 /  60 |  15.95 ( 3.36 /  1.86) |  101.4 |  52.88 (37.59) |  59.0 |  230.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   every2     |  88.99 / 217.25 |  24.9 /  60 |  13.54 ( 2.95 /  1.60) |  101.4 |  44.96 (26.26) |  59.0 |  230.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     every2: ring as base + 64 B block deltas: full 90.12 MB -> vs base 97.26 MB (108%), vs previous 95.13 MB (106%)
-RESULT   every4     |  46.56 / 112.05 |  13.0 /  31 |  14.46 ( 1.58 /  1.72) |   51.1 |  40.33 (29.00) |  59.0 |  289.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   every4     |  46.56 / 112.05 |  13.0 /  31 |  15.49 ( 1.65 /  1.75) |   51.1 |  64.62 (31.96) |  59.0 |  289.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     every4: ring as base + 64 B block deltas: full 46.14 MB -> vs base 49.62 MB (108%), vs previous 49.50 MB (107%)
-RESULT   every8     |  25.48 /  57.83 |   7.1 /  16 |  16.76 ( 0.80 /  1.75) |   26.0 |  47.10 (35.59) |  59.0 |  407.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   every8     |  25.48 /  57.83 |   7.1 /  16 |  19.81 ( 0.89 /  1.90) |   26.0 |  99.59 (44.03) |  59.0 |  407.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     every8: ring as base + 64 B block deltas: full 25.35 MB -> vs base 27.36 MB (108%), vs previous 27.32 MB (108%)
-RESULT   every16    |  14.72 /  32.31 |   4.1 /   9 |  23.68 ( 0.42 /  1.77) |   13.1 |  57.69 (51.69) |  59.0 |  652.7 | 118 | f5ff6241644c9678 all members equal
+RESULT   every16    |  14.72 /  32.31 |   4.1 /   9 |  24.06 ( 0.42 /  1.73) |   13.1 |  60.38 (51.55) |  59.0 |  652.7 | 118 | f5ff6241644c9678 all members equal
 RESULT     every16: ring as base + 64 B block deltas: full 14.72 MB -> vs base 15.80 MB (107%), vs previous 15.80 MB (107%)
-RESULT   log2       |  32.33 /  47.59 |   9.0 /  13 |  15.42 ( 3.24 /  1.81) |  100.0 |  45.06 (38.14) |  59.0 |  231.4 | 118 | f5ff6241644c9678 all members equal
+RESULT   log2       |  32.33 /  47.59 |   9.0 /  13 |  13.76 ( 2.88 /  1.57) |  100.0 |  47.53 (28.72) |  59.0 |  231.4 | 118 | f5ff6241644c9678 all members equal
 RESULT     log2: ring as base + 64 B block deltas: full 31.99 MB -> vs base 33.70 MB (105%), vs previous 33.17 MB (104%)
-RESULT   log4       |  25.16 /  40.15 |   7.0 /  11 |  14.92 ( 1.65 /  1.74) |   51.1 |  35.86 (30.55) |  59.0 |  289.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   log4       |  25.16 /  40.15 |   7.0 /  11 |  15.07 ( 1.66 /  1.70) |   51.1 |  40.87 (31.52) |  59.0 |  289.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     log4: ring as base + 64 B block deltas: full 24.81 MB -> vs base 26.04 MB (105%), vs previous 25.96 MB (105%)
-RESULT   log8       |  18.67 /  32.71 |   5.2 /   9 |  15.36 ( 0.73 /  1.57) |   26.0 |  48.87 (34.99) |  59.0 |  407.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   log8       |  18.67 /  32.71 |   5.2 /   9 |  20.85 ( 0.99 /  1.81) |   26.0 | 117.50 (48.48) |  59.0 |  407.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     log8: ring as base + 64 B block deltas: full 18.54 MB -> vs base 19.83 MB (107%), vs previous 19.80 MB (107%)
-RESULT   log16      |  13.34 /  25.26 |   3.8 /   7 |  23.28 ( 0.46 /  1.56) |   13.1 | 204.93 (56.95) |  59.0 |  652.7 | 118 | f5ff6241644c9678 all members equal
+RESULT   log16      |  13.34 /  25.26 |   3.8 /   7 |  27.09 ( 0.48 /  1.87) |   13.1 |  89.86 (77.05) |  59.0 |  652.7 | 118 | f5ff6241644c9678 all members equal
 RESULT     log16: ring as base + 64 B block deltas: full 13.37 MB -> vs base 14.30 MB (107%), vs previous 14.30 MB (107%)
-RESULT   base1      |   6.99 /   7.50 |   2.0 /   2 |  99.73 ( 0.35 /  1.84) |   11.2 | 514.42 (365.04) |  59.0 | 2831.4 | 118 | f5ff6241644c9678 all members equal
+RESULT   base1      |   6.99 /   7.50 |   2.0 /   2 |  85.91 ( 0.39 /  1.90) |   11.2 | 224.11 (209.52) |  59.0 | 2831.4 | 118 | f5ff6241644c9678 all members equal
 RESULT     base1: ring as base + 64 B block deltas: full 6.99 MB -> vs base 6.88 MB (98%), vs previous 6.88 MB (98%)
-RESULT   base4      |   6.87 /   7.50 |   2.0 /   2 |  89.00 ( 0.19 /  1.65) |    6.6 | 338.26 (246.37) |  59.0 | 2780.6 | 118 | f5ff6241644c9678 all members equal
+RESULT   base4      |   6.87 /   7.50 |   2.0 /   2 |  79.05 ( 0.19 /  1.64) |    6.6 | 230.76 (203.82) |  59.0 | 2780.6 | 118 | f5ff6241644c9678 all members equal
 RESULT     base4: ring as base + 64 B block deltas: full 6.74 MB -> vs base 6.68 MB (99%), vs previous 6.68 MB (99%)
-RESULT   window4    |  16.50 /  18.45 |   4.6 /   5 |  15.36 ( 1.79 /  2.02) |   51.1 | 141.44 (31.77) |  59.0 |  289.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   window4    |  16.50 /  18.45 |   4.6 /   5 |  13.77 ( 1.50 /  1.60) |   51.1 |  60.84 (27.55) |  59.0 |  289.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     window4: ring as base + 64 B block deltas: full 16.19 MB -> vs base 16.58 MB (102%), vs previous 16.49 MB (102%)
-RESULT   window8    |  14.20 /  18.37 |   4.0 /   5 |  20.07 ( 0.91 /  1.98) |   26.0 | 104.02 (48.58) |  59.0 |  407.9 | 118 | f5ff6241644c9678 all members equal
+RESULT   window8    |  14.20 /  18.37 |   4.0 /   5 |  16.37 ( 0.78 /  1.60) |   26.0 |  43.77 (35.97) |  59.0 |  407.9 | 118 | f5ff6241644c9678 all members equal
 RESULT     window8: ring as base + 64 B block deltas: full 14.06 MB -> vs base 14.85 MB (106%), vs previous 14.83 MB (105%)
-RESULT   knob-moving |  25.47 / 140.79 |   7.1 /  38 |  28.67 ( 3.03 /  1.79) |   94.0 | 159.00 (119.39) |  59.0 |  652.5 | 118 | f5ff6241644c9678 all members equal
+RESULT   knob-moving |  25.47 / 140.79 |   7.1 /  38 |  25.59 ( 2.85 /  1.62) |   94.0 | 136.49 (105.68) |  59.0 |  652.5 | 118 | f5ff6241644c9678 all members equal
 RESULT     knob-moving: ring as base + 64 B block deltas: full 27.87 MB -> vs base 28.83 MB (103%), vs previous 27.61 MB (99%)
 RESULT   end hash identical across all 14 runs: YES; deepest rollback 12 frames
