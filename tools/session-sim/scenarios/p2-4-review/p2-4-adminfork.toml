@@ -52,7 +52,8 @@ before_ms = 4000
 delay_ms = 2000
 
 [[part]]
-world.1.fixes_off = ["VC3R3S"]
+# VC3R3S acts only with VC6R3 off since round 7 (review VC7R-7).
+world.1.fixes_off = ["VC3R3S", "VC6R3"]
 report = [
     { kind = "check", case = "adminfork", label = "adminfork fixed=false", at = 1, target = 9, members = [3], honest = [1, 2, 3] },
     { kind = "view_changes", honest = [1, 2, 3], label = "adminfork" },

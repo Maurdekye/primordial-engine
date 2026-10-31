@@ -62,6 +62,9 @@ pub struct Actor {
     crash_at: Option<u64>,
     fork_entry: Option<Entry>,
     p0: Cell<MemberId>,
+    /// ForkSegment: its real branch B and its forged branch A.
+    seg_a: Vec<SignedEntry>,
+    seg_b: Vec<SignedEntry>,
 }
 
 impl Actor {
@@ -104,6 +107,8 @@ impl Actor {
             crash_at: None,
             fork_entry: None,
             p0: Cell::new(0),
+            seg_a: Vec::new(),
+            seg_b: Vec::new(),
         })
     }
 
@@ -111,6 +116,12 @@ impl Actor {
     pub fn wedge_info(&self) -> Option<(MemberId, MemberId, u32, Option<u64>)> {
         let Byzantine::AdminWedge { part, .. } = &self.spec else { return None };
         Some((self.p0.get(), *part, self.step, self.crash_at))
+    }
+
+    /// ForkSegment: (forker, P, step reached, crash time in us).
+    pub fn segment_info(&self) -> Option<(MemberId, MemberId, u32, Option<u64>)> {
+        let Byzantine::ForkSegment { member, p, .. } = &self.spec else { return None };
+        Some((*member, *p, self.step, self.crash_at))
     }
 
     /// GoSilent: its member, if it went silent (the `adminfork` check).
@@ -157,6 +168,18 @@ impl Actor {
             if p0 != Some(*member) {
                 return Err(format!("equivocate_prevote: member {member} is not the round-0 proposer ({p0:?})"));
             }
+        }
+        if let Byzantine::ForkSegment { member, own_fixes_off, .. } = &self.spec {
+            let p0 = sim.peers.iter().find_map(|p| p.worlds.get(&1)).and_then(|r| r.sim.proposer_of(0, 0));
+            if p0 != Some(*member) {
+                return Err(format!("fork_segment: member {member} is not the round-0 proposer ({p0:?})"));
+            }
+            let mut extra = 0u64;
+            for f in own_fixes_off {
+                extra |= crate::setup::FIXES.iter().find(|(n, _)| n == f).ok_or(format!("fork_segment: unknown fix `{f}`"))?.1;
+            }
+            let pe = sim.peers.iter_mut().find(|pe| pe.id == *member).ok_or(format!("fork_segment: member {member} is not a peer"))?;
+            pe.worlds.get_mut(&1).ok_or("fork_segment: no world 1")?.sim.fixes_off |= extra;
         }
         if let Byzantine::ForgeProposal { world, member, .. } = &self.spec {
             let p0 = sim.peers.iter().find_map(|p| p.worlds.get(world)).and_then(|r| r.sim.proposer_of(0, 0));
@@ -258,12 +281,18 @@ impl Actor {
                     _ => None,
                 }))
             }
-            Byzantine::EquivocatePrevote { member, .. } => {
-                let (member, ids) = (*member, self.forged_ids.clone());
-                Some(Box::new(move |_t, _w, from, _to, m| match m {
+            Byzantine::EquivocatePrevote { member, slow_to, slow_ms, .. } => {
+                // VC7R-2 (`slowcapper`): the forked value-prevote reaches `slow_to` late, from anyone.
+                let (member, ids, vv, slow_to, slow_us) = (*member, self.forged_ids.clone(), self.forged_vote.clone(), slow_to.clone(), slow_ms * 1000);
+                Some(Box::new(move |_t, _w, from, to, m| match m {
+                    Msg::Entry(e) if slow_us > 0 && slow_to.contains(&to) && vv.get() != EntryId::NONE && e.id() == vv.get() => Some(Fate::Delay(slow_us)),
                     Msg::Entry(e) if from == member && matches!(e.payload, Payload::Prevote { round: 0, .. }) && !ids.borrow().contains(&e.id()) => Some(Fate::Drop),
                     _ => None,
                 }))
+            }
+            Byzantine::ForkSegment { member, .. } => {
+                let (member, crashed) = (*member, self.silent.clone());
+                Some(Box::new(move |_t, _w, from, _to, _m| (from == member && crashed.get()).then_some(Fate::Drop)))
             }
             Byzantine::ForgeProposal { member, to, .. } => {
                 let (member, to, fv) = (*member, to.clone(), self.forged_vote.clone());
@@ -585,7 +614,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 send_to(sim, *member, prevote_to, &p);
                 act.fired = true;
             }
-            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to } if !act.fired => {
+            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to, .. } if !act.fired => {
                 if sim.net.now_us < from_ms * 1000 {
                     continue;
                 }
@@ -600,9 +629,65 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 nil.payload = Payload::Prevote { epoch, round, value: 0 };
                 act.forged_ids.borrow_mut().insert(vv.id());
                 act.forged_ids.borrow_mut().insert(nil.id());
+                act.forged_vote.set(vv.id());
                 send_to(sim, *member, value_to, &vv);
                 send_to(sim, *member, nil_to, &nil);
                 act.fired = true;
+            }
+            Byzantine::ForkSegment { member, at_ms, swap_ms, p, others, segment, role, back, crash_by_ms, .. } => {
+                // session-sim p24r4.rs `voidfork` / `fork_segment_sim`: at most one step per millisecond.
+                let t = sim.net.now_us;
+                let f = *member;
+                if act.step == 0 && t >= at_ms * 1000 {
+                    let r = sim_mut(sim, f, 1);
+                    let epoch = r.vcm.epoch;
+                    let b1 = r.author(Payload::Attest { fact: Fact([1; 32]), sig: [0; 64] }, None);
+                    match segment.as_str() {
+                        "void_one" => {
+                            let a = test_sign(1, Entry { payload: Payload::SetRole { epoch, member: *p, role: *role }, stamp: b1.stamp.saturating_sub(*back), ..b1.entry.clone() });
+                            r.byz_change = Some(Change { epoch, admin: vec![(a.id(), true)], ..Default::default() });
+                            act.seg_a = vec![a];
+                            act.seg_b = vec![b1];
+                        }
+                        seg => {
+                            let b2 = r.author(Payload::Attest { fact: Fact([2; 32]), sig: [0; 64] }, None);
+                            act.seg_a = if seg == "plain" {
+                                r.byz_change = Some(Change { epoch, ..Default::default() });
+                                vec![test_sign(1, Entry { payload: Payload::Attest { fact: Fact([3; 32]), sig: [0; 64] }, ..b1.entry.clone() })]
+                            } else {
+                                let h = b1.stamp + 40;
+                                let ack_epoch = if seg == "valid_role" { epoch + 2 } else { epoch };
+                                let a1 = test_sign(1, Entry { payload: Payload::Ack { horizon: h, heads: vec![], check: None, epoch: ack_epoch }, ..b1.entry.clone() });
+                                let a2 = test_sign(1, Entry { seq: b2.seq, prev: a1.id(), stamp: b1.stamp + 10, payload: Payload::SetRole { epoch, member: *p, role: *role }, carried: None, ..b2.entry.clone() });
+                                r.byz_change = Some(Change { epoch, admin: vec![(a2.id(), true)], ..Default::default() });
+                                vec![a1, a2]
+                            };
+                            act.seg_b = vec![b1, b2];
+                        }
+                    }
+                    for e in act.seg_b.clone() {
+                        send_to(sim, f, others, &e);
+                    }
+                    for e in act.seg_a.clone() {
+                        sim.net.send(1, f, *p, &Msg::Entry(e));
+                    }
+                    act.step = 1;
+                } else if act.step == 1 && t >= swap_ms * 1000 {
+                    for e in act.seg_a.clone() {
+                        send_to(sim, f, others, &e);
+                    }
+                    for e in act.seg_b.clone() {
+                        sim.net.send(1, f, *p, &Msg::Entry(e));
+                    }
+                    act.step = 2;
+                } else if act.step == 2 {
+                    let all = others.iter().all(|&m| sim.replica(m, 1).sim.all_entries().iter().any(|e| e.member == m && matches!(e.payload, Payload::Precommit { .. })));
+                    if all || crash_by_ms.is_some_and(|c| t >= c * 1000) {
+                        act.silent.set(true);
+                        act.crash_at = Some(t);
+                        act.step = 3;
+                    }
+                }
             }
             Byzantine::BackdatedKick { member, at_frame, target, back, to } if !act.fired => {
                 if sim.replica(*member, 1).sim.frame < *at_frame {
