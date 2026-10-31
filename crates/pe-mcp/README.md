@@ -80,7 +80,7 @@ clock is real time and there is no scenario to control.
 
 Design 17.2 writes names with dots (`world.get_state`). The tools use underscores, because the Anthropic API
 accepts only `[a-zA-Z0-9_-]` in tool names. Frames are 60 Hz sim frames. `conf` is exclusive: every frame
-below it is confirmed and can never be rolled back. Hashes are 16 hex digits.
+below it is confirmed and can never be rolled back. Frame state hashes are 16 hex digits; check hashes (BLAKE3) are 64.
 
 | Tool | Does | Errors besides `invalid_argument`, `forbidden` and `session_faulted` |
 |---|---|---|

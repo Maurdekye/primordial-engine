@@ -2,7 +2,7 @@
 //! use these: the session simulator (`sim_backend`) and a live peer (`pe-app`), so a tool returns the
 //! same shapes whichever drives it.
 
-use pe_session::session::{EntryId, Outcome, Payload, SignedEntry, WorldSim};
+use pe_session::session::{CheckHash, EntryId, Outcome, Payload, SignedEntry, WorldSim};
 
 use crate::backend::*;
 use crate::model::*;
@@ -21,11 +21,15 @@ pub fn hex(h: u64) -> String {
     format!("{h:016x}")
 }
 
+/// A check hash (BLAKE3, 32 bytes) as 64 hex digits.
+pub fn check_hex(h: &CheckHash) -> String {
+    h.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn summary(s: &WorldSim, i: u32) -> Option<ObjectSummary> {
     let o = s.t.objs.get(i as usize).copied().flatten()?;
     let st = s.obj_state(i)?;
-    let (p, v) = (st.pos(), st.lin());
-    Some(ObjectSummary { object: i, kind: kind_name(o.kind).into(), position: [p.x, p.y, p.z], linear_velocity: [v.x, v.y, v.z] })
+    Some(ObjectSummary { object: i, kind: kind_name(o.kind).into(), position: st.pos(), linear_velocity: st.lin() })
 }
 
 fn claim(s: &WorldSim, obj: u32) -> Option<ClaimInfo> {
@@ -55,15 +59,14 @@ pub fn object(s: &WorldSim, object: u32) -> ToolResult<ObjectState> {
     };
     let o = s.t.objs.get(object as usize).copied().flatten().ok_or_else(unknown)?;
     let st = s.obj_state(object).ok_or_else(unknown)?;
-    let (p, q, v, w) = (st.pos(), st.rot(), st.lin(), st.ang());
     Ok(ObjectState {
         object,
         global_id: hex(o.global),
         kind: kind_name(o.kind).into(),
-        position: [p.x, p.y, p.z],
-        rotation: [q.v.x, q.v.y, q.v.z, q.s],
-        linear_velocity: [v.x, v.y, v.z],
-        angular_velocity: [w.x, w.y, w.z],
+        position: st.pos(),
+        rotation: st.rot(),
+        linear_velocity: st.lin(),
+        angular_velocity: st.ang(),
         state_hash: hex(st.hash()),
         claim: claim(s, object),
     })
@@ -156,7 +159,8 @@ pub fn events_since(s: &WorldSim, n: usize) -> (Vec<String>, usize) {
 
 pub fn hashes(s: &WorldSim, from: u64, to: u64) -> Hashes {
     let fh = |(f, h): (&u64, &u64)| FrameHash { frame: *f, hash: hex(*h) };
-    Hashes { conf: s.conf, frames: s.hashes.range(from..to).map(fh).collect(), checks: s.check_hashes.range(from..to).map(fh).collect() }
+    let ch = |(f, h): (&u64, &CheckHash)| FrameHash { frame: *f, hash: check_hex(h) };
+    Hashes { conf: s.conf, frames: s.hashes.range(from..to).map(fh).collect(), checks: s.check_hashes.range(from..to).map(ch).collect() }
 }
 
 /// `members` is the session's genesis member list (evicted members stay listed, with their eviction).
@@ -195,7 +199,7 @@ pub fn sync(s: &WorldSim) -> SyncStatus {
         caught_up: s.caught_up(),
         checks_ok: s.stats.checks_ok,
         checks_bad: s.stats.checks_bad,
-        latest_check: s.check_hashes.iter().next_back().map(|(f, h)| FrameHash { frame: *f, hash: hex(*h) }),
+        latest_check: s.check_hashes.iter().next_back().map(|(f, h)| FrameHash { frame: *f, hash: check_hex(h) }),
         rollbacks: s.stats.rollbacks,
         max_rollback_depth: s.stats.max_depth,
         resim_frames: s.stats.resim_frames,
