@@ -257,6 +257,10 @@ pub mod fix {
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
 pub const MAX_ATTESTS: usize = 64;
 
+/// Review VC6R-2: the most prevote ids a capped precommit carries (its polka). At least the largest
+/// quorum, so honest code never exceeds it; a decode of more is refused.
+pub const MAX_POLKA: usize = 512;
+
 /// Round 3 only (`fix::VC3R2` off, review VC3R-2): a member whose votes or caps resets overruled in
 /// this many of the last `STRIKE_EPOCHS` epochs is voted out.
 pub const STRIKES_OUT: usize = 3;
@@ -812,7 +816,7 @@ impl Wr {
                 // Review VC4R-1: a capped precommit carries the prevote ids of the polka that justifies
                 // it, so a member that did not receive them (an equivocated prevote) can fetch them
                 // before it votes the capper out. At most `MAX_ATTESTS` so the size is bounded.
-                assert!(polka.len() <= MAX_ATTESTS, "a precommit carries at most {MAX_ATTESTS} prevote ids");
+                assert!(polka.len() <= MAX_POLKA, "a precommit carries at most {MAX_POLKA} prevote ids");
                 self.u32(polka.len() as u32);
                 for id in polka { self.u64(*id) }
             }
@@ -987,7 +991,7 @@ impl Rd<'_> {
             13 => {
                 let (epoch, round, value, boundary) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?);
                 let n = self.u32()? as usize;
-                if n > MAX_ATTESTS { return None; }
+                if n > MAX_POLKA { return None; }
                 let mut polka = Vec::with_capacity(n);
                 for _ in 0..n { polka.push(self.u64()?) }
                 Payload::Precommit { epoch, round, value, boundary, polka }
@@ -3783,12 +3787,18 @@ impl WorldSim {
             // Review VC4R-1: a capped precommit names the prevote ids of the polka this replica saw for
             // `v` in `round`, so a member that lacks one (an equivocated prevote sent only to me) can
             // fetch it before it holds my cap unjustified.
+            // Review VC6R-2: at most a quorum of prevote ids; more is never needed to justify the cap,
+            // and listing every prevoting member overran the encoding in a large session.
             let polka = if boundary > 0 {
-                self.vc
+                let (_, q) = quorum(self.cfg.quorum, self.members.len());
+                let mut ids: Vec<EntryId> = self
+                    .vc
                     .prevotes
                     .get(&round)
                     .map(|ms| ms.iter().filter(|&(_, &x)| x == v).filter_map(|(k, _)| self.vc.prevote_id.get(&(round, *k)).copied()).collect())
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                ids.truncate(q);
+                ids
             } else {
                 Vec::new()
             };
@@ -5396,6 +5406,25 @@ pub fn digest(h: &BTreeMap<u64, u64>, frames: u64) -> u64 {
 mod round3_tests {
     //! Review VCR-11 (P2-4 round 3): encodings that must be refused, never read in part.
     use super::*;
+
+    #[test]
+    fn large_polka_round_trips() {
+        // Review VC6R-2: a capped precommit carries up to MAX_POLKA prevote ids. A polka of 300 would
+        // have panicked the old encoder (asserted at 64); now it round-trips, and a decode claiming
+        // more than MAX_POLKA is refused.
+        let polka: Vec<EntryId> = (1..=300).collect();
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka }, carried: None };
+        assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
+        // A precommit payload whose polka count exceeds MAX_POLKA is refused (never read in part).
+        let mut w = Wr(Vec::new());
+        w.u8(1); // Msg::Entry
+        w.u32(1); w.u32(1); w.u64(0); w.u64(5); // member, seq, prev, stamp
+        w.u8(13); w.u32(0); w.u32(0); w.u64(9); w.u64(7); // Precommit epoch, round, value, boundary
+        w.u32(MAX_POLKA as u32 + 1);
+        for i in 0..=MAX_POLKA as u64 { w.u64(i) }
+        w.u8(0); // carried: none
+        assert_eq!(decode_msg(&w.0), None);
+    }
 
     #[test]
     fn signed_join_and_branch_fetch_round_trip() {
