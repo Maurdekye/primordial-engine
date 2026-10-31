@@ -15,4 +15,4 @@ RESULT jointiming: m5 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, 
   m3: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
   m4: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
   m5: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
-RESULT jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary): frames 0..712 honest m1=96e2ce17c8fc9925 m2=96e2ce17c8fc9925 m3=96e2ce17c8fc9925 m4=96e2ce17c8fc9925 m5=96e2ce17c8fc9925 | offline replay 96e2ce17c8fc9925 | ALL EQUAL, NO FALSE CHECKS ; checks ok 456 bad 0
+RESULT jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary): frames 0..712 honest m1=70a9b31d9579776c m2=70a9b31d9579776c m3=70a9b31d9579776c m4=70a9b31d9579776c m5=70a9b31d9579776c | offline replay 70a9b31d9579776c | ALL EQUAL, NO FALSE CHECKS ; checks ok 456 bad 0

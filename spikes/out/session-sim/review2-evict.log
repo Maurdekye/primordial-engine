@@ -5,4 +5,4 @@
   m1: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 3 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
   m2: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 4 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
   m3: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 4 max depth 9 violations 0 equivocations 1 checks ok 54 bad 0
-RESULT evict (late entry, then an eviction): frames 0..592 honest m1=06590cf30a08754b m2=06590cf30a08754b m3=06590cf30a08754b | offline replay 06590cf30a08754b | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+RESULT evict (late entry, then an eviction): frames 0..592 honest m1=19b7d9c903ce8c08 m2=19b7d9c903ce8c08 m3=19b7d9c903ce8c08 | offline replay 19b7d9c903ce8c08 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0

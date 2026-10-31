@@ -76,8 +76,7 @@ for v in fakemix adminfork; do run p2-4-$v $v; done
 for v in capfake fakeadmin adminwedge; do run p2-4-$v $v; done
 # P2-4 review rounds 7-8, fixed in round 8 (design 10.8): admin validity along the entry's own
 # ancestry, a capper's fetch budget at the slow-member allowance, and a forker's prevotes in polkas.
-# Spike only: pe-session has round 7, not round 8, yet (tools/session-sim/scenarios/pe-pending.txt).
-if [ $pe = no ]; then for v in voidfork slowcapper voiddeep plainfork pfsilent; do run p2-4-$v $v; done; fi
+for v in voidfork slowcapper voiddeep plainfork pfsilent; do run p2-4-$v $v; done
 # The randomized Byzantine schedule generator (not a scenario file): a fixed seed range, checked
 # against the written invariants (spikes/out/session-sim/INVARIANTS.md). A larger run is separate.
 expect+=(randsched); "$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"

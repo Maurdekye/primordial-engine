@@ -1,10 +1,10 @@
 RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 20 s
 RESULT r18 capped: member 3 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   per message      | 158.8 /  71.9 /  70.8 |  500 /  499 /  500 | 1208 | 112 / 117 / 1001 | 232 / 235 / 1117 | 0 (own entries moved: 0) | 28.4/s,   3 | 0 ms | m1 3dce618c2d758954 / m2 3dce618c2d758954 replay 3dce618c2d758954 EQUAL
+RESULT   per message      | 158.8 /  71.9 /  70.8 |  500 /  499 /  500 | 1208 | 112 / 117 / 1001 | 232 / 235 / 1117 | 0 (own entries moved: 0) | 28.4/s,   3 | 0 ms | m1 12624ed5cee35a55 / m2 12624ed5cee35a55 replay 12624ed5cee35a55 EQUAL
 RESULT     removed from the session (cut, from frame): {3: (43, 85)}
-RESULT   batched          | 135.1 /  69.6 /  71.2 |  500 /  500 /  500 | 1136 | 113 / 118 / 1003 | 233 / 236 / 1118 | 0 (own entries moved: 0) | 28.1/s,   3 | 0 ms | m1 3dce618c2d758954 / m2 3dce618c2d758954 replay 3dce618c2d758954 EQUAL
+RESULT   batched          | 135.1 /  69.6 /  71.2 |  500 /  500 /  500 | 1136 | 113 / 118 / 1003 | 233 / 236 / 1118 | 0 (own entries moved: 0) | 28.1/s,   3 | 0 ms | m1 12624ed5cee35a55 / m2 12624ed5cee35a55 replay 12624ed5cee35a55 EQUAL
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
-RESULT   batched+adaptive |  30.6 /  24.7 /  21.5 |  498 /  498 /  499 |   55 | 113 / 116 / 999 | 233 / 236 / 1118 | 0 (own entries moved: 0) |  3.8/s,   3 | 0 ms | m1 1e2c519085648fc7 / m2 1e2c519085648fc7 replay 1e2c519085648fc7 EQUAL
+RESULT   batched+adaptive |  30.6 /  24.7 /  21.5 |  498 /  498 /  499 |   55 | 113 / 116 / 999 | 233 / 236 / 1118 | 0 (own entries moved: 0) |  3.8/s,   3 | 0 ms | m1 f5b08a682923f8b5 / m2 f5b08a682923f8b5 replay f5b08a682923f8b5 EQUAL
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [14508, 400, 400, 400, 400, 3794] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [5108, 5100, 5100, 400, 400, 3794] ms

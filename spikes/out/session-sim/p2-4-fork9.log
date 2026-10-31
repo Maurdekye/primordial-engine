@@ -9,4 +9,4 @@ RESULT fork9: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest rou
   m1: conf 467 frame 473 members {1, 2, 3} evicted {9: (63, 124)} rollbacks 3 max depth 13 violations 0 equivocations 1 checks ok 36 bad 0
   m2: conf 467 frame 473 members {1, 2, 3} evicted {9: (63, 124)} rollbacks 4 max depth 15 violations 0 equivocations 1 checks ok 36 bad 0
   m3: conf 467 frame 473 members {1, 2, 3} evicted {9: (63, 124)} rollbacks 2 max depth 14 violations 0 equivocations 1 checks ok 36 bad 0
-RESULT fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3): frames 0..472 honest m1=59e981830ed2cd63 m2=59e981830ed2cd63 m3=59e981830ed2cd63 | offline replay 59e981830ed2cd63 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3): frames 0..472 honest m1=2e0f93b4ce91602b m2=2e0f93b4ce91602b m3=2e0f93b4ce91602b | offline replay 2e0f93b4ce91602b | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
