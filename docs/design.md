@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state overwrite (if different) -> hashes          |  |
+ |  | Box3D step -> carried-state write (always*) -> hashes                  |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -180,6 +180,9 @@ Rulings that shape the design:
  |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
  +------------------------------------------------------------------------------+
 ```
+
+\* Always (review SET-1) in pe-session. The spike writes carried state only when its bits differ, until
+p2/spike-reset lands (review PT-1).
 
 * **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
 * **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
@@ -210,8 +213,8 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Commit visible to every peer | confirmation + activation lead ≈ 0.14 s + 0.5 s | 15.2 |
 | Shader edit to visible | ≤ 100 ms locally (naga validation is milliseconds [I]) + the same commit path | 14 |
 | Hot swap at a frame | ≤ 10 ms on the sim thread | 6 ms in wasmi; Cranelift 27-35 ms, so it compiles off-thread during the activation lead (13.3) [V iteration-benchmark, reviewer] |
-| Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6 |
-| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s) at 50 ± 5 ms without loss, 18.8 kB/s per message [V r18 capped, ballpit]. Like for like with 3d0f98a's 14.7 kB/s (60 ± 10 ms, 2% loss), batched is 13.6 kB/s, 7% less; ack bytes alone grew 53% [V reviewer, R3-13]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
+| Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6. **Over budget in pe-session:** 7.8 kB/s each way idle at 2 members (spike 3.1), nearly all signed 208-byte acks at 30 Hz [V @ballpit-viz, p2/session e98261f]; reductions proposed in 7.6 |
+| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | pe-session: 18.4 kB/s each way during the sweep [V @ballpit-viz] (7.6). Spike, 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s) at 50 ± 5 ms without loss, 18.8 kB/s per message [V r18 capped, ballpit]. Like for like with 3d0f98a's 14.7 kB/s (60 ± 10 ms, 2% loss), batched is 13.6 kB/s, 7% less; ack bytes alone grew 53% [V reviewer, R3-13]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
 | Head motion to photon (VR) | < 20 ms | 18.5 |
 
 ---
@@ -681,6 +684,11 @@ inexact.
    holds it. The rule is part of the deterministic sim, so every peer applies it identically. On a
    speculative frame it acts as a prediction, and the real entry replaces it by rollback when it arrives.
    Before this change (3d0f98a), a hand without an entry stopped dead.
+   * A thinned entry (10.9) is followed over its declared span first, and the coast covers only a gap
+     past it: a hand moves while n ≤ (span − 1) + 6 frames after its last entry, then holds (D52, D53).
+     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163]. The
+     spike's rule is still flat (n ≤ `hand_predict`) and off by default (0); it follows with its next
+     change [V].
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
@@ -811,7 +819,9 @@ every player, perfectly synced, and optimized for CPU and memory.
 ### 7.3 Resulting state, and the acceptance criterion
 
 * **Contents:** for each body the entry touched, its exact post-frame state as bit patterns: position,
-  rotation, linear and angular velocity, 13 × 32 bits = 52 bytes [V session-sim encoding].
+  rotation, linear and angular velocity, 16 words = 64 bytes. The position is three f64 (D58's double
+  precision), the rest f32 bits; it was 13 words (52 bytes) before D58 [V by reading `BodyState` at
+  p2/double-precision 1ae64e6; review D58-2].
 * **Application rule** (applied identically by every peer, the author included, whenever frame *f* is
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
@@ -824,11 +834,24 @@ every player, perfectly synced, and optimized for CPU and memory.
 * **Why the rule is deterministic:** the write is the same operation on every peer, at the same frame,
   with bits taken from the log. In the confirmed history every peer holds the same log, so its world at
   *f* is the same, contact cache included, and the result is bit-identical.
-* **Known gap, speculative only** [V D58 probe, @vdw-physics]: the write sets the body's bits but not its
-  contact cache. A receiver whose copy differed (it lacked an entry, or is behind) gets the author's bits
-  at *f* but keeps its own contacts, so its copy drifts by about 1e-12 after the next step. The confirmed
-  history is unaffected, since every peer's cache is the same there. A pe-physics item is resetting the
-  body's contacts on a write.
+* **Every write also resets the body's history** (@vdw-physics, on main at f65851e). `set_state` calls
+  the recorded fork op `body_reset_history`, so a replay reproduces it. The op destroys the body's
+  contacts, rebuilds its proxies (the contacts return at the next step, in sorted pair-key order), and
+  clears its joint warm starts and sleep timer. Before it, the write set the body's bits but kept its
+  contact cache. A receiver whose copy differed (it lacked an entry, or was behind) took the author's bits
+  at *f* with its own contacts, and drifted by about 1e-12 after the next step [V D58 probe]. The reset
+  runs on every write, not only when the bits change. The toucher's own bits never change, so a
+  bits-changed reset left it with its recycled contacts [V @vdw-physics: two peers reach one 18-body pile
+  by different histories, then write every body. They are equal for 120 of 120 frames with the reset,
+  in f32 and f64, and differ at frame 0 without it or with the bits-changed variant]. Contact ids can
+  still differ between such peers: all 78 contacts match by pair and colour, under other ids. Only
+  speculative worlds can differ that way, and check hashes cover confirmed frames, where histories are
+  identical. The spike core's write (`BodyState::write`) does not reset yet. It will mirror the reset in
+  a commit of its own, which re-blesses the spike's logs.
+* **A held object takes no other member's carried state** (P23-6, following 8.4). When the touched body is
+  held at *f* by another member's grab, step 3 skips it: the touch acts on it only physically, through the
+  grab's constraint. Whether a body is held at *f* is part of the state at *f*, so every peer skips
+  alike. The holder moves it through its hand, and its own touch of it writes as usual.
 * **What the rule buys:**
   * a peer already on the author's world line writes the bits it already holds and stays bit-exact by
     determinism;
@@ -847,7 +870,7 @@ every player, perfectly synced, and optimized for CPU and memory.
   (9.3), and a state transfer covers true nondeterminism (9.3, 9.5).
 * **Contact island scope (D40):**
   * carrying the whole contact island of each touched body would make the local neighbourhood exact
-    sooner, at 52 bytes per island body;
+    sooner, at 64 bytes per island body;
   * the recommendation is touched bodies only, plus an island digest so a mismatch can trigger a scoped
     state transfer.
 * **Overwrites can erase late indirect effects.** An earlier-stamped entry that arrives late and pushed the
@@ -922,7 +945,7 @@ release build [V session-sim ballpit].
   small entry: the hand's state plus the canonical frame, quantized to 1 mm. Every peer simulates the balls
   from it. Start and end are ordinary entries, and the touched island's state is sent only when a sync
   check flags divergence [I; the spike compared end-state hashes instead]. This satisfies the ruling, because the perturbation (the hand) carries its state
-  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1 MB/s one way for naive exact state streaming: roughly 1/70 of the volume. The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
+  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1.2 MB/s one way for naive exact state streaming at D58's 64 bytes a state: roughly 1/80 of the volume (the logs price a state at 52 bytes and show 989 kB/s until review D58-3's re-bless). The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
 * **(b) Batch, delta-code and quantize island state.** This cuts naive streaming several-fold (measured
   above). But quantized state is not bit-exact unless the sender also snaps its own copy to the quantized
   values, and it still scales with the number of balls moving.
@@ -938,7 +961,7 @@ release build [V session-sim ballpit].
 ### 7.6 Bandwidth per interaction
 
 * **An entry is about 100-170 bytes before transport overhead** [V session-sim encoding]:
-  * a touch with carried state is 100 bytes;
+  * a touch with carried state is 112 bytes (100 with the 13-word state before D58);
   * a hand target without state is 44 bytes.
 * **Acks** grow with the member count (review R3-11): 56 + 16(N-1) bytes with a check hash, that is 72, 88,
   104, 168, 296 and 1,064 bytes for N = 2, 3, 4, 8, 16 and 64 [V reviewer]. Every member sends one to
@@ -954,6 +977,82 @@ release build [V session-sim ballpit].
     time, relayed (gossip), at the cost of slower stability [I].
 * In production all of these share datagrams: the per-tick batch is option (b) applied to entries, not
   to state.
+* **Production sizes** (pe-session on P2-3's branch, from its encoding in `entry.rs` [V by reading]).
+  Every signed entry costs 114 bytes before its payload. That is a 1-byte tag, a 48-byte header (member,
+  seq, a 32-byte SHA-256 `prev`, stamp), the carried-state flag, and a 64-byte Ed25519 signature:
+
+  | Entry | Bytes in pe-session | Bytes in the spike |
+  |---|---|---|
+  | Ack, 2 members, with its check hash | 208 (168 without the check) | 72 |
+  | Ack, each further member | +40 (member, seq, 32-byte id) | +16 |
+  | Hand target | 133 | 44 |
+  | Touch with carried state | 188 (200 once pe-session takes D58's 16-word state) | 112 |
+  | Vote | 163 (195 naming a kick) | - |
+
+  Each datagram adds about 44 bytes: 28 for IPv4 and UDP, and Noise's 16-byte tag [I]. Measured on the
+  wire, an idle ack's datagram is about 299 bytes, with the transport's framing [V @world-chunks].
+* **Measured** [V @ballpit-viz, pe-session at p2/session e98261f, the 2026-10-30 matrix's config with R18
+  off]: idle, 7.8 kB/s each way at 2 members (the spike, 3.1). During the 500-ball sweep, 18.4 kB/s (the
+  spike, 8.3). The sizes above predict both. Idle is 30 acks/s at 208 bytes plus 30 datagrams, about 7.6
+  kB/s; the sweep adds 60 hand entries/s.
+* **Against the links:**
+  * At 64 kbit/s (8 kB/s), idle traffic alone takes about 95% of the link and the sweep about 230%.
+    Without R18's thinning (10.9) no room is left for repairs. @world-chunks measured the R18-off run
+    that never recovered as overload: 62.5 kbit/s of idle acks against the 64 kbit/s cap, which starves
+    repairs (10.9, item 5). Separately, R1's pauses were a port regression in the repair yield
+    (pe-session cut a reply per message instead of per reply); it is fixed [V @world-chunks]. R18 ships
+    on (@coordinator-opus, 14:02Z).
+  * At 256 kbit/s (32 kB/s), idle takes about 24% and the sweep 57%.
+  * Each member's idle upload is about 30 kB/s at 4 members (3 peers, 30 acks/s each, 288 bytes, plus
+    datagrams) and about 103 kB/s at 8: over the budget, as the spike already was from 3 members.
+* **Four reductions** (I: estimates from the sizes above). **Decided** (@coordinator-opus, about 15:05Z):
+  build 1 and 2 in pe-session (@item:primordial-engine/ack-bandwidth-reductions-in-pe-session-check-on-c,
+  @world-chunks's, after P2-3 merges), and the spike mirrors 2. 3 and 4 wait until after M1. None is
+  built yet:
+  1. **The check hash only when it changes.** It changes once per check interval (30 frames) but rides on
+     every ack. Sending it once saves 40 bytes on 14 acks of 15: idle at 2 members falls from 7.6 to
+     about 6.4 kB/s. It changes the ack encoding, so every entry id moves and pe-session's goldens are
+     re-blessed with ids masked. The check rules don't change: each check still arrives once.
+  2. **Idle thinning.** While nothing is unconfirmed, a member acks every 8 frames instead of every 2, and
+     returns to every 2 in the tick a new entry reaches it. Idle at 2 members falls to about 1.9 kB/s,
+     and confirmation latency while anything happens is unchanged. 8 frames stays far inside the timers
+     that read acks (half a window, 60 frames; `suspect_after`, 180). It moves the timing of every log
+     (re-bless). It combines with R18's ack thinning (10.9) by taking the longer interval: an idle
+     member acks every 8 frames at any level, and an active one at its level's interval (every 2 frames
+     uncongested, up to 8 at the coarsest level).
+     * **"Nothing unconfirmed," judged from a member's own copy** [proposal]: a member is idle while
+       every entry it holds, other than acks, is stamped at or before its own confirmed frame. Acks
+       are left out, or each ack would keep every member busy.
+     * A new entry, its own or anyone's, is stamped after the confirmed frame. So a member acks in the
+       tick it authors or receives one, then at its level's interval until its confirmed frame passes
+       every such entry.
+     * The author stays busy until every member has acked its entry. Its acks carry the new head, so
+       gap detection for a new entry is as prompt as before.
+     * A member whose sim lags judges from its lagging copy and stays busy longer. That costs only
+       bandwidth.
+     * Idle acks fall on frames that are multiples of 8, the coarsest level's grid, so they share
+       datagrams with hand entries. The ack that leaves idle goes at once, off the grid. A check hash
+       due at a check frame rides the first ack after it, at most 7 frames later.
+  3. **Compact heads** (the compact acks above). Each head is a (member, seq) pair as varints, plus one
+     32-byte BLAKE3 digest over every (member, seq, id), as P23-2 moves facts to (review DS-4: 16 bytes
+     would give evidence only 2^64 collision resistance). It saves about 4 bytes an ack at 2 members,
+     about 220 at 8 (half), and about 508 at 16. It touches the evidence rules. A lying-vote proof (R3-1)
+     and the reference checks compare the ids an ack named. So the digest must be checkable by a third
+     party from the entries it covers, and a proof must carry those entries. It needs a design review
+     of its own.
+  4. **The ack folded into the frame's entry.** When a member authors an entry on a frame tick anyway
+     (a hand stream), the ack's fields ride in that entry. That saves 114 bytes (a header and a
+     signature) per folded ack: about 3.4 kB/s, 19%, during a sweep, and nothing at idle. It changes the
+     entry format: any entry may then carry a horizon and heads, and the horizon rule applies to each.
+     Every golden moves.
+  * **All four together:**
+    * idle at 2 members: about 1.6 kB/s, 79% less;
+    * a sweep: about 13 kB/s, 29% less;
+    * idle at 8 members: about 12 kB/s instead of 103.
+    With the decided two (1 and 2), idle at 2 members is about 1.6-1.9 kB/s and a sweep is unchanged.
+    A sweep still needs R18's thinning at 64 kbit/s: the hand stream alone is 8 kB/s.
+  * **Whether the spike mirrors them:** (1), (3) and (4) are encodings, which the spike can leave out, as
+    it keeps FNV (P23-2). (2) changes timing, so the reference should mirror it.
 
 ### 7.7 What traffic R3 allows (review L9)
 
@@ -999,7 +1098,9 @@ them identically, so they can never fork anyone.
      opened, member 3 removed, and members 1 and 2 equal to the replay].
 
 **What a cheater can still do:**
-* backdate within one ack interval plus the slack, about 4 frames (67 ms) at the defaults;
+* backdate within one ack interval plus the slack: about 4 frames (67 ms) at the defaults, and up to
+  about 10 frames (167 ms) while the session is idle (7.6, reduction 2: acks every 8 frames) or at
+  R18's coarsest level (10.9), so rollback budgets assume the larger figure (review IR-1);
 * claim a present that lags the true one. That looks exactly like a slow link: it is accountable (others
   see the member's stamps consistently trail their own clocks) but not provable.
 
@@ -1028,7 +1129,9 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * **Only grabs claim** (D72 option (a)). An accepted grab claims its object while it is held; another
   member's grab of the same object in that time is refused with `RejectedClaimed{by, until}`.
 * **Every other physical interaction is never refused.** Touches, pushes and impulses all apply,
-  physically, including on a held object, which they move through the grab's constraint.
+  physically, including on a held object, which they move through the grab's constraint. A touch by a
+  member that does not hold the object carries no state onto it: its carried-state write is skipped, and
+  it acts only through physics (P23-6, 7.3).
 * **A member moves only its own hands** (P2-8 review: @shader-reviewer's probe moved another member's
   hand through `pe-mcp`, and every peer accepted it).
   * Hands are part of a member's avatar (16.3), and an entry's author is its chain's signed member (10.3).
@@ -1113,11 +1216,24 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
     seen maps, each a u32 count then entries sorted by key (reusing the entry codec's hop, epoch-cert and
     cert layouts), then a u8 portal flag. `decode_tables` accepts only bytes that re-encode identically,
     are fully consumed, and whose cached chain hashes match their chains (9.5).
+  * **The composition the trading lease needs** (review TL-4, decided by @coordinator-opus 2026-10-31;
+    layout agreed with @world-chunks; built with the lease, as a re-bless). It uses three fixed-size
+    digests, each under its own BLAKE3 derive-key context, so a table checkpoint (22.10) verifies without
+    the 1.5 MB store, and a tables encoding can never pass as a store:
+    * `tables_digest = derive_key("pe-tables v1", tables bytes)`;
+    * `store_digest = derive_key("pe-store v1", store bytes)`;
+    * `check = derive_key("pe-check v2", frame u64 | physics CheckHash (32) | store_digest (32) |
+      tables_digest (32))`, little-endian; with fixed-size inputs the length prefixes go.
+    * A table checkpoint carries the tables, the physics `CheckHash`, `store_digest`, the check hash, the
+      acks and the epoch certificates. Its verifier recomputes `tables_digest` from the tables, then
+      `check`. The seen-lease table (22.10) joins the tables.
+    * The same bytes are hashed once either way, with one more finalize per part [I].
 
 ### 9.2 Cadence
 
-* **On every interaction:** the carried state is compared with, and if needed applied over, the
-  receiver's own result (7.3).
+* **On every interaction:** the carried state is applied over the receiver's own result, always,
+  whether or not it already matches (7.3, review SET-1). That is pe-session's rule; the spike writes only
+  when the bits differ until p2/spike-reset lands (review CV-1).
 * **Periodic:** every 30 frames, but only at **confirmed** frames that this member has finished simulating
   with the complete log. A member with a re-simulation pending never compares (viz-1).
   * There, every member holds the same entries by construction, so any mismatch is true nondeterminism,
@@ -1219,6 +1335,12 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   its own transfer: the receiver trusts that member or waits for a second one [I].
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
+* **The joiner holds its simulation until the state is imported, and a state never rewinds a replica**
+  (review P23R-1). This is a requirement on the joiner's IO: pe-session's core does not hold it yet.
+  The harness meets it [V statejoin, which sets `throttle_us`], and the core enforces it later
+  [proposal; `request_state`'s rustdoc states the precondition].
+* A refused answer uses up that donor's request, so the joiner asks another member (review P23R-2)
+  [V @world-chunks, pe-session].
 * Region- or island-scoped transfer is a later optimization.
 
 ---
@@ -1499,18 +1621,29 @@ is fixed once the author's chain is contiguous up to it.
   * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
     of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
     **decides** it.
-  * **A proven forker's precommit counts by its signature** (review PF-1, found by @ballpit-viz). Chain
-    order governs every other use of an entry. A replica keeps the first version of a seq it receives,
-    and a member that forks a seq may continue its chain from a version some honest members never hold,
-    so they cannot link its later entries. If its precommit was in the quorum the others decided on,
-    those members could never check that quorum and stayed in the old epoch for good. So the
-    precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
-    in any version, and its proposals are kept by value the same way. This is Tendermint's commit rule,
+  * **A proven forker's precommits and prevotes count by their signatures** (reviews PF-1, found by
+    @ballpit-viz, and VC8R-1). Chain order governs every other use of an entry. A replica keeps the
+    first version of a seq it receives, and a member that forks a seq may continue its chain from a
+    version some honest members never hold, so they cannot link its later entries. If its precommit was
+    in the quorum the others decided on, those members could never check that quorum and stayed in the
+    old epoch for good. If its prevote was in the polka the others locked on, those members never saw
+    the polka; the locked members then prevoted nil on everything else, and the session halted with no
+    admin entry involved (VC8R-1). So the precommits of a member proven to have forked count toward a
+    decision, and its prevotes toward a polka (a lock, and a re-proposal's valid round), wherever they
+    sit in its chain, in any version; its proposals are kept by value the same way. That includes precommits chain
+    order would void: one whose boundary is at or below its author's horizon (VC-4), or a second
+    precommit in one round (review VC7R-4). Its proposals of a later epoch wait in an index for that
+    epoch, and its chain is scanned once per proof (VC7R-6). This is Tendermint's commit rule,
     which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
-    member, and an honest member precommits one value per round. Honest members' entries always link,
-    so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
-    own version. Every member decides the join, 1 is removed at 4.23 s, and confirmation goes on. Before
-    the fix, 3, 9 and the joiner stayed in epoch 0 and confirmation stopped at frame 53].
+    member, and an honest member prevotes and precommits one value per round. Honest members' entries
+    always link, so they count in chain order [V prevotefork: 1 forks its prevote three ways and
+    continues from its own version. Every member decides the join, 1 is removed at 2.27 s, and
+    confirmation goes on. With PF-1's and VC8R-1's fixes off, 3, 9 and the joiner stay in epoch 0 and
+    confirmation stops at frame 53. V pfsilent: the same with 9 silent from 1 s, so the forker's
+    precommit is in the only quorum; with PF-1 off, 3 and the joiner stay in epoch 0. V plainfork: f
+    forks a seq into two Attests and proposes an empty change; with VC8R-1 off the member that kept the
+    other version never sees the polka, and confirmation stops at frame 110; with it, f is removed at
+    2.88 s].
   * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
     together leave in one change [V twosilent].
   * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
@@ -1593,7 +1726,12 @@ is fixed once the author's chain is contiguous up to it.
     the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch; before the
     fix 3 never got it all and stopped at frame 116. V cutbackdate: the cut's branch holds a touch
     backdated 90 frames; before the fix 3 applied it below its confirmed frame and hit the rollback
-    assertion at 2.29 s].
+    assertion at 2.29 s]. They are validated from a clean chain state, the ack-epoch history included
+    (round 8, found while building `slowcapper`). The abandoned branch's history made every early ack
+    fail VC-5's epoch rule, so a replica that switched voided the removed member's acks while one that
+    had held the cut's branch kept them [V prevotefork: 28 such voids at the two replicas that switched,
+    now none, and the removed member stops counting from the same frame at all three]. VC7R-1's replay
+    reads the same history, so its purity rests on this (review VC8R-2).
   * A replica applies a decision only once it holds every admin entry the change lists; it asks those
     that precommitted it for the ones it lacks, by id (review VCR-8) [V slowadmin: an admin's entries
     reach follower 6 2.5 s late on every path; it decides at 3.60 s once it has the entry. Before the
@@ -1653,15 +1791,20 @@ is fixed once the author's chain is contiguous up to it.
     and they would vote the honest capper out. So before a member votes a capper out for an unexplained
     cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
     either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
-    two versions of one prevote proves the proposer equivocated and removes it. Locks still count one
-    version per member; decisions count a proven forker's precommits in any version (PF-1, under
-    Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
-    3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
-  * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
-    round trip, so if ids the cap named are still missing a further half window after the cap ripened,
-    they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
-    polka id that exists nowhere; 9 is removed at 4.15 s. With the fix off the id is fetched for good, 9 is
-    never removed and confirmation stops at frame 143].
+    two versions of one prevote proves the proposer equivocated and removes it. Locks, re-proposals and
+    decisions also count a proven forker's prevotes and precommits in any version (PF-1 and VC8R-1,
+    under Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to
+    observer 3. With VC4R-1's fix off (and VC8R-1's, which lets the join be decided before any cap is
+    judged) 3 votes 2 out; with it 3 fetches 1's value-prevote and keeps 2].
+  * The fetch has a budget (reviews VC6R-1, VC7R-2). An honest capper holds its own polka, but its
+    replies can be slow. If ids the cap named are still missing once the cap has ripened and a further
+    `suspect_after` (3 s, the allowance a slow member gets) has passed, they count as prevotes nobody
+    holds, and the capper is voted out. Every prevote the precommit named counts as soon as it is held,
+    linked into its author's chain or not. Round 7 gave the fetch a further half window (1 s) and
+    counted only prevotes it had linked or recorded as another version (VC7R-2) [V capfake: 9's capped
+    precommit names a polka id that exists nowhere. 9 is removed at 6.17 s (4.15 s on round 7's budget).
+    With the fix off, the id is fetched for good, 9 is never removed, and confirmation stops at frame
+    143]. A vote's frozen head gets the same allowance (below).
   * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
     member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
     prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
@@ -1748,7 +1891,10 @@ is fixed once the author's chain is contiguous up to it.
     110].
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
-  signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
+  signatures (exactly a quorum: the lowest member ids among those held, review VC7R-5), and the two
+  entries of every exclusion proof. Two replicas that decided on different quorums hold different,
+  equally valid certificates, so a certificate is checked by its signatures and never compared by its
+  bytes. Anyone holding the previous epoch's member
   list can check it, so another world can follow a world's membership from its genesis, one certificate
   at a time. P2-5's hops carry the source's certificates up to the epoch that signed them, so a world
   checks a hop from a world not on its route list too (P25-5).
@@ -1790,16 +1936,25 @@ is fixed once the author's chain is contiguous up to it.
   * Every fetch by id — a cut's branch, a listed admin entry, a vote's kick or frozen head — is retried
     with the same backoff as a range fetch, so one lost reply no longer stops a cut walk or a decision
     for good (review VC4R-4). A removal that a quorum has voted for waits only for entries this replica is
-    still fetching; a vote whose frozen head nobody delivers within half the speculation window counts
-    toward no cut and holds back no reset, and its voter is removed as a ghost kick's voter is (review
-    VC4R-5).
+    still fetching. A vote whose frozen head nobody delivers within half the speculation window counts
+    toward no cut and holds back no reset (review VC4R-5). Its voter is voted out, as a ghost kick's voter
+    is, but only once the head is still missing after `suspect_after` (review VC7R-2). An honest voter's
+    head may lie past a forker's fork, on a branch only it holds, so delivering it waits on that voter's
+    replies [V slowcapper: the forked prevote reaches 3 1.5 s late, and 3 keeps 2. With the fix off, 3
+    votes against 2 after 1 s, for its vote against the forker, whose head 3 cannot walk yet; one false
+    vote removes no one, so 2 stays].
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
-  * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
-    * epoch-at-frame for R14 hops: a hop's frame and epoch are not in the signed fact, so a third
-      party's check of the epoch active at the hop's frame trusts the carrier's labels (22.7);
-    * `cert_at` counts a world's majority over the members not excluded by proof, while a third party
-      counts over the whole epoch, so a correctly built hop can be refused elsewhere.
+  * **Epoch-at-frame for R14 facts** (reviews VC-7, VC-8; P2-5's follow-up, branch
+    on main):
+    * a hop's, departure's and verdict's frame and epoch are in the signed fact, so a third party's
+      check of the epoch active at that frame no longer trusts the carrier's labels. A member signs
+      with the epoch of that frame in its own log [V provenance unit tests], and signs again if a later
+      decision moves the frame into another epoch (22.7) [read: the fact changes with `epoch_at(frame)`;
+      no test or scenario moves a boundary after signing];
+    * `cert_at` and a third party count a majority the same way: over the epoch's members minus those
+      the next epoch's certificate excluded by proof, which then travels with the fact (`EpochCerts::
+      quorum`) [V unit test `excluded_members_leave_the_quorum`].
   * A removal's boundary is the proposer's present, a little before the decision, so facts a member
     attests under epoch e about frames between the boundary and its decision no longer match once it is
     in e + 1. That costs griefing, not safety [I].
@@ -1829,9 +1984,23 @@ is fixed once the author's chain is contiguous up to it.
     refuses one that validation voided, so a faulty proposer cannot commit a backdated entry either
     (review VC3R-3) [V adminvoid: 9 signs a horizon-void SetRole demoting 3 and proposes a change that
     lists it; refused, and 3 stays Admin. Before the fix it applied].
-  * **An admin entry's validity is a pure function of the entry and its ancestry** (review VC6R-3):
-    held, its author's chain validated up to it, and not voided, the same at every replica once it holds
-    the entry. Listing a canonical, undisputed version is only the proposer's choice. Every replica
+  * **An admin entry's validity is a pure function of the entry and its ancestry** (reviews VC6R-3,
+    VC7R-1). The entry must be held and not void along its own ancestry. A validator walks back from the
+    listed version to the prefix of its author's chain that it has validated. It replays the chain-local
+    rules over the rest (only acks change that state), and judges the entry by its horizon rule (VCR-9).
+    That prefix is common to every branch through it, so the answer is the same at every replica that
+    holds the ancestry, whichever branch it linked. Round 7 judged by the replica's own linked branch
+    (how far it had linked the author's chain, and what it had voided itself). So a horizon-void version
+    held as a duplicate passed at replicas that had linked the other version, and failed where it was
+    linked (VC7R-1) [V voidfork: faulty proposer 1 lists a backdated SetRole that member 4 linked first
+    and the others hold as a duplicate. It is refused everywhere, and 1 is removed at 2.25 s. With the
+    fix off, 2 and 3 lock on it, 4 prevotes nil for it forever, and confirmation stops at frame 110.
+    V voiddeep (@design-reviewer's probe): the fork is two entries deep, [an ack declaring H, the
+    SetRole stamped behind H], so 2 and 3 replay the ack along the SetRole's ancestry: refused
+    everywhere; with the ack breaking VC-5 it counts for nothing, the SetRole is valid on its ancestry,
+    and every member decides it]. The replay reads the ack-epoch history, so its purity rests on RECUT
+    (below; review VC8R-2).
+    Listing a canonical, undisputed version is only the proposer's choice. Every replica
     applies the version the change lists, with the outcome the change carries, so a fork cannot be
     committed at one replica and not another. Round 5 also required the listed version to be canonical
     and undisputed at the validator (VC3R-3's low), arguing that a member proposes only stable entries,
@@ -1839,7 +2008,7 @@ is fixed once the author's chain is contiguous up to it.
     validated, not what is stable. A fork that arrived after members had locked made their value invalid
     at them, and nothing releases a lock [V adminwedge: faulty admin 9 sends a SetRole to three members
     while a fourth is cut off, drops its precommits once they lock, crashes, and its fork of the same seq
-    arrives later; 9 is removed at 4.03 s. With the fix off, the locked members find their value's entry
+    arrives later; 9 is removed at 4.00 s. With the fix off, the locked members find their value's entry
     disputed, 9 is never removed and confirmation stops at frame 112]. A fork of a listed entry still
     proves its author equivocated and excludes it, which only shrinks the quorum.
   * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
@@ -1942,6 +2111,28 @@ is fixed once the author's chain is contiguous up to it.
   links [V session-sim r14];
 * the rollback window became the speculation limit (6.4).
 
+**Known limits of the port** (P2-3's review round, p2/session 7aa4163) [V @world-chunks; bounded by M1
+hardening, proposal]:
+* **P23-8:** `trusted_check` judges a joiner's check against the joiner's own view of decided changes, so
+  a joiner must hold the changes up to the check frame (the relayed log carries them). It ignores the
+  ack's epoch field. It now refuses when two hashes each reach a quorum (fixed).
+* **P23-9, unbounded growth from one faulty member:** versions per (member, seq); `pc_held` for any
+  future epoch (and `pv_held`, VC8R-1's, the same way; the spike shares both); join requests,
+  `followers` and `known`, with no limit on `expires`; `watched`, filled from any entry's carried index;
+  `Arrival::Rejected { until: u64::MAX }`, never pruned; `seen`, never pruned. Each needs a bound or a
+  prune. Bounded in the spike: ownership certificates held for a missing parent, at most 16 per author
+  (12.5, review OWNZ-1).
+* **P23-13:** `hand_owners` is fixed from the genesis members and is not hashed state. Nothing checks
+  that a joiner was built from genesis, or that the session id is the genesis hash (SX-1 should).
+* **P23-14:** a hand sent through a portal returns as an unowned dynamic body. `frame_effects` is not in
+  a state transfer, so a joiner never attests commit facts at or before its import frame.
+* **P23-2, the open part:** facts are 256-bit BLAKE3, with the session in the signed message. But
+  `Change::value` and `chain_hash` are still 64 bits (truncated BLAKE3, no longer FNV), so a proposer
+  that grinds two changes to one value, a birthday search of about 2^32, remains possible. Widening both
+  to 256 bits changes the vote payloads and the R14 tables. It is in the P2-5 port's scope, where the
+  facts also gain their frame and epoch (VC-7, P23R-4) (@coordinator-opus; @provenance-eng agrees for
+  the chain hash).
+
 ### 10.9 Recovery when the network degrades (R18)
 
 User requirement 18 (14:29Z): when the network degrades, the engine must detect it and recover. It must
@@ -1958,15 +2149,100 @@ and the engager's hand replayed after the gesture had ended.
    * The 500-ball pit's uplink fell from 77 to 65 kbit/s, with the hand author sending every frame
      [V r18 capped].
 3. **Congestion control** on each member's uplink.
-   * **Signal:** this member's own queue delay. The spike reads the bottleneck queue directly. Production
-     estimates it from the one-way delay gradient of ack timestamps, as WebRTC's GCC does [I].
+   * **Signal:** this member's own queue delay. The spike reads the bottleneck queue directly.
+     Production (pe-app) estimates it LEDBAT-style (RFC 6817): each receiver measures the one-way queueing
+     delay of a sender's datagrams and echoes it back [V pe-app r18-app]. We chose this over WebRTC's GCC trendline
+     because the controller's 40 ms / 10 ms thresholds need an absolute delay, and GCC yields only
+     over/under-use signals.
+     * **Wire:** every datagram carries a signed stamp of 8 bytes. `ts` (u32) is the sender's monotonic
+       clock in µs at send time. `seq` (u16) counts datagrams per destination. `qrep` (u16) is the queue
+       delay the sender measured on the recipient's datagrams to it, in ms, with "none" before the first
+       sample. That's about 0.5 kbit/s at level 5's 7.5 datagrams/s, and 2 kbit/s at level 0.
+     * **Receiver**, per sender:
+       * The one-way delay is `recv − ts`, with `ts` unwrapped to 64 bits from the newest value seen.
+         The clock offset between the two machines is unknown but constant, so it cancels.
+       * **base** is the minimum over 12 buckets of 10 s (2 minutes).
+       * **current** is the minimum over the last 100 ms or the last 4 samples, whichever spans more, so
+         that level 5's sparse datagrams still fill the filter.
+       * **q = current − base**, sent as `qrep` in every datagram back to that sender.
+       * The send and receive times are taken at the socket, just before sendto and just after
+         recvfrom, so the sim's tick and processing time don't read as queueing.
+     * **Sender:** each tick, `set_link` gets the largest report from any member. A member's congested
+       downlink thins the stream to everyone, which matches every member receiving the same entries.
+       * A report is fresh for 1 s and held at its last value for up to 5 s.
+       * With no report left, the controller gets a value inside its dead band (25 ms: above the 10 ms
+         calm level, below the 40 ms trigger), so its level holds. Silence is never read as calm.
+     * **Loss** is counted from `seq` gaps and logged, but not fed to the controller. Random loss
+       (Wi-Fi) isn't congestion, and tail-drop loss arrives with a full queue, which the delay already
+       shows.
+     * **Measured** [V pe-app r18-app; 3 members in a 500-ball pit, member 1 sweeping every frame,
+       25 ± 5 ms one-way, a cap on member 1's uplinks from 2 s (token bucket, 4 kB burst, 500 ms
+       tail-drop queue), 30 s; the same on Windows and on native Linux]:
+       * With no cap, the signal reads 2-3 ms (6-8 ms at most: the scripted jitter), and the level stays 0.
+       * With 80 kbit/s (member 1 offers about 168 kbit/s per link at level 0), the level cycles
+         through 0-5 and spends 30-33% of the time at 5. The cap's real queue peaks at 387-388 ms and the
+         signal at 362-372 ms. There are no drops, confirmation lag is at most 37 frames, and the session
+         stays live and all equal with all three members.
+       * With the same cap and the signal not fed (the level stays 0), the queue fills to its 500 ms
+         limit, and the receivers' estimate reads 450-475 ms. About 800 of member 1's datagrams are
+         dropped, member 2 pauses at the speculation limit at 4.7 s, and member 1 is removed at about
+         7 s.
+       * The cycle has a period of about 3.5 s. The controller lowers one level per 300 ms of calm,
+         back to level 0, where the stream again exceeds the cap by twice: the 40 ms trigger plus five
+         100 ms raises let the queue reach about 340 ms. A controller that remembers the last level that
+         congested, or raises by more than one level at a time, would cut those peaks (a D56 tuning
+         question).
+     * **Known limits [I]:**
+       * *Route changes.* A route change that adds more than 40 ms of path delay reads as a queue until
+         the old minimum ages out of the base window. The stream is then thinned for up to 2 minutes:
+         a coarser hand, but no stall. We don't re-base automatically, because a long standing queue
+         from cross-traffic (someone else's upload filling the uplink) is exactly when we should thin.
+         Seen in testing: 25 ms of scripted delay added at session start read as 25-33 ms of queue [V].
+       * *Standing queues longer than the base window* (review AR-1). Cross-traffic that fills the uplink
+         for over 2 minutes becomes the base: q then reads about 0, and the level falls while the queue
+         stays full. RFC 6817 uses 10 minutes. We keep 2 [proposal]: a longer base keeps a route
+         change's false queue reading longer (thinning for up to 10 minutes), and thinning our own
+         stream does not shorten a queue that another flow fills; it only yields bandwidth to it.
+       * *Clock drift.* At up to 100 ppm, drift moves the estimate by at most 12 ms over the 2-minute
+         window, below the 40 ms trigger.
+       * *Below level 5's rate* (review AR-3). A link below what level 5 still sends, about 60 kbit/s
+         per link for a member sweeping its hand, cannot carry the member: at 40 kbit/s, member 1 was
+         removed at 6.8 s [V @design-reviewer, pe-app r18-app].
+       * *One faulty report* (review AR-4). The sender takes the largest report, so one faulty member
+         reporting a full queue holds every sender at level 5. That costs bandwidth and hand precision,
+         not safety or liveness. Ignoring the top report would stop it, but would also ignore one
+         member's genuinely congested downlink, and does not work with two members [I].
+       * *AQM bottlenecks.* On a bottleneck running fq_codel or CAKE (common on SQM home routers), queueing
+         delay stays near 5-20 ms and congestion shows as drops. A delay-only controller then never
+         reaches 40 ms and never thins, and repairs compete with the stream. A loss rule is the
+         follow-up. Not shown: with a simplified CoDel on the 80 kbit/s cap, the queue still averaged
+         105 ms (max 330 ms) against twice the link's capacity, so the controller did engage. The
+         session stayed all equal, with 176 CoDel drops [V pe-app r18-app, Windows].
+       * *Timestamps.* pe-app stamps arrivals in a receive thread at the socket. Before that thread,
+         the observers' rollback ticks in the ball pit read as 25-38 ms of queue on an uncapped link
+         [V]. Sends are stamped as each datagram is built, just before sendto, so a slow tick delays a
+         send but never reads as queueing.
    * **Response:** six levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
      (after 300 ms below 10 ms).
+     * **It remembers the level that congested** (@coordinator-opus, 2026-10-31; D56). After congestion
+       at level L, it lowers back into L only after 5 s of calm instead of 300 ms, and forgets L after
+       30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Without it, a
+       stream at twice the cap cycled every 3.5 s: each 300 ms of calm lowered it back to level 0, and
+       the queue reached 340-390 ms before the raises caught up [V pe-app r18-app].
      * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
      * A thinned hand entry carries a `span`: its target is reached over that many frames, and dead
-       reckoning (6.10) covers the gaps.
+       reckoning (6.10) covers the gaps. Every peer, the author included, follows a thinned entry over
+       its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
+       most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
+       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
+     * A hand pose falls on a frame aligned to its level's stride, the first such frame after the last
+       pose; at a level change it is not held back to last + k. So the gap after a change is at most the
+       new stride, and a hand never stops while its author keeps sending. Before, a pose also had to be k
+       frames after the last, and at 4→5 pose 258 was followed by 272, freezing the hand 2 frames even
+       with span then coast (@shader-reviewer's matrix finding M1; fixed in pe-session at 649a77f, with a
+       test through every level change [V @world-chunks]). The spike follows with its next change.
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
@@ -1983,7 +2259,16 @@ and the engager's hand replayed after the gesture had ended.
    * a fetch for the same range is re-asked with exponential backoff, from 60 ms up to 2 s;
    * a reply holds at most 16 entries, and the requester asks again for the rest;
    * a member answers a fetch only while its uplink to the requester holds under 100 ms;
-   * every batch is split into datagrams of at most 1,200 bytes.
+   * every batch is split into datagrams of at most 1,200 bytes;
+   * a fetch's answer is sent or dropped whole, decided at its first message. Cutting a reply short
+     starved repair: at 36 kbit/s on one link of three, every member paused about 160 frames
+     [V @world-chunks, pe-session].
+   * **The weakness this leaves:** repairs only yield. On a link whose steady traffic sits just under
+     its cap, a repair waits behind the steady stream, its re-asks back off to 2 s, and confirmation
+     crawls or stalls for good. pe-session with R18 off showed it: idle acks at 62.5 kbit/s on a 64
+     kbit/s link, and a session that never recovered [V @world-chunks]. R18's thinning, which ships on,
+     is the defence: it holds the uplink queue near 40 ms, which leaves headroom for repairs. The ack
+     reductions decided in 7.6 widen that headroom [I].
 6. **Leaving a stall.**
    * A member that fell behind re-simulates in the background, at up to 8 ms per tick (6.5), and draws
      only its present. The catch-up is never shown as a replay.
@@ -2002,6 +2287,12 @@ and the engager's hand replayed after the gesture had ended.
      other member holds. Others' histories are never rewritten.
 8. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
    None was observed.
+
+**In pe-session** (P2-3; @coordinator-opus's split): `SessionCore` starts with R18 on (`adapt`,
+`ack_on_frames`). A production IO batches a tick's messages into one datagram per peer and reports its
+uplink queue delay (`set_link`). The test IOs (the session harness and `tools/session-sim`) send one
+datagram per message with the controller off unless a run opts in, so the protocol scenarios keep their
+transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
@@ -2103,7 +2394,7 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Every peer validates** every interaction and commit against the ACL state *as of that frame*. A
   non-authorized action is rejected identically everywhere, with a machine-readable reason.
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
-  concern (D10).
+  concern (D10). Who the owners are is now the world's ownership chain (12.5).
 
 ### 12.3 AI agents [I]
 
@@ -2199,6 +2490,386 @@ entries that the view change commits (10.8).
     (D9, D35) [I].
   * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
     rows [proposal].
+
+### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
+
+World ownership is a **lasting property of a world**, separate from a session's admins (12.4). Several people can share it (22:37Z). It is held as a **chain of signed ownership
+certificates**: each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain,
+no blockchain"). The chain travels with the world, in its genesis document, every save and each
+session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
+single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
+
+The rules below follow eight rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
+OWNR-9, OWNS-1 to OWNS-12, OWNT-1 to OWNT-10, OWNU-1 to OWNU-8, OWNV-1 to OWNV-7, OWNW-1 to OWNW-7,
+OWNX-1 to OWNX-7).
+
+**Consent only (user ruling 2026-10-31 08:31Z, OT = (a)).** Under rule A nobody is removed against
+their will, and nothing depends on time. A recovery key is a plain backup of its owner's key: its
+signature counts as the owner's wherever the owner's would. The dormant-owner removal window, the
+recovery key's delayed replacement and their cancellations are gone, and so are their open findings
+(OWNT-1, OWNT-3, OWNV-2's second half, OWNW-6). Bound session lineages, which would bring them back on
+a trust root, are a later package (D87).
+
+They are checked against written security invariants and an attacker model, by named tests and by an
+adversarial harness (see "What the spike shows"). Without a trust root, any session's attestations
+count; the residual risks that leaves are recorded in D87, and the user accepted them for now.
+
+* **Owners are keys.** Each owner is a player's long-term Ed25519 identity key (10.3), never a session
+  `MemberId`. A session maps members to keys through their join certificates. Owners are equals.
+* **The certificate** (`ownership::Cert`) has these fields:
+  * `world`;
+  * `seq`;
+  * `prev`: the parent, or several pairwise-concurrent parents for a merge;
+  * `change`;
+  * `sigs`.
+  Keys sign the hash of everything but the signatures, and that hash is the certificate's id.
+  * Copies with different signatures are one certificate. A book merges the signatures that matter
+    (owners' and recovery keys' at the parent) until a session attests it.
+  * The attestation carries the committed signatures, which are frozen from then on (OWNR-4, OWNS-5).
+    A book counts only the signers whose signature it verifies, so a session can't name a signer who
+    never signed (OWNX-1).
+  * Padding a certificate with other keys' signatures creates nothing.
+  * The encoding has exactly one form.
+* **The changes:** `Genesis{owners, rule, nonce}`, `Add`, `Leave`, `Remove` (rule C only), `SetRule`,
+  `SetRecovery` and `Merge`. Wire codes 7, 8, 10 and 11, the old window and recovery changes, are
+  retired.
+* **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
+  the genesis certificate [I]. (The spike uses the genesis certificate's id.)
+* **Valid, attested, counting.**
+  * **Valid:** a certificate's signatures satisfy the rule of the owner set at its parent. That is a
+    function of its causal past alone (OWN-5). A certificate whose parent isn't held is refused, never
+    stored (OWN-10, OWNU-2).
+  * **Attested:** a session that commits a certificate records the world frame at which it did.
+    Exported, that record is an `Attest`, signed by a strict majority of the session's members (P2-4's
+    epoch certificates), so anyone can check it offline.
+  * **Counting:** a certificate counts only if it is attested and it applies at its parent's
+    *effective* state (below). A certificate signed on an old copy that no session committed changes
+    nothing. That is @design-reviewer's mitigation for forks.
+* **A session commits only on a head of the counting chain, or a merge of counting heads, and only if
+  the certificate then counts** (OWNS-12, OWNT-4).
+  * Any session may adopt the chain, and a relayed certificate that is held but uncommitted can still be
+    committed.
+  * Within one session the chain is linear: the first of two conflicting certificates wins, and the
+    second is refused as stale (OWNR-2).
+  * Nothing someone else inserted can block a session, since uncounted children are not heads.
+  * Forks arise only between disconnected copies of the world, each with its own sessions.
+* **A certificate counts only if its whole causal past was committed by some session.** What is built
+  on an uncommitted certificate counts for nothing either.
+* **Unattested certificates are charged** (OWNT-2, OWNU-2, OWNU-4, OWNV-1, OWNV-5).
+  * An unattested certificate, held or kept, is charged to its own signers that are owners or recovery
+    keys at a current head. It gets in if one of them has fewer than 64 (OWNW-1), so a copy that
+    someone else signed never drops an honest proposal, and merged signatures are kept. There is no
+    shared pool, and nobody is charged for a certificate they didn't sign, so one key's flood never
+    crowds out another key.
+  * If none of its signers matters at a head (a key that an unattested certificate invited or minted),
+    it is charged to the unattested certificates it hangs from instead, each carrying at most 16 such
+    certificates. So an invited key never spends its inviters' quota.
+  * Charges are derived again after every pass. Within each quota the oldest stay. A certificate
+    nobody is charged for any more, because its signers no longer matter at a head, is dropped with
+    whatever hangs from it. The exception is one an attestation depends on.
+  * Refused and never stored:
+    * an orphan;
+    * a bad link;
+    * a certificate with no signature that matters;
+    * a valid one that nobody at a head signed (`Unattested`: it needs its attestation).
+    So a keyless relay stores nothing.
+  * Only an under-signed certificate is kept, waiting for more signatures. Its copies merge their
+    signatures, and a stripped copy never replaces it (OWNU-3). Whatever more signatures can't fix is
+    refused.
+* **The delivery contract** (invariant 4; OWNT-5, OWNU-1, OWNU-7, OWNV-6, OWNV-7). Pull-based
+  anti-entropy:
+  * peers exchange heads;
+  * one sends the missing certificates and their ancestors with every attestation it knows, as one
+    batch;
+  * the batch matches its own attestations to its own certificates, in any order, so an attested
+    certificate gets in at any size. `verify_chain` over 300 attested certificates gives the session's
+    view.
+  * Books keep other sessions' signed attestations so they can forward them (`Book::attestations`).
+    After `MissingParent`, `Book::missing_parents` says what to ask for.
+  * Pushing one item at a time is best effort. An attestation of a certificate the book doesn't hold
+    changes nothing, and an unattested certificate may be refused or later dropped. The next
+    anti-entropy batch repairs it.
+  * After a batch, the view (minus its list of certificates that don't count) is a function of what was
+    delivered. The `refused` list and the junk a book holds may differ between books.
+* **Solo changes are capped** (OWNU-6, OWNV-3, OWNV-4, OWNW-3, OWNW-5; invariant 9).
+  * A solo change is one that not every owner at its parent signed. An owner's backup key signs as the
+    owner.
+  * The genesis owners split 256 equally. An owner added later gets its share from the owners who
+    signed its addition: each gives its remaining share divided by the new owner count.
+  * A leaver's remaining share passes to the remaining owners, in equal parts, so selling the world
+    (add the buyer, then leave) keeps the world's share (OWNX-4). A rule-C removal passes the target's
+    remaining share to its removers.
+  * Share moves and is never created, so solo changes along one history total at most 256, and there
+    is no separate world-wide cap.
+  * A solo change needs one signing owner with share left. Each signing owner pays one, up to its
+    share: one with nothing left co-signs for free. So an owner's remaining share shrinks only through
+    certificates it signed, except a rule-C removal of it (OWNX-5). **Invariant 9:** whatever other
+    keys do, an honest owner can still make as many solo changes as it has left, and all owners
+    together can always make a joint change, until the book is full.
+  * Leave, clearing one's own backup key and Merge are exempt. Clearing is the way out of a stolen
+    backup (OWNV-2), and it needs a key to clear.
+  * Copies join the shares by minimum and the counts by maximum [I]. So across copies that each add an
+    owner and then merge, the shares can total more than 256: by one gift per copy (OWNX-3, for
+    example 298 after two copies each add one owner).
+  * The cap is per history. Siblings on one parent are each judged on their own history, so a co-owner
+    with a session of its own can attest solo siblings until the book is full (OWNX-2; D87).
+  * A sole owner's changes are all joint, so only the 1,024 cap bounds them: until compaction, a sole
+    owner can fill its own book (OWNW-7; D87).
+  * Without compaction, which production needs [I], an honest long-lived world also reaches 1,024 in
+    the end.
+* **The digest** (the book's part of the state hash) covers the counting certificates and their
+  attestations only. Junk a book happens to hold never enters it (OWNU-5).
+* **Two attestations of one certificate by one lineage that differ** (a session equivocating): the
+  lowest frame wins, then the smallest signer set, whatever the order (OWNT-6).
+
+**Signing rule A (22:54Z, O1; removal and recovery per OT = (a), 2026-10-31 08:31Z).**
+
+| Change | Who signs |
+|---|---|
+| Add an owner | every current owner |
+| Leave ownership | the leaving owner's own key; the last owner can't leave |
+| Remove another owner | nobody: no owner is removed against their will |
+| Change the rule | every current owner |
+| Name, replace or clear a recovery key | that owner, with its own key or its recovery key |
+| Lose a key | nothing to do: the recovery key signs as the owner, and names a new recovery key |
+| Sell the world | `Add(buyer)`, then `Leave(seller)` |
+
+* **Why A.** Owners always get in as Admin (row 0, 22:48Z), and only a co-owner can demote or kick them
+  (Q27). So adding an owner adds a permanent admin, and A stops a rogue co-owner from adding sock
+  puppets.
+* **No owner is removed against their will** (O2's promise; OWN-4). Under rule A there is no removal
+  at all: an owner goes only by its own Leave, signed by its key or its backup.
+  * The other side of this: a co-owner who vanishes stays an owner, and additions then need them. Their
+    backup key can sign for them. Groups that want removability pick rule C.
+* **A recovery key is a plain backup of its owner's key** (OT = (a)).
+  * Its signature counts as the owner's in every rule, merge, removal and solo-share check.
+  * A stolen backup equals a stolen key. The owner can clear it (exempt from the cap) or replace it, and
+    a replaced backup is a former key.
+  * One backup key backs one owner (OWNX-6).
+* **Kept for comparison** (the spike implements both):
+  * rule B: any one owner adds, and nobody can be removed;
+  * rule C: k of n, with instant `Remove`. Concurrent mutual removals void each other (OWNR-7).
+    * The stated exception [V: harness, seed 1895]: validity at insert uses the linear state, where
+      those voided removals still apply. So a voided target stays an owner in the view, but changes
+      about it, and changes that need its signature, are refused. Fixing it needs a linear state that
+      applies the same voiding at merges. That is deferred, since rule A has no removal. The harness
+      counts the honest histories that hit it.
+
+**Forks: proofs and the union (22:54Z, O4, refined by D87; detect-only, as D79).**
+
+* **A fork** is two valid certificates with one parent.
+  * Honest concurrency forks too, without anyone signing both (OWN-8).
+  * A key that signed both is an **equivocator**. The fork proof names it, and a client's own policy
+    may distrust it.
+  * Anyone holding the parent's causal past can check a fork proof, in any order, merges included
+    (OWN-9).
+* **The effective pass** (OWNR-1). The book walks every certificate in causal order. A certificate
+  applies to its parent's effective state only if it counts there; otherwise its branch inherits the
+  parent's state. A merge joins its parents' effective states.
+* **The join after a fork** is an observed-remove set:
+  * An owner is present if some counting certificate that added them hasn't been seen by a counting
+    removal of them.
+  * So a Leave or a removal sticks across forks unless the same history adds the person back (OWN-2).
+  * Recovery keys merge the same way.
+* **A removal on one branch counts only if the owners added by counting changes on concurrent branches
+  since it split off approve it too** (OWN-3). So a former sole owner can't evict owners added later.
+  * The check covers the additions whose parent is a strict ancestor of the removal's parent: the ones
+    the causal-order pass has already judged, so it has no cycles.
+  * A removal right at the fork point escapes it. That is rule C only, it needs a session of the
+    attacker's own (A2), and it shows as disputed (test `removal_at_the_fork_point_is_the_stated_residual`).
+* **Additions on different copies don't need each other** (OWNS-3).
+  * Each copy's owners add independently while disconnected, and the copies join. A double sale makes
+    both buyers co-owners, and an old-state fork never voids a later addition.
+  * Unattested additions block nothing and revive nothing (OWNR-5).
+* **Concurrent rules take the strictest in each dimension** (OWNS-4, OWNT-7).
+  * Who adds: Any < Threshold < All.
+  * Whether removal is allowed: not at all if any copy is under rule B.
+  * The owners loosen it again after a merge. That takes a SetRule signed by every owner, so with a
+    dormant owner removal stays off for good (OWNU-8; D87 question 2).
+* **A merge certificate** joins pairwise-concurrent certificates only, so it can't roll anything back
+  (OWN-1). It invalidates nothing, and any owner of the join may sign it.
+* **"Ownership disputed"** is shown once two attested, valid certificates whose whole past was
+  committed have ever shared a parent, even if both are voided (OWNS-8, OWNT-8). It comes from the fork history, so no merge, not even one by
+  the residual's sock, clears it. Joins use the join.
+* **Nobody left.** If the join would leave nobody (copies whose last owners left or removed each
+  other), every head's owners stay. The view says so (`nobody_left`).
+* **What remains without a trust root** [V: harness]. The user accepted this for now (OT = (a)).
+  Anyone can run a one-member session, so attestations can be minted. An attacker with a session of its
+  own (A2) can:
+  * return a former owner, or add a co-owner, through a fork at an old state (a replaced backup key is
+    a former key);
+  * under rule C, remove an owner through a fork-point removal (OWN-3's limit, above);
+  * void an honest change: a former owner's Leave committed on an old fork voids an honest removal
+    of them, and changes signed against the set without them then fail;
+  * fill the 1,024 cap, under any rule: a co-owner with a session of its own attests solo siblings on
+    one parent, each judged on its own history, until the book is full, and then even the owners'
+    joint merge is refused (OWNX-2). An attacker with only former keys can do the same on a branch
+    where its minted keys are the only owners.
+  In the harness's 15,000 random histories, A2 removed an honest owner in 307, added an owner in
+  5,641, and voided an honest change in 359. It loosened the rule in 99, always
+  together with such a takeover or with a stolen current backup key, which is its owner's key (A2 held
+  one in 7,493 runs). Every case is detected: there is a fork proof, and the world shows as
+  disputed. Bound session lineages (D87) close it later.
+
+**In the session log [V: spike].**
+
+* A certificate is published as `Payload::Ownership { epoch, cert }` (wire tag 20), an **admin entry
+  of 12.4's layer**, like a kick (seam agreed with @engine-architect). Any member may publish one: the
+  owners' signatures inside are its authority, so it needs no permission. It obeys its author's horizon
+  (VCR-9), waits across epochs until a decision judges it, and a closed session commits none.
+* **Pending only while it would apply** to the book as decided: owners' signatures that check, built on
+  the current heads. One that can't apply is not pending and starts no view change, so junk can't force
+  decisions (V1's receipt rule, VC6R-4). A decision that makes a pending one unable to apply drops it
+  unjudged. Sent again later, it is a new entry.
+  * One whose parent is not in the book yet (built on a pending certificate's head) is held, not dropped,
+    and judged again after each decision: pending once it applies, dropped once it never can (review
+    OWNY-2) [V unit test, with a control that loses it]. An author has at most 16 held
+    (`MAX_HELD_PER_AUTHOR`); past that one is dropped at receipt, so a member naming parents that never
+    exist can't grow the set every decision re-scans (OWNZ-1) [V unit test].
+  * Tag 20 carries at most 4,096 words (`MAX_CERT_WORDS`); a decode of more is refused (OWNY-3).
+* **Decided in `Change.admin`**, in commit order (stamp, author, seq) with the other admin entries. The
+  admin run holds the `Book` (copy on write) and applies a certificate if `Book::commit_local` does.
+  The outcome depends only on the book, the certificate and that order, never on the boundary, which
+  is computed after the admin entries. The session then commits it at the deciding boundary, its
+  attested frame. Proposer and validators reach the same outcome, and a validator refuses a change that
+  lists a different one.
+* **Governance, like roles.** The book lives beside roles and owners, outside the simulation's tables: a
+  rollback never rewinds it and the check hash doesn't cover it. Agreement on each decision covers it,
+  as it covers roles. No verdict depends on a validator's clock (VC-3).
+* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) ask
+  whether the member's key is an owner in the book, as the admin entries before them in the change left
+  it, so a kick listed after a certificate that made its target an owner is refused. The same holds
+  for a join in that change: an owner whose Leave the change lists joins under the rules, and one it
+  adds joins as Admin (review OWNY-1) [V unit tests; both fail when row 0 reads the decided book]. `key_of` is the one
+  place that maps a member to its key: in the spike the member id is the key (10.3); production reads
+  it from the member's signed genesis or join entry. A world without a chain keeps 12.4's owner list.
+  A relationship record's expiry (O5) is checked against the session's agreed time at the same step
+  [I].
+* **Cost.** A book holds at most 1,024 attested certificates. It holds 64 unattested ones per key at
+  a head, plus 16 per such certificate for keys it invited.
+  * A batch is sorted by seq, and each certificate's linear state is computed as it arrives, so an
+    in-order chain needs one pass (OWNT-10).
+  * Ancestry sets are shared between clones.
+  * Production compacts a long linear history into a checkpoint that the owners sign [I].
+
+**Joins, relationship records and discovery.**
+
+* **The join-rule matrix** is in 12.4 (22:47Z, 22:51Z). Every row tests either session state or a
+  signed record, so each row is decided the same way on every replica [I]. The signed records:
+  * ownership certificates;
+  * relationship records: a friendship is a pair of signed records; a confidant mark is one record by
+    the person who marks the confidant;
+  * invite tickets.
+* **Revocation.** A revocation committed before a join always wins, on every replica. Records expire
+  after about 30 days and are re-signed automatically while their signer is online (22:54Z, O5).
+* **Discovery (D9, D35).** World records and invites carry the world id and the ownership head, signed
+  by an owner. Two records whose heads fork are a fork proof.
+* **Where owners are shown.** Only the world info card and World settings show the owners (Q25), plus a
+  fork notice.
+* **Home worlds (Q28):** home friends means friends of any owner.
+
+**What the spike shows** [V, Windows].
+
+* **The invariants and the attacker model** are in the design draft (provenance-eng
+  world-ownership-draft.md, section 0).
+  * The attackers:
+    * A1 holds former owners', removed owners', stolen recovery and stranger keys, and can fork, pad,
+      strip, replay and reorder;
+    * A2 is A1 plus sessions of its own;
+    * the relay holds no key that matters.
+  * Must hold:
+    * 1, authority;
+    * 2, unattested changes change nothing (A1);
+    * 3, honest liveness (A1);
+    * 4, the view and digest are independent of arrival order, under the delivery contract;
+    * 5, bounded storage, per key, and no panic;
+    * 6, removals stick;
+    * 7, disputes stay visible;
+    * 9, an honest owner's capacity: what it has left, whatever other keys do.
+  * 8 is the residual for A2.
+* **The adversarial harness** (`ownership/harness.rs`).
+  * **Honest histories** are up to 50 steps, under rules A, B or C. About 1% are 700 steps, with up to
+    506 attested certificates. 30% of them copy the world, play both copies in two lineages, and merge
+    them when they meet. A fifth of honest steps are first gossiped unattested.
+  * **Honest steps include the backup keys:** a backup naming a new backup for its lost owner key,
+    signing a joint change in its owner's place, and the owner clearing it.
+  * **Honest steps are checked:**
+    * none is ever refused for capacity (`Quota`, `Full`);
+    * `Budget` only once every signing owner used up its remaining share. That is checked against
+      `reference_remaining`, which computes each owner's share from the history alone, never from the
+      book's own state;
+    * invariant 9, after every honest step: an owner with share left by that reference makes a solo
+      change, and all owners together a joint one (with rule C's stated exception above);
+    * honest gossip reaches an attacked book after every attacker key that matters has filled its
+      quota, and copies re-signed by every attacker key don't drop it.
+  * **A1 attacks:** forks at any depth, minted-key chains, floods of up to 300 certificates, pads,
+    strips, replays and bad seqs. In 30% of runs A1 also holds a current co-owner's key.
+  * **A2 attacks:** A1 plus two lineages of its own. It delivers its certificates with their
+    attestations, including equal-frame attestations of real signer subsets.
+  * **Relay attacks:** orphans with ground ids, unsigned and stranger-signed certificates on real
+    parents, and attestations of certificates nobody holds. Every one is refused, and the book is
+    unchanged.
+  * **Checked on every book:**
+    * invariant 1, authority;
+    * 2, unattested changes change nothing (A1);
+    * 3, liveness (A1): an uncompromised owner's unattested proposal on the head goes the same way as
+      in the unattacked book, and so do the next five honest commits;
+    * 4, the view and the digest after two rebuilds. One is a single shuffled batch. The other goes one
+      by one in a random causal order, with a relay sending stripped and partial copies, and some
+      attestations arriving before their certificates; what was refused is then sent again. Nothing is
+      skipped;
+    * 5, charges:
+      * every unattested certificate is charged, unless an attestation depends on it;
+      * keys are charged only if they signed it and matter at a head; certificates charged to one key
+        alone stay within 64, and all within 64 times the keys charged (a certificate counts against
+        every key it is charged to, so a key's total can pass 64 through co-signed ones, seed 10928);
+      * inherited charges go only to certificates it hangs from, within 16 in the same way;
+    * 6, removals stick: observed-remove, with the nobody-left exception, for Leave against A2 and for
+      rule C's removals against A1;
+    * 7, disputes stay visible.
+    Invariant 8 is measured.
+  * **Result** under consent only, 15,000 histories, at c4bf06b (seeds 0 to 9,499) and a8c41cd (9,500 to
+    14,999; it only brings invariant 5's per-key check in line with round 8's any-key charging): all of
+    that held.
+    * 4,272 histories forked and merged, and 141 had more than 256 attested certificates.
+    * 11,349 of the 30,000 one-by-one rebuilds needed the anti-entropy batch, and all then
+      converged.
+    * 12 honest histories hit rule C's stated exception.
+  * **What it found in rounds 6 and 7, before review, now fixed:**
+    * an unsigned child of an unattested certificate inherited its parent's charge, so a relay could
+      keep it;
+    * a resent attestation was dropped when the certificate's parent had turned invalid since;
+    * a key could drift over its quota as charges were derived again.
+  * **Round 8:** two mutations were each caught at once: halving the share gift, and charging every
+    key instead of any key.
+  * **Under consent only it found** rule C's stated exception (seed 1895), and that a stolen current
+    backup key legitimately changes the rule (seed 5460): it is now counted as a compromised owner, not
+    a failed rule join. Converting the tests found OWN-3's fork-point limit.
+  * **Round 9** [V: harness, 5,000 histories at e09d4b4: every must-hold invariant held; A2 residual:
+    honest owner lost 94, owner gained 1,822, honest change voided 114, rule loosened 33; 3 histories hit
+    rule C's exception]: A2 sometimes names a signer with a made-up signature (OWNX-1),
+    and the independent share reference models shares passing on Leave and removal. It found that an
+    owner could run into debt (paying a solo change beyond its share), which a passed share then paid
+    off first (seed 54); a signing owner now pays only up to its share.
+* **Tests:** 67 ownership tests pass; the three ignored ones are debug helpers. The tests of
+  the removed machinery went with it (OWNS-1a, OWNS-1c, OWNS-1d, OWNT-1, OWNT-1b, OWNT-3 and the
+  window and recovery tests); `backup_key_acts_as_its_owner` replaces them.
+* **Regression tests for the reviews.** Each set fails on the code before its fix:
+  * cbcdadb, 12 tests from round 1;
+  * 5083c64, 10 from round 2;
+  * dc3c1cd, 10 from round 3;
+  * f961f44, 6 from round 4;
+  * 5e2de2c, 7 from round 5;
+  * fc83412, 6 from round 6;
+  * 1660b92, 3 from round 7;
+  * 4f13228, 4 from round 8 (OWNX-1a, OWNX-1b, OWNX-4, OWNX-6).
+* **The session scenario** runs on the admin layer: every replica's book and outcomes equal an offline
+  reference that applies the decided changes' certificates in order, and the full regress (93) is
+  identical to main's logs apart from the ownership log [V: ownership scenario]. Under consent only, a
+  removal under rule A is refused, and backup keys co-sign an addition, make their owner leave and clear
+  themselves. Of a double sale, the first in commit order is committed and the second is stale and never
+  committed. A certificate makes member 3's key an owner, and a non-owner admin's kick of member 3 is
+  then refused. A control without that certificate lets the kick through [V: control run].
 
 ---
 
@@ -2833,12 +3504,12 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
 * **Two live instances and cross-world trade** (SW-1; @coordinator-opus's ruling (a), 09:51Z): only one
   live session of a world trades across worlds at a time. It holds a trading lease bound to the
   owner-signed head reference, and other instances refuse `Depart` and `Arrive`. The lease (granting,
-  fencing, hand-off, expiry, what other instances show) is designed in
-  @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t.
+  fencing, hand-off, expiry, what other instances show) is designed in 22.10.
 
-**The backup list** holds four kinds (8a.10): **checkpoints**, kept until an owner deletes them;
+**The backup list** holds five kinds (8a.10): **checkpoints**, kept until an owner deletes them;
 **autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
-(8a.10's schedule); **session ends**, one for each closed session; and **before load**, one for each load.
+(8a.10's schedule); **session ends**, one for each closed session; **before load**, one for each load;
+and **before merge**, one for each side of each merge (D87, below).
 * Owners, and anyone whose role has Load backups (the Admin role has it), see the list. Anyone who sees
   it may rename a backup; only owners delete.
 * Renames and deletions are signed and versioned (SV-8). A deletion is a signed tombstone, so a deleted
@@ -2846,6 +3517,85 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
 * Every holder of the world keeps the list and thins autosaves by the schedule, locally. A thinned
   autosave that another holder still offers is authentic, only older, so thinning needs no signature.
 * Backups travel with the world, like its chunk files.
+
+**Before-merge backups** (D87 q2; the user, 12:52Z, verbatim: "world copies are combined with
+version-control style merging: the pre-merge backups are always available to all players at all times,
+so nothing is ever lost"):
+* Before any merge writes its merged head, both sides' heads are kept as before-merge backups. That
+  covers a disjoint-path merge of two head references (above), a copy merged back into its world, and the
+  owners' choice on the compare card. "Keep this one" keeps the other head this way too.
+* **Every player of the world sees them,** not only owners and the Load backups role, and can preview
+  them. The list rule above does not apply to this kind. Loading one into a live session still needs Load
+  backups (@coordinator-opus's reading, sent to the user). Opening one as a new world needs Copy world,
+  as any full copy does (code and assets included), so owners keep control over full copies
+  (@coordinator-opus's ruling (b), 12:53Z, which the user may reverse; 8a.10). "Nothing is ever lost" is
+  met by every player seeing and previewing every before-merge version, and by none being deleted.
+* They are never thinned and never deleted, owners included [proposal: "always available ... at all
+  times" rules out both].
+* Each costs a manifest, any blobs the merge dropped, and the full encodings of the runtime records it
+  held as deltas (at most the runtime image, about 1.5 MB, per backup); it shares the rest with the
+  merged head (storage, below).
+* The ownership chain's merge records both pre-merge heads too (D87; @provenance-eng).
+
+**Storage** (the user, 12:56Z, verbatim: "assets should be deduplicated and world deltas stored to save
+on storage space, in a similar manner to how resonite works"):
+* **Blobs are content-addressed** (D16, BLAKE3). Every chunk file, logic module, shader, asset and
+  runtime-chunk record is stored once per machine, in a blob store that every world, backup, copy and
+  version on that machine shares, as Resonite's resdb hashes are. A backup is a manifest (a tree of
+  hashes) plus the authority data above.
+* **The runtime image is stored as deltas:**
+  * Runtime state is stored per chunk (the dormant records above; SW-6). An unchanged chunk is the same
+    blob, so a backup stores only the chunks that changed since the one before.
+  * A changed chunk's record is stored as a zstd delta against that chunk's record in the previous
+    *kept* backup (patch-from style), with a full copy every 8 versions, so a read never chains more
+    than 8 deltas [proposal]. When thinning drops a backup that a later delta was based on, that delta is
+    re-based onto its new previous kept version, or stored full; thinned versions are never kept alive
+    as bases (review DS-2). A blob is still named by the hash of its full content and checked against
+    it after decoding.
+  * A before-merge backup holds every chunk record it names as a full copy, never as a delta, so no
+    damaged base can break a version that nothing may lose (review DS-3). A record it shares with the
+    head is often stored as a delta under the same name, since the last autosave wrote it. That blob is
+    converted to a full encoding in place, never kept twice, so a name has one encoding; deltas based on
+    it stay valid, since its content and name are unchanged. Nothing re-encodes a blob a before-merge
+    backup names as a delta again (review DS-7) [proposal].
+  * Re-encoding a blob under its name (re-basing it, storing it full instead, or a before-merge
+    conversion) writes and syncs the new encoding in full before it replaces the old one in one atomic
+    step, so a crash at any point leaves one valid encoding (review DS-6).
+  * So there is no world-wide keyframe: every manifest is complete, and only chunk records have
+    keyframes.
+* **Collection is mark-and-sweep, never reference counts** [proposal]. A count drifts after a crash; a
+  sweep starts over each time.
+  * The roots are every kept backup's manifest (by the schedule above), every head, every checkpoint and
+    before-merge backup, and every other world's roots on the machine.
+  * **What a sweep must never take** (review DS-1):
+    * writes in flight (review DS-1b): a write pins every blob its manifest will name, whether it
+      writes the blob or finds it already stored (a dedup hit). It pins a blob before writing it, or in
+      the same step as the lookup that finds it, and holds the pins until its manifest commits, or, if
+      a sweep is running then, until that sweep ends. Copies, checkpoints and re-encodings (above) are
+      writes too;
+    * running sessions: each pins what it uses, its snapshot ring, its unsaved runtime state, and the
+      assets it fetched for a joined world this machine holds no backup of; caches pin theirs the same
+      way, until they release them;
+    * a pinned or reached blob stored as a delta keeps its base chain, as encoded when it was pinned or
+      reached; so a delta being written pins the base it is written against.
+  * The sweep checks pins when it deletes, not only when it marks: checking a blob and deleting it are
+    one step against the lookup that would pin it (review DS-1b).
+  * Nothing the protocol needs lives as a loose blob: the cross-world tables (22.7) and the ownership
+    chain (12.5) are part of every manifest's authority data, so any kept manifest reaches them.
+  * The sweep runs at idle priority, about daily. Thinning only drops manifests; the sweep then deletes
+    what no root and no pin reaches, never a blob a kept backup reaches.
+* **A rough estimate** [I; assumptions stated, to measure]:
+  * The assumptions: a busy world with 50 MB of assets and 20 MB of chunk files, a 1.5 MB runtime image
+    (9.1), and 10-20% of its chunks changing per 5-minute autosave, about 0.2-0.3 MB before
+    compression.
+  * The schedule keeps about 66 autosaves over a month of daily play: 12 for the last hour, 24 hourly
+    and 30 daily. Kept versions differ by more than one autosave's change: an hourly keeper by an hour
+    of it (about 0.5 MB), a daily one by a day's (up to most of the image, about 0.75-1.5 MB). Deltas
+    against the previous kept version therefore come to about 40 MB, plus the 70 MB of base content
+    stored once.
+  * In total, about 110 MB per busy world-month, and up to about 200 MB if a day's play touches most
+    chunks (@design-reviewer's worst case); more with heavy checkpointing. An idle world writes
+    nothing, since autosave runs only while the world changes.
 
 **Loading a backup:**
 * It is a human action: no agent certificate can carry it (12.3). It needs the Load backups permission,
@@ -2891,7 +3641,7 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
   as above. The next session starts from it.
 * **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
   owner is whoever opens it. It needs the Copy world permission, held only by owners by default
-  (@coordinator-opus's direction, 08:35Z). The copy re-mints its objects' births in the new world, so
+  (@coordinator-opus's direction, 08:35Z). Before-merge backups follow the same rule (above). The copy re-mints its objects' births in the new world, so
   they can later be exported from it (SV-11).
 
 **Regions** (25.5; @design-reviewer's proposal): a save is a world-log entry stamped at a check frame F.
@@ -4610,6 +5360,11 @@ persists until a verdict arrives.
   "signatures" are keyless hashes that anyone could compute: they model who must sign, not
   unforgeability, and the forge tests forge only signatures an attacker could hold. Production signs with
   each member's Ed25519 key (10.3) (round 3, low).
+  * A verifier checks a fact signature over "pe-fact\0" | world | session_of(world) | fact, so it must
+    know each partner world's session id. The route list carries it, and feeds
+    `PublicKeys::add_world` (review P23R-3). pe-session at 3af709a registers only its own world's
+    session id, so once real keys are used a partner world's facts verify nothing [V @design-reviewer,
+    review-p2-3.md round 2].
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
@@ -4632,11 +5387,9 @@ persists until a verdict arrives.
       whether or not that world is on its own route list. Each hop carries its source's certificates up
       to the epoch that signed it, and that epoch must be the one active at the hop's commit frame
       (P25-5, 10.8) [V r14 chain-epoch: a hop signed after its source removed a member checks at a world
-      that does not route to the source; provenance unit tests]. **Not enforced yet** (review VC-7): the
-      hop's frame and epoch are not in the signed fact, so this check trusts the carrier's labels, and
-      the source's `cert_at` counts its majority differently from a third party (VC-8). Rely on neither
-      until @provenance-eng's follow-up signs both. A to B to C to A works [V r14 chain:
-      three hops, conserved, all equal in both orders].
+      that does not route to the source; provenance unit tests]. The hop's frame and epoch are in the
+      signed fact (VC-7), and both sides count the majority the same way (VC-8). A to B to C to A works
+      [V r14 chain: three hops, conserved, all equal in both orders].
     * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
       entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
       hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
@@ -4714,10 +5467,14 @@ persists until a verdict arrives.
       proof-of-stake systems [I; the unit test shows both].
   * **Member lists change** (review R3-8b). Since P2-4 a world's members change only by decided epochs,
     each with a certificate that the previous epoch's quorum signed, and another world follows them from
-    the world's genesis [V P25-5]. One check still uses the member list fixed at startup: a
-    destination checks the departure certificate in an `Arrive` against its route list's members of
-    the source, so a member the source has since removed still counts there [S session.rs]. The
-    `Arrive` should carry the source's epoch certificates, as hops do [I].
+    the world's genesis [V P25-5]. So do departures and verdicts: an `Arrive` carries the source's
+    epoch at the departure frame with its epoch certificates (`EpochProof`), and a `Verdict` the
+    destination's at its arrival frame. The route list still says which partners may vouch, but the
+    signers are checked from the partner's genesis, not against a member list fixed at startup, and a
+    fork proof's departure half convinces a third party across a membership change [V unit test
+    `departures_follow_the_source_epochs`; regress 89/89]. The long-range residual above holds here too:
+    a carrier that omits the later certificates lets an old majority that colludes sign for a frame of
+    the later epoch [I].
 
 ### 22.8 What crosses: avatars, components, code
 
@@ -4764,7 +5521,209 @@ persists until a verdict arrives.
     that world;
   * an unlocked panel's "anyone in session" means members of the panel's world.
 
-### 22.10 Spike: two worlds, three members, one object handed between them [V]
+### 22.10 One trading instance per world: the trading lease (SW-1) [I, nothing built]
+
+**The problem** (@design-reviewer's SW-1). A world can have two live sessions at once: two instances of a
+public world, or a home opened twice. For 22.6 both are "world A". Each holds A's objects live, and each
+session's quorum can sign A's facts. So each can export the same object: a double spend that provenance
+only records, as a fork proof against A (22.7). A head merge (16.10) also has no rule for cross-world
+tables that both changed.
+
+**The ruling** (@coordinator-opus, 09:51Z, option (a)): only one live session of a world trades across
+worlds at a time. It holds a **trading lease** bound to the world's owner-signed head (16.10). Every other
+instance stays out of cross-world trade. The rest of this section is a design reviewed in review-lease.md;
+the parts @coordinator-opus decided on 2026-10-31 are marked **decided**.
+
+**The lease** is a certificate `TradeLease {world, number, parent, session, base, until, until_utc}`
+signed by its grantor (below): the trade steward, or, in a live hand-off, the holder's quorum, whose
+release is the next lease.
+* `number` counts up from 1 per world. `parent` is the hash of lease `number - 1` (0 for the first), so
+  leases form a chain, as head references do (16.10).
+* `session` is the holder's session id (10.3: the hash of its signed genesis entry with a fresh nonce).
+  No other session of the world can use the lease. It also tells other worlds which session speaks for A.
+  A partner already checks A's signers from A's genesis (22.7, R3-8b), and a fact signature names
+  session_of(A) (P23R-3), but two instances of A have two geneses and two session ids, and each could
+  certify A's facts. So the route list names the world, and the newest lease names the session: a fact is
+  A's if the lease's session's quorum signed it, checked against that session's epoch certificates from
+  its genesis, as P2-5's hops carry them (22.7). The session id that P23R-3's verifier needs comes from
+  the lease, not from a fixed route-list entry.
+* `base` names the table checkpoint (below) of the previous lease that this holder starts from.
+* `until` and `until_utc` are the lease's first expiry, 10 minutes ahead: `until` as a frame of the
+  holder's session, from the grantors' estimate of its present, and `until_utc` in UTC (review TL-1).
+
+**The holder renews itself** (decided). Every 5 minutes it authors `LeaseRenew {number, until,
+until_utc}` on its own chain, both 10 minutes ahead, and its members attest the renewal like any
+cross-world fact. Every fact it signs for another world cites its newest renewal, so partners see it.
+The lease lapses 10 minutes after the last renewal. So trade carries on while every owner is offline: a
+grantor is needed only to start a holder.
+
+**Expiry is fenced by the holder's own members** (decided; review TL-1). Session time is a monotonic
+clock that stops while a machine sleeps (5), so a holder's frames cannot tell it that its lease lapsed:
+a laptop holder can wake an hour later still below `until`. So each holder member refuses to attest a
+cross-world fact, or to sign a renewal or a release, once its own clock passes the newest `until_utc`. A
+lapsed lease stays dead; it cannot renew itself back, nor hand itself on (review TL-10). This assumes the clocks of a holder session's honest members
+are within 1 minute of UTC, and the override below waits 2 minutes beyond the lapse to cover it.
+
+**Who grants** (decided; review TL-2). Two serialization points, each a single party, so one grantor
+in contact suffices:
+* **The holder's quorum, in a live hand-off.** Any owner or delegate in contact with the holder may ask
+  it to hand trade on. Its quorum signs a release that names the final checkpoint and the successor's
+  session id (hand-off, below), and that release is the next lease. The holder's honest majority signs
+  one release per lease.
+* **The trade steward, otherwise.** One designated key per world, named on the ownership chain (12.5).
+  It is one device's key, never a person's key copied to several devices, which would be several
+  stewards (review TL-11): by default the key of the device that created the world, which the owners can
+  move to another device, a co-owner's or an always-on one, under the chain's rule (a delegation as in
+  12.3, like 16.10's builders-write delegation, SW-5). It grants a new holder after a normal end, and it
+  alone may override after a crash. Its client grants each number once and records that durably. In a
+  single-owner world the steward is that owner's device unless they move it.
+* So two leases of one number need one grantor that signed both, the steward or the holder's quorum,
+  which is an equivocation proof against it, or an override racing a release. For a lapsed holder the
+  expiry fence rules the race out: a holder member signs no release past `until_utc`, and the override
+  waits 2 minutes past it (review TL-10). A live holder cut off from the steward can still release while
+  the steward overrides; that is the override's named risk (review TL-15). Partners refuse both leases of a fork (`RejectedLeaseFork`, below) until the steward
+  grants the next number naming one of them as its parent (review TL-8).
+* Grants are needed only to start a holder. A running holder renews itself.
+* No grant while the ownership chain is disputed, that is, while a fork of it is known (review TL-3). A
+  running holder keeps trading meanwhile; only new grants wait.
+* A world with no holder and no steward reachable gets no lease until the steward is. Its instances
+  play, but carry no objects across (players still travel, below).
+
+**What only the holder does.**
+* In the holder's session, `Depart`, `Arrive` and `Verdict` work as in 22.6. Every fact it signs for
+  another world (a departure, a verdict, a commit hop) also covers the lease (number and hash), its
+  newest renewal and the table checkpoint it rests on.
+* The first fact a partner receives under a lease carries the lease, the grantors' ownership proof (their
+  standing on A's ownership chain) and the holder session's epoch certificates. Later facts cite them by
+  hash (review TL-7).
+* In any other session of the world, these entries are void. They change nothing, and nobody attests
+  them. A non-holder must not even certify a refusal. A certified refusal makes the source refund the
+  object, and the same `Arrive`, relayed to the holder, could be accepted, so the object would then exist
+  twice.
+* An `Arrive` sent to a non-holder therefore waits until someone relays it to the holder. This is 22.6
+  step 7's rule: an object waits only while nobody can reach the world that can act on it.
+
+**Table checkpoints: nothing crosses until it is durable.**
+* The holder's cross-world tables are part of its hashed state (22.7, 9.1): escrow, arrivals and accepted
+  transfer ids, last exits, and the seen-lease table (below). So each quorum-acked check hash (every 30
+  frames, 9.1) already signs them.
+* **The check hash commits to the tables by their own digest** (decided; review TL-4): it hashes a digest
+  of the cross-world tables together with a digest of the rest of the store, so a table checkpoint
+  verifies without the 1.5 MB store. This changes 9.1's layout and pe-session's `check_hash_of`; the
+  layout is agreed with @world-chunks before it reaches pe-session.
+* A **table checkpoint** is the tables' content at a check frame, with the store's digest, the check
+  hash, the quorum's acks, the epoch certificates that say who the quorum was, and the lease.
+* Under a lease, the holder's members attest a cross-world fact only once a check frame at or after the
+  fact's frame has a quorum-acked check. So every effect another world will act on is already inside a
+  signed checkpoint, and every member of the holder session holds it.
+* Each holder member keeps its lease's newest checkpoint, which replaces the one before. The final one
+  is kept in the released head (below), under 16.10's rules for heads and backups (review TL-5).
+* Cost: at most one check interval (0.5 s at 60 Hz) per transfer step [I; to measure].
+
+**Fencing at the partner.** Each world keeps a record per source world on its route list. It holds the
+newest lease seen (number, hash, newest `until`), and the newest table checkpoint that any accepted fact
+under that lease cited. Like accepted transfer ids (22.6), this record is never rolled back or
+snapshotted once confirmed. A fact from A is refused, with a certified verdict as for any rejection, as:
+* `RejectedStaleLease`: its lease number is below the newest seen. So a holder that is only partitioned,
+  not gone, cannot keep trading with a partner that has heard of the next lease.
+* `RejectedLeaseExpired`: its frame is past the newest `until` it cites (the grant's or its newest
+  renewal's). This is a second fence behind the holder's own: it needs no clock, since the fact carries
+  its frame in A and `until` is in the same session's frames, and it stops a holder that stopped
+  renewing but whose frames still advance.
+* `RejectedLeaseGap`: its lease's `base` is older than a checkpoint of the previous lease that an earlier
+  accepted fact cited. The new holder started from a stale view of the old holder's trades. The partner
+  stops trading with A until a lease that includes them arrives.
+* `RejectedLeaseFork`: the partner holds two leases with one number, which proves their grantor signed
+  both. It accepts A's facts again under a higher number whose parent is one of them: the one it traded
+  under, if it traded under either. A higher number descending from the other branch, whose lineage may
+  still hold objects the partner's branch exported, is refused as `RejectedLeaseGap` (review TL-14).
+* `RejectedNoLease`: no valid lease, meaning one signed neither by A's trade steward as A's ownership
+  chain names it, nor by the previous holder's quorum in a release that an owner or delegate requested.
+
+**Hand-off.**
+* **Every hand-off starts the same way** (decided). Only a session opening from the head written in
+  step 2 may hold the next lease.
+  1. The holder stops authoring `Depart`s. In-flight escrows need not settle: they move with the tables.
+  2. At the next check frame, the final table checkpoint is taken. It is written into the world's head as
+     an owner- or delegate-signed head reference (16.10), which may carry only the tables.
+  3. From the final checkpoint's frame on, `Depart`, `Arrive` and `Verdict` are all void in the old
+     holder, and its members attest nothing more under that lease. An arrival or a verdict that comes
+     later waits to be relayed to the successor (review TL-9).
+* **Live hand-off** (decided): an owner or delegate in contact with the holder moves trading to a new
+  instance ("Make this the trading instance"). The requester's client opens the successor from the step-2
+  head first. The holder's quorum then signs a release that names the checkpoint and that session's id,
+  and the release is its lease, with the checkpoint as `base` (review TL-8). A requester's client that
+  crashes and opens again simply gets a new session named in a release; a session the release does not
+  name holds nothing.
+* **Normal end** (decided): members leave by the view change (10.8), so those who stay remain a quorum,
+  and the last one stays one check interval to sign a release that names the checkpoint and no successor.
+  A session whose members just vanish ends with no release (below; review TL-13). The trade steward then
+  grants the next number to a session opening from the released head, naming that session, with the
+  checkpoint as `base`.
+* Either way the new holder holds the checkpoint before it trades, since it opened from the head that
+  carries it. A session that is already running could later take the lease over by applying the
+  checkpoint as one ordered entry, by 16.10's load rule; that is a possible extension, not part of this
+  design.
+* **No release** (decided; it replaces an automatic re-grant): every member of the holder crashed or
+  slept, or it is cut off. A grantor cannot tell a vanished holder from a partitioned one, and a
+  partitioned holder that keeps renewing keeps trading with every partner it reaches. So no grant is
+  automatic without a release, and trade stops:
+  * Once the lease has lapsed in the steward's view (no renewal seen for 10 minutes) and 2 more minutes
+    have passed, the steward may **override**. It first asks the partners it can reach for the newest
+    renewal they saw, and starts the wait again from any newer one (review TL-12). It grants the next
+    lease to a session opening from a head that carries the newest table checkpoint it can fetch (review
+    TL-6). Only the steward may, so two owners cannot override at once.
+  * The app warns first: "The trading instance started by <name> at <time> hasn't been heard from for N
+    minutes. If it is still running somewhere, moving trade here can duplicate objects."
+  * By then a crashed or sleeping holder's members refuse to attest anything (the expiry fence above).
+    The override's only remaining risk is a live holder cut off from the owners, which the warning
+    names. The override is the only way into D79's detect-only regime (below), and only by that
+    explicit act.
+* **Lease length** (decided): 10 minutes of the holder's frames and of UTC, renewed every 5, measured from
+  the last self-renewal.
+
+**What remains** [I]:
+* If the old holder is still running somewhere, both holders trade. A partner that has heard of the new
+  lease refuses the old one's facts (`RejectedStaleLease`), but a partner that has not may accept an
+  export of an object the new holder also exports elsewhere. That leaves two live copies, detectable when
+  they meet as a fork proof against A across two lease numbers; the lease numbers tell a lost hand-off
+  apart from a dishonest majority.
+* If the old holder vanished with its last checkpoint before any copy reached anyone, its last trades
+  are lost to A. A partner that saw them refuses the new lease (`RejectedLeaseGap`). A lease whose `base`
+  is rebuilt from that partner's certificates is decided but not built. Until it is, A stops trading with
+  that partner until its owners act.
+* A dishonest single grantor (a steward that grants one number twice, or a holder quorum dishonest
+  beyond the session's bound that releases twice) can make two holders that each partner sees as valid.
+  That is detect-only too, with an equivocation proof against the grantor, and the steward's next grant
+  ends it (review TL-8).
+* This is D79's detect-only regime, entered only by the override or by a grantor's equivocation.
+* Two further residuals: honest holder members whose clocks are more than a minute off UTC weaken the
+  expiry fence by that much, and an ownership-chain fork that nobody has detected yet (D87's residual)
+  can name two stewards (review TL-3).
+
+**Head merges** (16.10):
+* The cross-world tables in a head change only by a lease holder's table checkpoint. A head reference
+  that changes them names the lease and the checkpoint.
+* When two heads differ, the tables come from the one with the higher lease number (then the later
+  checkpoint). They are never combined.
+* Content merges as 16.10 says. A non-holder's autosave never changes the tables.
+
+**Loads** (16.10) never rewind the tables, in the holder or in any other instance. A load in a non-holder
+instance changes no trade, since it has none.
+
+**What other instances show** (decided; sent to @gnosarium-ux for 8a.x):
+* Portals stay visible, but carrying objects through them is off, with the reason: "Objects cross only
+  in this world's trading instance, the session started by <name> at <time>."
+* Players can still travel: avatars are not sim objects (22.8), so crossing needs no lease.
+* Owners see who holds the lease and since when, and any owner or delegate in contact with the holder
+  can move it ("Make this the trading instance"): the new instance opens from the trading instance's
+  final head, and the holder's release names it.
+* When the trading instance has ended, another starts trading once the trade steward (by default the
+  device the world was created on) is online to grant it.
+* When the holder has gone silent without a release, the steward sees the override and its warning
+  (above) once the lease has lapsed and 2 more minutes have passed.
+
+### 22.11 Spike: two worlds, three members, one object handed between them [V]
 
 Setup: world A runs at 60 Hz (a 108-body pile), world B at 50 Hz (a 75-body pile). Member 1 is in both
 and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Links are 50 ms ± 15 ms with
@@ -4784,7 +5743,7 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 
 With a crashed carrier and nobody else in both worlds, the object waits in escrow (22.7), and a two-member world pauses (D7). "crash" shows the case with another member in both worlds and three members per world (review NEW-6).
 
-### 22.11 What this adds elsewhere
+### 22.12 What this adds elsewhere
 
 * Crates (23.1): `pe-worlds`, holding the multi-world scheduler, presence, portals and the transfer
   relay.
@@ -4969,8 +5928,8 @@ Rules for every package:
   @design-reviewer.
 * **Status:** built in the spike on `viewchange`; review round 1 by @design-reviewer at b01ebdf (changes
   requested: VC-1 to VC-10, HO-1, HO-2), fixed in round 2 together with the D80 admin layer, each repro
-  showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 go to
-  @provenance-eng's follow-up, stated in 10.8's limits and 22.7. Review round 2 at 758ff5e (changes
+  showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 are
+  fixed in P2-5's follow-up (`p2/provenance-epochs`), stated in 10.8 and 22.7. Review round 2 at 758ff5e (changes
   requested: VCR-1 to VCR-12, and HO-1's carried state) is fixed in round 3, again with a repro per
   finding that fails with its fix switched off; VCR-10 waits for the user (V1-V3). Review round 3 at
   a9286fc (changes requested: VC3R-1 to VC3R-8) is fixed in round 4, with @design-reviewer's two repros
@@ -5010,6 +5969,34 @@ Rules for every package:
     stops at frame 53]. The fixture had also lost 9's prevote for good, repairs included. That made 9 a
     second faulty member of four, beyond t = 1, so the loss now ends at 2.5 s. `fixes_off` is now 64 bits
     wide.
+  **Round 7's review** (changes requested: VC7R-1 High, VC7R-2 Medium, five lows) found that VC6R-3's
+  validity still followed the branch a replica had linked. **Round 8** answers it on a branch, landing
+  only after @design-reviewer's OK (the coordinator's review-before-landing rule):
+  * **VC7R-1** (`voidfork`): a listed admin entry is judged along its own ancestry (`fix::VC7R1`) [V:
+    the faulty proposer is removed at 2.25 s; off: confirmation stops at frame 110].
+  * **VC7R-2** (`slowcapper`): evidence an honest member must deliver (a cap's polka, a vote's frozen
+    head) gets the slow-member allowance, and a cap's named prevotes count once held, linked or not
+    (`fix::VC7R2`) [V: the slow capper is kept; off: it is voted against after 1 s]. capfake's faker
+    is now removed at 6.17 s.
+  * Lows: PF-1's exception named (VC7R-4); certificates carry exactly a quorum (VC7R-5); the scans
+    bounded (VC7R-6); adminfork's control switches round 5's check on again, `VC3R3S | VC6R3` (VC7R-7).
+    VC7R-3 (a lone vote resetting its own author's timer) is left as inferred: the reviewer's probe
+    removed the faker sooner.
+  * Found while building `slowcapper`: a re-pointed cut re-validates from a clean ack-epoch history
+    (`fix::RECUT`); VC7R-1's purity rests on it (review VC8R-2).
+  * **VC8R-1** (`plainfork`), found by @design-reviewer in round 8's review, older than round 8: a
+    faulty proposer that forks a plain seq halted the session for good, with no admin entry. A proven
+    forker's prevotes now count toward a polka wherever they sit in its chain (`fix::VC8R1`) [V: f
+    removed at 2.88 s; off: confirmation stops at frame 110]. With it, prevotefork's honest members lock
+    and decide without the forker (the join at 1.18 s, not 3.12 s), so its VC4R-1 and PF-1 controls
+    switch VC8R-1 off too, and `pfsilent` shows PF-1 still needed: with 9 silent, the forker's
+    precommit is in the only quorum. adminfork now decides round 0's change, 1's proposal listing 9's
+    forked SetRole, at every member: 3 counts 9's prevote toward the polka and locks with 1 and 2, and
+    decides at 2.13 s, and 1 and 2 decide at 4.1 s, when 3's delayed precommit reaches them. So 9's
+    SetRole applies (3 demoted), and 9 is removed by proof in the next epoch at 4.55 s; before, 9 was
+    removed in round 2 at 3.13 s and its SetRole never applied. Both outcomes were agreed everywhere.
+    slowcapper's decisions come before 9's held-back prevotes are released at 5 s, so 9 trails, is
+    voted against, and two resets keep it (4.72 s and 5.38 s).
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
@@ -5170,7 +6157,8 @@ entry says so.
   * Alternatives: our own bootstrap or relay servers (reliable, but a soft central point); invites and LAN
     only (purest, worst UX).
 * **D10. Root of authority (12).**
-  * **Settled (user, 19:11Z): as recommended.**
+  * **Settled (user, 19:11Z): as recommended.** Since 22:39Z the owners are the world's ownership chain,
+    and adding an owner follows rule A (12.5).
   * Recommend: the world creator's key is the genesis owner and can add co-owners; optional k-of-n owner
     threshold for ACL changes.
   * Alternatives: a mandatory multi-owner threshold; a fully democratic majority of present members.
@@ -5511,7 +6499,7 @@ entry says so.
   * **Settled (user, 19:11Z): as recommended.**
   * Recommend: the touched bodies' exact state, plus a digest of their contact island; a mismatch triggers
     a scoped state transfer.
-  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 52 bytes per island body;
+  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 64 bytes per island body;
     a resting pile is one large island).
 * **D41. Continuous perturbations: hands in a ball pit (7.5; the main question).**
   * Recommend: a continuous interaction is a **perturbation source**. Its pose streams as small entries
@@ -5695,9 +6683,13 @@ entry says so.
 * **D56. R18 defaults (10.9).** The controller thresholds:
   * **Settled (user, 19:11Z): as recommended.**
   * up above 40 ms of uplink queue, at most every 100 ms;
-  * down after 300 ms below 10 ms.
+  * down after 300 ms below 10 ms;
+  * within those, the level that last congested is re-entered only after 5 s of calm, and forgotten
+    after 30 s with no congestion (@coordinator-opus, 2026-10-31, from @shader-lang's 80 kbit/s
+    measurement; 10.9) [proposal: 5 s and 30 s].
 
-  Production measures the queue by delay gradient, as GCC does [I]. These defaults kept a 32-64 kbit/s cap
+  Production (pe-app) measures the queue as a LEDBAT-style one-way queueing delay (10.9, item 3) [V pe-app
+  r18-app]. These defaults kept a 32-64 kbit/s cap
   real-time with queues under about 100 ms, and 16 kbit/s with queues under 400 ms (review R3-9) [V].
   * Alternative: loss-based control (as in TCP Reno). It reacts only after the router queue is already
     full, the 500 ms bufferbloat this replaces.
@@ -5964,6 +6956,72 @@ entry says so.
     best-effort secret filter.
   * Alternative: stream the detailed tool view as well, to "watch them work" in full. More open, but it
     sends file contents and command output, with whatever secrets they hold, to everyone nearby.
+* **D87. World ownership: what the user decides (12.5). RULED.** Question 1 on 2026-10-31 08:31Z (OT =
+  (a)): consent only now, bound session lineages later; questions 3 and 4 follow from it. Questions 2
+  and 5 on 2026-10-31 12:52Z (msg m7fc6b059372d), both as recommended.**
+  * **1. The trust root: which sessions may change ownership. RULED (a), consent only.**
+    * No removal of a vanished owner. A recovery key is a backup with the owner's full power. No
+      time-based protections, since without a trust root none of them can hold.
+    * Consequence: a co-owner who vanishes stays an owner, and under rule A additions then need them
+      (or their backup). Groups that want removability pick rule C. A stolen backup key equals a stolen
+      key.
+    * **The residual, accepted for now** [V: harness, 15,000 histories at c4bf06b and a8c41cd]: anyone who runs a
+      session of their own can return a former owner or add a co-owner through a fork at an old state,
+      remove an owner under rule C at a fork point, and void an honest change. **Any co-owner with a
+      session of its own can also brick the world, under any rule:** it fills the 1,024 cap with
+      solo siblings, and then even the owners' joint merge is refused (OWNX-2). An honest owner was lost in 307 histories, an owner gained in 5,641, and an
+      honest change voided in 359, always detected and shown as disputed.
+    * **Also recorded** (the hardening stopped after round 9, as @coordinator-opus set):
+      * OWNX-2 (Medium-High, A2): the bricking above. Not fixed in the spike: counting each owner's
+        solo certificates across the whole book makes a certificate's validity depend on concurrent
+        ones, not its causal past. Storage then stays bounded and books converge only with a
+        deterministic eviction of attested certificates, plus charged merges (OWNW-2 enforced on
+        insert). That is a structural change to the storage layer. Compaction and bound session
+        lineages are the natural places for it;
+      * OWNX-3 (Medium): across copies that each add an owner and then merge, the shares can total
+        more than 256, by one gift per copy;
+      * OWNX-5 (Low): a rule-C removal passes the target's share to its removers, the one way a share
+        changes without its holder signing;
+      * a sole owner can fill its own book to 1,024 until compaction (OWNW-7);
+      * rule C: targets of voided mutual removals stay owners in the view, but their own changes are
+        refused at insert (12.5);
+      * rule C: OWN-3 doesn't cover a removal at the fork point (12.5);
+      * `commit_local` clones the book, O(N) per commit [I].
+    * **Later: bound session lineages.** The owners bind, in the chain, the session lineages whose
+      attestations count. A lineage is a P2-4 epoch-certificate chain from that session's genesis
+      (`EpochBook`), bound by its first certificate (@engine-architect). It would close the residual
+      except for a bound session's majority colluding, and could bring back dormant-owner removal and
+      delayed recovery. The deferred findings belong to it: OWNT-1 and OWNT-3 (attestations carry and
+      check signatures; objection explicit and monotone), OWNV-2's second half (one recovery at a
+      time; a recovery key's changes charged to itself) and OWNW-6 (Challenge and RemoveDormant
+      budgets).
+  * **2. Forks of the ownership chain (refines O4). RULED 12:52Z: combine.** The user's words: "world
+    copies are combined with version-control style merging: the pre-merge backups are always available
+    to all players at all times, so nothing is ever lost". The ownership book already keeps both sides:
+    a merge certificate names every pre-merge head as a parent, and the certificates behind them stay
+    in the book, so each side's owner set before the merge can always be shown. The pre-merge world
+    backups themselves are 16.10's (@engine-architect).
+    * As built (the recommendation): a change counts only once a session of the world committed it; within a session the
+      first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
+      * both buyers of a double sale become co-owners;
+      * each copy's additions stand;
+      * a Leave or a removal sticks;
+      * a removal on one copy needs the owners the other copy added since they split;
+      * concurrent rules take the strictest. If one copy turned removal off (rule B), it stays off
+        until every owner signs a new rule, so with a dormant owner, for good (OWNU-8).
+    * Solo changes (not signed by every owner) total at most 256 along any history. Each owner has a
+      share: the genesis owners split the 256, and a new owner's share is given by those who signed
+      its addition. An owner's share shrinks only through changes it signed, so under every rule one
+      owner can spend only its own share (OWNW-3).
+    * Residual: as in 1.
+    * Not chosen: a change counts only if every other copy's owners signed it too (a double sale
+      would cancel both sales).
+  * **3. Removing an owner (refines O1). Settled by 1:** nobody is removed under rule A; rule C keeps
+    instant k-of-n removal.
+  * **4. Recovery keys (refines O2). Settled by 1:** a backup key with the owner's full power.
+  * **5. Locking session rules (was D88). RULED 12:52Z, as recommended:** a lock is an ownership-chain
+    entry that every current owner signs, so a lone co-owner can't impose or lift one. Not built in the
+    spike yet (a `SetLock` change under `SetRule`'s signing rule) [I].
 * **D89. Which tools a confidant's turns get (21.5; raised by the 22:34Z confidant ruling).**
   **Ruled 08:31Z: (b), full as ruled.** A confidant's turns get exactly the panel's own profile, shell
   and web included on a Full panel, with no Restricted-by-default setting; the Seal keeps its plain

@@ -7,4 +7,4 @@ RESULT lagchurn: 2 resets, 9 removed at 6.48 s (1 demotion vote at m1) -> DEMOTE
   m1: conf 946 frame 953 members {1, 2, 3} evicted {9: (141, 271)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 66 bad 0
   m2: conf 946 frame 953 members {1, 2, 3} evicted {9: (141, 271)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 66 bad 0
   m3: conf 948 frame 953 members {1, 2, 3} evicted {9: (141, 271)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 66 bad 0
-RESULT lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch): frames 0..952 honest m1=c13de8ad356312bb m2=c13de8ad356312bb m3=c13de8ad356312bb | offline replay c13de8ad356312bb | ALL EQUAL, NO FALSE CHECKS ; checks ok 198 bad 0
+RESULT lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch): frames 0..952 honest m1=77cf2da8d6698b62 m2=77cf2da8d6698b62 m3=77cf2da8d6698b62 | offline replay 77cf2da8d6698b62 | ALL EQUAL, NO FALSE CHECKS ; checks ok 198 bad 0

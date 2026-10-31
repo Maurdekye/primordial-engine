@@ -65,6 +65,14 @@ pub enum Verdict {
 }
 
 /// SplitMix64, used for deterministic per-frame tie-breaking.
+
+/// A world position from f32 coordinates, widened exactly when Box3D positions are f64 (D58), so
+/// a scene places its bodies at the same values in both precisions (as the spike's sim-core `pos`).
+#[allow(clippy::unnecessary_cast)]
+pub fn pos(x: f32, y: f32, z: f32) -> Pos {
+    Pos { x: x as _, y: y as _, z: z as _ }
+}
+
 pub fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = x;
@@ -128,11 +136,11 @@ pub fn build_pile_scene_def(side: usize, layers: usize, world_def: &WorldDef) ->
                 def.type_ = BodyType::Dynamic;
                 // Small deterministic jitter so the pile topples instead of stacking perfectly.
                 let jitter = (n as f32 * 0.618_034).fract() * 0.2 - 0.1;
-                def.position = Pos {
-                    x: (ix as f32 - side as f32 * 0.5) * 1.1 + jitter,
-                    y: 0.5 + layer as f32 * 1.2,
-                    z: (iz as f32 - side as f32 * 0.5) * 1.1 - jitter,
-                };
+                def.position = pos(
+                    (ix as f32 - side as f32 * 0.5) * 1.1 + jitter,
+                    0.5 + layer as f32 * 1.2,
+                    (iz as f32 - side as f32 * 0.5) * 1.1 - jitter,
+                );
                 let body = create_body(&mut world, &def);
                 match n % 3 {
                     0 => {
