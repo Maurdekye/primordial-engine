@@ -363,9 +363,27 @@ pub struct Members {
     /// Members this peer presumed crashed and voted to remove.
     pub suspicions: u64,
     pub demotions: u64,
-    pub withdrawn_votes: u64,
+    /// View-change decisions this peer applied (design 10.8), resets included.
+    pub view_changes: u64,
+    /// Decisions that removed no one: a vote overruled for a member heard from again.
+    pub resets: u64,
     pub equivocations: u64,
     pub lying_votes: u64,
+    /// Every decision this peer applied, oldest first.
+    pub decisions: Vec<Decision>,
+}
+
+/// One view-change decision, as the driven peer applied it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Decision {
+    /// The epoch the decision started.
+    pub epoch: u32,
+    /// The peer's clock frame when it applied the decision.
+    pub frame: u64,
+    /// The view-change round that decided it.
+    pub round: u32,
+    /// The members it removed (empty: a reset or a join).
+    pub removed: Vec<MemberId>,
 }
 
 // ---- session_sync_status -------------------------------------------------------------------------
