@@ -586,9 +586,34 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     references lay behind its own votes, which VC-9 no longer counts as withholding; and `handowner`'s
     digests, since member 1 now touches its own hand in both runs. Every other line equals round 1's,
     timings aside.
+* **Round 3** (@design-reviewer's review of 758ff5e asked for changes: VCR-1 to VCR-12, and HO-1's carried
+  state). VCR-10 is a question for the user (V1-V3) and is not built. The rest is fixed on `viewchange`,
+  each with a repro that runs with its fix switched off first:
+
+    | Repro | With the fix switched off | With the fix |
+    |---|---|---|
+    | `ghostkick` (VCR-1) | confirmation stuck at frame 108 | a reset at 5.13 s answers the vote |
+    | `selfkickhead` (VCR-2) | the kick never goes through; confirmation stuck at frame 116 | 4 removed at 2.28 s |
+    | `ackgap`, `latejoin` (VCR-3) | the member's later acks are void, and it is voted out as too slow | every member stays |
+    | `capchurn` (VCR-4) | 88 resets, the faulty member never removed | three resets, then it is voted out at 2.50 s |
+    | `deepfork` (VCR-5) | 3 never gets the whole cut branch and stops at frame 116 | all equal |
+    | `cutbackdate` (VCR-6) | 3 applies a backdated entry below its confirmed frame: rollback assertion at 2.29 s | the entry is void; all equal |
+    | `joinattests` (VCR-7) | 1 and 2 lock on the join, 3 refuses it: wedged, confirmation stuck at frame 176 | 5 joins as Guest |
+    | `slowadmin` (VCR-8) | the follower panics at 2.23 s | it decides at 3.60 s, once it holds the entry |
+    | `kickbackdate` (VCR-9) | the backdated kick comes first and removes the other admin | the backdated kick is void |
+    | `lagprecommit` (VCR-12) | the lagging member's precommit is void: no decision, stuck at frame 224 | 5 admitted at 2.95 s |
+    | `handowner` (HO-1) | member 1's history changes | the carried state is refused; same history |
+
+  * `aheadlink` (VCR-12) checks a claim rather than a fix: a member that cannot hear the others is
+    removed for not keeping up, and the votes it casts against the members ahead remove none of them.
+  * VCR-11: the encoding refuses a join or change with more than 64 attestations and a role id wider
+    than 16 bits, rather than reading part of it, and an epoch at the change-layout flag is not encoded
+    (four new sim-core unit tests).
+  * Every other scenario keeps its outcome; decision times and confirmed frames move by a frame or two,
+    because members now ack on entering an epoch.
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
-  are not told; a faulty member can keep forcing resets; the departure half of a fork proof still
-  records epoch 0, and VC-7 and VC-8 are open (22.7).
+  are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
+  (22.7); VCR-10 waits for the user.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
