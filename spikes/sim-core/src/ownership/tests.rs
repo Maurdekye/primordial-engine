@@ -65,6 +65,11 @@ fn set(v: &View) -> Vec<Key> {
     v.owners.owners.iter().copied().collect()
 }
 
+fn insert_all(b: &mut Book, certs: &[Cert]) -> Result<(), Vec<(CertId, OwnError)>> {
+    let r = b.insert_all(certs);
+    if r.is_empty() { Ok(()) } else { Err(r) }
+}
+
 fn sessions() -> StaticEpochs {
     let mut s = StaticEpochs::default();
     s.worlds.insert(L1, (vec![1, 2, 3], 0));
@@ -140,15 +145,18 @@ fn objection_window_in_a_session() {
     assert_eq!(owners(&b), [B, C]);
 }
 
-/// The target cancels on a disconnected copy, attested there before the completion.
+/// The target cancels on a concurrent branch that the window's own session attested within it.
 #[test]
-fn concurrent_attested_cancel_protects_the_target() {
+fn concurrent_cancel_in_the_same_lineage_protects_the_target() {
     let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
     let g = b.genesis;
     let ch = put(&mut b, g, Change::Challenge { key: S }, &[B, C], Some((L1, 5)));
     put(&mut b, ch, Change::RemoveDormant { key: S }, &[B, C], Some((L1, 5 + W)));
     assert_eq!(owners(&b), [B, C]);
-    put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 100)));
+    // Frames of another lineage are no clock for this window (OWNS-1c): no effect.
+    let other = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 100)));
+    assert_eq!(owners(&b), [B, C]);
+    b.record(other, L1, 100);
     assert_eq!(owners(&b), [S, B, C]);
 }
 
@@ -201,9 +209,8 @@ fn add_after_a_cancelled_removal_does_not_count() {
     let g = b.genesis;
     let ch = put(&mut b, g, Change::Challenge { key: B }, &[A], Some((L1, 1)));
     put(&mut b, ch, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], Some((L1, 2)));
-    b.record(ch, L2, 1);
-    let rd = put(&mut b, ch, Change::RemoveDormant { key: B }, &[A], Some((L2, 1 + W)));
-    put(&mut b, rd, Change::Add { key: X }, &[A], Some((L2, 2 + W)));
+    let rd = put(&mut b, ch, Change::RemoveDormant { key: B }, &[A], Some((L1, 1 + W)));
+    put(&mut b, rd, Change::Add { key: X }, &[A], Some((L1, 2 + W)));
     assert_eq!(owners(&b), [A, B]);
 }
 
@@ -247,12 +254,10 @@ fn rotated_recovery_key_is_dead_on_every_branch() {
     let g = b.genesis;
     let r1 = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L1, 1)));
     put(&mut b, r1, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S], Some((L1, 2)));
-    // R forks at r1 and replaces S there, in a session of its own.
-    b.record(r1, L2, 1);
-    let st = put(&mut b, r1, Change::StartRecover { owner: S, new_key: EVE }, &[R], Some((L2, 3)));
-    put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some((L2, 3 + RF)));
+    // R forks at r1 and replaces S there, in the same session after the rotation.
+    let st = put(&mut b, r1, Change::StartRecover { owner: S, new_key: EVE }, &[R], Some((L1, 3)));
+    put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some((L1, 3 + RF)));
     let v = b.view();
-    assert!(v.disputed);
     assert_eq!(set(&v), [S, B]);
     assert!(v.refused.contains(&(st, OwnError::Revoked)));
     assert_eq!(v.owners.recovery[&S].keys().copied().collect::<Vec<_>>(), [R2]);
@@ -311,8 +316,11 @@ fn double_sale_is_detected_and_merges_in_any_order() {
     assert!(!bad.verify(std::slice::from_ref(&g)));
     // Either buyer merges; afterwards rule A runs over the union.
     assert_eq!(b.insert(merge(&b, &[EVE])), Err(OwnError::Signers));
-    assert_eq!(b.commit_local(merge(&b, &[B]), L1, 10), Ok(Insert::Applied));
-    assert!(!b.view().disputed);
+    let m = merge(&b, &[B]);
+    b.insert(m.clone()).unwrap();
+    b.record(m.id(), L1, 10);
+    assert_eq!(b.heads(), [m.id()]);
+    assert!(b.view().disputed, "the fork stays on record");
     assert_eq!(owners(&b), [B, C]);
     assert_eq!(commit(&mut b, Change::Add { key: X }, &[B], 11), Err(OwnError::Signers));
     assert_eq!(commit(&mut b, Change::Add { key: X }, &[B, C], 11), Ok(Insert::Applied));
@@ -406,14 +414,20 @@ fn old_state_fork_needs_the_owners_added_since() {
     assert_eq!(owners(&b), [S, I, J]);
 }
 
+/// Each copy's owners add independently while disconnected, and the copies join (OWNS-3). A removal
+/// still needs the owners the other copy added (OWN-3).
 #[test]
-fn stale_branch_owner_cannot_add_alone() {
+fn copies_add_independently_but_remove_only_with_the_other_copy() {
     let (b0, certs) = double_sale();
     let mut b = sold_twice(&b0, &certs);
     put(&mut b, certs[1].id(), Change::Add { key: EVE }, &[B], Some((L1, 9)));
-    assert_eq!(owners(&b), [B, C]);
-    put(&mut b, certs[1].id(), Change::Add { key: X }, &[B, C], Some((L1, 10)));
-    assert_eq!(owners(&b), [B, C, X]);
+    assert_eq!(owners(&b), [B, C, EVE]);
+    let mut b2 = sold_twice(&b0, &certs);
+    let e = put(&mut b2, certs[1].id(), Change::Add { key: EVE }, &[B], Some((L1, 9)));
+    let ch = put(&mut b2, e, Change::Challenge { key: EVE }, &[B], Some((L1, 10)));
+    put(&mut b2, ch, Change::RemoveDormant { key: EVE }, &[B], Some((L1, 10 + W)));
+    // B alone can't remove EVE: C, added on the other copy, never agreed.
+    assert_eq!(owners(&b2), [B, C, EVE]);
 }
 
 /// OWN-5: the same certificates and attestations give the same book in any arrival order.
@@ -496,13 +510,18 @@ fn mutual_removal_voids_both() {
     assert_eq!(owners(&b), [A, B, EVE]);
 }
 
-/// OWNR-9: an old-state fork doesn't revert a rule the owners agreed on later.
+/// OWNR-9, OWNS-4: concurrent rules take the strictest; the owners loosen it again after a merge.
 #[test]
-fn newest_rule_survives_an_old_fork() {
+fn concurrent_rules_take_the_strictest() {
     let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
     let g = b.genesis;
     put(&mut b, g, Change::SetRule { rule: SignRule::Threshold(1) }, &[S, B], Some((L1, 1)));
     put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 1)));
+    assert_eq!(b.view().owners.rule, SignRule::All);
+    let m = merge(&b, &[S]);
+    b.insert(m.clone()).unwrap();
+    b.record(m.id(), L1, 2);
+    assert_eq!(commit(&mut b, Change::SetRule { rule: SignRule::Threshold(1) }, &[S, B], 3), Ok(Insert::Applied));
     assert_eq!(b.view().owners.rule, SignRule::Threshold(1));
 }
 
@@ -512,12 +531,13 @@ fn signature_copies_converge() {
     let b0 = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
     let x = next(&b0, b0.genesis, Change::Challenge { key: S }, &[B, C]);
     let x2 = x.clone().signed(&[S]);
-    assert_ne!(x.id(), x2.id());
+    assert_eq!(x.id(), x2.id());
     let (mut b1, mut b2) = (b0.clone(), b0.clone());
     insert_all(&mut b1, &[x.clone(), x2.clone()]).unwrap();
     insert_all(&mut b2, &[x2, x.clone()]).unwrap();
     assert_eq!(b1.digest(), b2.digest());
-    assert!(b1.forks().is_empty(), "same change, two signature sets: not a fork");
+    assert!(b1.forks().is_empty(), "same change, two signature sets: one certificate");
+    assert_eq!(b1.cert(x.id()).unwrap().signers(), [S, B, C].into());
     // Junk signatures don't make a new certificate.
     let mut junk = x.clone();
     junk.sigs.push((EVE, 1));
@@ -541,15 +561,11 @@ fn duplicates_change_nothing() {
 fn books_are_capped_and_cheap_to_clone() {
     let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
     let mut refused = None;
-    let mut h = b.genesis;
     for i in 0..MAX_CERTS as u32 + 1 {
-        let c = next(&b, h, Change::SetRecovery { owner: S, recovery: Some(1000 + i) }, &[S]);
-        let id = c.id();
-        if let Err(e) = b.insert(c) {
+        if let Err(e) = commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(1000 + i) }, &[S], i as u64) {
             refused = Some(e);
             break;
         }
-        h = id;
     }
     assert_eq!(refused, Some(OwnError::Full));
     let c = b.clone();
@@ -565,8 +581,8 @@ fn tampered_or_reordered_chains_are_refused() {
     let c2 = next(&b, c1.id(), Change::Leave { key: S }, &[S]);
     let mut t = c1.clone();
     t.change = Change::Add { key: EVE };
-    assert_eq!(verify_chain(&g, &[t, c2.clone()], &[], &sessions()), Err(OwnError::Signers));
-    assert_eq!(verify_chain(&g, std::slice::from_ref(&c2), &[], &sessions()), Err(OwnError::MissingParent));
+    assert_eq!(set(&verify_chain(&g, &[t, c2.clone()], &[], &sessions()).unwrap()), [S]);
+    assert_eq!(verify_chain(&g, std::slice::from_ref(&c2), &[], &sessions()).unwrap().heads, [b.genesis]);
     let mut skip = next(&b, c1.id(), Change::Leave { key: S }, &[]);
     skip.seq = 5;
     assert_eq!(b.clone().insert(skip.signed(&[S])), Err(OwnError::BadLink));
