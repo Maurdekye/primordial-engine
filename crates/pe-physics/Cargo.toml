@@ -14,3 +14,8 @@ pe-sim = { path = "../pe-sim" }
 [features]
 # Fill the fork's stage profile (Box3D `Profile`) with wall-clock timings.
 stage-profile = ["box3d-rust/stage-profile"]
+# `PhysicsWorld::raw_mut`: the Box3D world, mutable, for test scenes and tools only.
+raw = []
+
+[dev-dependencies]
+pe-physics = { path = ".", features = ["raw"] }

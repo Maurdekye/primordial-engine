@@ -1163,6 +1163,7 @@ version = "0.1.0"
 dependencies = [
  "box3d-rust",
  "pe-core",
+ "pe-physics",
  "pe-sim",
 ]
 
