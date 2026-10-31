@@ -273,7 +273,7 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 3. No transcendental functions from `std`/libm in sim code; their results may vary by platform. Use
    Box3D's deterministic math or `pe_core::dmath` (P2-1): bit-exact `f32` `sin`, `cos`, `sin_cos`, `tan`,
    `atan`, `atan2`, `asin`, `acos`, `exp`, `ln`, `log2`, `pow` and `powi`, each an `f64` fdlibm kernel
-   rounded to `f32`, within 1 ulp of `std` over the tested ranges [V P2-1]. Basic IEEE ops
+   rounded to `f32`, within 1 ulp of `std` (2 for `pow`) over the tested ranges [V P2-1]. Basic IEEE ops
    (`+ - * / sqrt`, conversions) are exact.
    * **`powi` and `powf` count as transcendental here.** LLVM folds `f32::powi` at compile time with
      another algorithm: on constant inputs a release build gave results 2 ulps from the debug build's
@@ -302,9 +302,9 @@ Targets for the MVP desktop configuration, and how they compare with what was me
      changed [V P2-1 on x86-64, by setting flush-to-zero; aarch64 not run].
    * pe-sim's tick calls it first, on the sim thread, every tick [S `crates/pe-sim/src/schedule.rs`].
    * The parallel stepping's helpers (D2) run each job with the calling thread's register, copied in at
-     the job's start, so a worker never steps with a setting of its own [S
-     `crates/box3d-fork/src/worker_pool.rs`; not tested separately]. Any other thread that runs sim code
-     calls the check at each job start.
+     the job's start, so a worker never steps with a setting of its own [V box3d-fork test
+     `helpers_use_the_callers_fp_control`]. Any other thread that runs sim code calls the check at each
+     job start.
 10. **No process-global sim state (R14).** box3d-rust's length unit is a process global; it stays at
     1.0 for every world. Its `human` sample module (a thread-local RNG) is never used in sim code. Logic
     runtimes compile eagerly (22.2) [S].
@@ -2115,7 +2115,8 @@ use the same store or bevy_ecs; it does not need rollback.
   sibling, an intrusive list in fixed 40-byte rows, so it snapshots and hashes like any column. Only the
   hierarchy API writes it. `set_parent` refuses cycles; destroying an object removes its subtree.
   Traversal is roots in id order, then depth-first with children in list order [V P2-1].
-* **`Transform`** (80 bytes) holds an `f64` position, an `f32` quaternion and an `f32` scale. An object's
+* **`Transform`** (80 bytes) holds an `f64` position, an `f32` quaternion, an `f32` scale, a root's chunk
+  (`[i64; 3]`) and a pad. An object's
   frame is its nearest ancestor with a `Transform`; how roots and children are placed is in 25.2 [V P2-1].
 * World transforms are propagated in a deterministic order (depth-first, children in list order) for sim
   objects each frame; presentation propagates at render rate. They are derived data, never stored or
@@ -2933,10 +2934,14 @@ yours when they prompt it."
 * **Confirmations stay the owner's** (Q22, ruled as recommended at 22:54Z, "for now"): commits, unlocks,
   connections and kicks requested in a confidant's turn wait in the owner's approval layer. A confidant
   never confirms them.
-* **Only while the owner's harness runs:** it runs only on the owner's machine (21.4), so a confidant can
-  prompt only while the owner is online with the panel open, from inside the panel's world.
-* **Profile for confidants** [proposal, Gnosarium UX 8.5a]: an owner setting, "Confidants use my panels in
-  Restricted mode", on by default, so a confidant's turns on a Full-profile panel get no shell or web.
+* A confidant can prompt only while the owner is online with the panel open, from inside the panel's
+  world (below).
+* **Only while the owner's harness runs** [I]: it runs only on the owner's machine (21.4), so this follows
+  from where the harness runs, not from a rule of its own.
+* **Profile for confidants (D89)** [proposal, Gnosarium UX 8.5a]: an owner setting, "Confidants use my
+  panels in Restricted mode", ticked by default, so a confidant's turns on a Full-profile panel get no
+  shell or web. This narrows the ruling's "full access … as though they were you", so it is a decision for
+  the user.
 
 **Mechanics [I]:**
 * A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
@@ -4275,7 +4280,7 @@ Rules for every package:
 * **Status (2026-10-31)** [V]: done.
   * **Byte-identical:** the 4 spike guests plus logic_mono and logic_wasm are raw-hash identical on Windows (two CPUs) and on Linux, and at two paths each.
   * **Found and fixed** (13.2): the host separator in workspace-relative panic paths, host-dependent crate hashes in the name section (now stripped), and toolchain drift (now pinned).
-  * **Build times:** the table is in 13.2. It recommends a reproducible `rel-fast`-like profile for committed modules.
+  * **Build times:** the table is in 13.2. It led to the user's 22:47Z ruling: committed modules use the reproducible `rel-fast` profile.
 
 **P2-8. MCP server from day one (`pe-mcp`).**
 * What: the test and driver interface: an rmcp server with the 17.x tool catalogue for phase 2 (step,
@@ -5168,6 +5173,16 @@ entry says so.
     best-effort secret filter.
   * Alternative: stream the detailed tool view as well, to "watch them work" in full. More open, but it
     sends file contents and command output, with whatever secrets they hold, to everyone nearby.
+* **D89. Which tools a confidant's turns get (21.5; raised by the 22:34Z confidant ruling).**
+  * Ruled: confidants get "full access to your prompts as though they were you" (22:34Z), and do not
+    confirm the owner's approval cards (Q22, 22:54Z).
+  * Options:
+    * **(a) "Confidants use my panels in Restricted mode", ticked by default:** on a Full-profile panel a
+      confidant's turns get file and engine tools only, with no shell or web; the owner can untick it.
+      Recommended, because a Full panel's shell runs commands on the owner's computer as the owner.
+    * **(b) Full, as ruled:** a confidant's turns get exactly the panel's own profile.
+  * Whatever the answer, a confidant can prompt only while the owner's harness runs, on the owner's
+    machine with the panel open [I: this follows from where the harness runs].
 
 ---
 
@@ -5277,7 +5292,7 @@ length units, per world or per region.
     are explicit** (`set_parent_keep_world` and its siblings): they rewrite the affected local transforms
     for the new frame, with the root's chunk recomputed exactly. 150 keep-world moves between rotated,
     scaled frames 5 km apart stay within 1e-8 m.
-  * `maintain_transforms`, scheduled last in the tick, rebases roots into their chunk and repairs
+  * `maintain_transforms`, which a schedule adds as its last system, rebases roots into their chunk and repairs
     out-of-limit values written through mutable access, so the state stays loadable by joiners.
 
 ### 25.3 Hierarchy and the spatial index
