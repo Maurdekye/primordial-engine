@@ -1270,3 +1270,23 @@ fn rv8_ownx6_one_backup_for_one_owner() {
     commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
     assert!(commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], 2).is_err());
 }
+
+/// D87 q2 (ruled 12:52Z, version-control style merging, nothing ever lost): a merge names every
+/// pre-merge head as a parent, and each side's owner set before the merge stays readable.
+#[test]
+fn merge_keeps_both_pre_merge_heads() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::Any, 1)).unwrap();
+    let g = b.genesis;
+    let i = put(&mut b, g, Change::Add { key: I }, &[S], Some((L1, 1)));
+    let j = put(&mut b, g, Change::Add { key: J }, &[B], Some((L2, 1)));
+    let m = merge(&b, &[S]);
+    assert_eq!(b.commit_local(m.clone(), L1, 2), Ok(Insert::Applied));
+    let mut heads = m.prev.clone();
+    heads.sort_unstable();
+    let mut both = vec![i, j];
+    both.sort_unstable();
+    assert_eq!(heads, both);
+    assert_eq!(b.inner.eff[&i].owners.iter().copied().collect::<Vec<_>>(), [S, B, I]);
+    assert_eq!(b.inner.eff[&j].owners.iter().copied().collect::<Vec<_>>(), [S, B, J]);
+    assert_eq!(owners(&b), [S, B, I, J]);
+}
