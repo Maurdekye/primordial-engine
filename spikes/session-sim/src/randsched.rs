@@ -241,7 +241,7 @@ fn run_seed(seed: u64, fixes_off: u32, verbose: bool) -> Outcome {
                     let epoch = sim.replica(m, 1).sim.epoch;
                     if cap_done.insert((m, epoch)) {
                         let b = sim.replica(m, 1).sim.now + 30;
-                        let e = sim_mut(sim, m).author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary: b }, None);
+                        let e = sim_mut(sim, m).author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary: b, polka: vec![] }, None);
                         send_to(sim, m, &ids, &e);
                     }
                 }
@@ -271,7 +271,9 @@ fn run_seed(seed: u64, fixes_off: u32, verbose: bool) -> Outcome {
                 for &m in &ids {
                     sim.net.send(1, j, m, &join_msg(sid, j, vec![], u64::MAX));
                 }
-                for e in sim.replica(1, 1).sim.all_entries() {
+                let mut log = sim.replica(1, 1).sim.all_entries();
+                log.sort_by_key(|e| (e.member, e.seq));
+                for e in log {
                     sim.net.send(1, 1, j, &Msg::Entry(e));
                 }
                 sent_join = true;
@@ -381,12 +383,25 @@ fn check(
             }
         }
     }
-    // L1 liveness: after GST the live honest members keep confirming.
+    // L1 liveness (the reviewer's lag bound, not mere progress): after GST the live honest members
+    // confirm within a bounded lag of their present. A halt freezes confirmation while the clock runs
+    // on, so its lag grows past any bound; a healthy or merely slow session keeps it small once the
+    // faults stop. The bound is three speculation windows (about 6 s), generous enough for a removal's
+    // pause to clear in the tail after GST.
     let end_conf = min_conf(sim, &live);
-    if let Some(at_gst) = conf_at_gst {
-        if !live.is_empty() && end_conf <= at_gst {
-            fails.push(format!("no progress after GST: min honest conf {at_gst} -> {end_conf}"));
-        }
+    let lag = live
+        .iter()
+        .filter(|&&m| sim.replica(m, 1).sim.members.contains(&m))
+        .map(|&m| {
+            let r = &sim.replica(m, 1).sim;
+            r.frame.saturating_sub(1).saturating_sub(r.conf)
+        })
+        .max()
+        .unwrap_or(0);
+    let bound = 3 * sim.replica(live.first().copied().unwrap_or(honest[0]), 1).sim.cfg.window;
+    if !live.is_empty() && lag > bound {
+        let at_gst = conf_at_gst.unwrap_or(0);
+        fails.push(format!("confirmation lag {lag} > {bound} frames at the end (min honest conf {end_conf}, was {at_gst} at GST): not keeping up"));
     }
     // L2 a drawn faulty member that disrupts should end up removed or crashed, or the session
     // reaches a stable epoch without it being able to keep forcing changes. We only report this,

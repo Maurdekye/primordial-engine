@@ -36,9 +36,13 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
 
 ## Liveness (hold after GST, within a bound)
 
-* **L1 Progress.** After GST, the members that are honest, not crashed and still members keep confirming:
-  their lowest confirmed frame at the end of the run exceeds its value at GST. [checked: `min conf`
-  snapshot at GST vs at the end]
+* **L1 Progress, within a lag bound.** After GST, the members that are honest, not crashed and still
+  members confirm within a bounded lag of their present: at the end of the run no such member's present
+  minus its confirmed frame exceeds three speculation windows (about 6 s). A halt freezes confirmation
+  while the clock runs on, so its lag grows past the bound; a healthy or merely slow session keeps it
+  small once the faults stop. [checked: the end lag of the live honest members. An earlier version
+  checked only that confirmation advanced at all, which a one-frame blip passed; @design-reviewer asked
+  for the lag bound.]
 * **L2 Faulty members do not hold the session.** A faulty member that stalls confirmation — by going
   silent, by withholding or faking references, by a stale cap, by a ghost kick vote, or by a join
   request that reaches only part of the session — is removed, or its lever is neutralised, within a

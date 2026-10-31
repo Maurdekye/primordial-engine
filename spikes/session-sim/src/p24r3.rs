@@ -188,7 +188,9 @@ pub fn latejoin() {
                 for m in ids {
                     sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
-                for e in sim.replica(1, 1).sim.all_entries() {
+                let mut log = sim.replica(1, 1).sim.all_entries();
+                log.sort_by_key(|e| (e.member, e.seq));
+                for e in log {
                     sim.net.send(1, 1, joiner, &Msg::Entry(e));
                 }
                 asked = true;
@@ -228,7 +230,7 @@ pub fn capchurn() {
             r9.fake_ack_epoch = Some(epoch + 1);
             if capped.insert(epoch) {
                 let boundary = r9.now + 30;
-                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary }, None);
+                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka: vec![] }, None);
                 send_all(sim, 9, &ids, &e);
             }
         });

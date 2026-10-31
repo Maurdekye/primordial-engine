@@ -159,7 +159,7 @@ pub enum Payload {
     /// View change: this member's second-phase vote; a quorum of them decides the value. A value
     /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
     /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
-    Precommit { epoch: u32, round: u32, value: u64, boundary: u64 },
+    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, polka: Vec<EntryId> },
     /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
     /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
     /// target's chain for the cut, never to approve it. The view change commits it in order with
@@ -807,8 +807,14 @@ impl Wr {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
             Payload::Prevote { epoch, round, value } => { self.u8(12); self.u32(*epoch); self.u32(*round); self.u64(*value) }
-            Payload::Precommit { epoch, round, value, boundary } => {
-                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary)
+            Payload::Precommit { epoch, round, value, boundary, polka } => {
+                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary);
+                // Review VC4R-1: a capped precommit carries the prevote ids of the polka that justifies
+                // it, so a member that did not receive them (an equivocated prevote) can fetch them
+                // before it votes the capper out. At most `MAX_ATTESTS` so the size is bounded.
+                assert!(polka.len() <= MAX_ATTESTS, "a precommit carries at most {MAX_ATTESTS} prevote ids");
+                self.u32(polka.len() as u32);
+                for id in polka { self.u64(*id) }
             }
         }
         match &e.carried {
@@ -978,7 +984,14 @@ impl Rd<'_> {
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
-            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()? },
+            13 => {
+                let (epoch, round, value, boundary) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?);
+                let n = self.u32()? as usize;
+                if n > MAX_ATTESTS { return None; }
+                let mut polka = Vec::with_capacity(n);
+                for _ in 0..n { polka.push(self.u64()?) }
+                Payload::Precommit { epoch, round, value, boundary, polka }
+            }
             _ => return None,
         };
         let carried = match self.u8()? {
@@ -1554,6 +1567,9 @@ struct Vc {
     seen_at: BTreeMap<u64, u64>,
     /// Review VC4R-1: (round, value) -> every member a prevote for it is held from, in any version.
     any_prevotes: BTreeMap<(u32, u64), BTreeSet<MemberId>>,
+    /// Review VC4R-1: (round, member) -> the id of that member's first prevote this replica holds, so a
+    /// precommitter can name the prevote ids of the polka it saw.
+    prevote_id: BTreeMap<(u32, MemberId), EntryId>,
 }
 
 pub struct WorldSim {
@@ -1732,6 +1748,9 @@ pub struct WorldSim {
     /// Review VC3R-2: per member, its first capped precommit of this epoch: (round, value, my present
     /// when I recorded it).
     cap_seen: BTreeMap<MemberId, (u32, u64, u64)>,
+    /// Review VC4R-1: the prevote ids a member's capped precommit carried as its polka, and every id of
+    /// them asked for so far, so the justification is fetched once before the member is voted out.
+    cap_polka: BTreeMap<MemberId, Vec<EntryId>>,
     /// Review VC3R-6: the epoch each member entered the session in (genesis members: 0).
     admitted_epoch: BTreeMap<MemberId, u32>,
     /// Review VC3R-2: per member, until when I cast no suspicion vote against it, because decisions
@@ -1901,6 +1920,7 @@ impl WorldSim {
             ref_seen: BTreeMap::new(),
             suspect_since: BTreeMap::new(),
             cap_seen: BTreeMap::new(),
+            cap_polka: BTreeMap::new(),
             admitted_epoch: BTreeMap::new(),
             vote_hold: BTreeMap::new(),
             hold_n: BTreeMap::new(),
@@ -2428,8 +2448,44 @@ impl WorldSim {
         };
         let mut s = mine;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let matching = self.fixes_off & fix::VC4R3 == 0;
         for j in members {
             if j == self.me || j == m {
+                continue;
+            }
+            if matching {
+                // Review VC5R-2: j's contribution is the newest of m's chain it has referenced that I
+                // hold in the version it names. A reference to another version (a fake id, or a fork) is
+                // skipped and fetched for the proof, but it does not zero j's contribution, so a faulty
+                // member alternating a fake head with a stale real one cannot cap m's stability.
+                let Some(r) = self.refs.get(&(j, m)) else {
+                    s = 0;
+                    break;
+                };
+                let mut matched = None;
+                let unmatched: Vec<u32> = r
+                    .range(..=mine)
+                    .rev()
+                    .take_while(|(rs, (rid, _))| {
+                        if self.by_author.get(&(m, **rs)) == Some(rid) {
+                            matched = Some(**rs);
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|(rs, _)| *rs)
+                    .collect();
+                for rs in unmatched {
+                    self.want_from(j, m, rs, rs);
+                }
+                match matched {
+                    Some(rs) => s = s.min(rs),
+                    None => {
+                        s = 0;
+                        break;
+                    }
+                }
                 continue;
             }
             let Some((rs, rid)) = self.refs.get(&(j, m)).and_then(|r| r.range(..=mine).next_back()).map(|(a, b)| (*a, b.0)) else {
@@ -2660,16 +2716,36 @@ impl WorldSim {
             // evidence (the prevotes, the kick), which reaches every member within a few round trips,
             // and the cap holds everyone's confirmation meanwhile.
             let after = self.cfg.window / 2;
-            let caps: Vec<(MemberId, u64)> = self
+            // Review VC4R-1: a cap is justified by its polka counted in any prevote version I hold. A
+            // member faking the cap would be voted out, so I first fetch the prevote ids its precommit
+            // named (fetching a forked one records it, or proves the proposer equivocated), and vote it
+            // out only once I hold them all and they are still no quorum.
+            let ripe: Vec<(MemberId, u32, u64, u64)> = self
                 .cap_seen
                 .iter()
-                .filter(|(m, (r, v, at))| {
-                    let justified = if self.fixes_off & fix::VC4R1 == 0 { self.polka_any(*r, *v) } else { self.quorum_for(&self.vc.prevotes, *r, *v) };
-                    **m != self.me && self.now >= at + after && !justified
-                })
-                .map(|(m, _)| (*m, self.join_caps.get(m).map_or(0, |c| c.1)))
+                .filter(|(m, (_, _, at))| **m != self.me && self.now >= *at + after)
+                .map(|(m, (r, v, _))| (*m, *r, *v, self.join_caps.get(m).map_or(0, |c| c.1)))
                 .collect();
-            for (m, b) in caps {
+            for (m, r, v, b) in ripe {
+                let old_rule = self.fixes_off & fix::VC4R1 != 0;
+                if old_rule {
+                    if !self.quorum_for(&self.vc.prevotes, r, v) && self.members.contains(&m) && !self.voted(m) && !self.held(m) {
+                        self.ev(format!("member {m}'s precommit caps confirmation from frame {b} for a value no quorum here prevoted, for {after} frames: vote to remove it"));
+                        out.extend(self.freeze_and_vote(m, 0, 0));
+                    }
+                    continue;
+                }
+                if self.polka_any(r, v) {
+                    continue;
+                }
+                let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
+                let missing: Vec<EntryId> = ids.iter().copied().filter(|id| !self.entries.contains_key(id)).collect();
+                if !missing.is_empty() {
+                    for id in missing {
+                        self.want_entry_all(id, 0);
+                    }
+                    continue;
+                }
                 if self.members.contains(&m) && !self.voted(m) && !self.held(m) {
                     self.ev(format!("member {m}'s precommit caps confirmation from frame {b} for a value no quorum here prevoted, for {after} frames: vote to remove it"));
                     out.extend(self.freeze_and_vote(m, 0, 0));
@@ -3020,14 +3096,18 @@ impl WorldSim {
             Payload::Prevote { round, value, .. } => {
                 self.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
                 self.vc.any_prevotes.entry((round, value)).or_default().insert(m);
+                self.vc.prevote_id.entry((round, m)).or_insert(id);
             }
-            Payload::Precommit { round, value, boundary, .. } => {
+            Payload::Precommit { round, value, boundary, ref polka, .. } => {
                 self.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
                 if boundary > 0 {
                     // Keep the first precommit's seq and the smallest boundary (review VC-10).
                     let c = self.join_caps.entry(m).or_insert((e.seq, boundary));
                     c.1 = c.1.min(boundary);
                     self.cap_seen.entry(m).or_insert((round, value, self.now));
+                    // Review VC4R-1: keep the polka ids it named, so the next cap check fetches and
+                    // counts them (in any version) before voting it out.
+                    self.cap_polka.entry(m).or_insert_with(|| polka.clone());
                 }
             }
             Payload::Kick { target, .. } => {
@@ -3700,7 +3780,19 @@ impl WorldSim {
         self.vc.step = Step::Precommit;
         if !self.withhold_vc {
             let (epoch, round) = (self.epoch, self.vc.round);
-            out.push(self.author_vc(Payload::Precommit { epoch, round, value: v, boundary }));
+            // Review VC4R-1: a capped precommit names the prevote ids of the polka this replica saw for
+            // `v` in `round`, so a member that lacks one (an equivocated prevote sent only to me) can
+            // fetch it before it holds my cap unjustified.
+            let polka = if boundary > 0 {
+                self.vc
+                    .prevotes
+                    .get(&round)
+                    .map(|ms| ms.iter().filter(|&(_, &x)| x == v).filter_map(|(k, _)| self.vc.prevote_id.get(&(round, *k)).copied()).collect())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            out.push(self.author_vc(Payload::Precommit { epoch, round, value: v, boundary, polka }));
         }
     }
 
@@ -3728,7 +3820,7 @@ impl WorldSim {
                     out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
                     if !self.byz_no_precommit {
                         let boundary = self.vc.changes.get(&v).filter(|c| self.change_leads(c)).map_or(0, |c| c.boundary);
-                        out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary }));
+                        out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary, polka: vec![] }));
                     }
                 }
             }
@@ -3746,7 +3838,7 @@ impl WorldSim {
             }
             for r in nil_in(&self.vc.precommits) {
                 if !self.vc.proposals.contains_key(&r) && !self.byz_no_precommit {
-                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: 0, boundary: 0 }));
+                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: 0, boundary: 0, polka: vec![] }));
                 }
             }
             return out;
@@ -4115,6 +4207,11 @@ impl WorldSim {
         }
         self.join_caps.clear();
         self.cap_seen.clear();
+        self.cap_polka.clear();
+        // Review VC5R-4: the verified-reference timers and the silence spare-window are per-epoch; a
+        // decision clears them so a stale entry does not vote a member out in the new epoch.
+        self.ref_seen.clear();
+        self.suspect_since.clear();
         for &j in &c.add {
             self.admitted_epoch.insert(j, c.epoch + 1);
             // Review VC3R-6: a new member's silence counts from its admission, not from its last entry

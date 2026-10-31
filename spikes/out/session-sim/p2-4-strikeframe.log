@@ -28,9 +28,9 @@ RESULT strikeframe silent 3.08 s, 1000 ms late: at m2 members {1, 2, 3, 9}, rese
   m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 115 bad 0
   m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 114 bad 0
 RESULT strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=c43a4418f3f4bbd0 m2=c43a4418f3f4bbd0 m3=c43a4418f3f4bbd0 | offline replay c43a4418f3f4bbd0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 340 bad 0
-RESULT strikeframe silent 2.98 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 5, 9 removed at never -> 1 KEPT
-  m1: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 105 bad 0
-  m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 110 bad 0
-  m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 112 bad 0
-RESULT strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=c43a4418f3f4bbd0 m2=c43a4418f3f4bbd0 m3=c43a4418f3f4bbd0 | offline replay c43a4418f3f4bbd0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 327 bad 0
+RESULT strikeframe silent 2.98 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 3, 9 removed at never -> 1 KEPT
+  m1: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 113 bad 0
+  m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 118 bad 0
+  m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 120 bad 0
+RESULT strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=c43a4418f3f4bbd0 m2=c43a4418f3f4bbd0 m3=c43a4418f3f4bbd0 | offline replay c43a4418f3f4bbd0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 351 bad 0
 RESULT strikeframe: 1 kept in 5 of 5 timings -> OK
