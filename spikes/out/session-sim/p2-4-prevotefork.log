@@ -9,4 +9,4 @@ RESULT prevotefork: m3 votes to remove capper 2: false; 2 kept: true; epochs at 
   m1: conf 53 frame 173 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 8 bad 0
   m2: conf 587 frame 593 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 53 bad 0
   m3: conf 587 frame 593 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 53 bad 0
-RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..172 honest m1=30d604ae307f1578 m2=30d604ae307f1578 m3=30d604ae307f1578 | offline replay 30d604ae307f1578 | ALL EQUAL, NO FALSE CHECKS ; checks ok 114 bad 0
+RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..172 honest m1=a899c0cdfcb930cc m2=a899c0cdfcb930cc m3=a899c0cdfcb930cc | offline replay a899c0cdfcb930cc | ALL EQUAL, NO FALSE CHECKS ; checks ok 114 bad 0
