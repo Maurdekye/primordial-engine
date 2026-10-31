@@ -2437,7 +2437,9 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   unjudged. Sent again later, it is a new entry.
   * One whose parent is not in the book yet (built on a pending certificate's head) is held, not dropped,
     and judged again after each decision: pending once it applies, dropped once it never can (review
-    OWNY-2) [V unit test, with a control that loses it].
+    OWNY-2) [V unit test, with a control that loses it]. An author has at most 16 held
+    (`MAX_HELD_PER_AUTHOR`); past that one is dropped at receipt, so a member naming parents that never
+    exist can't grow the set every decision re-scans (OWNZ-1) [V unit test].
   * Tag 20 carries at most 4,096 words (`MAX_CERT_WORDS`); a decode of more is refused (OWNY-3).
 * **Decided in `Change.admin`**, in commit order (stamp, author, seq) with the other admin entries. The
   admin run holds the `Book` (copy on write) and applies a certificate if `Book::commit_local` does.
