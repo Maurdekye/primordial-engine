@@ -10,7 +10,7 @@ description = "The headless M1 peer (design 23.4, P2-10): the session protocol o
 pe-session = { path = "../pe-session" }
 pe-mcp = { path = "../pe-mcp" }
 ed25519-dalek = "3"
-sha2 = "0.11"
+blake3 = { version = "1.8", default-features = false, features = ["std", "pure"] }
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
