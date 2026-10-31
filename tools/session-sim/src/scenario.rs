@@ -31,6 +31,13 @@ pub struct Scenario {
     pub control: bool,
     /// A control run must print this text; without it, at least one of regress's failure markers.
     pub control_marker: Option<String>,
+    /// Templated lines printed before the run (see report.rs).
+    #[serde(default)]
+    pub intro: Vec<String>,
+    /// Print nothing for a panic (the spike's `run_quiet`, for a run with a fix switched off,
+    /// which may trip an assertion; the panic still ends the run and is reported).
+    #[serde(default)]
+    pub quiet_panics: bool,
     /// Last 1 ms step at or before this virtual time (`end_us` wins if both are given).
     pub end_ms: Option<u64>,
     pub end_us: Option<u64>,
@@ -51,6 +58,9 @@ pub struct Scenario {
     pub crash: Vec<Crash>,
     #[serde(default)]
     pub byzantine: Vec<Byzantine>,
+    /// Join requests (P2-4, design 10.8), each sent once at its time.
+    #[serde(default)]
+    pub join: Vec<JoinReq>,
     /// Printed in order after the run.
     #[serde(default)]
     pub report: Vec<Report>,
@@ -67,7 +77,12 @@ pub struct PeerCfg {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldCfg {
+    /// The genesis members. `members_range = [a, b]` stands for `members = [a, ..., b]`.
     pub members: Vec<u32>,
+    /// Peers that follow the world from frame 0 without being members (they may ask to join):
+    /// they replicate it with `members` as its membership, and every member follows them.
+    #[serde(default)]
+    pub joiners: Vec<u32>,
     pub scene: SceneCfg,
     /// Virtual time of the world's frame 0.
     pub epoch_ms: u64,
@@ -80,6 +95,23 @@ pub struct WorldCfg {
     pub check_every: Option<u64>,
     pub hand_predict: Option<u64>,
     pub suspect_after: Option<u64>,
+    /// D80 quorum rule: `bft` (the default) or `majority`.
+    pub quorum: Option<String>,
+    /// Acks carry heads (default true; false measures the view change alone, design 25.5.2).
+    pub ack_heads: Option<bool>,
+    /// Every replica acks every this many frames (default: the replica's own default).
+    pub ack_every_frames: Option<u64>,
+    /// Review repros: these fixes switched off on every replica (`fix::VC2` etc., by name).
+    #[serde(default)]
+    pub fixes_off: Vec<String>,
+    /// D80: define role `role` with no permissions and give it to every member and joiner, except
+    /// `admins`, who keep ADMIN (the spike's `guests`).
+    pub guests: Option<GuestsCfg>,
+    /// D80: the world's owners.
+    #[serde(default)]
+    pub owners: Vec<u32>,
+    /// D80: the join rules (default: the replica's).
+    pub join_rules: Option<JoinRulesCfg>,
     /// R14 genesis route list: the worlds this one trades objects with.
     #[serde(default)]
     pub routes: Vec<u32>,
@@ -96,6 +128,64 @@ pub struct WorldCfg {
 pub enum SceneCfg {
     Pile { side: usize, layers: usize },
     Ballpit { balls: usize, hands: usize },
+    /// No bodies: a log-only world (`scene = "empty"`).
+    Empty,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuestsCfg {
+    pub role: u16,
+    pub admins: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinRulesCfg {
+    #[serde(default)]
+    pub rules: Vec<JoinRuleCfg>,
+    pub fallback: Option<u16>,
+}
+
+/// One join rule: a joiner with relation `rel` (`friend`, `confidant`, `invited`) to a `target`
+/// (`player`, `admin`, `owner`), or to `all` of them, gets `role`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinRuleCfg {
+    pub target: String,
+    #[serde(default)]
+    pub all: bool,
+    pub rel: String,
+    pub role: Option<u16>,
+}
+
+/// A join request: `member` sends `Msg::Join` to each of `to` at `at_ms`. Members listed in
+/// `attests_to` get `attests`; the others get none (default: every recipient gets them).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinReq {
+    pub at_ms: u64,
+    #[serde(default = "one")]
+    pub world: u32,
+    pub member: u32,
+    pub to: Vec<u32>,
+    #[serde(default)]
+    pub attests: Vec<AttestCfg>,
+    pub attests_to: Option<Vec<u32>>,
+    /// Right after the request, this member sends the joiner every entry it holds (so it catches
+    /// up within a tick).
+    pub log_from: Option<u32>,
+}
+
+/// An attestation of relation `rel` (`friend`, `confidant`, `invited`) between the joiner and
+/// `with`, signed for `world`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestCfg {
+    pub rel: String,
+    pub with: u32,
+    #[serde(default = "one")]
+    pub world: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -108,6 +198,18 @@ pub struct ReplicaCfg {
     /// R18 congestion control on this member's uplink.
     #[serde(default)]
     pub adapt: bool,
+    /// Ack every this many ms (default: the world's).
+    pub ack_every_ms: Option<u64>,
+    /// Byzantine: casts no view-change entry (session.rs `withhold_vc`).
+    #[serde(default)]
+    pub withhold_vc: bool,
+    /// Byzantine: backs every vote, prevotes and precommits every proposal, echoes nil votes and
+    /// applies no decision (session.rs `byz_ally`).
+    #[serde(default)]
+    pub byz_ally: bool,
+    /// Byzantine: prevotes but never precommits (session.rs `byz_no_precommit`).
+    #[serde(default)]
+    pub byz_no_precommit: bool,
 }
 
 /// A planned action: at frame `at`, or `count` times from `at` every `every` frames.
@@ -125,6 +227,10 @@ pub struct ActionSpec {
     pub backdated: Option<BackdatedSpec>,
     /// The ball-pit hand gesture of session-sim's `ballpit_sweep` (no `at`).
     pub ballpit_sweep: Option<SweepSpec>,
+    /// D80 admin entries: kick a member, give a member a role, define a role.
+    pub kick: Option<KickSpec>,
+    pub set_role: Option<SetRoleSpec>,
+    pub define_role: Option<DefineRoleSpec>,
     /// Accept this action on an object the scene lacks (the protocol rejects it as gone). Only
     /// for reproducing a spike scenario that did this; say why next to it.
     #[serde(default)]
@@ -170,6 +276,26 @@ pub struct BackdatedSpec {
     pub obj: u32,
     pub impulse: [f32; 3],
     pub back: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KickSpec {
+    pub target: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRoleSpec {
+    pub member: u32,
+    pub role: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DefineRoleSpec {
+    pub role: u16,
+    pub perms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -382,6 +508,35 @@ pub enum Byzantine {
     },
     /// The R14 forgeries of reviews NEW-3..NEW-21, R3-4..R3-8, each at its time.
     R14Forgeries { attacks: Vec<R14Attack> },
+    /// From `from_ms`, `member`'s acks reference no more of anyone's chain (session.rs
+    /// `freeze_others`); at `until_ms` it references them again and, with `ally_until`, stops
+    /// backing everything (`byz_ally` off).
+    HideRefs {
+        #[serde(default = "one")]
+        world: u32,
+        member: u32,
+        from_ms: u64,
+        until_ms: Option<u64>,
+        #[serde(default)]
+        ally_until: bool,
+    },
+    /// `member`, the first proposer, shows `to` a reset in place of its first proposal (epoch 0,
+    /// round 0); `to` never receives its genuine proposals.
+    ForgeProposal {
+        #[serde(default = "one")]
+        world: u32,
+        member: u32,
+        to: Vec<u32>,
+    },
+}
+
+/// Who a report covers: a list of members, or `{ members_at = M }`, the membership member M's
+/// replica of world 1 holds at the end of the run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Honest {
+    List(Vec<u32>),
+    At { members_at: u32 },
 }
 
 fn one() -> u32 {
@@ -471,9 +626,56 @@ pub enum Report {
         text: String,
     },
     /// Honest members agree with each other and an offline replay, no false checks, no panic.
-    Verdict { honest: Vec<u32>, label: String },
+    Verdict { honest: Honest, label: String },
     /// Membership, evictions, confirmation and paused frames per honest member.
-    Membership { honest: Vec<u32>, label: String },
+    Membership { honest: Honest, label: String },
+    /// P2-4: every decision each member took (epoch, frame, round, removed).
+    ViewChanges { honest: Honest, label: String },
+    /// P2-4 join: each member's admissions and `joiner`'s touches.
+    Admitted { honest: Vec<u32>, joiner: u32 },
+    /// D80: per member, the admin entries' outcomes (`RESULT {label}: m{m}: ...`) and/or its
+    /// members, roles, admins and close frame.
+    Admin {
+        honest: Honest,
+        label: String,
+        #[serde(default)]
+        outcomes: bool,
+        #[serde(default)]
+        roles: bool,
+    },
+    /// Each member's confirmed and simulated frame on one line (`RESULT {label}: m1 conf ...`).
+    Confs { honest: Vec<u32>, label: String },
+    /// The line a run with its fix switched off ends with: whether it stopped, or every replica
+    /// of `honest` equals the replay; their frames; and the first one's members and evictions.
+    BeforeFix { honest: Vec<u32>, label: String, fix: String },
+    /// The spike's one-off checks, ported verbatim (report.rs `check`); each reads the fields it
+    /// names and nothing else:
+    /// * `bridge`: `label`, `text` (the verdict label if the session stayed whole), `honest`,
+    ///   `sides` (two groups, judged on their own if it forked; the first of each is compared).
+    /// * `kickwar`: `label`, `at` (whose membership is left), `members` (the two admins).
+    /// * `kickpartition`: `label`, `members` (the two compared), `target`, `until_ms` (the heal).
+    /// * `lastadmin`: `label`, `honest`, `members` (the admins expected at the end).
+    /// * `adminclose`: `label`, `text`, `honest` (two members).
+    /// * `joinrules`: `label`, `members` (friend, stranger, confidant, owner), `role` (guest).
+    /// * `vcscale`: `silent` (the last members, silent from 1 s).
+    Check {
+        case: String,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        honest: Vec<u32>,
+        #[serde(default)]
+        sides: Vec<Vec<u32>>,
+        at: Option<u32>,
+        #[serde(default)]
+        members: Vec<u32>,
+        target: Option<u32>,
+        until_ms: Option<u64>,
+        role: Option<u16>,
+        silent: Option<u32>,
+    },
     /// A condition on member `at`'s replica of `world`: confirmed frame within bounds and/or this
     /// exact membership. Prints OK or FAIL.
     Expect {
@@ -566,6 +768,22 @@ pub fn read_merged(path: &Path, depth: usize) -> Result<Value, String> {
     Ok(out)
 }
 
+/// `members_range = [a, b]` in a world table becomes `members = [a, ..., b]`.
+fn expand_ranges(v: &mut Value) -> Result<(), String> {
+    let Some(worlds) = v.get_mut("world").and_then(|w| w.as_table_mut()) else { return Ok(()) };
+    for (k, w) in worlds.iter_mut() {
+        let Some(t) = w.as_table_mut() else { continue };
+        if let Some(r) = t.remove("members_range") {
+            let r: [u32; 2] = r.try_into().map_err(|e| format!("world {k}: members_range: {e}"))?;
+            if t.contains_key("members") {
+                return Err(format!("world {k}: give members or members_range, not both"));
+            }
+            t.insert("members".into(), Value::Array((r[0]..=r[1]).map(|m| Value::Integer(m as i64)).collect()));
+        }
+    }
+    Ok(())
+}
+
 pub fn load(path: &Path) -> Result<Loaded, String> {
     let mut v = read_merged(path, 0)?;
     let parts = match v.as_table_mut().and_then(|t| t.remove("part")) {
@@ -583,7 +801,10 @@ pub fn load(path: &Path) -> Result<Loaded, String> {
     let parts = parts
         .into_iter()
         .enumerate()
-        .map(|(i, p)| p.try_into::<Scenario>().map_err(|e| format!("{} (part {}): {e}", path.display(), i + 1)))
+        .map(|(i, mut p)| {
+            expand_ranges(&mut p).map_err(|e| format!("{} (part {}): {e}", path.display(), i + 1))?;
+            p.try_into::<Scenario>().map_err(|e| format!("{} (part {}): {e}", path.display(), i + 1))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Loaded { parts })
 }

@@ -11,7 +11,7 @@ use spike::{Fate, Sim, WorldId};
 
 use crate::faults::Hook;
 use crate::report::{template, Vars};
-use crate::scenario::{Byzantine, R14Attack, When};
+use crate::scenario::{Byzantine, JoinReq, R14Attack, When};
 
 /// One forged R14 entry: (world, author, entry, what it attempts).
 pub type Forged = (WorldId, MemberId, EntryId, &'static str);
@@ -41,6 +41,8 @@ pub const R14_ATTACKS: &[&str] = &[
 pub struct Actor {
     spec: Byzantine,
     pub fired: bool,
+    /// HideRefs: it has stopped hiding (`until_ms`).
+    done: bool,
     /// ForkChain: (seq, id) of the forged chain's head.
     head: (u32, EntryId),
     forged_ids: Rc<RefCell<BTreeSet<EntryId>>>,
@@ -63,7 +65,7 @@ impl Actor {
                 }
             }
         }
-        Ok(Actor { spec, fired: false, head: (0, 0), forged_ids: Rc::default(), forged_vote: Rc::default(), refunded: None })
+        Ok(Actor { spec, fired: false, done: false, head: (0, 0), forged_ids: Rc::default(), forged_vote: Rc::default(), refunded: None })
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -82,6 +84,13 @@ impl Actor {
 
     /// Replica settings, applied once before the run.
     pub fn configure(&self, sim: &mut Sim) -> Result<(), String> {
+        if let Byzantine::ForgeProposal { world, member, .. } = &self.spec {
+            let p0 = sim.peers.iter().find_map(|p| p.worlds.get(world)).and_then(|r| r.sim.proposer_of(0, 0));
+            if p0 != Some(*member) {
+                return Err(format!("forge_proposal: member {member} is not world {world}'s first proposer ({p0:?})"));
+            }
+            return Ok(());
+        }
         let (world, member) = match &self.spec {
             Byzantine::LieInVotes { world, member } | Byzantine::LagHorizon { world, member, .. } => (*world, *member),
             _ => return Ok(()),
@@ -110,6 +119,13 @@ impl Actor {
                 let (member, fv) = (*member, self.forged_vote.clone());
                 Some(Box::new(move |_t, _w, from, _to, m| match m {
                     Msg::Entry(e) if from == member && matches!(e.payload, Payload::Vote { .. }) && e.id() != fv.get() => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::ForgeProposal { member, to, .. } => {
+                let (member, to, fv) = (*member, to.clone(), self.forged_vote.clone());
+                Some(Box::new(move |_t, _w, from, dest, m| match m {
+                    Msg::Entry(e) if from == member && to.contains(&dest) && matches!(e.payload, Payload::Propose { .. }) && e.id() != fv.get() => Some(Fate::Drop),
                     _ => None,
                 }))
             }
@@ -193,9 +209,72 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 act.fired = true;
             }
+            Byzantine::HideRefs { world, member, from_ms, until_ms, ally_until } => {
+                let now = sim.net.now_us;
+                if !act.fired && now >= from_ms * 1000 {
+                    sim_mut(sim, *member, *world).freeze_others();
+                    act.fired = true;
+                }
+                if let (true, false, Some(u)) = (act.fired, act.done, until_ms) {
+                    if now >= u * 1000 {
+                        let r = sim_mut(sim, *member, *world);
+                        if *ally_until {
+                            r.byz_ally = false;
+                        }
+                        r.unfreeze_others();
+                        act.done = true;
+                    }
+                }
+            }
+            Byzantine::ForgeProposal { world, member, to } if !act.fired => {
+                let genuine = sim.replica(*member, *world).sim.all_entries().into_iter().find(|e| e.member == *member && matches!(e.payload, Payload::Propose { epoch: 0, round: 0, .. }));
+                let Some(g) = genuine else { continue };
+                let Payload::Propose { epoch, round, valid_round, ref change } = g.payload else { unreachable!() };
+                let mut f = g.clone();
+                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![] };
+                f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
+                act.forged_vote.set(f.id());
+                for &m in to {
+                    sim.net.send(*world, *member, m, &Msg::Entry(f.clone()));
+                }
+                let fooled: BTreeSet<MemberId> = to.iter().copied().collect();
+                println!(
+                    "  t={} ms: {member} proposes removing {:?} to the others and a reset to {fooled:?}",
+                    sim.net.now_us / 1000,
+                    change.remove.iter().map(|r| r.member).collect::<Vec<_>>()
+                );
+                act.fired = true;
+            }
             _ => {}
         }
     }
+}
+
+fn sim_mut(sim: &mut Sim, member: MemberId, w: WorldId) -> &mut WorldSim {
+    let i = sim.peers.iter().position(|p| p.id == member).unwrap();
+    &mut sim.peers[i].worlds.get_mut(&w).unwrap().sim
+}
+
+/// Before the step: the join requests due (each once, at the first millisecond at or after its
+/// time), in file order.
+pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result<(), String> {
+    for (j, done) in joins.iter().zip(sent.iter_mut()) {
+        if *done || sim.net.now_us < j.at_ms * 1000 {
+            continue;
+        }
+        let attests = j.attests.iter().map(|a| Ok(attest(crate::setup::rel(&a.rel)?, j.member, a.with, a.world))).collect::<Result<Vec<_>, String>>()?;
+        for &m in &j.to {
+            let a = if j.attests_to.as_ref().is_none_or(|t| t.contains(&m)) { attests.clone() } else { vec![] };
+            sim.net.send(j.world, j.member, m, &Msg::Join { member: j.member, attests: a });
+        }
+        if let Some(from) = j.log_from {
+            for e in sim.replica(from, j.world).sim.all_entries() {
+                sim.net.send(j.world, from, j.member, &Msg::Entry(e));
+            }
+        }
+        *done = true;
+    }
+    Ok(())
 }
 
 /// After the step: the R14 forgeries due at this millisecond.
