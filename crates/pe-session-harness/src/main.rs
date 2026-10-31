@@ -762,7 +762,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // A:52 went A -> W -> B. W's majority exports it again, into A, citing its genuine hop
                 // in: A's own last exit is on the chain, so A cannot tell.
                 let a = &sim.replica(1, 1).sim;
-                let in_b = sim.replica(3, 2).sim.t.objs.iter().flatten().any(|o| o.global == g(52));
+                let in_b = sim.replica(3, 2).sim.objects().map(|(_, o)| o).any(|o| o.global == g(52));
                 if let (4_600_000, true, Some(Seen::Left { transfer: t1, dest: 6, .. })) = (t, in_b, a.t.seen.get(&g(52)).cloned()) {
                     let cert = a.cert(fact_committed(1, t1, g(52), 6, 0)).unwrap();
                     let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
@@ -827,7 +827,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // accepted forgeries shift B's local ids). Member 1 is in both, so it relays.
                 let i = sim.peers.iter().position(|p| p.id == 1).unwrap();
                 let r = sim.peers[i].worlds.get_mut(&2).unwrap();
-                let obj = r.sim.t.objs.iter().position(|o| o.is_some_and(|o| o.global == g(52))).map(|i| i as u32);
+                let obj = r.sim.objects().find(|(_, o)| o.global == g(52)).map(|(i, _)| i);
                 if let Some(obj) = obj {
                     let hop = r.sim.pending_hop(obj);
                     let deadline = sim.replica(1, 1).sim.now + 600;
@@ -840,7 +840,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             if t == 7_000_000 && !doublespend {
                 // Resurrection: A:52 went A -> W -> B -> A. W re-exports it, citing its genuine hop in.
                 let a = &sim.replica(1, 1).sim;
-                let back = a.t.objs.iter().flatten().any(|o| o.global == g(52)) && matches!(a.t.seen.get(&g(52)), Some(Seen::Here { from: 2, .. }));
+                let back = a.objects().map(|(_, o)| o).any(|o| o.global == g(52)) && matches!(a.t.seen.get(&g(52)), Some(Seen::Here { from: 2, .. }));
                 let first = sim.peers.iter().flat_map(|p| p.jobs.iter()).find(|j| j.src == 1 && j.dst == 6 && j.record.is_some_and(|r| r.global == g(52))).map(|j| j.transfer);
                 if let (true, Some(t1)) = (back, first) {
                     let cert = a.cert(fact_committed(1, t1, g(52), 6, 0)).unwrap();
@@ -905,15 +905,15 @@ fn r14(variant: &str, reverse: bool, control: bool) {
     for (w, label) in [(1, "A"), (2, "B")] {
         for p in &sim.peers {
             if let Some(r) = p.worlds.get(&w) {
-                let live = r.sim.t.objs.iter().flatten().filter(|o| o.global == gid).count();
+                let live = r.sim.objects().map(|(_, o)| o).filter(|o| o.global == gid).count();
                 let esc: Vec<String> = r.sim.t.escrow.iter().map(|(t, e)| format!("T{t}:{:?}", e.status)).collect();
                 let arr: Vec<String> = r.sim.t.arrivals.iter().map(|(t, a)| format!("T{t}:{a:?}")).collect();
                 println!("  m{} world {label}: object 40 live copies {live}; escrow {esc:?}; arrivals {arr:?}", p.id);
             }
         }
     }
-    let live_a = sim.replica(2, 1).sim.t.objs.iter().flatten().filter(|o| o.global == gid).count();
-    let live_b = sim.replica(3, 2).sim.t.objs.iter().flatten().filter(|o| o.global == gid).count();
+    let live_a = sim.replica(2, 1).sim.objects().map(|(_, o)| o).filter(|o| o.global == gid).count();
+    let live_b = sim.replica(3, 2).sim.objects().map(|(_, o)| o).filter(|o| o.global == gid).count();
     let pending = sim.replica(2, 1).sim.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
     println!(
         "RESULT r14 {variant}{}: object 40 live in A {live_a}, in B {live_b}, pending escrow {pending} -> {}",
@@ -921,7 +921,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
         if live_a + live_b == 1 && pending == 0 { "CONSERVED (exactly one live copy, nothing in limbo)" } else { "NOT CONSERVED" }
     );
     if forge {
-        let live = |m: MemberId, w: WorldId, g: u64| sim.replica(m, w).sim.t.objs.iter().flatten().filter(|o| o.global == g).count();
+        let live = |m: MemberId, w: WorldId, g: u64| sim.replica(m, w).sim.objects().map(|(_, o)| o).filter(|o| o.global == g).count();
         let (g50, g51) = ((1u64 << 32) | 50, (1u64 << 32) | 51);
         let (a50, a51, d50, b40) = (live(1, 1, g50), live(1, 1, g51), live(2, 4, g50), live(3, 2, gid));
         if variant == "forge" {
@@ -1090,7 +1090,7 @@ fn r14_chain(reverse: bool) {
     let mut parts = Vec::new();
     for (w, label, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
         let r = &sim.replica(m, w).sim;
-        let live = r.t.objs.iter().flatten().filter(|o| o.global == gid).count();
+        let live = r.objects().map(|(_, o)| o).filter(|o| o.global == gid).count();
         pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
         total += live;
         parts.push(format!("{label} {live} ({:?})", r.t.seen.get(&gid).map(|s| match s {
@@ -1102,7 +1102,7 @@ fn r14_chain(reverse: bool) {
         "RESULT r14 chain{}: A:40 live copies {} ; pending escrows {pending} -> {}",
         if reverse { " (reverse order)" } else { "" },
         parts.join(", "),
-        if total == 1 && pending == 0 && sim.replica(2, 1).sim.t.objs.iter().flatten().any(|o| o.global == gid) {
+        if total == 1 && pending == 0 && sim.replica(2, 1).sim.objects().map(|(_, o)| o).any(|o| o.global == gid) {
             "CONSERVED (back in A, nothing in limbo)"
         } else {
             "NOT CONSERVED"
@@ -1176,12 +1176,12 @@ fn r14_chain_epoch() {
     let mut parts = Vec::new();
     for (w, label, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
         let r = &sim.replica(m, w).sim;
-        let live = r.t.objs.iter().flatten().filter(|o| o.global == gid).count();
+        let live = r.objects().map(|(_, o)| o).filter(|o| o.global == gid).count();
         pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
         total += live;
         parts.push(format!("{label} {live}"));
     }
-    let in_c = sim.replica(4, 3).sim.t.objs.iter().flatten().any(|o| o.global == gid);
+    let in_c = sim.replica(4, 3).sim.objects().map(|(_, o)| o).any(|o| o.global == gid);
     println!(
         "RESULT r14 chain-epoch: A:40 live copies {} ; pending escrows {pending} -> {}",
         parts.join(", "),
