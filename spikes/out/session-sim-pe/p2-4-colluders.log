@@ -1,0 +1,15 @@
+  t=3574 ms: 9's touch s26 at frame 50 confirmed at m1: true, at m2: true (m1 conf 201) -> 9 signs a second version
+  t=3611 ms: 8 sends members 1, 2 and 3 a forged vote against 9 with frozen head (0, 0)
+  9's touches at m1: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m2: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m3: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+RESULT colluders: m1 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
+RESULT colluders: m2 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
+RESULT colluders: m3 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
+RESULT colluders: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 219 (t=3.75 s) round 0 removed [8, 9]
+RESULT colluders: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 219 (t=3.75 s) round 0 removed [8, 9]
+RESULT colluders: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [8, 9]
+  m1: conf 467 frame 473 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 46 bad 0
+  m2: conf 467 frame 473 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 46 bad 0
+  m3: conf 467 frame 473 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 46 bad 0
+RESULT colluders (two of five: 9 equivocates on a confirmed touch; 8 forks its vote): frames 0..472 honest m1=1cc88e9ecb710261 m2=1cc88e9ecb710261 m3=1cc88e9ecb710261 | offline replay 1cc88e9ecb710261 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0

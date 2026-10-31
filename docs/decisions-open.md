@@ -1,16 +1,19 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of main, 30 October 2026, after your decisions of 18:42-20:07Z. This summarises design.md section 24
+As of 30 October 2026, after your decisions of 18:42-22:51Z. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
 from measured parts; **inferred** = design reasoning, not run.
 
-## A. Still open: one question from the phase-2 view change
+## A. Still open
 
-| ID | Question | Options and their main cost | Recommendation | Evidence |
-|---|---|---|---|---|
-| D80 | How many members must agree to remove members (crashed, too slow, or caught cheating) or let someone join? | **(a) A strict majority:** up to just under half can drop at once and still be removed (two of five). But one cheater that can reach both sides of a network split between honest players can get each side to remove the other, and the session splits into two sessions. **(b) Just over two thirds:** no fork while fewer than a third cheat, split or not. But fewer can drop at once (one of five, two of eight); when more drop together, the rest pause until enough come back. **(c) Per world:** (b) for worlds open to strangers, (a) for invite-only worlds | (b) | Measured in the simulator: under (a) bridge split into two sessions, under (b) it stayed one; twosilent5 shows (b)'s pause. 10.8, 24 |
+From the protocol: three questions about admin permissions, raised by the P2-4 review (VCR-10) and put to
+you as V1-V3 by @coordinator-opus. A role holding only the kick permission can kick the last admin, which
+closes the session; the roles permission can grant Admin, so it equals Admin; and removing an honest but
+slow sole admin closes the session for good. Recommended: only admins kick admins; only admins grant
+Admin, and the roles permission grants only lesser roles; keep closing on the last admin's timeout, with a
+longer grace period. The Gnosarium design's open questions are with @coordinator-opus too.
 
 ## B. Your rulings
 
@@ -55,6 +58,7 @@ from measured parts; **inferred** = design reasoning, not run.
 | D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
 | D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
+| D80 who may change a session's member list | Session admins: an admin's signed kick removes anyone; the view change's two-thirds quorum only commits and orders changes. Always at least one admin, and the last cannot step down without handing on; everyone is an admin by default; the session closes when no admin is left. Admin is the only built-in role; join rules are an ordered matrix with the fixed row "an owner joins as Admin" | 22:11-22:51Z |
 | Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
 | Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
 
@@ -124,8 +128,9 @@ The times are yours; @coordinator-opus relayed most of these rulings.
    90 Hz costs 1.5x that. Parallel physics is the chosen answer, and its feasibility is still being
    studied.
 3. **Strangers from day one:** the view change now removes several failed members, colluders and
-   cheaters in the simulator, but how many must agree (D80) decides whether a cheater who can split the
-   network can fork a session. Cheating stays bounded, not prevented.
+   cheaters in the simulator, and with D80 settled a session cannot fork while at most about a third of
+   its members cheat, proven or not. Above that, a partition plus one-sided proofs can fork it (measured
+   as a control). Cheating stays bounded, not prevented.
 4. **Every peer compiles:** byte-identical builds across machines and operating systems are unproven,
    joining a world means building its code, and every peer compiles other people's code (in a sandbox).
 5. **Unlocked panels:** guests act with your rights and your AI account, which you accepted; prompt
