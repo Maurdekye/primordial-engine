@@ -5052,9 +5052,10 @@ in contact suffices:
   alone may override after a crash. Its client grants each number once and records that durably. In a
   single-owner world the steward is that owner's device unless they move it.
 * So two leases of one number need one grantor that signed both, the steward or the holder's quorum,
-  which is an equivocation proof against it, or an override racing a release. The expiry fence rules the
-  race out: a holder member signs no release past `until_utc`, and the override waits 2 minutes past it
-  (review TL-10). Partners refuse both leases of a fork (`RejectedLeaseFork`, below) until the steward
+  which is an equivocation proof against it, or an override racing a release. For a lapsed holder the
+  expiry fence rules the race out: a holder member signs no release past `until_utc`, and the override
+  waits 2 minutes past it (review TL-10). A live holder cut off from the steward can still release while
+  the steward overrides; that is the override's named risk (review TL-15). Partners refuse both leases of a fork (`RejectedLeaseFork`, below) until the steward
   grants the next number naming one of them as its parent (review TL-8).
 * Grants are needed only to start a holder. A running holder renews itself.
 * No grant while the ownership chain is disputed, that is, while a fork of it is known (review TL-3). A
@@ -5107,7 +5108,9 @@ snapshotted once confirmed. A fact from A is refused, with a certified verdict a
   accepted fact cited. The new holder started from a stale view of the old holder's trades. The partner
   stops trading with A until a lease that includes them arrives.
 * `RejectedLeaseFork`: the partner holds two leases with one number, which proves their grantor signed
-  both. It accepts A's facts again under a higher number whose parent is one of them.
+  both. It accepts A's facts again under a higher number whose parent is one of them: the one it traded
+  under, if it traded under either. A higher number descending from the other branch, whose lineage may
+  still hold objects the partner's branch exported, is refused as `RejectedLeaseGap` (review TL-14).
 * `RejectedNoLease`: no valid lease, meaning one signed neither by A's trade steward as A's ownership
   chain names it, nor by the previous holder's quorum in a release that an owner or delegate requested.
 
