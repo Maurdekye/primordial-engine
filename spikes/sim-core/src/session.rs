@@ -292,6 +292,11 @@ pub const MAX_POLKA: usize = 512;
 /// ones the receiver lacks [I].
 pub const MAX_EPOCH_CERTS: usize = 1024;
 
+/// Review OWNZ-1: the most ownership entries one author has held for a missing parent (OWNY-2); past
+/// it, such an entry is dropped at receipt as before, so one faulty member can't grow the set that
+/// every decision re-scans.
+pub const MAX_HELD_PER_AUTHOR: usize = 16;
+
 /// Round 3 only (`fix::VC3R2` off, review VC3R-2): a member whose votes or caps resets overruled in
 /// this many of the last `STRIKE_EPOCHS` epochs is voted out.
 pub const STRIKES_OUT: usize = 3;
@@ -3287,7 +3292,10 @@ impl WorldSim {
                         }
                         // Review OWNY-2: its parent may be a pending certificate; hold it until it is decided.
                         Err(OwnError::MissingParent) if self.fixes_off & fix::OWNY2 == 0 => {
-                            self.own_held.insert(id);
+                            let mine = self.own_held.iter().filter(|h| self.entries.get(h).is_some_and(|e| e.member == m)).count();
+                            if mine < MAX_HELD_PER_AUTHOR {
+                                self.own_held.insert(id);
+                            }
                         }
                         _ => {}
                     }
@@ -5939,6 +5947,19 @@ mod ownership_tests {
         let c = Change { epoch: s.epoch, admin: vec![(id1, true)], boundary: 10, ..Default::default() };
         s.apply_change(c, 0, &mut Vec::new());
         assert!(!s.admin_pending.contains(&id2));
+    }
+
+    #[test]
+    fn an_author_holds_at_most_max_held_per_author() {
+        // Review OWNZ-1: certificates naming parents that never exist are held up to the cap only.
+        let mut s = world(&[1]);
+        let world = s.book.as_ref().unwrap().world;
+        for n in 0..MAX_HELD_PER_AUTHOR as u64 + 4 {
+            let c = Cert { world, seq: 2, prev: vec![1000 + n], change: OwnChange::Add { key: 9 }, sigs: vec![] }.signed(&[1]);
+            s.publish_ownership(c);
+        }
+        assert_eq!(s.own_held.len(), MAX_HELD_PER_AUTHOR);
+        assert!(s.admin_pending.is_empty());
     }
 
     #[test]
