@@ -4869,7 +4869,7 @@ What moved, and why:
    remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), the 60 Hz fallback (D76) and
    opt-in input delay (D41).
 2. **Determinism beyond the machines tested.** With the engine's physics (vdW on), main (d79f160) is
-   byte-identical on this PC in five build settings, on <laptop> (Intel, also with `target-cpu=native`) and
+   byte-identical on this PC in five build settings, on a second Windows machine (an Intel laptop, also with `target-cpu=native`) and
    as a Linux musl build, the four wasm modules included [V @design-reviewer's re-check; report
    `determinism-main-d79f160.md` in its working folder]. ARM and macOS never ran. Parallel stepping (D2) must
    stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
@@ -4911,7 +4911,7 @@ What moved, and why:
 
 Phase 2 split into packages that can be staffed in parallel, one agent each. @engine-architect keeps the
 protocol core (P2-3, P2-4) and design ownership, and integrates. Already running and not listed: the
-parallel Box3D feasibility study (D2, @vdw-physics) and the <laptop> and Linux determinism re-check on main
+parallel Box3D feasibility study (D2, @vdw-physics) and the Intel-laptop and Linux determinism re-check on main
 (@design-reviewer).
 
 Rules for every package:
@@ -5029,7 +5029,7 @@ Rules for every package:
   x86-64 CPUs. ARM64 is deferred: no ARM machine is available.
 * Skills: build and CI engineering, cross-compilation, scripting.
 * Depends on: nothing. **Settled (user, 19:58Z): CI runs on local machines only:** this PC's Windows and
-  WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
+  WSL, plus an Intel laptop; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
 * **Status (2026-10-31)** [V]: `scripts/run_matrix.sh`, with columns win, glibc, musl and laptop (docs/p2-6-p2-7-matrix.md). **PASS: 72 outputs equal on 4 machines** (spikes/out/matrix/matrix.txt). A difference names its first differing output and line.
