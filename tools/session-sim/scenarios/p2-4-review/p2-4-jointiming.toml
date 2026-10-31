@@ -1,0 +1,39 @@
+description = """
+P2-4 review round 2, VC-3: 5 asks to join at 2 s; prevotes reach 3 and 4 1.5 s late, past the \
+join's boundary, after 1 and 2 have locked on the join. It must still be decided. Part 1 runs with \
+VC-3's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 12000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4]
+joiners = [5]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+msg = "prevote"
+to = [3, 4]
+before_ms = 5000
+delay_ms = 1500
+
+[[join]]
+at_ms = 2000
+member = 5
+to = [1, 2, 3, 4]
+
+[[part]]
+world.1.fixes_off = ["VC3"]
+report = [
+    { kind = "line", text = "  joiner admitted at m1: {member@1:5}" },
+    { kind = "before_fix", honest = [1, 2, 3, 4], label = "jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary)", fix = "VC-3's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "membership", honest = [1, 2, 3, 4, 5], label = "jointiming" },
+    { kind = "view_changes", honest = [1, 2, 3, 4, 5], label = "jointiming" },
+    { kind = "verdict", honest = [1, 2, 3, 4, 5], label = "jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary)" },
+]

@@ -1,0 +1,40 @@
+description = """
+P2-4: member 5 goes silent at 3 s; the first proposer (1) equivocates, showing half of the others \
+(2) a reset instead of the removal. That round fails, a later one removes 5, and the equivocating \
+proposer is proven faulty and removed too. The spike picks the silent member as the last that is \
+not the first proposer, and the fooled ones as the first half of the rest; forge_proposal refuses \
+to run if 1 is not the first proposer."""
+include = ["../common/review.toml"]
+end_ms = 15000
+intro = ["  first proposer {proposer@1}; member 5 goes silent at t=3 s; 1 shows {{2}} a reset instead of the removal"]
+
+[world.1]
+members = [1, 2, 3, 4, 5]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+involves = 5
+after_ms = 3000
+drop = true
+
+[[byzantine]]
+kind = "forge_proposal"
+member = 1
+to = [2]
+
+[[report]]
+kind = "membership"
+honest = [2, 3, 4]
+label = "badproposer"
+
+[[report]]
+kind = "view_changes"
+honest = [2, 3, 4]
+label = "badproposer"
+
+[[report]]
+kind = "verdict"
+honest = [2, 3, 4]
+label = "badproposer (proposer 1 equivocates; member 5 silent from t=3 s)"

@@ -31,24 +31,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use box3d_rust::body::{
-    body_apply_linear_impulse_to_center, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_transform, body_set_angular_velocity, body_set_linear_velocity,
-    body_set_target_transform, body_set_transform, create_body, destroy_body,
-};
-use box3d_rust::geometry::{Capsule, Sphere};
-use box3d_rust::hull::make_box_hull;
-use box3d_rust::id::BodyId;
-use box3d_rust::math_functions::{Pos, Quat, Transform, Vec3, QUAT_IDENTITY};
-use box3d_rust::recording::{
-    deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer,
-    RegistrySlot,
-};
-use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_shape};
-use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
-use box3d_rust::world::World;
+use pe_physics::{BodyDesc, BodyKind, Geometry, ObjectId, PhysicsConfig, PhysicsWorld, Pose, Push, ShapeDesc, WorldImage};
 
-use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES};
 pub use crate::sign::{sig_words, test_fact_sig, test_sign, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
@@ -129,7 +114,7 @@ pub struct Tables {
 
 #[derive(Clone)]
 struct Keyframe {
-    image: Vec<u8>,
+    image: WorldImage,
     t: Tables,
 }
 
@@ -384,15 +369,11 @@ pub struct WorldSim {
     pub world_id: u32,
     pub me: MemberId,
     pub cfg: SimConfig,
-    pub world: World,
+    /// The physics world (S2: through pe-physics).
+    pub world: PhysicsWorld,
     pub t: Tables,
     pub frame: u64,
-    registry: GeometryRegistry,
-    slots: Vec<RegistrySlot>,
-    slot_count: usize,
     ring: BTreeMap<u64, Keyframe>,
-    /// Scratch world for canonical check hashes (review NEW-7).
-    scratch: Option<World>,
     /// R14: the worlds this one trades objects with, and their members: its agreed route list
     /// (D46 trust config, part of the world's genesis; reviews R3-4 to R3-6). Any other world can
     /// neither receive its objects nor vouch for one.
@@ -466,8 +447,8 @@ pub struct WorldSim {
     fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
-    pub check_hashes: BTreeMap<u64, u64>,
-    remote_checks: BTreeMap<u64, BTreeMap<MemberId, u64>>,
+    pub check_hashes: BTreeMap<u64, CheckHash>,
+    remote_checks: BTreeMap<u64, BTreeMap<MemberId, CheckHash>>,
     evaluated: BTreeSet<(u64, MemberId)>,
     pub outcomes: BTreeMap<EntryId, (u64, Outcome)>,
     pub watched: BTreeSet<u32>,
@@ -677,11 +658,7 @@ impl WorldSim {
             world,
             t: Tables { objs, portal_open: true, ..Default::default() },
             frame: 0,
-            registry: GeometryRegistry::new(),
-            slots: Vec::new(),
-            slot_count: 0,
             ring: BTreeMap::new(),
-            scratch: None,
             peers_of: BTreeMap::new(),
             epochs: EpochBook { keys: keys.public.clone(), ..EpochBook::default() },
             provenance: true,

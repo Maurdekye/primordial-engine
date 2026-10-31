@@ -1,0 +1,33 @@
+description = """
+P2-4 review round 3, VCR-3: 3 acks once a second while admin 1 defines two roles, so two decisions \
+fall between two of its acks. Part 1 runs with VCR-3's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 9000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3]
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 125, define_role = { role = 1, perms = 0 } },
+    { at = 140, define_role = { role = 2, perms = 0 } },
+    { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[world.1.member.3]
+ack_every_ms = 1000
+
+[[part]]
+world.1.fixes_off = ["VCR3"]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "ackgap (3 acks once a second; two decisions fall between two of its acks)", fix = "VCR-3's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "ackgap" },
+    { kind = "confs", honest = [1, 2, 3], label = "ackgap" },
+    { kind = "verdict", honest = [1, 2, 3], label = "ackgap (3 acks once a second; two decisions fall between two of its acks)" },
+]
