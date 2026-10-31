@@ -1,6 +1,8 @@
 //! Engine-side descriptions of bodies and shapes. Plain data, validated before anything
 //! reaches Box3D (4.3 rule 6: no NaN or infinity enters the simulation).
 
+use box3d_rust::math_functions::{is_normalized_quat, Quat, Vec3};
+
 use crate::error::PhysicsError;
 
 /// Bounds on what the engine passes to Box3D. Box3D itself only debug-asserts its inputs, and a
@@ -41,8 +43,11 @@ pub(crate) fn position(v: &[f64; 3], what: &'static str) -> Result<(), PhysicsEr
     if v.iter().all(|c| c.is_finite() && c.abs() <= MAX_POSITION) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
 }
 
-/// `q` scaled to unit length, if it is within 1% of it. `sqrt` and division are correctly
-/// rounded, so every peer gets the same bits. Box3D debug-asserts unit length to about 2e-6.
+/// `q` as Box3D will take it. Its bits are kept when Box3D's own check (`is_normalized_quat`,
+/// |q|^2 within 20 epsilon of 1) passes, so a rotation read from a simulated body lands bit for
+/// bit (P2-3 arrivals, like `set_pose`). Otherwise it is scaled to unit length if within 1% of
+/// it (`sqrt` and division are correctly rounded, so every peer gets the same bits), and
+/// refused beyond that.
 pub(crate) fn unit_quat(q: [f32; 4], what: &'static str) -> Result<[f32; 4], PhysicsError> {
     if !q.iter().all(|c| c.is_finite()) {
         return Err(PhysicsError::InvalidValue(what));
@@ -51,7 +56,7 @@ pub(crate) fn unit_quat(q: [f32; 4], what: &'static str) -> Result<[f32; 4], Phy
     if (n2 - 1.0).abs() > 0.02 {
         return Err(PhysicsError::InvalidValue(what));
     }
-    if n2 == 1.0 {
+    if is_normalized_quat(Quat { v: Vec3 { x: q[0], y: q[1], z: q[2] }, s: q[3] }) {
         return Ok(q);
     }
     let n = n2.sqrt();
