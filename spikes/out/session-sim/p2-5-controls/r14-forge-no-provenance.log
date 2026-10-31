@@ -1,4 +1,4 @@
-  setup t=2165 ms: W's majority certifies to A a refusal of A:55 (transfer 17776544664608258853), while W's replicas accept it
+  setup t=2165 ms: W's majority certifies to A a refusal of A:55 (transfer 17442612549994744406), while W's replicas accept it
   setup t=5000 ms: member 1 departs A:52 (B's local 79) from B back to A, hop in carried: true
 RESULT   forged by m2 in world 1: member 2 departs A's object 50 to D, a world it controls alone -> Some(RejectedNoRoute)
 RESULT   forged by m2 in world 1: member 2 departs A's object 51 to unknown world 999 -> Some(RejectedNoRoute)
@@ -19,14 +19,14 @@ RESULT   forged by m2 in world 1: W's majority resurrects A:52 into A, where it 
   carrier: t=2766ms depart authored in world 1 at frame 160
   carrier: t=2972ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 141
   carrier: t=3225ms arrival confirmed in world 2 (frame 141, accepted=true); verdict authored in world 1 at frame 187 (its sim there at frame 187)
-  carrier: t=3382ms verdict confirmed in world 1; transfer 5227216996754832191 resolved
+  carrier: t=3382ms verdict confirmed in world 1; transfer 1335062069214560782 resolved
   carrier: t=3444ms commit certified in world 1; hop relayed into world 2 at frame 164
   carrier: phase Done accepted Some(true)
   carrier: depart entry final outcome at A frame 160: Accepted
-  carrier: t=5009ms relaying transfer 7789584009087420337 from world 2, as a member of both worlds
+  carrier: t=5009ms relaying transfer 14413571555258231398 from world 2, as a member of both worlds
   carrier: t=5238ms depart confirmed in world 2 (frame 242); arrive authored in world 1 at frame 308
   carrier: t=5454ms arrival confirmed in world 1 (frame 308, accepted=true); verdict authored in world 2 at frame 265 (its sim there at frame 265)
-  carrier: t=5610ms verdict confirmed in world 2; transfer 7789584009087420337 resolved
+  carrier: t=5610ms verdict confirmed in world 2; transfer 14413571555258231398 resolved
   carrier: t=5658ms commit certified in world 2; hop relayed into world 1 at frame 333
   carrier: phase Done accepted Some(true)
   relayer m2: t=1768ms depart authored in world 1 at frame 100
@@ -38,27 +38,27 @@ RESULT   forged by m2 in world 1: W's majority resurrects A:52 into A, where it 
   relayer m2: t=1935ms depart authored in world 1 at frame 110
   relayer m2: t=2165ms depart confirmed in world 1 (frame 110); arrive authored in world 6 at frame 123
   relayer m2: t=2367ms arrival confirmed in world 6 (frame 123, accepted=true); verdict authored in world 1 at frame 135 (its sim there at frame 135)
-  relayer m2: t=2500ms verdict confirmed in world 1; transfer 17776544664608258853 resolved
+  relayer m2: t=2500ms verdict confirmed in world 1; transfer 17442612549994744406 resolved
   relayer m2: phase Done accepted Some(true)
   relayer m3: t=3494ms depart authored in world 6 at frame 203
   relayer m3: t=3699ms depart confirmed in world 6 (frame 203); arrive authored in world 2 at frame 177
   relayer m3: t=3964ms arrival confirmed in world 2 (frame 177, accepted=true); verdict authored in world 6 at frame 231 (its sim there at frame 231)
-  relayer m3: t=4117ms verdict confirmed in world 6; transfer 2590699424036251659 resolved
+  relayer m3: t=4117ms verdict confirmed in world 6; transfer 16535564468320064064 resolved
   relayer m3: t=4292ms commit certified in world 6; hop relayed into world 2 at frame 207
   relayer m3: phase Done accepted Some(true)
-  m1 world A: object 40 live copies 0; escrow ["T1348085246442918803:DepartRejected", "T4791199242522799275:DepartRejected", "T5227216996754832191:Committed", "T14045726809445889095:Committed", "T17776544664608258853:Returned"]; arrivals ["T2502203715224867894:Rejected { frame: 413, until: 1013 }", "T7789584009087420337:Accepted { obj: 109, frame: 308 }"]
-  m2 world A: object 40 live copies 0; escrow ["T1348085246442918803:DepartRejected", "T4791199242522799275:DepartRejected", "T5227216996754832191:Committed", "T14045726809445889095:Committed", "T17776544664608258853:Returned"]; arrivals ["T2502203715224867894:Rejected { frame: 413, until: 1013 }", "T7789584009087420337:Accepted { obj: 109, frame: 308 }"]
-  m1 world B: object 40 live copies 1; escrow ["T7789584009087420337:Committed"]; arrivals ["T2590699424036251659:Accepted { obj: 79, frame: 177 }", "T4775081642288345484:Accepted { obj: 80, frame: 217 }", "T5227216996754832191:Accepted { obj: 75, frame: 141 }", "T7395524645525155919:Accepted { obj: 78, frame: 162 }", "T9527093093506414298:Accepted { obj: 81, frame: 342 }", "T10559210167188522975:Rejected { frame: 192, until: 792 }", "T11187875759624435735:Accepted { obj: 77, frame: 157 }", "T11435913114873983945:Rejected { frame: 127, until: 18446744073709551615 }", "T13777587129220718238:Accepted { obj: 76, frame: 157 }"]
-  m3 world B: object 40 live copies 1; escrow ["T7789584009087420337:Committed"]; arrivals ["T2590699424036251659:Accepted { obj: 79, frame: 177 }", "T4775081642288345484:Accepted { obj: 80, frame: 217 }", "T5227216996754832191:Accepted { obj: 75, frame: 141 }", "T7395524645525155919:Accepted { obj: 78, frame: 162 }", "T9527093093506414298:Accepted { obj: 81, frame: 342 }", "T10559210167188522975:Rejected { frame: 192, until: 792 }", "T11187875759624435735:Accepted { obj: 77, frame: 157 }", "T11435913114873983945:Rejected { frame: 127, until: 18446744073709551615 }", "T13777587129220718238:Accepted { obj: 76, frame: 157 }"]
+  m1 world A: object 40 live copies 0; escrow ["T1335062069214560782:Committed", "T8069358191771253513:DepartRejected", "T9466366451302805248:DepartRejected", "T14045726809445889095:Committed", "T17442612549994744406:Returned"]; arrivals ["T2502203715224867894:Rejected { frame: 413, until: 1013 }", "T14413571555258231398:Accepted { obj: 109, frame: 308 }"]
+  m2 world A: object 40 live copies 0; escrow ["T1335062069214560782:Committed", "T8069358191771253513:DepartRejected", "T9466366451302805248:DepartRejected", "T14045726809445889095:Committed", "T17442612549994744406:Returned"]; arrivals ["T2502203715224867894:Rejected { frame: 413, until: 1013 }", "T14413571555258231398:Accepted { obj: 109, frame: 308 }"]
+  m1 world B: object 40 live copies 1; escrow ["T14413571555258231398:Committed"]; arrivals ["T1335062069214560782:Accepted { obj: 75, frame: 141 }", "T7395524645525155919:Accepted { obj: 78, frame: 162 }", "T8101307689848330985:Accepted { obj: 80, frame: 217 }", "T9527093093506414298:Accepted { obj: 81, frame: 342 }", "T10559210167188522975:Rejected { frame: 192, until: 792 }", "T11187875759624435735:Accepted { obj: 77, frame: 157 }", "T11435913114873983945:Rejected { frame: 127, until: 18446744073709551615 }", "T13777587129220718238:Accepted { obj: 76, frame: 157 }", "T16535564468320064064:Accepted { obj: 79, frame: 177 }"]
+  m3 world B: object 40 live copies 1; escrow ["T14413571555258231398:Committed"]; arrivals ["T1335062069214560782:Accepted { obj: 75, frame: 141 }", "T7395524645525155919:Accepted { obj: 78, frame: 162 }", "T8101307689848330985:Accepted { obj: 80, frame: 217 }", "T9527093093506414298:Accepted { obj: 81, frame: 342 }", "T10559210167188522975:Rejected { frame: 192, until: 792 }", "T11187875759624435735:Accepted { obj: 77, frame: 157 }", "T11435913114873983945:Rejected { frame: 127, until: 18446744073709551615 }", "T13777587129220718238:Accepted { obj: 76, frame: 157 }", "T16535564468320064064:Accepted { obj: 79, frame: 177 }"]
 RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
 RESULT r14 forge: A's objects 50 and 51 live in A 1 and 1, object 50 in D 0; copies of A:40 in B 1 -> CONSERVED
 RESULT r14 forge: dishonest-majority W (CONTROL, provenance off): A:52 A 1 B 1 pending 0 (W 0); A:53 A 1 B 1 pending 0 (W 0); A:54 A 1 B 1 pending 0 (W 0); A:55 A 1 B 1 pending 0 (W 1); W:500 A 0 B 1 pending 0 (W 0) -> NOT CONSERVED in the honest worlds
-  m2 world 6: rollbacks 2 max depth 3 resim frames 12 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
-  m3 world 6: rollbacks 2 max depth 4 resim frames 10 (0.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
-  m1 world 1: rollbacks 12 max depth 4 resim frames 61 (9.8 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 16 max depth 4 resim frames 67 (10.4 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 12 max depth 9 resim frames 52 (7.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 5 max depth 3 resim frames 24 (3.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-RESULT r14 forge A world 1: frames 0..500 digests m1=ffd9c47384f23e58 m2=ffd9c47384f23e58 | offline replay ffd9c47384f23e58 | ALL EQUAL
-RESULT r14 forge B world 2: frames 0..400 digests m1=f412d7a5a0109573 m3=f412d7a5a0109573 | offline replay f412d7a5a0109573 | ALL EQUAL
-RESULT r14 forge W world 6: frames 0..480 digests m2=f4b12e17d5c4d94c m3=f4b12e17d5c4d94c | offline replay f4b12e17d5c4d94c | ALL EQUAL
+  m2 world 6: rollbacks 2 max depth 3 resim frames 12 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
+  m3 world 6: rollbacks 2 max depth 4 resim frames 10 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
+  m1 world 1: rollbacks 12 max depth 4 resim frames 61 (27.7 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
+  m2 world 1: rollbacks 16 max depth 4 resim frames 67 (24.3 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 12 max depth 9 resim frames 52 (12.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 5 max depth 3 resim frames 24 (5.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+RESULT r14 forge A world 1: frames 0..500 digests m1=f3cd1f429dc28dc7 m2=f3cd1f429dc28dc7 | offline replay f3cd1f429dc28dc7 | ALL EQUAL
+RESULT r14 forge B world 2: frames 0..400 digests m1=0f9fa50432d1c25c m3=0f9fa50432d1c25c | offline replay 0f9fa50432d1c25c | ALL EQUAL
+RESULT r14 forge W world 6: frames 0..480 digests m2=2870367fde3fe397 m3=2870367fde3fe397 | offline replay 2870367fde3fe397 | ALL EQUAL
