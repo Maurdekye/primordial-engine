@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use pe_sim_core::ownership::View;
 use pe_sim_core::session::*;
 use pe_sim_core::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
 use spike::{Acceptance, Replica, Sim, WorldId};
@@ -179,6 +180,9 @@ impl Probe {
                     skip.extend(gone);
                 }
                 check_world(sim, *world, frames, label, &skip);
+            }
+            Report::Ownership { world, frames, label, at } => {
+                ownership(sim, *world, *frames, label, at);
             }
             Report::Stats { world } => print_stats(sim, *world),
             Report::Events { world, filter } => {
@@ -409,6 +413,68 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
     let conf = sim.peers.iter().filter(|p| !skip.contains(&p.id)).filter_map(|p| p.worlds.get(&w)).map(|r| r.sim.conf).min().unwrap_or(0);
     if frames > conf {
         println!("  UNCONFIRMED: {label} checks frames {conf}..{frames}, past the lowest confirmed frame of the checked replicas ({conf})");
+    }
+    all_equal
+}
+
+fn view_line(v: &View) -> String {
+    let o = &v.owners;
+    format!(
+        "owners {:?} rule {:?} heads {}{}{}",
+        o.owners,
+        o.rule,
+        v.heads.len(),
+        if v.disputed { " DISPUTED" } else { "" },
+        if o.recovery.is_empty() { String::new() } else { format!(" recovery {:?}", o.recovery.iter().map(|(k, r)| (*k, r.keys().copied().collect::<Vec<_>>())).collect::<BTreeMap<_, _>>()) }
+    )
+}
+
+/// World ownership: every replica's view of the ownership chain at its present, against an offline
+/// replay of the final log over `frames`; the refused certificates and the fork proofs (each checked
+/// as a third party holding only the chain up to the fork would check it).
+pub fn ownership(sim: &Sim, w: WorldId, frames: u64, label: &str, at: &[u64]) -> bool {
+    let mut views = Vec::new();
+    let mut first: Option<&Replica> = None;
+    for p in &sim.peers {
+        if let Some(r) = p.worlds.get(&w) {
+            let b = r.sim.t.owners.as_ref().expect("a world with owners");
+            views.push((p.id, b.view(), b.digest()));
+            first.get_or_insert(r);
+        }
+    }
+    let r = first.unwrap();
+    let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+    let replay = replay_sim_like(&r.sim, r.scene, &members, &final_log(&r.sim), frames);
+    let rb = replay.t.owners.as_ref().unwrap();
+    let all_equal = views.iter().all(|(_, v, d)| *v == rb.view() && *d == rb.digest());
+    println!(
+        "RESULT {label} world {w}: offline replay {} | {}",
+        view_line(&rb.view()),
+        if all_equal { "ALL EQUAL" } else { "MISMATCH" }
+    );
+    for (m, v, d) in &views {
+        println!("  m{m}: {} digest {d:016x}", view_line(v));
+    }
+    let mut log = final_log(&r.sim);
+    log.sort_by_key(|(e, f)| (*f, e.member, e.seq));
+    for (e, f) in &log {
+        if let Payload::Ownership { cert } = &e.payload {
+            let outcome = replay.outcomes.get(&e.id()).map(|(_, o)| *o);
+            let ok = matches!(outcome, Some(Outcome::Accepted));
+            println!("  cert m{}s{}@{f}: seq {} {:?} by {:?} -> {}", e.member, e.seq, cert.seq, cert.change, cert.signers(), if ok { "applied".to_string() } else { format!("refused {outcome:?}") });
+        }
+    }
+    for p in rb.forks() {
+        let prefix = rb.path_to(p.a.prev[0]);
+        println!("  fork proof: {:?} vs {:?}, signed both by {:?}; a third party holding {} certificate(s) verifies it: {}", p.a.change, p.b.change, p.signed_both(), prefix.len(), p.verify(&prefix));
+    }
+    for &f in at {
+        let rs = replay_sim_like(&r.sim, r.scene, &members, &final_log(&r.sim), f);
+        println!("  after frame {}: {}", f - 1, view_line(&rs.t.owners.as_ref().unwrap().view()));
+    }
+    let conf = sim.peers.iter().filter_map(|p| p.worlds.get(&w)).map(|r| r.sim.conf).min().unwrap_or(0);
+    if frames > conf {
+        println!("  UNCONFIRMED: {label} checks frames {conf}..{frames}, past the lowest confirmed frame ({conf})");
     }
     all_equal
 }

@@ -87,6 +87,36 @@ pub struct WorldCfg {
     /// Per-member replica settings in this world.
     #[serde(default)]
     pub member: BTreeMap<String, ReplicaCfg>,
+    /// World ownership: the genesis certificate's owners (all sign it), rule and nonce.
+    pub owners: Option<OwnersCfg>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnersCfg {
+    pub keys: Vec<u32>,
+    /// `all` (rule A, the default), `any` (B), or a threshold such as `2` (C).
+    #[serde(default = "all")]
+    pub rule: String,
+    #[serde(default)]
+    pub nonce: u64,
+}
+
+fn all() -> String {
+    "all".into()
+}
+
+/// An ownership certificate to publish: `change` is `add`, `leave`, `remove`, `challenge`,
+/// `remove_dormant` (with `key`), `set_recovery` (`key` names the owner, `recovery` the key or
+/// none), `set_rule` (`rule`) or `merge`; `signers` sign it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerSpec {
+    pub change: String,
+    pub key: Option<u32>,
+    pub recovery: Option<u32>,
+    pub rule: Option<String>,
+    pub signers: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -123,6 +153,8 @@ pub struct ActionSpec {
     pub backdated: Option<BackdatedSpec>,
     /// The ball-pit hand gesture of session-sim's `ballpit_sweep` (no `at`).
     pub ballpit_sweep: Option<SweepSpec>,
+    /// World ownership: publish a certificate.
+    pub owner: Option<OwnerSpec>,
     /// Accept this action on an object the scene lacks (the protocol rejects it as gone). Only
     /// for reproducing a spike scenario that did this; say why next to it.
     #[serde(default)]
@@ -410,6 +442,17 @@ pub enum Report {
         /// Also skip the members that member `skip_evicted_at` removed from the session, and
         /// compare only frames every remaining member has simulated (at most `frames`).
         skip_evicted_at: Option<u32>,
+    },
+    /// World ownership: each replica's owner set (heads, dispute, refused certificates, fork
+    /// proofs) against an offline replay of its final log over `frames`.
+    Ownership {
+        #[serde(default = "one")]
+        world: u32,
+        frames: u64,
+        label: String,
+        /// Also print the offline replay's view after these frames.
+        #[serde(default)]
+        at: Vec<u64>,
     },
     /// Rollbacks, re-sims, checks and so on per replica of `world`.
     Stats {

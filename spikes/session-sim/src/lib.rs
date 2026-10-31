@@ -6,6 +6,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use pe_sim_core::session::*;
+use pe_sim_core::ownership::{Change, Key};
 use pe_sim_core::splitmix64;
 
 pub type WorldId = u32;
@@ -138,6 +139,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Vote { .. } | Payload::Unvote { .. } => "vote",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
+            Payload::Ownership { .. } => "entry/ownership",
             _ => "entry/transfer",
         },
         Msg::Fetch { .. } => "fetch",
@@ -305,6 +307,9 @@ pub enum Action {
     /// Start a cross-world transfer: depart `obj` from this world towards `dest`.
     Carry { transfer: u64, obj: u32, dest: WorldId },
     Backdated { obj: u32, impulse: [f32; 3], back: u64 },
+    /// World ownership: publish a certificate for `change` on this replica's ownership head,
+    /// signed by `keys`.
+    Owner { change: Change, keys: Vec<Key> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -656,6 +661,10 @@ impl Sim {
                                     r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span }, ahead)
                                 }
                                 Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
+                                Action::Owner { change, keys } => {
+                                    let Some(cert) = r.sim.owner_cert(change, &keys) else { continue };
+                                    r.sim.author(Payload::Ownership { cert }, None)
+                                }
                                 Action::Backdated { obj, impulse, back } => {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
