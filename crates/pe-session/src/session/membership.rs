@@ -662,21 +662,19 @@ impl WorldSim {
             // 12.5: pending only while the certificate would apply to the book as decided (V1's
             // receipt rule): an entry that cannot apply would start view changes for nothing (VC6R-4).
             // Re-sent later, it is a new entry.
-            Payload::Ownership { ref cert, .. } => {
-                if !self.vcm.admin_outcomes.contains_key(&id) && self.vcm.closed_at.is_none() && self.vcm.members.contains(&m) {
-                    match self.ownership_judge(cert) {
-                        Ok(Insert::Applied) => {
-                            self.vcm.admin_pending.insert(id);
-                        }
-                        // Review OWNY-2: its parent may be a pending certificate; hold it until it is decided.
-                        Err(OwnError::MissingParent) if self.fixes_off & fix::OWNY2 == 0 => {
-                            let mine = self.vcm.own_held.iter().filter(|h| self.entries.get(h).is_some_and(|e| e.member == m)).count();
-                            if mine < MAX_HELD_PER_AUTHOR {
-                                self.vcm.own_held.insert(id);
-                            }
-                        }
-                        _ => {}
+            Payload::Ownership { ref cert, .. } if !self.vcm.admin_outcomes.contains_key(&id) && self.vcm.closed_at.is_none() && self.vcm.members.contains(&m) => {
+                match self.ownership_judge(cert) {
+                    Ok(Insert::Applied) => {
+                        self.vcm.admin_pending.insert(id);
                     }
+                    // Review OWNY-2: its parent may be a pending certificate; hold it until it is decided.
+                    Err(OwnError::MissingParent) if self.fixes_off & fix::OWNY2 == 0 => {
+                        let mine = self.vcm.own_held.iter().filter(|h| self.entries.get(h).is_some_and(|e| e.member == m)).count();
+                        if mine < MAX_HELD_PER_AUTHOR {
+                            self.vcm.own_held.insert(id);
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
