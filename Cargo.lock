@@ -1201,6 +1201,7 @@ dependencies = [
  "blake3",
  "box3d-rust",
  "ed25519-dalek",
+ "pe-physics",
  "sha2",
 ]
 
