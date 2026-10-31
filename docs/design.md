@@ -2978,8 +2978,7 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
 * **Two live instances and cross-world trade** (SW-1; @coordinator-opus's ruling (a), 09:51Z): only one
   live session of a world trades across worlds at a time. It holds a trading lease bound to the
   owner-signed head reference, and other instances refuse `Depart` and `Arrive`. The lease (granting,
-  fencing, hand-off, expiry, what other instances show) is designed in
-  @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t.
+  fencing, hand-off, expiry, what other instances show) is designed in 22.10.
 
 **The backup list** holds five kinds (8a.10): **checkpoints**, kept until an owner deletes them;
 **autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
@@ -4996,7 +4995,137 @@ persists until a verdict arrives.
     that world;
   * an unlocked panel's "anyone in session" means members of the panel's world.
 
-### 22.10 Spike: two worlds, three members, one object handed between them [V]
+### 22.10 One trading instance per world: the trading lease (SW-1) [proposal; I, nothing built]
+
+**The problem** (@design-reviewer's SW-1). A world can have two live sessions at once: two instances of a
+public world, or a home opened twice. For 22.6 both are "world A". Each holds A's objects live, and each
+session's quorum can sign A's facts. So each can export the same object: a double spend that provenance
+only records, as a fork proof against A (22.7). A head merge (16.10) also has no rule for cross-world
+tables that both changed.
+
+**The ruling** (@coordinator-opus, 09:51Z, option (a)): only one live session of a world trades across
+worlds at a time. It holds a **trading lease** bound to the world's owner-signed head (16.10). Every other
+instance stays out of cross-world trade.
+
+**The lease** is a certificate `TradeLease {world, number, parent, session, base, until}` signed by a
+grantor.
+* `number` counts up from 1 per world. `parent` is the hash of lease `number - 1` (0 for the first), so
+  leases form a chain, as head references do (16.10).
+* `session` is the holder's session id (10.3: the hash of its signed genesis entry with a fresh nonce).
+  No other session of the world can use the lease. It also tells other worlds which session speaks for A.
+  A partner already checks A's signers from A's genesis (22.7, R3-8b), and a fact signature names
+  session_of(A) (P23R-3), but two instances of A have two geneses and two session ids, and each could
+  certify A's facts. So the route list names the world, and the newest lease names the session: a fact is
+  A's if the lease's session's quorum signed it, checked against that session's epoch certificates from
+  its genesis, as P2-5's hops carry them (22.7). The session id that P23R-3's verifier needs comes from
+  the lease, not from a fixed route-list entry.
+* `base` names the table checkpoint (below) of the previous lease that this holder starts from.
+* `until` is a frame of the holder's session. Session time is a monotonic clock, never wall time (5), so
+  the grantor sets `until` from its own estimate of the session's present, plus the lease length. A
+  grantor renews a live lease by signing it again with a later `until`, keeping every other field.
+
+**Who grants** [proposal]:
+* Grantors are the world's owners (12.5), and anyone holding an owner-signed trading delegation (a
+  delegation certificate as in 12.3, like 16.10's builders-write delegation, SW-5).
+* An owner's client grants and renews automatically while the owner is in the holder session or in
+  contact with it.
+* A world whose grantors are all unreachable gets no lease. Its instances play, but carry no objects
+  across (players still travel, below).
+* Two co-owners granting one number at once fork the chain. Two leases with one parent are a conflict any
+  holder can detect, as with head references, and partner worlds refuse both (below) until a lease of a
+  higher number names one of them as parent.
+
+**What only the holder does.**
+* In the holder's session, `Depart`, `Arrive` and `Verdict` work as in 22.6. Every fact it signs for
+  another world (a departure, a verdict, a commit hop) also covers the lease (number and hash) and the
+  table checkpoint it rests on.
+* In any other session of the world, these entries are void. They change nothing, and nobody attests
+  them. A non-holder must not even certify a refusal. A certified refusal makes the source refund the
+  object, and the same `Arrive`, relayed to the holder, could be accepted, so the object would then exist
+  twice.
+* An `Arrive` sent to a non-holder therefore waits until someone relays it to the holder. This is 22.6
+  step 7's rule: an object waits only while nobody can reach the world that can act on it.
+
+**Table checkpoints: nothing crosses until it is durable.**
+* The holder's cross-world tables are part of its hashed state (22.7, 9.1): escrow, arrivals and accepted
+  transfer ids, last exits, and the seen-lease table (below). So each quorum-acked check hash (every 30
+  frames, 9.1) already signs them.
+* A **table checkpoint** is the tables' content at a check frame, with the check hash, the quorum's acks,
+  the epoch certificates that say who the quorum was, and the lease.
+* Under a lease, the holder's members attest a cross-world fact only once a check frame at or after the
+  fact's frame has a quorum-acked check. So every effect another world will act on is already inside a
+  signed checkpoint, and every member of the holder session holds it.
+* Cost: at most one check interval (0.5 s at 60 Hz) per transfer step [I; to measure].
+
+**Fencing at the partner.** Each world keeps a record per source world on its route list. It holds the
+newest lease seen (number, hash, latest `until`), and the newest table checkpoint that any accepted fact
+under that lease cited. Like accepted transfer ids (22.6), this record is never rolled back or
+snapshotted once confirmed. A fact from A is refused, with a certified verdict as for any rejection, as:
+* `RejectedStaleLease`: its lease number is below the newest seen. So a holder that is only partitioned,
+  not gone, cannot keep trading with a partner that has heard of the next lease.
+* `RejectedLeaseExpired`: its frame is past its lease's `until`. So a partitioned old holder cannot trade
+  past expiry either, even with a partner that has not heard of the next lease. The check needs no
+  clock: the fact carries its frame in A, and the lease carries `until` in the same session's frames.
+* `RejectedLeaseGap`: its lease's `base` is older than a checkpoint of the previous lease that an earlier
+  accepted fact cited. The new holder started from a stale view of the old holder's trades. The partner
+  stops trading with A until a lease that includes them arrives.
+* `RejectedLeaseFork`: the partner holds two leases with one number.
+* `RejectedNoLease`: no valid lease, meaning one not signed by an owner on A's ownership chain or by one
+  of their delegates.
+
+**Hand-off.**
+* **Planned:** the holder session ends, or the owners move trading to another instance.
+  1. The holder stops authoring `Depart`s. In-flight escrows need not settle: they move with the tables.
+  2. At the next check frame, the final table checkpoint is taken. It is written into the world's head as
+     an owner- or delegate-signed head reference (16.10), which may carry only the tables.
+  3. The holder's quorum signs a release that names that checkpoint.
+  4. The grantor grants the next number to the new holder, with that checkpoint as `base`.
+  5. The new holder holds the checkpoint before it trades. A session that is already running applies it
+     as one ordered entry, by 16.10's load rule: objects that left since are removed, objects that arrived
+     since are added in their current state, and escrows resume.
+  [proposal; the simpler alternative is that only a session opening from that head can hold the next
+  lease.]
+* **The holder vanished** (no release):
+  * The grantor waits until its estimate of the old session's present passes `until`, plus a margin
+    [proposal: 30 s].
+  * It fetches the lease's newest table checkpoint from any member of the old session, or from any holder
+    that stored it.
+  * It grants the next lease with that checkpoint as `base`.
+  * If a later checkpoint exists that the grantor could not get, a partner that saw a fact citing it
+    refuses the new lease's facts (`RejectedLeaseGap`). That stops trade with A rather than duplicating an
+    object.
+* **Lease length** [proposal: 10 minutes of the holder's frames, renewed every 5]. It bounds how long trade
+  stops after a holder vanishes. A grantor out of contact for longer than that stops trade too. Owners
+  who want trade while they are away delegate.
+
+**What remains** [I]:
+* Suppose every member of the old holder session vanishes for good before any copy of its last
+  checkpoint reaches anyone else. Then its last trades are lost to A.
+* A partner that saw them refuses the new lease (`RejectedLeaseGap`). Trade with that partner stops until
+  the owners intervene [proposal: a lease whose `base` is rebuilt from the partner's certificates].
+* A partner that never saw them may accept an export of an object the old holder had already sent
+  elsewhere. That leaves two live copies, detectable when they meet as a fork proof against A across two
+  lease numbers. The lease numbers tell a lost hand-off apart from a dishonest majority.
+* This is D79's detect-only regime, and it takes a whole session vanishing with its data.
+
+**Head merges** (16.10):
+* The cross-world tables in a head change only by a lease holder's table checkpoint. A head reference
+  that changes them names the lease and the checkpoint.
+* When two heads differ, the tables come from the one with the higher lease number (then the later
+  checkpoint). They are never combined.
+* Content merges as 16.10 says. A non-holder's autosave never changes the tables.
+
+**Loads** (16.10) never rewind the tables, in the holder or in any other instance. A load in a non-holder
+instance changes no trade, since it has none.
+
+**What other instances show** (a line for Gnosarium 8a.x, @gnosarium-ux):
+* Portals stay visible, but carrying objects through them is off, with the reason: "Objects cross only
+  in this world's trading instance, the session started by <name> at <time>."
+* Players can still travel: avatars are not sim objects (22.8), so crossing needs no lease.
+* Owners see who holds the lease and since when, and can move it ("Make this the trading instance").
+  Moving it waits for the holder's release or for the lease to expire.
+
+### 22.11 Spike: two worlds, three members, one object handed between them [V]
 
 Setup: world A runs at 60 Hz (a 108-body pile), world B at 50 Hz (a 75-body pile). Member 1 is in both
 and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Links are 50 ms ± 15 ms with
@@ -5016,7 +5145,7 @@ and carries object 40 from A to B; member 2 is only in A, member 3 only in B. Li
 
 With a crashed carrier and nobody else in both worlds, the object waits in escrow (22.7), and a two-member world pauses (D7). "crash" shows the case with another member in both worlds and three members per world (review NEW-6).
 
-### 22.11 What this adds elsewhere
+### 22.12 What this adds elsewhere
 
 * Crates (23.1): `pe-worlds`, holding the multi-world scheduler, presence, portals and the transfer
   relay.
