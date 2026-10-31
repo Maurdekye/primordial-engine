@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state overwrite (if different) -> hashes          |  |
+ |  | Box3D step -> carried-state write (always*) -> hashes                  |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -180,6 +180,9 @@ Rulings that shape the design:
  |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
  +------------------------------------------------------------------------------+
 ```
+
+\* Always (review SET-1) in pe-session. The spike writes carried state only when its bits differ, until
+p2/spike-reset lands (review PT-1).
 
 * **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
 * **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
@@ -210,8 +213,8 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 | Commit visible to every peer | confirmation + activation lead ≈ 0.14 s + 0.5 s | 15.2 |
 | Shader edit to visible | ≤ 100 ms locally (naga validation is milliseconds [I]) + the same commit path | 14 |
 | Hot swap at a frame | ≤ 10 ms on the sim thread | 6 ms in wasmi; Cranelift 27-35 ms, so it compiles off-thread during the activation lead (13.3) [V iteration-benchmark, reviewer] |
-| Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6 |
-| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s) at 50 ± 5 ms without loss, 18.8 kB/s per message [V r18 capped, ballpit]. Like for like with 3d0f98a's 14.7 kB/s (60 ± 10 ms, 2% loss), batched is 13.6 kB/s, 7% less; ack bytes alone grew 53% [V reviewer, R3-13]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
+| Bandwidth per member, interactions + acks | 1-5 kB/s | 7.6. **Over budget in pe-session:** 7.8 kB/s each way idle at 2 members (spike 3.1), nearly all signed 208-byte acks at 30 Hz [V @ballpit-viz, p2/session e98261f]; reductions proposed in 7.6 |
+| Bandwidth, a hand engaged in a ball pit | ≤ 20 kB/s per member | pe-session: 18.4 kB/s each way during the sweep [V @ballpit-viz] (7.6). Spike, 2 members: 11.9 kB/s both directions batched (65 + 30 kbit/s) at 50 ± 5 ms without loss, 18.8 kB/s per message [V r18 capped, ballpit]. Like for like with 3d0f98a's 14.7 kB/s (60 ± 10 ms, 2% loss), batched is 13.6 kB/s, 7% less; ack bytes alone grew 53% [V reviewer, R3-13]. Upload grows with members, since each peer gets its own copy: about 16 kB/s for the hand's author at 3 members and 24 kB/s at 4 [I, from the 2-member figures] (NEW-15). Signatures add 2-4 kB/s per peer [I, 10.9] |
 | Head motion to photon (VR) | < 20 ms | 18.5 |
 
 ---
@@ -681,6 +684,11 @@ inexact.
    holds it. The rule is part of the deterministic sim, so every peer applies it identically. On a
    speculative frame it acts as a prediction, and the real entry replaces it by rollback when it arrives.
    Before this change (3d0f98a), a hand without an entry stopped dead.
+   * A thinned entry (10.9) is followed over its declared span first, and the coast covers only a gap
+     past it: a hand moves while n ≤ (span − 1) + 6 frames after its last entry, then holds (D52, D53).
+     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163]. The
+     spike's rule is still flat (n ≤ `hand_predict`) and off by default (0); it follows with its next
+     change [V].
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
@@ -811,7 +819,9 @@ every player, perfectly synced, and optimized for CPU and memory.
 ### 7.3 Resulting state, and the acceptance criterion
 
 * **Contents:** for each body the entry touched, its exact post-frame state as bit patterns: position,
-  rotation, linear and angular velocity, 13 × 32 bits = 52 bytes [V session-sim encoding].
+  rotation, linear and angular velocity, 16 words = 64 bytes. The position is three f64 (D58's double
+  precision), the rest f32 bits; it was 13 words (52 bytes) before D58 [V by reading `BodyState` at
+  p2/double-precision 1ae64e6; review D58-2].
 * **Application rule** (applied identically by every peer, the author included, whenever frame *f* is
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
@@ -824,11 +834,24 @@ every player, perfectly synced, and optimized for CPU and memory.
 * **Why the rule is deterministic:** the write is the same operation on every peer, at the same frame,
   with bits taken from the log. In the confirmed history every peer holds the same log, so its world at
   *f* is the same, contact cache included, and the result is bit-identical.
-* **Known gap, speculative only** [V D58 probe, @vdw-physics]: the write sets the body's bits but not its
-  contact cache. A receiver whose copy differed (it lacked an entry, or is behind) gets the author's bits
-  at *f* but keeps its own contacts, so its copy drifts by about 1e-12 after the next step. The confirmed
-  history is unaffected, since every peer's cache is the same there. A pe-physics item is resetting the
-  body's contacts on a write.
+* **Every write also resets the body's history** (@vdw-physics, on main at f65851e). `set_state` calls
+  the recorded fork op `body_reset_history`, so a replay reproduces it. The op destroys the body's
+  contacts, rebuilds its proxies (the contacts return at the next step, in sorted pair-key order), and
+  clears its joint warm starts and sleep timer. Before it, the write set the body's bits but kept its
+  contact cache. A receiver whose copy differed (it lacked an entry, or was behind) took the author's bits
+  at *f* with its own contacts, and drifted by about 1e-12 after the next step [V D58 probe]. The reset
+  runs on every write, not only when the bits change. The toucher's own bits never change, so a
+  bits-changed reset left it with its recycled contacts [V @vdw-physics: two peers reach one 18-body pile
+  by different histories, then write every body. They are equal for 120 of 120 frames with the reset,
+  in f32 and f64, and differ at frame 0 without it or with the bits-changed variant]. Contact ids can
+  still differ between such peers: all 78 contacts match by pair and colour, under other ids. Only
+  speculative worlds can differ that way, and check hashes cover confirmed frames, where histories are
+  identical. The spike core's write (`BodyState::write`) does not reset yet. It will mirror the reset in
+  a commit of its own, which re-blesses the spike's logs.
+* **A held object takes no other member's carried state** (P23-6, following 8.4). When the touched body is
+  held at *f* by another member's grab, step 3 skips it: the touch acts on it only physically, through the
+  grab's constraint. Whether a body is held at *f* is part of the state at *f*, so every peer skips
+  alike. The holder moves it through its hand, and its own touch of it writes as usual.
 * **What the rule buys:**
   * a peer already on the author's world line writes the bits it already holds and stays bit-exact by
     determinism;
@@ -847,7 +870,7 @@ every player, perfectly synced, and optimized for CPU and memory.
   (9.3), and a state transfer covers true nondeterminism (9.3, 9.5).
 * **Contact island scope (D40):**
   * carrying the whole contact island of each touched body would make the local neighbourhood exact
-    sooner, at 52 bytes per island body;
+    sooner, at 64 bytes per island body;
   * the recommendation is touched bodies only, plus an island digest so a mismatch can trigger a scoped
     state transfer.
 * **Overwrites can erase late indirect effects.** An earlier-stamped entry that arrives late and pushed the
@@ -922,7 +945,7 @@ release build [V session-sim ballpit].
   small entry: the hand's state plus the canonical frame, quantized to 1 mm. Every peer simulates the balls
   from it. Start and end are ordinary entries, and the touched island's state is sent only when a sync
   check flags divergence [I; the spike compared end-state hashes instead]. This satisfies the ruling, because the perturbation (the hand) carries its state
-  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1 MB/s one way for naive exact state streaming: roughly 1/70 of the volume. The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
+  and frame and receivers roll back and re-simulate. **Measured:** about 15 kB/s for everything, in both directions together, against about 1.2 MB/s one way for naive exact state streaming at D58's 64 bytes a state: roughly 1/80 of the volume (the logs price a state at 52 bytes and show 989 kB/s until review D58-3's re-bless). The cost moves to CPU. The receiver re-simulates every frame, in one coalesced rollback about 5 frames deep, which costs 2.8 ms per 16.7 ms frame at 500 balls [V].
 * **(b) Batch, delta-code and quantize island state.** This cuts naive streaming several-fold (measured
   above). But quantized state is not bit-exact unless the sender also snaps its own copy to the quantized
   values, and it still scales with the number of balls moving.
@@ -938,7 +961,7 @@ release build [V session-sim ballpit].
 ### 7.6 Bandwidth per interaction
 
 * **An entry is about 100-170 bytes before transport overhead** [V session-sim encoding]:
-  * a touch with carried state is 100 bytes;
+  * a touch with carried state is 112 bytes (100 with the 13-word state before D58);
   * a hand target without state is 44 bytes.
 * **Acks** grow with the member count (review R3-11): 56 + 16(N-1) bytes with a check hash, that is 72, 88,
   104, 168, 296 and 1,064 bytes for N = 2, 3, 4, 8, 16 and 64 [V reviewer]. Every member sends one to
@@ -954,6 +977,82 @@ release build [V session-sim ballpit].
     time, relayed (gossip), at the cost of slower stability [I].
 * In production all of these share datagrams: the per-tick batch is option (b) applied to entries, not
   to state.
+* **Production sizes** (pe-session on P2-3's branch, from its encoding in `entry.rs` [V by reading]).
+  Every signed entry costs 114 bytes before its payload. That is a 1-byte tag, a 48-byte header (member,
+  seq, a 32-byte SHA-256 `prev`, stamp), the carried-state flag, and a 64-byte Ed25519 signature:
+
+  | Entry | Bytes in pe-session | Bytes in the spike |
+  |---|---|---|
+  | Ack, 2 members, with its check hash | 208 (168 without the check) | 72 |
+  | Ack, each further member | +40 (member, seq, 32-byte id) | +16 |
+  | Hand target | 133 | 44 |
+  | Touch with carried state | 188 (200 once pe-session takes D58's 16-word state) | 112 |
+  | Vote | 163 (195 naming a kick) | - |
+
+  Each datagram adds about 44 bytes: 28 for IPv4 and UDP, and Noise's 16-byte tag [I]. Measured on the
+  wire, an idle ack's datagram is about 299 bytes, with the transport's framing [V @world-chunks].
+* **Measured** [V @ballpit-viz, pe-session at p2/session e98261f, the 2026-10-30 matrix's config with R18
+  off]: idle, 7.8 kB/s each way at 2 members (the spike, 3.1). During the 500-ball sweep, 18.4 kB/s (the
+  spike, 8.3). The sizes above predict both. Idle is 30 acks/s at 208 bytes plus 30 datagrams, about 7.6
+  kB/s; the sweep adds 60 hand entries/s.
+* **Against the links:**
+  * At 64 kbit/s (8 kB/s), idle traffic alone takes about 95% of the link and the sweep about 230%.
+    Without R18's thinning (10.9) no room is left for repairs. @world-chunks measured the R18-off run
+    that never recovered as overload: 62.5 kbit/s of idle acks against the 64 kbit/s cap, which starves
+    repairs (10.9, item 5). Separately, R1's pauses were a port regression in the repair yield
+    (pe-session cut a reply per message instead of per reply); it is fixed [V @world-chunks]. R18 ships
+    on (@coordinator-opus, 14:02Z).
+  * At 256 kbit/s (32 kB/s), idle takes about 24% and the sweep 57%.
+  * Each member's idle upload is about 30 kB/s at 4 members (3 peers, 30 acks/s each, 288 bytes, plus
+    datagrams) and about 103 kB/s at 8: over the budget, as the spike already was from 3 members.
+* **Four reductions** (I: estimates from the sizes above). **Decided** (@coordinator-opus, about 15:05Z):
+  build 1 and 2 in pe-session (@item:primordial-engine/ack-bandwidth-reductions-in-pe-session-check-on-c,
+  @world-chunks's, after P2-3 merges), and the spike mirrors 2. 3 and 4 wait until after M1. None is
+  built yet:
+  1. **The check hash only when it changes.** It changes once per check interval (30 frames) but rides on
+     every ack. Sending it once saves 40 bytes on 14 acks of 15: idle at 2 members falls from 7.6 to
+     about 6.4 kB/s. It changes the ack encoding, so every entry id moves and pe-session's goldens are
+     re-blessed with ids masked. The check rules don't change: each check still arrives once.
+  2. **Idle thinning.** While nothing is unconfirmed, a member acks every 8 frames instead of every 2, and
+     returns to every 2 in the tick a new entry reaches it. Idle at 2 members falls to about 1.9 kB/s,
+     and confirmation latency while anything happens is unchanged. 8 frames stays far inside the timers
+     that read acks (half a window, 60 frames; `suspect_after`, 180). It moves the timing of every log
+     (re-bless). It combines with R18's ack thinning (10.9) by taking the longer interval: an idle
+     member acks every 8 frames at any level, and an active one at its level's interval (every 2 frames
+     uncongested, up to 8 at the coarsest level).
+     * **"Nothing unconfirmed," judged from a member's own copy** [proposal]: a member is idle while
+       every entry it holds, other than acks, is stamped at or before its own confirmed frame. Acks
+       are left out, or each ack would keep every member busy.
+     * A new entry, its own or anyone's, is stamped after the confirmed frame. So a member acks in the
+       tick it authors or receives one, then at its level's interval until its confirmed frame passes
+       every such entry.
+     * The author stays busy until every member has acked its entry. Its acks carry the new head, so
+       gap detection for a new entry is as prompt as before.
+     * A member whose sim lags judges from its lagging copy and stays busy longer. That costs only
+       bandwidth.
+     * Idle acks fall on frames that are multiples of 8, the coarsest level's grid, so they share
+       datagrams with hand entries. The ack that leaves idle goes at once, off the grid. A check hash
+       due at a check frame rides the first ack after it, at most 7 frames later.
+  3. **Compact heads** (the compact acks above). Each head is a (member, seq) pair as varints, plus one
+     32-byte BLAKE3 digest over every (member, seq, id), as P23-2 moves facts to (review DS-4: 16 bytes
+     would give evidence only 2^64 collision resistance). It saves about 4 bytes an ack at 2 members,
+     about 220 at 8 (half), and about 508 at 16. It touches the evidence rules. A lying-vote proof (R3-1)
+     and the reference checks compare the ids an ack named. So the digest must be checkable by a third
+     party from the entries it covers, and a proof must carry those entries. It needs a design review
+     of its own.
+  4. **The ack folded into the frame's entry.** When a member authors an entry on a frame tick anyway
+     (a hand stream), the ack's fields ride in that entry. That saves 114 bytes (a header and a
+     signature) per folded ack: about 3.4 kB/s, 19%, during a sweep, and nothing at idle. It changes the
+     entry format: any entry may then carry a horizon and heads, and the horizon rule applies to each.
+     Every golden moves.
+  * **All four together:**
+    * idle at 2 members: about 1.6 kB/s, 79% less;
+    * a sweep: about 13 kB/s, 29% less;
+    * idle at 8 members: about 12 kB/s instead of 103.
+    With the decided two (1 and 2), idle at 2 members is about 1.6-1.9 kB/s and a sweep is unchanged.
+    A sweep still needs R18's thinning at 64 kbit/s: the hand stream alone is 8 kB/s.
+  * **Whether the spike mirrors them:** (1), (3) and (4) are encodings, which the spike can leave out, as
+    it keeps FNV (P23-2). (2) changes timing, so the reference should mirror it.
 
 ### 7.7 What traffic R3 allows (review L9)
 
@@ -999,7 +1098,9 @@ them identically, so they can never fork anyone.
      opened, member 3 removed, and members 1 and 2 equal to the replay].
 
 **What a cheater can still do:**
-* backdate within one ack interval plus the slack, about 4 frames (67 ms) at the defaults;
+* backdate within one ack interval plus the slack: about 4 frames (67 ms) at the defaults, and up to
+  about 10 frames (167 ms) while the session is idle (7.6, reduction 2: acks every 8 frames) or at
+  R18's coarsest level (10.9), so rollback budgets assume the larger figure (review IR-1);
 * claim a present that lags the true one. That looks exactly like a slow link: it is accountable (others
   see the member's stamps consistently trail their own clocks) but not provable.
 
@@ -1028,7 +1129,9 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * **Only grabs claim** (D72 option (a)). An accepted grab claims its object while it is held; another
   member's grab of the same object in that time is refused with `RejectedClaimed{by, until}`.
 * **Every other physical interaction is never refused.** Touches, pushes and impulses all apply,
-  physically, including on a held object, which they move through the grab's constraint.
+  physically, including on a held object, which they move through the grab's constraint. A touch by a
+  member that does not hold the object carries no state onto it: its carried-state write is skipped, and
+  it acts only through physics (P23-6, 7.3).
 * **A member moves only its own hands** (P2-8 review: @shader-reviewer's probe moved another member's
   hand through `pe-mcp`, and every peer accepted it).
   * Hands are part of a member's avatar (16.3), and an entry's author is its chain's signed member (10.3).
@@ -1219,6 +1322,12 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   its own transfer: the receiver trusts that member or waits for a second one [I].
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
+* **The joiner holds its simulation until the state is imported, and a state never rewinds a replica**
+  (review P23R-1). This is a requirement on the joiner's IO: pe-session's core does not hold it yet.
+  The harness meets it [V statejoin, which sets `throttle_us`], and the core enforces it later
+  [proposal; `request_state`'s rustdoc states the precondition].
+* A refused answer uses up that donor's request, so the joiner asks another member (review P23R-2)
+  [V @world-chunks, pe-session].
 * Region- or island-scoped transfer is a later optimization.
 
 ---
@@ -1947,6 +2056,27 @@ is fixed once the author's chain is contiguous up to it.
   links [V session-sim r14];
 * the rollback window became the speculation limit (6.4).
 
+**Known limits of the port** (P2-3's review round, p2/session 7aa4163) [V @world-chunks; bounded by M1
+hardening, proposal]:
+* **P23-8:** `trusted_check` judges a joiner's check against the joiner's own view of decided changes, so
+  a joiner must hold the changes up to the check frame (the relayed log carries them). It ignores the
+  ack's epoch field. It now refuses when two hashes each reach a quorum (fixed).
+* **P23-9, unbounded growth from one faulty member:** versions per (member, seq); `pc_held` for any
+  future epoch (and `pv_held`, VC8R-1's, the same way; the spike shares both); join requests,
+  `followers` and `known`, with no limit on `expires`; `watched`, filled from any entry's carried index;
+  `Arrival::Rejected { until: u64::MAX }`, never pruned; `seen`, never pruned. Each needs a bound or a
+  prune.
+* **P23-13:** `hand_owners` is fixed from the genesis members and is not hashed state. Nothing checks
+  that a joiner was built from genesis, or that the session id is the genesis hash (SX-1 should).
+* **P23-14:** a hand sent through a portal returns as an unowned dynamic body. `frame_effects` is not in
+  a state transfer, so a joiner never attests commit facts at or before its import frame.
+* **P23-2, the open part:** facts are 256-bit BLAKE3, with the session in the signed message. But
+  `Change::value` and `chain_hash` are still 64 bits (truncated BLAKE3, no longer FNV), so a proposer
+  that grinds two changes to one value, a birthday search of about 2^32, remains possible. Widening both
+  to 256 bits changes the vote payloads and the R14 tables. It is in the P2-5 port's scope, where the
+  facts also gain their frame and epoch (VC-7, P23R-4) (@coordinator-opus; @provenance-eng agrees for
+  the chain hash).
+
 ### 10.9 Recovery when the network degrades (R18)
 
 User requirement 18 (14:29Z): when the network degrades, the engine must detect it and recover. It must
@@ -1971,7 +2101,16 @@ and the engager's hand replayed after the gesture had ended.
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
      * A thinned hand entry carries a `span`: its target is reached over that many frames, and dead
-       reckoning (6.10) covers the gaps.
+       reckoning (6.10) covers the gaps. Every peer, the author included, follows a thinned entry over
+       its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
+       most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
+       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
+     * A hand pose falls on a frame aligned to its level's stride, the first such frame after the last
+       pose; at a level change it is not held back to last + k. So the gap after a change is at most the
+       new stride, and a hand never stops while its author keeps sending. Before, a pose also had to be k
+       frames after the last, and at 4→5 pose 258 was followed by 272, freezing the hand 2 frames even
+       with span then coast (@shader-reviewer's matrix finding M1; fixed in pe-session at 649a77f, with a
+       test through every level change [V @world-chunks]). The spike follows with its next change.
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
@@ -1988,7 +2127,16 @@ and the engager's hand replayed after the gesture had ended.
    * a fetch for the same range is re-asked with exponential backoff, from 60 ms up to 2 s;
    * a reply holds at most 16 entries, and the requester asks again for the rest;
    * a member answers a fetch only while its uplink to the requester holds under 100 ms;
-   * every batch is split into datagrams of at most 1,200 bytes.
+   * every batch is split into datagrams of at most 1,200 bytes;
+   * a fetch's answer is sent or dropped whole, decided at its first message. Cutting a reply short
+     starved repair: at 36 kbit/s on one link of three, every member paused about 160 frames
+     [V @world-chunks, pe-session].
+   * **The weakness this leaves:** repairs only yield. On a link whose steady traffic sits just under
+     its cap, a repair waits behind the steady stream, its re-asks back off to 2 s, and confirmation
+     crawls or stalls for good. pe-session with R18 off showed it: idle acks at 62.5 kbit/s on a 64
+     kbit/s link, and a session that never recovered [V @world-chunks]. R18's thinning, which ships on,
+     is the defence: it holds the uplink queue near 40 ms, which leaves headroom for repairs. The ack
+     reductions decided in 7.6 widen that headroom [I].
 6. **Leaving a stall.**
    * A member that fell behind re-simulates in the background, at up to 8 ms per tick (6.5), and draws
      only its present. The catch-up is never shown as a replay.
@@ -2007,6 +2155,12 @@ and the engager's hand replayed after the gesture had ended.
      other member holds. Others' histories are never rewritten.
 8. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
    None was observed.
+
+**In pe-session** (P2-3; @coordinator-opus's split): `SessionCore` starts with R18 on (`adapt`,
+`ack_on_frames`). A production IO batches a tick's messages into one datagram per peer and reports its
+uplink queue delay (`set_link`). The test IOs (the session harness and `tools/session-sim`) send one
+datagram per message with the controller off unless a run opts in, so the protocol scenarios keep their
+transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
@@ -2841,9 +2995,10 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
   fencing, hand-off, expiry, what other instances show) is designed in
   @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t.
 
-**The backup list** holds four kinds (8a.10): **checkpoints**, kept until an owner deletes them;
+**The backup list** holds five kinds (8a.10): **checkpoints**, kept until an owner deletes them;
 **autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
-(8a.10's schedule); **session ends**, one for each closed session; and **before load**, one for each load.
+(8a.10's schedule); **session ends**, one for each closed session; **before load**, one for each load;
+and **before merge**, one for each side of each merge (D87, below).
 * Owners, and anyone whose role has Load backups (the Admin role has it), see the list. Anyone who sees
   it may rename a backup; only owners delete.
 * Renames and deletions are signed and versioned (SV-8). A deletion is a signed tombstone, so a deleted
@@ -2851,6 +3006,85 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
 * Every holder of the world keeps the list and thins autosaves by the schedule, locally. A thinned
   autosave that another holder still offers is authentic, only older, so thinning needs no signature.
 * Backups travel with the world, like its chunk files.
+
+**Before-merge backups** (D87 q2; the user, 12:52Z, verbatim: "world copies are combined with
+version-control style merging: the pre-merge backups are always available to all players at all times,
+so nothing is ever lost"):
+* Before any merge writes its merged head, both sides' heads are kept as before-merge backups. That
+  covers a disjoint-path merge of two head references (above), a copy merged back into its world, and the
+  owners' choice on the compare card. "Keep this one" keeps the other head this way too.
+* **Every player of the world sees them,** not only owners and the Load backups role, and can preview
+  them. The list rule above does not apply to this kind. Loading one into a live session still needs Load
+  backups (@coordinator-opus's reading, sent to the user). Opening one as a new world needs Copy world,
+  as any full copy does (code and assets included), so owners keep control over full copies
+  (@coordinator-opus's ruling (b), 12:53Z, which the user may reverse; 8a.10). "Nothing is ever lost" is
+  met by every player seeing and previewing every before-merge version, and by none being deleted.
+* They are never thinned and never deleted, owners included [proposal: "always available ... at all
+  times" rules out both].
+* Each costs a manifest, any blobs the merge dropped, and the full encodings of the runtime records it
+  held as deltas (at most the runtime image, about 1.5 MB, per backup); it shares the rest with the
+  merged head (storage, below).
+* The ownership chain's merge records both pre-merge heads too (D87; @provenance-eng).
+
+**Storage** (the user, 12:56Z, verbatim: "assets should be deduplicated and world deltas stored to save
+on storage space, in a similar manner to how resonite works"):
+* **Blobs are content-addressed** (D16, BLAKE3). Every chunk file, logic module, shader, asset and
+  runtime-chunk record is stored once per machine, in a blob store that every world, backup, copy and
+  version on that machine shares, as Resonite's resdb hashes are. A backup is a manifest (a tree of
+  hashes) plus the authority data above.
+* **The runtime image is stored as deltas:**
+  * Runtime state is stored per chunk (the dormant records above; SW-6). An unchanged chunk is the same
+    blob, so a backup stores only the chunks that changed since the one before.
+  * A changed chunk's record is stored as a zstd delta against that chunk's record in the previous
+    *kept* backup (patch-from style), with a full copy every 8 versions, so a read never chains more
+    than 8 deltas [proposal]. When thinning drops a backup that a later delta was based on, that delta is
+    re-based onto its new previous kept version, or stored full; thinned versions are never kept alive
+    as bases (review DS-2). A blob is still named by the hash of its full content and checked against
+    it after decoding.
+  * A before-merge backup holds every chunk record it names as a full copy, never as a delta, so no
+    damaged base can break a version that nothing may lose (review DS-3). A record it shares with the
+    head is often stored as a delta under the same name, since the last autosave wrote it. That blob is
+    converted to a full encoding in place, never kept twice, so a name has one encoding; deltas based on
+    it stay valid, since its content and name are unchanged. Nothing re-encodes a blob a before-merge
+    backup names as a delta again (review DS-7) [proposal].
+  * Re-encoding a blob under its name (re-basing it, storing it full instead, or a before-merge
+    conversion) writes and syncs the new encoding in full before it replaces the old one in one atomic
+    step, so a crash at any point leaves one valid encoding (review DS-6).
+  * So there is no world-wide keyframe: every manifest is complete, and only chunk records have
+    keyframes.
+* **Collection is mark-and-sweep, never reference counts** [proposal]. A count drifts after a crash; a
+  sweep starts over each time.
+  * The roots are every kept backup's manifest (by the schedule above), every head, every checkpoint and
+    before-merge backup, and every other world's roots on the machine.
+  * **What a sweep must never take** (review DS-1):
+    * writes in flight (review DS-1b): a write pins every blob its manifest will name, whether it
+      writes the blob or finds it already stored (a dedup hit). It pins a blob before writing it, or in
+      the same step as the lookup that finds it, and holds the pins until its manifest commits, or, if
+      a sweep is running then, until that sweep ends. Copies, checkpoints and re-encodings (above) are
+      writes too;
+    * running sessions: each pins what it uses, its snapshot ring, its unsaved runtime state, and the
+      assets it fetched for a joined world this machine holds no backup of; caches pin theirs the same
+      way, until they release them;
+    * a pinned or reached blob stored as a delta keeps its base chain, as encoded when it was pinned or
+      reached; so a delta being written pins the base it is written against.
+  * The sweep checks pins when it deletes, not only when it marks: checking a blob and deleting it are
+    one step against the lookup that would pin it (review DS-1b).
+  * Nothing the protocol needs lives as a loose blob: the cross-world tables (22.7) and the ownership
+    chain (12.5) are part of every manifest's authority data, so any kept manifest reaches them.
+  * The sweep runs at idle priority, about daily. Thinning only drops manifests; the sweep then deletes
+    what no root and no pin reaches, never a blob a kept backup reaches.
+* **A rough estimate** [I; assumptions stated, to measure]:
+  * The assumptions: a busy world with 50 MB of assets and 20 MB of chunk files, a 1.5 MB runtime image
+    (9.1), and 10-20% of its chunks changing per 5-minute autosave, about 0.2-0.3 MB before
+    compression.
+  * The schedule keeps about 66 autosaves over a month of daily play: 12 for the last hour, 24 hourly
+    and 30 daily. Kept versions differ by more than one autosave's change: an hourly keeper by an hour
+    of it (about 0.5 MB), a daily one by a day's (up to most of the image, about 0.75-1.5 MB). Deltas
+    against the previous kept version therefore come to about 40 MB, plus the 70 MB of base content
+    stored once.
+  * In total, about 110 MB per busy world-month, and up to about 200 MB if a day's play touches most
+    chunks (@design-reviewer's worst case); more with heavy checkpointing. An idle world writes
+    nothing, since autosave runs only while the world changes.
 
 **Loading a backup:**
 * It is a human action: no agent certificate can carry it (12.3). It needs the Load backups permission,
@@ -2896,7 +3130,7 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
   as above. The next session starts from it.
 * **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
   owner is whoever opens it. It needs the Copy world permission, held only by owners by default
-  (@coordinator-opus's direction, 08:35Z). The copy re-mints its objects' births in the new world, so
+  (@coordinator-opus's direction, 08:35Z). Before-merge backups follow the same rule (above). The copy re-mints its objects' births in the new world, so
   they can later be exported from it (SV-11).
 
 **Regions** (25.5; @design-reviewer's proposal): a save is a world-log entry stamped at a check frame F.
@@ -4612,6 +4846,11 @@ persists until a verdict arrives.
   "signatures" are keyless hashes that anyone could compute: they model who must sign, not
   unforgeability, and the forge tests forge only signatures an attacker could hold. Production signs with
   each member's Ed25519 key (10.3) (round 3, low).
+  * A verifier checks a fact signature over "pe-fact\0" | world | session_of(world) | fact, so it must
+    know each partner world's session id. The route list carries it, and feeds
+    `PublicKeys::add_world` (review P23R-3). pe-session at 3af709a registers only its own world's
+    session id, so once real keys are used a partner world's facts verify nothing [V @design-reviewer,
+    review-p2-3.md round 2].
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
@@ -5515,7 +5754,7 @@ entry says so.
   * **Settled (user, 19:11Z): as recommended.**
   * Recommend: the touched bodies' exact state, plus a digest of their contact island; a mismatch triggers
     a scoped state transfer.
-  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 52 bytes per island body;
+  * Alternative: always carry the whole island (exact neighbourhoods sooner, at 64 bytes per island body;
     a resting pile is one large island).
 * **D41. Continuous perturbations: hands in a ball pit (7.5; the main question).**
   * Recommend: a continuous interaction is a **perturbation source**. Its pose streams as small entries
