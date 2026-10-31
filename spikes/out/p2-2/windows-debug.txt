@@ -1,10 +1,10 @@
-commit 4f4593dca4d2d6012f55db49c2c7c4894d1371d5
+commit f440165329edd6e804a30962fd284d99bcbbeaa6
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
    Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\contacts\crates\pe-physics)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.17s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.27s
      Running unittests src\lib.rs (target\debug\deps\pe_physics-46ac55e950bbb459.exe)
 
 running 0 tests
@@ -14,7 +14,12 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests\api.rs (target\debug\deps\api-5362cd0977d15e60.exe)
 
 running 21 tests
-test carried_state_exact_across_histories ... RESULT carried state across histories (18 bodies): first differing state_hash frame of 120 None, check_hash differs at 120 of 120 frames (first Some(0))
+test carried_state_exact_across_histories ... RESULT carried state across histories, at rest: 0 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, collapsing: 9 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, grabbed, at rest: 0 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, grabbed, collapsing: 8 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, spherical joint and rope, at rest (limit): 11 of 18 bodies moving at the write, awake until frame 599; first differing state_hash frame of 600 Some(31); check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, spherical joint and rope, collapsing (limit): 12 of 18 bodies moving at the write, awake until frame 599; first differing state_hash frame of 600 Some(31); check_hash differs at 120 of the first 120 frames
 ok
 test carried_state_lands_exactly ... RESULT carried state, off-centre, spinning, both sides true: first differing frame of 120 None
 RESULT carried state, asleep on the ground, both sides true: first differing frame of 120 None
@@ -51,7 +56,7 @@ test targets_drive_hands ... ok
 test transfer_canonical_after_destroy ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.56s
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.06s
 
      Running tests\spike_records.rs (target\debug\deps\spike_records-54e0938baa09903e.exe)
 
@@ -110,7 +115,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 189.61s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 183.25s
 
    Doc-tests pe_physics
 
