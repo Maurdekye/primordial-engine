@@ -603,6 +603,8 @@ struct Residual {
     /// Long honest histories, and the most attested certificates in one.
     long: u32,
     max_attested: usize,
+    /// A2 runs whose keys include a current backup key: a compromised owner (OT = (a)).
+    stolen_backup: u32,
     /// Honest histories in which the view and the linear state differed (rule C's stated exception).
     diverged: u32,
 }
@@ -706,6 +708,8 @@ fn check(seed: u64, residual: &mut Residual) {
         } else {
             // 8: the residual, measured.
             residual.runs += 1;
+            let stolen_backup = ks.iter().any(|k| honest.owners.recovery.values().any(|r| r.contains_key(k)));
+            residual.stolen_backup += stolen_backup as u32;
             let (ho, vo) = (&honest.owners, &vv.owners);
             if !ho.owners.is_subset(&vo.owners) {
                 residual.honest_owner_lost += 1;
@@ -718,8 +722,11 @@ fn check(seed: u64, residual: &mut Residual) {
             residual.honest_voided += voided as u32;
             if vo.rule < ho.rule || (vo.rule == SignRule::Any) != (ho.rule == SignRule::Any) && vo.rule == SignRule::Any {
                 residual.rule_loosened += 1;
-                if vo.owners == ho.owners && !voided {
+                // A stolen current backup is its owner's key (OT = (a)): a rule it signs is no
+                // takeover but a compromised owner.
+                if vo.owners == ho.owners && !voided && !stolen_backup {
                     residual.loosened_without_takeover += 1;
+                    panic!("{ctx}: the rule loosened ({:?} -> {:?}) with no takeover: concurrent rules take the strictest", ho.rule, vo.rule);
                 }
             }
         }
@@ -739,8 +746,8 @@ fn adversarial_harness() {
         }
     }
     println!(
-        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, an honest change voided {}, rule loosened {} (always with a takeover: an owner lost or gained, or an honest change voided); {} one-by-one rebuilds sent certificates again, then converged; {} honest histories hit rule C's stated exception (mutual removals voided: view and linear state differ)",
-        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.honest_voided, residual.rule_loosened, residual.resent, residual.diverged
+        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, an honest change voided {}, rule loosened {} (always with a takeover: an owner lost or gained, or an honest change voided, or a stolen current backup key, which A2 held in {} runs); {} one-by-one rebuilds sent certificates again, then converged; {} honest histories hit rule C's stated exception (mutual removals voided: view and linear state differ)",
+        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.honest_voided, residual.rule_loosened, residual.stolen_backup, residual.resent, residual.diverged
     );
     assert_eq!(residual.loosened_without_takeover, 0, "concurrent rules take the strictest; only a takeover loosens");
 }
