@@ -678,3 +678,26 @@ fn targets_drive_hands() {
     assert!(invalid(pw.set_target(id(1), target, DT, true)), "static body");
     assert_eq!(pw.state_hash().unwrap(), before);
 }
+
+/// After a destroy, a world that never restored saves the same transfer as one restored from
+/// it, so `from_transfer` accepts it and their check hashes agree (world-chunks' r14 case: a
+/// sphere resting in a settled pile leaves through a portal; the freed slot kept its type).
+#[test]
+fn transfer_canonical_after_destroy() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    for n in 0..12u32 {
+        let (x, z) = ((n % 4) as f64 * 1.1 - 1.6, (n / 4) as f64 * 1.1 - 1.1);
+        pw.add_body(id(2 + n), &BodyDesc { position: [x, 0.5, z], ..ball(0.0) }).unwrap();
+    }
+    run(&mut pw, 120);
+    pw.remove_body(id(7)).unwrap();
+    for frames in [0, 1, 30] {
+        run(&mut pw, frames);
+        let transfer = pw.save_transfer().unwrap();
+        let confirmed = transfer.check_hash();
+        let joiner = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &transfer, &confirmed);
+        assert!(joiner.is_ok(), "{frames} frames after the destroy: {:?}", joiner.err());
+        assert_eq!(joiner.unwrap().check_hash().unwrap(), confirmed);
+    }
+}
