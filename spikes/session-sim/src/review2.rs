@@ -122,7 +122,7 @@ pub fn ackfork() {
                 seq: forged.0 + 1,
                 prev: forged.1,
                 stamp: now,
-                payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None },
+                payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None, epoch: 0 },
                 carried: None,
             };
             forged = (e.seq, e.id());

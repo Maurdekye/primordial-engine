@@ -5,8 +5,9 @@
 use std::sync::Arc;
 
 use pe_physics::{
-    BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig, PhysicsError,
-    PhysicsWorld, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
+    BodyDesc, BodyKind, CheckHash, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig,
+    PhysicsError,
+    PhysicsWorld, Pose, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
 };
 use pe_sim::{Registry, SimStore, Transform};
 
@@ -108,6 +109,20 @@ fn rotations_are_normalized() {
     let n2: f32 = q.iter().map(|c| c * c).sum();
     assert!((n2 - 1.0).abs() < 1.0e-6, "{n2}");
     run(&mut pw, 5);
+
+    // A rotation Box3D already takes as unit length keeps its bits (P2-3 arrivals), including
+    // one whose length is not 1.0 even in f32, so that dividing by it would change the bits.
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let q = (1..40)
+        .map(|k| [0.0, s, 0.0, s].map(|c| c * (1.0 + k as f32 * 1.0e-7)))
+        .find(|q| {
+            let n2: f32 = q.iter().map(|c| c * c).sum();
+            (n2 - 1.0).abs() < 20.0 * f32::EPSILON && n2.sqrt() != 1.0
+        })
+        .expect("a rotation Box3D takes as unit whose length is not 1.0");
+    pw.add_body(id(2), &ball(5.0).with_rotation(q)).unwrap();
+    assert_eq!(pw.pose(id(2)).unwrap().rotation.map(f32::to_bits), q.map(f32::to_bits), "bits kept");
+    assert!(invalid(pw.add_body(id(3), &ball(8.0).with_rotation([0.0, 0.0, 0.0, 1.03]))), "beyond 1%");
 }
 
 #[test]
@@ -612,4 +627,331 @@ fn hull_and_shape_counts_bounded() {
     pw.add_body(id(3), &many).unwrap();
     assert!(invalid(pw.add_body(id(4), &many.clone().with_shape(sphere()))));
     assert_eq!(pw.body_count(), 2);
+}
+
+fn bits(p: Pose, v: ([f32; 3], [f32; 3])) -> Vec<u64> {
+    let f32s = p.rotation.iter().chain(&v.0).chain(&v.1).map(|c| c.to_bits() as u64);
+    p.position.iter().map(|c| c.to_bits()).chain(f32s).collect()
+}
+
+/// Carried state (P2-3, review SET-1/SET-2): the toucher's pose and velocities, applied with
+/// `set_state` by every peer (the toucher included) at the same frame, give identical worlds
+/// afterwards: off-centre bodies, a source asleep on the ground, one settling towards sleep
+/// (sleep timer running), and one rolling in contact. Applied by the receiver only, an
+/// off-centre body diverges on the next step, although its pose bits are equal.
+#[test]
+fn carried_state_lands_exactly() {
+    let off = |y: f64| {
+        BodyDesc::new(BodyKind::Dynamic, [0.0, y, 0.0])
+            .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.37, 0.05, -0.11], radius: 0.3 }))
+            .with_shape(ShapeDesc::new(Geometry::Sphere { center: [-0.2, 0.0, 0.0], radius: 0.2 }))
+    };
+    let cases = [
+        ("off-centre, spinning", off(3.0).with_velocity([0.7, 0.0, -0.2], [0.3, 4.1, 1.7]), off(9.0), 37),
+        ("asleep on the ground", ball(0.5), ball(9.0), 300),
+        ("settling, sleep timer running", ball(0.5), ball(9.0), 20),
+        ("rolling in contact", ball(0.6).with_velocity([1.5, 0.0, 0.0], [0.0, 0.0, -3.0]), ball(9.0), 20),
+    ];
+    for both_sides in [true, false] {
+        for (label, src, dst, frames) in &cases {
+            let mut a = world(PhysicsConfig::engine());
+            let mut b = world(PhysicsConfig::engine());
+            for pw in [&mut a, &mut b] {
+                pw.add_body(id(1), &ground()).unwrap();
+            }
+            a.add_body(id(2), src).unwrap();
+            b.add_body(id(2), dst).unwrap();
+            run(&mut a, *frames);
+            let (pose, vel) = (a.pose(id(2)).unwrap(), a.velocity(id(2)).unwrap());
+            if both_sides {
+                a.set_state(id(2), pose, vel.0, vel.1).unwrap();
+            }
+            b.set_state(id(2), pose, vel.0, vel.1).unwrap();
+            assert_eq!(bits(b.pose(id(2)).unwrap(), b.velocity(id(2)).unwrap()), bits(pose, vel), "exact bits, {label}");
+            assert!(b.is_awake(id(2)).unwrap(), "carried state is awake, {label}");
+            let (ra, rb) = (run(&mut a, 120), run(&mut b, 120));
+            let first = ra.iter().zip(&rb).position(|(x, y)| x != y);
+            println!("RESULT carried state, {label}, both sides {both_sides}: first differing frame of 120 {first:?}");
+            if both_sides {
+                assert_eq!(first, None, "{label}");
+                assert_eq!(a.is_awake(id(2)).unwrap(), b.is_awake(id(2)).unwrap(), "{label}");
+            } else if label.starts_with("off-centre") {
+                assert_eq!(first, Some(0), "receiver only: the derived state differs (SET-1)");
+            }
+        }
+    }
+
+    // Refusals change nothing; each check runs before anything is written.
+    let mut b = world(PhysicsConfig::engine());
+    b.add_body(id(1), &ground()).unwrap();
+    b.add_body(id(2), &ball(2.0)).unwrap();
+    run(&mut b, 3);
+    let before = b.state_hash().unwrap();
+    let pose = b.pose(id(2)).unwrap();
+    let ok = ([0.1, 0.0, 0.0], [0.0; 3]);
+    assert!(invalid(b.set_state(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose }, ok.0, ok.1)), "not unit: refused, not renormalized");
+    assert!(invalid(b.set_state(id(2), Pose { rotation: [f32::NAN, 0.0, 0.0, 1.0], ..pose }, ok.0, ok.1)));
+    assert!(invalid(b.set_state(id(2), Pose { position: [f64::NAN, 0.0, 0.0], ..pose }, ok.0, ok.1)));
+    assert!(invalid(b.set_state(id(2), Pose { position: [2.0e6, 0.0, 0.0], ..pose }, ok.0, ok.1)));
+    assert!(invalid(b.set_state(id(2), pose, [1.0e5, 0.0, 0.0], ok.1)));
+    assert!(invalid(b.set_state(id(2), pose, ok.0, [f32::NAN, 0.0, 0.0])), "the pose is not written either");
+    assert!(invalid(b.set_pose(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose })));
+    assert!(invalid(b.set_velocity(id(2), [0.0; 3], [f32::NAN, 0.0, 0.0])), "the linear part is not written either");
+    assert!(invalid(b.set_state(id(1), pose, ok.0, ok.1)), "static body");
+    assert!(invalid(b.set_pose(id(1), pose)), "static body");
+    assert!(invalid(b.set_velocity(id(1), [1.0, 0.0, 0.0], [0.0; 3])), "static body");
+    assert_eq!(b.set_state(id(7), pose, ok.0, ok.1), Err(PhysicsError::NotBound(id(7))));
+    assert_eq!(b.state_hash().unwrap(), before, "a refused call changed the world");
+}
+
+/// set_target (hands): a kinematic body reaches its target pose after dt.
+#[test]
+fn targets_drive_hands() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    let hand = BodyDesc::new(BodyKind::Kinematic, [0.0, 1.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
+    pw.add_body(id(2), &hand).unwrap();
+    // 30 degrees about y: Box3D turns a body by at most 45 degrees per step.
+    let (s, c) = 15f32.to_radians().sin_cos();
+    let target = Pose { position: [0.5, 1.2, -0.3], rotation: [0.0, s, 0.0, c] };
+    pw.set_target(id(2), target, DT, true).unwrap();
+    pw.step(DT).unwrap();
+    let got = pw.pose(id(2)).unwrap();
+    let d = got.position.iter().zip(&target.position).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let dot: f32 = got.rotation.iter().zip(&target.rotation).map(|(a, b)| a * b).sum();
+    assert!(d < 1.0e-5 && dot.abs() > 1.0 - 1.0e-5, "hand at {got:?}, target {target:?}");
+
+    let before = pw.state_hash().unwrap();
+    for dt in [0.0, -1.0, 1.0e-4, 2.0, f32::NAN] {
+        assert!(invalid(pw.set_target(id(2), target, dt, true)), "dt {dt}");
+    }
+    assert!(invalid(pw.set_target(id(2), Pose { rotation: [0.0, 0.0, 0.0, 0.5], ..target }, DT, true)));
+    assert!(invalid(pw.set_target(id(2), Pose { position: [0.0, f64::INFINITY, 0.0], ..target }, DT, true)));
+    assert!(invalid(pw.set_target(id(1), target, DT, true)), "static body");
+    assert_eq!(pw.state_hash().unwrap(), before);
+}
+
+/// After a destroy, a world that never restored saves the same transfer as one restored from
+/// it, so `from_transfer` accepts it and their check hashes agree (world-chunks' r14 case: a
+/// sphere resting in a settled pile leaves through a portal; the freed slot kept its type).
+#[test]
+fn transfer_canonical_after_destroy() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    for n in 0..12u32 {
+        let (x, z) = ((n % 4) as f64 * 1.1 - 1.6, (n / 4) as f64 * 1.1 - 1.1);
+        pw.add_body(id(2 + n), &BodyDesc { position: [x, 0.5, z], ..ball(0.0) }).unwrap();
+    }
+    run(&mut pw, 120);
+    pw.remove_body(id(7)).unwrap();
+    for frames in [0, 1, 30] {
+        run(&mut pw, frames);
+        let transfer = pw.save_transfer().unwrap();
+        let confirmed = transfer.check_hash();
+        let joiner = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &transfer, &confirmed);
+        assert!(joiner.is_ok(), "{frames} frames after the destroy: {:?}", joiner.err());
+        assert_eq!(joiner.unwrap().check_hash().unwrap(), confirmed);
+    }
+}
+
+/// A body with a hull no other body has, so each one adds a registry entry.
+fn unique_hull(n: u32, x: f64) -> BodyDesc {
+    let s = 0.3 + 0.001 * n as f32;
+    let points = vec![[0.0; 3], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s], [s * 0.3, s * 0.4, s * 0.5]];
+    BodyDesc::new(BodyKind::Dynamic, [x, 3.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Hull { points }))
+}
+
+/// Hull churn: frame `f`'s inputs. A unique hull body appears every 4 frames and the one from
+/// 16 frames earlier goes; a ball gets a push every 9 frames.
+fn churn(pw: &mut PhysicsWorld, f: u32) {
+    if f.is_multiple_of(4) {
+        pw.add_body(id(1000 + f), &unique_hull(f, (f % 7) as f64 - 3.0)).unwrap();
+        if f >= 16 {
+            pw.remove_body(id(1000 + f - 16)).unwrap();
+        }
+    }
+    if f % 9 == 4 {
+        pw.push(id(2), Push::Impulse([0.3, 1.0, 0.0])).unwrap();
+    }
+}
+
+fn churn_world() -> PhysicsWorld {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    pw.add_body(id(2), &ball(1.0)).unwrap();
+    pw
+}
+
+/// Compaction is exact: every kept image restores to the same state after it as before, the
+/// live world is unchanged, the registry shrinks to what the kept images and the live world
+/// use, and later saves and restores work.
+#[test]
+fn compact_images_is_exact() {
+    let mut pw = churn_world();
+    let mut ring = Vec::new();
+    for f in 0..120 {
+        churn(&mut pw, f);
+        pw.step(DT).unwrap();
+        ring.push(pw.save_image().unwrap());
+    }
+    let mut kept: Vec<WorldImage> = ring.split_off(100);
+    let hashes = |pw: &mut PhysicsWorld, images: &[WorldImage]| -> Vec<(u64, CheckHash)> {
+        let live = pw.save_image().unwrap();
+        let out = images.iter().map(|i| {
+            pw.restore_image(i).unwrap();
+            (pw.state_hash().unwrap(), pw.check_hash().unwrap())
+        });
+        let out = out.collect();
+        pw.restore_image(&live).unwrap();
+        out
+    };
+    let before = hashes(&mut pw, &kept);
+    let live_before = (pw.state_hash().unwrap(), pw.check_hash().unwrap());
+    let len_before = pw.registry_len();
+    pw.compact_images(&mut kept.iter_mut().collect::<Vec<_>>()).unwrap();
+    let len_after = pw.registry_len();
+    println!("RESULT compact registry {len_before} -> {len_after} blobs (20 kept images)");
+    assert!(len_after < len_before / 2, "{len_before} -> {len_after}");
+    assert_eq!((pw.state_hash().unwrap(), pw.check_hash().unwrap()), live_before, "live world unchanged");
+    assert_eq!(hashes(&mut pw, &kept), before, "each kept image restores as before");
+    // The world goes on, saving into the new registry and rolling back with the new images.
+    let reference = run(&mut pw, 20);
+    pw.restore_image(&kept[19]).unwrap();
+    run(&mut pw, 0);
+    assert_eq!(pw.check_hash().unwrap(), live_before.1);
+    assert_eq!(run(&mut pw, 20), reference);
+}
+
+/// A refused kept image (another configuration's) changes nothing: the images, the registry
+/// and the live world stay as they were, and the world is not poisoned.
+#[test]
+fn compact_images_refusal_changes_nothing() {
+    let mut pw = churn_world();
+    for f in 0..40 {
+        churn(&mut pw, f);
+        pw.step(DT).unwrap();
+    }
+    let mut mine = pw.save_image().unwrap();
+    let mut upstream = world(PhysicsConfig::upstream());
+    upstream.add_body(id(1), &ground()).unwrap();
+    let mut foreign = upstream.save_image().unwrap();
+    let (a, b, len, live) = (mine.clone(), foreign.clone(), pw.registry_len(), pw.check_hash().unwrap());
+    assert!(matches!(pw.compact_images(&mut [&mut mine, &mut foreign]), Err(PhysicsError::BadImage(_))));
+    assert_eq!((mine, foreign, pw.registry_len()), (a, b, len));
+    assert!(!pw.is_poisoned());
+    assert_eq!(pw.check_hash().unwrap(), live);
+}
+
+/// Compaction is invisible to the simulation (P22-12 condition 1): two peers with the same
+/// inputs but different save cadences, rollbacks at different frames (a late input reaches
+/// them 3 and 7 frames late) and compaction at different frames, through hull churn, keep
+/// `state_hash` equal every frame and `check_hash` equal every 10 frames.
+#[test]
+fn compaction_is_invisible_to_the_simulation() {
+    struct Peer {
+        pw: PhysicsWorld,
+        /// (frame, the state at the start of that frame)
+        ring: Vec<(u32, WorldImage)>,
+        save_every: u32,
+        compact_every: u32,
+        late_by: u32,
+        max_len: usize,
+    }
+    // A late input: a push at frames 11k + 5, applied only once the peer has heard of it.
+    let late = |f: u32| f % 11 == 5;
+    let step = |p: &mut Peer, f: u32, heard_up_to: u32| {
+        if f.is_multiple_of(p.save_every) {
+            let image = p.pw.save_image().unwrap();
+            p.ring.push((f, image));
+        }
+        churn(&mut p.pw, f);
+        if late(f) && f <= heard_up_to {
+            p.pw.push(id(2), Push::Impulse([0.0, 2.0, 0.4])).unwrap();
+        }
+        p.pw.step(DT).unwrap();
+    };
+    let mut peers = [3u32, 7].map(|late_by| Peer {
+        pw: churn_world(),
+        ring: Vec::new(),
+        save_every: if late_by == 3 { 1 } else { 3 },
+        compact_every: if late_by == 3 { 20 } else { 33 },
+        late_by,
+        max_len: 0,
+    });
+    let (mut compactions, mut rollbacks) = ([0; 2], [0; 2]);
+    for f in 0..300u32 {
+        let mut hashes = Vec::new();
+        for (k, p) in peers.iter_mut().enumerate() {
+            // Hear of the late input of frame f - late_by: roll back to before it and re-simulate.
+            if f >= p.late_by && late(f - p.late_by) {
+                let r = f - p.late_by;
+                let (from, image) = p.ring.iter().rev().find(|(g, _)| *g <= r).cloned().expect("a kept image at or before the input");
+                p.pw.restore_image(&image).unwrap();
+                rollbacks[k] += 1;
+                p.ring.retain(|(g, _)| *g <= from);
+                p.ring.pop();
+                for g in from..f {
+                    step(p, g, f);
+                }
+            }
+            step(p, f, f);
+            p.ring.retain(|(g, _)| *g + 30 > f);
+            p.max_len = p.max_len.max(p.pw.registry_len());
+            if f > 0 && f.is_multiple_of(p.compact_every) {
+                let mut kept: Vec<&mut WorldImage> = p.ring.iter_mut().map(|(_, i)| i).collect();
+                p.pw.compact_images(&mut kept).unwrap();
+                compactions[k] += 1;
+            }
+            hashes.push(p.pw.state_hash().unwrap());
+        }
+        assert_eq!(hashes[0], hashes[1], "state_hash at frame {f}");
+        if f % 10 == 9 {
+            assert_eq!(peers[0].pw.check_hash().unwrap(), peers[1].pw.check_hash().unwrap(), "check_hash at frame {f}");
+        }
+    }
+    // 75 unique hulls were created; uncompacted, the registry would hold every one of them.
+    for p in &peers {
+        println!("RESULT compaction peer late by {}: registry at most {} blobs (75 unique hulls made), now {}", p.late_by, p.max_len, p.pw.registry_len());
+        assert!(p.max_len < 40, "the registry stays bounded: {}", p.max_len);
+    }
+    assert!(compactions.iter().all(|&n| n >= 9), "{compactions:?}");
+    assert!(rollbacks.iter().all(|&n| n >= 25), "{rollbacks:?}");
+}
+
+/// Images not passed to `compact_images` are refused afterwards, with nothing written: their
+/// geometry indices name other blobs in the new registry (review CMP-1). So is an image from
+/// another world with the same settings, whose indices never meant anything here.
+#[test]
+fn stale_and_foreign_images_refused() {
+    let mut pw = churn_world();
+    let mut ring = Vec::new();
+    for f in 0..120 {
+        churn(&mut pw, f);
+        pw.step(DT).unwrap();
+        ring.push(pw.save_image().unwrap());
+    }
+    let mut kept = ring.split_off(100);
+    pw.compact_images(&mut kept.iter_mut().collect::<Vec<_>>()).unwrap();
+    let live = (pw.state_hash().unwrap(), pw.check_hash().unwrap());
+    let refused = ring.iter().filter(|image| matches!(pw.restore_image(image), Err(PhysicsError::BadImage(_)))).count();
+    println!("RESULT stale images after compaction: {refused} of {} refused", ring.len());
+    assert_eq!(refused, ring.len());
+    assert!(!pw.is_poisoned(), "refused before anything is written");
+    assert_eq!((pw.state_hash().unwrap(), pw.check_hash().unwrap()), live, "the world is unchanged");
+    // Stale images cannot be compacted in either: nothing changes.
+    let len = pw.registry_len();
+    assert!(matches!(pw.compact_images(&mut [&mut ring[99]]), Err(PhysicsError::BadImage(_))));
+    assert_eq!((pw.registry_len(), pw.check_hash().unwrap()), (len, live.1));
+    // Another world, same settings and history.
+    let mut other = churn_world();
+    for f in 0..120 {
+        churn(&mut other, f);
+        other.step(DT).unwrap();
+    }
+    let theirs = other.save_image().unwrap();
+    assert!(matches!(pw.restore_image(&theirs), Err(PhysicsError::BadImage(_))));
+    assert!(!pw.is_poisoned());
+    // The kept images still restore.
+    pw.restore_image(&kept[19]).unwrap();
+    assert_eq!(pw.check_hash().unwrap(), live.1);
 }

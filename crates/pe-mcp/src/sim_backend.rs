@@ -44,8 +44,6 @@ pub struct SimSession {
     /// Partition: member -> group. Shared with the network filter.
     partition: Rc<RefCell<BTreeMap<MemberId, usize>>>,
     faults: Vec<String>,
-    /// Ball pit: the index of member 1's hand; member m's hand is `hand_base + m - 1`.
-    hand_base: Option<u32>,
 }
 
 fn range<T: PartialOrd + Copy + std::fmt::Display>(field: &str, v: Option<T>, default: T, lo: T, hi: T) -> ToolResult<T> {
@@ -83,6 +81,7 @@ impl SimSession {
         let objects = match scene {
             SceneKind::Pile { side, layers } => side * side * layers,
             SceneKind::BallPit { balls, .. } => balls,
+            SceneKind::Empty => 0,
         } as u64;
         let mut peers = Vec::new();
         for &m in &members {
@@ -121,11 +120,7 @@ impl SimSession {
         let label = format!(
             "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} touches/s; window {window}; seed {seed:x}"
         );
-        let hand_base = match scene {
-            SceneKind::BallPit { balls, .. } => Some(balls as u32),
-            SceneKind::Pile { .. } => None,
-        };
-        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new(), hand_base })
+        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new() })
     }
 
     fn replica(&self) -> &WorldSim {
@@ -252,13 +247,15 @@ impl DrivenPeer for SimSession {
                 (true, false) => return Err(ToolError::arg("action", format!("object {object} is not a hand ({})", kind_name(o.kind)))),
                 _ => {}
             }
-            // A hand is its member's alone. sim-core's Payload::Hand does not check the author, so the
-            // peer must (review of 358cfb7, finding 1).
+            // A hand is its member's alone (review of 358cfb7, finding 1). Every replica refuses
+            // another member's hand entry (RejectedNotOwner, design 8.4); this checks the same map
+            // before authoring, so the agent gets a clear error instead of a refused entry.
             if is_hand {
-                let base = self.hand_base.expect("hands exist only in the ball pit");
-                let (owner, mine) = (object - base + 1, base + self.me - 1);
-                if owner != self.me {
-                    return Err(ToolError::new(ErrorCode::NotOwner, format!("object {object} is member {owner}'s hand; yours is object {mine}"))
+                let owner = s.hand_owners.get(&object).copied();
+                if owner != Some(self.me) {
+                    let mine = s.hand_owners.iter().find(|&(_, &m)| m == self.me).map(|(&h, _)| h);
+                    let (o, y) = (owner.map_or("no member".into(), |m| format!("member {m}")), mine.map_or("none".into(), |h| format!("object {h}")));
+                    return Err(ToolError::new(ErrorCode::NotOwner, format!("object {object} is {o}'s hand; yours is {y}"))
                         .with_details(serde_json::json!({ "owner": owner, "yours": mine })));
                 }
             }
@@ -278,7 +275,7 @@ impl DrivenPeer for SimSession {
                 r.sim.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1 }, 0)
             }
         };
-        let to: Vec<MemberId> = r.sim.members.iter().copied().filter(|&m| m != me).collect();
+        let to: Vec<MemberId> = r.sim.audience().into_iter().filter(|&m| m != me).collect();
         let msg = Msg::Entry(e.clone());
         for m in to {
             self.sim.net.post(WORLD, me, m, &msg);
@@ -314,6 +311,7 @@ impl DrivenPeer for SimSession {
             Outcome::RejectedFork => (reject("fork"), None, None),
             Outcome::RejectedUnsettled => (reject("unsettled"), None, None),
             Outcome::RejectedPolicy => (reject("policy"), None, None),
+            Outcome::RejectedNotOwner => (reject("not_owner"), None, None),
         };
         st.state = state;
         st.reason = reason;
@@ -372,9 +370,15 @@ impl DrivenPeer for SimSession {
                 .collect(),
             suspicions: s.stats.suspicions,
             demotions: s.stats.demotions,
-            withdrawn_votes: s.stats.withdrawn_votes,
+            view_changes: s.stats.view_changes,
+            resets: s.stats.resets,
             equivocations: s.stats.equivocations,
             lying_votes: s.stats.lying_votes,
+            decisions: s
+                .vc_log
+                .iter()
+                .map(|(epoch, frame, round, removed)| Decision { epoch: *epoch, frame: *frame, round: *round, removed: removed.clone() })
+                .collect(),
         }
     }
 
