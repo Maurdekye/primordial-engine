@@ -1,0 +1,24 @@
+description = """
+State + frame acceptance (user ruling 09:31Z): after re-simulating to its present frame, does \
+each receiver's copy of a touched object equal the author's copy at that frame? 60 +- 20 ms links."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 13000
+
+[net]
+seed = 3
+link = { delay_ms = 60, jitter_ms = 20 }
+
+[[report]]
+kind = "acceptance"
+label = "state-frame"
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "traffic"
+
+[[report]]
+kind = "check_world"
+frames = 700
+label = "state-frame"

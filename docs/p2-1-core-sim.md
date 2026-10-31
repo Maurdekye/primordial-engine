@@ -177,6 +177,18 @@ a Transform and a 16 B velocity; half also have a 16 B runtime component; a thir
 | P21R-7: script gaps | Every log must have the same commit and test count; fewer than 4 passing test binaries fails; `--all` writes the wasm32 log with a header |
 | P21R-8: `range_f32` with an overflowing width | Computed in `f64` |
 
+## Follow-up to the approval (round 3 lows) and per-worker fpenv
+
+| Finding | Fix |
+|---|---|
+| P21S-1: the repair normalized a tiny garbage rotation in `f32` to a norm of about 0.8 | Normalized in `f64`, with an identity fallback; a test repairs `[3e-23, 0, 0, 0]` in one pass |
+| P21S-2: a plain `set_parent` of a rebased root under a frame is refused | Documented, with a dedicated `Error::ChunkUnderFrame` that points to the keep-world call |
+| P21S-3: the repair must run after the last `get_mut` writer | Documented: schedule `maintain_transforms` last |
+| P21S-4: plain edits cost O(depth) | Documented, with how loaders should link long chains |
+| P21S-5: script gaps | Each log must show a clean tree; the wasm32 log's commit is compared; only test binaries that ran tests count |
+| P21S-6: `range_f32` bit arithmetic overflowed in debug builds for a NaN `hi` | Wrapping arithmetic |
+| D2 review: the FP environment must hold on every physics worker | `fpenv::check_and_reset()` is per thread and costs one register read; its doc now says every simulation thread, workers at each job start, must call it |
+
 ## Findings
 
 * **`std`'s `f32::powi` changes with optimization.** On constant-folded inputs, a release build gave results

@@ -1,0 +1,44 @@
+description = """
+R14 crash (reviews NEW-6, R3-7): member 4 is in both worlds too, so A and B have three members \
+each and keep a majority when the carrier crashes at 2.85 s, mid-transfer. Every member of both \
+worlds relays the pending transfer; the survivors evict the carrier and finish it."""
+include = ["../common/r14.toml"]
+
+[world.1]
+members = [1, 2, 4]
+
+[world.2]
+members = [1, 3, 4]
+
+[[crash]]
+member = 1
+at_ms = 2850
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_crash"
+at = [[1, 2], [2, 3]]
+[[report]]
+kind = "r14_conservation"
+label = "crash"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 crash A"
+skip = [1]
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 crash B"
+skip = [1]

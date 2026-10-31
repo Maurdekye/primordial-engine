@@ -1,0 +1,116 @@
+description = """
+R14 forge (reviews NEW-3..NEW-5, NEW-21, R3-4..R3-8, and P2-5): 16 forged or proofless \
+cross-world entries. Nine come from members who control the one-member worlds D (4, member 2) \
+and E (5, member 3), or who hold genuine certificates. Seven come from W (6, members 2 and 3), a \
+routed partner world whose majority is dishonest: mints, a forged and a spliced hop, \
+refund-and-keep, and resurrection. Every one is refused, and objects stay conserved in the \
+honest worlds."""
+include = ["../common/r14.toml"]
+
+# P2-5: member 2 carries A's objects 52 and 55 to W. 52 then goes on to B (member 3) and back to
+# A (member 1); 55 is the object of the refund-and-keep attack.
+[world.1.plan]
+2 = [
+    { at = 140, touch = { obj = 33, impulse = [2.0, 4.0, 0.0] } },
+    { at = 175, touch = { obj = 60, impulse = [0.0, 6.0, 1.0] } },
+    { at = 230, touch = { obj = 12, impulse = [0.0, 5.0, 0.0] } },
+    { at = 100, carry = { transfer = 52, obj = 52, dest = 6 } },
+    { at = 110, carry = { transfer = 55, obj = 55, dest = 6 } },
+]
+
+[world.1]
+routes = [2, 6]
+
+[world.2]
+routes = [1, 6]
+
+# One-member worlds that a single member controls. Their owners route them to A and B; A and B
+# do not route to them.
+[world.4]
+members = [2]
+scene = { pile = { side = 3, layers = 1 } }
+epoch_ms = 120
+seed = 0xD
+routes = [1]
+
+[world.5]
+members = [3]
+scene = { pile = { side = 3, layers = 1 } }
+epoch_ms = 120
+seed = 0xE
+routes = [2]
+
+# W: on A's and B's route lists, and members 2 and 3 are its whole membership. It runs honestly
+# except for the forged entries. A:52 arrives as W's local object 9 (after its 9 bodies), and
+# member 3 carries it on to B.
+[world.6]
+members = [2, 3]
+scene = { pile = { side = 3, layers = 1 } }
+epoch_ms = 110
+seed = 0x6
+routes = [1, 2]
+
+[world.6.plan]
+# Object 9 is A:52 after it arrives (W starts with objects 0-8), hence missing_ok.
+3 = [{ at = 203, carry = { transfer = 9, obj = 9, dest = 2 }, missing_ok = true }]
+
+# In the spike's order (two attacks at one time run in this order).
+[[byzantine]]
+kind = "r14_forgeries"
+attacks = [
+    { at_ms = 2000, attack = "depart_to_own_world" },
+    { at_ms = 2000, attack = "depart_to_unknown_world" },
+    { at_ms = 2200, attack = "mint_from_own_world" },
+    { at_ms = 2500, attack = "mint_without_departure" },
+    { at_ms = 2700, attack = "nan_record" },
+    { at_ms = 2900, attack = "squat_transfer" },
+    { at_ms = 3000, attack = "proofless_verdict" },
+    { at_ms = 3020, attack = "relabel_record" },
+    { at_ms = 3050, attack = "false_rejection" },
+    { at_ms = 3300, attack = "w_mint_live_id" },
+    { at_ms = 3300, attack = "w_mint_unborn_id" },
+    { at_ms = 3400, attack = "w_forge_earlier_hop" },
+    { at_ms = 4000, attack = "w_splice_hop" },
+    # Watches from t = 0 until A has certified A:55's departure to W.
+    { at_ms = 0, attack = "w_refund_setup" },
+    { at_ms = 4500, attack = "w_refund_export" },
+    { at_ms = 5000, attack = "carry_back" },
+    { at_ms = 7000, attack = "w_resurrect" },
+]
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "forge"
+[[report]]
+kind = "r14_forge_conservation"
+label = "forge"
+original = true
+attacks = 16
+[[report]]
+kind = "stats"
+world = 6
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 forge A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 forge B"
+[[report]]
+kind = "check_world"
+world = 6
+frames = 480
+label = "r14 forge W"

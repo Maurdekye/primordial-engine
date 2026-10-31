@@ -1,0 +1,44 @@
+description = """
+R14 reject: member 3 closes B's arrival portal at B frame 134; member 1 hears of it 150 ms \
+late, after it already relayed the arrival: B rolls back past the arrival, refuses it, and the \
+certified refusal returns the object to A."""
+include = ["../common/r14.toml"]
+
+[world.2.plan]
+3 = [
+    { at = 120, touch = { obj = 30, impulse = [0.0, 6.0, 0.0] } },
+    { at = 160, touch = { obj = 8, impulse = [3.0, 3.0, 0.0] } },
+    { at = 134, portal = { open = false } },
+]
+
+[[fault]]
+msg = "entry"
+world = 2
+from = 3
+to = 1
+before_ms = 4000
+delay_ms = 150
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "reject"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 reject A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 reject B"

@@ -1,0 +1,43 @@
+description = """
+State + frame acceptance when member 2 runs without member 3's frame-300 entry for a while: \
+the entry never reaches 2 directly, and the acks of members 1 and 3 to 2 are delayed 400 ms."""
+include = ["state-frame.toml"]
+
+[[fault]]
+msg = "entry"
+from = 3
+to = 2
+stamp = 300
+before_ms = 6000
+drop = true
+
+[[fault]]
+msg = "ack"
+from = 3
+to = 2
+after_ms = 5000
+before_ms = 5600
+delay_ms = 400
+
+[[fault]]
+msg = "ack"
+from = 1
+to = 2
+after_ms = 5000
+before_ms = 5600
+delay_ms = 400
+
+[[report]]
+kind = "acceptance"
+label = "diverged"
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "traffic"
+
+[[report]]
+kind = "check_world"
+frames = 700
+label = "diverged"
