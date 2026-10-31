@@ -135,8 +135,8 @@ impl SimSession {
         let s = self.replica();
         let o = s.t.objs.get(i as usize).copied().flatten()?;
         let st = s.obj_state(i)?;
-        let (p, v) = (st.pos(), st.lin());
-        Some(ObjectSummary { object: i, kind: kind_name(o.kind).into(), position: [p.x, p.y, p.z], linear_velocity: [v.x, v.y, v.z] })
+        let v = st.lin();
+        Some(ObjectSummary { object: i, kind: kind_name(o.kind).into(), position: st.pos_f64(), linear_velocity: [v.x, v.y, v.z] })
     }
 
     fn claim(&self, obj: u32) -> Option<ClaimInfo> {
@@ -213,12 +213,12 @@ impl DrivenPeer for SimSession {
         };
         let o = s.t.objs.get(object as usize).copied().flatten().ok_or_else(unknown)?;
         let st = s.obj_state(object).ok_or_else(unknown)?;
-        let (p, q, v, w) = (st.pos(), st.rot(), st.lin(), st.ang());
+        let (q, v, w) = (st.rot(), st.lin(), st.ang());
         Ok(ObjectState {
             object,
             global_id: hex(o.global),
             kind: kind_name(o.kind).into(),
-            position: [p.x, p.y, p.z],
+            position: st.pos_f64(),
             rotation: [q.v.x, q.v.y, q.v.z, q.s],
             linear_velocity: [v.x, v.y, v.z],
             angular_velocity: [w.x, w.y, w.z],
