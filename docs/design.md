@@ -2120,7 +2120,8 @@ hardening, proposal]:
   future epoch (and `pv_held`, VC8R-1's, the same way; the spike shares both); join requests,
   `followers` and `known`, with no limit on `expires`; `watched`, filled from any entry's carried index;
   `Arrival::Rejected { until: u64::MAX }`, never pruned; `seen`, never pruned. Each needs a bound or a
-  prune.
+  prune. Bounded in the spike: ownership certificates held for a missing parent, at most 16 per author
+  (12.5, review OWNZ-1).
 * **P23-13:** `hand_owners` is fixed from the genesis members and is not hashed state. Nothing checks
   that a joiner was built from genesis, or that the session id is the genesis hash (SX-1 should).
 * **P23-14:** a hand sent through a portal returns as an unowned dynamic body. `frame_effects` is not in
@@ -2393,7 +2394,7 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Every peer validates** every interaction and commit against the ACL state *as of that frame*. A
   non-authorized action is rejected identically everywhere, with a machine-readable reason.
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
-  concern (D10).
+  concern (D10). Who the owners are is now the world's ownership chain (12.5).
 
 ### 12.3 AI agents [I]
 
@@ -2489,6 +2490,386 @@ entries that the view change commits (10.8).
     (D9, D35) [I].
   * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
     rows [proposal].
+
+### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
+
+World ownership is a **lasting property of a world**, separate from a session's admins (12.4). Several people can share it (22:37Z). It is held as a **chain of signed ownership
+certificates**: each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain,
+no blockchain"). The chain travels with the world, in its genesis document, every save and each
+session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
+single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
+
+The rules below follow eight rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
+OWNR-9, OWNS-1 to OWNS-12, OWNT-1 to OWNT-10, OWNU-1 to OWNU-8, OWNV-1 to OWNV-7, OWNW-1 to OWNW-7,
+OWNX-1 to OWNX-7).
+
+**Consent only (user ruling 2026-10-31 08:31Z, OT = (a)).** Under rule A nobody is removed against
+their will, and nothing depends on time. A recovery key is a plain backup of its owner's key: its
+signature counts as the owner's wherever the owner's would. The dormant-owner removal window, the
+recovery key's delayed replacement and their cancellations are gone, and so are their open findings
+(OWNT-1, OWNT-3, OWNV-2's second half, OWNW-6). Bound session lineages, which would bring them back on
+a trust root, are a later package (D87).
+
+They are checked against written security invariants and an attacker model, by named tests and by an
+adversarial harness (see "What the spike shows"). Without a trust root, any session's attestations
+count; the residual risks that leaves are recorded in D87, and the user accepted them for now.
+
+* **Owners are keys.** Each owner is a player's long-term Ed25519 identity key (10.3), never a session
+  `MemberId`. A session maps members to keys through their join certificates. Owners are equals.
+* **The certificate** (`ownership::Cert`) has these fields:
+  * `world`;
+  * `seq`;
+  * `prev`: the parent, or several pairwise-concurrent parents for a merge;
+  * `change`;
+  * `sigs`.
+  Keys sign the hash of everything but the signatures, and that hash is the certificate's id.
+  * Copies with different signatures are one certificate. A book merges the signatures that matter
+    (owners' and recovery keys' at the parent) until a session attests it.
+  * The attestation carries the committed signatures, which are frozen from then on (OWNR-4, OWNS-5).
+    A book counts only the signers whose signature it verifies, so a session can't name a signer who
+    never signed (OWNX-1).
+  * Padding a certificate with other keys' signatures creates nothing.
+  * The encoding has exactly one form.
+* **The changes:** `Genesis{owners, rule, nonce}`, `Add`, `Leave`, `Remove` (rule C only), `SetRule`,
+  `SetRecovery` and `Merge`. Wire codes 7, 8, 10 and 11, the old window and recovery changes, are
+  retired.
+* **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
+  the genesis certificate [I]. (The spike uses the genesis certificate's id.)
+* **Valid, attested, counting.**
+  * **Valid:** a certificate's signatures satisfy the rule of the owner set at its parent. That is a
+    function of its causal past alone (OWN-5). A certificate whose parent isn't held is refused, never
+    stored (OWN-10, OWNU-2).
+  * **Attested:** a session that commits a certificate records the world frame at which it did.
+    Exported, that record is an `Attest`, signed by a strict majority of the session's members (P2-4's
+    epoch certificates), so anyone can check it offline.
+  * **Counting:** a certificate counts only if it is attested and it applies at its parent's
+    *effective* state (below). A certificate signed on an old copy that no session committed changes
+    nothing. That is @design-reviewer's mitigation for forks.
+* **A session commits only on a head of the counting chain, or a merge of counting heads, and only if
+  the certificate then counts** (OWNS-12, OWNT-4).
+  * Any session may adopt the chain, and a relayed certificate that is held but uncommitted can still be
+    committed.
+  * Within one session the chain is linear: the first of two conflicting certificates wins, and the
+    second is refused as stale (OWNR-2).
+  * Nothing someone else inserted can block a session, since uncounted children are not heads.
+  * Forks arise only between disconnected copies of the world, each with its own sessions.
+* **A certificate counts only if its whole causal past was committed by some session.** What is built
+  on an uncommitted certificate counts for nothing either.
+* **Unattested certificates are charged** (OWNT-2, OWNU-2, OWNU-4, OWNV-1, OWNV-5).
+  * An unattested certificate, held or kept, is charged to its own signers that are owners or recovery
+    keys at a current head. It gets in if one of them has fewer than 64 (OWNW-1), so a copy that
+    someone else signed never drops an honest proposal, and merged signatures are kept. There is no
+    shared pool, and nobody is charged for a certificate they didn't sign, so one key's flood never
+    crowds out another key.
+  * If none of its signers matters at a head (a key that an unattested certificate invited or minted),
+    it is charged to the unattested certificates it hangs from instead, each carrying at most 16 such
+    certificates. So an invited key never spends its inviters' quota.
+  * Charges are derived again after every pass. Within each quota the oldest stay. A certificate
+    nobody is charged for any more, because its signers no longer matter at a head, is dropped with
+    whatever hangs from it. The exception is one an attestation depends on.
+  * Refused and never stored:
+    * an orphan;
+    * a bad link;
+    * a certificate with no signature that matters;
+    * a valid one that nobody at a head signed (`Unattested`: it needs its attestation).
+    So a keyless relay stores nothing.
+  * Only an under-signed certificate is kept, waiting for more signatures. Its copies merge their
+    signatures, and a stripped copy never replaces it (OWNU-3). Whatever more signatures can't fix is
+    refused.
+* **The delivery contract** (invariant 4; OWNT-5, OWNU-1, OWNU-7, OWNV-6, OWNV-7). Pull-based
+  anti-entropy:
+  * peers exchange heads;
+  * one sends the missing certificates and their ancestors with every attestation it knows, as one
+    batch;
+  * the batch matches its own attestations to its own certificates, in any order, so an attested
+    certificate gets in at any size. `verify_chain` over 300 attested certificates gives the session's
+    view.
+  * Books keep other sessions' signed attestations so they can forward them (`Book::attestations`).
+    After `MissingParent`, `Book::missing_parents` says what to ask for.
+  * Pushing one item at a time is best effort. An attestation of a certificate the book doesn't hold
+    changes nothing, and an unattested certificate may be refused or later dropped. The next
+    anti-entropy batch repairs it.
+  * After a batch, the view (minus its list of certificates that don't count) is a function of what was
+    delivered. The `refused` list and the junk a book holds may differ between books.
+* **Solo changes are capped** (OWNU-6, OWNV-3, OWNV-4, OWNW-3, OWNW-5; invariant 9).
+  * A solo change is one that not every owner at its parent signed. An owner's backup key signs as the
+    owner.
+  * The genesis owners split 256 equally. An owner added later gets its share from the owners who
+    signed its addition: each gives its remaining share divided by the new owner count.
+  * A leaver's remaining share passes to the remaining owners, in equal parts, so selling the world
+    (add the buyer, then leave) keeps the world's share (OWNX-4). A rule-C removal passes the target's
+    remaining share to its removers.
+  * Share moves and is never created, so solo changes along one history total at most 256, and there
+    is no separate world-wide cap.
+  * A solo change needs one signing owner with share left. Each signing owner pays one, up to its
+    share: one with nothing left co-signs for free. So an owner's remaining share shrinks only through
+    certificates it signed, except a rule-C removal of it (OWNX-5). **Invariant 9:** whatever other
+    keys do, an honest owner can still make as many solo changes as it has left, and all owners
+    together can always make a joint change, until the book is full.
+  * Leave, clearing one's own backup key and Merge are exempt. Clearing is the way out of a stolen
+    backup (OWNV-2), and it needs a key to clear.
+  * Copies join the shares by minimum and the counts by maximum [I]. So across copies that each add an
+    owner and then merge, the shares can total more than 256: by one gift per copy (OWNX-3, for
+    example 298 after two copies each add one owner).
+  * The cap is per history. Siblings on one parent are each judged on their own history, so a co-owner
+    with a session of its own can attest solo siblings until the book is full (OWNX-2; D87).
+  * A sole owner's changes are all joint, so only the 1,024 cap bounds them: until compaction, a sole
+    owner can fill its own book (OWNW-7; D87).
+  * Without compaction, which production needs [I], an honest long-lived world also reaches 1,024 in
+    the end.
+* **The digest** (the book's part of the state hash) covers the counting certificates and their
+  attestations only. Junk a book happens to hold never enters it (OWNU-5).
+* **Two attestations of one certificate by one lineage that differ** (a session equivocating): the
+  lowest frame wins, then the smallest signer set, whatever the order (OWNT-6).
+
+**Signing rule A (22:54Z, O1; removal and recovery per OT = (a), 2026-10-31 08:31Z).**
+
+| Change | Who signs |
+|---|---|
+| Add an owner | every current owner |
+| Leave ownership | the leaving owner's own key; the last owner can't leave |
+| Remove another owner | nobody: no owner is removed against their will |
+| Change the rule | every current owner |
+| Name, replace or clear a recovery key | that owner, with its own key or its recovery key |
+| Lose a key | nothing to do: the recovery key signs as the owner, and names a new recovery key |
+| Sell the world | `Add(buyer)`, then `Leave(seller)` |
+
+* **Why A.** Owners always get in as Admin (row 0, 22:48Z), and only a co-owner can demote or kick them
+  (Q27). So adding an owner adds a permanent admin, and A stops a rogue co-owner from adding sock
+  puppets.
+* **No owner is removed against their will** (O2's promise; OWN-4). Under rule A there is no removal
+  at all: an owner goes only by its own Leave, signed by its key or its backup.
+  * The other side of this: a co-owner who vanishes stays an owner, and additions then need them. Their
+    backup key can sign for them. Groups that want removability pick rule C.
+* **A recovery key is a plain backup of its owner's key** (OT = (a)).
+  * Its signature counts as the owner's in every rule, merge, removal and solo-share check.
+  * A stolen backup equals a stolen key. The owner can clear it (exempt from the cap) or replace it, and
+    a replaced backup is a former key.
+  * One backup key backs one owner (OWNX-6).
+* **Kept for comparison** (the spike implements both):
+  * rule B: any one owner adds, and nobody can be removed;
+  * rule C: k of n, with instant `Remove`. Concurrent mutual removals void each other (OWNR-7).
+    * The stated exception [V: harness, seed 1895]: validity at insert uses the linear state, where
+      those voided removals still apply. So a voided target stays an owner in the view, but changes
+      about it, and changes that need its signature, are refused. Fixing it needs a linear state that
+      applies the same voiding at merges. That is deferred, since rule A has no removal. The harness
+      counts the honest histories that hit it.
+
+**Forks: proofs and the union (22:54Z, O4, refined by D87; detect-only, as D79).**
+
+* **A fork** is two valid certificates with one parent.
+  * Honest concurrency forks too, without anyone signing both (OWN-8).
+  * A key that signed both is an **equivocator**. The fork proof names it, and a client's own policy
+    may distrust it.
+  * Anyone holding the parent's causal past can check a fork proof, in any order, merges included
+    (OWN-9).
+* **The effective pass** (OWNR-1). The book walks every certificate in causal order. A certificate
+  applies to its parent's effective state only if it counts there; otherwise its branch inherits the
+  parent's state. A merge joins its parents' effective states.
+* **The join after a fork** is an observed-remove set:
+  * An owner is present if some counting certificate that added them hasn't been seen by a counting
+    removal of them.
+  * So a Leave or a removal sticks across forks unless the same history adds the person back (OWN-2).
+  * Recovery keys merge the same way.
+* **A removal on one branch counts only if the owners added by counting changes on concurrent branches
+  since it split off approve it too** (OWN-3). So a former sole owner can't evict owners added later.
+  * The check covers the additions whose parent is a strict ancestor of the removal's parent: the ones
+    the causal-order pass has already judged, so it has no cycles.
+  * A removal right at the fork point escapes it. That is rule C only, it needs a session of the
+    attacker's own (A2), and it shows as disputed (test `removal_at_the_fork_point_is_the_stated_residual`).
+* **Additions on different copies don't need each other** (OWNS-3).
+  * Each copy's owners add independently while disconnected, and the copies join. A double sale makes
+    both buyers co-owners, and an old-state fork never voids a later addition.
+  * Unattested additions block nothing and revive nothing (OWNR-5).
+* **Concurrent rules take the strictest in each dimension** (OWNS-4, OWNT-7).
+  * Who adds: Any < Threshold < All.
+  * Whether removal is allowed: not at all if any copy is under rule B.
+  * The owners loosen it again after a merge. That takes a SetRule signed by every owner, so with a
+    dormant owner removal stays off for good (OWNU-8; D87 question 2).
+* **A merge certificate** joins pairwise-concurrent certificates only, so it can't roll anything back
+  (OWN-1). It invalidates nothing, and any owner of the join may sign it.
+* **"Ownership disputed"** is shown once two attested, valid certificates whose whole past was
+  committed have ever shared a parent, even if both are voided (OWNS-8, OWNT-8). It comes from the fork history, so no merge, not even one by
+  the residual's sock, clears it. Joins use the join.
+* **Nobody left.** If the join would leave nobody (copies whose last owners left or removed each
+  other), every head's owners stay. The view says so (`nobody_left`).
+* **What remains without a trust root** [V: harness]. The user accepted this for now (OT = (a)).
+  Anyone can run a one-member session, so attestations can be minted. An attacker with a session of its
+  own (A2) can:
+  * return a former owner, or add a co-owner, through a fork at an old state (a replaced backup key is
+    a former key);
+  * under rule C, remove an owner through a fork-point removal (OWN-3's limit, above);
+  * void an honest change: a former owner's Leave committed on an old fork voids an honest removal
+    of them, and changes signed against the set without them then fail;
+  * fill the 1,024 cap, under any rule: a co-owner with a session of its own attests solo siblings on
+    one parent, each judged on its own history, until the book is full, and then even the owners'
+    joint merge is refused (OWNX-2). An attacker with only former keys can do the same on a branch
+    where its minted keys are the only owners.
+  In the harness's 15,000 random histories, A2 removed an honest owner in 307, added an owner in
+  5,641, and voided an honest change in 359. It loosened the rule in 99, always
+  together with such a takeover or with a stolen current backup key, which is its owner's key (A2 held
+  one in 7,493 runs). Every case is detected: there is a fork proof, and the world shows as
+  disputed. Bound session lineages (D87) close it later.
+
+**In the session log [V: spike].**
+
+* A certificate is published as `Payload::Ownership { epoch, cert }` (wire tag 20), an **admin entry
+  of 12.4's layer**, like a kick (seam agreed with @engine-architect). Any member may publish one: the
+  owners' signatures inside are its authority, so it needs no permission. It obeys its author's horizon
+  (VCR-9), waits across epochs until a decision judges it, and a closed session commits none.
+* **Pending only while it would apply** to the book as decided: owners' signatures that check, built on
+  the current heads. One that can't apply is not pending and starts no view change, so junk can't force
+  decisions (V1's receipt rule, VC6R-4). A decision that makes a pending one unable to apply drops it
+  unjudged. Sent again later, it is a new entry.
+  * One whose parent is not in the book yet (built on a pending certificate's head) is held, not dropped,
+    and judged again after each decision: pending once it applies, dropped once it never can (review
+    OWNY-2) [V unit test, with a control that loses it]. An author has at most 16 held
+    (`MAX_HELD_PER_AUTHOR`); past that one is dropped at receipt, so a member naming parents that never
+    exist can't grow the set every decision re-scans (OWNZ-1) [V unit test].
+  * Tag 20 carries at most 4,096 words (`MAX_CERT_WORDS`); a decode of more is refused (OWNY-3).
+* **Decided in `Change.admin`**, in commit order (stamp, author, seq) with the other admin entries. The
+  admin run holds the `Book` (copy on write) and applies a certificate if `Book::commit_local` does.
+  The outcome depends only on the book, the certificate and that order, never on the boundary, which
+  is computed after the admin entries. The session then commits it at the deciding boundary, its
+  attested frame. Proposer and validators reach the same outcome, and a validator refuses a change that
+  lists a different one.
+* **Governance, like roles.** The book lives beside roles and owners, outside the simulation's tables: a
+  rollback never rewinds it and the check hash doesn't cover it. Agreement on each decision covers it,
+  as it covers roles. No verdict depends on a validator's clock (VC-3).
+* **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) ask
+  whether the member's key is an owner in the book, as the admin entries before them in the change left
+  it, so a kick listed after a certificate that made its target an owner is refused. The same holds
+  for a join in that change: an owner whose Leave the change lists joins under the rules, and one it
+  adds joins as Admin (review OWNY-1) [V unit tests; both fail when row 0 reads the decided book]. `key_of` is the one
+  place that maps a member to its key: in the spike the member id is the key (10.3); production reads
+  it from the member's signed genesis or join entry. A world without a chain keeps 12.4's owner list.
+  A relationship record's expiry (O5) is checked against the session's agreed time at the same step
+  [I].
+* **Cost.** A book holds at most 1,024 attested certificates. It holds 64 unattested ones per key at
+  a head, plus 16 per such certificate for keys it invited.
+  * A batch is sorted by seq, and each certificate's linear state is computed as it arrives, so an
+    in-order chain needs one pass (OWNT-10).
+  * Ancestry sets are shared between clones.
+  * Production compacts a long linear history into a checkpoint that the owners sign [I].
+
+**Joins, relationship records and discovery.**
+
+* **The join-rule matrix** is in 12.4 (22:47Z, 22:51Z). Every row tests either session state or a
+  signed record, so each row is decided the same way on every replica [I]. The signed records:
+  * ownership certificates;
+  * relationship records: a friendship is a pair of signed records; a confidant mark is one record by
+    the person who marks the confidant;
+  * invite tickets.
+* **Revocation.** A revocation committed before a join always wins, on every replica. Records expire
+  after about 30 days and are re-signed automatically while their signer is online (22:54Z, O5).
+* **Discovery (D9, D35).** World records and invites carry the world id and the ownership head, signed
+  by an owner. Two records whose heads fork are a fork proof.
+* **Where owners are shown.** Only the world info card and World settings show the owners (Q25), plus a
+  fork notice.
+* **Home worlds (Q28):** home friends means friends of any owner.
+
+**What the spike shows** [V, Windows].
+
+* **The invariants and the attacker model** are in the design draft (provenance-eng
+  world-ownership-draft.md, section 0).
+  * The attackers:
+    * A1 holds former owners', removed owners', stolen recovery and stranger keys, and can fork, pad,
+      strip, replay and reorder;
+    * A2 is A1 plus sessions of its own;
+    * the relay holds no key that matters.
+  * Must hold:
+    * 1, authority;
+    * 2, unattested changes change nothing (A1);
+    * 3, honest liveness (A1);
+    * 4, the view and digest are independent of arrival order, under the delivery contract;
+    * 5, bounded storage, per key, and no panic;
+    * 6, removals stick;
+    * 7, disputes stay visible;
+    * 9, an honest owner's capacity: what it has left, whatever other keys do.
+  * 8 is the residual for A2.
+* **The adversarial harness** (`ownership/harness.rs`).
+  * **Honest histories** are up to 50 steps, under rules A, B or C. About 1% are 700 steps, with up to
+    506 attested certificates. 30% of them copy the world, play both copies in two lineages, and merge
+    them when they meet. A fifth of honest steps are first gossiped unattested.
+  * **Honest steps include the backup keys:** a backup naming a new backup for its lost owner key,
+    signing a joint change in its owner's place, and the owner clearing it.
+  * **Honest steps are checked:**
+    * none is ever refused for capacity (`Quota`, `Full`);
+    * `Budget` only once every signing owner used up its remaining share. That is checked against
+      `reference_remaining`, which computes each owner's share from the history alone, never from the
+      book's own state;
+    * invariant 9, after every honest step: an owner with share left by that reference makes a solo
+      change, and all owners together a joint one (with rule C's stated exception above);
+    * honest gossip reaches an attacked book after every attacker key that matters has filled its
+      quota, and copies re-signed by every attacker key don't drop it.
+  * **A1 attacks:** forks at any depth, minted-key chains, floods of up to 300 certificates, pads,
+    strips, replays and bad seqs. In 30% of runs A1 also holds a current co-owner's key.
+  * **A2 attacks:** A1 plus two lineages of its own. It delivers its certificates with their
+    attestations, including equal-frame attestations of real signer subsets.
+  * **Relay attacks:** orphans with ground ids, unsigned and stranger-signed certificates on real
+    parents, and attestations of certificates nobody holds. Every one is refused, and the book is
+    unchanged.
+  * **Checked on every book:**
+    * invariant 1, authority;
+    * 2, unattested changes change nothing (A1);
+    * 3, liveness (A1): an uncompromised owner's unattested proposal on the head goes the same way as
+      in the unattacked book, and so do the next five honest commits;
+    * 4, the view and the digest after two rebuilds. One is a single shuffled batch. The other goes one
+      by one in a random causal order, with a relay sending stripped and partial copies, and some
+      attestations arriving before their certificates; what was refused is then sent again. Nothing is
+      skipped;
+    * 5, charges:
+      * every unattested certificate is charged, unless an attestation depends on it;
+      * keys are charged only if they signed it and matter at a head; certificates charged to one key
+        alone stay within 64, and all within 64 times the keys charged (a certificate counts against
+        every key it is charged to, so a key's total can pass 64 through co-signed ones, seed 10928);
+      * inherited charges go only to certificates it hangs from, within 16 in the same way;
+    * 6, removals stick: observed-remove, with the nobody-left exception, for Leave against A2 and for
+      rule C's removals against A1;
+    * 7, disputes stay visible.
+    Invariant 8 is measured.
+  * **Result** under consent only, 15,000 histories, at c4bf06b (seeds 0 to 9,499) and a8c41cd (9,500 to
+    14,999; it only brings invariant 5's per-key check in line with round 8's any-key charging): all of
+    that held.
+    * 4,272 histories forked and merged, and 141 had more than 256 attested certificates.
+    * 11,349 of the 30,000 one-by-one rebuilds needed the anti-entropy batch, and all then
+      converged.
+    * 12 honest histories hit rule C's stated exception.
+  * **What it found in rounds 6 and 7, before review, now fixed:**
+    * an unsigned child of an unattested certificate inherited its parent's charge, so a relay could
+      keep it;
+    * a resent attestation was dropped when the certificate's parent had turned invalid since;
+    * a key could drift over its quota as charges were derived again.
+  * **Round 8:** two mutations were each caught at once: halving the share gift, and charging every
+    key instead of any key.
+  * **Under consent only it found** rule C's stated exception (seed 1895), and that a stolen current
+    backup key legitimately changes the rule (seed 5460): it is now counted as a compromised owner, not
+    a failed rule join. Converting the tests found OWN-3's fork-point limit.
+  * **Round 9** [V: harness, 5,000 histories at e09d4b4: every must-hold invariant held; A2 residual:
+    honest owner lost 94, owner gained 1,822, honest change voided 114, rule loosened 33; 3 histories hit
+    rule C's exception]: A2 sometimes names a signer with a made-up signature (OWNX-1),
+    and the independent share reference models shares passing on Leave and removal. It found that an
+    owner could run into debt (paying a solo change beyond its share), which a passed share then paid
+    off first (seed 54); a signing owner now pays only up to its share.
+* **Tests:** 67 ownership tests pass; the three ignored ones are debug helpers. The tests of
+  the removed machinery went with it (OWNS-1a, OWNS-1c, OWNS-1d, OWNT-1, OWNT-1b, OWNT-3 and the
+  window and recovery tests); `backup_key_acts_as_its_owner` replaces them.
+* **Regression tests for the reviews.** Each set fails on the code before its fix:
+  * cbcdadb, 12 tests from round 1;
+  * 5083c64, 10 from round 2;
+  * dc3c1cd, 10 from round 3;
+  * f961f44, 6 from round 4;
+  * 5e2de2c, 7 from round 5;
+  * fc83412, 6 from round 6;
+  * 1660b92, 3 from round 7;
+  * 4f13228, 4 from round 8 (OWNX-1a, OWNX-1b, OWNX-4, OWNX-6).
+* **The session scenario** runs on the admin layer: every replica's book and outcomes equal an offline
+  reference that applies the decided changes' certificates in order, and the full regress (93) is
+  identical to main's logs apart from the ownership log [V: ownership scenario]. Under consent only, a
+  removal under rule A is refused, and backup keys co-sign an addition, make their owner leave and clear
+  themselves. Of a double sale, the first in commit order is committed and the second is stale and never
+  committed. A certificate makes member 3's key an owner, and a non-owner admin's kick of member 3 is
+  then refused. A control without that certificate lets the kick through [V: control run].
 
 ---
 
@@ -5773,7 +6154,8 @@ entry says so.
   * Alternatives: our own bootstrap or relay servers (reliable, but a soft central point); invites and LAN
     only (purest, worst UX).
 * **D10. Root of authority (12).**
-  * **Settled (user, 19:11Z): as recommended.**
+  * **Settled (user, 19:11Z): as recommended.** Since 22:39Z the owners are the world's ownership chain,
+    and adding an owner follows rule A (12.5).
   * Recommend: the world creator's key is the genesis owner and can add co-owners; optional k-of-n owner
     threshold for ACL changes.
   * Alternatives: a mandatory multi-owner threshold; a fully democratic majority of present members.
@@ -6571,6 +6953,72 @@ entry says so.
     best-effort secret filter.
   * Alternative: stream the detailed tool view as well, to "watch them work" in full. More open, but it
     sends file contents and command output, with whatever secrets they hold, to everyone nearby.
+* **D87. World ownership: what the user decides (12.5). RULED.** Question 1 on 2026-10-31 08:31Z (OT =
+  (a)): consent only now, bound session lineages later; questions 3 and 4 follow from it. Questions 2
+  and 5 on 2026-10-31 12:52Z (msg m7fc6b059372d), both as recommended.**
+  * **1. The trust root: which sessions may change ownership. RULED (a), consent only.**
+    * No removal of a vanished owner. A recovery key is a backup with the owner's full power. No
+      time-based protections, since without a trust root none of them can hold.
+    * Consequence: a co-owner who vanishes stays an owner, and under rule A additions then need them
+      (or their backup). Groups that want removability pick rule C. A stolen backup key equals a stolen
+      key.
+    * **The residual, accepted for now** [V: harness, 15,000 histories at c4bf06b and a8c41cd]: anyone who runs a
+      session of their own can return a former owner or add a co-owner through a fork at an old state,
+      remove an owner under rule C at a fork point, and void an honest change. **Any co-owner with a
+      session of its own can also brick the world, under any rule:** it fills the 1,024 cap with
+      solo siblings, and then even the owners' joint merge is refused (OWNX-2). An honest owner was lost in 307 histories, an owner gained in 5,641, and an
+      honest change voided in 359, always detected and shown as disputed.
+    * **Also recorded** (the hardening stopped after round 9, as @coordinator-opus set):
+      * OWNX-2 (Medium-High, A2): the bricking above. Not fixed in the spike: counting each owner's
+        solo certificates across the whole book makes a certificate's validity depend on concurrent
+        ones, not its causal past. Storage then stays bounded and books converge only with a
+        deterministic eviction of attested certificates, plus charged merges (OWNW-2 enforced on
+        insert). That is a structural change to the storage layer. Compaction and bound session
+        lineages are the natural places for it;
+      * OWNX-3 (Medium): across copies that each add an owner and then merge, the shares can total
+        more than 256, by one gift per copy;
+      * OWNX-5 (Low): a rule-C removal passes the target's share to its removers, the one way a share
+        changes without its holder signing;
+      * a sole owner can fill its own book to 1,024 until compaction (OWNW-7);
+      * rule C: targets of voided mutual removals stay owners in the view, but their own changes are
+        refused at insert (12.5);
+      * rule C: OWN-3 doesn't cover a removal at the fork point (12.5);
+      * `commit_local` clones the book, O(N) per commit [I].
+    * **Later: bound session lineages.** The owners bind, in the chain, the session lineages whose
+      attestations count. A lineage is a P2-4 epoch-certificate chain from that session's genesis
+      (`EpochBook`), bound by its first certificate (@engine-architect). It would close the residual
+      except for a bound session's majority colluding, and could bring back dormant-owner removal and
+      delayed recovery. The deferred findings belong to it: OWNT-1 and OWNT-3 (attestations carry and
+      check signatures; objection explicit and monotone), OWNV-2's second half (one recovery at a
+      time; a recovery key's changes charged to itself) and OWNW-6 (Challenge and RemoveDormant
+      budgets).
+  * **2. Forks of the ownership chain (refines O4). RULED 12:52Z: combine.** The user's words: "world
+    copies are combined with version-control style merging: the pre-merge backups are always available
+    to all players at all times, so nothing is ever lost". The ownership book already keeps both sides:
+    a merge certificate names every pre-merge head as a parent, and the certificates behind them stay
+    in the book, so each side's owner set before the merge can always be shown. The pre-merge world
+    backups themselves are 16.10's (@engine-architect).
+    * As built (the recommendation): a change counts only once a session of the world committed it; within a session the
+      first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
+      * both buyers of a double sale become co-owners;
+      * each copy's additions stand;
+      * a Leave or a removal sticks;
+      * a removal on one copy needs the owners the other copy added since they split;
+      * concurrent rules take the strictest. If one copy turned removal off (rule B), it stays off
+        until every owner signs a new rule, so with a dormant owner, for good (OWNU-8).
+    * Solo changes (not signed by every owner) total at most 256 along any history. Each owner has a
+      share: the genesis owners split the 256, and a new owner's share is given by those who signed
+      its addition. An owner's share shrinks only through changes it signed, so under every rule one
+      owner can spend only its own share (OWNW-3).
+    * Residual: as in 1.
+    * Not chosen: a change counts only if every other copy's owners signed it too (a double sale
+      would cancel both sales).
+  * **3. Removing an owner (refines O1). Settled by 1:** nobody is removed under rule A; rule C keeps
+    instant k-of-n removal.
+  * **4. Recovery keys (refines O2). Settled by 1:** a backup key with the owner's full power.
+  * **5. Locking session rules (was D88). RULED 12:52Z, as recommended:** a lock is an ownership-chain
+    entry that every current owner signs, so a lone co-owner can't impose or lift one. Not built in the
+    spike yet (a `SetLock` change under `SetRule`'s signing rule) [I].
 * **D89. Which tools a confidant's turns get (21.5; raised by the 22:34Z confidant ruling).**
   **Ruled 08:31Z: (b), full as ruled.** A confidant's turns get exactly the panel's own profile, shell
   and web included on a Full panel, with no Restricted-by-default setting; the Seal keeps its plain
