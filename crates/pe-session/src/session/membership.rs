@@ -115,6 +115,9 @@ pub mod fix {
     /// A member that kept another version of the forked seq could not count the forker's prevote, never
     /// saw the polka the others locked on, and the locked members prevoted nil on everything else.
     pub const VC8R1: u64 = 1 << 36;
+    /// Review OWNY-2 (ownership, 12.5): a certificate built on a pending one's head is held and judged
+    /// again after each decision, not dropped at receipt. (A high bit, clear of P2-4's next flags.)
+    pub const OWNY2: u64 = 1 << 40;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -123,6 +126,11 @@ pub const MAX_ATTESTS: usize = 64;
 /// Review VC6R-2: the most prevote ids a capped precommit carries (its polka). At least the largest
 /// quorum, so honest code never exceeds it; a decode of more is refused.
 pub const MAX_POLKA: usize = 512;
+
+/// Review OWNZ-1: the most ownership entries one author has held for a missing parent (OWNY-2); past
+/// it, such an entry is dropped at receipt as before, so one faulty member can't grow the set that
+/// every decision re-scans.
+pub const MAX_HELD_PER_AUTHOR: usize = 16;
 
 /// Round 3 only (`fix::VC3R2` off, review VC3R-2): a member whose votes or caps resets overruled in
 /// this many of the last `STRIKE_EPOCHS` epochs is voted out.
@@ -197,7 +205,13 @@ pub(super) struct AdminRun {
     roles: BTreeMap<MemberId, RoleId>,
     defs: BTreeMap<RoleId, u64>,
     excluded: BTreeSet<MemberId>,
-    owners: BTreeSet<MemberId>,
+    /// The world owners' keys (12.5).
+    owners: BTreeSet<Key>,
+    /// The members' ownership keys ([`WorldSim::key_of`]), for Q27.
+    keys: BTreeMap<MemberId, Key>,
+    /// The world's ownership chain (12.5), if it has one, and the session lineage that commits to it.
+    book: Option<Book>,
+    lineage: u32,
 }
 
 impl AdminRun {
@@ -211,6 +225,10 @@ impl AdminRun {
     pub(super) fn has_admin(&self) -> bool {
         self.members.iter().any(|m| self.roles.get(m) == Some(&ADMIN))
     }
+    /// Member `m` owns the world, as this point of the sequence has it (12.5, Q27).
+    fn owns(&self, m: MemberId) -> bool {
+        self.keys.get(&m).is_some_and(|k| self.owners.contains(k))
+    }
     /// Whether admin entry `e` applies at this point of the sequence; if it does, apply it. A
     /// refused entry changes nothing.
     pub(super) fn apply(&mut self, e: &Entry) -> bool {
@@ -222,7 +240,7 @@ impl AdminRun {
         match e.payload {
             Payload::Kick { target, .. } => {
                 // Q27 (user 22:49Z, kicks assumed alike): only a co-owner kicks an owner.
-                let owner_safe = self.owners.contains(&target) && !self.owners.contains(&a);
+                let owner_safe = self.owns(target) && !self.owns(a);
                 if p & perm::KICK == 0 || target == a || !self.members.contains(&target) || owner_safe {
                     return false;
                 }
@@ -232,7 +250,7 @@ impl AdminRun {
             }
             Payload::SetRole { member, role, .. } => {
                 // Q27 (user 22:49Z): an owner may give up Admin, but only a co-owner demotes an owner.
-                let owner_safe = self.owners.contains(&member) && member != a && !self.owners.contains(&a) && role != ADMIN;
+                let owner_safe = self.owns(member) && member != a && !self.owns(a) && role != ADMIN;
                 if p & perm::ROLES == 0 || !self.members.contains(&member) || (role != ADMIN && !self.defs.contains_key(&role)) || owner_safe {
                     return false;
                 }
@@ -252,6 +270,18 @@ impl AdminRun {
                     return false;
                 }
                 self.defs.insert(role, perms);
+                true
+            }
+            // 12.5: valid against the book as the entries before it leave it. The outcome depends
+            // on the book, the certificate and commit order only, never on the boundary (which is
+            // computed after the admin entries); the entry's stamp stands in as the frame, which
+            // only the session's own attestation record reads. Later entries see the new owners.
+            Payload::Ownership { ref cert, .. } => {
+                let Some(b) = self.book.as_mut() else { return false };
+                if !matches!(b.commit_local(cert.clone(), self.lineage, e.stamp), Ok(Insert::Applied)) {
+                    return false;
+                }
+                self.owners = b.view().owners.owners;
                 true
             }
             _ => false,
@@ -629,6 +659,24 @@ impl WorldSim {
                     self.vcm.admin_pending.insert(id);
                 }
             }
+            // 12.5: pending only while the certificate would apply to the book as decided (V1's
+            // receipt rule): an entry that cannot apply would start view changes for nothing (VC6R-4).
+            // Re-sent later, it is a new entry.
+            Payload::Ownership { ref cert, .. } if !self.vcm.admin_outcomes.contains_key(&id) && self.vcm.closed_at.is_none() && self.vcm.members.contains(&m) => {
+                match self.ownership_judge(cert) {
+                    Ok(Insert::Applied) => {
+                        self.vcm.admin_pending.insert(id);
+                    }
+                    // Review OWNY-2: its parent may be a pending certificate; hold it until it is decided.
+                    Err(OwnError::MissingParent) if self.fixes_off & fix::OWNY2 == 0 => {
+                        let mine = self.vcm.own_held.iter().filter(|h| self.entries.get(h).is_some_and(|e| e.member == m)).count();
+                        if mine < MAX_HELD_PER_AUTHOR {
+                            self.vcm.own_held.insert(id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -665,7 +713,75 @@ impl WorldSim {
     }
 
     pub(super) fn admin_run(&self) -> AdminRun {
-        AdminRun { members: self.vcm.members.clone(), roles: self.vcm.roles.clone(), defs: self.vcm.role_defs.clone(), excluded: BTreeSet::new(), owners: self.vcm.owners.clone() }
+        AdminRun {
+            members: self.vcm.members.clone(),
+            roles: self.vcm.roles.clone(),
+            defs: self.vcm.role_defs.clone(),
+            excluded: BTreeSet::new(),
+            owners: self.owner_keys(),
+            keys: self.vcm.members.iter().filter_map(|&m| Some((m, self.key_of(m)?))).collect(),
+            book: self.vcm.book.clone(),
+            lineage: self.world_id,
+        }
+    }
+
+    /// Member `m`'s ownership key (12.5): its Ed25519 identity key from the session's key directory.
+    /// Production: the key its join certificate carries, signed by it [I]. None without a key (an
+    /// offline replay holds none), and a member without a key owns nothing.
+    pub fn key_of(&self, m: MemberId) -> Option<Key> {
+        self.keys.public.get(m).map(|k| Key(k.to_bytes()))
+    }
+
+    /// The world owners' keys (12.5): from the ownership chain if the world has one, else the keys of
+    /// the owners it lists.
+    pub fn owner_keys(&self) -> BTreeSet<Key> {
+        match &self.vcm.book {
+            Some(b) => b.view().owners.owners,
+            None => self.vcm.owners.iter().filter_map(|&m| self.key_of(m)).collect(),
+        }
+    }
+
+    /// How `cert` would fare against the book as decided now (12.5): it applies if its owners'
+    /// signatures check and it builds on the current heads.
+    pub(super) fn ownership_judge(&self, cert: &Cert) -> Result<Insert, OwnError> {
+        match self.vcm.book.clone() {
+            Some(mut b) => b.commit_local(cert.clone(), self.world_id, self.frame),
+            None => Err(OwnError::NotAllowed),
+        }
+    }
+
+    pub(super) fn ownership_applies(&self, cert: &Cert) -> bool {
+        matches!(self.ownership_judge(cert), Ok(Insert::Applied))
+    }
+
+    /// 12.5: publish an ownership certificate (an admin entry); every replica judges it.
+    pub fn publish_ownership(&mut self, cert: Cert) -> SignedEntry {
+        let epoch = self.vcm.epoch;
+        let e = self.author_vc(Payload::Ownership { epoch, cert });
+        self.signed(e)
+    }
+
+    /// The decided view changes, in order (the ownership report replays their admin entries).
+    pub fn decided_changes(&self) -> impl Iterator<Item = &Change> {
+        self.vcm.decided.iter().map(|(c, _, _)| c)
+    }
+
+    /// Give the world an ownership chain from its genesis certificate (part of the genesis
+    /// document; before the first frame is simulated).
+    pub fn set_ownership(&mut self, genesis: Cert) {
+        assert_eq!(self.frame, 0, "ownership is part of the world's genesis");
+        self.vcm.book = Some(Book::new(genesis).expect("a valid genesis certificate"));
+    }
+
+    /// A certificate for `change` on top of this replica's present ownership head(s), signed by test
+    /// identities `signers` (the harness: a key holder handing the member a signed certificate). A
+    /// merge joins every head; any other change builds on the first head.
+    pub fn owner_cert(&self, change: OwnChange, signers: &[u32]) -> Option<Cert> {
+        let b = self.vcm.book.as_ref()?;
+        let heads = b.heads();
+        let prev = if change == OwnChange::Merge { heads } else { heads.into_iter().take(1).collect() };
+        let seq = prev.iter().map(|p| b.cert(*p).map_or(0, |c| c.seq)).max()? + 1;
+        Some(Cert { world: b.world, seq, prev, change, sigs: vec![] }.signed_test(signers))
     }
 
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
@@ -711,8 +827,10 @@ impl WorldSim {
     /// Whether member `j` may join now under the join rules, against `run` (the membership the
     /// change leaves before its joins), and with which starting role (D80).
     pub(super) fn join_role(&self, j: MemberId, attests: &[Attest], run: &AdminRun) -> Option<RoleId> {
-        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin.
-        if self.vcm.owners.contains(&j) {
+        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin. Owners, like the
+        // other targets, are as the admin entries before the join in its change leave them (review OWNY-1).
+        let jk = self.key_of(j);
+        if jk.is_some_and(|k| run.owners.contains(&k)) {
             return Some(ADMIN);
         }
         let has = |rel: Rel, g: MemberId| match rel {
@@ -720,14 +838,28 @@ impl WorldSim {
             Rel::Named(n) => n == j,
             _ => attests.iter().any(|a| a.rel == rel && a.with == g && attest_ok(&self.keys.public, a, j, self.world_id)),
         };
+        // An owner is a key (12.5), who need not be a member: a relationship counts with an owner if the
+        // member it names holds that owner's key. `Named(n)` names the joiner, as for every target
+        // (review OWNP-1).
+        let has_owner = |rel: Rel, o: Key| match rel {
+            Rel::Is => jk == Some(o),
+            Rel::Named(n) => n == j,
+            _ => attests.iter().any(|a| a.rel == rel && self.key_of(a.with) == Some(o) && attest_ok(&self.keys.public, a, j, self.world_id)),
+        };
         for rule in &self.vcm.join_rules.rules {
-            let group: Vec<MemberId> = match rule.target {
-                Target::Owner => self.vcm.owners.iter().copied().collect(),
-                Target::Player => run.members.iter().copied().collect(),
-                Target::Admin => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&ADMIN)).collect(),
-                Target::Role(r) => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&r)).collect(),
+            let hit = match rule.target {
+                Target::Owner if rule.all => !run.owners.is_empty() && run.owners.iter().all(|&o| has_owner(rule.rel, o)),
+                Target::Owner => run.owners.iter().any(|&o| has_owner(rule.rel, o)),
+                _ => {
+                    let group: Vec<MemberId> = match rule.target {
+                        Target::Player => run.members.iter().copied().collect(),
+                        Target::Admin => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&ADMIN)).collect(),
+                        Target::Role(r) => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&r)).collect(),
+                        Target::Owner => unreachable!(),
+                    };
+                    if rule.all { !group.is_empty() && group.iter().all(|&g| has(rule.rel, g)) } else { group.iter().any(|&g| has(rule.rel, g)) }
+                }
             };
-            let hit = if rule.all { !group.is_empty() && group.iter().all(|&g| has(rule.rel, g)) } else { group.iter().any(|&g| has(rule.rel, g)) };
             if hit {
                 return rule.role;
             }
@@ -1306,7 +1438,7 @@ impl WorldSim {
         for &(id, ok) in &c.admin {
             let e = self.entries.get(&id)?.clone();
             let epoch = match e.payload {
-                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } => epoch,
+                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } => epoch,
                 _ => return Some(false),
             };
             let key = admin_key(&e);
@@ -1747,6 +1879,15 @@ impl WorldSim {
                     Some(Payload::DefineRole { role, perms, .. }) => {
                         self.vcm.role_defs.insert(role, perms);
                     }
+                    // 12.5: the session commits the certificate at the deciding boundary. Its
+                    // validity does not depend on the frame, so it applies here as in the run.
+                    Some(Payload::Ownership { cert, .. }) => {
+                        let lineage = self.world_id;
+                        if let Some(b) = self.vcm.book.as_mut() {
+                            let r = b.commit_local(cert, lineage, c.boundary);
+                            debug_assert!(matches!(r, Ok(Insert::Applied)), "a decided certificate applies: {r:?}");
+                        }
+                    }
                     _ => {}
                 }
             } else {
@@ -1787,6 +1928,40 @@ impl WorldSim {
             .collect();
         for id in gone {
             self.vcm.admin_pending.remove(&id);
+        }
+        // 12.5: a pending certificate the decision made stale or invalid can never apply: drop it
+        // unjudged, as `gone` does (V1's receipt rule).
+        let dead: Vec<EntryId> = self
+            .vcm.admin_pending
+            .iter()
+            .copied()
+            .filter(|id| matches!(self.entries.get(id).map(|e| &e.payload), Some(Payload::Ownership { cert, .. }) if !self.ownership_applies(cert)))
+            .collect();
+        for id in dead {
+            self.vcm.admin_pending.remove(&id);
+        }
+        // Review OWNY-2: a held certificate whose parents the decision brought into the book is judged
+        // again: pending if it now applies, dropped if it never can; still held while a parent is missing.
+        let held: Vec<EntryId> = self.vcm.own_held.iter().copied().collect();
+        for id in held {
+            let Some(e) = self.entries.get(&id) else { continue };
+            let Payload::Ownership { cert, .. } = &e.payload else { continue };
+            if self.vcm.admin_outcomes.contains_key(&id) || self.vcm.closed_at.is_some() || !self.vcm.members.contains(&e.member) {
+                self.vcm.own_held.remove(&id);
+                continue;
+            }
+            if self.vcm.book.as_ref().is_some_and(|b| cert.prev.iter().any(|p| b.cert(*p).is_none())) {
+                continue;
+            }
+            match self.ownership_judge(cert) {
+                Err(OwnError::MissingParent) => {}
+                r => {
+                    self.vcm.own_held.remove(&id);
+                    if r == Ok(Insert::Applied) {
+                        self.vcm.admin_pending.insert(id);
+                    }
+                }
+            }
         }
         // Review VC-6: a decided epoch restarts the slowness timers, so one borderline view cannot vote
         // again the instant a reset ends. Review VCR-4: the unbacked-epoch timers do not restart (a
