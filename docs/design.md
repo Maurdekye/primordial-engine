@@ -1645,6 +1645,11 @@ is fixed once the author's chain is contiguous up to it.
     count one version per member [V prevotefork: proposer 1 sends its prevote for the join to capper 2
     and nil to observer 3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps
     2].
+  * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
+    round trip, so if ids the cap named are still missing a further half window after the cap ripened,
+    they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
+    polka id that exists nowhere; 9 is removed at 4.15 s. With the fix off the id is fetched for good, 9 is
+    never removed and confirmation stops at frame 143].
   * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
     member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
     prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
@@ -1721,6 +1726,14 @@ is fixed once the author's chain is contiguous up to it.
     fell behind (review VC4R-3): references that never deliver no longer spare it without end. The silent
     member is removed regardless, because its own references stop [V fakeref: 9 falls silent at 2 s while
     8 fakes references to 9's chain; 9 is removed at 5.2 s].
+  * **A decision resets only the timers its cleared votes made stale** (review VC6R-4). A decision
+    clears every vote of the epoch. A voter froze its target's chain, so its reference to that chain stood
+    still, and the targets of this replica's own votes looked silent or slow to it: only those timers,
+    and new members', restart. Round 6 cleared every reference and suspicion timer at every decision, so a
+    member that forces decisions, with a no-op admin entry every 2 s, kept its own timers from ever
+    ripening [V fakeadmin: 8 fakes references and authors a no-op SetRole every 2 s; 8 is removed at 5.23 s.
+    With the fix off, six decisions reset its timers, 8 is never removed and confirmation stops at frame
+    110].
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
   signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
@@ -1803,16 +1816,20 @@ is fixed once the author's chain is contiguous up to it.
   * A validator accepts a listed admin entry only once it has validated its author's chain up to it, and
     refuses one that validation voided, so a faulty proposer cannot commit a backdated entry either
     (review VC3R-3) [V adminvoid: 9 signs a horizon-void SetRole demoting 3 and proposes a change that
-    lists it; refused, and 3 stays Admin. Before the fix it applied]. The listed entry must also be this
-    member's canonical version at its seq and not disputed, so a forked admin version held only as a
-    duplicate, which a proposer never lists, cannot be committed at one replica and not another (review
-    VC3R-3's low). A forked admin entry does not wedge a lock (review VC5R-1): a change is prevoted or
-    locked only once `change_valid` returns true, which needs the listed entry held, validated and
-    canonical here; and a member proposes only entries that are stable, so an honest round's proposal
-    cannot later turn invalid at an honest member. A fork of the entry that arrives afterwards proves the
-    author equivocated and excludes it, which only shrinks the quorum; it does not unmake a decision a
-    quorum already reached. @design-reviewer could not reproduce a wedge (`adminfork` removes the faulty
-    admin either way); this is the argument, not a run [I].
+    lists it; refused, and 3 stays Admin. Before the fix it applied].
+  * **An admin entry's validity is a pure function of the entry and its ancestry** (review VC6R-3):
+    held, its author's chain validated up to it, and not voided, the same at every replica once it holds
+    the entry. Listing a canonical, undisputed version is only the proposer's choice. Every replica
+    applies the version the change lists, with the outcome the change carries, so a fork cannot be
+    committed at one replica and not another. Round 5 also required the listed version to be canonical
+    and undisputed at the validator (VC3R-3's low), arguing that a member proposes only stable entries,
+    so no lock could turn invalid (VC5R-1). That premise was false: a proposer lists what it has
+    validated, not what is stable. A fork that arrived after members had locked made their value invalid
+    at them, and nothing releases a lock [V adminwedge: faulty admin 9 sends a SetRole to three members
+    while a fourth is cut off, drops its precommits once they lock, crashes, and its fork of the same seq
+    arrives later; 9 is removed at 4.03 s. With the fix off, the locked members find their value's entry
+    disputed, 9 is never removed and confirmation stops at frame 112]. A fork of a listed entry still
+    proves its author equivocated and excludes it, which only shrinks the quorum.
   * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
     admin is a permission of its own, held by default only by admins (V1); the roles permission counts
     as Admin, since it can grant Admin (V2 = (b)); and when the last admin times out the session closes,
@@ -4957,18 +4974,20 @@ Rules for every package:
   behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
   windows), and the RG-1 control fails L1. **Landed on main at 5ba3eab (31 October)**, with the P2-9
   tool brought onto the landed API at f05324f.
-  **Three one-faulty-member liveness halts are known open, to be fixed as round 7 on main** (they do not
-  touch safety — every replica still agrees — only liveness):
-  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, proposes a change listing the honest
-    version, and crashes; honest members lock on it and the fork that arrives later disputes the version
-    they hold, so the lock never clears. The round-5 argument (a proposer lists only stable entries) was
-    wrong: `admin_pending` fills at validation. Fix: admin validity a pure function of the change's
-    bytes, or listed admin entries must be stable at the validator.
-  * **VC6R-1** (`capfake`): a capped precommit whose polka lists an id that exists nowhere is retried
-    forever and never votes the capper out. Fix: after one fetch budget, vote it out.
-  * **VC6R-4** (`fakeadmin`): a member authoring a no-op admin entry every epoch, plus a pure fake
-    reference, has its reference timers cleared by every decision (VC5R-4 clears them all). Fix: clear
-    only the pairs whose vote a decision answered.
+  **Round 7 on main fixed the three one-faulty-member liveness halts that round 6's review found** (none
+  touched safety: every replica still agreed). Each repro fails with its fix switched off and passes with
+  it:
+  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, honest members lock on a change listing one
+    version, and the fork arriving later disputed it, so the lock never cleared. Admin validity is now a
+    pure function of the entry and its ancestry (`fix::VC6R3`) [V: 9 removed at 4.03 s; off: never,
+    confirmation stops at frame 112].
+  * **VC6R-1** (`capfake`): a capped precommit whose polka names an id that exists nowhere was fetched
+    forever. The fetch now has a budget of a further half window, after which the capper is voted out
+    (`fix::VC6R1`) [V: 9 removed at 4.15 s; off: never, frame 143].
+  * **VC6R-4** (`fakeadmin`): a member forcing a decision every 2 s with a no-op admin entry kept its own
+    reference timers from ripening, because every decision cleared them all. A decision now resets only
+    the timers its cleared votes made stale (`fix::VC6R4`) [V: 8 removed at 5.23 s; off: never, frame
+    110].
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
