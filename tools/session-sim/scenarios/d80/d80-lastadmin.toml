@@ -1,0 +1,42 @@
+description = """
+D80: 1 is the only admin (the others hold role 1, a guest role with no permissions). Its release \
+of the role at frame 120 is refused; handing ADMIN (0) to 2 at 240 and then releasing at 241 works."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 3]
+guests = { role = 1, admins = [1] }
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, set_role = { member = 1, role = 1 } },
+    { at = 240, set_role = { member = 2, role = 0 } },
+    { at = 241, set_role = { member = 1, role = 1 } },
+]
+3 = [{ at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3]
+label = "lastadmin"
+
+[[report]]
+kind = "admin"
+honest = [1, 2, 3]
+label = "lastadmin"
+outcomes = true
+roles = true
+
+[[report]]
+kind = "check"
+case = "lastadmin"
+label = "lastadmin"
+honest = [1, 2, 3]
+members = [2]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "lastadmin (the only admin releases its role, then hands it to 2 and releases)"

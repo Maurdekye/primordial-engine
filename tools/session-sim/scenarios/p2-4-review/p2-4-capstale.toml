@@ -1,0 +1,37 @@
+description = """
+P2-4 review round 4, VC3R-2: capchurn without the climbing acks. From 2 s, while it is a member, 9 \
+signs a capped precommit for no proposal in every epoch it enters. Part 1 runs with VC3R-2's fix \
+switched off (round 3's stale-cap resets and strikes), part 2 as shipped: 9 voted out, no reset."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[byzantine]]
+kind = "precommit"
+member = 9
+from_ms = 2000
+value = 0xBAD0
+ahead = 30
+every_epoch = true
+while_member_at = 1
+to = [1, 2, 3]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+report = [
+    { kind = "line", text = "  with round 3's stale-cap resets and strikes: 9 removed at {removed_s@1:9}, after {resets@1} resets" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "capstale" },
+    { kind = "check", case = "capstale", label = "capstale", at = 1, target = 9, event = "for a value no quorum here prevoted", honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3], label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch)" },
+]

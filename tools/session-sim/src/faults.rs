@@ -5,7 +5,8 @@ use spike::{Fate, Filter, Sim};
 
 use crate::scenario::{Crash, FaultRule};
 
-pub const MSG_CLASSES: &[&str] = &["entry", "fetch", "batch", "touch", "hand", "ack", "vote", "unvote", "attest", "depart", "arrive", "verdict", "portal"];
+pub const MSG_CLASSES: &[&str] =
+    &["entry", "fetch", "batch", "touch", "hand", "ack", "vote", "propose", "prevote", "precommit", "kick", "setrole", "definerole", "attest", "depart", "arrive", "verdict", "portal", "provenance"];
 
 /// Does `m` belong to message class `c` (see [`FaultRule::msg`])?
 pub fn is_class(m: &Msg, c: &str) -> bool {
@@ -17,20 +18,26 @@ pub fn is_class(m: &Msg, c: &str) -> bool {
                 | (Payload::Hand { .. }, "hand")
                 | (Payload::Ack { .. }, "ack")
                 | (Payload::Vote { .. }, "vote")
-                | (Payload::Unvote { .. }, "unvote")
+                | (Payload::Propose { .. }, "propose")
+                | (Payload::Prevote { .. }, "prevote")
+                | (Payload::Precommit { .. }, "precommit")
+                | (Payload::Kick { .. }, "kick")
+                | (Payload::SetRole { .. }, "setrole")
+                | (Payload::DefineRole { .. }, "definerole")
                 | (Payload::Attest { .. }, "attest")
                 | (Payload::Depart { .. }, "depart")
                 | (Payload::Arrive { .. }, "arrive")
                 | (Payload::Verdict { .. }, "verdict")
                 | (Payload::Portal { .. }, "portal")
+                | (Payload::Provenance { .. }, "provenance")
         ),
         _ => false,
     }
 }
 
 pub fn validate(r: &FaultRule) -> Result<(), String> {
-    if r.drop == r.delay_ms.is_some() {
-        return Err(format!("fault rule needs exactly one of `drop = true` or `delay_ms`: {r:?}"));
+    if [r.drop, r.delay_ms.is_some(), r.deliver].iter().filter(|&&x| x).count() != 1 {
+        return Err(format!("fault rule needs exactly one of `drop = true`, `delay_ms` or `deliver = true`: {r:?}"));
     }
     if let Some(c) = &r.msg {
         if !MSG_CLASSES.contains(&c.as_str()) {
@@ -61,6 +68,7 @@ fn matches(r: &FaultRule, t_us: u64, w: u32, from: u32, to: u32, m: &Msg) -> boo
         && r.msg.as_ref().is_none_or(|c| is_class(m, c))
         && r.stamp.is_none_or(|s| entry.is_some_and(|e| e.stamp == s))
         && r.seq.is_none_or(|s| entry.is_some_and(|e| e.seq == s))
+        && r.author.as_ref().is_none_or(|x| entry.is_some_and(|e| x.contains(e.member)))
 }
 
 /// A filter from a Byzantine behaviour: `Some(fate)` decides the message.
@@ -87,7 +95,11 @@ pub fn filter(rules: Vec<FaultRule>, hooks: Vec<Hook>) -> Option<Filter> {
             if let Some(k) = n.as_mut() {
                 *k -= 1;
             }
-            return if r.drop { Fate::Drop } else { Fate::Delay(r.delay_ms.unwrap() * 1000) };
+            return match (r.drop, r.delay_ms) {
+                (true, _) => Fate::Drop,
+                (false, Some(d)) => Fate::Delay(d * 1000),
+                (false, None) => Fate::Deliver,
+            };
         }
         Fate::Deliver
     }))
@@ -126,7 +138,7 @@ mod tests {
     }
 
     fn ack(member: u32) -> Msg {
-        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None }, carried: None })
+        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None, epoch: 0 }, carried: None })
     }
 
     fn fate(f: &mut Filter, t_ms: u64, from: u32, to: u32, m: &Msg) -> String {
@@ -162,9 +174,21 @@ mod tests {
     }
 
     #[test]
+    fn author_and_deliver() {
+        // As p2-4-aheadlink: 4's own acks pass, every other entry to 3 is delayed.
+        let mut f = filter(vec![rule("to = 3\nfrom = 4\nauthor = 4\nmsg = \"ack\"\ndeliver = true"), rule("to = 3\nmsg = \"entry\"\ndelay_ms = 5")], vec![]).unwrap();
+        assert_eq!(fate(&mut f, 0, 4, 3, &ack(4)), "deliver");
+        assert_eq!(fate(&mut f, 0, 4, 3, &ack(1)), "delay 5", "relayed: authored by 1");
+        assert_eq!(fate(&mut f, 0, 4, 3, &touch(4, 1, 0)), "delay 5", "not an ack");
+        assert_eq!(fate(&mut f, 0, 4, 2, &touch(4, 1, 0)), "deliver");
+    }
+
+    #[test]
     fn validation() {
         assert!(validate(&rule("from = 1")).is_err(), "needs an action");
         assert!(validate(&rule("drop = true\ndelay_ms = 3")).is_err(), "one action only");
+        assert!(validate(&rule("deliver = true\ndrop = true")).is_err(), "one action only");
+        assert!(validate(&rule("deliver = true")).is_ok());
         assert!(validate(&rule("msg = \"tuch\"\ndrop = true")).is_err());
         assert!(validate(&rule("msg = \"fetch\"\nseq = 1\ndrop = true")).is_err());
         assert!(validate(&rule("msg = \"vote\"\ndrop = true")).is_ok());
