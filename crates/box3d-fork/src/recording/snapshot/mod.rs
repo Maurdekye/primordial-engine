@@ -8,6 +8,8 @@ mod joints;
 mod pod_bodies;
 mod pod_contacts;
 mod pods;
+#[cfg(test)]
+mod record_tests;
 
 use crate::compound::{
     COMPOUND_CAPSULE_SIZE, COMPOUND_DATA_SIZE, COMPOUND_SPHERE_SIZE, COMPOUND_VERSION,
@@ -383,7 +385,9 @@ pub fn deserialize_into_shell(
 
     des_names(&mut r, &mut world.names);
 
-    r.ok
+    // Primordial Engine fork: the image must be consumed exactly, so no bytes ride along that
+    // the state does not hold (a joiner's image is confirmed by hashing all of its bytes).
+    r.ok && r.cursor() == data.len()
 }
 
 /// Primordial Engine fork: a world's settings (gravity, solver and contact parameters, flags,

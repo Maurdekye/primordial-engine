@@ -31,6 +31,6 @@ mod world;
 pub use config::{engine_world_def, PhysicsConfig, SUBSTEPS};
 pub use desc::{limits, BodyDesc, BodyKind, Geometry, ShapeDesc};
 pub use error::PhysicsError;
-pub use image::{Transfer, WorldImage};
+pub use image::{CheckHash, Transfer, WorldImage};
 pub use pe_core::ids::ObjectId;
-pub use world::{GrabSpring, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push};
+pub use world::{GrabSpring, JointDesc, JointKey, JointKind, PhysicsWorld, Pose, Push, WriteBack};

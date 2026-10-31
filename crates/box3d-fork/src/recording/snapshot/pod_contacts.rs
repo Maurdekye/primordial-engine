@@ -30,8 +30,8 @@ use crate::shape::{Shape, ShapeGeometry};
 use crate::world::World;
 
 /// Lower bounds on a record's image size, for count checks.
-const MATERIAL_MIN_BYTES: i32 = 32;
-const MANIFOLD_MIN_BYTES: i32 = 40;
+pub(crate) const MATERIAL_MIN_BYTES: i32 = 32;
+pub(crate) const MANIFOLD_MIN_BYTES: i32 = 40;
 
 pub fn ser_manifold(buf: &mut RecBuffer, m: &Manifold) {
     for p in &m.points {
