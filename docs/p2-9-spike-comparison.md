@@ -185,12 +185,14 @@ tool's `regress` is 92 of 92 identical to the new goldens.
   [verified by reading the spike's logs]. The capped runs keep their points (fault-capped: 125
   dropped, 0 paused, conf 558 at every member).
 
-- **P2-4 round 8 (main af23ae5) is not in pe-session yet.** Its five new scenarios (p2-4-voidfork,
-  slowcapper, voiddeep, plainfork, pfsilent) drive fixes pe-session does not have (VC7R-1/2, RECUT,
-  VC8R-1/2). They are listed in `tools/session-sim/scenarios/pe-pending.txt`, which `regress` skips
-  and reports, and `scripts/run_session_sim.sh --pe` does not run them; their logs are the spike's.
-  adminfork's and prevotefork's scenario files keep their round-7 versions (main's add VC6R3 and
-  VC8R1 switches). The round-8 port to pe-session is a follow-up.
+- **P2-4 round 8 (main af23ae5), ported on p2/session-r8.** With the spike's claim rule, against the
+  spike's logs: voidfork, voiddeep and plainfork are equal with ids masked; pfsilent and slowcapper
+  decide one late epoch a frame later (266 against 265, 278 against 277), the class of the review
+  round's 13 view-change logs [inferred mechanism]. Every repro's verdicts, frame ranges and check
+  counts equal the spike's. Against pe-session's goldens, exactly the 5 logs round 8 changed in the
+  spike differ (adminfork, adminwedge, capfake, fakeadmin, prevotefork), and the 5 new ones are added.
+  The tool's five round-8 scenarios and adminfork's and prevotefork's round-8 files reproduce them
+  (regress 97 of 97); only `ownership` stays in `pe-pending.txt`.
 
 ## Fixture changes made by the port
 
