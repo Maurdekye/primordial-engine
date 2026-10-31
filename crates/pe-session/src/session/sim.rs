@@ -409,7 +409,7 @@ impl WorldSim {
                 let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
                 let chash = chain_hash(chain);
                 let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chash);
-                if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
+                if *transfer != transfer_id(src, *depart) || !cert_ok(&self.keys.public, &members, src, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
@@ -501,7 +501,7 @@ impl WorldSim {
                     return Outcome::RejectedDuplicate;
                 }
                 let members = self.peers_of.get(&esc.dest).cloned().unwrap_or_default();
-                if !cert_ok(&members, esc.dest, fact_verdict(esc.dest, *transfer, *accepted), cert) {
+                if !cert_ok(&self.keys.public, &members, esc.dest, fact_verdict(esc.dest, *transfer, *accepted), cert) {
                     return Outcome::RejectedNoProof;
                 }
                 if *accepted {

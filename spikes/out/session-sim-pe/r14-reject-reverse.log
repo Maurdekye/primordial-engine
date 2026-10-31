@@ -9,9 +9,9 @@
   m1 world B: object 40 live copies 0; escrow []; arrivals ["T16817996328531130808:Rejected { frame: 140, until: 730 }"]
   m3 world B: object 40 live copies 0; escrow []; arrivals ["T16817996328531130808:Rejected { frame: 140, until: 730 }"]
 RESULT r14 reject (reverse order): object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 14 max depth 3 resim frames 57 (7.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 3 max depth 10 resim frames 32 (3.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (2.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 14 max depth 3 resim frames 57 (8.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 3 max depth 10 resim frames 32 (3.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 reject A world 1: frames 0..500 digests m1=9bd67ff64d9304a0 m2=9bd67ff64d9304a0 | offline replay 9bd67ff64d9304a0 | ALL EQUAL
 RESULT r14 reject B world 2: frames 0..400 digests m1=717f7ee985804781 m3=717f7ee985804781 | offline replay 717f7ee985804781 | ALL EQUAL
