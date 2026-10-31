@@ -1795,11 +1795,15 @@ is fixed once the author's chain is contiguous up to it.
     VC4R-5).
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
-  * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
-    * epoch-at-frame for R14 hops: a hop's frame and epoch are not in the signed fact, so a third
-      party's check of the epoch active at the hop's frame trusts the carrier's labels (22.7);
-    * `cert_at` counts a world's majority over the members not excluded by proof, while a third party
-      counts over the whole epoch, so a correctly built hop can be refused elsewhere.
+  * **Epoch-at-frame for R14 facts** (reviews VC-7, VC-8; P2-5's follow-up, branch
+    `p2/provenance-epochs`):
+    * a hop's, departure's and verdict's frame and epoch are in the signed fact, so a third party's
+      check of the epoch active at that frame no longer trusts the carrier's labels. A member signs
+      with the epoch of that frame in its own log, and signs again if a later decision moves the frame
+      into another epoch (22.7) [V provenance unit tests];
+    * `cert_at` and a third party count a majority the same way: over the epoch's members minus those
+      the next epoch's certificate excluded by proof, which then travels with the fact (`EpochCerts::
+      quorum`) [V unit test `excluded_members_leave_the_quorum`].
   * A removal's boundary is the proposer's present, a little before the decision, so facts a member
     attests under epoch e about frames between the boundary and its decision no longer match once it is
     in e + 1. That costs griefing, not safety [I].
@@ -4632,11 +4636,9 @@ persists until a verdict arrives.
       whether or not that world is on its own route list. Each hop carries its source's certificates up
       to the epoch that signed it, and that epoch must be the one active at the hop's commit frame
       (P25-5, 10.8) [V r14 chain-epoch: a hop signed after its source removed a member checks at a world
-      that does not route to the source; provenance unit tests]. **Not enforced yet** (review VC-7): the
-      hop's frame and epoch are not in the signed fact, so this check trusts the carrier's labels, and
-      the source's `cert_at` counts its majority differently from a third party (VC-8). Rely on neither
-      until @provenance-eng's follow-up signs both. A to B to C to A works [V r14 chain:
-      three hops, conserved, all equal in both orders].
+      that does not route to the source; provenance unit tests]. The hop's frame and epoch are in the
+      signed fact (VC-7), and both sides count the majority the same way (VC-8). A to B to C to A works
+      [V r14 chain: three hops, conserved, all equal in both orders].
     * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
       entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
       hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
@@ -4714,10 +4716,14 @@ persists until a verdict arrives.
       proof-of-stake systems [I; the unit test shows both].
   * **Member lists change** (review R3-8b). Since P2-4 a world's members change only by decided epochs,
     each with a certificate that the previous epoch's quorum signed, and another world follows them from
-    the world's genesis [V P25-5]. One check still uses the member list fixed at startup: a
-    destination checks the departure certificate in an `Arrive` against its route list's members of
-    the source, so a member the source has since removed still counts there [S session.rs]. The
-    `Arrive` should carry the source's epoch certificates, as hops do [I].
+    the world's genesis [V P25-5]. So do departures and verdicts: an `Arrive` carries the source's
+    epoch at the departure frame with its epoch certificates (`EpochProof`), and a `Verdict` the
+    destination's at its arrival frame. The route list still says which partners may vouch, but the
+    signers are checked from the partner's genesis, not against a member list fixed at startup, and a
+    fork proof's departure half convinces a third party across a membership change [V unit test
+    `departures_follow_the_source_epochs`; regress 89/89]. The long-range residual above holds here too:
+    a carrier that omits the later certificates lets an old majority that colludes sign for a frame of
+    the later epoch [I].
 
 ### 22.8 What crosses: avatars, components, code
 
@@ -4969,8 +4975,8 @@ Rules for every package:
   @design-reviewer.
 * **Status:** built in the spike on `viewchange`; review round 1 by @design-reviewer at b01ebdf (changes
   requested: VC-1 to VC-10, HO-1, HO-2), fixed in round 2 together with the D80 admin layer, each repro
-  showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 go to
-  @provenance-eng's follow-up, stated in 10.8's limits and 22.7. Review round 2 at 758ff5e (changes
+  showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 are
+  fixed in P2-5's follow-up (`p2/provenance-epochs`), stated in 10.8 and 22.7. Review round 2 at 758ff5e (changes
   requested: VCR-1 to VCR-12, and HO-1's carried state) is fixed in round 3, again with a repro per
   finding that fails with its fix switched off; VCR-10 waits for the user (V1-V3). Review round 3 at
   a9286fc (changes requested: VC3R-1 to VC3R-8) is fixed in round 4, with @design-reviewer's two repros
