@@ -1,13 +1,5 @@
 description = """
-World ownership (design 12.5, rule A): a world's ownership chain carried in its session log. Key 10 \
-creates the world and is its sole owner. Refused: a stranger's forged transfer, a co-owner adding a \
-sock puppet alone, a recovery key signing for its owner, an instant removal (rule A removes only \
-through the objection window), a removal after the target cancelled its window by signing, and the \
-last owner leaving. The sole owner then sells twice in one frame (two members publish the two \
-certificates concurrently): canonical order applies both, the world is disputed with both buyers \
-as co-owners and a fork proof a third party can verify, and a merge by one buyer ends the dispute. \
-A recovery key starts replacing its owner's key; finishing before the 7-day delay is refused. Every \
-replica holds the same owners at every frame as an offline replay of the final log."""
+World ownership (design 12.5, rule A): a world's ownership chain carried in its session log. Key 10 creates the world and is its sole owner. Refused: a stranger's forged transfer, a co-owner adding a sock puppet alone, a recovery key signing for its owner, an instant removal (rule A removes only through the objection window), a removal after the target cancelled its window by signing, and the last owner leaving. The sole owner then tries to sell twice in one frame: the session commits the first sale, and refuses the second as stale (built on an older head), so within a session there is no double sale. A merge with nothing to merge is refused. A recovery key starts replacing its owner's key; finishing before the 7-day delay is refused. The session attests every certificate it commits at its frame. Every replica holds the same owners at every frame as an offline replay."""
 
 end_ms = 7000
 

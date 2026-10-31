@@ -1,7 +1,7 @@
-RESULT ownership world 1: offline replay owners {10, 40, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} | ALL EQUAL
-  m1: owners {10, 40, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest e1b947e0def1a1f8
-  m2: owners {10, 40, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest e1b947e0def1a1f8
-  m3: owners {10, 40, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest e1b947e0def1a1f8
+RESULT ownership world 1: offline replay owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} | ALL EQUAL
+  m1: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9b8bca37a63f1cf4
+  m2: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9b8bca37a63f1cf4
+  m3: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9b8bca37a63f1cf4
   cert m1s31@60: seq 1 Add { key: 20 } by {10} -> applied
   cert m2s46@90: seq 2 Add { key: 66 } by {66} -> refused Some(RejectedOwnership(Signers))
   cert m3s60@120: seq 2 Add { key: 66 } by {20} -> refused Some(RejectedOwnership(Signers))
@@ -15,14 +15,13 @@ RESULT ownership world 1: offline replay owners {10, 40, 41} rule All heads 1 re
   cert m3s132@260: seq 6 Leave { key: 20 } by {20} -> applied
   cert m2s143@280: seq 7 Leave { key: 30 } by {30} -> applied
   cert m1s149@290: seq 8 Leave { key: 10 } by {10} -> refused Some(RejectedOwnership(LastOwner))
-  cert m1s155@300: seq 8 Add { key: 40 } by {10} -> applied
+  cert m1s155@300: seq 8 Add { key: 40 } by {10} -> refused Some(RejectedOwnership(Stale))
   cert m2s154@300: seq 8 Add { key: 41 } by {10} -> applied
-  cert m3s167@330: seq 9 Merge by {40} -> applied
-  cert m2s174@340: seq 10 StartRecover { owner: 10, new_key: 60 } by {50} -> applied
-  cert m3s178@350: seq 11 FinishRecover { owner: 10 } by {50} -> refused Some(RejectedOwnership(WindowOpen))
-  cert m1s185@360: seq 11 Add { key: 66 } by {10} -> refused Some(RejectedOwnership(Signers))
-  fork: Add { key: 41 } vs Add { key: 40 }, signed both by {10} (equivocation); a third party holding 8 certificate(s) verifies it: true
+  cert m3s167@330: seq 9 Merge by {40} -> refused Some(RejectedOwnership(BadLink))
+  cert m2s174@340: seq 9 StartRecover { owner: 10, new_key: 60 } by {50} -> applied
+  cert m3s178@350: seq 10 FinishRecover { owner: 10 } by {50} -> refused Some(RejectedOwnership(WindowOpen))
+  cert m1s185@360: seq 10 Add { key: 66 } by {10} -> refused Some(RejectedOwnership(Signers))
   after frame 249: owners {10, 20, 30} rule All heads 1 recovery {10: [50], 30: [52]}
-  after frame 319: owners {10, 40, 41} rule All heads 2 DISPUTED recovery {10: [50]}
-  after frame 344: owners {10, 40, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60}
-RESULT ownership world 1: frames 0..380 digests m1=12110ee45b4a7ea7 m2=12110ee45b4a7ea7 m3=12110ee45b4a7ea7 | offline replay 12110ee45b4a7ea7 | ALL EQUAL
+  after frame 319: owners {10, 41} rule All heads 1 recovery {10: [50]}
+  after frame 344: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60}
+RESULT ownership world 1: frames 0..380 digests m1=7dc5af09471d5911 m2=7dc5af09471d5911 m3=7dc5af09471d5911 | offline replay 7dc5af09471d5911 | ALL EQUAL
