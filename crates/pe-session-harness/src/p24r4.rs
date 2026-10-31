@@ -704,7 +704,7 @@ pub fn adminfork() {
                 let r9 = sim_mut(sim, 9);
                 let epoch = r9.vcm.epoch;
                 let a = r9.author(Payload::SetRole { epoch, member: 3, role: GUEST }, None);
-                let b = Entry { payload: Payload::Attest { fact: 1, sig: [0; 64] }, ..a.entry.clone() };
+                let b = Entry { payload: Payload::Attest { fact: Fact([1; 32]), sig: [0; 64] }, ..a.entry.clone() };
                 a_id.set(a.id());
                 r9.byz_change = Some(Change { epoch, admin: vec![(a.id(), true)], ..Default::default() });
                 let p = r9.author(Payload::Prevote { epoch, round: 0, value: 0 }, None);
@@ -984,7 +984,7 @@ pub fn adminwedge() {
                 let r9 = sim_mut(sim, 9);
                 let epoch = r9.vcm.epoch;
                 let a = r9.author(Payload::SetRole { epoch, member: 9, role: ADMIN }, None);
-                let b = Entry { payload: Payload::Attest { fact: 1, sig: [0; 64] }, ..a.entry.clone() };
+                let b = Entry { payload: Payload::Attest { fact: Fact([1; 32]), sig: [0; 64] }, ..a.entry.clone() };
                 fork_id.set(b.id());
                 fork = Some(b);
                 send_all(sim, 9, &[1, 2, 3, 4], &a);

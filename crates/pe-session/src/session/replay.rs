@@ -17,6 +17,8 @@ pub fn replay_sim(world_id: u32, scene: SceneKind, cfg: SimConfig, keys: &Public
 }
 
 /// As [`replay_sim`], for a world that trades objects with others (R14 certificates).
+/// Its epoch book is empty, so a world whose log holds R14 arrivals needs [`replay_sim_like`]
+/// instead (review P23-12), or its arrivals' provenance fails here and not live.
 pub fn replay_sim_with(
     world_id: u32,
     scene: SceneKind,
@@ -187,6 +189,6 @@ mod round3_tests {
         let c = Change { epoch: 3, add: vec![5], add_roles: vec![1], add_attests: vec![vec![attest(Rel::Friend, 5, 1, 1)]], boundary: 9, ..Default::default() };
         let mut w = Wr(Vec::new());
         w.change(&c);
-        assert_eq!(Rd(&w.0, 0).change(), Some(c));
+        assert_eq!(Rd::new(&w.0).change(), Some(c));
     }
 }

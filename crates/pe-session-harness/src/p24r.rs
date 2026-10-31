@@ -207,7 +207,7 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
                         b.prev = b_id[&(b.seq - 1)];
                     }
                     if matches!(b.payload, Payload::Touch { .. }) {
-                        b.payload = Payload::Attest { fact: 0, sig: [0; 64] };
+                        b.payload = Payload::Attest { fact: Fact::ZERO, sig: [0; 64] };
                         b.carried = None;
                     }
                     if matches!(b.payload, Payload::Ack { .. }) {

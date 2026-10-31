@@ -1,9 +1,10 @@
 //! P2-3 scenarios on pe-session's own additions.
 //!
-//! * `statejoin` (design 9.5, reviews P22R-1 and P22S-1): a joiner catches up by state transfer. Member
-//!   2 answers first with a tampered state, which the joiner refuses; member 1's state, vouched for by
-//!   a quorum's signed acks, is restored, and from its frame on the joiner's history equals the
-//!   members'.
+//! * `statejoin` (design 9.5, reviews P22R-1, P22S-1 and P23-3): a joiner catches up by state transfer.
+//!   It asks members 2 and 1 (`request_state`). Member 2 answers first with a tampered state, which the
+//!   joiner refuses (Hash); member 2's honest answer then arrives unrequested (its request was used)
+//!   and is refused too (Unrequested); member 1's state, vouched for by a quorum's signed acks, is
+//!   restored, and from its frame on the joiner's history equals the members'.
 
 use std::collections::BTreeMap;
 
@@ -52,7 +53,9 @@ pub fn statejoin() {
             let at = bad.physics.len() / 3;
             bad.physics[at] ^= 0x01;
             sim.net.send(1, 2, joiner, &Msg::State(Box::new(bad)));
-            sim.net.send(1, joiner, 1, &Msg::FetchState);
+            let r = sim.replica_mut(joiner, 1);
+            r.core.request_state(2);
+            r.core.request_state(1);
             step = 2;
         } else if step == 2 && sim.replica(joiner, 1).sim.stats.imports > 0 {
             let st = sim.replica(1, 1).sim.export_state().expect("a confirmed check frame");

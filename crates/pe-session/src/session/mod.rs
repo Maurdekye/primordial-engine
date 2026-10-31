@@ -37,7 +37,7 @@ use pe_core::Frame;
 use pe_sim::{SimStore, Snapshot};
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES};
-pub use crate::sign::{sig_words, test_fact_sig, test_join_sig, test_sign, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
+pub use crate::sign::{hash64, sig_words, test_fact_sig, test_join_sig, test_sign, Fact, FactKind, FactWriter, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
@@ -242,7 +242,8 @@ pub struct SimConfig {
     pub seed: u64,
     pub check_every: u64,
     /// Remote-hand dead reckoning: an active hand with no entry for a frame keeps its last
-    /// commanded velocity for up to this many frames, then holds. 0 = hold at once.
+    /// commanded velocity for up to this many frames, then holds. 0 = hold at once. The default is
+    /// D52's 6 frames (design 6.10, a world rule); a run that tests the hold opts out.
     pub hand_predict: u64,
     /// A member none of whose entries has arrived for this many frames is presumed crashed and
     /// voted out (review R3-2). 1.5x the speculation limit, so a congested member is not.
@@ -283,7 +284,7 @@ impl Default for SimConfig {
             horizon_slack: 2,
             seed: 0x5052_494D_4F52_4449,
             check_every: 30,
-            hand_predict: 0,
+            hand_predict: 6,
             suspect_after: 180,
             quorum: QuorumRule::Bft,
             vc_timeout: 20,
@@ -388,8 +389,9 @@ struct Vc {
     /// Round -> member -> value (0 = nil): each member's first prevote and first precommit.
     prevotes: BTreeMap<u32, BTreeMap<MemberId, u64>>,
     precommits: BTreeMap<u32, BTreeMap<MemberId, u64>>,
-    /// (round, member) -> the signature over that precommit's fact (S3c).
-    precommit_sigs: BTreeMap<(u32, MemberId), Sig>,
+    /// (round, value, member) -> the signature over that precommit's fact (S3c). Keyed by value too
+    /// (review P23-5): a proven forker's precommits for two values each keep their own signature.
+    precommit_sigs: BTreeMap<(u32, u64, MemberId), Sig>,
     /// Rounds whose proposal this replica already saw a quorum prevote.
     polka_done: BTreeSet<u32>,
     /// Armed timeouts: round -> clock frame armed.
@@ -447,10 +449,10 @@ pub struct WorldSim {
     /// Cross-world effects of each simulated frame, kept outside the rollback state: a re-simulation
     /// of the frame replaces them, and they are acted on only once the frame is confirmed (P25-3,
     /// P25-4): (commit facts to attest, fork proofs found).
-    frame_effects: BTreeMap<u64, (Vec<u64>, Vec<ForkProof>)>,
+    frame_effects: BTreeMap<u64, (Vec<Fact>, Vec<ForkProof>)>,
     /// Confirmed commit facts not yet attested (P25-4: each attested once).
-    commits_due: Vec<u64>,
-    attested: BTreeSet<u64>,
+    commits_due: Vec<Fact>,
+    attested: BTreeSet<Fact>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
@@ -684,7 +686,19 @@ pub fn now_us() -> u64 {
 }
 
 impl WorldSim {
-    pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig, keys: KeyRing) -> Self {
+    /// Whether frame `f`'s outcomes are final here (review P23-7): confirmed, simulated, and no
+    /// re-simulation pending from `f` or earlier.
+    pub fn settled(&self, f: u64) -> bool {
+        f < self.conf && f < self.frame && self.dirty_from.is_none_or(|d| d > f)
+    }
+
+    pub fn new(world_id: u32, me: MemberId, members: &[MemberId], scene: SceneKind, cfg: SimConfig, mut keys: KeyRing) -> Self {
+        assert!(!members.contains(&LOGIC), "member id 0 is reserved for world logic (review P23-10)");
+        // This world's facts are signed in its own session (review P23-2). A ring without one (an
+        // offline replay's) keeps what its directory says.
+        if keys.session != [0; 32] {
+            keys.public.add_world(world_id, keys.session);
+        }
         let (world, objs) = build_scene(scene, world_id);
         let genesis_objects = objs.len() as u64;
         let hand_owners = match scene {
