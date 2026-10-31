@@ -8,6 +8,8 @@ mod joints;
 mod pod_bodies;
 mod pod_contacts;
 mod pods;
+#[cfg(test)]
+mod record_tests;
 
 use crate::compound::{
     COMPOUND_CAPSULE_SIZE, COMPOUND_DATA_SIZE, COMPOUND_SPHERE_SIZE, COMPOUND_VERSION,
@@ -330,10 +332,11 @@ pub fn deserialize_into_shell(
         world.joints.push(des_joint(&mut r));
     }
 
-    let sensor_count = r.i32();
+    // Each sensor takes at least its shape id and three visitor counts.
+    let sensor_count = r.count(16);
     world.sensors.clear();
-    world.sensors.reserve(sensor_count.max(0) as usize);
-    for _ in 0..sensor_count.max(0) {
+    world.sensors.reserve(sensor_count as usize);
+    for _ in 0..sensor_count {
         let shape_id = r.i32();
         let hits = des_visitors(&mut r);
         let overlaps1 = des_visitors(&mut r);
@@ -346,10 +349,11 @@ pub fn deserialize_into_shell(
         });
     }
 
-    let island_count = r.i32();
+    // Each island takes at least four scalars and three array counts.
+    let island_count = r.count(28);
     world.islands.clear();
-    world.islands.reserve(island_count.max(0) as usize);
-    for _ in 0..island_count.max(0) {
+    world.islands.reserve(island_count as usize);
+    for _ in 0..island_count {
         let set_index = r.i32();
         let local_index = r.i32();
         let island_id = r.i32();
@@ -381,7 +385,39 @@ pub fn deserialize_into_shell(
 
     des_names(&mut r, &mut world.names);
 
-    r.ok
+    // Primordial Engine fork: the image must be consumed exactly, so no bytes ride along that
+    // the state does not hold (a joiner's image is confirmed by hashing all of its bytes).
+    r.ok && r.cursor() == data.len()
+}
+
+/// Primordial Engine fork: a world's settings (gravity, solver and contact parameters, flags,
+/// contact recycling) as image bytes, without the step state. Two worlds with equal settings
+/// bytes simulate alike.
+pub fn world_settings(world: &World) -> Vec<u8> {
+    let mut buf = RecBuffer::new();
+    ser_world_settings(&mut buf, world);
+    buf.data
+}
+
+/// Primordial Engine fork: the settings bytes of a snapshot image (as [`world_settings`] of the
+/// world it was saved from), read without restoring it. `None` if the image is too short.
+/// A peer restoring an image from elsewhere compares these with its own world's settings
+/// before anything is overwritten.
+pub fn image_world_settings(data: &[u8]) -> Option<Vec<u8>> {
+    // Header (magic, version, layout hash, flags), then ser_world_config: the settings head,
+    // the step state, the capacity, then the settings tail (flags byte, recycling parameters
+    // if flag 0x20 is set).
+    const HEADER: usize = 16;
+    const HEAD: usize = 12 + 9 * 4;
+    const STEP_STATE: usize = 8 + 5 * 4;
+    const CAPACITY: usize = 5 * 4;
+    const SCALING: usize = 3 * 4 + 1;
+    let tail = HEADER + HEAD + STEP_STATE + CAPACITY;
+    let flags = *data.get(tail)?;
+    let tail_len = 1 + if flags & 0x20 != 0 { SCALING } else { 0 };
+    let mut out = data.get(HEADER..HEADER + HEAD)?.to_vec();
+    out.extend_from_slice(data.get(tail..tail + tail_len)?);
+    Some(out)
 }
 
 /// Convenience: serialize then deserialize into a fresh shell world.

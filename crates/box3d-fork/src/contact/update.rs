@@ -502,7 +502,7 @@ fn update_compound_contact(
     } else {
         None
     };
-    let child_shape_a = child_shape_a.as_ref().unwrap_or(&shape_a);
+    let child_shape_a = child_shape_a.as_ref().unwrap_or(shape_a);
 
     let touching = match child.geometry {
         ChildGeometry::Capsule(c) => {
@@ -513,8 +513,8 @@ fn update_compound_contact(
                     env,
                     task,
                     contact,
-                    &shape_b,
-                    &geom_b,
+                    shape_b,
+                    geom_b,
                     xf_b,
                     child_shape_a,
                     &child_geom,
@@ -529,8 +529,8 @@ fn update_compound_contact(
                     child_shape_a,
                     &child_geom,
                     xf_a,
-                    &shape_b,
-                    &geom_b,
+                    shape_b,
+                    geom_b,
                     xf_b,
                     false,
                 )
@@ -546,8 +546,8 @@ fn update_compound_contact(
                 child_shape_a,
                 &child_geom,
                 xf_child,
-                &shape_b,
-                &geom_b,
+                shape_b,
+                geom_b,
                 xf_b,
                 false,
             )
@@ -560,8 +560,8 @@ fn update_compound_contact(
                     env,
                     task,
                     contact,
-                    &shape_b,
-                    &geom_b,
+                    shape_b,
+                    geom_b,
                     xf_b,
                     child_shape_a,
                     &child_geom,
@@ -576,8 +576,8 @@ fn update_compound_contact(
                     child_shape_a,
                     &child_geom,
                     xf_a,
-                    &shape_b,
-                    &geom_b,
+                    shape_b,
+                    geom_b,
                     xf_b,
                     false,
                 )
@@ -597,11 +597,11 @@ fn update_compound_contact(
                 &child_shape,
                 Some(material_indices),
                 xf_child,
-                &shape_b,
+                shape_b,
                 xf_b,
                 is_fast,
             );
-            apply_mesh_hit_flags(contact, &shape_a, &shape_b);
+            apply_mesh_hit_flags(contact, shape_a, shape_b);
             debug_assert!(
                 (touching && !contact.manifolds.is_empty())
                     || (!touching && contact.manifolds.is_empty())
