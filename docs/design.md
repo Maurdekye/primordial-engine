@@ -2931,10 +2931,9 @@ yours when they prompt it."
 * **Confirmations stay the owner's** (Q22, ruled as recommended at 22:54Z, "for now"): commits, unlocks,
   connections and kicks requested in a confidant's turn wait in the owner's approval layer. A confidant
   never confirms them.
-* A confidant can prompt only while the owner is online with the panel open, from inside the panel's
-  world (below).
-* **Only while the owner's harness runs** [I]: it runs only on the owner's machine (21.4), so this follows
-  from where the harness runs, not from a rule of its own.
+* **Only while the owner's harness runs** [I]: a confidant can prompt only while the owner is online
+  with the panel open, from inside the panel's world, because the harness runs only on the owner's
+  machine (21.4). This follows from where the harness runs, not from a rule of its own.
 * **Profile for confidants (D89)** [proposal, Gnosarium UX 8.5a]: an owner setting, "Confidants use my
   panels in Restricted mode", ticked by default, so a confidant's turns on a Full-profile panel get no
   shell or web. This narrows the ruling's "full access … as though they were you", so it is a decision for
@@ -2944,8 +2943,8 @@ yours when they prompt it."
 * A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
   over the session transport's control channel, not the sim, signed by the guest's session key.
 * The owner's peer verifies the signature and checks the sender's key against the access level or the
-  owner's confidant attestations, then queues the message as a turn of the panel's session. Turns from several people are taken in arrival
-  order; the panel shows whose turn is running.
+  owner's confidant attestations, then queues the message as a turn of the panel's session. Turns from
+  several people are taken in arrival order; the panel shows whose turn is running.
 * **Sender attribution that cannot be spoofed:**
   * the adapter delivers every turn, the owner's included, as a structured user message
     (Claude Code `--input-format stream-json`, ACP prompt content, Codex app-server input) whose first
