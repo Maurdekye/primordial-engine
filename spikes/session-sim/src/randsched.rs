@@ -119,7 +119,7 @@ struct Outcome {
     note: String,
 }
 
-fn run_seed(seed: u64, fixes_off: u32, verbose: bool) -> Outcome {
+fn run_seed(seed: u64, fixes_off: u64, verbose: bool) -> Outcome {
     let sch = draw(seed);
     let ids = sch.ids.clone();
     let faulty = sch.faulty.clone();
@@ -441,7 +441,7 @@ fn check(
 pub fn main(args: &[String]) {
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
     let verbose = args.iter().any(|a| a == "--verbose");
-    let fixes_off = get("--fixes-off").map_or(0, |v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0));
+    let fixes_off = get("--fixes-off").map_or(0, |v| u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0));
     if let Some(s) = get("--seed") {
         let seed: u64 = s.parse().unwrap();
         let o = run_seed(seed, fixes_off, true);

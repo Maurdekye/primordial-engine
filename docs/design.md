@@ -1499,6 +1499,18 @@ is fixed once the author's chain is contiguous up to it.
   * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
     of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
     **decides** it.
+  * **A proven forker's precommit counts by its signature** (review PF-1, found by @ballpit-viz). Chain
+    order governs every other use of an entry. A replica keeps the first version of a seq it receives,
+    and a member that forks a seq may continue its chain from a version some honest members never hold,
+    so they cannot link its later entries. If its precommit was in the quorum the others decided on,
+    those members could never check that quorum and stayed in the old epoch for good. So the
+    precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
+    in any version, and its proposals are kept by value the same way. This is Tendermint's commit rule,
+    which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
+    member, and an honest member precommits one value per round. Honest members' entries always link,
+    so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
+    own version. Every member decides the join, 1 is removed at 4.23 s, and confirmation goes on. Before
+    the fix, 3, 9 and the joiner stayed in epoch 0 and confirmation stopped at frame 53].
   * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
     together leave in one change [V twosilent].
   * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
@@ -1641,10 +1653,15 @@ is fixed once the author's chain is contiguous up to it.
     and they would vote the honest capper out. So before a member votes a capper out for an unexplained
     cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
     either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
-    two versions of one prevote proves the proposer equivocated and removes it. Locks and decisions still
-    count one version per member [V prevotefork: proposer 1 sends its prevote for the join to capper 2
-    and nil to observer 3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps
-    2].
+    two versions of one prevote proves the proposer equivocated and removes it. Locks still count one
+    version per member; decisions count a proven forker's precommits in any version (PF-1, under
+    Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
+    3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
+  * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
+    round trip, so if ids the cap named are still missing a further half window after the cap ripened,
+    they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
+    polka id that exists nowhere; 9 is removed at 4.15 s. With the fix off the id is fetched for good, 9 is
+    never removed and confirmation stops at frame 143].
   * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
     member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
     prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
@@ -1721,6 +1738,14 @@ is fixed once the author's chain is contiguous up to it.
     fell behind (review VC4R-3): references that never deliver no longer spare it without end. The silent
     member is removed regardless, because its own references stop [V fakeref: 9 falls silent at 2 s while
     8 fakes references to 9's chain; 9 is removed at 5.2 s].
+  * **A decision resets only the timers its cleared votes made stale** (review VC6R-4). A decision
+    clears every vote of the epoch. A voter froze its target's chain, so its reference to that chain stood
+    still, and the targets of this replica's own votes looked silent or slow to it: only those timers,
+    and new members', restart. Round 6 cleared every reference and suspicion timer at every decision, so a
+    member that forces decisions, with a no-op admin entry every 2 s, kept its own timers from ever
+    ripening [V fakeadmin: 8 fakes references and authors a no-op SetRole every 2 s; 8 is removed at 5.23 s.
+    With the fix off, six decisions reset its timers, 8 is never removed and confirmation stops at frame
+    110].
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
   signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
@@ -1807,16 +1832,20 @@ is fixed once the author's chain is contiguous up to it.
   * A validator accepts a listed admin entry only once it has validated its author's chain up to it, and
     refuses one that validation voided, so a faulty proposer cannot commit a backdated entry either
     (review VC3R-3) [V adminvoid: 9 signs a horizon-void SetRole demoting 3 and proposes a change that
-    lists it; refused, and 3 stays Admin. Before the fix it applied]. The listed entry must also be this
-    member's canonical version at its seq and not disputed, so a forked admin version held only as a
-    duplicate, which a proposer never lists, cannot be committed at one replica and not another (review
-    VC3R-3's low). A forked admin entry does not wedge a lock (review VC5R-1): a change is prevoted or
-    locked only once `change_valid` returns true, which needs the listed entry held, validated and
-    canonical here; and a member proposes only entries that are stable, so an honest round's proposal
-    cannot later turn invalid at an honest member. A fork of the entry that arrives afterwards proves the
-    author equivocated and excludes it, which only shrinks the quorum; it does not unmake a decision a
-    quorum already reached. @design-reviewer could not reproduce a wedge (`adminfork` removes the faulty
-    admin either way); this is the argument, not a run [I].
+    lists it; refused, and 3 stays Admin. Before the fix it applied].
+  * **An admin entry's validity is a pure function of the entry and its ancestry** (review VC6R-3):
+    held, its author's chain validated up to it, and not voided, the same at every replica once it holds
+    the entry. Listing a canonical, undisputed version is only the proposer's choice. Every replica
+    applies the version the change lists, with the outcome the change carries, so a fork cannot be
+    committed at one replica and not another. Round 5 also required the listed version to be canonical
+    and undisputed at the validator (VC3R-3's low), arguing that a member proposes only stable entries,
+    so no lock could turn invalid (VC5R-1). That premise was false: a proposer lists what it has
+    validated, not what is stable. A fork that arrived after members had locked made their value invalid
+    at them, and nothing releases a lock [V adminwedge: faulty admin 9 sends a SetRole to three members
+    while a fourth is cut off, drops its precommits once they lock, crashes, and its fork of the same seq
+    arrives later; 9 is removed at 4.03 s. With the fix off, the locked members find their value's entry
+    disputed, 9 is never removed and confirmation stops at frame 112]. A fork of a listed entry still
+    proves its author equivocated and excludes it, which only shrinks the quorum.
   * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
     admin is a permission of its own, held by default only by admins (V1); the roles permission counts
     as Admin, since it can grant Admin (V2 = (b)); and when the last admin times out the session closes,
@@ -4843,7 +4872,7 @@ What moved, and why:
    remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), the 60 Hz fallback (D76) and
    opt-in input delay (D41).
 2. **Determinism beyond the machines tested.** With the engine's physics (vdW on), main (d79f160) is
-   byte-identical on this PC in five build settings, on <laptop> (Intel, also with `target-cpu=native`) and
+   byte-identical on this PC in five build settings, on a second Windows machine (an Intel laptop, also with `target-cpu=native`) and
    as a Linux musl build, the four wasm modules included [V @design-reviewer's re-check; report
    `determinism-main-d79f160.md` in its working folder]. ARM and macOS never ran. Parallel stepping (D2) must
    stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
@@ -4885,7 +4914,7 @@ What moved, and why:
 
 Phase 2 split into packages that can be staffed in parallel, one agent each. @engine-architect keeps the
 protocol core (P2-3, P2-4) and design ownership, and integrates. Already running and not listed: the
-parallel Box3D feasibility study (D2, @vdw-physics) and the <laptop> and Linux determinism re-check on main
+parallel Box3D feasibility study (D2, @vdw-physics) and the Intel-laptop and Linux determinism re-check on main
 (@design-reviewer).
 
 Rules for every package:
@@ -4960,18 +4989,30 @@ Rules for every package:
   behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
   windows), and the RG-1 control fails L1. **Landed on main at 5ba3eab (31 October)**, with the P2-9
   tool brought onto the landed API at f05324f.
-  **Three one-faulty-member liveness halts are known open, to be fixed as round 7 on main** (they do not
-  touch safety — every replica still agrees — only liveness):
-  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, proposes a change listing the honest
-    version, and crashes; honest members lock on it and the fork that arrives later disputes the version
-    they hold, so the lock never clears. The round-5 argument (a proposer lists only stable entries) was
-    wrong: `admin_pending` fills at validation. Fix: admin validity a pure function of the change's
-    bytes, or listed admin entries must be stable at the validator.
-  * **VC6R-1** (`capfake`): a capped precommit whose polka lists an id that exists nowhere is retried
-    forever and never votes the capper out. Fix: after one fetch budget, vote it out.
-  * **VC6R-4** (`fakeadmin`): a member authoring a no-op admin entry every epoch, plus a pure fake
-    reference, has its reference timers cleared by every decision (VC5R-4 clears them all). Fix: clear
-    only the pairs whose vote a decision answered.
+  **Round 7 on main fixed the three one-faulty-member liveness halts that round 6's review found, and a
+  fourth that @ballpit-viz found while mirroring `prevotefork`** (none touched safety: every replica
+  still agreed). Each repro fails with its fix switched off and passes with it, and each now checks that
+  confirmation is still live at the end of the run. Round 6's `prevotefork` checked only the vote it
+  targeted, and passed while the session had halted:
+  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, honest members lock on a change listing one
+    version, and the fork arriving later disputed it, so the lock never cleared. Admin validity is now a
+    pure function of the entry and its ancestry (`fix::VC6R3`) [V: 9 removed at 4.03 s; off: never,
+    confirmation stops at frame 112].
+  * **VC6R-1** (`capfake`): a capped precommit whose polka names an id that exists nowhere was fetched
+    forever. The fetch now has a budget of a further half window, after which the capper is voted out
+    (`fix::VC6R1`) [V: 9 removed at 4.15 s; off: never, frame 143].
+  * **VC6R-4** (`fakeadmin`): a member forcing a decision every 2 s with a no-op admin entry kept its own
+    reference timers from ripening, because every decision cleared them all. A decision now resets only
+    the timers its cleared votes made stale (`fix::VC6R4`) [V: 8 removed at 5.23 s; off: never, frame
+    110].
+  * **PF-1** (`prevotefork`): a member that forks one seq continued its chain from a version that some
+    honest members never held. They could not link its later entries, so they could not count its
+    precommit in the quorum the others decided on, and they stayed in the old epoch. A proven forker's
+    precommits now count toward a decision wherever they sit in its chain (`fix::PF1`) [V: every member
+    decides, the forker is removed at 4.23 s; off: 3, 9 and the joiner stay in epoch 0, and confirmation
+    stops at frame 53]. The fixture had also lost 9's prevote for good, repairs included. That made 9 a
+    second faulty member of four, beyond t = 1, so the loss now ends at 2.5 s. `fixes_off` is now 64 bits
+    wide.
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
@@ -4991,7 +5032,7 @@ Rules for every package:
   x86-64 CPUs. ARM64 is deferred: no ARM machine is available.
 * Skills: build and CI engineering, cross-compilation, scripting.
 * Depends on: nothing. **Settled (user, 19:58Z): CI runs on local machines only:** this PC's Windows and
-  WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
+  WSL, plus an Intel laptop; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
 * **Status (2026-10-31)** [V]: `scripts/run_matrix.sh`, with columns win, glibc, musl and laptop (docs/p2-6-p2-7-matrix.md). **PASS: 72 outputs equal on 4 machines** (spikes/out/matrix/matrix.txt). A difference names its first differing output and line.

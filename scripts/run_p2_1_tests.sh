@@ -5,16 +5,15 @@
 #   scripts/run_p2_1_tests.sh --linux-only   Linux only (keeps the recorded Windows logs)
 #   scripts/run_p2_1_tests.sh --wasm         also checks that both crates build for wasm32
 #   scripts/run_p2_1_tests.sh --all          Windows, Linux and wasm32
-# Machine-load rule: every cargo job goes through the org-wide lock (heavy.sh: one at a time, idle
-# priority, 2 jobs). Never runs `wsl --shutdown`.
+# Machine load: set PE_HEAVY to a wrapper script (for example a lock that runs one job at a time at idle
+# priority) and every cargo job runs through it as `bash $PE_HEAVY <command>`. Never runs `wsl --shutdown`.
 # Each log starts with the commit, the working-tree state and the compiler. The golden digests (RESULT
 # lines) must be identical in every test log; the end of this script checks that and fails otherwise.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=spikes/out/p2-1
 mkdir -p "$out"
-heavy="/c/Users/<user>/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh"
-low() { bash "$heavy" "$@"; }
+low() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }
 header() {
   echo "commit $(git rev-parse HEAD)"
   echo "working tree changes: $(git status --porcelain -- crates scripts | wc -l)"
