@@ -1555,11 +1555,16 @@ is fixed once the author's chain is contiguous up to it.
     Before the fix 3's precommit was void and nothing was decided].
   * Once some member's acks are capped at or below B, others may precommit late, without a cap: every
     reader then confirms nothing from B on before the decision, whoever holds the cap (review VC-3).
-  * A cap is justified by the quorum of prevotes it followed, counted in **any version this reader
-    holds** (review VC4R-1): a faulty proposer that sends a member one version of its prevote and others
-    another must not, through the single-version count, make an honest member that capped on the polka
-    look unjustified and get it voted out. Locks and decisions still count one version per member; only
-    the cap's justification counts every version.
+  * A cap is justified by the quorum of prevotes it followed, and a **capped precommit carries the ids
+    of those prevotes** (review VC4R-1). A faulty proposer that sends its prevote for the value to the
+    capper and a nil version to the others would otherwise make the capper's polka invisible to them,
+    and they would vote the honest capper out. So before a member votes a capper out for an unexplained
+    cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
+    either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
+    two versions of one prevote proves the proposer equivocated and removes it. Locks and decisions still
+    count one version per member [V prevotefork: proposer 1 sends its prevote for the join to capper 2
+    and nil to observer 3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps
+    2].
   * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
     member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
     prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
@@ -1618,15 +1623,19 @@ is fixed once the author's chain is contiguous up to it.
   way. A member that only acks slowly still advances, and is not. A member that has voted against a
   chain's author no longer references it, so that pair is skipped, and a new member's references count
   from its admission (review VC-9).
-  * **A reference counts only once the entry it names is held** (reviews VC4R-3, and the randomized
-    generator's RG-1): both toward a chain's stability and against a member as a withholder, a reference
-    to seq *s* of chain *y* counts only if this replica holds *y* up to *s* in the version the reference
-    names. A faulty member that references entries nobody has — a fake head, even one only a little above
-    the real chain so it hides in normal lag — advances its raw reference but never its counted one, so
-    it stalls no chain and is caught as a withholder like one that stops referencing [V slowref: a member
-    that grows slower while another fakes references to its chain is removed at 7.4 s, not spared for
-    good; the generator's seed 1: a member faking a reference to a healthy member's chain is voted out
-    and confirmation goes on. Before the fix both stalled confirmation for good].
+  * **A reference counts only once the entry it names is held** (reviews VC4R-3, VC5R-2, and the
+    randomized generator's RG-1): both toward a chain's stability and against a member as a withholder, a
+    reference to seq *s* of chain *y* counts only if this replica holds *y* up to *s* in the version the
+    reference names. For stability, the member's contribution is the newest of its references that
+    resolves this way, not zero when its newest names a version I lack: so a faulty member alternating a
+    fake head with a stale real one cannot cap the chain either, and the unresolved references are still
+    fetched for the proof. A faulty member that references entries nobody has — a fake head, even one
+    only a little above the real chain so it hides in normal lag — advances its raw reference but never
+    its counted one, so it stalls no chain and is caught as a withholder like one that stops referencing
+    [V slowref: a member that grows slower while another fakes references to its chain is removed at
+    7.4 s; fakemix: a member alternating a fake head with a refreshed stale one raises the confirmation
+    lag but halts nothing; the generator's seed 1: a member faking a reference to a healthy member's
+    chain is voted out. Before the fix each stalled confirmation for good].
   * While another member references more of a silent or slow member's chain than this replica holds, it
     fetches the difference before suspecting, but only for a silence limit from when that member first
     fell behind (review VC4R-3): references that never deliver no longer spare it without end. The silent
@@ -1716,7 +1725,13 @@ is fixed once the author's chain is contiguous up to it.
     lists it; refused, and 3 stays Admin. Before the fix it applied]. The listed entry must also be this
     member's canonical version at its seq and not disputed, so a forked admin version held only as a
     duplicate, which a proposer never lists, cannot be committed at one replica and not another (review
-    VC3R-3's low).
+    VC3R-3's low). A forked admin entry does not wedge a lock (review VC5R-1): a change is prevoted or
+    locked only once `change_valid` returns true, which needs the listed entry held, validated and
+    canonical here; and a member proposes only entries that are stable, so an honest round's proposal
+    cannot later turn invalid at an honest member. A fork of the entry that arrives afterwards proves the
+    author equivocated and excludes it, which only shrinks the quorum; it does not unmake a decision a
+    quorum already reached. @design-reviewer could not reproduce a wedge (`adminfork` removes the faulty
+    admin either way); this is the argument, not a run [I].
   * **Open with the user** (review VCR-10, the user's questions V1-V3 through @coordinator-opus): a role
     holding only the kick permission can kick the last admin, which closes the session; the roles
     permission can grant Admin, so it equals Admin; and removing an honest but slow sole admin closes the
@@ -1799,10 +1814,12 @@ is fixed once the author's chain is contiguous up to it.
   and confirmed frames move by a frame or two, because members now ack on entering an epoch [V 5k].
   Round 4 changes none either, beyond the rows above: `kickpartition` decides 2 frames sooner, and
   `bridge` under (b) ends with two resets after the heal instead of one, still one session [V 5k].
-  Round 5 changes no outcome elsewhere, but it moves more logs than the earlier rounds: the extra
-  reference fetches shift view-change timing by a frame, so some scenarios' cuts land one entry later
-  and their confirmed digests move with them (`evict`, `deepfork`), though every member still equals the
-  replay with no false check. Members removed, roles and closures are unchanged [V 5k].
+  Rounds 5 and 6 change no removal outcome by design, but they move more logs than the earlier rounds:
+  the extra reference fetches and the larger capped-precommit shift view-change timing by a frame, so
+  some scenarios' cuts land one entry later and their confirmed digests move with them (`evict`,
+  `deepfork`), and `fakeref` and `strikeframe` now also remove the faulty member whose fake references
+  or hostile timing the new rules catch. Every member still equals the replay with no false check, and
+  roles and closures are unchanged [V 5k].
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -4241,7 +4258,9 @@ Rules for every package:
   and seven more; V4 is a question for the user. Review round 4 at 452e1f7 (changes requested: VC4R-1 to
   VC4R-6, two halting the session) is fixed in round 5, with the reviewer's `joinwedge` and `slowref`
   repros and a randomized Byzantine schedule generator (`randsched`) that checks the written invariants
-  (`spikes/out/session-sim/INVARIANTS.md`) on every run; it found one further hole (RG-1), now fixed. The
+  (`spikes/out/session-sim/INVARIANTS.md`) on every run; it found one further hole (RG-1), now fixed.
+  Review round 5 (changes requested: VC4R-1's stronger fix, VC5R-2, an L1 lag bound) is answered in
+  round 6, with the reviewer's `prevotefork` and `fakemix` repros; VC5R-1 is argued, not reproduced. The
   port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**

@@ -645,8 +645,10 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     | `joinwedge` (VC4R-2, the reviewer's) | a join seen by only part of the session, plus a crash, wedges it; stuck at frame 114 | 5 admitted at 2.6 s, 9 removed at 5.6 s |
     | `slowref` (VC4R-3, the reviewer's) | fake references shield a slow member; stuck at frame 108 | the slow member removed at 7.4 s |
 
-  * VC4R-1: a cap is justified by its polka counted in any prevote version a reader holds, so an
-    equivocated prevote cannot get an honest capper voted out. VC4R-4: fetches by id retry with backoff.
+  * VC4R-1 [V prevotefork]: a capped precommit carries its polka's prevote ids; a member fetches them
+    and counts any version (completing the polka, or proving the proposer equivocated) before voting the
+    capper out, so an equivocated prevote cannot get an honest capper voted out. VC4R-4: fetches by id
+    retry with backoff.
     VC4R-5: a vote whose frozen head nobody delivers blocks no reset and removes its voter. VC4R-6: a join
     signature names the session and an expiry. VC3R-3's low: a listed admin entry must be the canonical,
     undisputed version.
@@ -666,6 +668,22 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     to a particular prevote), VCR-12 or VC-5 within that budget, and the generator does not yet craft
     equivocated view-change votes (VC4R-1). So it complements the hand repros rather than replacing them
     yet; strengthening its join and equivocation draws is the next step.
+* **Round 6** (@design-reviewer's review of round 5 asked for changes: the real VC4R-1 fix, VC5R-2, and
+  an L1 lag bound). All in:
+
+    | Repro | With the fix off | With the fix |
+    |---|---|---|
+    | `prevotefork` (VC4R-1) | an equivocated prevote gets honest capper 2 voted out by observer 3 | 3 fetches the cited prevote and keeps 2 |
+    | `fakemix` (VC5R-2) | a fake head alternated with a stale real one caps a healthy chain; stuck at 471 of 591 | the chain stabilises on the newest matching reference; confirmation keeps up |
+
+  * VC4R-1's real fix: the capped precommit carries its polka's prevote ids, fetched and counted in any
+    version (or proving the proposer equivocated) before the capper is voted out. VC5R-2: `stable_seq`
+    takes the newest matching reference instead of zero. VC5R-4: the verified-reference timers reset on a
+    decision. VC5R-5: the "members removed unchanged" note is corrected (fakeref and strikeframe now
+    remove the faulty member). VC5R-1 (a forked admin entry wedging a lock) is argued, not reproduced
+    (`adminfork` removes the faulty admin either way); the argument is in design 10.8.
+  * L1 in `randsched` is now a lag bound (three windows), not mere progress; the generator runs as a seed
+    range in `scripts/run_session_sim.sh`. 80 seeds hold every invariant.
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
   (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be

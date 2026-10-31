@@ -56,10 +56,10 @@ RESULT r14 forge: dishonest-majority W (provenance on): A:52 A 1 B 0 pending 0 (
 RESULT r14 forge: world 2 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 14045726809445889095 (transfers 2590699424036251659 and 9527093093506414298); verifies for a third party: true
   m2 world 6: rollbacks 2 max depth 3 resim frames 12 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
   m3 world 6: rollbacks 2 max depth 4 resim frames 10 (0.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
-  m1 world 1: rollbacks 12 max depth 4 resim frames 61 (7.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 16 max depth 4 resim frames 67 (8.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 12 max depth 9 resim frames 52 (5.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 5 max depth 3 resim frames 24 (2.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m1 world 1: rollbacks 12 max depth 4 resim frames 61 (7.1 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
+  m2 world 1: rollbacks 16 max depth 4 resim frames 67 (8.4 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 12 max depth 9 resim frames 52 (4.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 5 max depth 3 resim frames 24 (2.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 forge A world 1: frames 0..500 digests m1=eff45d6148445fd3 m2=eff45d6148445fd3 | offline replay eff45d6148445fd3 | ALL EQUAL
 RESULT r14 forge B world 2: frames 0..400 digests m1=d7f8b7edaf84f897 m3=d7f8b7edaf84f897 | offline replay d7f8b7edaf84f897 | ALL EQUAL
 RESULT r14 forge W world 6: frames 0..480 digests m2=fed92d387b29bf13 m3=fed92d387b29bf13 | offline replay fed92d387b29bf13 | ALL EQUAL
