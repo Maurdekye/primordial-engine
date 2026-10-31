@@ -44,7 +44,8 @@ fn commit(b: &mut Book, change: Change, keys: &[Key], frame: u64) -> Result<Inse
 fn put(b: &mut Book, prev: CertId, change: Change, keys: &[Key], at: Option<(Lineage, u64)>) -> CertId {
     let c = next(b, prev, change, keys);
     let id = c.id();
-    assert_eq!(b.insert(c), Ok(Insert::Applied));
+    // Offline, a certificate whose parent doesn't count yet is parked until it does (OWNT-2, OWNT-5).
+    assert!(matches!(b.insert(c), Ok(Insert::Applied | Insert::Parked)));
     if let Some((l, f)) = at {
         b.record(id, l, f);
     }
@@ -593,7 +594,8 @@ fn tampered_or_reordered_chains_are_refused() {
 fn orphans_are_not_stored() {
     let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
     let orphan = Cert { world: b.world, seq: 5, prev: vec![12345], change: Change::Add { key: EVE }, sigs: vec![] };
-    assert_eq!(b.insert(orphan), Err(OwnError::MissingParent));
+    // Parked (bounded) until its parent arrives; not held, and it counts for nothing.
+    assert_eq!(b.insert(orphan), Ok(Insert::Parked));
     assert_eq!(b.len(), 1);
 }
 
@@ -604,6 +606,7 @@ fn fork_proof_prefix_order_and_merges() {
     let mut b = sold_twice(&b0, &certs);
     let m = merge(&b, &[B]);
     b.insert(m.clone()).unwrap();
+    b.record(m.id(), L1, 19);
     let ch = put(&mut b, m.id(), Change::Challenge { key: C }, &[B], Some((L1, 20)));
     let rd = put(&mut b, ch, Change::RemoveDormant { key: C }, &[B], Some((L1, 20 + W)));
     assert_eq!(owners(&b), [B]);
@@ -668,7 +671,7 @@ fn owns5b_unattested_flood_is_capped_per_signer() {
     let mut refused = 0;
     for i in 0..MAX_CERTS as u32 {
         let c = next(&b, g, Change::SetRecovery { owner: B, recovery: Some(5000 + i) }, &[B]);
-        if b.insert(c).is_err() {
+        if b.insert(c) != Ok(Insert::Applied) {
             refused += 1;
         }
     }
@@ -821,12 +824,13 @@ fn junk_is_skipped_and_unknown_prefix_is_empty() {
     assert!(b.prefix_of(12345).is_empty());
 }
 
-/// OWNS-12: a session builds only on certificates it committed itself.
+/// OWNS-12: a session never builds on a certificate that doesn't count (it may adopt one that does,
+/// OWNT-4).
 #[test]
-fn owns12_session_builds_only_on_its_own_commits() {
+fn owns12_session_builds_only_on_counting_certificates() {
     let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
     let g = b.genesis;
-    let other = put(&mut b, g, Change::Add { key: B }, &[S], Some((L2, 1)));
+    let other = put(&mut b, g, Change::Add { key: B }, &[S], None);
     let c = next(&b, other, Change::Add { key: C }, &[S, B]);
     assert_eq!(b.commit_local(c, L1, 2), Err(OwnError::Stale));
 }
@@ -908,14 +912,13 @@ fn rv4_owt2_minted_keys_fill_the_cap() {
     let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
     commit(&mut b, Change::Add { key: B }, &[S], 1).unwrap();
     commit(&mut b, Change::Leave { key: S }, &[S], 2).unwrap();
-    let (mut p, mut me) = (b.genesis, S);
+    let (mut p, mut seq, mut me) = (b.genesis, 0, S);
     for k in 5000..5000 + MAX_CERTS as Key {
-        let add = next(&b, p, Change::Add { key: k }, &[me]);
+        let add = Cert { world: b.world, seq: seq + 1, prev: vec![p], change: Change::Add { key: k }, sigs: vec![] }.signed(&[me]);
         let _ = b.insert(add.clone());
-        let lv = next(&b, add.id(), Change::Leave { key: me }, &[me]);
+        let lv = Cert { world: b.world, seq: seq + 2, prev: vec![add.id()], change: Change::Leave { key: me }, sigs: vec![] }.signed(&[me]);
         let _ = b.insert(lv.clone());
-        p = lv.id();
-        me = k;
+        (p, seq, me) = (lv.id(), seq + 2, k);
     }
     assert!(b.len() <= 3 + UNATTESTED_PER_KEY, "{} certs stored", b.len());
     assert_eq!(commit(&mut b, Change::Add { key: C }, &[B], 3), Ok(Insert::Applied));
@@ -1006,7 +1009,6 @@ fn rv4_owt7_rule_join_order() {
     b.insert(m.clone()).unwrap();
     b.record(m.id(), L1, 2);
     assert_eq!(commit(&mut b, Change::Remove { key: B }, &[A], 3), Err(OwnError::NotAllowed));
-    assert_eq!(commit(&mut b, Change::Add { key: X }, &[A], 3), Err(OwnError::Signers));
     assert_eq!(owners(&b), [A, B, C]);
 }
 

@@ -1618,8 +1618,14 @@ no blockchain"). The chain travels with the world, in its genesis document, ever
 session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
 single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
 
-The rules below follow three rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
-OWNR-9, OWNS-1 to OWNS-12).
+The rules below follow four rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
+OWNR-9, OWNS-1 to OWNS-12, OWNT-1 to OWNT-10).
+
+**The window and recovery-delay machinery is provisional.** The dormant-owner removal window, the
+recovery key's delayed replacement, and their cancellations exist only for trust-root option (A), bound
+session lineages. Under the recommended option (B), consent-only, they are removed: there is no dormant
+removal, and a recovery key is a backup key. Their remaining findings (OWNT-1, OWNT-3) are deferred
+until the user answers D87.
 
 They are checked against written security invariants and an attacker model, by named tests and by an
 adversarial harness (see "What the spike shows"). The trust root, meaning which sessions' attestations
@@ -1653,14 +1659,28 @@ count, is with the user in D87, and so are the residual risks that hold without 
   * **Counting:** a certificate counts only if it is attested and it applies at its parent's
     *effective* state (below). A certificate signed on an old copy that no session committed changes
     nothing. That is @design-reviewer's mitigation for forks.
-* **A session commits only certificates built on the head of what it committed itself** (OWNS-12), and
-  only if they count.
-  * So within one session the chain is linear: the first of two conflicting certificates wins, and the
+* **A session commits only on a head of the counting chain, or a merge of counting heads, and only if
+  the certificate then counts** (OWNS-12, OWNT-4).
+  * Any session may adopt the chain, and a relayed certificate that is held but uncommitted can still be
+    committed.
+  * Within one session the chain is linear: the first of two conflicting certificates wins, and the
     second is refused as stale (OWNR-2).
-  * Nothing someone else inserted can block a session. That includes an unattested child of its head.
+  * Nothing someone else inserted can block a session, since uncounted children are not heads.
   * Forks arise only between disconnected copies of the world, each with its own sessions.
-* **Quota:** each key may have at most 16 unattested certificates in a book, so nobody floods it
-  (OWNS-5). The book cap is 1,024 certificates.
+* **A certificate counts only if its whole causal past was committed by some session.** What is built
+  on an uncommitted certificate counts for nothing either.
+* **The pool of unattested certificates** (OWNT-2).
+  * An unattested certificate is admitted only on a parent that counts. It is charged to its signers
+    that are owners or recovery keys at that parent's effective state, each under a quota of 16, in a
+    pool of at most 256, apart from the cap of 1,024 attested certificates.
+  * Minted keys are never charged, so they flood nothing.
+  * Anything the book can't take yet is parked: a missing parent, a parent that doesn't count, a full
+    quota, or a state-dependent refusal. Parked certificates are re-admitted as parents and
+    attestations arrive. Attestations of certificates not yet held are buffered.
+  * Both buffers hold at most 256. Under a flood beyond that, a dropped item has to be sent again
+    (OWNT-5).
+* **Two attestations of one certificate by one lineage that differ** (a session equivocating): the
+  lowest frame wins, then the smallest signer set, whatever the order (OWNT-6).
 
 **Signing rule A (22:54Z, O1; removal and recovery per D87, recommended).**
 
@@ -1717,21 +1737,26 @@ count, is with the user in D87, and so are the residual risks that hold without 
   * Each copy's owners add independently while disconnected, and the copies join. A double sale makes
     both buyers co-owners, and an old-state fork never voids a later addition.
   * Unattested additions block nothing and revive nothing (OWNR-5).
-* **Concurrent rules take the strictest** (OWNS-4). The owners loosen it again after a merge.
+* **Concurrent rules take the strictest in each dimension** (OWNS-4, OWNT-7).
+  * Who adds: Any < Threshold < All.
+  * Whether removal is allowed: not at all if any copy is under rule B.
+  * The owners loosen it again after a merge.
 * **A merge certificate** joins pairwise-concurrent certificates only, so it can't roll anything back
   (OWN-1). It invalidates nothing, and any owner of the join may sign it.
-* **"Ownership disputed"** is shown once two counting certificates have ever shared a parent. It comes
-  from the fork history, so no merge, not even one by the residual's sock, clears it (OWNS-8). Joins use
-  the join.
+* **"Ownership disputed"** is shown once two attested, valid certificates have ever shared a parent,
+  even if both are voided (OWNS-8, OWNT-8). It comes from the fork history, so no merge, not even one by
+  the residual's sock, clears it. Joins use the join.
+* **Nobody left.** If the join would leave nobody (copies whose last owners left or removed each
+  other), every head's owners stay. The view says so (`nobody_left`).
 * **What remains without a trust root** [V: harness]. Anyone can run a one-member session, so attestations
   can be minted. An attacker with a session of its own (A2) can:
   * replace an active owner with a stolen recovery key;
   * remove an active owner through a private window;
   * return a former owner, or add a co-owner, through a fork at an old state.
-  In the harness's 50,000 random histories, A2 removed an honest owner in 1,202 and added an owner in
-  3,582. It never loosened the rule except after such a takeover. Every case is detected: there is a
-  fork proof, and the world shows as disputed. D87 asks the user how to close this (a host binding), or
-  to accept it.
+  In the harness's 15,000 random histories, A2 removed an honest owner in 428 and added an owner in
+  4,616. It loosened the rule in 100, always together with such a takeover. Every case is detected:
+  there is a fork proof, and the world shows as disputed. D87 asks the user how to close this (bound
+  session lineages), or to accept it.
 
 **In the session log [V: spike].**
 
@@ -1749,9 +1774,11 @@ count, is with the user in D87, and so are the residual risks that hold without 
 * **Who reads the owner set.** Row 0, the join-rule target "a world owner" and the Q27 checks (12.4) all
   ask whether the member's identity key is in `book.view().owners` at that step. A relationship
   record's expiry (O5) is checked against the session's agreed time at the same step [I].
-* **Cost.** A book holds at most 1,024 certificates, and each key at most 16 unattested ones. Each change
-  re-runs the pass, and a batch runs it once per round of parents (OWNS-9). Production compacts a long
-  linear history into a checkpoint that the owners sign [I].
+* **Cost.** A book holds at most 1,024 attested certificates and a pool of 256 unattested ones.
+  * A batch is sorted by seq, and each certificate's linear state is computed as it arrives, so an
+    in-order chain needs one pass (OWNT-10).
+  * Ancestry sets are shared between clones.
+  * Production compacts a long linear history into a checkpoint that the owners sign [I].
 
 **Joins, relationship records and discovery.**
 
@@ -1784,18 +1811,39 @@ count, is with the user in D87, and so are the residual risks that hold without 
     * 6, removals stick;
     * 7, disputes stay visible.
   * 8 is the residual for A2.
-* **The adversarial harness** (`ownership/harness.rs`) plays random honest histories through a session,
-  then random A1 and A2 attacks.
-  * It checks invariants 2 to 5 on every book. Determinism is checked by rebuilding each book in a
-    shuffled order.
-  * It measures 8, and asserts that A2 never loosens the rule without a takeover.
-  * With 50,000 histories, all of that held. While it was being built, it found three holes before
-    review, now fixed: an unattested merge counted, honest certificates hit the quota during an offline
-    rebuild, and the genesis certificate's attestations were lost in a rebuild.
-* **Tests:** 48 pass, and 3 are ignored: the two residual tests OWNS-1a and OWNS-1d, plus a debug
-  helper.
-* **Regression tests for the reviews:** cbcdadb (12 of round 1), 5083c64 (10 of round 2) and dc3c1cd (10
-  of round 3) each fail on the code before their fix.
+* **The adversarial harness** (`ownership/harness.rs`).
+  * **Honest histories** are up to 50 steps, under rules A, B or C. 30% of them copy the world, play
+    both copies in two lineages, and merge them when they meet.
+  * **A1 attacks:** forks at any depth, minted-key chains, floods of up to 300 certificates, pads,
+    strips, replays and bad seqs.
+  * **A2 attacks:** A1 plus two lineages of its own, with equal-frame attestations of real signer
+    subsets.
+  * **Checked on every book:**
+    * invariant 1, authority;
+    * 2, unattested changes change nothing (A1);
+    * 3, liveness (A1);
+    * 4, the view after a shuffled rebuild, with the attestations first and also after the
+      certificates;
+    * 5, the bounds;
+    * 6, removals stick: observed-remove, with the nobody-left exception, for Leave against A2 and for
+      every removal against A1;
+    * 7, disputes stay visible.
+    Invariant 8 is measured.
+  * **Result:** with 15,000 histories, all of that held (4,119 of them forked and merged).
+  * **What it found in this round, before review, now fixed:**
+    * a refusal that depends on state was final, so a valid honest certificate was lost when its
+      parent's state was still changing;
+    * an attested merge counted on an uncommitted parent;
+    * a buffered local record was lost.
+* **Tests:** 51 ownership tests pass. Ignored:
+  * OWNS-1a and OWNS-1d, the residual;
+  * OWNT-1, OWNT-1b and OWNT-3, deferred with the window machinery under OT(a);
+  * three debug helpers.
+* **Regression tests for the reviews.** Each set fails on the code before its fix:
+  * cbcdadb, 12 tests from round 1;
+  * 5083c64, 10 from round 2;
+  * dc3c1cd, 10 from round 3;
+  * f961f44, 6 from round 4.
 * **The session scenario** gives ALL EQUAL, and the full regress has 42 of 42 identical.
 
 ---
@@ -4929,7 +4977,7 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
-* **D87. World ownership: what the user decides (12.5; after @design-reviewer's three review rounds).**
+* **D87. World ownership: what the user decides (12.5; after @design-reviewer's four review rounds).**
   * One consolidated set, replacing OA, OB, OC and D88. Each question gives the recommendation, its
     consequence, the residual risk and an alternative. The spike is built to recommendation 1 (B) and
     to the other recommendations.
@@ -4942,14 +4990,17 @@ entry says so.
         them. Groups that want removability pick rule C. A stolen backup key equals a stolen key.
       * Residual: anyone who once held full authority can add a co-owner through a fork at an old
         state. It is always detected and shown as disputed.
-    * **(A), later: host sessions.** The owners name, in the chain, the session lineages that may
-      change ownership. Only their attestations count for windows, cancels, recoveries and fork
-      branches. This needs P2-4 to define a persistent session lineage for a world.
-      * Residual: a host session's majority colluding.
-    * **What happens if neither, as the spike stands today** [V: harness, 50,000 histories]: anyone who
+    * **(A), later: bound session lineages.** The owners bind, in the chain, the session lineages
+      whose attestations count for windows, cancels, recoveries and fork branches.
+      * A lineage is a P2-4 epoch-certificate chain from that session's genesis (`EpochBook`), bound
+        by its first certificate (@engine-architect).
+      * The open findings OWNT-1 and OWNT-3 get fixed inside this design: attestations carry and
+        check signatures, and objection becomes explicit and monotone.
+      * Residual: a bound session's majority colluding.
+    * **What happens if neither, as the spike stands today** [V: harness, 15,000 histories]: anyone who
       runs a session of their own defeats the windows and delays. A stolen recovery key replaced an
       active owner, a private window removed an active co-owner, and a former owner returned. An
-      honest owner was lost in 1,202 histories and an owner gained in 3,582, always detected.
+      honest owner was lost in 428 histories and an owner gained in 4,616, always detected.
   * **2. Forks of the ownership chain (refines O4).**
     * Recommended: a change counts only once a session of the world committed it; within a session the
       first of two conflicting changes wins. When disconnected copies meet, the owner sets join:
