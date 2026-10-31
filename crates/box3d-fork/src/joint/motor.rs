@@ -17,7 +17,7 @@ use crate::id::JointId;
 use crate::math_functions::{
     add, add_mm, cross, delta_quat_to_rotation, det, dot_quat, inv_mul_quat, invert_matrix,
     length_squared, max_float, mul_add, mul_mv, mul_quat, mul_sub, mul_sv, neg, negate_quat,
-    normalize, rotate_vector, sub, sub_pos, Vec3, QUAT_IDENTITY, VEC3_ZERO,
+    normalize, rotate_vector, sub, sub_pos, Vec3, QUAT_IDENTITY,
 };
 use crate::solver::{make_soft, StepContext};
 use crate::solver_set::AWAKE_SET;
@@ -281,10 +281,7 @@ pub fn prepare_motor_joint(world: &World, base: &mut JointSim, context: &StepCon
     joint.angular_mass = angular_mass;
 
     if !context.enable_warm_starting {
-        joint.linear_velocity_impulse = VEC3_ZERO;
-        joint.angular_velocity_impulse = VEC3_ZERO;
-        joint.linear_spring_impulse = VEC3_ZERO;
-        joint.angular_spring_impulse = VEC3_ZERO;
+        joint.reset_impulses();
     }
 }
 

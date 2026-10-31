@@ -216,6 +216,13 @@ impl Recording {
         self.end_record();
     }
 
+    /// Write framed `BodyResetHistory` op (Primordial Engine fork).
+    pub fn write_body_reset_history(&mut self, body: BodyId) {
+        self.begin_record(RecOp::BodyResetHistory as u8);
+        self.buffer.append_body_id(body);
+        self.end_record();
+    }
+
     /// Write framed `BodyDisable` op.
     pub fn write_body_disable(&mut self, body: BodyId) {
         self.begin_record(RecOp::BodyDisable as u8);
