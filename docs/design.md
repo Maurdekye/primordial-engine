@@ -1232,7 +1232,8 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 ### 9.2 Cadence
 
 * **On every interaction:** the carried state is applied over the receiver's own result, always,
-  whether or not it already matches (7.3, review SET-1).
+  whether or not it already matches (7.3, review SET-1). That is pe-session's rule; the spike writes only
+  when the bits differ until p2/spike-reset lands (review CV-1).
 * **Periodic:** every 30 frames, but only at **confirmed** frames that this member has finished simulating
   with the complete log. A member with a re-simulation pending never compares (viz-1).
   * There, every member holds the same entries by construction, so any mismatch is true nondeterminism,
