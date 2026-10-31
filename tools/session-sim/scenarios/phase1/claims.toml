@@ -20,7 +20,7 @@ link = { delay_ms = 30, jitter_ms = 10 }
 kind = "outcomes"
 at = 1
 mode = "tally"
-prefix = "RESULT claims (member 1 nudges every 29 frames, member 2 every frame, impulses do not renew claims): "
+prefix = "RESULT claims (member 1 nudges every 29 frames, member 2 every frame; D72: only grabs claim, so no push is refused): "
 
 [[report]]
 kind = "check_world"

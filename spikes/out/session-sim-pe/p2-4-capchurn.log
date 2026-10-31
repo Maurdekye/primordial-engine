@@ -1,0 +1,11 @@
+  9 removed: None s; resets 88
+  capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one) with VCR-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833; at m1: members {1, 2, 3, 9}, evicted []
+RESULT capchurn: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT capchurn: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT capchurn: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT capchurn: 0 resets, 9 removed at 3.17 s -> VOTED OUT
+RESULT capchurn: m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+  m1: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 58 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 58 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 58 bad 0
+RESULT capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one): frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0

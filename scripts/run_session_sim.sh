@@ -2,13 +2,22 @@
 # Builds and runs every session-protocol scenario (in-process, virtual clock; deterministic).
 # Logs go to spikes/out/session-sim/; the RESULT lines are the evidence cited in docs/design.md.
 # usage: scripts/run_session_sim.sh            (from any directory; needs only a Rust toolchain)
+#        scripts/run_session_sim.sh --pe       the same scenarios on crates/pe-session through its fork
+#                                              of this harness, crates/pe-session-harness (P2-3); logs in
+#                                              spikes/out/session-sim-pe/
 # PE_BIN=<dir> runs a prebuilt binary from <dir> without building; PE_OUT=<dir> writes the logs under
-# <dir>/session-sim instead of spikes/out (both used by scripts/run_matrix.sh).
+# <dir>/session-sim (or <dir>/session-sim-pe) instead of spikes/out (both used by scripts/run_matrix.sh).
 set -u
 cd "$(dirname "$0")/.."
-[ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim || exit 1
-B=${PE_BIN:-target/release}/pe-spike-session-sim
-O=${PE_OUT:-spikes/out}/session-sim
+if [ "${1:-}" = --pe ]; then
+  [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-session-harness || exit 1
+  B=${PE_BIN:-target/release}/pe-session-harness
+  O=${PE_OUT:-spikes/out}/session-sim-pe
+else
+  [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim || exit 1
+  B=${PE_BIN:-target/release}/pe-spike-session-sim
+  O=${PE_OUT:-spikes/out}/session-sim
+fi
 mkdir -p $O
 run() { local name=$1; shift; "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }
 run c1 c1
@@ -18,6 +27,10 @@ run diverged diverged
 run loss loss
 run ties ties
 run claims claims
+# P2-3 S4: grab races under D72 (only grabs claim; --pe only, the spike core has the earlier rule).
+if [ "${1:-}" = --pe ]; then run grabrace grabrace; fi
+# P2-3 S5: a joiner catches up by state transfer (design 9.5, P22S-1; --pe only).
+if [ "${1:-}" = --pe ]; then run p2-3-statejoin statejoin; fi
 run backdate backdate
 for v in ok abort reject throttle forge late crash chain chain-epoch; do run r14-$v r14 $v; done
 for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done

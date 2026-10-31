@@ -6427,6 +6427,20 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
+* **D80. Who may change a session's member list, and how many must agree (10.8, 12.4; raised by P2-4).**
+  **Settled 22:13Z: admins over a two-thirds safety layer.**
+  * The user answered with session admins (22:11Z): admins may kick anyone; there is always at least one
+    admin, and the last cannot give the role up without handing it on; every player is an admin by
+    default; the session closes when the last admin leaves.
+  * Confirmed reading (22:13Z): an admin's signed kick authorises a removal, with no vote. The
+    two-thirds quorum, option (b), stays underneath only as the commit and ordering rule. Conflicting
+    kicks resolve by commit order, a kick by an admin already removed is void, kicks wait out a
+    partition instead of forking, and silence or crash removal stays automatic. A last admin that crashes
+    or times out closes the session.
+  * Roles (22:14Z, 22:15Z), owners (Q27) and join rules (22:37Z-22:51Z) are in 12.4.
+  * Measured [V kickwar, kickpartition, lastadmin, adminclose, joinrules; bridge and twosilent5 for the
+    quorum]. The safety bound counts every faulty member, proven or not (review VC-1, 10.8) [V onesided,
+    a control above the bound]. Options (a), a strict majority, and (c), per world, are not taken.
 * **D81. Speech models: runtime, size and where they run (21.11; raised by the 21:51Z voice ruling).**
   **Ruled 08:31Z: as recommended.** A spike measures accuracy, time to the first word, and CPU and GPU
   cost before the runtime, model size and processor are chosen.
