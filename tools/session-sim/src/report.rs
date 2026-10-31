@@ -8,14 +8,14 @@
 //! `{touches@M:A}` A's touches as M holds them; and, for the entry a behaviour acts on,
 //! `{x.stamp}`, `{x.seq}`, `{x.target}` (a vote's target), `{x.confirmed@M}`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pe_sim_core::session::*;
 use pe_sim_core::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
 use spike::{Acceptance, Replica, Sim, WorldId};
 
 use crate::byzantine::Forged;
-use crate::scenario::{Report, Scenario};
+use crate::scenario::{Honest, Report, Scenario};
 use crate::setup::hz;
 
 pub struct Vars<'a> {
@@ -28,11 +28,19 @@ fn member(s: &str) -> MemberId {
     s.parse().unwrap_or_else(|_| panic!("template: `{s}` is not a member id"))
 }
 
-/// Substitute `{...}` variables (see the module docs).
+/// Substitute `{...}` variables (see the module docs); `{{` and `}}` are literal braces.
 pub fn template(t: &str, v: &Vars) -> String {
     let mut out = String::new();
     let mut rest = t;
-    while let Some(i) = rest.find('{') {
+    while let Some(i) = rest.find(['{', '}']) {
+        if rest[i..].starts_with("{{") || rest[i..].starts_with("}}") {
+            out.push_str(&rest[..=i]);
+            rest = &rest[i + 2..];
+            continue;
+        }
+        if rest[i..].starts_with('}') {
+            panic!("template: unmatched `}}` in {t:?}");
+        }
         out.push_str(&rest[..i]);
         let j = rest[i..].find('}').map(|j| i + j).unwrap_or_else(|| panic!("template: unclosed `{{` in {t:?}"));
         out.push_str(&var(&rest[i + 1..j], v));
@@ -63,15 +71,29 @@ fn var(name: &str, v: &Vars) -> String {
             _ => panic!("template: {{x.target}} needs a vote"),
         },
         "x.confirmed" => r().is_confirmed(e().id()).to_string(),
+        "proposer" => format!("{}", r().proposer_of(0, 0).map_or("none".to_string(), |p| p.to_string())),
         _ => panic!("template: unknown variable `{{{name}}}`"),
     }
 }
+
+/// The `check` report's cases.
+pub const CHECKS: &[&str] = &["bridge", "kickwar", "kickpartition", "lastadmin", "adminclose", "joinrules", "vcscale"];
 
 /// What the run left for the reports besides the simulator.
 #[derive(Default)]
 pub struct Ctx {
     pub forged: Vec<Forged>,
     pub panic_at_ms: Option<u64>,
+    /// When the run started (the wall time `vcscale` reports).
+    pub started: Option<std::time::Instant>,
+}
+
+/// The members a report covers (see [`Honest`]).
+pub fn honest(h: &Honest, sim: &Sim) -> Vec<MemberId> {
+    match h {
+        Honest::List(v) => v.clone(),
+        Honest::At { members_at } => sim.replica(*members_at, 1).sim.members.iter().copied().collect(),
+    }
 }
 
 /// A report and the samples it collects during the run.
@@ -110,6 +132,11 @@ impl Probe {
         if let Report::Phase1Rule { case } = &spec {
             if case != "c1" && case != "c2" {
                 return Err(format!("phase1_rule: case must be c1 or c2, not `{case}`"));
+            }
+        }
+        if let Report::Check { case, .. } = &spec {
+            if !CHECKS.contains(&case.as_str()) {
+                return Err(format!("check: case must be one of {CHECKS:?}, not `{case}`"));
             }
         }
         if let Report::Outcomes { mode, .. } = &spec {
@@ -243,11 +270,33 @@ impl Probe {
                     println!("  {}: {}", text.replace("{m}", &m.to_string()), touch_state(sim, *world, m, *author));
                 }
             }
-            Report::Verdict { honest, label } => {
-                verdict(sim, honest, label, ctx.panic_at_ms);
+            Report::Verdict { honest: h, label } => {
+                verdict(sim, &honest(h, sim), label, ctx.panic_at_ms);
             }
-            Report::Membership { honest, label } => {
+            Report::ViewChanges { honest: h, label } => vc_report(sim, &honest(h, sim), label),
+            Report::Admitted { honest, joiner } => {
                 for &m in honest {
+                    let r = &sim.replica(m, 1).sim;
+                    println!("  m{m}: admitted {:?}; {joiner}'s touches: {}", r.admitted, touch_state(sim, 1, m, *joiner));
+                }
+            }
+            Report::Admin { honest: h, label, outcomes: o, roles } => {
+                for m in honest(h, sim) {
+                    if *o {
+                        println!("RESULT {label}: m{m}: {}", outcomes(sim, m));
+                    }
+                    if *roles {
+                        println!("  {}", roles_line(sim, m));
+                    }
+                }
+            }
+            Report::Confs { honest, label } => println!("RESULT {label}: {}", confs(sim, honest)),
+            Report::BeforeFix { honest, label, fix } => before_fix(sim, honest, label, fix, ctx.panic_at_ms),
+            Report::Check { case, label, text, honest, sides, at, members, target, until_ms, role, silent } => {
+                check(sim, ctx, case, label, text, honest, sides, *at, members, *target, *until_ms, *role, *silent)
+            }
+            Report::Membership { honest: h, label } => {
+                for m in honest(h, sim) {
                     let r = &sim.replica(m, 1).sim;
                     println!(
                         "RESULT {label}: m{m} members {:?} evicted {:?} conf {} frame {} paused frames {} lying votes found {}",
@@ -357,6 +406,225 @@ impl Probe {
             "RESULT   end state at frame {last} (all 500 balls, both hands, all tables): m1 {h1:016x} m2 {h2:016x} -> {}",
             if h1 == h2 { "IDENTICAL" } else { "DIFFERENT" }
         );
+    }
+}
+
+// ---- P2-4 and D80 (session-sim viewchange.rs, p24r.rs, p24r3.rs), unchanged ------------------
+
+/// The scenario time at which a replica's clock frame `f` began.
+fn sim_secs(rep: &Replica, f: u64) -> f64 {
+    (rep.epoch_us + f * rep.dt_us) as f64 / 1e6
+}
+
+/// Every decision each listed replica took: (epoch reached, clock frame, round, removed).
+fn vc_report(sim: &Sim, members: &[MemberId], label: &str) {
+    for &m in members {
+        let rep = sim.replica(m, 1);
+        let r = &rep.sim;
+        let at: Vec<String> = r.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} (t={:.2} s) round {rd} removed {rm:?}", sim_secs(rep, *f))).collect();
+        println!(
+            "RESULT {label}: m{m} epoch {} members {:?} view changes {} (resets {}, highest round {}) | {}",
+            r.epoch,
+            r.members,
+            r.stats.view_changes,
+            r.stats.resets,
+            r.stats.max_round,
+            if at.is_empty() { "no decision".to_string() } else { at.join("; ") }
+        );
+        if std::env::var("PE_EVENTS").is_ok_and(|v| !v.is_empty()) {
+            for e in &r.events {
+                println!("  event {e}");
+            }
+            println!("  vc {}", r.vc_debug());
+        }
+    }
+}
+
+fn confs(sim: &Sim, ids: &[MemberId]) -> String {
+    ids.iter()
+        .map(|&m| {
+            let r = &sim.replica(m, 1).sim;
+            format!("m{m} conf {} of frame {}", r.conf, r.frame)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether every listed replica equals the offline replay, with no false check, printing nothing a
+/// suite check reads: for the runs with a fix switched off.
+fn quiet_equal(sim: &Sim, honest: &[MemberId]) -> bool {
+    let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
+    let first = &sim.replica(honest[0], 1).sim;
+    let members: Vec<MemberId> = first.members.iter().copied().collect();
+    let reference = replay(1, SceneKind::Pile { side: 8, layers: 4 }, first.cfg, &members, &final_log(first), frames);
+    let rd = digest(&reference, frames);
+    let bad: u64 = honest.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
+    honest.iter().all(|&m| digest(&sim.replica(m, 1).sim.hashes, frames) == rd) && bad == 0
+}
+
+fn before_fix(sim: &Sim, honest: &[MemberId], label: &str, fix: &str, stopped: Option<u64>) {
+    let state = match stopped {
+        Some(t) => format!("the run stopped at t={t} ms: a replica hit an assertion or a panic"),
+        None if quiet_equal(sim, honest) => "every replica equals the replay".to_string(),
+        None => "the replicas do not all equal the replay".to_string(),
+    };
+    let r = &sim.replica(honest[0], 1).sim;
+    println!(
+        "  {label} with {fix} switched off (the behaviour before the fix): {state}; {}; at m{}: members {:?}, evicted {:?}",
+        confs(sim, honest),
+        honest[0],
+        r.members,
+        r.members_evicted().keys().collect::<Vec<_>>()
+    );
+}
+
+fn outcomes(sim: &Sim, m: MemberId) -> String {
+    let r = &sim.replica(m, 1).sim;
+    let mut v: Vec<(u64, String)> = r
+        .admin_outcomes
+        .iter()
+        .filter_map(|(id, ok)| {
+            let e = r.all_entries().into_iter().find(|e| e.id() == *id)?;
+            let what = match e.payload {
+                Payload::Kick { target, .. } => format!("{} kicks {target}", e.member),
+                Payload::SetRole { member, role, .. } => format!("{} gives {member} role {role}", e.member),
+                Payload::DefineRole { role, perms, .. } => format!("{} defines role {role} = {perms:#x}", e.member),
+                _ => return None,
+            };
+            Some((e.stamp, format!("{what} @{}: {}", e.stamp, if *ok { "applied" } else { "refused" })))
+        })
+        .collect();
+    v.sort();
+    v.into_iter().map(|(_, s)| s).collect::<Vec<_>>().join("; ")
+}
+
+fn roles_line(sim: &Sim, m: MemberId) -> String {
+    let r = &sim.replica(m, 1).sim;
+    format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.members, r.roles, r.admins(), r.closed_at)
+}
+
+fn need<T: Copy>(v: Option<T>, case: &str, field: &str) -> T {
+    v.unwrap_or_else(|| panic!("check {case}: needs `{field}`"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check(
+    sim: &Sim,
+    ctx: &Ctx,
+    case: &str,
+    label: &str,
+    text: &str,
+    honest: &[MemberId],
+    sides: &[Vec<MemberId>],
+    at: Option<MemberId>,
+    members: &[MemberId],
+    target: Option<MemberId>,
+    until_ms: Option<u64>,
+    role: Option<RoleId>,
+    silent: Option<u32>,
+) {
+    match case {
+        "bridge" => {
+            let a = sim.replica(sides[0][0], 1).sim.members.clone();
+            let b = sim.replica(sides[1][0], 1).sim.members.clone();
+            println!(
+                "RESULT {label}: member lists after the partition healed: m{} {a:?}, m{} {b:?} -> {}",
+                sides[0][0],
+                sides[1][0],
+                if a == b { "ONE SESSION" } else { "FORKED (two sessions)" }
+            );
+            if a == b {
+                verdict(sim, honest, text, ctx.panic_at_ms);
+            } else {
+                for side in sides {
+                    let names: Vec<String> = side.iter().map(|m| m.to_string()).collect();
+                    verdict(sim, side, &format!("{label} side {{{}}}", names.join(",")), ctx.panic_at_ms);
+                }
+            }
+        }
+        "kickwar" => {
+            let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.members.iter().copied().collect();
+            let one = left.contains(&members[0]) != left.contains(&members[1]);
+            println!("RESULT {label}: members left {left:?}: exactly one of the two admins removed: {one}{}", if one { "" } else { " -> FAIL" });
+        }
+        "kickpartition" => {
+            let rep1 = sim.replica(members[0], 1);
+            let heal = need(until_ms, case, "until_ms") as f64 / 1000.0;
+            let during = rep1.sim.vc_log.iter().any(|d| sim_secs(rep1, d.1) < heal);
+            let (a, b) = (sim.replica(members[0], 1).sim.members.clone(), sim.replica(members[1], 1).sim.members.clone());
+            let t = need(target, case, "target");
+            println!(
+                "RESULT {label}: decided during the partition: {during}; members after: m{} {a:?}, m{} {b:?} -> {}",
+                members[0],
+                members[1],
+                if a == b && !a.contains(&t) && !during { format!("ONE SESSION, {t} removed after the heal") } else { "FAIL".to_string() }
+            );
+        }
+        "lastadmin" => {
+            let admins: Vec<Vec<MemberId>> = honest.iter().map(|&m| sim.replica(m, 1).sim.admins()).collect();
+            let ok = admins.iter().all(|a| a == members);
+            println!("RESULT {label}: admins at the end {admins:?} -> {}", if ok { "the release was refused, the hand-over held" } else { "FAIL" });
+        }
+        "adminclose" => {
+            let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.closed_at).collect();
+            let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]);
+            println!(
+                "RESULT {label}: {text}; session closed at frame {:?} at m{}, {:?} at m{} -> {}",
+                closed[0],
+                honest[0],
+                closed[1],
+                honest[1],
+                if ok { "CLOSED, the same frame everywhere" } else { "FAIL" }
+            );
+        }
+        "joinrules" => {
+            let [friend, stranger, confidant, owner] = members[..] else { panic!("check joinrules: members = [friend, stranger, confidant, owner]") };
+            let guest = need(role, case, "role");
+            let admitted: Vec<MemberId> = sim.replica(1, 1).sim.members.iter().copied().collect();
+            let roles = &sim.replica(1, 1).sim.roles;
+            let ok = roles.get(&friend) == Some(&guest) && roles.get(&confidant) == Some(&ADMIN) && roles.get(&owner) == Some(&ADMIN) && !admitted.contains(&stranger);
+            println!(
+                "RESULT {label}: admitted {admitted:?}, roles {roles:?} -> {}",
+                if ok { "friend of an admin as Guest, owner's confidant as Admin, owner by row 0, stranger refused" } else { "FAIL" }
+            );
+        }
+        "vcscale" => {
+            let silent = need(silent, case, "silent");
+            // Every peer is a genesis member here, in id order (the spike's 1..=n).
+            let ids: Vec<MemberId> = sim.peers.iter().map(|p| p.id).collect();
+            let n = ids.len();
+            let heads = sim.replica(ids[0], 1).sim.cfg.ack_heads;
+            let gone: BTreeSet<MemberId> = ids.iter().rev().take(silent as usize).copied().collect();
+            let live: Vec<MemberId> = ids.iter().copied().filter(|m| !gone.contains(m)).collect();
+            let mut at: Vec<f64> = Vec::new();
+            let mut undecided = 0;
+            let mut members_after = BTreeSet::new();
+            for &m in &live {
+                let rep = sim.replica(m, 1);
+                let r = &rep.sim;
+                match r.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
+                    Some(d) => at.push(sim_secs(rep, d.1) - 1.0),
+                    None => undecided += 1,
+                }
+                members_after.insert(r.members.len());
+            }
+            at.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let r1 = &sim.replica(live[0], 1).sim;
+            println!(
+                "RESULT vcscale n={n} silent={silent} heads={heads}: {} of {} live members decided the removal; seconds after the silence began: min {:.2} median {:.2} max {:.2}; undecided {undecided}; member counts after {members_after:?}; m{} decisions {:?}; conf {} | {} | wall {:.1} s",
+                at.len(),
+                live.len(),
+                at.first().copied().unwrap_or(f64::NAN),
+                at.get(at.len() / 2).copied().unwrap_or(f64::NAN),
+                at.last().copied().unwrap_or(f64::NAN),
+                live[0],
+                r1.vc_log,
+                r1.conf,
+                if ctx.panic_at_ms.is_some() { "PANIC" } else { "no panic" },
+                ctx.started.map_or(0.0, |t| t.elapsed().as_secs_f64())
+            );
+        }
+        _ => panic!("check: unknown case `{case}`"),
     }
 }
 

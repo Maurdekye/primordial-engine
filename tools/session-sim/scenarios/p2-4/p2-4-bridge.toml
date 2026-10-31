@@ -1,0 +1,48 @@
+description = """
+P2-4, D80: a partition between {1, 2} and {3, 4} from 3 to 12 s, with faulty member 8 reaching \
+both sides: it hides what it hears (its references stop), backs every vote, prevotes and \
+precommits every proposal, echoes the nil votes of rounds without one, and applies no decision. \
+Under a strict majority each side removes the other: the session forks, by design, and each side \
+is checked on its own. Under the Byzantine quorum neither side can, and the session carries on \
+whole once the partition heals and 8 behaves."""
+include = ["../common/review.toml"]
+end_ms = 20000
+
+[world.1]
+members = [1, 2, 3, 4, 8]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[world.1.member.8]
+byz_ally = true
+
+[[fault]]
+partition = [[1, 2], [3, 4]]
+after_ms = 3000
+before_ms = 12000
+drop = true
+
+# 8 hides what it hears of everyone during the partition, then behaves once it heals.
+[[byzantine]]
+kind = "hide_refs"
+member = 8
+from_ms = 3000
+until_ms = 12000
+ally_until = true
+
+[[part]]
+world.1.quorum = "majority"
+report = [
+    { kind = "membership", honest = [1, 2, 3, 4], label = "bridge-majority" },
+    { kind = "view_changes", honest = [1, 2, 3, 4], label = "bridge-majority" },
+    { kind = "check", case = "bridge", label = "bridge-majority", text = "bridge-majority (partition {1,2} | {3,4} 3-12 s, faulty 8 backs both sides)", honest = [1, 2, 3, 4], sides = [[1, 2], [3, 4]] },
+]
+
+[[part]]
+world.1.quorum = "bft"
+report = [
+    { kind = "membership", honest = [1, 2, 3, 4], label = "bridge-bft" },
+    { kind = "view_changes", honest = [1, 2, 3, 4], label = "bridge-bft" },
+    { kind = "check", case = "bridge", label = "bridge-bft", text = "bridge-bft (partition {1,2} | {3,4} 3-12 s, faulty 8 backs both sides)", honest = [1, 2, 3, 4], sides = [[1, 2], [3, 4]] },
+]

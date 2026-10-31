@@ -48,6 +48,7 @@ const TIMINGS: &[(&str, &str)] = &[
     ("re-sim ", " ms per rendered sim frame"), // ball pit
     ("rendered sim frame (", " ms over the window)"),
     ("step avg ", " ms;"),
+    ("| wall ", " s"), // vcscale: "| no panic | wall 40.7 s"
 ];
 
 /// Mask the measured CPU timings in a log line (see [`TIMINGS`]).
@@ -327,6 +328,8 @@ mod tests {
         assert_eq!(mask("re-sim 3.51 ms per rendered sim frame (772 ms over the window); step avg 0.400 ms;"), "re-sim X ms per rendered sim frame (X ms over the window); step avg X ms;");
         assert_eq!(mask("  t=2850 ms: 9's touch"), "  t=2850 ms: 9's touch");
         assert_eq!(mask("one burst per 250 ms)"), "one burst per 250 ms)");
+        assert_eq!(mask("conf 360 | no panic | wall 40.7 s"), "conf 360 | no panic | wall X s");
+        assert_eq!(mask("removed at 3.75 s"), "removed at 3.75 s");
         assert_eq!(mask("mean lag 33.3 ms, resim frames 2 (1.5 ms) overwrites"), "mean lag 33.3 ms, resim frames 2 (X ms) overwrites");
         assert_eq!(mask("  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0"), "  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (X ms) overwrites 0");
     }

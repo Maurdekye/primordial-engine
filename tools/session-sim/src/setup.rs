@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use pe_sim_core::session::{SceneKind, SimConfig};
+use pe_sim_core::session::{fix, JoinRule, JoinRules, QuorumRule, Rel, SceneKind, SimConfig, Target, ADMIN};
 use spike::{ballpit_sweep, Action, Cap, Link, Net, Peer, Sim};
 
 use crate::scenario::{id, ActionSpec, CapCfg, LinkCfg, Scenario, SceneCfg, WorldCfg};
@@ -11,7 +11,58 @@ pub fn scene(s: SceneCfg) -> SceneKind {
     match s {
         SceneCfg::Pile { side, layers } => SceneKind::Pile { side, layers },
         SceneCfg::Ballpit { balls, hands } => SceneKind::BallPit { balls, hands },
+        SceneCfg::Empty => SceneKind::Empty,
     }
+}
+
+/// The review fixes by name (session.rs `fix`).
+pub const FIXES: &[(&str, u32)] = &[
+    ("VC2", fix::VC2),
+    ("VC3", fix::VC3),
+    ("VC4", fix::VC4),
+    ("VC5", fix::VC5),
+    ("VCR1", fix::VCR1),
+    ("VCR2", fix::VCR2),
+    ("VCR3", fix::VCR3),
+    ("VCR4", fix::VCR4),
+    ("VCR5", fix::VCR5),
+    ("VCR6", fix::VCR6),
+    ("VCR7", fix::VCR7),
+    ("VCR8", fix::VCR8),
+    ("VCR9", fix::VCR9),
+    ("VCR12", fix::VCR12),
+];
+
+pub fn fixes_off(w: &WorldCfg) -> Result<u32, String> {
+    w.fixes_off.iter().try_fold(0, |acc, n| {
+        FIXES.iter().find(|(k, _)| k == n).map(|(_, b)| acc | b).ok_or_else(|| format!("fixes_off: unknown fix `{n}` (one of {:?})", FIXES.iter().map(|f| f.0).collect::<Vec<_>>()))
+    })
+}
+
+pub fn rel(r: &str) -> Result<Rel, String> {
+    match r {
+        "friend" => Ok(Rel::Friend),
+        "confidant" => Ok(Rel::Confidant),
+        "invited" => Ok(Rel::Invited),
+        _ => Err(format!("rel must be friend, confidant or invited, not `{r}`")),
+    }
+}
+
+fn join_rules(c: &crate::scenario::JoinRulesCfg) -> Result<JoinRules, String> {
+    let rules = c
+        .rules
+        .iter()
+        .map(|r| {
+            let target = match r.target.as_str() {
+                "player" => Target::Player,
+                "admin" => Target::Admin,
+                "owner" => Target::Owner,
+                t => return Err(format!("join_rules: target must be player, admin or owner, not `{t}`")),
+            };
+            Ok(JoinRule { target, all: r.all, rel: rel(&r.rel)?, role: r.role })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(JoinRules { rules, fallback: c.fallback })
 }
 
 pub fn hz(w: &WorldCfg) -> u64 {
@@ -28,6 +79,12 @@ pub fn config(w: &WorldCfg) -> SimConfig {
         check_every: w.check_every.unwrap_or(d.check_every),
         hand_predict: w.hand_predict.unwrap_or(d.hand_predict),
         suspect_after: w.suspect_after.unwrap_or(d.suspect_after),
+        quorum: match w.quorum.as_deref() {
+            Some("majority") => QuorumRule::Majority,
+            Some("bft") => QuorumRule::Bft,
+            _ => d.quorum,
+        },
+        ack_heads: w.ack_heads.unwrap_or(d.ack_heads),
         ..d
     }
 }
@@ -42,9 +99,21 @@ fn cap(c: CapCfg) -> Cap {
 
 /// One action spec expanded into (frame, action) pairs, in order.
 fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, String> {
-    let kinds = [a.touch.is_some(), a.hand.is_some(), a.portal.is_some(), a.carry.is_some(), a.backdated.is_some(), a.ballpit_sweep.is_some()];
+    let kinds = [
+        a.touch.is_some(),
+        a.hand.is_some(),
+        a.portal.is_some(),
+        a.carry.is_some(),
+        a.backdated.is_some(),
+        a.ballpit_sweep.is_some(),
+        a.kick.is_some(),
+        a.set_role.is_some(),
+        a.define_role.is_some(),
+    ];
     if kinds.iter().filter(|&&k| k).count() != 1 {
-        return Err(format!("member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep: {a:?}"));
+        return Err(format!(
+            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, kick, set_role, define_role: {a:?}"
+        ));
     }
     if let Some(s) = &a.ballpit_sweep {
         return Ok(ballpit_sweep(hz, member, s.ahead));
@@ -57,6 +126,12 @@ fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, St
         Action::Portal { open: p.open }
     } else if let Some(c) = &a.carry {
         Action::Carry { transfer: c.transfer, obj: c.obj, dest: c.dest }
+    } else if let Some(k) = &a.kick {
+        Action::Kick { target: k.target }
+    } else if let Some(r) = &a.set_role {
+        Action::SetRole { member: r.member, role: r.role }
+    } else if let Some(r) = &a.define_role {
+        Action::DefineRole { role: r.role, perms: r.perms }
     } else {
         let b = a.backdated.as_ref().unwrap();
         Action::Backdated { obj: b.obj, impulse: b.impulse, back: b.back }
@@ -91,7 +166,7 @@ pub fn peer_order(s: &Scenario) -> Result<Vec<u32>, String> {
     if !s.peers.is_empty() {
         return Ok(s.peers.clone());
     }
-    let all: BTreeSet<u32> = s.world.values().flat_map(|w| w.members.iter().copied()).collect();
+    let all: BTreeSet<u32> = s.world.values().flat_map(|w| w.members.iter().chain(&w.joiners).copied()).collect();
     Ok(all.into_iter().collect())
 }
 
@@ -119,24 +194,57 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
         let mut p = Peer::new(pid, skew);
         for (wk, w) in &s.world {
             let wid = id(wk)?;
-            if !w.members.contains(&pid) {
+            let joiner = w.joiners.contains(&pid);
+            if !w.members.contains(&pid) && !joiner {
                 continue;
             }
             p.join(wid, &w.members, scene(w.scene), config(w), w.epoch_ms * 1000, plan(w, pid)?);
             p.route(wid, &w.routes);
+            let off = fixes_off(w)?;
+            let rules = w.join_rules.as_ref().map(join_rules).transpose()?;
+            let r = p.worlds.get_mut(&wid).unwrap();
+            if let Some(f) = w.ack_every_frames {
+                r.ack_every_us = f * r.dt_us;
+            }
             if let Some(rc) = w.member.get(&pid.to_string()) {
-                let r = p.worlds.get_mut(&wid).unwrap();
                 r.throttle_us = rc.throttle_ms.map(|x| x * 1000);
                 r.throttle_from_us = rc.throttle_from_ms * 1000;
                 r.adapt = rc.adapt;
+                if let Some(ms) = rc.ack_every_ms {
+                    r.ack_every_us = ms * 1000;
+                }
+                r.sim.withhold_vc = rc.withhold_vc;
+                r.sim.byz_ally = rc.byz_ally;
+                r.sim.byz_no_precommit = rc.byz_no_precommit;
             }
+            if !joiner {
+                for &j in &w.joiners {
+                    r.sim.follow(j);
+                }
+            }
+            if let Some(g) = &w.guests {
+                // The spike's `guests`: every member (the roles table) a guest but the admins.
+                r.sim.role_defs.insert(g.role, 0);
+                let ms: Vec<u32> = r.sim.roles.keys().copied().collect();
+                for m in ms {
+                    r.sim.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
+                }
+            }
+            if !w.owners.is_empty() {
+                r.sim.owners = w.owners.iter().copied().collect();
+            }
+            if let Some(j) = rules {
+                r.sim.join_rules = j;
+            }
+            r.sim.fixes_off = off;
         }
         peers.push(p);
     }
     for (wk, w) in &s.world {
         // An empty plan may name a non-member (to clear an included one).
         for k in w.plan.iter().filter(|(_, v)| !v.is_empty()).map(|(k, _)| k).chain(w.member.keys()) {
-            if !w.members.contains(&id(k)?) {
+            let m = id(k)?;
+            if !w.members.contains(&m) && !w.joiners.contains(&m) {
                 return Err(format!("world {wk}: member {k} has a plan or settings but is not a member"));
             }
         }
