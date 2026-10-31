@@ -4,6 +4,8 @@
 //!
 //! A backend lives on the engine thread only (`engine.rs`), so it need not be `Send`.
 
+pub use pe_session::session::EntryId;
+
 use crate::model::*;
 
 /// One proposed interaction, as validated input for the backend.
@@ -16,7 +18,7 @@ pub enum Interaction {
 /// A backend's receipt for an authored entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Authored {
-    pub entry: u64,
+    pub entry: EntryId,
     pub stamp: u64,
     pub seq: u32,
 }
@@ -58,7 +60,7 @@ pub trait DrivenPeer {
     /// Author an interaction at the present frame, through the same path a player's input takes.
     fn propose(&mut self, i: Interaction) -> ToolResult<Authored>;
     /// The current verdict on one of this peer's own entries; None if it holds no such entry.
-    fn status(&self, entry: u64) -> Option<EntryStatus>;
+    fn status(&self, entry: EntryId) -> Option<EntryStatus>;
     /// Advance the peer's clock by `ms` milliseconds of (virtual) time.
     fn advance_ms(&mut self, ms: u64) -> ToolResult<()>;
     fn counters(&self) -> Counters;

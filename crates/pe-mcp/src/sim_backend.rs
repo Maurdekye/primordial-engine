@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use pe_session_sim::{Action, Fate, Link, Net, Peer, Sim};
-use pe_sim_core::session::{
+use pe_session::session::{
     final_log, replay_sim_like, Msg, SceneKind, SimConfig, WorldSim,
 };
-use pe_sim_core::splitmix64;
+use pe_session::splitmix64;
 
 use crate::backend::*;
 use crate::model::*;
@@ -61,6 +61,7 @@ impl SimSession {
         let jitter = range("jitter_ms", p.jitter_ms, 0, 0, 500)?;
         let loss = range("loss_pct", p.loss_pct, 0, 0, 50)?;
         let rate = range("background_touches_per_s", p.background_touches_per_s, 0, 0, 30)?;
+        let grabs = p.background_grabs.unwrap_or(false);
         let window = range("window", p.window, 120, 30, 600)?;
         let seed = p.seed.unwrap_or(DEFAULT_SEED);
         let cfg = SimConfig { window, suspect_after: window * 3 / 2, seed, ..SimConfig::default() };
@@ -84,7 +85,7 @@ impl SimSession {
                     let obj = (r % objects) as u32;
                     let c = |k: u32| ((r >> (16 + 8 * k)) & 0xff) as f32 / 255.0;
                     let impulse = [4.0 * c(0) - 2.0, 4.0 * c(1), 4.0 * c(2) - 2.0];
-                    plan.entry(f).or_default().push(Action::Touch { obj, impulse, grab: false });
+                    plan.entry(f).or_default().push(Action::Touch { obj, impulse, grab: grabs });
                     f += period;
                 }
             }
@@ -106,7 +107,8 @@ impl SimSession {
             }
         }));
         let label = format!(
-            "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} touches/s; window {window}; seed {seed:x}"
+            "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} {}/s; window {window}; seed {seed:x}",
+            if grabs { "grabs" } else { "touches" }
         );
         Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new() })
     }
@@ -188,7 +190,7 @@ impl DrivenPeer for SimSession {
         Ok(Authored { entry: e.id(), stamp: e.stamp, seq: e.seq })
     }
 
-    fn status(&self, entry: u64) -> Option<EntryStatus> {
+    fn status(&self, entry: EntryId) -> Option<EntryStatus> {
         sim_view::status(self.replica(), entry, self.me)
     }
 
@@ -326,7 +328,7 @@ impl ScenarioControl for SimSession {
             }
         }
         let replicas_equal = first.is_none();
-        let members: Vec<MemberId> = rs.members.iter().copied().collect();
+        let members: Vec<MemberId> = rs.membership().members().iter().copied().collect();
         let replay = replay_sim_like(rs, reference.scene, &members, &final_log(rs), frames).hashes;
         let replay_div = (0..frames).find(|f| replay.get(f) != rs.hashes.get(f));
         if let (Some(f), None) = (replay_div, &first) {
