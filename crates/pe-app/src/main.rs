@@ -5,7 +5,7 @@
 //!             [--size S] [--window W] [--seed X] [--name NAME] --out DIR
 //!     Write DIR/session.json (ids, addresses, public keys) and DIR/member-<id>.key (secret keys).
 //! pe-app run --session FILE --key FILE --me N [--bind ADDR] [--faults FILE] [--crash-at-ms T]
-//!            [--touches-per-s R] [--out DIR] [-v] [--mcp-pipe] [--mcp-http] [--scopes ..] [--principal NAME] [-- CMD ARGS..]
+//!            [--touches-per-s R] [--hand-sweep] [--no-link-signal] [--out DIR] [-v] [--mcp-pipe] [--mcp-http] [--scopes ..] [--principal NAME] [-- CMD ARGS..]
 //!     Run one member until every frame of the session is confirmed (plus a short linger), then
 //!     write DIR/hashes-<id>.txt and DIR/summary-<id>.json. With --mcp-*, an MCP server is attached
 //!     and CMD (a harness such as Claude Code) is launched with PE_MCP_TOKEN / PE_MCP_PIPE / PE_MCP_URL.
@@ -144,6 +144,11 @@ async fn run(mut a: Args) -> Result<(), String> {
         None => None,
     };
     let touches_per_s: u32 = a.num("--touches-per-s", 0)?;
+    let hand_sweep = a.flag("--hand-sweep");
+    if hand_sweep && session.scene != "ballpit" {
+        return Err("--hand-sweep needs a ballpit session (init --scene ballpit)".into());
+    }
+    let link_signal = !a.flag("--no-link-signal");
     let out_dir = PathBuf::from(a.take("--out").unwrap_or_else(|| ".".into()));
     let verbose = a.flag("-v");
     let (mcp_pipe, mcp_http) = (a.flag("--mcp-pipe"), a.flag("--mcp-http"));
@@ -160,7 +165,7 @@ async fn run(mut a: Args) -> Result<(), String> {
 
     let socket = UdpSocket::bind(bind).map_err(|e| format!("bind {bind}: {e}"))?;
     let finished = Arc::new(AtomicBool::new(false));
-    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, touches_per_s, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
+    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, touches_per_s, hand_sweep, link_signal, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
     eprintln!("pe-app: member {me} of session {:016x} on {bind}; {} members, {} frames", session.session, session.members.len(), session.frames);
     let engine = EngineHandle::spawn_ticking(move || Engine::new(Box::new(Node::new(opts))), Duration::from_millis(1));
     let _hosted = if mcp_pipe || mcp_http {
