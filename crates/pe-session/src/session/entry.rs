@@ -3,6 +3,21 @@
 use super::*;
 
 pub type MemberId = u32;
+/// The check hash members exchange at check frames (design 9.1, review P22R-1): BLAKE3 over the
+/// whole canonical state, so a donor cannot forge a state that matches it (XXH64 and FNV can be
+/// steered). The per-frame `state_hash` stays a 64-bit local diagnostic.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CheckHash(pub [u8; 32]);
+
+impl std::fmt::Debug for CheckHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for b in &self.0[..8] {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 /// An entry's identity: the SHA-256 of its canonical encoding, all 256 bits (S3b). Signatures cover
 /// it, so a shorter id would let an author grind two entries with one id. All zeros means "none"
 /// (the `prev` of a member's first entry).
@@ -127,7 +142,7 @@ pub enum Payload {
     /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
     /// its author is in (design 10.8: an ack from a newer epoch than the reader's never counts
     /// toward the reader's confirmation).
-    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32 },
+    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, CheckHash)>, epoch: u32 },
     /// Vote, in membership epoch `epoch`, to remove `target`: it signed two versions of its entry
     /// `seq` (or another proof), or (`seq` = 0) it has gone silent or cannot keep up (reviews
     /// R3-2, R3-9). `frozen` is the head of target's chain this voter holds and will ever
@@ -273,7 +288,7 @@ impl Wr {
                 // their entry ids; a later epoch is tag 14 with the epoch appended.
                 self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.id(*id) }
-                match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
+                match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.0.extend_from_slice(&h.0) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
             }
             Payload::Vote { epoch, target, seq, frozen, kick } => {
@@ -443,7 +458,7 @@ impl Rd<'_> {
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
                 for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.id()?)) }
-                let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
+                let check = if self.u8()? == 1 { Some((self.u64()?, CheckHash(self.take(32)?.try_into().ok()?))) } else { None };
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
             }

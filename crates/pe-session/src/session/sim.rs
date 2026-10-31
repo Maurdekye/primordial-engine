@@ -185,6 +185,25 @@ impl WorldSim {
 
     /// Hash of the full world image plus tables: used at confirmed check frames (review H4).
     pub fn image_hash(&mut self) -> u64 {
+        fnv_bytes(&self.canonical_image()) ^ self.tables_hash().rotate_left(17)
+    }
+
+    /// The check hash at this frame (design 9.1, P22R-1): BLAKE3 over the canonical world image and
+    /// every engine table, so the same state hashes alike however it was reached.
+    pub fn check_hash(&mut self) -> CheckHash {
+        let image = self.canonical_image();
+        let mut h = blake3::Hasher::new();
+        h.update(b"pe-check");
+        h.update(&(image.len() as u64).to_le_bytes());
+        h.update(&image);
+        for w in self.tables_words() {
+            h.update(&w.to_le_bytes());
+        }
+        CheckHash(*h.finalize().as_bytes())
+    }
+
+    /// The world image's bytes as a world restored from a keyframe of this one would write them.
+    pub(super) fn canonical_image(&mut self) -> Vec<u8> {
         // A check-hash serialization is not a keyframe: keep it out of the snapshot counters.
         let (n, us) = (self.stats.saves, self.stats.save_us);
         let k = self.save();
@@ -196,10 +215,15 @@ impl WorldSim {
         assert!(deserialize_into_shell(&k.image, scratch, &mut self.slots), "canonical restore failed");
         let mut buf = RecBuffer::new();
         serialize_world(scratch, &mut buf, &mut self.registry);
-        fnv_bytes(&buf.data) ^ self.tables_hash().rotate_left(17)
+        buf.data
     }
 
     pub(super) fn tables_hash(&self) -> u64 {
+        fnv_u64s(self.tables_words())
+    }
+
+    /// Every engine table, canonically, as 64-bit words.
+    pub(super) fn tables_words(&self) -> Vec<u64> {
         let mut v = vec![self.frame];
         for (i, o) in self.t.objs.iter().enumerate() {
             if let Some(o) = o {
@@ -230,7 +254,7 @@ impl WorldSim {
                 v.extend([*o as u64, *n, 11]);
             }
         }
-        fnv_u64s(v)
+        v
     }
 
     /// Per-frame hash: Box3D body transforms + velocities, plus every engine table.
@@ -651,7 +675,7 @@ impl WorldSim {
                 }
             }
             if f % self.cfg.check_every == 0 {
-                let h = self.image_hash();
+                let h = self.check_hash();
                 self.check_hashes.insert(f, h);
                 // Review L2: a release-build finite check at every check frame. NaN payload bits differ
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
