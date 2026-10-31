@@ -199,7 +199,7 @@ pub fn badproposer() {
         if let Some(g) = genuine {
             if let Payload::Propose { epoch, round, valid_round, ref change } = g.payload {
                 let mut f = g.clone();
-                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![] };
+                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };
                 f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
                 forged.set(f.id());
                 for &to in &fooled {
@@ -342,7 +342,7 @@ pub fn join() {
     let panic_at = run_to_end(&mut sim, |sim| {
         if !asked && sim.net.now_us >= 2_000_000 {
             for m in [1, 2, 3] {
-                sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
+                sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
             }
             asked = true;
         }

@@ -1,11 +1,11 @@
-  cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2286 ms: a replica hit an assertion or a panic; m1 conf 116 of frame 131, m2 conf 114 of frame 131, m3 conf 112 of frame 131; at m1: members {1, 2, 3}, evicted [9]
+  cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2277 ms: a replica hit an assertion or a panic; m1 conf 114 of frame 130, m2 conf 114 of frame 130, m3 conf 112 of frame 130; at m1: members {1, 2, 3, 9}, evicted []
   fork at 9's seq 55, t=1935 ms; branch B 26 entries plus 10 extra acks
 RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (60, 118)} conf 467 frame 473 paused frames 0 lying votes found 0
 RESULT cutbackdate: m2 members {1, 2, 3} evicted {9: (60, 118)} conf 467 frame 473 paused frames 0 lying votes found 0
 RESULT cutbackdate: m3 members {1, 2, 3} evicted {9: (60, 118)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT cutbackdate: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [9]
-RESULT cutbackdate: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 133 (t=2.32 s) round 0 removed [9]
-RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [9]
+RESULT cutbackdate: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [9]
+RESULT cutbackdate: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 132 (t=2.30 s) round 0 removed [9]
+RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [9]
   m1: conf 467 frame 473 members {1, 2, 3} evicted {9: (60, 118)} rollbacks 0 max depth 0 violations 1 equivocations 1 checks ok 36 bad 0
   m2: conf 467 frame 473 members {1, 2, 3} evicted {9: (60, 118)} rollbacks 3 max depth 4 violations 1 equivocations 1 checks ok 36 bad 0
   m3: conf 467 frame 473 members {1, 2, 3} evicted {9: (60, 118)} rollbacks 1 max depth 2 violations 2 equivocations 1 checks ok 36 bad 0

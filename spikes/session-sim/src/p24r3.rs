@@ -186,7 +186,7 @@ pub fn latejoin() {
                 // The joiner asks, and member 1 hands it the whole log at once: it catches up on both
                 // decisions within a tick.
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
                 for e in sim.replica(1, 1).sim.all_entries() {
                     sim.net.send(1, 1, joiner, &Msg::Entry(e));
@@ -317,7 +317,7 @@ pub fn joinattests() {
                 let friend = vec![attest(Rel::Friend, joiner, 1, 1)];
                 for m in ids {
                     let attests = if m == 1 || m == 2 { friend.clone() } else { vec![] };
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests, sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, attests, u64::MAX));
                 }
                 asked = true;
             }
@@ -454,7 +454,7 @@ pub fn lagprecommit() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !asked && sim.net.now_us >= 2_800_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
                 asked = true;
             }
