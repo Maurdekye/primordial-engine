@@ -1,0 +1,12 @@
+# Terms for scripts/publish_check.sh. Copy this file to scripts/publish_terms.local (gitignored, so
+# the list itself stays out of the repository) and replace the examples with the real terms.
+# One term per line, case-insensitive: `fixed <text>` matches anywhere, `word <text>` as a whole
+# word only.
+
+# Names of people and machines, network addresses, mail domains:
+fixed <user name>
+fixed <machine name>
+fixed <address prefix>
+
+# Words the published text must not use (whole words, so longer words containing them are fine):
+word <word>

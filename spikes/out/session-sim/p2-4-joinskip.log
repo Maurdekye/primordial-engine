@@ -9,4 +9,4 @@ RESULT joinskip: members at m1 {1, 2, 3, 5} -> 5 STAYS; m1 conf 587 of frame 593
   m2: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 55 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 55 bad 0
   m5: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 80 violations 0 equivocations 0 checks ok 60 bad 0
-RESULT joinskip (two decisions, then 5 joins at epoch 2 and authors no ack before it is admitted): frames 0..592 honest m1=756487b1d1863f62 m2=756487b1d1863f62 m3=756487b1d1863f62 m5=756487b1d1863f62 | offline replay 756487b1d1863f62 | ALL EQUAL, NO FALSE CHECKS ; checks ok 225 bad 0
+RESULT joinskip (two decisions, then 5 joins at epoch 2 and authors no ack before it is admitted): frames 0..592 honest m1=70bfa97b5170501c m2=70bfa97b5170501c m3=70bfa97b5170501c m5=70bfa97b5170501c | offline replay 70bfa97b5170501c | ALL EQUAL, NO FALSE CHECKS ; checks ok 225 bad 0
