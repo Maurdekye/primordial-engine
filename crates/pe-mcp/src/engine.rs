@@ -304,6 +304,11 @@ impl Engine {
         Ok(b.scenario().ok_or_else(|| ToolError::new(ErrorCode::NoScenarioControl, "this peer is live, not the simulator"))?.check())
     }
 
+    /// Why the session stopped, once a panic faulted it.
+    pub fn faulted(&self) -> Option<&str> {
+        self.faulted.as_deref()
+    }
+
     /// Let a live backend do its housekeeping. A panic faults the session, as in `call`.
     pub fn tick(&mut self) {
         if self.faulted.is_some() {
