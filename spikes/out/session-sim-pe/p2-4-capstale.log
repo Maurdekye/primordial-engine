@@ -1,0 +1,10 @@
+  with round 3's stale-cap resets and strikes: 9 removed at 2.50 s, after 3 resets
+  capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833; at m1: members {1, 2, 3}, evicted [9]
+RESULT capstale: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT capstale: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT capstale: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT capstale: 0 resets, 9 removed at 3.17 s (1 cap vote at m1) -> VOTED OUT, NO RESET; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+  m1: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 61 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 61 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 61 bad 0
+RESULT capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch): frames 0..832 honest m1=1f360dea85ccc6a0 m2=1f360dea85ccc6a0 m3=1f360dea85ccc6a0 | offline replay 1f360dea85ccc6a0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 183 bad 0

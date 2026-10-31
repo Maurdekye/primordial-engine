@@ -1,0 +1,55 @@
+description = """
+P2-4 review round 5, VC4R-2 (a halt): friends-only join rules, every member an admin. At 2 s \
+joiner 5, a friend of admin 1, asks to join; 9's precommits are lost, and once 9 holds its own \
+first prevote every message it sends is lost (it crashes, in effect). With the request reaching \
+3 or not, the change must still admit 5 and remove 9. Part 1 runs with VC4R-2's fix switched off \
+(request not reaching 3), parts 2 and 3 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+guests = { role = 1, admins = [1, 2, 3, 9] }
+join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }] }
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 600, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[join]]
+at_ms = 2000
+member = 5
+to = [1, 2, 3, 9]
+attests = [{ rel = "friend", with = 1 }]
+
+[[byzantine]]
+kind = "go_silent"
+member = 9
+from_ms = 2000
+holds_own = "prevote"
+
+[[part]]
+world.1.fixes_off = ["VC4R2"]
+fault = [{ from = 9, msg = "precommit", drop = true }, { to = 3, msg = "join", drop = true }]
+report = [
+    { kind = "line", text = "  5 admitted at m1: {member@1:5}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "joinwedge (request reaches 3: false; 9 crashes after its first prevote)", fix = "VC4R-2's fix" },
+]
+
+[[part]]
+fault = [{ from = 9, msg = "precommit", drop = true }, { to = 3, msg = "join", drop = true }]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "joinwedge" },
+    { kind = "check", case = "joinwedge", label = "joinwedge reach3=false", at = 1, target = 9, members = [5], honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "joinwedge (request reaches 3: false; 9 crashes after its first prevote)" },
+]
+
+[[part]]
+fault = [{ from = 9, msg = "precommit", drop = true }]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "joinwedge" },
+    { kind = "check", case = "joinwedge", label = "joinwedge reach3=true", at = 1, target = 9, members = [5], honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "joinwedge (request reaches 3: true; 9 crashes after its first prevote)" },
+]

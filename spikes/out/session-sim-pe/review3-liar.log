@@ -1,8 +1,8 @@
   t=3575 ms: 9's touch s26 at frame 50 confirmed at m1: true, at m2: true (m1 conf 201) -> 9 signs a second version
   9's touches at m1: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
   9's touches at m2: m9s26@50 eff=Some(50) void=false, m9s26@50 eff=None void=true
-RESULT liar: m1 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
-RESULT liar: m2 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
-  m1: conf 467 frame 473 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 30 bad 0
-  m2: conf 467 frame 473 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 30 bad 0
-RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=1082434503f2fc57 m2=1082434503f2fc57 | offline replay 1082434503f2fc57 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0
+RESULT liar: m1 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 469 frame 473 paused frames 0 lying votes found 1
+RESULT liar: m2 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 469 frame 473 paused frames 0 lying votes found 1
+  m1: conf 469 frame 473 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 30 bad 0
+  m2: conf 469 frame 473 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 30 bad 0
+RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=a322707a7a1a2d48 m2=a322707a7a1a2d48 | offline replay a322707a7a1a2d48 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0

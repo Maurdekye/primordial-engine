@@ -1,0 +1,41 @@
+description = """
+P2-4 review round 4, VC3R-2: from 2 s everything 9 sends arrives 1.3 s late (its horizon trails \
+every reader's present by about 80 frames, past half the window and short of all of it), and in \
+every epoch it votes against 2, whom everyone hears, which forces a reset each time. Part 1 runs \
+with round 4's surviving slowness timers switched off (LAGKEEP), part 2 as shipped: 9 demoted."""
+include = ["../common/review.toml"]
+end_ms = 16000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+from = 9
+after_ms = 2000
+delay_ms = 1300
+
+[[byzantine]]
+kind = "churn_vote"
+member = 9
+target = 2
+from_ms = 2000
+while_member_at = 1
+to = [1, 2, 3]
+
+[[part]]
+world.1.fixes_off = ["LAGKEEP"]
+report = [
+    { kind = "line", text = "  9 removed: {removed_s@1:9}, after {resets@1} resets" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch)", fix = "round 4's surviving slowness timers" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "lagchurn" },
+    { kind = "check", case = "lagchurn", label = "lagchurn", at = 1, target = 9, event = "vote to demote it", honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3], label = "lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch)" },
+]

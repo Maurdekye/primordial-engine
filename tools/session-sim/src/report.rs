@@ -60,8 +60,8 @@ fn var(name: &str, v: &Vars) -> String {
         "conf" => r().conf.to_string(),
         "frame" => r().frame.to_string(),
         "now" => r().now.to_string(),
-        "member" => r().members.contains(&member(x)).to_string(),
-        "members" => format!("{:?}", r().members),
+        "member" => r().vcm.members.contains(&member(x)).to_string(),
+        "members" => format!("{:?}", r().vcm.members),
         "evicted" => format!("{:?}", r().members_evicted()),
         "touches" => touch_state(v.sim, v.world, member(m), member(x)),
         "x.stamp" => e().stamp.to_string(),
@@ -72,11 +72,13 @@ fn var(name: &str, v: &Vars) -> String {
         },
         "x.confirmed" => r().is_confirmed(e().id()).to_string(),
         "proposer" => r().proposer_of(0, 0).map_or("none".to_string(), |p| p.to_string()),
-        "role" => format!("{:?}", r().roles.get(&member(x))),
+        "role" => format!("{:?}", r().vcm.roles.get(&member(x))),
         "resets" => r().stats.resets.to_string(),
-        "member_list" => format!("{:?}", r().members.iter().copied().collect::<Vec<_>>()),
+        "member_list" => format!("{:?}", r().vcm.members.iter().copied().collect::<Vec<_>>()),
         "removed" => format!("{:?}", removed_at(v.sim, member(m), member(x))),
         "votes" => format!("{:?}", own_votes(v.sim, member(m))),
+        "removed_s" => secs(removed_at(v.sim, member(m), member(x))),
+        "strikes" => format!("{:?}", r().vcm.strikes),
         _ => panic!("template: unknown variable `{{{name}}}`"),
     }
 }
@@ -98,6 +100,27 @@ pub const CHECKS: &[&str] = &[
     "lagprecommit",
     "aheadlink",
     "onesided",
+    "removed",
+    "strikeframe",
+    "strikeframe_total",
+    "aheadshield",
+    "fakeref",
+    "capstale",
+    "lagchurn",
+    "votechurn",
+    "votechurn_off",
+    "adminvoid",
+    "joinskip",
+    "joinwedge",
+    "slowref",
+    "fakemix",
+    "adminfork",
+    "prevotefork",
+    "prevotefork_off",
+    "prevotefork_pf",
+    "capfake",
+    "fakeadmin",
+    "adminwedge",
 ];
 
 /// What the run left for the reports besides the simulator.
@@ -109,6 +132,30 @@ pub struct Ctx {
     pub started: Option<std::time::Instant>,
     /// `fork_branch`'s summary.
     pub fork_info: Option<String>,
+    /// The members `go_silent` silenced.
+    pub silenced: Vec<MemberId>,
+    /// `admin_wedge`'s (round-0 proposer, partitioned member, step reached, crash time in us).
+    pub wedge: Option<(MemberId, MemberId, u32, Option<u64>)>,
+}
+
+/// Whether every one of `ids` still confirms near its present at the end of the run (session-sim
+/// p24r4.rs `live`): a halted member sits at the speculation limit, a whole window past its
+/// confirmed frame.
+fn live(sim: &Sim, ids: &[MemberId]) -> bool {
+    ids.iter().all(|&m| {
+        let r = &sim.replica(m, 1).sim;
+        r.frame.saturating_sub(r.conf) < r.cfg.window
+    })
+}
+
+/// The epoch each of `ids` ends in: "m1 1, m2 1, ...".
+fn epochs(sim: &Sim, ids: &[MemberId]) -> String {
+    ids.iter().map(|&m| format!("m{m} {}", sim.replica(m, 1).sim.vcm.epoch)).collect::<Vec<_>>().join(", ")
+}
+
+/// "2, 3, 9, 5".
+fn id_list(ids: &[MemberId]) -> String {
+    ids.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 /// Finished runs kept by name (a part's `keep`), with when they panicked.
@@ -118,7 +165,11 @@ pub type Kept = BTreeMap<String, (Sim, Option<u64>)>;
 pub fn honest(h: &Honest, sim: &Sim) -> Vec<MemberId> {
     match h {
         Honest::List(v) => v.clone(),
-        Honest::At { members_at } => sim.replica(*members_at, 1).sim.members.iter().copied().collect(),
+        Honest::At { members_at } => sim.replica(*members_at, 1).sim.vcm.members.iter().copied().collect(),
+        Honest::Among { members_at, among } => {
+            let ms = &sim.replica(*members_at, 1).sim.vcm.members;
+            among.iter().copied().filter(|m| ms.contains(m)).collect()
+        }
     }
 }
 
@@ -172,6 +223,18 @@ impl Probe {
         }
         let pit = Pit { prev: vec![None; pit_params.4], ..Default::default() };
         Ok(Probe { spec, lag: Vec::new(), pit, pit_params })
+    }
+
+    /// Before every 1 ms step (where the spike's loops sampled): `votechurn`'s confirmation lag at
+    /// `at`, every 100 ms from 0.5 s.
+    pub fn pre_sample(&mut self, sim: &Sim) {
+        if let Report::Check { case, at: Some(a), .. } = &self.spec {
+            let t = sim.net.now_us;
+            if case == "votechurn" && t % 100_000 == 0 && t >= 500_000 {
+                let r = &sim.replica(*a, 1).sim;
+                self.lag.push((t, r.now.saturating_sub(r.conf)));
+            }
+        }
     }
 
     /// After every 1 ms step.
@@ -307,7 +370,7 @@ impl Probe {
             Report::Admitted { honest, joiner } => {
                 for &m in honest {
                     let r = &sim.replica(m, 1).sim;
-                    println!("  m{m}: admitted {:?}; {joiner}'s touches: {}", r.admitted, touch_state(sim, 1, m, *joiner));
+                    println!("  m{m}: admitted {:?}; {joiner}'s touches: {}", r.vcm.admitted, touch_state(sim, 1, m, *joiner));
                 }
             }
             Report::Admin { honest: h, label, outcomes: o, roles } => {
@@ -323,15 +386,13 @@ impl Probe {
             Report::Confs { honest, label } => println!("RESULT {label}: {}", confs(sim, honest)),
             Report::BeforeFix { honest: h, label, fix } => before_fix(sim, &honest(h, sim), label, fix, ctx.panic_at_ms),
             Report::ForkInfo => println!("  {}", ctx.fork_info.as_deref().unwrap_or("no fork_branch behaviour")),
-            Report::Check { case, label, text, honest, sides, at, members, target, until_ms, role, silent } => {
-                check(sim, ctx, case, label, text, honest, sides, *at, members, *target, *until_ms, *role, *silent)
-            }
+            Report::Check { .. } => check(sim, ctx, kept, &self.spec, &self.lag),
             Report::Membership { honest: h, label } => {
                 for m in honest(h, sim) {
                     let r = &sim.replica(m, 1).sim;
                     println!(
                         "RESULT {label}: m{m} members {:?} evicted {:?} conf {} frame {} paused frames {} lying votes found {}",
-                        r.members,
+                        r.vcm.members,
                         r.members_evicted(),
                         r.conf,
                         r.frame,
@@ -350,14 +411,14 @@ impl Probe {
                     bad.push(format!("conf below {}", conf_min.unwrap()));
                 }
                 if let Some(want) = members {
-                    if r.members.iter().copied().collect::<Vec<_>>() != *want {
+                    if r.vcm.members.iter().copied().collect::<Vec<_>>() != *want {
                         bad.push(format!("members not {want:?}"));
                     }
                 }
                 println!(
                     "RESULT {label}: m{at} world {world} conf {} members {:?} evicted {:?} -> {}",
                     r.conf,
-                    r.members,
+                    r.vcm.members,
                     r.members_evicted(),
                     if bad.is_empty() { "OK".to_string() } else { format!("FAIL ({})", bad.join(", ")) }
                 );
@@ -370,7 +431,7 @@ impl Probe {
                     let r = &sim.replica(m, w).sim;
                     println!(
                         "RESULT r14 crash: world {w} at m{m}: members {:?} evicted {:?} conf {} frame {} paused frames {}",
-                        r.members,
+                        r.vcm.members,
                         r.members_evicted(),
                         r.conf,
                         r.frame,
@@ -453,11 +514,11 @@ fn vc_report(sim: &Sim, members: &[MemberId], label: &str) {
     for &m in members {
         let rep = sim.replica(m, 1);
         let r = &rep.sim;
-        let at: Vec<String> = r.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} (t={:.2} s) round {rd} removed {rm:?}", sim_secs(rep, *f))).collect();
+        let at: Vec<String> = r.vcm.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} (t={:.2} s) round {rd} removed {rm:?}", sim_secs(rep, *f))).collect();
         println!(
             "RESULT {label}: m{m} epoch {} members {:?} view changes {} (resets {}, highest round {}) | {}",
-            r.epoch,
-            r.members,
+            r.vcm.epoch,
+            r.vcm.members,
             r.stats.view_changes,
             r.stats.resets,
             r.stats.max_round,
@@ -487,8 +548,8 @@ fn confs(sim: &Sim, ids: &[MemberId]) -> String {
 fn quiet_equal(sim: &Sim, honest: &[MemberId]) -> bool {
     let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(honest[0], 1).sim;
-    let members: Vec<MemberId> = first.members.iter().copied().collect();
-    let reference = replay(1, SceneKind::Pile { side: 8, layers: 4 }, first.cfg, &members, &final_log(first), frames);
+    let members: Vec<MemberId> = first.vcm.members.iter().copied().collect();
+    let reference = replay(1, SceneKind::Pile { side: 8, layers: 4 }, first.cfg, first.public_keys(), &members, &final_log(first), frames);
     let rd = digest(&reference, frames);
     let bad: u64 = honest.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
     honest.iter().all(|&m| digest(&sim.replica(m, 1).sim.hashes, frames) == rd) && bad == 0
@@ -505,7 +566,7 @@ fn before_fix(sim: &Sim, honest: &[MemberId], label: &str, fix: &str, stopped: O
         "  {label} with {fix} switched off (the behaviour before the fix): {state}; {}; at m{}: members {:?}, evicted {:?}",
         confs(sim, honest),
         honest[0],
-        r.members,
+        r.vcm.members,
         r.members_evicted().keys().collect::<Vec<_>>()
     );
 }
@@ -513,7 +574,7 @@ fn before_fix(sim: &Sim, honest: &[MemberId], label: &str, fix: &str, stopped: O
 fn outcomes(sim: &Sim, m: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
     let mut v: Vec<(u64, String)> = r
-        .admin_outcomes
+        .vcm.admin_outcomes
         .iter()
         .filter_map(|(id, ok)| {
             let e = r.all_entries().into_iter().find(|e| e.id() == *id)?;
@@ -532,13 +593,13 @@ fn outcomes(sim: &Sim, m: MemberId) -> String {
 
 fn roles_line(sim: &Sim, m: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
-    format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.members, r.roles, r.admins(), r.closed_at)
+    format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.vcm.members, r.vcm.roles, r.admins(), r.vcm.closed_at)
 }
 
 /// When member `m` decided to remove `x` (scenario seconds), if it did.
 fn removed_at(sim: &Sim, m: MemberId, x: MemberId) -> Option<f64> {
     let rep = sim.replica(m, 1);
-    rep.sim.vc_log.iter().find(|d| d.3.contains(&x)).map(|d| sim_secs(rep, d.1))
+    rep.sim.vcm.vc_log.iter().find(|d| d.3.contains(&x)).map(|d| sim_secs(rep, d.1))
 }
 
 /// The targets of member `m`'s own votes (not kick votes), as it holds them.
@@ -549,36 +610,31 @@ fn own_votes(sim: &Sim, m: MemberId) -> Vec<MemberId> {
         .into_iter()
         .filter(|e| e.member == m)
         .filter_map(|e| match e.payload {
-            Payload::Vote { target, kick: 0, .. } => Some(target),
+            Payload::Vote { target, kick, .. } if kick == EntryId::NONE => Some(target),
             _ => None,
         })
         .collect()
+}
+
+/// The spike's `secs`: a time in seconds, or "never".
+fn secs(t: Option<f64>) -> String {
+    t.map_or("never".to_string(), |t| format!("{t:.2} s"))
 }
 
 fn need<T: Copy>(v: Option<T>, case: &str, field: &str) -> T {
     v.unwrap_or_else(|| panic!("check {case}: needs `{field}`"))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn check(
-    sim: &Sim,
-    ctx: &Ctx,
-    case: &str,
-    label: &str,
-    text: &str,
-    honest: &[MemberId],
-    sides: &[Vec<MemberId>],
-    at: Option<MemberId>,
-    members: &[MemberId],
-    target: Option<MemberId>,
-    until_ms: Option<u64>,
-    role: Option<RoleId>,
-    silent: Option<u32>,
-) {
+/// The spike's one-off checks (see scenario.rs `Report::Check`); `samples` are `votechurn`'s.
+fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)]) {
+    let Report::Check { case, label, text, honest, sides, at, members, target, until_ms, role, silent, from_ms, runs, event, expect, conf_min } = spec else { unreachable!() };
+    let (case, label, text) = (case.as_str(), label.as_str(), text.as_str());
+    let (at, target, until_ms, role, silent, from_ms) = (*at, *target, *until_ms, *role, *silent, *from_ms);
+    let events = |m: MemberId, what: &str| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains(what)).count();
     match case {
         "bridge" => {
-            let a = sim.replica(sides[0][0], 1).sim.members.clone();
-            let b = sim.replica(sides[1][0], 1).sim.members.clone();
+            let a = sim.replica(sides[0][0], 1).sim.vcm.members.clone();
+            let b = sim.replica(sides[1][0], 1).sim.vcm.members.clone();
             println!(
                 "RESULT {label}: member lists after the partition healed: m{} {a:?}, m{} {b:?} -> {}",
                 sides[0][0],
@@ -595,15 +651,15 @@ fn check(
             }
         }
         "kickwar" => {
-            let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.members.iter().copied().collect();
+            let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.vcm.members.iter().copied().collect();
             let one = left.contains(&members[0]) != left.contains(&members[1]);
             println!("RESULT {label}: members left {left:?}: exactly one of the two admins removed: {one}{}", if one { "" } else { " -> FAIL" });
         }
         "kickpartition" => {
             let rep1 = sim.replica(members[0], 1);
             let heal = need(until_ms, case, "until_ms") as f64 / 1000.0;
-            let during = rep1.sim.vc_log.iter().any(|d| sim_secs(rep1, d.1) < heal);
-            let (a, b) = (sim.replica(members[0], 1).sim.members.clone(), sim.replica(members[1], 1).sim.members.clone());
+            let during = rep1.sim.vcm.vc_log.iter().any(|d| sim_secs(rep1, d.1) < heal);
+            let (a, b) = (sim.replica(members[0], 1).sim.vcm.members.clone(), sim.replica(members[1], 1).sim.vcm.members.clone());
             let t = need(target, case, "target");
             println!(
                 "RESULT {label}: decided during the partition: {during}; members after: m{} {a:?}, m{} {b:?} -> {}",
@@ -618,7 +674,7 @@ fn check(
             println!("RESULT {label}: admins at the end {admins:?} -> {}", if ok { "the release was refused, the hand-over held" } else { "FAIL" });
         }
         "adminclose" => {
-            let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.closed_at).collect();
+            let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.vcm.closed_at).collect();
             let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]);
             println!(
                 "RESULT {label}: {text}; session closed at frame {:?} at m{}, {:?} at m{} -> {}",
@@ -632,8 +688,8 @@ fn check(
         "joinrules" => {
             let [friend, stranger, confidant, owner] = members[..] else { panic!("check joinrules: members = [friend, stranger, confidant, owner]") };
             let guest = need(role, case, "role");
-            let admitted: Vec<MemberId> = sim.replica(1, 1).sim.members.iter().copied().collect();
-            let roles = &sim.replica(1, 1).sim.roles;
+            let admitted: Vec<MemberId> = sim.replica(1, 1).sim.vcm.members.iter().copied().collect();
+            let roles = &sim.replica(1, 1).sim.vcm.roles;
             let ok = roles.get(&friend) == Some(&guest) && roles.get(&confidant) == Some(&ADMIN) && roles.get(&owner) == Some(&ADMIN) && !admitted.contains(&stranger);
             println!(
                 "RESULT {label}: admitted {admitted:?}, roles {roles:?} -> {}",
@@ -642,6 +698,7 @@ fn check(
         }
         "vcscale" => {
             let silent = need(silent, case, "silent");
+            let from_s = need(from_ms, case, "from_ms") as f64 / 1000.0;
             // Every peer is a genesis member here, in id order (the spike's 1..=n).
             let ids: Vec<MemberId> = sim.peers.iter().map(|p| p.id).collect();
             let n = ids.len();
@@ -654,11 +711,11 @@ fn check(
             for &m in &live {
                 let rep = sim.replica(m, 1);
                 let r = &rep.sim;
-                match r.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
-                    Some(d) => at.push(sim_secs(rep, d.1) - 1.0),
+                match r.vcm.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
+                    Some(d) => at.push(sim_secs(rep, d.1) - from_s),
                     None => undecided += 1,
                 }
-                members_after.insert(r.members.len());
+                members_after.insert(r.vcm.members.len());
             }
             at.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let r1 = &sim.replica(live[0], 1).sim;
@@ -670,7 +727,7 @@ fn check(
                 at.get(at.len() / 2).copied().unwrap_or(f64::NAN),
                 at.last().copied().unwrap_or(f64::NAN),
                 live[0],
-                r1.vc_log,
+                r1.vcm.vc_log,
                 r1.conf,
                 if ctx.panic_at_ms.is_some() { "PANIC" } else { "no panic" },
                 ctx.started.map_or(0.0, |t| t.elapsed().as_secs_f64())
@@ -697,7 +754,7 @@ fn check(
         }
         "joinattests" => {
             let (at, j, guest) = (need(at, case, "at"), need(target, case, "target"), role);
-            let role = sim.replica(at, 1).sim.roles.get(&j).copied();
+            let role = sim.replica(at, 1).sim.vcm.roles.get(&j).copied();
             println!(
                 "RESULT {label}: {j}'s role at m{at} {role:?} -> {}; {}",
                 if role == Some(need(guest, case, "role")) { "ADMITTED AS GUEST" } else { "FAIL" },
@@ -705,31 +762,47 @@ fn check(
             );
         }
         "slowadmin" => {
-            let defs: Vec<String> = honest.iter().map(|&m| format!("m{m} {:?}", sim.replica(m, 1).sim.role_defs)).collect();
+            let defs: Vec<String> = honest.iter().map(|&m| format!("m{m} {:?}", sim.replica(m, 1).sim.vcm.role_defs)).collect();
             println!("RESULT {label}: role definitions {}", defs.join(", "));
         }
         "kickbackdate" => {
-            let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.members.iter().copied().collect();
-            let ok = left == members;
+            let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.vcm.members.iter().copied().collect();
+            let ok = left == *members;
             println!("RESULT {label}: members left {left:?} -> {}", if ok { "THE BACKDATED KICK IS VOID: 2 removed" } else { "FAIL" });
         }
         "lagprecommit" => {
-            let admitted = sim.replica(need(at, case, "at"), 1).sim.members.contains(&need(target, case, "target"));
+            let admitted = sim.replica(need(at, case, "at"), 1).sim.vcm.members.contains(&need(target, case, "target"));
             println!("RESULT {label}: joiner admitted {admitted} -> {}; {}", if admitted { "JOINED" } else { "FAIL" }, confs(sim, honest));
         }
         "aheadlink" => {
-            // Its votes are cast in an epoch the others have left, so none of the members ahead is removed.
-            let votes = own_votes(sim, need(at, case, "at"));
-            let ms = sim.replica(honest[0], 1).sim.members.clone();
+            // Its votes are cast in an epoch the others have left, and an epoch decides once, so none
+            // of the members ahead is removed.
+            let a = need(at, case, "at");
+            let votes: Vec<(u32, MemberId)> = sim
+                .replica(a, 1)
+                .sim
+                .all_entries()
+                .into_iter()
+                .filter(|e| e.member == a)
+                .filter_map(|e| match e.payload {
+                    Payload::Vote { epoch, target, kick: EntryId::NONE, .. } => Some((epoch, target)),
+                    _ => None,
+                })
+                .collect();
+            let ms = sim.replica(honest[0], 1).sim.vcm.members.clone();
             let kept = members.iter().all(|m| ms.contains(m));
             println!(
-                "RESULT {label}: {}'s votes against the members ahead {votes:?}; members {ms:?} -> {}",
-                need(at, case, "at"),
-                if kept { "THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
+                "RESULT {label}: {a}'s votes against the members ahead, by (epoch, target): {votes:?}; members {ms:?} -> {}",
+                if kept && !votes.is_empty() { "CAST, AND THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
             );
         }
+        "removed" => {
+            let t = need(target, case, "target");
+            let removed = removed_at(sim, need(at, case, "at"), t);
+            println!("RESULT {label}: {t} removed at {} -> {}", secs(removed), if removed.is_some() { text } else { "FAIL" });
+        }
         "onesided" => {
-            let first = |m: MemberId| sim.replica(m, 1).sim.vc_log.first().map(|d| d.3.clone());
+            let first = |m: MemberId| sim.replica(m, 1).sim.vcm.vc_log.first().map(|d| d.3.clone());
             let (a, b) = (first(members[0]), first(members[1]));
             println!(
                 "RESULT onesided (control: 3 of 6 collude, above t(6) = 1): epoch 1 removed {a:?} at m{}, {b:?} at m{} -> {}{}",
@@ -742,6 +815,194 @@ fn check(
                 }
             );
         }
+        "strikeframe" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let r = &sim.replica(a, 1).sim;
+            let ok = r.vcm.members.contains(&members[0]);
+            println!(
+                "RESULT strikeframe {text}: at m{a} members {:?}, resets {}, {t} removed at {} -> {}",
+                r.vcm.members,
+                r.stats.resets,
+                secs(removed_at(sim, a, t)),
+                if ok { format!("{} KEPT", members[0]) } else { "FAIL".to_string() }
+            );
+        }
+        "strikeframe_total" => {
+            let a = need(at, case, "at");
+            let kept_n = runs.iter().filter(|k| kept.get(*k).unwrap_or_else(|| panic!("check: no kept run `{k}`")).0.replica(a, 1).sim.vcm.members.contains(&members[0])).count();
+            println!("RESULT strikeframe: {} kept in {kept_n} of {} timings -> {}", members[0], runs.len(), if kept_n == runs.len() { "OK" } else { "FAIL" });
+        }
+        "aheadshield" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let voted_out = expect.as_deref() == Some("voted_out");
+            let ok = if voted_out { removed.is_some() } else { removed.is_none() && sim.replica(a, 1).sim.conf > need(*conf_min, case, "conf_min") };
+            println!(
+                "RESULT aheadshield {text}: {t} removed at {}; {} -> {}",
+                secs(removed),
+                confs(sim, honest),
+                match (ok, voted_out) {
+                    (false, _) => "FAIL",
+                    (true, true) => "VOTED OUT",
+                    (true, false) => "HARMLESS",
+                }
+            );
+        }
+        "fakeref" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!(
+                "RESULT {label}: {t} removed at {} ({n} withholding vote at m{a}) -> {}; {}",
+                secs(removed),
+                if removed.is_some() { "VOTED OUT" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "capstale" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let resets = sim.replica(a, 1).sim.stats.resets;
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!(
+                "RESULT {label}: {resets} resets, {t} removed at {} ({n} cap vote at m{a}) -> {}; {}",
+                secs(removed),
+                if removed.is_some() && resets == 0 { "VOTED OUT, NO RESET" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "lagchurn" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            let resets = sim.replica(a, 1).sim.stats.resets;
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!(
+                "RESULT {label}: {resets} resets, {t} removed at {} ({n} demotion vote at m{a}) -> {}; {}",
+                secs(removed),
+                if removed.is_some() && n > 0 { "DEMOTED" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "votechurn" | "votechurn_off" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let (from, until) = (need(from_ms, case, "from_ms") as f64 / 1000.0, need(until_ms, case, "until_ms") as f64 / 1000.0);
+            let r1 = sim.replica(a, 1);
+            let removed = removed_at(sim, a, t);
+            let during = r1.sim.vcm.vc_log.iter().filter(|d| (from..until).contains(&sim_secs(r1, d.1)) && d.3.is_empty()).count();
+            if case == "votechurn_off" {
+                println!("  with round 3's strikes: {t} removed at {}; {during} resets during the churn", secs(removed));
+                return;
+            }
+            let after = r1.sim.vcm.vc_log.iter().filter(|d| sim_secs(r1, d.1) > until + 0.5 && d.3.is_empty()).count();
+            // The samples: (time, lag), bucketed before, during and from 2 s after the churn.
+            let (f_us, u_us) = ((from * 1e6) as u64, (until * 1e6) as u64);
+            let mut lag: [Vec<u64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            for &(t_us, l) in samples {
+                let k = if t_us < f_us { 0 } else if t_us < u_us { 1 } else if t_us >= u_us + 2_000_000 { 2 } else { continue };
+                lag[k].push(l);
+            }
+            let mm = |mut v: Vec<u64>| {
+                v.sort_unstable();
+                (v.get(v.len() / 2).copied().unwrap_or(0), v.last().copied().unwrap_or(0))
+            };
+            let [b, d, af] = lag.map(mm);
+            println!(
+                "RESULT votechurn: {during} resets in the {:.0} s of churn ({:.1} per s); m{a}'s confirmation lag in frames, median/max: {}/{} before, {}/{} during, {}/{} after; {t} kicked at {}, {after} resets after -> {}",
+                until - from,
+                during as f64 / (until - from),
+                b.0,
+                b.1,
+                d.0,
+                d.1,
+                af.0,
+                af.1,
+                secs(removed),
+                if removed.is_some() && after == 0 { "THE KICK ENDS IT" } else { "FAIL" }
+            );
+        }
+        "adminvoid" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let role = sim.replica(a, 1).sim.vcm.roles.get(&t).copied();
+            println!(
+                "RESULT {label}: {t}'s role at m{a} {role:?} -> {}; {}",
+                if role == Some(ADMIN) { "THE VOID ENTRY IS NOT APPLIED" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "joinskip" => {
+            let (a, j) = (need(at, case, "at"), need(target, case, "target"));
+            let ms = sim.replica(a, 1).sim.vcm.members.clone();
+            println!("RESULT {label}: members at m{a} {ms:?} -> {}; {}", if ms.contains(&j) { format!("{j} STAYS") } else { "FAIL".to_string() }, confs(sim, honest));
+        }
+        "joinwedge" => {
+            let (a, t, j) = (need(at, case, "at"), need(target, case, "target"), members[0]);
+            let admitted = sim.replica(a, 1).sim.vcm.members.contains(&j);
+            println!(
+                "RESULT {label}: {j} admitted {admitted}, {t} removed at {} -> {}; {}",
+                secs(removed_at(sim, a, t)),
+                if admitted { "ADMITTED" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "slowref" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            println!("RESULT {label}: {t} removed at {} -> {}; {}", secs(removed), if removed.is_some() { "DEMOTED" } else { "FAIL" }, confs(sim, honest));
+        }
+        "fakemix" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!("REPRO {label}: {t} removed at {}; withholding votes at m{a} {n}; {}", secs(removed_at(sim, a, t)), confs(sim, honest));
+        }
+        "adminfork" => {
+            let (a, t, x) = (need(at, case, "at"), need(target, case, "target"), members[0]);
+            println!(
+                "REPRO {label}: {t} crashed {}; {t} removed at {}; {x}'s role at m{a} {:?}; {}",
+                ctx.silenced.contains(&t),
+                secs(removed_at(sim, a, t)),
+                sim.replica(a, 1).sim.vcm.roles.get(&x).copied(),
+                confs(sim, honest)
+            );
+        }
+        "prevotefork" | "prevotefork_off" => {
+            let (obs, capper) = (need(at, case, "at"), need(target, case, "target"));
+            let voted = events(obs, event.as_deref().unwrap_or("")) > 0;
+            if case == "prevotefork_off" {
+                println!("  m{obs} votes to remove capper {capper}: {voted}");
+            } else {
+                // Round 7: liveness of the members other than the faulty proposer (`honest`).
+                let kept = sim.replica(obs, 1).sim.vcm.members.contains(&capper) && sim.replica(capper, 1).sim.vcm.members.contains(&capper);
+                let ok = live(sim, honest);
+                println!(
+                    "RESULT {label}: m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; epochs at the end: {}; confirmation live at the end ({}): {ok} -> {}",
+                    epochs(sim, members),
+                    id_list(honest),
+                    if !voted && kept && ok { "THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE, AND CONFIRMATION GOES ON" } else { "FAIL" }
+                );
+            }
+        }
+        "prevotefork_pf" => {
+            println!("  epochs at the end: {}; confirmation live at the end ({}): {}", epochs(sim, members), id_list(honest), live(sim, honest));
+        }
+        "capfake" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            println!("REPRO {label}: {t} removed at {}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
+        }
+        "fakeadmin" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let vcs = sim.replica(a, 1).sim.vcm.vc_log.len();
+            println!("REPRO {label}: {t} removed at {}; decisions at m{a} {vcs}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
+        }
+        "adminwedge" => {
+            let t = need(target, case, "target");
+            let (p0, part, step, crash_at) = ctx.wedge.expect("adminwedge: validated to have an admin_wedge behaviour");
+            println!(
+                "REPRO {label}: proposer(0,0)={p0}, partitioned {part}; step reached {step}, {t} crashed at {crash_at:?} us; {t} removed at {}; live at the end: {}; {}",
+                secs(removed_at(sim, 1, t)),
+                live(sim, honest),
+                confs(sim, honest)
+            );
+        }
         _ => panic!("check: unknown case `{case}`"),
     }
 }
@@ -751,7 +1012,10 @@ fn check(
 /// HO-1's fix switched off.
 fn handowner((a, pa): &(Sim, Option<u64>), (b, pb): &(Sim, Option<u64>), (c, pc): &(Sim, Option<u64>), member: MemberId, h1: u32, label: &str) {
     let ids = [1, 2];
-    let frames = [a, b].iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    // Only frames every compared replica has confirmed: past its confirmed frame a replica may still
+    // roll back.
+    let lowest = |ss: [&Sim; 2]| ss.iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame.saturating_sub(1).min(s.replica(m, 1).sim.conf))).min().unwrap_or(0);
+    let frames = lowest([a, b]);
     let mut all_refused = true;
     for m in ids {
         let r = &a.replica(m, 1).sim;
@@ -775,7 +1039,7 @@ fn handowner((a, pa): &(Sim, Option<u64>), (b, pb): &(Sim, Option<u64>), (c, pc)
         all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
         println!("  m{m}: member {member}'s touch of a ball carrying a state for member 1's hand: {planted:?}");
     }
-    let frames_c = [c, b].iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let frames_c = lowest([c, b]);
     let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
     println!(
         "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",
@@ -816,7 +1080,7 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
         }
     }
     let r = first.unwrap();
-    let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+    let members: Vec<MemberId> = r.sim.vcm.members.iter().copied().collect();
     let reference = replay_sim_like(&r.sim, r.scene, &members, &final_log(&r.sim), frames).hashes;
     let rd = digest(&reference, frames);
     let all_equal = digests.iter().all(|(_, d)| *d == rd);
@@ -921,8 +1185,8 @@ fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Option<u64>) -
     let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let r0 = sim.replica(honest[0], 1);
     let first = &r0.sim;
-    let members: Vec<MemberId> = first.members.iter().copied().collect();
-    let reference = replay(1, r0.scene, first.cfg, &members, &final_log(first), frames);
+    let members: Vec<MemberId> = first.vcm.members.iter().copied().collect();
+    let reference = replay(1, r0.scene, first.cfg, first.public_keys(), &members, &final_log(first), frames);
     let rd = digest(&reference, frames);
     let ds: Vec<(MemberId, u64)> = honest.iter().map(|&m| (m, digest(&sim.replica(m, 1).sim.hashes, frames))).collect();
     let equal = ds.iter().all(|(_, d)| *d == rd);
@@ -934,7 +1198,7 @@ fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Option<u64>) -
             "  m{m}: conf {} frame {} members {:?} evicted {:?} rollbacks {} max depth {} violations {} equivocations {} checks ok {} bad {}",
             r.conf,
             r.frame,
-            r.members,
+            r.vcm.members,
             r.members_evicted(),
             r.stats.rollbacks,
             r.stats.max_depth,
@@ -1040,15 +1304,15 @@ fn r14_conservation(sim: &Sim, label: &str) {
     for (w, name) in [(1, "A"), (2, "B")] {
         for p in &sim.peers {
             if let Some(r) = p.worlds.get(&w) {
-                let live = r.sim.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
+                let live = r.sim.objects().map(|(_, o)| o).filter(|o| o.global == GID40).count();
                 let esc: Vec<String> = r.sim.t.escrow.iter().map(|(t, e)| format!("T{t}:{:?}", e.status)).collect();
                 let arr: Vec<String> = r.sim.t.arrivals.iter().map(|(t, a)| format!("T{t}:{a:?}")).collect();
                 println!("  m{} world {name}: object 40 live copies {live}; escrow {esc:?}; arrivals {arr:?}", p.id);
             }
         }
     }
-    let live_a = sim.replica(2, 1).sim.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
-    let live_b = sim.replica(3, 2).sim.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
+    let live_a = sim.replica(2, 1).sim.objects().map(|(_, o)| o).filter(|o| o.global == GID40).count();
+    let live_b = sim.replica(3, 2).sim.objects().map(|(_, o)| o).filter(|o| o.global == GID40).count();
     let pending = sim.replica(2, 1).sim.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
     println!(
         "RESULT r14 {label}: object 40 live in A {live_a}, in B {live_b}, pending escrow {pending} -> {}",
@@ -1057,7 +1321,7 @@ fn r14_conservation(sim: &Sim, label: &str) {
 }
 
 fn r14_forge_conservation(sim: &Sim, forged: &[Forged], label: &str, original: bool, attacks: Option<usize>, control: bool) {
-    let live = |m: MemberId, w: WorldId, g: u64| sim.replica(m, w).sim.t.objs.iter().flatten().filter(|o| o.global == g).count();
+    let live = |m: MemberId, w: WorldId, g: u64| sim.replica(m, w).sim.objects().map(|(_, o)| o).filter(|o| o.global == g).count();
     let (g50, g51) = ((1u64 << 32) | 50, (1u64 << 32) | 51);
     let (a50, a51, d50, b40) = (live(1, 1, g50), live(1, 1, g51), live(2, 4, g50), live(3, 2, GID40));
     if original {
@@ -1150,7 +1414,7 @@ fn r14_chain_epoch(sim: &Sim) {
         }
     }
     let a = &sim.replica(2, 1).sim;
-    println!("RESULT r14 chain-epoch: A at m2: epoch {} members {:?} decisions {:?}", a.epoch, a.members, a.vc_log);
+    println!("RESULT r14 chain-epoch: A at m2: epoch {} members {:?} decisions {:?}", a.vcm.epoch, a.vcm.members, a.vcm.vc_log);
     for (w, label, m) in [(2, "B", 3), (3, "C", 4)] {
         let r = &sim.replica(m, w).sim;
         for e in r.all_entries() {
@@ -1174,12 +1438,12 @@ fn r14_chain_epoch(sim: &Sim) {
     let mut parts = Vec::new();
     for (w, label, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
         let r = &sim.replica(m, w).sim;
-        let live = r.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
+        let live = r.objects().map(|(_, o)| o).filter(|o| o.global == GID40).count();
         pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
         total += live;
         parts.push(format!("{label} {live}"));
     }
-    let in_c = sim.replica(4, 3).sim.t.objs.iter().flatten().any(|o| o.global == GID40);
+    let in_c = sim.replica(4, 3).sim.objects().map(|(_, o)| o).any(|o| o.global == GID40);
     println!(
         "RESULT r14 chain-epoch: A:40 live copies {} ; pending escrows {pending} -> {}",
         parts.join(", "),
@@ -1192,7 +1456,7 @@ fn r14_chain_conservation(sim: &Sim, label: &str) {
     let mut parts = Vec::new();
     for (w, name, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
         let r = &sim.replica(m, w).sim;
-        let live = r.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
+        let live = r.objects().map(|(_, o)| o).filter(|o| o.global == GID40).count();
         pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
         total += live;
         parts.push(format!(
@@ -1206,7 +1470,7 @@ fn r14_chain_conservation(sim: &Sim, label: &str) {
     println!(
         "RESULT {label}: A:40 live copies {} ; pending escrows {pending} -> {}",
         parts.join(", "),
-        if total == 1 && pending == 0 && sim.replica(2, 1).sim.t.objs.iter().flatten().any(|o| o.global == GID40) {
+        if total == 1 && pending == 0 && sim.replica(2, 1).sim.objects().map(|(_, o)| o).any(|o| o.global == GID40) {
             "CONSERVED (back in A, nothing in limbo)"
         } else {
             "NOT CONSERVED"

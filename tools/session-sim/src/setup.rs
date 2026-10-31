@@ -16,7 +16,7 @@ pub fn scene(s: SceneCfg) -> SceneKind {
 }
 
 /// The review fixes by name (session.rs `fix`).
-pub const FIXES: &[(&str, u32)] = &[
+pub const FIXES: &[(&str, u64)] = &[
     ("VC2", fix::VC2),
     ("VC3", fix::VC3),
     ("VC4", fix::VC4),
@@ -32,9 +32,27 @@ pub const FIXES: &[(&str, u32)] = &[
     ("VCR9", fix::VCR9),
     ("VCR12", fix::VCR12),
     ("HO1", fix::HO1),
+    ("VC3R1", fix::VC3R1),
+    ("VC3R2", fix::VC3R2),
+    ("VC3R3", fix::VC3R3),
+    ("VC3R4", fix::VC3R4),
+    ("VC3R6", fix::VC3R6),
+    ("VC3R7", fix::VC3R7),
+    ("LAGKEEP", fix::LAGKEEP),
+    ("VC4R1", fix::VC4R1),
+    ("VC4R2", fix::VC4R2),
+    ("VC4R3", fix::VC4R3),
+    ("VC4R4", fix::VC4R4),
+    ("VC4R5", fix::VC4R5),
+    ("VC4R6", fix::VC4R6),
+    ("VC3R3S", fix::VC3R3S),
+    ("VC6R1", fix::VC6R1),
+    ("VC6R3", fix::VC6R3),
+    ("VC6R4", fix::VC6R4),
+    ("PF1", fix::PF1),
 ];
 
-pub fn fixes_off(w: &WorldCfg) -> Result<u32, String> {
+pub fn fixes_off(w: &WorldCfg) -> Result<u64, String> {
     w.fixes_off.iter().try_fold(0, |acc, n| {
         FIXES.iter().find(|(k, _)| k == n).map(|(_, b)| acc | b).ok_or_else(|| format!("fixes_off: unknown fix `{n}` (one of {:?})", FIXES.iter().map(|f| f.0).collect::<Vec<_>>()))
     })
@@ -228,9 +246,10 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 if let Some(ms) = rc.ack_every_ms {
                     r.ack_every_us = ms * 1000;
                 }
-                r.sim.withhold_vc = rc.withhold_vc;
-                r.sim.byz_ally = rc.byz_ally;
-                r.sim.byz_no_precommit = rc.byz_no_precommit;
+                r.sim.vcm.withhold_vc = rc.withhold_vc;
+                r.sim.vcm.byz_ally = rc.byz_ally;
+                r.sim.vcm.byz_no_precommit = rc.byz_no_precommit;
+                r.sim.quiet_until_member = rc.quiet_until_member;
             }
             if !joiner && w.follow_joiners != Some(false) {
                 for &j in &w.joiners {
@@ -239,17 +258,17 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
             }
             if let Some(g) = &w.guests {
                 // The spike's `guests`: every member (the roles table) a guest but the admins.
-                r.sim.role_defs.insert(g.role, 0);
-                let ms: Vec<u32> = r.sim.roles.keys().copied().collect();
+                r.sim.vcm.role_defs.insert(g.role, 0);
+                let ms: Vec<u32> = r.sim.vcm.roles.keys().copied().collect();
                 for m in ms {
-                    r.sim.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
+                    r.sim.vcm.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
                 }
             }
             if !w.owners.is_empty() {
-                r.sim.owners = w.owners.iter().copied().collect();
+                r.sim.vcm.owners = w.owners.iter().copied().collect();
             }
             if let Some(j) = rules {
-                r.sim.join_rules = j;
+                r.sim.vcm.join_rules = j;
             }
             r.sim.fixes_off = off;
         }

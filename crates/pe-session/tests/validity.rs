@@ -45,3 +45,34 @@ fn a_touch_carries_only_its_own_object() {
     assert_eq!(outcome(&s, &bad), Some(Outcome::RejectedInvalid));
     assert_eq!(outcome(&s, &good), Some(Outcome::Accepted));
 }
+
+/// Review P23-6 (design 8.4): a plain touch on an object another member holds applies its impulse,
+/// but not its carried state: it acts through physics, never by placing the held object.
+#[test]
+fn a_touch_on_another_members_held_object_does_not_place_it() {
+    let members = [1, 2, 3];
+    let run = |carried_by_2: bool| {
+        let mut s = WorldSim::new(1, 3, &members, SceneKind::Pile { side: 4, layers: 1 }, SimConfig::default(), KeyRing::test(3));
+        let mut far = s.obj_state(5).unwrap();
+        far.0[1] = 50.0f32.to_bits();
+        let g1 = touch(1, 1, EntryId::NONE, 10, 5, true, None);
+        let p2 = touch(2, 1, EntryId::NONE, 12, 5, false, carried_by_2.then_some((5, far)));
+        for e in [&g1, &p2] {
+            s.insert(test_sign(1, e.clone()));
+        }
+        s.advance(13);
+        (outcome(&s, &p2), s.obj_state(5).unwrap())
+    };
+    let (o, with) = run(true);
+    let (_, without) = run(false);
+    assert_eq!(o, Some(Outcome::Accepted), "the push applies");
+    assert_eq!(with, without, "the carried state was not written onto the held object");
+    // Unheld, the same carried state is written.
+    let mut s = WorldSim::new(1, 3, &members, SceneKind::Pile { side: 4, layers: 1 }, SimConfig::default(), KeyRing::test(3));
+    let mut far = s.obj_state(5).unwrap();
+    far.0[1] = 50.0f32.to_bits();
+    let p = touch(2, 1, EntryId::NONE, 12, 5, false, Some((5, far)));
+    s.insert(test_sign(1, p.clone()));
+    s.advance(13);
+    assert_ne!(s.obj_state(5).unwrap(), without);
+}

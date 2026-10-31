@@ -62,6 +62,17 @@ for v in fork9 jointiming bogusprecommit futureack; do run p2-4-$v $v; done
 for v in kickwar kickpartition lastadmin adminclose joinrules; do run d80-$v $v; done
 # P2-4 review round 3 (design 10.8): each repro also reports its run with the fix switched off.
 for v in ghostkick selfkickhead ackgap latejoin capchurn deepfork cutbackdate joinattests slowadmin kickbackdate lagprecommit aheadlink; do run p2-4-$v $v; done
+# P2-4 review round 4 (design 10.8): the same, for the round-3 findings and round 4's own changes.
+for v in strikeframe aheadshield fakeref capstale lagchurn votechurn adminvoid joinsquat joinskip; do run p2-4-$v $v; done
+# P2-4 review round 5 (design 10.8): the join wedge and the slow/fake-reference halt.
+for v in joinwedge slowref prevotefork; do run p2-4-$v $v; done
+for v in fakemix adminfork; do run p2-4-$v $v; done
+# P2-4 review round 6, fixed in round 7 (design 10.8): three halts by one faulty member; each
+# repro also reports its run with the fix switched off.
+for v in capfake fakeadmin adminwedge; do run p2-4-$v $v; done
+# The randomized Byzantine schedule generator (not a scenario file): a fixed seed range, checked
+# against the written invariants (spikes/out/session-sim/INVARIANTS.md). A larger run is separate.
+"$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"
 # Review VC-1, a control outside the check below (expected to fork): three of six collude, above the
 # bound of t(6) = 1 faulty member.
 mkdir -p $O/p2-4-controls

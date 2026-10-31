@@ -1,2 +1,2 @@
 RESULT ties: same-frame conflicts on one object at 150 frames, winners per member {1: 150, 2: 150, 3: 150}
-RESULT ties world 1: frames 0..6000 digests m1=59ff948d6e067c24 m2=59ff948d6e067c24 m3=59ff948d6e067c24 | offline replay 59ff948d6e067c24 | ALL EQUAL
+RESULT ties world 1: frames 0..6000 digests m1=5f04ae6cbef628e0 m2=5f04ae6cbef628e0 m3=5f04ae6cbef628e0 | offline replay 5f04ae6cbef628e0 | ALL EQUAL

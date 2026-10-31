@@ -2,7 +2,7 @@
   member 1's touch at m1: m1s31@60 eff=Some(60) void=false
   member 1's touch at m2: m1s31@60 eff=Some(60) void=false
   member 1's touch at m3: m1s31@60 eff=Some(60) void=false
-  m1: conf 587 frame 593 members {1, 2, 3} evicted {9: (197, 399)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 54 bad 0
-  m2: conf 587 frame 593 members {1, 2, 3} evicted {9: (197, 399)} rollbacks 3 max depth 2 violations 0 equivocations 1 checks ok 54 bad 0
-  m3: conf 587 frame 593 members {1, 2, 3} evicted {9: (197, 399)} rollbacks 3 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
-RESULT evict (late entry, then an eviction): frames 0..592 honest m1=e7d9480867ba0841 m2=e7d9480867ba0841 m3=e7d9480867ba0841 | offline replay e7d9480867ba0841 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+  m1: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 3 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
+  m2: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 4 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
+  m3: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 4 max depth 9 violations 0 equivocations 1 checks ok 54 bad 0
+RESULT evict (late entry, then an eviction): frames 0..592 honest m1=c1e534243af4a55f m2=c1e534243af4a55f m3=c1e534243af4a55f | offline replay c1e534243af4a55f | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0

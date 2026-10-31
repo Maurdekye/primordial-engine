@@ -56,13 +56,111 @@ pub fn signing_message(world: u32, session: &SessionId, id: EntryId) -> Vec<u8> 
 /// The signing domain of facts: R14 attestations, precommits of the view change (S3c).
 pub const FACT_DOMAIN: &[u8; 8] = b"pe-fact\0";
 
-/// The bytes a fact signature covers: `"pe-fact\0" | world | fact`. Facts are tagged 64-bit hashes
-/// for now (S3c keeps the spike's fact hashing; making them collision-resistant is a follow-up).
-pub fn fact_message(world: u32, fact: u64) -> [u8; 20] {
-    let mut m = [0u8; 20];
+/// What members sign besides entries (review P23-2): a 256-bit BLAKE3 digest of a fact's typed
+/// fields, keyed by its kind ([`FactWriter`]). The spike's 64-bit FNV facts inverted step by step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Fact(pub [u8; 32]);
+
+impl Fact {
+    /// No fact (scenario fixtures for invalid attestations).
+    pub const ZERO: Fact = Fact([0; 32]);
+}
+
+/// The kinds of fact, each hashed under its own BLAKE3 `derive_key` context, so a digest of one kind
+/// is never a digest of another (the spike's view-change and commit facts shared tag 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactKind {
+    /// A precommit's view-change value: epoch, round, value.
+    VcValue,
+    /// R14: a transfer committed in its source: src, transfer, global, dest, via.
+    Committed,
+    /// R14: an object departed its source (`fact_departed`).
+    Departed,
+    /// R14: the destination's verdict: dst, transfer, accepted.
+    Verdict,
+    /// A join attestation's relationship (signed in world 0: it holds in any world).
+    Rel,
+    /// Round 4's join signature (a fix-off fixture).
+    Join,
+}
+
+impl FactKind {
+    pub fn context(self) -> &'static str {
+        match self {
+            FactKind::VcValue => "primordial-engine 2026 fact vc-value v1",
+            FactKind::Committed => "primordial-engine 2026 fact committed v1",
+            FactKind::Departed => "primordial-engine 2026 fact departed v1",
+            FactKind::Verdict => "primordial-engine 2026 fact verdict v1",
+            FactKind::Rel => "primordial-engine 2026 fact rel v1",
+            FactKind::Join => "primordial-engine 2026 fact join v1",
+        }
+    }
+}
+
+/// The canonical writer of a fact: fixed-width little-endian fields in a fixed order, a u32 length
+/// before anything variable-length, under the kind's context.
+pub struct FactWriter(blake3::Hasher);
+
+impl FactWriter {
+    pub fn new(kind: FactKind) -> Self {
+        FactWriter(blake3::Hasher::new_derive_key(kind.context()))
+    }
+    pub fn u32(mut self, v: u32) -> Self {
+        self.0.update(&v.to_le_bytes());
+        self
+    }
+    pub fn u64(mut self, v: u64) -> Self {
+        self.0.update(&v.to_le_bytes());
+        self
+    }
+    pub fn bool(mut self, v: bool) -> Self {
+        self.0.update(&[v as u8]);
+        self
+    }
+    pub fn id(mut self, id: &EntryId) -> Self {
+        self.0.update(&id.0);
+        self
+    }
+    pub fn bytes(mut self, b: &[u8]) -> Self {
+        self.0.update(&(b.len() as u32).to_le_bytes());
+        self.0.update(b);
+        self
+    }
+    pub fn finish(self) -> Fact {
+        Fact(*self.0.finalize().as_bytes())
+    }
+}
+
+/// A 64-bit BLAKE3 digest under `context` (the view-change value, the provenance chain hash): not
+/// invertible like the spike's FNV, though still 64 bits wide against a birthday search.
+pub fn hash64(context: &str, b: &[u8]) -> u64 {
+    let h = blake3::Hasher::new_derive_key(context).update(b).finalize();
+    u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap())
+}
+
+/// The bytes a fact signature covers: `"pe-fact\0" | world | session | fact`. The session is the
+/// signing world's (review P23-2: a fact cannot be replayed into a later session of that world);
+/// world 0, for attestations that hold in any world, has the all-zero session.
+pub fn fact_message(world: u32, session: &SessionId, fact: Fact) -> [u8; 76] {
+    let mut m = [0u8; 76];
     m[..8].copy_from_slice(FACT_DOMAIN);
     m[8..12].copy_from_slice(&world.to_le_bytes());
-    m[12..].copy_from_slice(&fact.to_le_bytes());
+    m[12..44].copy_from_slice(session);
+    m[44..].copy_from_slice(&fact.0);
+    m
+}
+
+/// The signing domain of join requests (review VC4R-6).
+pub const JOIN_DOMAIN: &[u8; 8] = b"pe-join\0";
+
+/// The bytes a join request's signature covers: `"pe-join\0" | session | joiner | expires`. The
+/// session id binds it to one session of one world, so it cannot be replayed into a later one.
+pub fn join_message(session: &SessionId, joiner: MemberId, expires: u64) -> [u8; 52] {
+    let mut m = [0u8; 52];
+    m[..8].copy_from_slice(JOIN_DOMAIN);
+    m[8..40].copy_from_slice(session);
+    m[40..44].copy_from_slice(&joiner.to_le_bytes());
+    m[44..].copy_from_slice(&expires.to_le_bytes());
     m
 }
 
@@ -76,26 +174,52 @@ pub fn sig_words(s: &Sig) -> [u64; 8] {
 #[derive(Clone, Debug, Default)]
 pub struct PublicKeys {
     keys: BTreeMap<MemberId, VerifyingKey>,
-    /// Test identities: any member's key is derived from its id (see [`KeyRing::test`]).
+    /// Each known world's session id, to verify its facts (review P23-2).
+    sessions: BTreeMap<u32, SessionId>,
+    /// Test identities: any member's key is derived from its id, and every world's session is
+    /// [`TEST_SESSION`] (see [`KeyRing::test`]).
     test: bool,
     derived: RefCell<BTreeMap<MemberId, VerifyingKey>>,
 }
 
 impl PublicKeys {
-    pub fn new(keys: BTreeMap<MemberId, VerifyingKey>) -> Self {
-        PublicKeys { keys, test: false, derived: RefCell::default() }
+    pub fn new(mut keys: BTreeMap<MemberId, VerifyingKey>) -> Self {
+        keys.remove(&crate::session::LOGIC);
+        PublicKeys { keys, sessions: BTreeMap::new(), test: false, derived: RefCell::default() }
     }
 
     /// Every member's test identity (see [`KeyRing::test`]).
     pub fn test() -> Self {
-        PublicKeys { keys: BTreeMap::new(), test: true, derived: RefCell::default() }
+        PublicKeys { keys: BTreeMap::new(), sessions: BTreeMap::new(), test: true, derived: RefCell::default() }
     }
 
+    /// Member id 0 (world logic) never has a key (review P23-10): it is refused here.
     pub fn add(&mut self, m: MemberId, k: VerifyingKey) {
-        self.keys.insert(m, k);
+        if m != crate::session::LOGIC {
+            self.keys.insert(m, k);
+        }
     }
 
+    /// Registers `world`'s session id, so its facts verify here.
+    pub fn add_world(&mut self, world: u32, session: SessionId) {
+        self.sessions.insert(world, session);
+    }
+
+    /// The session whose facts `world`'s members sign: world 0 (any world) has the all-zero session;
+    /// an unknown world has none, so none of its facts verify.
+    pub fn session_of(&self, world: u32) -> Option<SessionId> {
+        if world == 0 {
+            return Some([0; 32]);
+        }
+        self.sessions.get(&world).copied().or(self.test.then_some(TEST_SESSION))
+    }
+
+    /// No key for member id 0 (world logic), even among test identities (review P23-10), so no entry
+    /// from the wire can claim world logic's exemptions.
     pub fn get(&self, m: MemberId) -> Option<VerifyingKey> {
+        if m == crate::session::LOGIC {
+            return None;
+        }
         if let Some(k) = self.keys.get(&m) {
             return Some(*k);
         }
@@ -116,9 +240,14 @@ impl PublicKeys {
         self.verify(se.member, &signing_message(world, session, se.id()), &se.sig)
     }
 
-    /// Whether `sig` is `m`'s signature over `fact` in `world`.
-    pub fn fact_ok(&self, m: MemberId, world: u32, fact: u64, sig: &Sig) -> bool {
-        self.verify(m, &fact_message(world, fact), sig)
+    /// Whether `sig` is `m`'s signature over `fact` in `world` (in that world's session).
+    pub fn fact_ok(&self, m: MemberId, world: u32, fact: Fact, sig: &Sig) -> bool {
+        self.session_of(world).is_some_and(|s| self.verify(m, &fact_message(world, &s, fact), sig))
+    }
+
+    /// Whether `sig` is joiner `j`'s request to join session `session` until `expires`.
+    pub fn join_ok(&self, j: MemberId, session: &SessionId, expires: u64, sig: &Sig) -> bool {
+        self.verify(j, &join_message(session, j, expires), sig)
     }
 }
 
@@ -159,9 +288,16 @@ impl KeyRing {
         SignedEntry { entry: e, sig }
     }
 
-    /// Signs `fact` in `world` as this replica's member. Panics without a signing key.
-    pub fn sign_fact(&self, world: u32, fact: u64) -> Sig {
-        self.key().sign(&fact_message(world, fact)).to_bytes()
+    /// Signs `fact` in `world` as this replica's member. Panics without a signing key, or for a world
+    /// whose session is unknown.
+    pub fn sign_fact(&self, world: u32, fact: Fact) -> Sig {
+        let s = self.public.session_of(world).expect("signing a fact of a world with a known session");
+        self.key().sign(&fact_message(world, &s, fact)).to_bytes()
+    }
+
+    /// This replica's request to join its session until `expires` (review VC4R-6).
+    pub fn sign_join(&self, me: MemberId, expires: u64) -> Sig {
+        self.key().sign(&join_message(&self.session, me, expires)).to_bytes()
     }
 
     pub fn verify(&self, world: u32, se: &SignedEntry) -> bool {
@@ -185,9 +321,16 @@ pub fn test_sign(world: u32, e: Entry) -> SignedEntry {
     SignedEntry { entry: e, sig }
 }
 
-/// `m`'s test-identity signature over `fact` in `world`: scenario fixtures and unit tests.
-pub fn test_fact_sig(m: MemberId, world: u32, fact: u64) -> Sig {
-    test_signing_key(m).sign(&fact_message(world, fact)).to_bytes()
+/// `m`'s test-identity signature over `fact` in `world` (in [`TEST_SESSION`], or world 0's): scenario
+/// fixtures and unit tests.
+pub fn test_fact_sig(m: MemberId, world: u32, fact: Fact) -> Sig {
+    let s = PublicKeys::test().session_of(world).unwrap();
+    test_signing_key(m).sign(&fact_message(world, &s, fact)).to_bytes()
+}
+
+/// `j`'s test-identity request to join session `session` until `expires`.
+pub fn test_join_sig(j: MemberId, session: &SessionId, expires: u64) -> Sig {
+    test_signing_key(j).sign(&join_message(session, j, expires)).to_bytes()
 }
 
 #[cfg(test)]
@@ -225,19 +368,43 @@ mod tests {
     #[test]
     fn fact_signatures() {
         use crate::session::cert_ok;
+        let f = |n: u64| FactWriter::new(FactKind::Verdict).u64(n).finish();
         let ring = KeyRing::test(2);
-        let sig = ring.sign_fact(5, 77);
+        let sig = ring.sign_fact(5, f(77));
         let keys = PublicKeys::test();
-        assert_eq!(sig, test_fact_sig(2, 5, 77));
-        assert!(keys.fact_ok(2, 5, 77, &sig));
+        assert_eq!(sig, test_fact_sig(2, 5, f(77)));
+        assert!(keys.fact_ok(2, 5, f(77), &sig));
         // Another fact, world or member does not verify; no key, no verification.
-        assert!(!keys.fact_ok(2, 5, 78, &sig) && !keys.fact_ok(2, 6, 77, &sig) && !keys.fact_ok(3, 5, 77, &sig));
-        assert!(!PublicKeys::default().fact_ok(2, 5, 77, &sig));
+        assert!(!keys.fact_ok(2, 5, f(78), &sig) && !keys.fact_ok(2, 6, f(77), &sig) && !keys.fact_ok(3, 5, f(77), &sig));
+        assert!(!PublicKeys::default().fact_ok(2, 5, f(77), &sig));
         // A certificate needs a strict majority of valid signatures.
-        let good = |m| (m, test_fact_sig(m, 5, 77));
-        assert!(cert_ok(&keys, &[1, 2, 3], 5, 77, &[good(1), good(2)]));
-        assert!(!cert_ok(&keys, &[1, 2, 3], 5, 77, &[good(1)]));
-        assert!(!cert_ok(&keys, &[1, 2, 3], 5, 77, &[good(1), (2, test_fact_sig(4, 5, 77))]));
+        let good = |m| (m, test_fact_sig(m, 5, f(77)));
+        assert!(cert_ok(&keys, &[1, 2, 3], 5, f(77), &[good(1), good(2)]));
+        assert!(!cert_ok(&keys, &[1, 2, 3], 5, f(77), &[good(1)]));
+        assert!(!cert_ok(&keys, &[1, 2, 3], 5, f(77), &[good(1), (2, test_fact_sig(4, 5, f(77)))]));
+    }
+
+    /// Review P23-2: a fact is bound to its kind and to its world's session.
+    #[test]
+    fn facts_are_bound_to_their_kind_and_session() {
+        let same = |k| FactWriter::new(k).u32(1).u64(2).u64(3).finish();
+        assert_ne!(same(FactKind::VcValue), same(FactKind::Committed));
+        assert_ne!(FactWriter::new(FactKind::Rel).bytes(&[1, 2]).finish(), FactWriter::new(FactKind::Rel).bytes(&[1]).bytes(&[2]).finish());
+        let fact = same(FactKind::VcValue);
+        // A world registered with its own session: a test signature (TEST_SESSION) does not verify there.
+        let mut keys = PublicKeys::test();
+        keys.add_world(5, [7; 32]);
+        let sig = test_fact_sig(2, 5, fact);
+        assert!(!keys.fact_ok(2, 5, fact, &sig));
+        assert!(PublicKeys::test().fact_ok(2, 5, fact, &sig));
+        // A world with no known session verifies nothing (production directory, test keys added).
+        let mut prod = PublicKeys::new(BTreeMap::new());
+        prod.add(2, test_signing_key(2).verifying_key());
+        assert!(!prod.fact_ok(2, 5, fact, &sig));
+        prod.add_world(5, TEST_SESSION);
+        assert!(prod.fact_ok(2, 5, fact, &sig));
+        // World 0 (attestations that hold in any world) has the all-zero session.
+        assert!(prod.fact_ok(2, 0, fact, &test_fact_sig(2, 0, fact)));
     }
 
     #[test]
