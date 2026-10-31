@@ -598,7 +598,7 @@ impl Sim {
                 // directly; production estimates it from the one-way delay gradient of acks, as
                 // WebRTC's GCC does).
                 let b = r.sim.audience().iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
-                r.core.set_link(b);
+                r.core.set_link(Some(b));
             }
             r.core.ack_on_frames = self.net.batching;
             let clock_frame = r.core.clock_frame(now);
