@@ -122,6 +122,8 @@ pub struct Node {
     acked: BTreeSet<u32>,
     epoch: Option<u64>,
     last_ping: u64,
+    /// Send times of my pings still unanswered: a pong counts only if it echoes one of them.
+    pings_out: BTreeSet<u64>,
     last_ready: u64,
     last_start: u64,
     control: BTreeMap<u32, Vec<Item>>,
@@ -186,6 +188,7 @@ impl Node {
             acked: BTreeSet::new(),
             epoch: None,
             last_ping: 0,
+            pings_out: BTreeSet::new(),
             last_ready: 0,
             last_start: 0,
             control: BTreeMap::new(),
@@ -273,7 +276,7 @@ impl Node {
             // The core verifies entry signatures; the datagram already authenticated `sender`.
             Item::Msg(m) => self.core.receive(sender, m, local),
             Item::Ping(t) => self.push_control(sender, Item::Pong(t, local)),
-            Item::Pong(t, r) if sender == self.leader => {
+            Item::Pong(t, r) if sender == self.leader && self.pings_out.remove(&t) => {
                 let rtt = local.saturating_sub(t);
                 self.pongs += 1;
                 if rtt < self.best_rtt_us {
@@ -311,6 +314,7 @@ impl Node {
         if self.me != self.leader {
             if self.pongs < PINGS && local >= self.last_ping + 25_000 {
                 self.last_ping = local;
+                self.pings_out.insert(local);
                 let l = self.leader;
                 self.push_control(l, Item::Ping(local));
             }
@@ -490,7 +494,11 @@ impl Node {
         let s = &self.core.sim;
         let mut f = std::fs::File::create(self.out_dir.join(format!("hashes-{}.txt", self.me)))?;
         for fr in 0..self.session.frames {
-            writeln!(f, "{fr} {:016x}", s.hashes.get(&fr).copied().unwrap_or(0))?;
+            match s.hashes.get(&fr) {
+                Some(h) => writeln!(f, "{fr} {h:016x}")?,
+                // Never a stand-in value: two members both missing a frame must not compare equal.
+                None => writeln!(f, "{fr} missing")?,
+            }
         }
         let sum = self.summary();
         std::fs::write(self.out_dir.join(format!("summary-{}.json", self.me)), serde_json::to_string_pretty(&sum).unwrap() + "\n")?;
