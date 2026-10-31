@@ -2157,11 +2157,11 @@ impl WorldSim {
             Payload::Ownership { cert } => {
                 let Some(b) = self.t.owners.as_mut() else { return Outcome::RejectedOwnership(OwnError::WrongWorld) };
                 // The session commits the certificate at this frame (its attestation, which the
-                // windows count; reviews OWN-7, OWNR-3), only on its current head (OWNR-2), and only
+                // windows count; reviews OWN-7, OWNR-3), only on a head of the counting chain (OWNR-2, OWNT-4), and only
                 // if it then counts. A certificate without its parents is refused (OWN-10).
                 match b.commit_local(cert.clone(), self.world_id, f) {
                     Ok(Insert::Applied) => Outcome::Accepted,
-                    Ok(Insert::Duplicate) => Outcome::RejectedDuplicate,
+                    Ok(Insert::Duplicate | Insert::Parked) => Outcome::RejectedDuplicate,
                     Err(e) => Outcome::RejectedOwnership(e),
                 }
             }

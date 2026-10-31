@@ -1,18 +1,23 @@
 //! Adversarial harness for the ownership invariants (world-ownership-draft.md, section 0): random
 //! attacker strategies against random honest histories, every invariant checked on every book.
 //!
-//! * Honest side: owners act through one honest session (lineage 1) with `commit_local`.
+//! * Honest side: owners act through sessions with `commit_local`. Usually one lineage; sometimes the
+//!   world is copied, both copies play on in two lineages, and the copies meet and merge.
 //! * A1: holds former owners' keys, removed owners' keys, stolen recovery keys and stranger keys;
-//!   forks anywhere, pads, strips, replays and reorders certificates.
-//! * A2: A1 plus sessions of its own (lineage 9) attesting anything at any frames.
+//!   forks anywhere, mints key chains, floods, pads, strips, replays and reorders certificates.
+//! * A2: A1 plus sessions of its own (lineages 8 and 9) attesting anything at any frames, with
+//!   signer subsets the certificates really carry. Forged signer sets (OWNT-1) and the window and
+//!   recovery machinery are deferred with the trust root (D87): removed under OT(a).
 //!
-//! Invariants 2-7 must hold for A1 (2, 3) or both (4-7); invariant 8 is a residual for A2, measured.
-//! `PE_OWN_ITERS` sets the number of histories (default 150).
+//! Must hold: invariants 1-7 for A1; 1, 4, 5 and 7 for A2, and 6 for Leave. Invariant 8 (A2) is
+//! the residual, measured. `PE_OWN_ITERS` sets the number of histories (default 150).
 
 use super::*;
 use crate::provenance::StaticEpochs;
 
 const L1: Lineage = 1;
+const L2: Lineage = 2;
+const L8: Lineage = 8;
 const L9: Lineage = 9;
 
 struct Rng(u64);
@@ -33,12 +38,21 @@ impl Rng {
     }
 }
 
+fn sessions() -> StaticEpochs {
+    let mut s = StaticEpochs::default();
+    for l in [L1, L2, L8, L9] {
+        s.worlds.insert(l, (vec![1], 0));
+    }
+    s
+}
+
 fn cert_on(b: &Book, prev: Vec<CertId>, change: Change, keys: &[Key]) -> Cert {
-    let seq = prev.iter().filter_map(|p| b.cert(*p)).map(|c| c.seq).max().unwrap_or(0) + 1;
+    let seq = prev.iter().map(|p| b.cert(*p).or_else(|| b.inner.parked.get(p)).map_or(0, |c| c.seq)).max().unwrap_or(0) + 1;
     Cert { world: b.world, seq, prev, change, sigs: vec![] }.signed(keys)
 }
 
 /// Everything an honest history leaves behind, for the attacker to use.
+#[derive(Clone)]
 struct History {
     book: Book,
     frame: u64,
@@ -47,14 +61,19 @@ struct History {
     recovery_keys: BTreeSet<Key>,
 }
 
-/// One honest step on the session's head; an invalid attempt is simply refused.
-fn honest_step(rng: &mut Rng, h: &mut History) -> Result<Insert, OwnError> {
+/// One honest step in `lineage` on a counting head; an invalid attempt is simply refused.
+fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Insert, OwnError> {
     let v = h.book.view();
     let o: Vec<Key> = v.owners.owners.iter().copied().collect();
-    let head = *h.book.lineage_heads(L1).iter().next().unwrap();
     h.frame += if rng.chance(15) { OBJECTION_FRAMES + 1 } else if rng.chance(10) { RECOVERY_FRAMES + 1 } else { 1 + rng.below(10) as u64 };
+    if v.heads.len() > 1 {
+        // Copies met: merge them first.
+        let m = cert_on(&h.book, v.heads.clone(), Change::Merge, &o);
+        return h.book.commit_local(m, lineage, h.frame);
+    }
+    let head = v.heads[0];
     let others = |k: Key| -> Vec<Key> { o.iter().copied().filter(|&x| x != k).collect() };
-    let (change, keys): (Change, Vec<Key>) = match rng.below(9) {
+    let (change, keys): (Change, Vec<Key>) = match rng.below(10) {
         0 | 1 => {
             h.next_key += 1;
             (Change::Add { key: h.next_key }, o.clone())
@@ -87,11 +106,18 @@ fn honest_step(rng: &mut Rng, h: &mut History) -> Result<Insert, OwnError> {
             Some((&k, r)) => (Change::FinishRecover { owner: k }, vec![r.by]),
             None => return Err(OwnError::WindowOpen),
         },
-        _ => (Change::SetRule { rule: if rng.chance(50) { SignRule::All } else { SignRule::Threshold(2) } }, o.clone()),
+        8 => {
+            let k = rng.pick(&o).unwrap();
+            (Change::Remove { key: k }, others(k))
+        }
+        _ => {
+            let rule = [SignRule::All, SignRule::Threshold(2), SignRule::Any][rng.below(3)];
+            (Change::SetRule { rule }, o.clone())
+        }
     };
     let c = cert_on(&h.book, vec![head], change, &keys);
     let before = v.owners.owners;
-    let r = h.book.commit_local(c, L1, h.frame);
+    let r = h.book.commit_local(c, lineage, h.frame);
     for k in before.difference(&h.book.view().owners.owners) {
         h.former.insert(*k);
     }
@@ -100,18 +126,38 @@ fn honest_step(rng: &mut Rng, h: &mut History) -> Result<Insert, OwnError> {
 
 fn honest_history(rng: &mut Rng) -> History {
     let owners = [1, 2, 3];
-    let rule = if rng.chance(70) { SignRule::All } else { SignRule::Threshold(2) };
+    let rule = [SignRule::All, SignRule::All, SignRule::Threshold(2), SignRule::Any][rng.below(4)];
     let book = Book::new(Cert::genesis(&owners, rule, rng.next())).unwrap();
     let mut h = History { book, frame: 0, next_key: 100, former: BTreeSet::new(), recovery_keys: BTreeSet::new() };
-    for _ in 0..rng.below(25) + 3 {
-        let _ = honest_step(rng, &mut h);
+    for _ in 0..rng.below(40) + 3 {
+        let _ = honest_step(rng, &mut h, L1);
+    }
+    if rng.chance(30) {
+        // The world is copied; both copies play on, then meet.
+        let mut copy = h.clone();
+        for _ in 0..rng.below(6) + 1 {
+            let _ = honest_step(rng, &mut copy, L2);
+        }
+        for _ in 0..rng.below(6) + 1 {
+            let _ = honest_step(rng, &mut h, L1);
+        }
+        let certs: Vec<Cert> = copy.book.inner.certs.values().filter(|c| c.seq > 0).cloned().collect();
+        h.book.insert_attested(&certs, &copy.book.export(L2, &[1]), &sessions());
+        h.former.extend(copy.former);
+        h.recovery_keys.extend(copy.recovery_keys);
+        h.next_key = h.next_key.max(copy.next_key) + 1000;
+        h.frame = h.frame.max(copy.frame);
+        for _ in 0..rng.below(10) + 1 {
+            let _ = honest_step(rng, &mut h, L1);
+        }
     }
     h
 }
 
 /// A random attack on `book`, with the attacker's keys, optionally with sessions of its own.
-fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions: bool) {
+fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
     let mut sock: Key = 9000;
+    let ss = sessions();
     for _ in 0..rng.below(40) + 1 {
         let ids: Vec<CertId> = book.inner.certs.keys().copied().collect();
         let parent = rng.pick(&ids).unwrap();
@@ -121,46 +167,51 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions: bool) {
         }
         let target = rng.pick(keys).unwrap_or(1);
         let victim = rng.below(3) as Key + 1;
+        let lineage = if rng.chance(50) { L8 } else { L9 };
         sock += 1;
-        let c = match rng.below(12) {
+        let c = match rng.below(15) {
             0 | 1 => cert_on(book, vec![parent], Change::Add { key: sock }, &signers),
             2 => cert_on(book, vec![parent], Change::Leave { key: target }, &signers),
             3 => cert_on(book, vec![parent], Change::Challenge { key: victim }, &signers),
-            4 => {
-                let ch = cert_on(book, vec![parent], Change::Challenge { key: victim }, &signers);
-                let _ = book.insert(ch.clone());
-                if sessions {
-                    book.record(ch.id(), L9, rng.next() >> 20);
-                }
-                cert_on(book, vec![ch.id()], Change::RemoveDormant { key: victim }, &signers)
-            }
+            4 => cert_on(book, vec![parent], Change::Remove { key: victim }, &signers),
             5 => cert_on(book, vec![parent], Change::SetRule { rule: SignRule::Any }, &signers),
             6 => cert_on(book, vec![parent], Change::SetRecovery { owner: target, recovery: Some(sock) }, &signers),
             7 => {
-                let st = cert_on(book, vec![parent], Change::StartRecover { owner: victim, new_key: sock }, &signers);
-                let _ = book.insert(st.clone());
-                if sessions {
-                    book.record(st.id(), L9, rng.next() >> 20);
-                }
-                cert_on(book, vec![st.id()], Change::FinishRecover { owner: victim }, &signers)
-            }
-            8 => {
                 let a = rng.pick(&ids).unwrap();
                 let mut p = vec![parent, a];
                 p.sort_unstable();
                 p.dedup();
                 cert_on(book, p, Change::Merge, &signers)
             }
+            8 => book.cert(parent).unwrap().clone().signed(&signers),
             9 => {
-                // Pad a held certificate with the attacker's signatures.
-                let held = book.cert(parent).unwrap().clone();
-                held.signed(&signers)
-            }
-            10 => {
-                // Replay a held certificate with some signatures stripped.
                 let mut held = book.cert(parent).unwrap().clone();
                 held.sigs.retain(|_| rng.chance(50));
                 held
+            }
+            10 => {
+                // A chain of minted keys from an old state: each new key adds the next, then leaves.
+                let mut p = parent;
+                let mut me = rng.pick(keys).unwrap();
+                for _ in 0..rng.below(20) + 1 {
+                    sock += 1;
+                    let add = cert_on(book, vec![p], Change::Add { key: sock }, &[me]);
+                    let _ = book.insert(add.clone());
+                    let lv = cert_on(book, vec![add.id()], Change::Leave { key: me }, &[me]);
+                    let _ = book.insert(lv.clone());
+                    p = lv.id();
+                    me = sock;
+                }
+                cert_on(book, vec![p], Change::Add { key: sock + 1 }, &[me])
+            }
+            11 => {
+                // A flood of junk from the attacker's keys.
+                for _ in 0..rng.below(300) {
+                    sock += 1;
+                    let p = rng.pick(&ids).unwrap();
+                    let _ = book.insert(cert_on(book, vec![p], Change::Add { key: sock }, &[rng.pick(keys).unwrap()]));
+                }
+                cert_on(book, vec![parent], Change::Add { key: sock + 1 }, &signers)
             }
             _ => {
                 let mut c = cert_on(book, vec![parent], Change::Add { key: sock }, &signers);
@@ -170,44 +221,131 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions: bool) {
         };
         let id = c.id();
         let _ = book.insert(c);
-        if sessions && rng.chance(60) {
+        if sessions_too && rng.chance(60) {
             let frame = if rng.chance(50) { rng.next() >> 20 } else { rng.below(1000) as u64 };
-            book.record(id, L9, frame);
             if rng.chance(30) {
-                // Also re-attest an ancestor in the attacker's lineage, so windows can run there.
-                if let Some(&p) = book.cert(id).and_then(|c| c.prev.first()) {
-                    book.record(p, L9, frame.saturating_sub(OBJECTION_FRAMES + 1));
+                // Two attestations of one certificate in one lineage, equal frames, signer subsets.
+                if let Some(held) = book.cert(id).cloned() {
+                    let s: BTreeSet<Key> = held.signers();
+                    let sub: BTreeSet<Key> = s.iter().copied().filter(|_| rng.chance(50)).collect();
+                    for set in [s, sub] {
+                        book.attest(&Attest::make(book.world, id, lineage, frame, &set, &[1]), &ss);
+                    }
                 }
+            } else {
+                book.record(id, lineage, frame);
+            }
+            if rng.chance(30)
+                && let Some(&p) = book.cert(id).and_then(|c| c.prev.first())
+            {
+                book.record(p, lineage, frame.saturating_sub(OBJECTION_FRAMES + 1));
             }
         }
     }
 }
 
+type Essence = (BTreeSet<Key>, SignRule, bool, BTreeMap<Key, BTreeMap<Key, CertId>>, BTreeMap<Key, CertId>, BTreeMap<Key, Recovering>, Vec<CertId>, bool);
+
 /// The view minus what may legitimately differ (refused certificates).
-#[allow(clippy::type_complexity)]
-fn essence(v: &View) -> (BTreeSet<Key>, SignRule, BTreeMap<Key, BTreeMap<Key, CertId>>, BTreeMap<Key, CertId>, BTreeMap<Key, Recovering>, Vec<CertId>, bool) {
+fn essence(v: &View) -> Essence {
     let o = &v.owners;
-    (o.owners.clone(), o.rule, o.recovery.clone(), o.challenges.clone(), o.recovering.clone(), v.heads.clone(), v.disputed)
+    (o.owners.clone(), o.rule, o.no_removal, o.recovery.clone(), o.challenges.clone(), o.recovering.clone(), v.heads.clone(), v.disputed)
 }
 
-/// Rebuild a book from its certificates and attestations, in a shuffled order (invariant 4).
-fn rebuilt(rng: &mut Rng, b: &Book) -> Book {
+/// Rebuild a book from its certificates and attestations, in a shuffled order, the attestations
+/// first or after the certificates (invariant 4).
+fn rebuilt(rng: &mut Rng, b: &Book, attests_after: bool) -> Book {
     let mut certs: Vec<Cert> = b.inner.certs.values().filter(|c| c.seq > 0).cloned().collect();
     for i in (1..certs.len()).rev() {
         certs.swap(i, rng.below(i + 1));
     }
     let g = b.cert(b.genesis).unwrap().clone();
-    let mut sessions = StaticEpochs::default();
-    for l in [L1, L9] {
-        sessions.worlds.insert(l, (vec![1], 0));
-    }
-    let mut attests: Vec<Attest> = [L1, L9].iter().flat_map(|&l| b.export(l, &[1])).collect();
+    let mut attests: Vec<Attest> = [L1, L2, L8, L9].iter().flat_map(|&l| b.export(l, &[1])).collect();
     for i in (1..attests.len()).rev() {
         attests.swap(i, rng.below(i + 1));
     }
     let mut r = Book::new(g).unwrap();
-    r.insert_attested(&certs, &attests, &sessions);
+    if attests_after {
+        for c in &certs {
+            let _ = r.insert(c.clone());
+        }
+        for a in &attests {
+            r.attest(a, &sessions());
+        }
+    } else {
+        r.insert_attested(&certs, &attests, &sessions());
+    }
     r
+}
+
+/// The keys that counting certificates added (genesis included).
+fn added_keys(b: &Book) -> BTreeSet<Key> {
+    let refused: BTreeSet<CertId> = b.inner.view.refused.iter().map(|(c, _)| *c).collect();
+    let mut keys = BTreeSet::new();
+    for (id, c) in &b.inner.certs {
+        if refused.contains(id) {
+            continue;
+        }
+        match &c.change {
+            Change::Genesis { owners, .. } => keys.extend(owners.iter().copied()),
+            Change::Add { key } => {
+                keys.insert(*key);
+            }
+            Change::FinishRecover { owner } => {
+                if let Some(r) = b.inner.eff.get(&c.prev[0]).and_then(|s| s.recovering.get(owner)) {
+                    keys.insert(r.new_key);
+                }
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+/// Invariant 6: a key a counting removal took out is out of the view, unless a counting addition that
+/// removal didn't see brought it back. `dormant`: also for window removals and recoveries.
+fn removals_stick(b: &Book, dormant: bool) -> Option<String> {
+    let refused: BTreeSet<CertId> = b.inner.view.refused.iter().map(|(c, _)| *c).collect();
+    let owners = &b.inner.view.owners.owners;
+    if b.inner.view.owners.nobody_left {
+        // The stated exception: the join would have left nobody, so every head's owners stayed.
+        return None;
+    }
+    for (id, c) in &b.inner.certs {
+        if refused.contains(id) {
+            continue;
+        }
+        let gone = match c.change {
+            Change::Leave { key } => Some(key),
+            Change::RemoveDormant { key } | Change::Remove { key } if dormant => Some(key),
+            Change::FinishRecover { owner } if dormant => Some(owner),
+            _ => None,
+        };
+        let Some(k) = gone else { continue };
+        if !owners.contains(&k) {
+            continue;
+        }
+        // Observed-remove: the key may be back only through a counting addition this removal never
+        // saw: one after it, or one on a copy that didn't see it (each copy's additions stand).
+        let readded = b.inner.certs.iter().any(|(a, x)| {
+            !refused.contains(a) && matches!(x.change, Change::Add { key } if key == k) && !b.inner.anc[id].contains(a)
+        });
+        if !readded {
+            return Some(format!("key {k} removed by {id} is back"));
+        }
+    }
+    None
+}
+
+/// Invariant 7: two attested, valid certificates with one parent mean "disputed".
+fn dispute_visible(b: &Book) -> bool {
+    let mut by_prev: BTreeMap<CertId, usize> = BTreeMap::new();
+    for (id, c) in &b.inner.certs {
+        if c.prev.len() == 1 && b.inner.commits.contains_key(id) && !b.inner.invalid.contains(id) {
+            *by_prev.entry(c.prev[0]).or_default() += 1;
+        }
+    }
+    !by_prev.values().any(|&n| n > 1) || b.view().disputed
 }
 
 #[derive(Default, Debug)]
@@ -218,8 +356,83 @@ struct Residual {
     rule_loosened: u32,
     /// The rule loosened while the owners stayed the same: concurrent rules must take the strictest.
     loosened_without_takeover: u32,
-    /// Books whose stored, non-counting junk differs by arrival order (views equal).
-    junk_differs: u32,
+    /// Honest histories that forked into two lineages and merged.
+    forked: u32,
+    /// Rebuilds whose parked or pending buffer overflowed under the attacker's flood (not compared).
+    overflowed: u32,
+}
+
+fn check(seed: u64, residual: &mut Residual) {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x0E);
+    let h = honest_history(&mut rng);
+    if h.book.inner.commits.values().any(|m| m.contains_key(&L2)) {
+        residual.forked += 1;
+    }
+    let honest = h.book.view();
+    // The attacker's keys: former owners, recovery keys (stolen), strangers.
+    let mut keys: Vec<Key> = h.former.iter().copied().chain(h.recovery_keys.iter().copied()).collect();
+    keys.extend([7001, 7002]);
+    keys.retain(|k| !honest.owners.owners.contains(k));
+    for sessions_too in [false, true] {
+        let mut v = h.book.clone();
+        attack(&mut rng, &mut v, &keys, sessions_too);
+        let ctx = format!("seed {seed}, sessions {sessions_too}");
+        let vv = v.view();
+        // 5: bounded.
+        let unattested = v.inner.certs.len() - v.inner.commits.len();
+        assert!(unattested <= UNATTESTED_MAX + 1, "{ctx}: {unattested} unattested certs");
+        assert!(v.inner.parked.len() <= PARKED_MAX && v.inner.pending.len() <= PARKED_MAX, "{ctx}: parked or pending over bound");
+        // 4: the view doesn't depend on arrival order, attestations first or after.
+        for after in [false, true] {
+            let r = rebuilt(&mut rng, &v, after);
+            if r.inner.overflowed {
+                // A flood beyond the buffers: dropped items must be sent again (stated bound).
+                residual.overflowed += 1;
+                continue;
+            }
+            assert_eq!(essence(&r.view()), essence(&vv), "{ctx}: the view depends on arrival order (attests after: {after})");
+        }
+        // 1: every owner was added by a counting certificate.
+        let added = added_keys(&v);
+        assert!(vv.owners.owners.is_subset(&added), "{ctx}: an owner nobody added: {:?}", vv.owners.owners.difference(&added).collect::<Vec<_>>());
+        // 6: removals stick (Leave against both; windows and recoveries against A1 only, OT(a)).
+        if let Some(e) = removals_stick(&v, !sessions_too) {
+            panic!("{ctx}: {e}");
+        }
+        // 7: a dispute is visible.
+        assert!(dispute_visible(&v), "{ctx}: attested siblings but not disputed");
+        if !sessions_too {
+            // 2: unattested changes change nothing.
+            assert_eq!(essence(&vv), essence(&honest), "{ctx}: an A1 attacker changed the view");
+            // 3: liveness: the next honest steps go the same way in both books.
+            let mut h1 = History { book: h.book.clone(), ..h.clone() };
+            let mut h2 = History { book: v.clone(), ..h.clone() };
+            for k in 0..5 {
+                let mut r1 = Rng(seed ^ (k << 40));
+                let mut r2 = Rng(seed ^ (k << 40));
+                let a = honest_step(&mut r1, &mut h1, L1);
+                let b = honest_step(&mut r2, &mut h2, L1);
+                assert_eq!(a, b, "{ctx}: honest step {k} went differently after the attack");
+                assert_eq!(essence(&h1.book.view()), essence(&h2.book.view()), "{ctx}: views diverged at honest step {k}");
+            }
+        } else {
+            // 8: the residual, measured.
+            residual.runs += 1;
+            let (ho, vo) = (&honest.owners, &vv.owners);
+            if !ho.owners.is_subset(&vo.owners) {
+                residual.honest_owner_lost += 1;
+            }
+            if !vo.owners.is_subset(&ho.owners) {
+                residual.owner_gained += 1;
+            }
+            if vo.rule < ho.rule || (vo.rule == SignRule::Any) != (ho.rule == SignRule::Any) && vo.rule == SignRule::Any {
+                residual.rule_loosened += 1;
+                if vo.owners == ho.owners {
+                    residual.loosened_without_takeover += 1;
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -227,94 +440,88 @@ fn adversarial_harness() {
     let iters: u64 = std::env::var("PE_OWN_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(150);
     let mut residual = Residual::default();
     for seed in 0..iters {
-        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x0E);
-        let h = honest_history(&mut rng);
-        let honest = h.book.view();
-        // The attacker's keys: former owners, recovery keys (stolen), strangers.
-        let mut keys: Vec<Key> = h.former.iter().copied().chain(h.recovery_keys.iter().copied()).collect();
-        keys.extend([7001, 7002]);
-        keys.retain(|k| !honest.owners.owners.contains(k));
-        for sessions in [false, true] {
-            let mut v = h.book.clone();
-            attack(&mut rng, &mut v, &keys, sessions);
-            let ctx = format!("seed {seed}, sessions {sessions}");
-            // 5: bounded.
-            assert!(v.len() <= h.book.len() + 2 * UNATTESTED_PER_KEY * keys.len() + 2 * 40, "{ctx}: {} certs", v.len());
-            // 4: determinism under any arrival order.
-            let r = rebuilt(&mut rng, &v);
-            let vv = v.view();
-            assert_eq!(essence(&r.view()), essence(&vv), "{ctx}: the view depends on arrival order");
-            if r.digest() != v.digest() {
-                residual.junk_differs += 1;
-            }
-            // 7: a fork among counting certificates is always visible.
-            if !sessions {
-                // 2: unattested changes change nothing.
-                assert_eq!(essence(&vv), essence(&honest), "{ctx}: an A1 attacker changed the view");
-                // 3: liveness: the next honest steps go the same way in both books.
-                let mut h1 = History { book: h.book.clone(), frame: h.frame, next_key: h.next_key, former: BTreeSet::new(), recovery_keys: BTreeSet::new() };
-                let mut h2 = History { book: v.clone(), frame: h.frame, next_key: h.next_key, former: BTreeSet::new(), recovery_keys: BTreeSet::new() };
-                for k in 0..5 {
-                    let mut r1 = Rng(seed ^ (k << 40));
-                    let mut r2 = Rng(seed ^ (k << 40));
-                    let a = honest_step(&mut r1, &mut h1);
-                    let b = honest_step(&mut r2, &mut h2);
-                    assert_eq!(a, b, "{ctx}: honest step {k} went differently after the attack");
-                    assert_eq!(essence(&h1.book.view()), essence(&h2.book.view()), "{ctx}: views diverged at honest step {k}");
-                }
-            } else {
-                // 8: the residual, measured.
-                residual.runs += 1;
-                let (ho, vo) = (&honest.owners, &vv.owners);
-                if !ho.owners.is_subset(&vo.owners) {
-                    residual.honest_owner_lost += 1;
-                }
-                if !vo.owners.is_subset(&ho.owners) {
-                    residual.owner_gained += 1;
-                }
-                if vo.rule < ho.rule {
-                    residual.rule_loosened += 1;
-                    if vo.owners == ho.owners {
-                        residual.loosened_without_takeover += 1;
-                    }
-                }
-            }
-            // 6: a key that a counting removal took out stays out unless re-added: covered by the
-            // determinism and A1 checks above for every history; the named tests cover the forks.
-        }
+        check(seed, &mut residual);
     }
     println!(
-        "HARNESS {iters} honest histories x 2 attackers: invariants 2-5 held in every run (A1), 4-5 in every run (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, rule loosened {}; stored junk differed by order in {} books (views equal)",
-        residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.rule_loosened, residual.junk_differs
+        "HARNESS {iters} honest histories ({} forked into two lineages and merged) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, rule loosened {} (always with a takeover); {} rebuilds overflowed a buffer under the flood (not compared)",
+        residual.forked, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.rule_loosened, residual.overflowed
     );
     assert_eq!(residual.loosened_without_takeover, 0, "concurrent rules take the strictest; only a takeover loosens");
 }
 
 #[test]
-#[ignore = "debug helper"]
+#[ignore = "debug helper: PE_OWN_SEED"]
 fn harness_debug_seed() {
     let seed: u64 = std::env::var("PE_OWN_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut residual = Residual::default();
+    check(seed, &mut residual);
+}
+
+#[test]
+#[ignore = "debug helper: PE_OWN_SEED, prints the rebuild difference"]
+fn harness_debug_rebuild() {
+    let seed: u64 = std::env::var("PE_OWN_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(7);
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x0E);
     let h = honest_history(&mut rng);
     let honest = h.book.view();
     let mut keys: Vec<Key> = h.former.iter().copied().chain(h.recovery_keys.iter().copied()).collect();
     keys.extend([7001, 7002]);
     keys.retain(|k| !honest.owners.owners.contains(k));
-    for sessions in [false, true] {
+    for sessions_too in [false, true] {
         let mut v = h.book.clone();
-        attack(&mut rng, &mut v, &keys, sessions);
-        let r = rebuilt(&mut rng, &v);
-        let a: BTreeSet<CertId> = v.inner.certs.keys().copied().collect();
-        let b: BTreeSet<CertId> = r.inner.certs.keys().copied().collect();
-        println!("sessions {sessions}: certs only in v {:?} only in rebuilt {:?}", a.difference(&b).collect::<Vec<_>>(), b.difference(&a).collect::<Vec<_>>());
-        for id in a.intersection(&b) {
-            if v.inner.certs[id] != r.inner.certs[id] {
-                println!("  sigs differ on {id}: {:?} vs {:?}", v.inner.certs[id].sigs, r.inner.certs[id].sigs);
+        attack(&mut rng, &mut v, &keys, sessions_too);
+        for after in [false, true] {
+            let r = rebuilt(&mut rng, &v, after);
+            if essence(&r.view()) == essence(&v.view()) {
+                continue;
             }
-            if v.inner.commits.get(id) != r.inner.commits.get(id) {
-                println!("  commits differ on {id}: {:?} vs {:?}", v.inner.commits.get(id), r.inner.commits.get(id));
+            println!("sessions {sessions_too} after {after}: v certs {} r certs {} parked v {} r {}", v.len(), r.len(), v.inner.parked.len(), r.inner.parked.len());
+            let a: BTreeSet<CertId> = v.inner.certs.keys().copied().collect();
+            let b: BTreeSet<CertId> = r.inner.certs.keys().copied().collect();
+            for id in a.difference(&b) {
+                println!("  only in v: {id} {:?} attested {:?} counts {}", v.inner.certs[id].change, v.inner.commits.get(id).map(|m| m.keys().collect::<Vec<_>>()), v.counts(*id));
+                let mut r2 = r.clone();
+                let c = v.inner.certs[id].clone();
+                println!("    parked in r {} pending {}; prev held in r {:?}; insert_raw Free -> {:?}", r.inner.parked.contains_key(id), r.inner.pending.contains_key(id), c.prev.iter().map(|p| (r.inner.certs.contains_key(p), r.inner.parked.contains_key(p), r.inner.invalid.contains(p))).collect::<Vec<_>>(), r2.insert_raw(c, Admit::Free));
+            }
+            for id in a.intersection(&b) {
+                if v.inner.commits.get(id) != r.inner.commits.get(id) {
+                    println!("  commits differ {id}: {:?} vs {:?}", v.inner.commits.get(id), r.inner.commits.get(id));
+                }
+                if v.counts(*id) != r.counts(*id) {
+                    println!("  counts differ {id} {:?}: v {} r {}", v.inner.certs[id].change, v.counts(*id), r.counts(*id));
+                }
             }
         }
-        println!("  digests {} {}", v.digest(), r.digest());
+    }
+}
+
+#[test]
+#[ignore = "debug helper: PE_OWN_SEED, invariant 6 on the honest book"]
+fn harness_debug_removal() {
+    let seed: u64 = std::env::var("PE_OWN_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(99);
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x0E);
+    let h = honest_history(&mut rng);
+    let b = &h.book;
+    println!("honest: {:?}", removals_stick(b, true));
+    let mut ids: Vec<&CertId> = b.inner.certs.keys().collect();
+    ids.sort_by_key(|i| b.inner.certs[i].seq);
+    let refused: BTreeMap<CertId, OwnError> = b.inner.view.refused.iter().copied().collect();
+    for id in ids {
+        let c = &b.inner.certs[id];
+        println!("  {id} seq {} prev {:?} {:?} signers {:?} lineages {:?} {}", c.seq, c.prev, c.change, c.signers(), b.inner.commits.get(id).map(|m| m.keys().collect::<Vec<_>>()), refused.get(id).map_or("counts".to_string(), |e| format!("refused {e:?}")));
+    }
+    println!("owners {:?}", b.view().owners.owners);
+    for (id, c) in &b.inner.certs {
+        if c.change == Change::Merge {
+            for p in &c.prev {
+                println!("merge {id} parent {p}: eff tags {:?} anc has Leave(s): {:?}", b.inner.eff[p].tags, b.inner.certs.iter().filter(|(x, y)| matches!(y.change, Change::Leave { .. }) && b.inner.anc[p].contains(x)).map(|(x, y)| (x, y.change.clone())).collect::<Vec<_>>());
+            }
+            println!("merge eff tags {:?}", b.inner.eff[id].tags);
+        }
+        if let Change::Leave { key } = c.change {
+            let p = c.prev[0];
+            println!("leave {id} of {key}: parent eff tags of key {:?}", b.inner.eff[&p].tags.get(&key));
+        }
     }
 }
