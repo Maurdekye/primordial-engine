@@ -39,7 +39,12 @@ Each scenario has three logs:
 - **pe-session's golden,** under D72.
 
 Every comparison masks the CPU timings. A difference is attributed in two steps
-(`scripts/p2-3/p29_causes.py <repo>`):
+(`scripts/p2-3/p29_causes.py <repo>`). What the script's masks do, exactly (review L1): it masks
+every `N s` / `N ms` value, simulated times (`t=`) included, sorts every bracketed list, and compares
+a log's lines as a multiset. @chunks-reviewer reran it with stricter masks (CPU timings only, only
+id lists sorted, lines compared in order): they hide exactly two order differences, both from
+iterating `all_entries()`, a `BTreeMap` keyed by entry id in both cores, so both are ids and hashes:
+member 3's vote list in p2-4-aheadlink, and the order of the RESULT lines in the three r14-chain logs.
 
 - **Spike vs pe-session under the spike rule:** what pe-session's types change.
   - **ids and hashes:** equal once entry ids, transfer ids and digests are masked, and id-keyed
@@ -85,27 +90,74 @@ includes round 7's capfake, fakeadmin and adminwedge, and the fix-off runs insid
 
 pe-session's messages are larger. In fault-capped, an ack averages 247 B against the spike's 88, and
 an entry 188 B against 100 (the `bytes:` lines). Under the spike's caps the three capped runs stall early and stop
-testing their point. The mismatches seen are in unconfirmed frames only, so safety holds. The caps
-are scaled so that each run tests the same thing again. The scenario descriptions state the new
-figures.
+testing their point. The mismatches seen are in unconfirmed frames only, so safety holds. Every cap
+is scaled by about 2.9, close to the acks' growth, so that each run tests the same thing again. The
+scenario descriptions state the new figures (measured at the P2-3 review round, 7aa4163 and after).
 
 | run | what it tests | spike (spike caps) | pe-session, spike caps | pe-session, scaled caps |
 |---|---|---|---|---|
-| fault-capped | one capped link: its queue fills, the controller-less link drops, member 1 lags, and the rest has headroom | 12 kbit/s 3->1, 64 elsewhere: 156 dropped, m1 lags, ALL EQUAL | conf 46 at m1, MISMATCH in unconfirmed frames | 52 kbit/s 3->1, 186 elsewhere: **56 dropped**; m1 rolls back up to 45 frames (others 2) and confirms behind (552 against 556); ALL EQUAL over 0..530, every checked frame confirmed. Without the 3->1 cap: **0 dropped** (headroom) |
+| fault-capped | one capped link: its queue fills, the controller-less link drops, member 1 lags and repairs through member 2, and the rest has headroom | 12 kbit/s 3->1, 64 elsewhere: 156 dropped, m1 rolls back up to 60 frames, conf 534-538, ALL EQUAL | conf 46 at m1, MISMATCH in unconfirmed frames | 36 kbit/s 3->1, 186 elsewhere: **125 dropped**; m1 rolls back up to 32 frames (others 2); conf 558 at every member, 0 paused; ALL EQUAL over 0..530, every checked frame confirmed. Without the 3->1 cap: **0 dropped** (headroom) |
 | fault-capped-collapse | a cap that binds everywhere, no R18: queues overflow and confirmation stalls, and safety holds | 16 kbit/s: stall at 114, confirmed prefix equal | stall at 34; the prefix check reaches unconfirmed frames | 46 kbit/s: **534 dropped**, stall at 104, confirmed prefix 0..95 **equal on every replica and the replay** |
 | fault-capped-r18 | the same links with R18: it thins entries and acks, keeps confirming, drops nothing | 16 kbit/s: 0 dropped, conf 568 | 98 dropped, conf 34: FAIL | 46 kbit/s: **0 dropped**, conf 586, ALL EQUAL. R18 engages: 1158 acks against collapse's 1752 (spike: 980 against 1752) |
 
-For fault-capped's 3->1 cap I tried:
+**fault-capped's 3->1 link, and a cause found by this review (R1, @chunks-reviewer).** At a812805 the
+size-scaled 36 kbit/s cap made **every member pause 157-163 frames** (confirmation ended at 432-436
+by frame 552-556), where the spike paused none; that run used 52 kbit/s instead, the lowest cap tried
+that passed. It was not D72 (the spike's claim rule gave the same) and not the 4 kB burst.
+Instrumented runs of both cores (chain prefixes, fetches, queues, repair yields and duplicate
+deliveries every 100 ms) named the cause:
 
-| 3->1 cap | dropped | lowest confirmed frame | result |
-|---|---|---|---|
-| 45 kbit/s | 86 | 495 | frames 495..530 unconfirmed |
-| 48 kbit/s | 73 | 528 | still short of 530 |
-| **52 kbit/s** | **56** | **552** | **passes** |
-| 56 kbit/s | 39 | 552 | passes |
+- the spike decides a repair per fetch request: under 100 ms of queue, the whole reply (up to 16
+  entries) goes out;
+- pe-session's sans-IO port marked each reply entry a repair and the IO decided per message, so a
+  reply was cut short as soon as the queue passed 100 ms;
+- m2->m1, member 1's only repair route for member 3's chain, sat at 70-105 ms of queue; replies
+  delivered 1-2 entries, 45% of what m2 delivered to m1 were duplicates (326 of 722; the spike: 106 of
+  545), and m1 took in member 3's chain at about 22 entries/s while member 3 wrote 30/s, until frame
+  minus conf reached the 120-frame window at t = 7.3 s and every member paused (confirmation waits
+  for m1's horizon).
 
-52 kbit/s is the lowest cap tried that passes, so it drops the most while still confirming every
-checked frame.
+The IO now sends or drops a reply whole, deciding at its first message (`Class::Repair`). The sweep
+after the fix (7aa4163):
+
+| 3->1 cap | dropped | paused frames (m1, m2, m3) | lowest confirmed frame | result |
+|---|---|---|---|---|
+| 30 kbit/s | 151 | 0, 0, 0 | 546 | passes |
+| 33 kbit/s | 138 | 0, 0, 0 | 546 | passes |
+| **36 kbit/s** | **125** | **0, 0, 0** | **558** | **passes (the scenario's cap)** |
+| 40 kbit/s | 108 | 0, 0, 0 | 552 | passes |
+| 45 kbit/s | 86 | 0, 0, 0 | 560 | passes (at a812805: 495, frames 495..530 unconfirmed) |
+| 52 kbit/s | 56 | 0, 0, 0 | 556 | passes |
+
+So the 3->1 link now scales like the others (12 x 3 = 36).
+
+## Since a812805: the P2-3 review round
+
+The per-scenario table below attributes the spike-to-pe-session differences at a812805. The review
+round (7aa4163, 649a77f and the scenario fix after) moved pe-session's goldens again. Measured with
+the harness suite at 7aa4163 against the goldens committed before it (timings masked): ALL EQUAL,
+0 false checks; 56 logs identical, 17 equal with ids masked, 15 different. The later commits change
+only runs that opt into R18 (none in the harness suite), statejoin and fault-capped. The tool's
+`regress` is 92 of 92 identical to the new goldens.
+
+- **P23-2: facts are 256-bit BLAKE3, signed with the session; the view-change value and the chain
+  hash are 64-bit BLAKE3.** A precommit carries its fact signature, and an Attest its fact, so their
+  entry ids change, and the change values too. With them changes the order in which id- and
+  value-keyed tables iterate [inferred mechanism; the set is measured]:
+  - 17 logs differ only in ids (R14 transfer ids, entry ids);
+  - 13 view-change and eviction scenarios move a decision by a frame, a member's final conf by up to
+    2 frames, or a resimulation count by one: backdate, c2, d80-joinrules, d80-kickpartition,
+    p2-4-badproposer, p2-4-bridge, p2-4-controls/onesided, p2-4-lagchurn, p2-4-strikeframe,
+    review2-ackfork, review2-lateequiv, review3-badvote, review3-liar. Each stays ALL EQUAL, and
+    every decision is the same one.
+- **D52 by default (`hand_predict` 6) and span-then-coast:** ballpit-60hz-2hands (about 0.2% more
+  balls change per frame under coasting) [inferred]. The other ball-pit logs are unchanged.
+- **P23-3: a state is restored only as the answer to this member's request, and never rewinds the
+  replica.** p2-3-statejoin's joiner used to simulate from genesis and then rewind to the state.
+  It now holds its sim until the state arrives, so it imports once and refuses twice: member 2's
+  tampered state (Hash), then member 2's honest answer, which arrives after the tampered one used
+  up that request (Unrequested).
+- **Whole-reply repair (the R1 cause above):** fault-capped, now at its proportional cap (36 kbit/s).
 
 ## Fixture changes made by the port
 

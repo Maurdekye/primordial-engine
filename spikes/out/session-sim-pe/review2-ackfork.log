@@ -1,5 +1,5 @@
   9's touch at m1: m9s29@50 eff=None void=true
   9's touch at m2: m9s29@50 eff=None void=true
-  m1: conf 469 frame 473 members {1, 2} evicted {9: (1, 1)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 16 bad 0
+  m1: conf 467 frame 473 members {1, 2} evicted {9: (1, 1)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 16 bad 0
   m2: conf 469 frame 473 members {1, 2} evicted {9: (1, 1)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 16 bad 0
 RESULT ackfork (9 shows member 2 a different chain): frames 0..472 honest m1=3ed5283d06ab0c52 m2=3ed5283d06ab0c52 | offline replay 3ed5283d06ab0c52 | ALL EQUAL, NO FALSE CHECKS ; checks ok 32 bad 0

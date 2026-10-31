@@ -24,6 +24,10 @@ pub fn statejoin() {
     });
     let mut p = Peer::new(joiner, 0);
     p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
+    // The joiner does not simulate before its state arrives (a background world that never bursts):
+    // a state never rewinds a replica (review P23-3), so a joiner that had simulated past the state's
+    // frame would refuse it.
+    p.worlds.get_mut(&1).unwrap().core.throttle_us = Some(u64::MAX / 2);
     ps.push(p);
     let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 10_000_000);
     let relay = |sim: &mut Sim| {
@@ -58,6 +62,7 @@ pub fn statejoin() {
             r.core.request_state(1);
             step = 2;
         } else if step == 2 && sim.replica(joiner, 1).sim.stats.imports > 0 {
+            sim.replica_mut(joiner, 1).core.throttle_us = None;
             let st = sim.replica(1, 1).sim.export_state().expect("a confirmed check frame");
             sent_bytes = (st.physics.len(), st.store.len(), st.tables.len());
             step = 3;
