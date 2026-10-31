@@ -9,6 +9,7 @@
 //! Frame convention: `snapshot(f)` is the state at the *start* of frame `f`, before frame `f`'s
 //! interactions are applied. `hashes[f]` is the hash of the state *after* frame `f` was stepped.
 
+pub mod peer;
 pub mod provenance;
 pub mod session;
 pub mod sign;
