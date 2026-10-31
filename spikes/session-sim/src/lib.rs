@@ -141,7 +141,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
         },
-        Msg::Fetch { .. } | Msg::FetchValue { .. } => "fetch",
+        Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } => "fetch",
         Msg::Join { .. } => "join",
         Msg::Batch(_) => "batch",
     }
@@ -567,6 +567,11 @@ impl Sim {
                     }
                 }
                 Msg::Join { member, attests } => r.sim.on_join(member, attests),
+                Msg::FetchEntry { id } => {
+                    for e in r.sim.on_fetch_entry(id) {
+                        self.net.post(w, to, from, &e);
+                    }
+                }
                 Msg::Batch(_) => {}
             }
         }
