@@ -140,7 +140,7 @@ async fn propose_touch_resolves_and_moves_the_object() {
     let before = ok(&c, "world_get_object", json!({ "object": 20 })).await;
     let p = touch(&c, 20, [0.0, 30.0, 0.0]).await;
     assert_eq!(p["ticket"], 1);
-    assert_eq!(p["entry"].as_str().unwrap().len(), 16);
+    assert_eq!(p["entry"].as_str().unwrap().len(), 64);
     let st = ok(&c, "world_interaction_status", json!({ "ticket": 1 })).await;
     assert_eq!((st["state"].clone(), st["final"].clone()), (json!("pending"), json!(false)));
     let r = step(&c, 1000).await;
@@ -216,13 +216,16 @@ async fn interaction_status_errors_and_isolation() {
 async fn claims_reject_contending_touches() {
     let e = engine();
     let c = client(&e).await;
-    // Two objects, three other members touching them 30 times a second: our touches must meet claims.
-    ok(&c, "scenario_load", json!({ "size": 1, "background_touches_per_s": 30, "seed": 7 })).await;
+    // Two objects, three other members grabbing them 3 times a second each: our grabs must meet claims
+    // (design D72: only a grab claims, and only a grab is refused).
+    ok(&c, "scenario_load", json!({ "size": 1, "background_touches_per_s": 3, "background_grabs": true, "seed": 7 })).await;
     step(&c, 1100).await;
     let mut tickets = vec![];
     for _ in 0..30 {
-        tickets.push(touch(&c, 0, [0.0, 1.0, 0.0]).await["ticket"].as_u64().unwrap());
-        step(&c, 50).await;
+        let g = json!({ "object": 0, "action": "grab", "impulse": [0.0, 1.0, 0.0] });
+        tickets.push(ok(&c, "world_propose_interaction", g).await["ticket"].as_u64().unwrap());
+        // Past our own claim (0.5 s) and its cooldown, so every grab contests afresh.
+        step(&c, 700).await;
     }
     step(&c, 1000).await;
     let mut reasons = std::collections::BTreeMap::new();

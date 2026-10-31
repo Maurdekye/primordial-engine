@@ -2,7 +2,7 @@
 //! use these: the session simulator (`sim_backend`) and a live peer (`pe-app`), so a tool returns the
 //! same shapes whichever drives it.
 
-use pe_sim_core::session::{Entry, Outcome, Payload, WorldSim};
+use pe_session::session::{EntryId, Outcome, Payload, SignedEntry, WorldSim};
 
 use crate::backend::*;
 use crate::model::*;
@@ -103,14 +103,14 @@ pub fn check_interaction(s: &WorldSim, i: &Interaction, me: MemberId) -> ToolRes
 }
 
 /// Author a checked interaction at the present frame: the same `WorldSim` calls a player's input uses.
-pub fn author(s: &mut WorldSim, i: Interaction) -> Entry {
+pub fn author(s: &mut WorldSim, i: Interaction) -> SignedEntry {
     match i {
         Interaction::Touch { object, impulse, grab } => s.author(Payload::Touch { obj: object, impulse, grab }, Some(object)),
         Interaction::Hand { object, target_mm, active } => s.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1 }, 0),
     }
 }
 
-pub fn status(s: &WorldSim, entry: u64, me: MemberId) -> Option<EntryStatus> {
+pub fn status(s: &WorldSim, entry: EntryId, me: MemberId) -> Option<EntryStatus> {
     let e = s.entry(entry).filter(|e| e.member == me)?;
     let is_final = e.stamp < s.conf;
     let mut st = EntryStatus { stamp: e.stamp, state: InteractionState::Pending, reason: None, by_member: None, until_frame: None, is_final };
@@ -164,7 +164,7 @@ pub fn members(s: &WorldSim, me: MemberId, members: &[MemberId]) -> Members {
     let ev = s.members_evicted();
     Members {
         me,
-        epoch: s.epoch,
+        epoch: s.membership().epoch(),
         members: members
             .iter()
             .map(|&m| MemberInfo { member: m, me: m == me, evicted: ev.get(&m).map(|&(cut_seq, from_frame)| Eviction { cut_seq, from_frame }) })
@@ -176,6 +176,7 @@ pub fn members(s: &WorldSim, me: MemberId, members: &[MemberId]) -> Members {
         equivocations: s.stats.equivocations,
         lying_votes: s.stats.lying_votes,
         decisions: s
+            .vcm
             .vc_log
             .iter()
             .map(|(epoch, frame, round, removed)| Decision { epoch: *epoch, frame: *frame, round: *round, removed: removed.clone() })

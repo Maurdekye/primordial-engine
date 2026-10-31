@@ -14,7 +14,6 @@
 //! ```
 
 mod config;
-mod core;
 mod node;
 mod wire;
 

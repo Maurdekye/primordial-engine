@@ -1,5 +1,6 @@
-//! The node: one peer process's IO around its `PeerCore`. It owns the UDP socket, the clock and its
-//! sync with the leader, signing, batching, scripted faults, the background plan, and the results
+//! The node: one peer process's IO around its pe-session `SessionCore`. It owns the UDP socket, the
+//! clock and its sync with the leader, datagram signing, batching, scripted faults, the background
+//! plan, and the results
 //! written at the end. It runs on pe-mcp's engine thread (`EngineHandle::spawn_ticking`) and
 //! implements pe-mcp's `DrivenPeer`, so an agent can drive it.
 //!
@@ -8,7 +9,7 @@
 //! member is Ready, the leader picks an epoch 1 s ahead on its own clock and sends Start until each
 //! member acks. Session time = local time + offset (0 for the leader).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
@@ -17,15 +18,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use pe_mcp::backend::{Authored, Counters, DrivenPeer, EntryStatus, Interaction, ScenarioControl};
+use pe_mcp::backend::{Authored, Counters, DrivenPeer, EntryId, EntryStatus, Interaction, ScenarioControl};
 use pe_mcp::model::*;
 use pe_mcp::sim_view;
-use pe_sim_core::session::{digest, final_log, replay_sim_like, EntryId, Msg, Payload};
-use pe_sim_core::splitmix64;
+use pe_session::peer::{AuthorError, Event, SessionCore};
+use pe_session::session::{digest, final_log, replay_sim_like, Payload, SceneKind, WorldSim};
+use pe_session::splitmix64;
 use serde::{Deserialize, Serialize};
 
 use crate::config::SessionFile;
-use crate::core::{AuthorError, Class, Event, PeerCore};
 use crate::wire::{self, Item};
 
 pub const WORLD: u32 = 1;
@@ -77,7 +78,6 @@ pub struct Traffic {
     pub datagrams_received: u64,
     pub bytes_sent: u64,
     pub rejected: BTreeMap<String, u64>,
-    pub entries_without_signature: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,7 +106,7 @@ pub struct Summary {
 }
 
 pub struct Node {
-    core: PeerCore,
+    core: SessionCore,
     me: u32,
     session: SessionFile,
     key: SigningKey,
@@ -124,8 +124,6 @@ pub struct Node {
     last_ping: u64,
     last_ready: u64,
     last_start: u64,
-    /// Author signatures of every entry held (mine and relayed), so repair can forward them.
-    sigs: HashMap<EntryId, [u8; wire::SIG]>,
     control: BTreeMap<u32, Vec<Item>>,
     faults: Vec<FaultStep>,
     links: BTreeMap<u32, Link>,
@@ -149,14 +147,16 @@ impl Node {
         let s = &o.session;
         let ids = s.ids();
         let scene = s.scene_kind().expect("validated session");
-        let core = PeerCore::new(WORLD, o.me, &ids, scene, s.sim_config());
+        // View-change membership (the default), not the static one: M1 must survive a member
+        // dropping out, which takes suspicion, votes and a new epoch.
+        let core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
         let keys = ids.iter().map(|&m| (m, s.key_of(m).expect("validated key"))).collect();
         // Background touches: deterministic in (seed, member), on non-hand objects.
         let mut plan: BTreeMap<u64, Vec<Payload>> = BTreeMap::new();
         if o.touches_per_s > 0 {
             let objects = match scene {
-                pe_sim_core::session::SceneKind::Pile { side, layers } => (side * side * layers) as u64,
-                pe_sim_core::session::SceneKind::BallPit { balls, .. } => balls as u64,
+                SceneKind::Pile { side, layers } => (side * side * layers) as u64,
+                SceneKind::BallPit { balls, .. } => balls as u64,
                 _ => 1,
             };
             let period = (60 / o.touches_per_s as u64).max(1);
@@ -188,7 +188,6 @@ impl Node {
             last_ping: 0,
             last_ready: 0,
             last_start: 0,
-            sigs: HashMap::new(),
             control: BTreeMap::new(),
             faults: o.faults,
             links: BTreeMap::new(),
@@ -254,8 +253,8 @@ impl Node {
                 Err(_) => break,
             };
             self.traffic.datagrams_received += 1;
-            let (keys, sigs) = (&self.keys, &self.sigs);
-            let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied(), |e| sigs.contains_key(&e.id()));
+            let keys = &self.keys;
+            let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied());
             match r {
                 Ok((sender, items)) if sender != self.me => {
                     for i in items {
@@ -271,15 +270,8 @@ impl Node {
     fn on_item(&mut self, sender: u32, i: Item) {
         let local = self.local_us();
         match i {
-            Item::Entry(e, sig) => {
-                self.sigs.entry(e.id()).or_insert(sig);
-                let now = self.now_us();
-                self.core.receive(sender, Msg::Entry(e), now);
-            }
-            Item::Fetch(m) => {
-                let now = self.now_us();
-                self.core.receive(sender, m, now);
-            }
+            // The core verifies entry signatures; the datagram already authenticated `sender`.
+            Item::Msg(m) => self.core.receive(sender, m, local),
             Item::Ping(t) => self.push_control(sender, Item::Pong(t, local)),
             Item::Pong(t, r) if sender == self.leader => {
                 let rtt = local.saturating_sub(t);
@@ -288,6 +280,7 @@ impl Node {
                     self.best_rtt_us = rtt;
                     // The leader's clock read r halfway through the round trip.
                     self.offset_us = r as i64 - (t as i64 + rtt as i64 / 2);
+                    self.core.set_offset(self.offset_us);
                 }
             }
             Item::Pong(..) => {}
@@ -368,28 +361,9 @@ impl Node {
     fn flush_out(&mut self) {
         let mut per: BTreeMap<u32, Vec<Item>> = std::mem::take(&mut self.control);
         for o in self.core.outbox() {
-            let item = match o.msg {
-                Msg::Entry(e) => {
-                    let id = e.id();
-                    let sig = if e.member == self.me {
-                        *self.sigs.entry(id).or_insert_with(|| wire::sign_entry(&self.key, self.session.session, &e))
-                    } else {
-                        match self.sigs.get(&id) {
-                            Some(s) => *s,
-                            None => {
-                                self.traffic.entries_without_signature += 1;
-                                continue;
-                            }
-                        }
-                    };
-                    Item::Entry(e, sig)
-                }
-                m @ (Msg::Fetch { .. } | Msg::FetchValue { .. }) => Item::Fetch(m),
-                // Joins and batches are not sent in M1.
-                _ => continue,
-            };
-            // Repair could wait on a long queue (o.class == Class::Repair); a LAN has none.
-            let _ = o.class == Class::Repair;
+            // Class Repair may be dropped while the queue to its requester is long (the requester
+            // asks again); a LAN has no such queue, so everything goes out.
+            let item = Item::Msg(o.msg);
             for to in o.to {
                 per.entry(to).or_default().push(item.clone());
             }
@@ -432,13 +406,12 @@ impl Node {
 
     // ---- the plan and the end ---------------------------------------------------------------------
 
-    fn run_plan(&mut self) {
-        let now = self.now_us();
-        let Some(cf) = self.core.clock_frame(now) else { return };
+    /// The background touches due by clock frame `cf`, authored right after the sim reached it.
+    fn run_plan(&mut self, cf: u64) {
         while self.core.ready() && self.plan.first_key_value().is_some_and(|(f, _)| *f <= cf) {
             let (_, list) = self.plan.pop_first().unwrap();
             for p in list {
-                if self.core.author(p).is_ok() {
+                if self.core.author(p, 0).is_ok() {
                     self.authored += 1;
                 }
             }
@@ -483,7 +456,7 @@ impl Node {
     pub fn summary(&self) -> Summary {
         let s = &self.core.sim;
         let frames = self.session.frames;
-        let members: Vec<u32> = s.members.iter().copied().collect();
+        let members: Vec<u32> = s.membership().members().iter().copied().collect();
         let scene = self.session.scene_kind().expect("validated");
         let replay = replay_sim_like(s, scene, &members, &final_log(s), frames).hashes;
         let (d, rd) = (digest(&s.hashes, frames), digest(&replay, frames));
@@ -497,7 +470,7 @@ impl Node {
             replay_equal: d == rd,
             members_at_end: members,
             evicted: s.members_evicted().keys().copied().collect(),
-            epoch: s.epoch,
+            epoch: s.membership().epoch(),
             rollbacks: s.stats.rollbacks,
             max_rollback_depth: s.stats.max_depth,
             checks_ok: s.stats.checks_ok,
@@ -536,9 +509,12 @@ impl Node {
         self.sync_clock();
         self.apply_faults();
         if self.epoch.is_some() {
-            let now = self.now_us();
-            self.core.tick(now);
-            self.run_plan();
+            // Entries authored at a frame's start precede that tick's ack, as in the harness.
+            let now = self.local_us();
+            if let Some(cf) = self.core.begin_tick(now, false) {
+                self.run_plan(cf);
+            }
+            self.core.end_tick(now);
         }
         let t2 = self.local_us();
         self.drain_events();
@@ -553,8 +529,8 @@ impl Node {
             self.last_status = local;
             let (s, t) = (&self.core.sim, &self.traffic);
             let line = format!(
-                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} recv {} rejected {:?} unsigned {} | sigs {}",
-                s.frame, s.now, s.conf, s.members, s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_received, t.rejected, t.entries_without_signature, self.sigs.len()
+                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} recv {} rejected {:?} bad entry sigs {}",
+                s.frame, s.now, s.conf, s.membership().members(), s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_received, t.rejected, s.stats.bad_sigs
             );
             self.note(line);
         }
@@ -581,7 +557,7 @@ impl DrivenPeer for Node {
         format!("{} {}", self.session.scene, self.session.size)
     }
     fn dt_ms(&self) -> f64 {
-        self.core.dt_us() as f64 / 1000.0
+        self.core.dt_us as f64 / 1000.0
     }
     fn time_ms(&self) -> u64 {
         self.session_ms().unwrap_or(0)
@@ -610,15 +586,16 @@ impl DrivenPeer for Node {
             Interaction::Touch { object, impulse, grab } => Payload::Touch { obj: object, impulse, grab },
             Interaction::Hand { object, target_mm, active } => Payload::Hand { obj: object, target_mm, active, span: 1 },
         };
-        let e = self.core.author(payload).map_err(|e| match e {
+        let e = self.core.author(payload, 0).map_err(|e| match e {
             AuthorError::NotReady => ToolError::new(ErrorCode::NotReady, "the peer is behind its clock or paused; step and retry"),
             AuthorError::NotOwner => ToolError::new(ErrorCode::NotOwner, "not your hand"),
+            AuthorError::Stride => ToolError::new(ErrorCode::NotReady, "a pose for this hand was already sent this frame; step and retry"),
         })?;
         self.authored += 1;
         self.flush_out();
         Ok(Authored { entry: e.id(), stamp: e.stamp, seq: e.seq })
     }
-    fn status(&self, entry: u64) -> Option<EntryStatus> {
+    fn status(&self, entry: EntryId) -> Option<EntryStatus> {
         sim_view::status(&self.core.sim, entry, self.me)
     }
     /// Real time cannot be advanced: this waits `ms` milliseconds while the node keeps running.

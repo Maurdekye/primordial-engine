@@ -244,6 +244,14 @@
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "background_grabs": {
+          "default": null,
+          "description": "Background touches are grabs (default false). Only a grab claims its object, for 0.5 s, and\nonly a grab can be refused for a claim (design D72).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "background_touches_per_s": {
           "default": null,
           "description": "Touches per second each other member makes on random objects, 0..=30 (default 0).",

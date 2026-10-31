@@ -1132,9 +1132,10 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",
  "pe-mcp",
- "pe-sim-core",
+ "pe-session",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
@@ -1165,8 +1166,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "getrandom 0.3.4",
- "pe-sim-core",
- "pe-spike-session-sim",
+ "pe-session",
+ "pe-session-harness",
  "rmcp",
  "schemars",
  "serde",
