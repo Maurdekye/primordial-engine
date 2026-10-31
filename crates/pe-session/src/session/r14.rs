@@ -75,7 +75,7 @@ impl WorldSim {
     }
 
     fn attest_due_entries(&mut self) -> Vec<Entry> {
-        if self.dirty_from.is_some() || !self.members.contains(&self.me) {
+        if self.dirty_from.is_some() || !self.membership().members().contains(&self.me) {
             return vec![];
         }
         let mut facts = Vec::new();
@@ -119,7 +119,7 @@ impl WorldSim {
 
     /// A certificate for `fact` from this world's members, once a strict majority has signed it.
     pub fn cert(&self, fact: u64) -> Option<Vec<(MemberId, Sig)>> {
-        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let members: Vec<MemberId> = self.membership().members().iter().copied().collect();
         let mut c: BTreeMap<MemberId, Sig> = BTreeMap::new();
         for (id, e) in &self.entries {
             if let Payload::Attest { fact: f, sig } = e.payload {

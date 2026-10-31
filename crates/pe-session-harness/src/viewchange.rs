@@ -49,11 +49,11 @@ pub(crate) fn vc_report(sim: &Sim, members: &[MemberId], label: &str) {
     for &m in members {
         let rep = sim.replica(m, 1);
         let r = &rep.sim;
-        let at: Vec<String> = r.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} (t={:.2} s) round {rd} removed {rm:?}", sim_secs(rep, *f))).collect();
+        let at: Vec<String> = r.vcm.vc_log.iter().map(|(e, f, rd, rm)| format!("epoch {e} at frame {f} (t={:.2} s) round {rd} removed {rm:?}", sim_secs(rep, *f))).collect();
         println!(
             "RESULT {label}: m{m} epoch {} members {:?} view changes {} (resets {}, highest round {}) | {}",
-            r.epoch,
-            r.members,
+            r.vcm.epoch,
+            r.vcm.members,
             r.stats.view_changes,
             r.stats.resets,
             r.stats.max_round,
@@ -109,7 +109,7 @@ pub fn withheld() {
     let ids = [1, 2, 3, 8, 9];
     let mut ps = peers_with(&ids, SimConfig::default(), |m| if m == 9 { plan(&[(50, touch(10, 6.0))]) } else { BTreeMap::new() });
     for p in ps.iter_mut().filter(|p| p.id == 8) {
-        p.worlds.get_mut(&1).unwrap().sim.withhold_vc = true;
+        p.worlds.get_mut(&1).unwrap().sim.vcm.withhold_vc = true;
     }
     let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 8_000_000);
     let mut equivocated = false;
@@ -226,7 +226,7 @@ pub fn bridge() {
         let cfg = SimConfig { quorum: q, ..SimConfig::default() };
         let mut ps = peers_with(&ids, cfg, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (400, touch(33, 3.0))]) } else { BTreeMap::new() });
         for p in ps.iter_mut().filter(|p| p.id == 8) {
-            p.worlds.get_mut(&1).unwrap().sim.byz_ally = true;
+            p.worlds.get_mut(&1).unwrap().sim.vcm.byz_ally = true;
         }
         let mut net = Net::new(link(30, 10, 0), 7);
         let side = |m: MemberId| if m <= 2 { 1 } else if m <= 4 { 2 } else { 0 };
@@ -248,7 +248,7 @@ pub fn bridge() {
             }
             if !healed && sim.net.now_us >= 12_000_000 {
                 let r = &mut sim.peers[i8].worlds.get_mut(&1).unwrap().sim;
-                r.byz_ally = false;
+                r.vcm.byz_ally = false;
                 r.unfreeze_others();
                 healed = true;
             }
@@ -256,8 +256,8 @@ pub fn bridge() {
         let label = format!("bridge-{}", rule_name(q));
         report(&sim, &[1, 2, 3, 4], &label);
         vc_report(&sim, &[1, 2, 3, 4], &label);
-        let a = sim.replica(1, 1).sim.members.clone();
-        let b = sim.replica(3, 1).sim.members.clone();
+        let a = sim.replica(1, 1).sim.vcm.members.clone();
+        let b = sim.replica(3, 1).sim.vcm.members.clone();
         println!(
             "RESULT {label}: member lists after the partition healed: m1 {a:?}, m3 {b:?} -> {}",
             if a == b { "ONE SESSION" } else { "FORKED (two sessions)" }
@@ -302,11 +302,11 @@ pub fn vc_scale(n: u32, silent: u32, heads: bool) {
     for &m in &live {
         let rep = sim.replica(m, 1);
         let r = &rep.sim;
-        match r.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
+        match r.vcm.vc_log.iter().find(|d| d.3.iter().any(|x| gone.contains(x))) {
             Some(d) => at.push(sim_secs(rep, d.1) - 1.0),
             None => undecided += 1,
         }
-        members_after.insert(r.members.len());
+        members_after.insert(r.vcm.members.len());
     }
     at.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let r1 = &sim.replica(live[0], 1).sim;
@@ -318,7 +318,7 @@ pub fn vc_scale(n: u32, silent: u32, heads: bool) {
         at.get(at.len() / 2).copied().unwrap_or(f64::NAN),
         at.last().copied().unwrap_or(f64::NAN),
         live[0],
-        r1.vc_log,
+        r1.vcm.vc_log,
         r1.conf,
         if panic_at.is_some() { "PANIC" } else { "no panic" },
         t0.elapsed().as_secs_f64()
@@ -351,7 +351,7 @@ pub fn join() {
     vc_report(&sim, &[1, 2, 3, 4], "join");
     for m in [1, 2, 3, 4] {
         let r = &sim.replica(m, 1).sim;
-        println!("  m{m}: admitted {:?}; 4's touches: {}", r.admitted, touch_state(&sim, m, joiner));
+        println!("  m{m}: admitted {:?}; 4's touches: {}", r.vcm.admitted, touch_state(&sim, m, joiner));
     }
     verdict(&sim, &[1, 2, 3, 4], "join (member 4 asks to join at t=2 s and touches an object at frame 420)", panic_at);
 }

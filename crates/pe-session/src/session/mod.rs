@@ -63,9 +63,11 @@ mod check;
 mod r14;
 mod sim;
 mod replay;
+mod seam;
 
 pub use entry::*;
 pub use membership::*;
+pub use seam::*;
 pub use r14::*;
 pub use sim::*;
 pub use replay::*;
@@ -381,8 +383,6 @@ struct Vc {
 pub struct WorldSim {
     pub world_id: u32,
     pub me: MemberId,
-    pub members: BTreeSet<MemberId>,
-    pub epoch: u32,
     pub cfg: SimConfig,
     pub world: World,
     pub t: Tables,
@@ -446,6 +446,59 @@ pub struct WorldSim {
     stable_hi: BTreeMap<MemberId, u32>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
+    /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
+    hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
+    /// The genesis members (epoch 0), from which every later epoch's members follow.
+    genesis: Vec<MemberId>,
+    /// Test fixture: review fixes switched off (see [`fix`]).
+    pub fixes_off: u32,
+    wants: Vec<(MemberId, MemberId, u32, u32)>,
+    pub conf: u64,
+    /// My clock frame (my present), set by the harness each tick.
+    pub now: u64,
+    my_seq: u32,
+    /// Test fixture (review H5): publish horizons this many frames behind the present.
+    pub horizon_lag: u64,
+    /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
+    pub lie_in_votes: bool,
+    my_last: EntryId,
+    /// (holder, author) -> (first seq asked, when, current retry interval), all in ms.
+    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
+    // ---- results
+    pub hashes: BTreeMap<u64, u64>,
+    pub check_hashes: BTreeMap<u64, u64>,
+    remote_checks: BTreeMap<u64, BTreeMap<MemberId, u64>>,
+    evaluated: BTreeSet<(u64, MemberId)>,
+    pub outcomes: BTreeMap<EntryId, (u64, Outcome)>,
+    pub watched: BTreeSet<u32>,
+    /// (frame, obj) -> object state hash after that frame, for watched objects.
+    pub obj_hist: BTreeMap<(u64, u32), u64>,
+    dirty_from: Option<u64>,
+    /// The present a running re-simulation is heading for (keyframe thinning during re-sim).
+    resim_to: u64,
+    /// Record every object's position after each frame (observer measurements).
+    pub track: bool,
+    pub pos_hist: BTreeMap<u64, Vec<[f32; 3]>>,
+    pub stats: Stats,
+    pub events: Vec<String>,
+    /// This replica's signing key and the members' public keys (S3).
+    keys: KeyRing,
+    /// The author's signature of every entry held, for relaying it.
+    sigs: BTreeMap<EntryId, Sig>,
+    /// The membership and view-change state (P2-3 S6b): read through [`Membership`], written by
+    /// the view change.
+    pub vcm: ViewChangeMembership,
+    /// M1: a fixed member list; when set, the core reads it instead of `vcm` and the view change is off.
+    static_ms: Option<StaticMembership>,
+}
+
+/// Everything the view change (10.8, P2-4) and the D80 admin layer keep: members, epochs, votes,
+/// cuts, joins, roles. The protocol core reads it through [`Membership`]; the view change
+/// (membership.rs, evict.rs) writes its fields. A plain struct the view change extends.
+#[derive(Clone)]
+pub struct ViewChangeMembership {
+    pub members: BTreeSet<MemberId>,
+    pub epoch: u32,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
     /// by more than half the speculation limit (review R3-9, demotion).
     lagging: BTreeMap<MemberId, u64>,
@@ -489,8 +542,6 @@ pub struct WorldSim {
     join_caps: BTreeMap<MemberId, (u32, u64)>,
     /// Per member: the first seq of its chain whose ack declares each epoch after 0.
     ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
-    /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
-    hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// (referrer, author) -> my present frame when the referrer's acks last referenced more of that
     /// author's chain (P2-4: a member that stops referencing a chain stalls everyone's confirmation).
     ref_advanced: BTreeMap<(MemberId, MemberId), u64>,
@@ -503,8 +554,6 @@ pub struct WorldSim {
     pub byz_ally: bool,
     /// Test fixture (review VCR-7): with `byz_ally`, prevote every proposal but never precommit.
     pub byz_no_precommit: bool,
-    /// The genesis members (epoch 0), from which every later epoch's members follow.
-    genesis: Vec<MemberId>,
     /// D80: each member's role. Every genesis member is an admin unless the session says otherwise.
     pub roles: BTreeMap<MemberId, RoleId>,
     /// D80: custom roles, id -> permission set. Admin (role 0) is built in and holds every permission.
@@ -523,8 +572,6 @@ pub struct WorldSim {
     /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
     /// it acts.
     pub closed_at: Option<u64>,
-    /// Test fixture: review fixes switched off (see [`fix`]).
-    pub fixes_off: u32,
     /// Test fixture (review VC-5): the epoch this member's acks declare, whatever epoch it is in.
     pub fake_ack_epoch: Option<u32>,
     /// VC-5: per member, my present when its acks first declared an epoch newer than mine.
@@ -541,39 +588,6 @@ pub struct WorldSim {
     /// (member to ask, value), and every pair asked so far.
     value_wants: Vec<(MemberId, u64)>,
     value_asked: BTreeSet<(MemberId, u64)>,
-    wants: Vec<(MemberId, MemberId, u32, u32)>,
-    pub conf: u64,
-    /// My clock frame (my present), set by the harness each tick.
-    pub now: u64,
-    my_seq: u32,
-    /// Test fixture (review H5): publish horizons this many frames behind the present.
-    pub horizon_lag: u64,
-    /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
-    pub lie_in_votes: bool,
-    my_last: EntryId,
-    /// (holder, author) -> (first seq asked, when, current retry interval), all in ms.
-    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
-    // ---- results
-    pub hashes: BTreeMap<u64, u64>,
-    pub check_hashes: BTreeMap<u64, u64>,
-    remote_checks: BTreeMap<u64, BTreeMap<MemberId, u64>>,
-    evaluated: BTreeSet<(u64, MemberId)>,
-    pub outcomes: BTreeMap<EntryId, (u64, Outcome)>,
-    pub watched: BTreeSet<u32>,
-    /// (frame, obj) -> object state hash after that frame, for watched objects.
-    pub obj_hist: BTreeMap<(u64, u32), u64>,
-    dirty_from: Option<u64>,
-    /// The present a running re-simulation is heading for (keyframe thinning during re-sim).
-    resim_to: u64,
-    /// Record every object's position after each frame (observer measurements).
-    pub track: bool,
-    pub pos_hist: BTreeMap<u64, Vec<[f32; 3]>>,
-    pub stats: Stats,
-    pub events: Vec<String>,
-    /// This replica's signing key and the members' public keys (S3).
-    keys: KeyRing,
-    /// The author's signature of every entry held, for relaying it.
-    sigs: BTreeMap<EntryId, Sig>,
 }
 
 /// Bytes needed to store `b` as a patch on `a`: every `block`-byte block of `b` that differs from
@@ -615,8 +629,50 @@ impl WorldSim {
         WorldSim {
             world_id,
             me,
-            members: members.iter().copied().collect(),
-            epoch: 0,
+            static_ms: None,
+            vcm: ViewChangeMembership {
+                members: members.iter().copied().collect(),
+                epoch: 0,
+                lagging: BTreeMap::new(),
+                proofs: BTreeMap::new(),
+                liars: BTreeMap::new(),
+                frozen: BTreeMap::new(),
+                votes: BTreeMap::new(),
+                evicted: BTreeMap::new(),
+                cut_ids: BTreeMap::new(),
+                cut_done: BTreeSet::new(),
+                vc: Vc::default(),
+                vc_later: BTreeMap::new(),
+                proposal_ids: BTreeMap::new(),
+                decided: Vec::new(),
+                vc_log: Vec::new(),
+                withhold_vc: false,
+                byz_ally: false,
+                byz_no_precommit: false,
+                ref_advanced: BTreeMap::new(),
+                withhold_checked: 0,
+                followers: BTreeSet::new(),
+                join_requests: BTreeSet::new(),
+                admitted: BTreeMap::new(),
+                join_caps: BTreeMap::new(),
+                ack_epoch_from: BTreeMap::new(),
+                roles: members.iter().map(|&m| (m, ADMIN)).collect(),
+                role_defs: BTreeMap::new(),
+                join_rules: JoinRules::default(),
+                join_attests: BTreeMap::new(),
+                owners: BTreeSet::new(),
+                admin_pending: BTreeSet::new(),
+                admin_outcomes: BTreeMap::new(),
+                closed_at: None,
+                fake_ack_epoch: None,
+                newer_since: BTreeMap::new(),
+                adopting: false,
+                strikes: BTreeMap::new(),
+                entry_wants: Vec::new(),
+                entry_asked: BTreeSet::new(),
+                value_wants: Vec::new(),
+                value_asked: BTreeSet::new(),
+            },
             cfg,
             world,
             t: Tables { objs, portal_open: true, ..Default::default() },
@@ -649,48 +705,9 @@ impl WorldSim {
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
-            lagging: BTreeMap::new(),
-            proofs: BTreeMap::new(),
-            liars: BTreeMap::new(),
-            frozen: BTreeMap::new(),
-            votes: BTreeMap::new(),
-            evicted: BTreeMap::new(),
-            cut_ids: BTreeMap::new(),
-            cut_done: BTreeSet::new(),
-            vc: Vc::default(),
-            vc_later: BTreeMap::new(),
-            proposal_ids: BTreeMap::new(),
-            decided: Vec::new(),
-            vc_log: Vec::new(),
-            withhold_vc: false,
-            byz_ally: false,
-            byz_no_precommit: false,
             hidden: None,
-            ref_advanced: BTreeMap::new(),
-            withhold_checked: 0,
-            followers: BTreeSet::new(),
-            join_requests: BTreeSet::new(),
-            admitted: BTreeMap::new(),
-            join_caps: BTreeMap::new(),
-            ack_epoch_from: BTreeMap::new(),
             genesis: members.to_vec(),
-            roles: members.iter().map(|&m| (m, ADMIN)).collect(),
-            role_defs: BTreeMap::new(),
-            join_rules: JoinRules::default(),
-            join_attests: BTreeMap::new(),
-            owners: BTreeSet::new(),
-            admin_pending: BTreeSet::new(),
-            admin_outcomes: BTreeMap::new(),
-            closed_at: None,
             fixes_off: 0,
-            fake_ack_epoch: None,
-            newer_since: BTreeMap::new(),
-            adopting: false,
-            strikes: BTreeMap::new(),
-            entry_wants: Vec::new(),
-            entry_asked: BTreeSet::new(),
-            value_wants: Vec::new(),
-            value_asked: BTreeSet::new(),
             wants: Vec::new(),
             conf: 0,
             now: 0,

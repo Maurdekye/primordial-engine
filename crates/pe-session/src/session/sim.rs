@@ -785,6 +785,6 @@ impl WorldSim {
     }
 
     pub fn members_evicted(&self) -> &BTreeMap<MemberId, (u32, u64)> {
-        &self.evicted
+        self.membership().removed()
     }
 }
