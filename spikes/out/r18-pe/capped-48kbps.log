@@ -1,0 +1,9 @@
+RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 48 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 10 s
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   per message      | 151.0 /  62.2 |  499 /  499 |  264 | 338 / 357 | 458 / 461 | 0 (own entries moved: 0) | 20.8/s,  33 | never | m1 5e2f4cccb83814ca / m2 220007afdbec18bb replay 5e2f4cccb83814ca DIFFER
+RESULT     member 1's own hand against its target, over 136 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched          | 140.9 /  63.4 |  499 /  499 |  177 | 338 / 355 | 458 / 461 | 0 (own entries moved: 0) | 20.5/s,  32 | never | m1 5e2f4cccb83814ca / m2 175a302957345e4b replay 5e2f4cccb83814ca DIFFER
+RESULT     member 1's own hand against its target, over 136 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched+adaptive |  48.2 /  50.6 |  326 /  106 |    0 |   0 /   0 |  35 /  35 | 50 (own entries moved: 0) | 14.2/s,  24 | 92 ms | m1 8eb41e88c05540ce / m2 8eb41e88c05540ce replay 8eb41e88c05540ce EQUAL
+RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2672, 1200, 1336, 1642, 1179, 1873] ms
