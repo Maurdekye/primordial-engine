@@ -1308,6 +1308,9 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   its own transfer: the receiver trusts that member or waits for a second one [I].
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
+* **The joiner holds its simulation until the state is imported, and a state never rewinds a replica**
+  (reviews P23R-1 and P23R-2): a state join needs a joiner that is not simulating yet, and a refused
+  answer uses up that donor's request, so the joiner asks another member [V @world-chunks, pe-session].
 * Region- or island-scoped transfer is a later optimization.
 
 ---
@@ -2053,8 +2056,9 @@ hardening, proposal]:
 * **P23-2, the open part:** facts are 256-bit BLAKE3, with the session in the signed message. But
   `Change::value` and `chain_hash` are still 64 bits (truncated BLAKE3, no longer FNV), so a proposer
   that grinds two changes to one value, a birthday search of about 2^32, remains possible. Widening both
-  to 256 bits changes the vote payloads and the R14 tables; it goes with P2-5's move to pe-session
-  [proposal; @provenance-eng agrees for the chain hash].
+  to 256 bits changes the vote payloads and the R14 tables. It is in the P2-5 port's scope, where the
+  facts also gain their frame and epoch (VC-7, P23R-4) (@coordinator-opus; @provenance-eng agrees for
+  the chain hash).
 
 ### 10.9 Recovery when the network degrades (R18)
 
@@ -4828,6 +4832,11 @@ persists until a verdict arrives.
   "signatures" are keyless hashes that anyone could compute: they model who must sign, not
   unforgeability, and the forge tests forge only signatures an attacker could hold. Production signs with
   each member's Ed25519 key (10.3) (round 3, low).
+  * A verifier checks a fact signature over "pe-fact\0" | world | session_of(world) | fact, so it must
+    know each partner world's session id. The route list carries it, and feeds
+    `PublicKeys::add_world` (review P23R-3). pe-session at 3af709a registers only its own world's
+    session id, so once real keys are used a partner world's facts verify nothing [V @design-reviewer,
+    review-p2-3.md round 2].
   * **Each world trades only with the worlds on its route list** (reviews R3-4 to R3-6). It knows their
     member lists from the same genesis config. Round 3 showed why: when every world counted, a member
     who controlled a world alone could duplicate or mint objects.
