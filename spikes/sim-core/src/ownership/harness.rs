@@ -8,9 +8,13 @@
 //! * A2: A1 plus sessions of its own (lineages 8 and 9) attesting anything at any frames, with
 //!   signer subsets the certificates really carry. Forged signer sets (OWNT-1) and the window and
 //!   recovery machinery are deferred with the trust root (D87): removed under OT(a).
+//! * Relay: holds no key that matters; sends orphans with made-up parents, unsigned and stranger-
+//!   signed certificates, stripped and partial copies, and attestations before their certificates.
 //!
 //! Must hold: invariants 1-7 for A1; 1, 4, 5 and 7 for A2, and 6 for Leave. Invariant 8 (A2) is
-//! the residual, measured. `PE_OWN_ITERS` sets the number of histories (default 150).
+//! the residual, measured. `PE_OWN_ITERS` sets the number of histories (default 150), `PE_OWN_FROM`
+//! the first seed (default 0). About one in a hundred is long (several hundred attested
+//! certificates).
 
 use super::*;
 use crate::provenance::StaticEpochs;
@@ -129,7 +133,8 @@ fn honest_history(rng: &mut Rng) -> History {
     let rule = [SignRule::All, SignRule::All, SignRule::Threshold(2), SignRule::Any][rng.below(4)];
     let book = Book::new(Cert::genesis(&owners, rule, rng.next())).unwrap();
     let mut h = History { book, frame: 0, next_key: 100, former: BTreeSet::new(), recovery_keys: BTreeSet::new() };
-    for _ in 0..rng.below(40) + 3 {
+    let steps = if rng.chance(1) { 700 } else { rng.below(40) + 3 };
+    for _ in 0..steps {
         let _ = honest_step(rng, &mut h, L1);
     }
     if rng.chance(30) {
@@ -169,6 +174,10 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
         let victim = rng.below(3) as Key + 1;
         let lineage = if rng.chance(50) { L8 } else { L9 };
         sock += 1;
+        if rng.chance(8) {
+            relay_flood(rng, book);
+            continue;
+        }
         let c = match rng.below(15) {
             0 | 1 => cert_on(book, vec![parent], Change::Add { key: sock }, &signers),
             2 => cert_on(book, vec![parent], Change::Leave { key: target }, &signers),
@@ -244,6 +253,36 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
     }
 }
 
+/// A relay with no key that matters: orphans with made-up parents (ids ground low), unsigned and
+/// stranger-signed certificates on real parents, and attestations of certificates nobody holds. The
+/// book refuses every one and stores nothing (invariant 5, OWNU-2).
+fn relay_flood(rng: &mut Rng, book: &mut Book) {
+    let before = book.clone();
+    let ids: Vec<CertId> = book.inner.certs.keys().copied().collect();
+    for i in 0..rng.below(300) + 1 {
+        let parent = rng.pick(&ids).unwrap();
+        let c = match i % 4 {
+            0 => {
+                let mut c = Cert { world: book.world, seq: 1, prev: vec![rng.next()], change: Change::Add { key: 7777 }, sigs: vec![] };
+                while c.id() > u64::MAX >> 6 {
+                    c.prev[0] = rng.next();
+                }
+                c
+            }
+            1 => cert_on(book, vec![parent], Change::Add { key: 7777 }, &[]),
+            2 => cert_on(book, vec![parent], Change::Add { key: 7778 }, &[7777]),
+            _ => {
+                let a = Attest::make(book.world, rng.next(), L8, rng.below(100) as u64, &[1].into(), &[1]);
+                assert!(!book.attest(&a, &sessions()), "an attestation of an unheld certificate is dropped");
+                continue;
+            }
+        };
+        let r = book.insert(c.clone());
+        assert!(r.is_err(), "a keyless relay's certificate is refused: {r:?} {c:?} parent counts {}", before.counts(parent));
+    }
+    assert_eq!(*book, before, "a keyless relay stored something");
+}
+
 type Essence = (BTreeSet<Key>, SignRule, bool, BTreeMap<Key, BTreeMap<Key, CertId>>, BTreeMap<Key, CertId>, BTreeMap<Key, Recovering>, Vec<CertId>, bool);
 
 /// The view minus what may legitimately differ (refused certificates).
@@ -252,9 +291,12 @@ fn essence(v: &View) -> Essence {
     (o.owners.clone(), o.rule, o.no_removal, o.recovery.clone(), o.challenges.clone(), o.recovering.clone(), v.heads.clone(), v.disputed)
 }
 
-/// Rebuild a book from its certificates and attestations, in a shuffled order, the attestations
-/// first or after the certificates (invariant 4).
-fn rebuilt(rng: &mut Rng, b: &Book, attests_after: bool) -> Book {
+/// Rebuild a book from its certificates and attestations (invariant 4). `batch`: one batch, in a
+/// shuffled order. Otherwise one by one in a random causal order, each attestation at a random
+/// moment (sometimes before its certificate, so it is dropped), with a keyless relay sending stripped
+/// copies and junk in between. What was refused is then sent again with its attestations, as the
+/// contract says. Returns the book and how many certificates had to be sent again.
+fn rebuilt(rng: &mut Rng, b: &Book, batch: bool) -> (Book, usize) {
     let mut certs: Vec<Cert> = b.inner.certs.values().filter(|c| c.seq > 0).cloned().collect();
     for i in (1..certs.len()).rev() {
         certs.swap(i, rng.below(i + 1));
@@ -265,17 +307,44 @@ fn rebuilt(rng: &mut Rng, b: &Book, attests_after: bool) -> Book {
         attests.swap(i, rng.below(i + 1));
     }
     let mut r = Book::new(g).unwrap();
-    if attests_after {
-        for c in &certs {
-            let _ = r.insert(c.clone());
-        }
-        for a in &attests {
+    if batch {
+        r.insert_attested(&certs, &attests, &sessions());
+        return (r, 0);
+    }
+    // A random causal order: by seq, ties shuffled (a parent's seq is always lower).
+    certs.sort_by_key(|c| c.seq);
+    let mut pending: Vec<Attest> = Vec::new();
+    let mut by: BTreeMap<CertId, Vec<Attest>> = BTreeMap::new();
+    for a in &attests {
+        if rng.chance(10) {
             r.attest(a, &sessions());
         }
-    } else {
-        r.insert_attested(&certs, &attests, &sessions());
+        by.entry(a.cert).or_default().push(a.clone());
     }
-    r
+    // The genesis is held from the start.
+    pending.extend(by.remove(&b.genesis).into_iter().flatten());
+    for c in &certs {
+        if rng.chance(10) {
+            // The relay: a partial copy first, or junk.
+            let mut part = c.clone();
+            part.sigs.retain(|_| rng.chance(50));
+            let _ = r.insert(part);
+        }
+        let _ = r.insert(c.clone());
+        pending.extend(by.remove(&c.id()).into_iter().flatten());
+        while !pending.is_empty() && rng.chance(60) {
+            let a = pending.swap_remove(rng.below(pending.len()));
+            r.attest(&a, &sessions());
+        }
+    }
+    for a in &pending {
+        r.attest(a, &sessions());
+    }
+    let missing: Vec<Cert> = certs.iter().filter(|c| r.cert(c.id()).is_none() || b.inner.commits.get(&c.id()) != r.inner.commits.get(&c.id())).cloned().collect();
+    if !missing.is_empty() {
+        r.insert_attested(&missing, &attests, &sessions());
+    }
+    (r, missing.len())
 }
 
 /// The keys that counting certificates added (genesis included).
@@ -358,8 +427,11 @@ struct Residual {
     loosened_without_takeover: u32,
     /// Honest histories that forked into two lineages and merged.
     forked: u32,
-    /// Rebuilds whose parked or pending buffer overflowed under the attacker's flood (not compared).
-    overflowed: u32,
+    /// One-by-one rebuilds that had to send certificates again (a quota or an early attestation).
+    resent: u32,
+    /// Long honest histories, and the most attested certificates in one.
+    long: u32,
+    max_attested: usize,
 }
 
 fn check(seed: u64, residual: &mut Residual) {
@@ -368,6 +440,10 @@ fn check(seed: u64, residual: &mut Residual) {
     if h.book.inner.commits.values().any(|m| m.contains_key(&L2)) {
         residual.forked += 1;
     }
+    if h.book.inner.commits.len() > 256 {
+        residual.long += 1;
+    }
+    residual.max_attested = residual.max_attested.max(h.book.inner.commits.len());
     let honest = h.book.view();
     // The attacker's keys: former owners, recovery keys (stolen), strangers.
     let mut keys: Vec<Key> = h.former.iter().copied().chain(h.recovery_keys.iter().copied()).collect();
@@ -378,19 +454,29 @@ fn check(seed: u64, residual: &mut Residual) {
         attack(&mut rng, &mut v, &keys, sessions_too);
         let ctx = format!("seed {seed}, sessions {sessions_too}");
         let vv = v.view();
-        // 5: bounded.
-        let unattested = v.inner.certs.len() - v.inner.commits.len();
-        assert!(unattested <= UNATTESTED_MAX + 1, "{ctx}: {unattested} unattested certs");
-        assert!(v.inner.parked.len() <= PARKED_MAX && v.inner.pending.len() <= PARKED_MAX, "{ctx}: parked or pending over bound");
-        // 4: the view doesn't depend on arrival order, attestations first or after.
-        for after in [false, true] {
-            let r = rebuilt(&mut rng, &v, after);
-            if r.inner.overflowed {
-                // A flood beyond the buffers: dropped items must be sent again (stated bound).
-                residual.overflowed += 1;
-                continue;
-            }
-            assert_eq!(essence(&r.view()), essence(&vv), "{ctx}: the view depends on arrival order (attests after: {after})");
+        // 5: bounded. Unattested certificates, held or parked, are charged only to keys that matter
+        // at a counting certificate (or, at one some session attested, in its own state: the A2
+        // attacker's sessions), at most UNATTESTED_PER_KEY each. A keyless relay stores nothing
+        // (asserted in relay_flood).
+        let keys_of = |s: &Owners| s.owners.iter().copied().chain(s.recovery.values().flat_map(|r| r.keys().copied())).collect::<Vec<_>>();
+        let mattering: BTreeSet<Key> = v
+            .inner
+            .eff
+            .iter()
+            .filter(|(id, _)| v.counts(**id))
+            .flat_map(|(_, s)| keys_of(s))
+            .chain(v.inner.commits.keys().flat_map(|id| keys_of(&v.inner.linear[id])))
+            .collect();
+        let unattested = v.inner.certs.keys().filter(|id| **id != v.genesis && !v.inner.commits.contains_key(id)).count() + v.inner.parked.len();
+        assert_eq!(unattested, v.inner.charged.len(), "{ctx}: an unattested certificate charged to nobody");
+        assert!(v.inner.charged.values().all(|p| p.is_subset(&mattering)), "{ctx}: charged to a key that never mattered");
+        assert!(unattested <= UNATTESTED_PER_KEY * mattering.len(), "{ctx}: {unattested} unattested certs for {} keys", mattering.len());
+        // 4: the view and the digest don't depend on arrival order.
+        for batch in [true, false] {
+            let (r, resent) = rebuilt(&mut rng, &v, batch);
+            residual.resent += (resent > 0) as u32;
+            assert_eq!(essence(&r.view()), essence(&vv), "{ctx}: the view depends on arrival order (batch: {batch})");
+            assert_eq!(r.digest(), v.digest(), "{ctx}: the digest depends on arrival order (batch: {batch})");
         }
         // 1: every owner was added by a counting certificate.
         let added = added_keys(&v);
@@ -404,7 +490,13 @@ fn check(seed: u64, residual: &mut Residual) {
         if !sessions_too {
             // 2: unattested changes change nothing.
             assert_eq!(essence(&vv), essence(&honest), "{ctx}: an A1 attacker changed the view");
-            // 3: liveness: the next honest steps go the same way in both books.
+            // 3: liveness: an owner's unattested proposal on the head still gets in, and the next
+            // honest steps go the same way in both books.
+            let o = *vv.owners.owners.iter().next().unwrap();
+            let prop = cert_on(&v, vv.heads.clone(), Change::SetRecovery { owner: o, recovery: Some(55_555) }, &[o]);
+            if vv.heads.len() == 1 {
+                assert_eq!(v.clone().insert(prop.clone()), h.book.clone().insert(prop), "{ctx}: an honest proposal went differently after the attack");
+            }
             let mut h1 = History { book: h.book.clone(), ..h.clone() };
             let mut h2 = History { book: v.clone(), ..h.clone() };
             for k in 0..5 {
@@ -438,13 +530,15 @@ fn check(seed: u64, residual: &mut Residual) {
 #[test]
 fn adversarial_harness() {
     let iters: u64 = std::env::var("PE_OWN_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(150);
+    // A long run splits into chunks: PE_OWN_FROM is the first seed.
+    let from: u64 = std::env::var("PE_OWN_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut residual = Residual::default();
-    for seed in 0..iters {
+    for seed in from..from + iters {
         check(seed, &mut residual);
     }
     println!(
-        "HARNESS {iters} honest histories ({} forked into two lineages and merged) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, rule loosened {} (always with a takeover); {} rebuilds overflowed a buffer under the flood (not compared)",
-        residual.forked, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.rule_loosened, residual.overflowed
+        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, rule loosened {} (always with a takeover); {} one-by-one rebuilds sent certificates again, then converged",
+        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.rule_loosened, residual.resent
     );
     assert_eq!(residual.loosened_without_takeover, 0, "concurrent rules take the strictest; only a takeover loosens");
 }
@@ -470,23 +564,44 @@ fn harness_debug_rebuild() {
     for sessions_too in [false, true] {
         let mut v = h.book.clone();
         attack(&mut rng, &mut v, &keys, sessions_too);
-        for after in [false, true] {
-            let r = rebuilt(&mut rng, &v, after);
-            if essence(&r.view()) == essence(&v.view()) {
+        for batch in [true, false] {
+            let (r, _) = rebuilt(&mut rng, &v, batch);
+            if essence(&r.view()) == essence(&v.view()) && r.digest() == v.digest() {
                 continue;
             }
-            println!("sessions {sessions_too} after {after}: v certs {} r certs {} parked v {} r {}", v.len(), r.len(), v.inner.parked.len(), r.inner.parked.len());
+            println!("sessions {sessions_too} batch {batch}: v certs {} r certs {} parked v {} r {}", v.len(), r.len(), v.inner.parked.len(), r.inner.parked.len());
+            if v.view().owners != r.view().owners {
+                println!("  owners differ:
+   v {:?}
+   r {:?}", v.view().owners, r.view().owners);
+            }
             let a: BTreeSet<CertId> = v.inner.certs.keys().copied().collect();
             let b: BTreeSet<CertId> = r.inner.certs.keys().copied().collect();
             for id in a.difference(&b) {
                 println!("  only in v: {id} {:?} attested {:?} counts {}", v.inner.certs[id].change, v.inner.commits.get(id).map(|m| m.keys().collect::<Vec<_>>()), v.counts(*id));
                 let mut r2 = r.clone();
                 let c = v.inner.certs[id].clone();
-                println!("    parked in r {} pending {}; prev held in r {:?}; insert_raw Free -> {:?}", r.inner.parked.contains_key(id), r.inner.pending.contains_key(id), c.prev.iter().map(|p| (r.inner.certs.contains_key(p), r.inner.parked.contains_key(p), r.inner.invalid.contains(p))).collect::<Vec<_>>(), r2.insert_raw(c, Admit::Free));
+                println!("    parked in r {}; prev held in r {:?}; insert_raw Free -> {:?}", r.inner.parked.contains_key(id), c.prev.iter().map(|p| (r.inner.certs.contains_key(p), r.inner.parked.contains_key(p), r.inner.invalid.contains(p))).collect::<Vec<_>>(), r2.insert_raw(c, Admit::Free));
             }
             for id in a.intersection(&b) {
                 if v.inner.commits.get(id) != r.inner.commits.get(id) {
-                    println!("  commits differ {id}: {:?} vs {:?}", v.inner.commits.get(id), r.inner.commits.get(id));
+                    let c = &v.inner.certs[id];
+                    let mut r2 = r.clone();
+                    let att: Vec<Attest> = [L1, L2, L8, L9].iter().flat_map(|&l| v.export(l, &[1])).filter(|a| a.cert == *id).collect();
+                    println!(
+                        "  commits differ {id}: {:?} vs {:?}; seq {} {:?}; prev invalid in r {:?}, in v {:?}; invalid itself r {} v {}; resend -> {:?}; attests {}",
+                        v.inner.commits.get(id),
+                        r.inner.commits.get(id),
+                        c.seq,
+                        c.change,
+                        c.prev.iter().map(|p| r.inner.invalid.contains(p)).collect::<Vec<_>>(),
+                        c.prev.iter().map(|p| v.inner.invalid.contains(p)).collect::<Vec<_>>(),
+                        r.inner.invalid.contains(id),
+                        v.inner.invalid.contains(id),
+                        r2.insert_attested(std::slice::from_ref(c), &att, &sessions()),
+                        att.len()
+                    );
+                    println!("    after resend {:?}", r2.inner.commits.get(id));
                 }
                 if v.counts(*id) != r.counts(*id) {
                     println!("  counts differ {id} {:?}: v {} r {}", v.inner.certs[id].change, v.counts(*id), r.counts(*id));

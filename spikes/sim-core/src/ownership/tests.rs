@@ -594,8 +594,8 @@ fn tampered_or_reordered_chains_are_refused() {
 fn orphans_are_not_stored() {
     let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
     let orphan = Cert { world: b.world, seq: 5, prev: vec![12345], change: Change::Add { key: EVE }, sigs: vec![] };
-    // Parked (bounded) until its parent arrives; not held, and it counts for nothing.
-    assert_eq!(b.insert(orphan), Ok(Insert::Parked));
+    // Refused, never stored (OWNU-2): deliver the parents first.
+    assert_eq!(b.insert(orphan), Err(OwnError::MissingParent));
     assert_eq!(b.len(), 1);
 }
 
@@ -675,7 +675,7 @@ fn owns5b_unattested_flood_is_capped_per_signer() {
             refused += 1;
         }
     }
-    assert!(refused > 0 && b.len() < 64, "B alone stored {} certs", b.len());
+    assert!(refused > 0 && b.len() <= UNATTESTED_PER_KEY + 1, "B alone stored {} certs", b.len());
     assert_eq!(b.commit_local(next(&b, g, Change::Add { key: X }, &[S, B]), L1, 10), Ok(Insert::Applied));
 }
 

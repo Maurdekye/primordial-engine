@@ -55,6 +55,10 @@ pub const RECOVERY_FRAMES: u64 = 7 * 24 * 3600 * 60;
 /// changes are rare; each insert re-runs the effective pass, O(N log N). Production compacts a long
 /// linear history into a checkpoint signed by the owners [I].
 pub const MAX_CERTS: usize = 1024;
+/// Solo changes (signed by fewer than every owner at their parent; Leave and Merge excepted) take
+/// at most this many of [`MAX_CERTS`]: each owner's share is this over the owner count at the
+/// parent, counted along the certificate's own history (OWNU-6). Joint changes keep the rest.
+pub const SOLO_CERTS: usize = MAX_CERTS / 2;
 
 /// Spike model of `key` signing `msg`. Production: Ed25519.
 pub fn key_sig(key: Key, msg: u64) -> u64 {
@@ -327,12 +331,18 @@ pub enum OwnError {
     Revoked,
     /// The book holds [`MAX_CERTS`] certificates.
     Full,
-    /// Every signer already has [`UNATTESTED_PER_KEY`] unattested certificates in the book (OWNS-5).
+    /// Every key the certificate is charged to already has [`UNATTESTED_PER_KEY`] unattested
+    /// certificates in the book (OWNS-5, OWNU-4). Send it again with its attestation.
     Quota,
+    /// Every owner who signed this solo change used its share of [`SOLO_CERTS`] (OWNU-6).
+    Budget,
 }
 
-/// Unattested certificates one key may have in a book (OWNS-5: nobody floods it).
-pub const UNATTESTED_PER_KEY: usize = 16;
+/// Unattested certificates (held or parked) charged to one key at most (OWNS-5, OWNU-2, OWNU-4).
+/// A certificate is charged to its signers that are owners or recovery keys at its nearest counting
+/// ancestors, plus whoever its unattested parents are charged to; it gets in if one of them has room.
+/// Keys are charged one by one, never in groups, so nobody's flood crowds out another key.
+pub const UNATTESTED_PER_KEY: usize = 64;
 
 /// A recovery in progress: `by` started replacing its owner with `new_key` at certificate `start`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,6 +372,9 @@ pub struct Owners {
     pub challenges: BTreeMap<Key, CertId>,
     /// Recoveries in progress, by owner.
     pub recovering: BTreeMap<Key, Recovering>,
+    /// Solo changes each owner signed (itself or through a recovery key) along this history
+    /// (OWNU-6). Joined by maximum.
+    pub solo: BTreeMap<Key, u32>,
     pub seq: u32,
 }
 
@@ -400,6 +413,7 @@ impl Owners {
         }
         v.extend(self.challenges.iter().flat_map(|(&k, &c)| [k as u64 | 1 << 40, c]));
         v.extend(self.recovering.iter().flat_map(|(&o, r)| [o as u64 | 1 << 41, r.start, r.by as u64, r.new_key as u64]));
+        v.extend(self.solo.iter().flat_map(|(&o, &n)| [o as u64 | 1 << 42, n as u64]));
         fnv_u64s(v)
     }
 }
@@ -426,15 +440,12 @@ struct Inner {
     anc: BTreeMap<CertId, Arc<BTreeSet<CertId>>>,
     /// Attested commits: certificate -> lineage -> (frame, the signer set committed).
     commits: BTreeMap<CertId, BTreeMap<Lineage, (u64, BTreeSet<Key>)>>,
-    /// Certificates refused for the unattested pool (their parent didn't count yet, or the quota),
-    /// kept to re-admit once a parent counts or their attestation arrives (OWNT-5). Bounded; the
-    /// lowest ids stay. They count for nothing and aren't in the digest.
+    /// Certificates whose parents are held but that aren't valid yet (under-signed, or a state that
+    /// may change), kept to retry as copies with more signatures and attestations arrive (OWNT-5).
+    /// Copies merge their signatures (OWNU-3). They count for nothing and aren't in the digest.
     parked: BTreeMap<CertId, Cert>,
-    /// Verified attestations of certificates not held yet (bounded likewise).
-    pending: BTreeMap<CertId, Vec<Attest>>,
-    /// The parked or pending buffer ever overflowed: a certificate or attestation was dropped, and
-    /// has to be sent again (invariant 4 holds up to the buffers' bounds).
-    overflowed: bool,
+    /// Unattested certificates, held or parked, and the keys each is charged to (OWNU-2, OWNU-4).
+    charged: BTreeMap<CertId, BTreeSet<Key>>,
     /// Results of the last pass: signer sets, linear validity and state, effective states, the view,
     /// the digest.
     signers: BTreeMap<CertId, BTreeSet<Key>>,
@@ -444,11 +455,6 @@ struct Inner {
     view: View,
     digest: u64,
 }
-
-/// Unattested certificates a book holds at most, apart from [`MAX_CERTS`] (OWNT-2).
-pub const UNATTESTED_MAX: usize = 256;
-/// Parked certificates and pending attestations a book keeps at most.
-pub const PARKED_MAX: usize = 256;
 
 /// What one verifier holds of a world's ownership. Cloning shares everything until the next change
 /// (keyframes, OWNR-6).
@@ -463,15 +469,17 @@ pub struct Book {
 pub enum Insert {
     Applied,
     Duplicate,
-    /// Kept aside until a parent counts or its attestation arrives (it counts for nothing yet).
+    /// Not valid yet (under-signed, say), kept to retry as more arrives (it counts for nothing).
     Parked,
 }
 
-/// How a certificate is admitted: through the bounded pool of unattested certificates, or freely,
-/// because a session attests it or because only its validity is being checked.
+/// How a certificate is admitted: charged to keys under their quota (unattested), already charged
+/// (a parked one retried), or freely, because a session attests it or because only its validity is
+/// being checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Admit {
     Pool,
+    Settled,
     Free,
 }
 
@@ -511,10 +519,11 @@ impl Book {
         self.inner.commits.len()
     }
 
-    /// Store `c` if it is valid against its parent's state. Unattested, it enters the bounded pool:
-    /// only on a parent that counts, charged to signers that are owners or recovery keys there, each
-    /// under its quota (OWNT-2); otherwise it is parked. It counts only once attested. A copy of a
-    /// held certificate adds its missing signatures, until a session attests it.
+    /// Store `c` if its parents are held and it is valid against their state. Unattested, it is
+    /// charged to keys under their quota (OWNT-2, OWNU-4) and counts for nothing until a session
+    /// attests it. An orphan is refused, never stored (OWNU-2): deliver the parents first. Valid
+    /// against nothing yet (under-signed, say), it is parked to retry, charged likewise. A copy of a
+    /// held or parked certificate adds its missing signatures (OWNU-3), until a session attests it.
     pub fn insert(&mut self, c: Cert) -> Result<Insert, OwnError> {
         let r = self.admit(c)?;
         self.recompute();
@@ -522,43 +531,87 @@ impl Book {
         Ok(r)
     }
 
-    /// Pool admission, parking what the pool can't take yet.
+    /// Admission of an unattested certificate, parking what can't get in yet.
     fn admit(&mut self, c: Cert) -> Result<Insert, OwnError> {
+        match self.insert_raw(c.clone(), Admit::Pool) {
+            Ok(r) => Ok(r),
+            Err(e) => self.park(c, e),
+        }
+    }
+
+    /// Keep a certificate that isn't valid yet, if every parent is held and valid and it carries a
+    /// signature that matters there, charged like any unattested certificate. Final refusals (a
+    /// wrong world, a second genesis, an orphan, a bad link, the quota, the cap, the budget) are never
+    /// parked.
+    fn park(&mut self, mut c: Cert, e: OwnError) -> Result<Insert, OwnError> {
+        use OwnError::*;
+        if matches!(e, WrongWorld | BadGenesis | MissingParent | BadLink | Quota | Full | Stale | Budget) {
+            return Err(e);
+        }
+        let Some(p) = self.parent_state(&c.prev) else { return Err(e) };
         let id = c.id();
-        let mode = if self.inner.pending.contains_key(&id) { Admit::Free } else { Admit::Pool };
-        match self.insert_raw(c.clone(), mode) {
-            Ok(r) => {
-                self.apply_pending(id);
-                Ok(r)
-            }
-            // A refusal that depends on what the book holds so far (a parent, a state, the pool)
-            // may change as more arrives: park and retry. Only a wrong world or a second genesis is
-            // final. The certificate is still reported as refused.
-            Err(e) if c.world == self.world && e != OwnError::BadGenesis => {
-                self.park(c);
-                if matches!(e, OwnError::Quota | OwnError::Unattested | OwnError::MissingParent) { Ok(Insert::Parked) } else { Err(e) }
-            }
-            Err(e) => Err(e),
+        let h = c.body_hash();
+        c.sigs.retain(|&(k, s)| p.relevant(k) && s == key_sig(k, h));
+        if let Some(held) = self.inner.parked.get(&id) {
+            c.sigs.extend(held.sigs.iter().copied());
         }
+        c.sigs.sort_unstable();
+        c.sigs.dedup_by_key(|x| x.0);
+        if !self.inner.charged.contains_key(&id) {
+            let payer = self.payer(&c.prev, &c.signers());
+            if payer.is_empty() {
+                return Err(e);
+            }
+            if !self.has_room(&payer) {
+                return Err(OwnError::Quota);
+            }
+            Arc::make_mut(&mut self.inner).charged.insert(id, payer);
+        }
+        Arc::make_mut(&mut self.inner).parked.insert(id, c.clone());
+        // More signatures may make it valid now.
+        if self.insert_raw(c, Admit::Settled).is_ok() {
+            return Ok(Insert::Applied);
+        }
+        Ok(Insert::Parked)
     }
 
-    fn park(&mut self, c: Cert) {
-        let inner = Arc::make_mut(&mut self.inner);
-        inner.parked.insert(c.id(), c);
-        while inner.parked.len() > PARKED_MAX {
-            let last = *inner.parked.keys().next_back().unwrap();
-            inner.parked.remove(&last);
-            inner.overflowed = true;
+    /// Whom an unattested certificate on `prev`, with these signers, is charged to: its signers that
+    /// are owners or recovery keys at the nearest counting or attested ancestors (at an attested one
+    /// that doesn't count, its own state), plus whoever its unattested parents are charged to (so a
+    /// minted key's chain is paid by the key that minted it).
+    fn payer(&self, prev: &[CertId], signers: &BTreeSet<Key>) -> BTreeSet<Key> {
+        // Without a signature that matters at its parent, nobody's quota pays for it.
+        if signers.is_empty() {
+            return BTreeSet::new();
         }
-    }
-
-    /// Apply buffered attestations of a certificate that just became held.
-    fn apply_pending(&mut self, id: CertId) {
-        if let Some(v) = Arc::make_mut(&mut self.inner).pending.remove(&id) {
-            for a in v {
-                self.record_raw(a.cert, a.lineage, a.frame, a.signers.iter().copied().collect());
+        let mut out: BTreeSet<Key> = prev.iter().filter_map(|p| self.inner.charged.get(p)).flatten().copied().collect();
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<CertId> = prev.to_vec();
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            if self.counted_now(x) {
+                let s = &self.inner.eff[&x];
+                out.extend(signers.iter().copied().filter(|&k| s.relevant(k)));
+            } else if self.inner.commits.contains_key(&x) {
+                let s = &self.inner.linear[&x];
+                out.extend(signers.iter().copied().filter(|&k| s.relevant(k)));
+            } else if let Some(c) = self.inner.certs.get(&x) {
+                stack.extend(c.prev.iter().copied());
             }
         }
+        out
+    }
+
+    /// One of these keys is charged less than its quota.
+    fn has_room(&self, payer: &BTreeSet<Key>) -> bool {
+        payer.iter().any(|k| self.inner.charged.values().filter(|ks| ks.contains(k)).count() < UNATTESTED_PER_KEY)
+    }
+
+    /// Counts as of the last pass (a certificate inserted since then doesn't yet).
+    fn counted_now(&self, id: CertId) -> bool {
+        self.inner.eff.contains_key(&id) && self.counts(id)
     }
 
     /// Try the parked certificates again, until nothing more gets in.
@@ -567,16 +620,8 @@ impl Book {
             let parked: Vec<Cert> = self.inner.parked.values().cloned().collect();
             let mut progress = false;
             for c in parked {
-                let id = c.id();
-                Arc::make_mut(&mut self.inner).parked.remove(&id);
-                let mode = if self.inner.pending.contains_key(&id) { Admit::Free } else { Admit::Pool };
-                match self.insert_raw(c.clone(), mode) {
-                    Ok(_) => {
-                        self.apply_pending(id);
-                        progress = true;
-                    }
-                    Err(OwnError::WrongWorld | OwnError::BadGenesis) => {}
-                    Err(_) => self.park(c),
+                if self.insert_raw(c, Admit::Settled).is_ok() {
+                    progress = true;
                 }
             }
             if !progress {
@@ -587,23 +632,45 @@ impl Book {
     }
 
     /// Insert many, in any order (OWNS-9), parking what can't get in yet. Returns what was refused
-    /// for good (OWNS-10: junk is skipped, not fatal).
+    /// (OWNS-10: junk is skipped, not fatal).
     pub fn insert_all(&mut self, certs: &[Cert]) -> Vec<(CertId, OwnError)> {
         self.insert_attested(certs, &[], &crate::provenance::StaticEpochs::default())
     }
 
-    /// As [`Book::insert_all`], with the sessions' attestations: those are verified and buffered first,
-    /// so an attested certificate gets in freely whatever the order (OWNT-5).
+    /// As [`Book::insert_all`], with the sessions' attestations, in any order within the batch. The
+    /// batch's attestations are matched to its own certificates (OWNU-1): an attested certificate
+    /// gets in freely, whatever the batch's size. Attestations of certificates neither in the batch
+    /// nor held are dropped: send them with their certificates.
     pub fn insert_attested(&mut self, certs: &[Cert], attests: &[Attest], sessions: &dyn EpochCerts) -> Vec<(CertId, OwnError)> {
-        for a in attests {
-            self.buffer(a, sessions);
+        let mut by: BTreeMap<CertId, Vec<&Attest>> = BTreeMap::new();
+        for a in attests.iter().filter(|a| a.verify(self.world, sessions)) {
+            by.entry(a.cert).or_default().push(a);
         }
         let mut sorted: Vec<&Cert> = certs.iter().collect();
         sorted.sort_by_key(|c| (c.seq, c.id()));
         let mut refused = Vec::new();
         for c in sorted {
-            if let Err(e) = self.admit(c.clone()) {
-                refused.push((c.id(), e));
+            let id = c.id();
+            let r = match by.get(&id) {
+                Some(v) => match self.insert_raw(c.clone(), Admit::Free) {
+                    Ok(r) => {
+                        for a in v {
+                            self.record_raw(id, a.lineage, a.frame, a.signers.iter().copied().collect());
+                        }
+                        Ok(r)
+                    }
+                    Err(e) => self.park(c.clone(), e),
+                },
+                None => self.admit(c.clone()),
+            };
+            if let Err(e) = r {
+                refused.push((id, e));
+            }
+        }
+        // Attestations of certificates held (or parked) before the batch.
+        for (id, v) in &by {
+            for a in v {
+                self.attest_raw(*id, a.lineage, a.frame, a.signers.iter().copied().collect());
             }
         }
         self.recompute();
@@ -611,59 +678,40 @@ impl Book {
         refused
     }
 
-    /// Record a verified attestation, or buffer it until its certificate arrives.
-    fn buffer(&mut self, a: &Attest, sessions: &dyn EpochCerts) -> bool {
-        if !a.verify(self.world, sessions) {
+    /// Record an attestation of a held or parked certificate; anything else is dropped. False if
+    /// the certificate isn't held afterwards.
+    fn attest_raw(&mut self, id: CertId, lineage: Lineage, frame: u64, signers: BTreeSet<Key>) -> bool {
+        if let Some(c) = self.inner.parked.get(&id).cloned() {
+            let _ = self.insert_raw(c, Admit::Free);
+        }
+        if !self.inner.certs.contains_key(&id) {
             return false;
         }
-        if self.inner.certs.contains_key(&a.cert) {
-            self.record_raw(a.cert, a.lineage, a.frame, a.signers.iter().copied().collect());
-        } else {
-            let inner = Arc::make_mut(&mut self.inner);
-            let v = inner.pending.entry(a.cert).or_default();
-            if !v.contains(a) {
-                v.push(a.clone());
-            }
-            while inner.pending.len() > PARKED_MAX {
-                let last = *inner.pending.keys().next_back().unwrap();
-                inner.pending.remove(&last);
-                inner.overflowed = true;
-            }
-        }
+        self.record_raw(id, lineage, frame, signers);
         true
     }
 
     /// The local session committed `id` at its `frame` (its own record; exported as an [`Attest`]),
-    /// with the certificate's signer set as it holds it now. A parked certificate gets in with it.
+    /// with the certificate's signer set as it holds it now. A parked certificate gets in with it;
+    /// one the book doesn't hold changes nothing (OWNU-7).
     pub fn record(&mut self, id: CertId, lineage: Lineage, frame: u64) {
-        if let Some(c) = self.inner.parked.get(&id).cloned()
-            && self.insert_raw(c, Admit::Free).is_ok()
-        {
-            Arc::make_mut(&mut self.inner).parked.remove(&id);
+        let Some(c) = self.inner.certs.get(&id).or_else(|| self.inner.parked.get(&id)) else { return };
+        let signers = c.signers();
+        if self.attest_raw(id, lineage, frame, signers) {
+            self.recompute();
+            self.readmit();
         }
-        match self.inner.certs.get(&id) {
-            Some(c) => {
-                let signers = c.signers();
-                self.record_raw(id, lineage, frame, signers);
-            }
-            None => {
-                // Not held yet (its parent is parked too): keep the record for when it arrives.
-                let signers = self.inner.parked.get(&id).map(|c| c.signers().into_iter().collect()).unwrap_or_default();
-                let a = Attest { cert: id, lineage, epoch: 0, frame, signers, sigs: vec![] };
-                Arc::make_mut(&mut self.inner).pending.entry(id).or_default().push(a);
-            }
-        }
-        self.recompute();
-        self.readmit();
     }
 
     /// One lineage's attestations of one certificate can differ (a session equivocating): the lowest
-    /// frame wins, then the smallest signer set, whatever the order they arrive in (OWNT-6).
+    /// frame wins, then the smallest signer set, whatever the order they arrive in (OWNT-6). An
+    /// attested certificate is charged to nobody.
     fn record_raw(&mut self, id: CertId, lineage: Lineage, frame: u64, signers: BTreeSet<Key>) {
         if !self.inner.certs.contains_key(&id) {
             return;
         }
         let inner = Arc::make_mut(&mut self.inner);
+        inner.charged.remove(&id);
         let e = inner.commits.entry(id).or_default().entry(lineage).or_insert((frame, signers.clone()));
         let key = |f: u64, s: &BTreeSet<Key>| (f, s.len(), s.iter().copied().collect::<Vec<_>>());
         if key(frame, &signers) < key(e.0, &e.1) {
@@ -671,23 +719,15 @@ impl Book {
         }
     }
 
-    /// Import another session's attestation, if its signatures check out (buffered if its certificate
-    /// isn't held yet).
+    /// Import another session's attestation, if its signatures check out and the certificate is held
+    /// or parked; otherwise nothing changes (send the certificate first).
     pub fn attest(&mut self, a: &Attest, sessions: &dyn EpochCerts) -> bool {
-        let ok = self.buffer(a, sessions);
-        if ok {
-            if let Some(c) = self.inner.parked.get(&a.cert).cloned() {
-                Arc::make_mut(&mut self.inner).parked.remove(&a.cert);
-                if self.insert_raw(c.clone(), Admit::Free).is_ok() {
-                    self.apply_pending(a.cert);
-                } else {
-                    self.park(c);
-                }
-            }
-            self.recompute();
-            self.readmit();
+        if !a.verify(self.world, sessions) || !self.attest_raw(a.cert, a.lineage, a.frame, a.signers.iter().copied().collect()) {
+            return false;
         }
-        ok
+        self.recompute();
+        self.readmit();
+        true
     }
 
     /// The attestations of every certificate session `lineage` committed in this book.
@@ -715,11 +755,9 @@ impl Book {
             return Err(OwnError::Full);
         }
         let mut b = self.clone();
-        Arc::make_mut(&mut b.inner).parked.remove(&id);
         b.insert_raw(c, Admit::Free)?;
         let signers = b.inner.certs[&id].signers();
         b.record_raw(id, lineage, frame, signers);
-        b.apply_pending(id);
         b.recompute();
         if let Some(&(_, e)) = b.inner.view.refused.iter().find(|(r, _)| *r == id) {
             return Err(e);
@@ -732,8 +770,9 @@ impl Book {
     /// The state a certificate built on `prev` is judged against, as of the last pass.
     fn parent_state(&self, prev: &[CertId]) -> Option<Owners> {
         match prev {
-            [p] => (!self.inner.invalid.contains(p)).then(|| self.inner.linear[p].clone()),
-            ps => Some(self.join(ps, &self.inner.linear, &|x| !self.inner.invalid.contains(&x))),
+            [] => None,
+            [p] => (self.inner.linear.contains_key(p) && !self.inner.invalid.contains(p)).then(|| self.inner.linear[p].clone()),
+            ps => ps.iter().all(|p| self.inner.linear.contains_key(p)).then(|| self.join(ps, &self.inner.linear, &|x| !self.inner.invalid.contains(&x))),
         }
     }
 
@@ -749,9 +788,18 @@ impl Book {
         }
         let id = c.id();
         let h = c.body_hash();
+        // A held certificate stays held, even if its parent has turned invalid since: a copy is a
+        // duplicate (so an attestation that comes with it is still recorded).
+        if self.inner.commits.contains_key(&id) || (self.inner.certs.contains_key(&id) && self.parent_state(&c.prev).is_none()) {
+            return Ok(Insert::Duplicate);
+        }
         let Some(p) = self.parent_state(&c.prev) else { return Err(OwnError::BadLink) };
         // Only signatures that can matter: owners' and recovery keys' at the parent (OWNS-5).
         c.sigs.retain(|&(k, s)| p.relevant(k) && s == key_sig(k, h));
+        if let Some(parked) = self.inner.parked.get(&id) {
+            // OWNU-3: a copy of a parked certificate merges its signatures; it never replaces it.
+            c.sigs.extend(parked.sigs.iter().copied().filter(|&(k, _)| p.relevant(k)));
+        }
         c.sigs.sort_unstable();
         c.sigs.dedup_by_key(|x| x.0);
         if let Some(held) = self.inner.certs.get(&id) {
@@ -790,27 +838,29 @@ impl Book {
             }
             self.step(&p, &c, id, &signers, false)?
         };
-        if mode == Admit::Pool {
-            // OWNT-2: an unattested certificate only on a parent that counts, charged to keys that
-            // are owners or recovery keys at that parent's effective state, within the pool.
-            let counting = c.prev.iter().all(|x| self.counts(*x) && self.inner.eff.contains_key(x));
-            if !counting {
-                return Err(OwnError::Unattested);
+        match mode {
+            Admit::Pool => {
+                // OWNT-2, OWNU-4: charged to keys that matter, one of which has room.
+                let payer = self.payer(&c.prev, &signers);
+                if payer.is_empty() {
+                    return Err(OwnError::Signers);
+                }
+                if !self.has_room(&payer) {
+                    return Err(OwnError::Quota);
+                }
+                Arc::make_mut(&mut self.inner).charged.insert(id, payer);
             }
-            let charged: Vec<Key> = signers.iter().copied().filter(|&k| c.prev.iter().any(|x| self.inner.eff[x].relevant(k))).collect();
-            let unattested = |k: Key| {
-                self.inner.certs.iter().filter(|(i, x)| !self.inner.commits.contains_key(i) && x.sigs.iter().any(|s| s.0 == k)).count()
-            };
-            let pool = self.inner.certs.len() - self.attested_count();
-            if charged.is_empty() || pool >= UNATTESTED_MAX || charged.iter().all(|&k| unattested(k) >= UNATTESTED_PER_KEY) {
-                return Err(OwnError::Quota);
+            Admit::Settled => {}
+            Admit::Free => {
+                if self.attested_count() >= MAX_CERTS {
+                    return Err(OwnError::Full);
+                }
             }
-        } else if self.attested_count() >= MAX_CERTS {
-            return Err(OwnError::Full);
         }
         let mut anc: BTreeSet<CertId> = c.prev.iter().flat_map(|p| self.inner.anc[p].iter().copied()).collect();
         anc.insert(id);
         let inner = Arc::make_mut(&mut self.inner);
+        inner.parked.remove(&id);
         inner.anc.insert(id, Arc::new(anc));
         // The linear state now, so a child in the same batch is judged without another pass (OWNT-10).
         inner.linear.insert(id, state);
@@ -1007,6 +1057,24 @@ impl Book {
                 s.add_owner(r.new_key, id);
             }
         }
+        // OWNU-6: a solo change (not every owner at the parent signed it; Leave and Merge excepted)
+        // is charged to the owners who signed it, themselves or through a recovery key, each within
+        // its share of SOLO_CERTS along this history.
+        let by: Vec<Key> = p
+            .owners
+            .iter()
+            .copied()
+            .filter(|o| signers.contains(o) || p.recovery.get(o).is_some_and(|r| r.keys().any(|k| signers.contains(k))))
+            .collect();
+        if !matches!(c.change, Change::Leave { .. }) && !p.owners.is_subset(signers) && !by.is_empty() {
+            let share = (SOLO_CERTS / p.owners.len().max(1)) as u32;
+            if by.iter().all(|o| p.solo.get(o).copied().unwrap_or(0) >= share) {
+                return Err(OwnError::Budget);
+            }
+            for o in by {
+                *s.solo.entry(o).or_default() += 1;
+            }
+        }
         // A recovery key never stays one once it is an owner itself.
         let owners = s.owners.clone();
         for r in s.recovery.values_mut() {
@@ -1103,6 +1171,11 @@ impl Book {
             recovery,
             challenges,
             recovering,
+            solo: st.iter().flat_map(|s| s.solo.iter()).fold(BTreeMap::new(), |mut m, (&k, &n)| {
+                let e = m.entry(k).or_insert(0);
+                *e = (*e).max(n);
+                m
+            }),
             seq: st.iter().map(|s| s.seq).max().unwrap_or(0),
         }
     }
@@ -1177,20 +1250,30 @@ impl Book {
             [h] => eff[h].clone(),
             hs => self.join(hs, &eff, &|x| counted.contains(&x)),
         };
-        // OWNS-8, OWNT-8: disputed if two attested, valid certificates ever shared a parent.
+        // OWNS-8, OWNT-8: disputed if two attested, valid certificates whose whole past was
+        // committed ever shared a parent (even if both are voided).
+        let mut committed: BTreeSet<CertId> = BTreeSet::new();
+        for id in &order {
+            let c = &self.inner.certs[id];
+            if c.prev.is_empty() || (self.inner.commits.contains_key(id) && c.prev.iter().all(|p| committed.contains(p))) {
+                committed.insert(*id);
+            }
+        }
         let mut by_prev: BTreeMap<CertId, usize> = BTreeMap::new();
-        for (id, c) in &self.inner.certs {
-            if c.prev.len() == 1 && self.inner.commits.contains_key(id) && !self.inner.invalid.contains(id) {
+        for id in &committed {
+            let c = &self.inner.certs[id];
+            if c.prev.len() == 1 && !self.inner.invalid.contains(id) {
                 *by_prev.entry(c.prev[0]).or_default() += 1;
             }
         }
         let disputed = by_prev.values().any(|&n| n > 1);
         let view = View { disputed, heads, owners, refused };
-        let mut v = vec![self.world, self.inner.certs.len() as u64];
-        v.extend(self.inner.certs.values().map(Cert::digest));
-        for (c, m) in &self.inner.commits {
+        // OWNU-5: the digest covers what counts (with the committed signer sets), never the junk a
+        // book happens to hold, so it doesn't depend on arrival order.
+        let mut v = vec![self.world, counted.len() as u64, disputed as u64];
+        for c in &counted {
             v.push(*c);
-            for (l, (f, s)) in m {
+            for (l, (f, s)) in self.inner.commits.get(c).into_iter().flatten() {
                 v.extend([*l as u64, *f, s.len() as u64]);
                 v.extend(s.iter().map(|&k| k as u64));
             }
@@ -1335,7 +1418,7 @@ impl Book {
         v.into_iter().cloned().collect()
     }
 
-    /// For the state hash: every held certificate (with signatures), the attested commits and the view.
+    /// For the state hash: the counting certificates, their attested commits and the view (OWNU-5).
     pub fn digest(&self) -> u64 {
         self.inner.digest
     }
