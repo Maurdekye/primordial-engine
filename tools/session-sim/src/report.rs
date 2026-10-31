@@ -111,6 +111,9 @@ pub struct Ctx {
     pub fork_info: Option<String>,
 }
 
+/// Finished runs kept by name (a part's `keep`), with when they panicked.
+pub type Kept = BTreeMap<String, (Sim, Option<u64>)>;
+
 /// The members a report covers (see [`Honest`]).
 pub fn honest(h: &Honest, sim: &Sim) -> Vec<MemberId> {
     match h {
@@ -217,8 +220,12 @@ impl Probe {
         }
     }
 
-    pub fn print(&self, sim: &Sim, ctx: &Ctx) {
+    pub fn print(&self, sim: &Sim, ctx: &Ctx, kept: &Kept) {
         match &self.spec {
+            Report::Handowner { forged, clean, fixoff, member, hand, label } => {
+                let get = |k: &String| kept.get(k).unwrap_or_else(|| panic!("handowner: no kept run `{k}`"));
+                handowner(get(forged), get(clean), get(fixoff), *member, *hand, label);
+            }
             Report::Phase1Rule { case } => phase1_rule(case),
             Report::CheckWorld { world, frames, label, skip, skip_evicted_at } => {
                 let mut skip = skip.clone();
@@ -376,6 +383,7 @@ impl Probe {
             Report::R14ChainJobs => r14_chain_jobs(sim),
             Report::R14ChainOutcomes => r14_chain_outcomes(sim),
             Report::R14ChainConservation { label } => r14_chain_conservation(sim, label),
+            Report::R14ChainEpoch => r14_chain_epoch(sim),
             Report::R14Lag { label, throttled } => r14_lag(sim, &self.lag, label, *throttled),
             Report::Ballpit { .. } => self.ballpit(sim),
         }
@@ -738,6 +746,53 @@ fn check(
     }
 }
 
+/// Review HO-1 (session-sim main.rs `handowner`, after its three runs), unchanged but for its
+/// parameters: `a` with `member`'s forgeries of hand `hand`, `b` without them, `c` with them and
+/// HO-1's fix switched off.
+fn handowner((a, pa): &(Sim, Option<u64>), (b, pb): &(Sim, Option<u64>), (c, pc): &(Sim, Option<u64>), member: MemberId, h1: u32, label: &str) {
+    let ids = [1, 2];
+    let frames = [a, b].iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let mut all_refused = true;
+    for m in ids {
+        let r = &a.replica(m, 1).sim;
+        let forged: Vec<EntryId> =
+            r.all_entries().iter().filter(|e| e.member == member && matches!(e.payload, Payload::Hand { obj, .. } if obj == h1)).map(|e| e.id()).collect();
+        let refused = forged.iter().filter(|&&id| r.outcomes.get(&id).is_some_and(|(_, o)| *o == Outcome::RejectedNotOwner)).count();
+        all_refused &= refused == forged.len() && !forged.is_empty();
+        println!("  m{m}: member {member}'s hand entries for member 1's hand: {}, refused {refused}", forged.len());
+        // Review HO-1: the grab and the carry are refused too, and the grab took no claim.
+        let others: Vec<(String, Option<Outcome>)> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == member && matches!(e.payload, Payload::Touch { obj, .. } | Payload::Depart { obj, .. } if obj == h1))
+            .map(|e| (if matches!(e.payload, Payload::Touch { .. }) { "grab".to_string() } else { "carry".to_string() }, r.outcomes.get(&e.id()).map(|(_, o)| *o)))
+            .collect();
+        let own = r.all_entries().iter().find(|e| e.member == 1 && matches!(e.payload, Payload::Touch { obj, .. } if obj == h1)).and_then(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o));
+        all_refused &= others.len() == 2 && others.iter().all(|(_, o)| *o == Some(Outcome::RejectedNotOwner)) && own == Some(Outcome::Accepted);
+        println!("  m{m}: member {member}'s grab and carry of member 1's hand: {others:?}; member 1's own touch of it: {own:?}");
+        let planted: Vec<Option<Outcome>> =
+            r.all_entries().iter().filter(|e| e.member == member && e.carried.is_some_and(|(o, _)| o == h1)).map(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o)).collect();
+        all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
+        println!("  m{m}: member {member}'s touch of a ball carrying a state for member 1's hand: {planted:?}");
+    }
+    let frames_c = [c, b].iter().flat_map(|s| ids.map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
+    println!(
+        "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",
+        if dc == dbc { "same history as without member 2's entries" } else { "member 1's history differs from the run without member 2's entries" },
+        if pc.is_some() { "; a replica stopped" } else { "" }
+    );
+    let (da, db) = (digest(&a.replica(1, 1).sim.hashes, frames), digest(&b.replica(1, 1).sim.hashes, frames));
+    println!(
+        "RESULT handowner: member {member}'s entries for member 1's hand refused at every replica: {all_refused}; frames 0..{frames} with them {da:016x}, without them {db:016x} -> {}",
+        if all_refused && da == db { "SAME HISTORY" } else { "FAIL" }
+    );
+    if pa.is_some() || pb.is_some() {
+        println!("RESULT handowner: PANIC");
+    }
+    check_world(a, 1, frames, label, &[]);
+}
+
 // ---- the spike's checks, unchanged ------------------------------------------------------------
 
 /// Every replica of world `w` (except `skip`) agrees with every other and with an offline replay
@@ -1083,6 +1138,53 @@ fn r14_chain_outcomes(sim: &Sim) {
             }
         }
     }
+}
+
+/// session-sim main.rs `r14_chain_epoch`'s report, unchanged.
+fn r14_chain_epoch(sim: &Sim) {
+    for p in &sim.peers {
+        for j in &p.jobs {
+            for l in &j.log {
+                println!("  m{}: {l}", p.id);
+            }
+        }
+    }
+    let a = &sim.replica(2, 1).sim;
+    println!("RESULT r14 chain-epoch: A at m2: epoch {} members {:?} decisions {:?}", a.epoch, a.members, a.vc_log);
+    for (w, label, m) in [(2, "B", 3), (3, "C", 4)] {
+        let r = &sim.replica(m, w).sim;
+        for e in r.all_entries() {
+            if let Payload::Provenance { hop } = &e.payload {
+                println!(
+                    "RESULT r14 chain-epoch: hop {}->{} relayed into {label}: signed by epoch {} at frame {}, carrying {} epoch certificate(s)",
+                    hop.src,
+                    hop.dest,
+                    hop.epoch,
+                    hop.frame,
+                    hop.certs.len()
+                );
+            }
+            if let Payload::Arrive { chain, .. } = &e.payload {
+                let route: Vec<String> = chain.iter().map(|h| format!("{}->{} (epoch {}, {} certs)", h.src, h.dest, h.epoch, h.certs.len())).collect();
+                println!("RESULT r14 chain-epoch: arrival into {label} with chain [{}] -> {:?}", route.join(", "), r.outcomes.get(&e.id()).map(|x| x.1));
+            }
+        }
+    }
+    let (mut total, mut pending) = (0, 0);
+    let mut parts = Vec::new();
+    for (w, label, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
+        let r = &sim.replica(m, w).sim;
+        let live = r.t.objs.iter().flatten().filter(|o| o.global == GID40).count();
+        pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
+        total += live;
+        parts.push(format!("{label} {live}"));
+    }
+    let in_c = sim.replica(4, 3).sim.t.objs.iter().flatten().any(|o| o.global == GID40);
+    println!(
+        "RESULT r14 chain-epoch: A:40 live copies {} ; pending escrows {pending} -> {}",
+        parts.join(", "),
+        if total == 1 && pending == 0 && in_c { "CONSERVED (in C, nothing in limbo)" } else { "NOT CONSERVED" }
+    );
 }
 
 fn r14_chain_conservation(sim: &Sim, label: &str) {

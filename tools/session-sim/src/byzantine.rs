@@ -323,6 +323,36 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 r.fake_ack_epoch = Some(epoch.unwrap_or_else(|| r.epoch + ahead.unwrap_or(0)));
                 act.fired = true;
             }
+            Byzantine::HandForgery { member, hand, to, grab_ms, carry_ms, plant_ms } => {
+                // session-sim `handowner`'s loop: three entries, each once at its time.
+                let now = sim.net.now_us;
+                let step = act.head.0;
+                let (member, hand, to) = (*member, *hand, *to);
+                let send = |sim: &mut Sim, p: Payload| {
+                    let e = sim_mut(sim, member, 1).author(p, None);
+                    sim.net.send(1, member, to, &Msg::Entry(e));
+                };
+                if step == 0 && now >= grab_ms * 1000 {
+                    send(sim, Payload::Touch { obj: hand, impulse: [0.0, 5.0, 0.0], grab: true });
+                    act.head.0 = 1;
+                }
+                if act.head.0 == 1 && now >= carry_ms * 1000 {
+                    send(sim, Payload::Depart { obj: hand, dest: 99, deadline: u64::MAX, hop: None });
+                    act.head.0 = 2;
+                }
+                if act.head.0 == 2 && now >= plant_ms * 1000 {
+                    // A touch of a free ball that carries a state for the other member's hand, 2 m
+                    // above where this member sees it.
+                    let r = sim_mut(sim, member, 1);
+                    if let Some(mut st) = r.obj_state(hand) {
+                        st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                        let e = r.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (hand, st));
+                        sim.net.send(1, member, to, &Msg::Entry(e));
+                    }
+                    act.head.0 = 3;
+                    act.fired = true;
+                }
+            }
             Byzantine::GhostVote { member, at_ms, target, kick, to } if !act.fired => {
                 if sim.net.now_us < at_ms * 1000 {
                     continue;

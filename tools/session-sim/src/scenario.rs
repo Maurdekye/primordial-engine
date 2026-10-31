@@ -34,6 +34,9 @@ pub struct Scenario {
     /// Templated lines printed before the run (see report.rs).
     #[serde(default)]
     pub intro: Vec<String>,
+    /// Keep this part's finished run under this name, for a later part's report that compares
+    /// runs (`handowner`). A kept part needs no checking report of its own.
+    pub keep: Option<String>,
     /// Print nothing for a panic (the spike's `run_quiet`, for a run with a fix switched off,
     /// which may trip an assertion; the panic still ends the run and is reported).
     #[serde(default)]
@@ -230,6 +233,10 @@ pub struct ActionSpec {
     pub backdated: Option<BackdatedSpec>,
     /// The ball-pit hand gesture of session-sim's `ballpit_sweep` (no `at`).
     pub ballpit_sweep: Option<SweepSpec>,
+    /// session-sim `handowner`'s hand gesture (no `at`): every frame from `from_frame` to
+    /// `to_frame`, move hand `obj` in a straight line from x = `from_x` to `to_x` m (y `y_mm`,
+    /// z `z` m), rounded to mm as the spike does.
+    pub hand_path: Option<HandPathSpec>,
     /// D80 admin entries: kick a member, give a member a role, define a role.
     pub kick: Option<KickSpec>,
     pub set_role: Option<SetRoleSpec>,
@@ -279,6 +286,18 @@ pub struct BackdatedSpec {
     pub obj: u32,
     pub impulse: [f32; 3],
     pub back: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandPathSpec {
+    pub obj: u32,
+    pub from_frame: u64,
+    pub to_frame: u64,
+    pub from_x: f64,
+    pub to_x: f64,
+    pub y_mm: i32,
+    pub z: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -585,6 +604,17 @@ pub enum Byzantine {
         ahead: Option<u32>,
         while_member_at: Option<u32>,
     },
+    /// Review HO-1 (session-sim `handowner`): `member` sends `to` a grab of `hand` (another
+    /// member's hand) at `grab_ms`, a departure of it at `carry_ms`, and at `plant_ms` a touch of
+    /// ball 5 carrying a state for `hand` 2 m above where `member` sees it.
+    HandForgery {
+        member: u32,
+        hand: u32,
+        to: u32,
+        grab_ms: u64,
+        carry_ms: u64,
+        plant_ms: u64,
+    },
     /// At `at_ms`, `member` votes against `target` for a kick `kick` that does not exist, with
     /// `target`'s head as it holds it as the frozen head; sent to `to`.
     GhostVote {
@@ -732,6 +762,17 @@ pub enum Report {
     BeforeFix { honest: Honest, label: String, fix: String },
     /// `fork_branch`: where the fork fell and how long branch B is.
     ForkInfo,
+    /// Review HO-1 (session-sim `handowner`), over three kept runs: with `member`'s forgeries of
+    /// hand `hand` (`forged`), without them (`clean`), and with them and HO-1's fix switched off
+    /// (`fixoff`). Every forgery refused at every replica, and the same history as without them.
+    Handowner {
+        forged: String,
+        clean: String,
+        fixoff: String,
+        member: u32,
+        hand: u32,
+        label: String,
+    },
     /// The spike's one-off checks, ported verbatim (report.rs `check`); each reads the fields it
     /// names and nothing else:
     /// * `bridge`: `label`, `text` (the verdict label if the session stayed whole), `honest`,
@@ -810,6 +851,10 @@ pub enum Report {
     R14ChainOutcomes,
     /// R14 chain: A:40 is back in A, one live copy, nothing pending.
     R14ChainConservation { label: String },
+    /// R14 chain-epoch (P2-4 x P2-5): the job logs; A's epoch at member 2; each provenance hop
+    /// relayed into B and C with its epoch, frame and epoch certificates; each arrival's chain and
+    /// outcome; and A:40 conserved in C.
+    R14ChainEpoch,
     /// R14: member 2's confirmation lag in A and how late check hashes come (sampled every 100 ms).
     R14Lag { label: String, throttled: bool },
     /// Ball pit: wire cost of the perturbation source vs naive state streaming, member 2's
@@ -973,6 +1018,14 @@ link = { delay_ms = 30 }
         assert_eq!((l.parts[0].end_ms, l.parts[1].end_ms), (Some(2000), Some(1000)));
         assert!(l.parts[0].byzantine.is_empty());
         assert_eq!(l.parts[1].byzantine.len(), 1);
+    }
+
+    #[test]
+    fn members_range_expands() {
+        let d = tmp("range", &[("r.toml", &BASE.replace("members = [1, 2]", "members_range = [1, 5]"))]);
+        assert_eq!(load(&d.0.join("r.toml")).unwrap().parts[0].world["1"].members, vec![1, 2, 3, 4, 5]);
+        let d = tmp("range2", &[("r.toml", &BASE.replace("members = [1, 2]", "members = [1, 2]\nmembers_range = [1, 5]"))]);
+        assert!(load(&d.0.join("r.toml")).err().unwrap().contains("not both"));
     }
 
     #[test]
