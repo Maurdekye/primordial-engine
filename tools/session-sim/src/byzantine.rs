@@ -3,7 +3,7 @@
 //! simulator's step of a millisecond, exactly where the spike's hand-written scenario loops did.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use pe_sim_core::session::*;
@@ -11,7 +11,7 @@ use spike::{Fate, Sim, WorldId};
 
 use crate::faults::Hook;
 use crate::report::{template, Vars};
-use crate::scenario::{Byzantine, R14Attack, When};
+use crate::scenario::{Byzantine, JoinReq, R14Attack, When};
 
 /// One forged R14 entry: (world, author, entry, what it attempts).
 pub type Forged = (WorldId, MemberId, EntryId, &'static str);
@@ -41,12 +41,27 @@ pub const R14_ATTACKS: &[&str] = &[
 pub struct Actor {
     spec: Byzantine,
     pub fired: bool,
+    /// HideRefs: it has stopped hiding (`until_ms`).
+    done: bool,
+    /// ForkBranch's state, and Precommit's epochs already capped.
+    fork: Fork,
+    capped: BTreeSet<u32>,
     /// ForkChain: (seq, id) of the forged chain's head.
     head: (u32, EntryId),
     forged_ids: Rc<RefCell<BTreeSet<EntryId>>>,
     forged_vote: Rc<Cell<EntryId>>,
     /// P2-5 refund-and-keep: A:55's transfer and escrow, once W has certified a refusal to A.
     refunded: Option<(u64, Escrow)>,
+    /// GoSilent: its member's messages are lost from now on.
+    silent: Rc<Cell<bool>>,
+    /// MixRefs: the last toggle, the last freeze, and whether this turn names the fake. NoopSetrole:
+    /// its last SetRole (`mix.0`).
+    mix: (u64, u64, bool),
+    /// AdminWedge: the step reached, when it crashed, its fork, and the round-0 proposer.
+    step: u32,
+    crash_at: Option<u64>,
+    fork_entry: Option<Entry>,
+    p0: Cell<MemberId>,
 }
 
 impl Actor {
@@ -56,6 +71,16 @@ impl Actor {
                 return Err(format!("equivocate: entry must be `first` or `first_touch`, not `{entry}`"));
             }
         }
+        if let Byzantine::Precommit { polka, .. } = &spec {
+            for p in polka {
+                hex_id(p)?;
+            }
+        }
+        if let Byzantine::GoSilent { holds_own, .. } = &spec {
+            if holds_own != "prevote" && holds_own != "nonnil_prevote" {
+                return Err(format!("go_silent: holds_own must be `prevote` or `nonnil_prevote`, not `{holds_own}`"));
+            }
+        }
         if let Byzantine::R14Forgeries { attacks } = &spec {
             for a in attacks {
                 if !R14_ATTACKS.contains(&a.attack.as_str()) {
@@ -63,7 +88,44 @@ impl Actor {
                 }
             }
         }
-        Ok(Actor { spec, fired: false, head: (0, 0), forged_ids: Rc::default(), forged_vote: Rc::default(), refunded: None })
+        Ok(Actor {
+            spec,
+            fired: false,
+            done: false,
+            fork: Fork::default(),
+            capped: BTreeSet::new(),
+            head: (0, 0),
+            forged_ids: Rc::default(),
+            forged_vote: Rc::default(),
+            refunded: None,
+            silent: Rc::default(),
+            mix: (0, 0, false),
+            step: 0,
+            crash_at: None,
+            fork_entry: None,
+            p0: Cell::new(0),
+        })
+    }
+
+    /// AdminWedge: (round-0 proposer, partitioned member, step reached, crash time in us).
+    pub fn wedge_info(&self) -> Option<(MemberId, MemberId, u32, Option<u64>)> {
+        let Byzantine::AdminWedge { part, .. } = &self.spec else { return None };
+        Some((self.p0.get(), *part, self.step, self.crash_at))
+    }
+
+    /// GoSilent: its member, if it went silent (the `adminfork` check).
+    pub fn silenced(&self) -> Option<MemberId> {
+        match &self.spec {
+            Byzantine::GoSilent { member, .. } if self.silent.get() => Some(*member),
+            _ => None,
+        }
+    }
+
+    /// ForkBranch: where the fork fell and how long branch B is (the `fork_info` report).
+    pub fn fork_info(&self) -> Option<String> {
+        let Byzantine::ForkBranch { member, .. } = &self.spec else { return None };
+        let f = &self.fork;
+        Some(format!("fork at {member}'s seq {}, t={} ms; branch B {} entries plus {} extra acks", f.seq.get(), f.t.get() / 1000, f.b_id.len(), f.extra))
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -82,6 +144,27 @@ impl Actor {
 
     /// Replica settings, applied once before the run.
     pub fn configure(&self, sim: &mut Sim) -> Result<(), String> {
+        if let Byzantine::AdminWedge { part, .. } = &self.spec {
+            let p0 = sim.peers.iter().find_map(|p| p.worlds.get(&1)).and_then(|r| r.sim.proposer_of(0, 0)).unwrap_or(0);
+            self.p0.set(p0);
+            let want = if p0 != 4 { 4 } else { 3 };
+            if *part != want {
+                return Err(format!("admin_wedge: part must be {want} (the round-0 proposer is {p0}), not {part}"));
+            }
+        }
+        if let Byzantine::EquivocatePrevote { member, .. } = &self.spec {
+            let p0 = sim.peers.iter().find_map(|p| p.worlds.get(&1)).and_then(|r| r.sim.proposer_of(0, 0));
+            if p0 != Some(*member) {
+                return Err(format!("equivocate_prevote: member {member} is not the round-0 proposer ({p0:?})"));
+            }
+        }
+        if let Byzantine::ForgeProposal { world, member, .. } = &self.spec {
+            let p0 = sim.peers.iter().find_map(|p| p.worlds.get(world)).and_then(|r| r.sim.proposer_of(0, 0));
+            if p0 != Some(*member) {
+                return Err(format!("forge_proposal: member {member} is not world {world}'s first proposer ({p0:?})"));
+            }
+            return Ok(());
+        }
         let (world, member) = match &self.spec {
             Byzantine::LieInVotes { world, member } | Byzantine::LagHorizon { world, member, .. } => (*world, *member),
             _ => return Ok(()),
@@ -99,6 +182,38 @@ impl Actor {
     /// The send-filter hook of a behaviour that hides a member's real messages.
     pub fn hook(&self) -> Option<Hook> {
         match &self.spec {
+            Byzantine::Equivocate { hide_from, hide_until_ms, .. } if !hide_from.is_empty() => {
+                let (hide, ids, until) = (hide_from.clone(), self.forged_ids.clone(), hide_until_ms.map_or(u64::MAX, |t| t * 1000));
+                Some(Box::new(move |t, _w, _from, to, m| match m {
+                    Msg::Entry(e) if t < until && hide.contains(&to) && ids.borrow().contains(&e.id()) => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::ForkBranch { member, b_to, live_ms, detect_ms, a_to, .. } => {
+                // session-sim p24r.rs `fork_run`'s filter, but for 3's delayed votes (a fault rule).
+                let (member, b_to, live_us, detect_us, a_to) = (*member, *b_to, live_ms * 1000, detect_ms * 1000, a_to.clone());
+                let (ft, fs, cr) = (self.fork.t.clone(), self.fork.seq.clone(), self.forged_ids.clone());
+                Some(Box::new(move |t, _w, from, to, m| {
+                    let silent = t >= ft.get().saturating_add(live_us);
+                    match m {
+                        Msg::Entry(e) if from == member && t >= ft.get() => Some(if cr.borrow().contains(&e.id()) {
+                            // With `detect_ms`, it does not relay B (b_to's fetch replies do).
+                            if detect_us > 0 && to != b_to {
+                                Fate::Drop
+                            } else {
+                                Fate::Deliver
+                            }
+                        } else if silent || (to == b_to && e.member == member && e.seq >= fs.get()) {
+                            Fate::Drop
+                        } else {
+                            Fate::Deliver
+                        }),
+                        _ if detect_us > 0 && from == b_to && a_to.contains(&to) && t >= ft.get() && t < ft.get().saturating_add(detect_us) => Some(Fate::Delay(detect_us)),
+                        _ if from == member && silent => Some(Fate::Drop),
+                        _ => None,
+                    }
+                }))
+            }
             Byzantine::ForkChain { member, to, hide_real: true, .. } => {
                 let (member, to, ids) = (*member, to.clone(), self.forged_ids.clone());
                 Some(Box::new(move |_t, _w, from, dest, m| match m {
@@ -110,6 +225,50 @@ impl Actor {
                 let (member, fv) = (*member, self.forged_vote.clone());
                 Some(Box::new(move |_t, _w, from, _to, m| match m {
                     Msg::Entry(e) if from == member && matches!(e.payload, Payload::Vote { .. }) && e.id() != fv.get() => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::RotateEntries { member, from_ms, to } => {
+                let (member, from_us, to) = (*member, from_ms * 1000, to.clone());
+                Some(Box::new(move |t, _w, from, dest, m| match m {
+                    Msg::Entry(e) if t >= from_us && from == member && e.member == member => {
+                        Some(if to[(e.seq as usize) % to.len()] == dest { Fate::Deliver } else { Fate::Drop })
+                    }
+                    _ => None,
+                }))
+            }
+            Byzantine::AdminWedge { member, .. } => {
+                // The fork passes every fault; after the crash nothing else from it does.
+                let (member, crashed, fork) = (*member, self.silent.clone(), self.forged_vote.clone());
+                Some(Box::new(move |_t, _w, from, _to, m| match m {
+                    Msg::Entry(e) if fork.get() != 0 && e.id() == fork.get() => Some(Fate::Deliver),
+                    _ if from == member && crashed.get() => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::GoSilent { member, .. } => {
+                let (member, silent) = (*member, self.silent.clone());
+                Some(Box::new(move |_t, _w, from, _to, _m| (from == member && silent.get()).then_some(Fate::Drop)))
+            }
+            Byzantine::AdminFork { member, b_to, .. } => {
+                // The SetRole never reaches b_to from it (they hold the Attest in its place).
+                let (member, b_to, a_id) = (*member, b_to.clone(), self.forged_vote.clone());
+                Some(Box::new(move |_t, _w, from, to, m| match m {
+                    Msg::Entry(e) if from == member && b_to.contains(&to) && a_id.get() != 0 && e.id() == a_id.get() => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::EquivocatePrevote { member, .. } => {
+                let (member, ids) = (*member, self.forged_ids.clone());
+                Some(Box::new(move |_t, _w, from, _to, m| match m {
+                    Msg::Entry(e) if from == member && matches!(e.payload, Payload::Prevote { round: 0, .. }) && !ids.borrow().contains(&e.id()) => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::ForgeProposal { member, to, .. } => {
+                let (member, to, fv) = (*member, to.clone(), self.forged_vote.clone());
+                Some(Box::new(move |_t, _w, from, dest, m| match m {
+                    Msg::Entry(e) if from == member && to.contains(&dest) && matches!(e.payload, Payload::Propose { .. }) && e.id() != fv.get() => Some(Fate::Drop),
                     _ => None,
                 }))
             }
@@ -132,6 +291,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let ready = match when {
                     When::Exists => true,
                     When::ConfAbove { at, frame } => sim.replica(*at, *world).sim.conf > *frame,
+                    When::AtMs(t) => sim.net.now_us >= t * 1000,
                 };
                 if !ready {
                     continue;
@@ -152,6 +312,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let mut x2 = x.clone();
                 x2.payload = Payload::Touch { obj: touch.obj, impulse: touch.impulse, grab: touch.grab };
                 x2.carried = None;
+                act.forged_ids.borrow_mut().insert(x2.id());
                 for &m in to {
                     sim.net.send(*world, *member, m, &Msg::Entry(x2.clone()));
                 }
@@ -161,13 +322,14 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 if sim.net.now_us % (every_ms * 1000) != 0 {
                     continue;
                 }
-                let now = sim.replica(*member, *world).sim.now;
+                let s = &sim.replica(*member, *world).sim;
+                let (now, epoch) = (s.now, s.epoch);
                 let e = Entry {
                     member: *member,
                     seq: act.head.0 + 1,
                     prev: act.head.1,
                     stamp: now,
-                    payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None },
+                    payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None, epoch },
                     carried: None,
                 };
                 act.head = (e.seq, e.id());
@@ -180,9 +342,9 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
             Byzantine::ForkVote { world, member, frozen, to, say, .. } if !act.fired => {
                 let v = sim.replica(*member, *world).sim.all_entries().into_iter().find(|e| e.member == *member && matches!(e.payload, Payload::Vote { .. }));
                 let Some(v) = v else { continue };
-                let Payload::Vote { target, seq, .. } = v.payload else { unreachable!() };
+                let Payload::Vote { epoch, target, seq, kick, .. } = v.payload else { unreachable!() };
                 let mut f = v.clone();
-                f.payload = Payload::Vote { target, seq, frozen: (frozen[0] as u32, frozen[1]) };
+                f.payload = Payload::Vote { epoch, target, seq, frozen: (frozen[0] as u32, frozen[1]), kick };
                 act.forged_vote.set(f.id());
                 for &m in to {
                     sim.net.send(*world, *member, m, &Msg::Entry(f.clone()));
@@ -192,9 +354,403 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 act.fired = true;
             }
+            Byzantine::HideRefs { world, member, from_ms, until_ms, ally_until } => {
+                let now = sim.net.now_us;
+                if !act.fired && now >= from_ms * 1000 {
+                    sim_mut(sim, *member, *world).freeze_others();
+                    act.fired = true;
+                }
+                if let (true, false, Some(u)) = (act.fired, act.done, until_ms) {
+                    if now >= u * 1000 {
+                        let r = sim_mut(sim, *member, *world);
+                        if *ally_until {
+                            r.byz_ally = false;
+                        }
+                        r.unfreeze_others();
+                        act.done = true;
+                    }
+                }
+            }
+            Byzantine::ForgeProposal { world, member, to } if !act.fired => {
+                let genuine = sim.replica(*member, *world).sim.all_entries().into_iter().find(|e| e.member == *member && matches!(e.payload, Payload::Propose { epoch: 0, round: 0, .. }));
+                let Some(g) = genuine else { continue };
+                let Payload::Propose { epoch, round, valid_round, ref change } = g.payload else { unreachable!() };
+                let mut f = g.clone();
+                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };
+                f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
+                act.forged_vote.set(f.id());
+                for &m in to {
+                    sim.net.send(*world, *member, m, &Msg::Entry(f.clone()));
+                }
+                let fooled: BTreeSet<MemberId> = to.iter().copied().collect();
+                println!(
+                    "  t={} ms: {member} proposes removing {:?} to the others and a reset to {fooled:?}",
+                    sim.net.now_us / 1000,
+                    change.remove.iter().map(|r| r.member).collect::<Vec<_>>()
+                );
+                act.fired = true;
+            }
+            Byzantine::ForkBranch { member, at_frame, a_to, b_to, live_ms, backdate, .. } => fork_branch(sim, (&mut act.fork, &act.forged_ids), *member, *at_frame, a_to, *b_to, live_ms * 1000, *backdate),
+            Byzantine::Precommit { member, from_ms, value, boundary, ahead, to, every_epoch, while_member_at, polka } => {
+                if !due(sim, *member, *from_ms, *while_member_at) || (!every_epoch && act.fired) {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = if *every_epoch { r.epoch } else { 0 };
+                if !act.capped.insert(epoch) {
+                    continue;
+                }
+                let b = boundary.unwrap_or_else(|| r.now + ahead.unwrap_or(0));
+                let v = if *every_epoch { value ^ epoch as u64 } else { *value };
+                let polka = polka.iter().map(|p| hex_id(p).unwrap()).collect();
+                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b, polka }, None);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::FakeAckEpoch { member, from_ms, epoch, ahead, while_member_at } => {
+                if !due(sim, *member, *from_ms, *while_member_at) || (epoch.is_some() && act.fired) {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                r.fake_ack_epoch = Some(epoch.unwrap_or_else(|| r.epoch + ahead.unwrap_or(0)));
+                act.fired = true;
+            }
+            Byzantine::HandForgery { member, hand, to, grab_ms, carry_ms, plant_ms } => {
+                // session-sim `handowner`'s loop: three entries, each once at its time.
+                let now = sim.net.now_us;
+                let step = act.head.0;
+                let (member, hand, to) = (*member, *hand, *to);
+                let send = |sim: &mut Sim, p: Payload| {
+                    let e = sim_mut(sim, member, 1).author(p, None);
+                    sim.net.send(1, member, to, &Msg::Entry(e));
+                };
+                if step == 0 && now >= grab_ms * 1000 {
+                    send(sim, Payload::Touch { obj: hand, impulse: [0.0, 5.0, 0.0], grab: true });
+                    act.head.0 = 1;
+                }
+                if act.head.0 == 1 && now >= carry_ms * 1000 {
+                    send(sim, Payload::Depart { obj: hand, dest: 99, deadline: u64::MAX, hop: None });
+                    act.head.0 = 2;
+                }
+                if act.head.0 == 2 && now >= plant_ms * 1000 {
+                    // A touch of a free ball that carries a state for the other member's hand, 2 m
+                    // above where this member sees it.
+                    let r = sim_mut(sim, member, 1);
+                    if let Some(mut st) = r.obj_state(hand) {
+                        st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                        let e = r.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (hand, st));
+                        sim.net.send(1, member, to, &Msg::Entry(e));
+                    }
+                    act.head.0 = 3;
+                    act.fired = true;
+                }
+            }
+            Byzantine::GhostVote { member, at_ms, target, kick, to } if !act.fired => {
+                if sim.net.now_us < at_ms * 1000 {
+                    continue;
+                }
+                let frozen = sim.replica(*member, 1).sim.all_entries().into_iter().filter(|e| e.member == *target).map(|e| (e.seq, e.id())).max().unwrap_or((0, 0));
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author(Payload::Vote { epoch, target: *target, seq: 0, frozen, kick: *kick }, None);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::SelfKickVote { member, frozen, to } if !act.fired => {
+                let kick = sim.replica(*member, 1).sim.all_entries().into_iter().find(|e| matches!(e.payload, Payload::Kick { target, .. } if target == *member)).map(|e| e.id());
+                let Some(kick) = kick else { continue };
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author(Payload::Vote { epoch, target: *member, seq: 0, frozen: (frozen[0] as u32, frozen[1]), kick }, None);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::ChurnVote { member, target, from_ms, until_ms, while_member_at, to } => {
+                let now = sim.net.now_us;
+                if now >= until_ms.map_or(u64::MAX, |u| u * 1000) || !due(sim, *member, *from_ms, *while_member_at) {
+                    continue;
+                }
+                let frozen = sim.replica(*member, 1).sim.all_entries().into_iter().filter(|e| e.member == *target).map(|e| (e.seq, e.id())).max().unwrap_or((0, 0));
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                if act.capped.insert(epoch) {
+                    let e = r.author(Payload::Vote { epoch, target: *target, seq: 0, frozen, kick: 0 }, None);
+                    send_to(sim, *member, to, &e);
+                }
+            }
+            Byzantine::VoidAdmin { member, at_ms, target, role, back, to } if !act.fired => {
+                if sim.net.now_us < at_ms * 1000 {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author_backdated(Payload::SetRole { epoch, member: *target, role: *role }, *back);
+                r.byz_change = Some(Change { epoch, admin: vec![(e.id(), true)], ..Default::default() });
+                let p = r.author(Payload::Prevote { epoch, round: 0, value: 0 }, None);
+                send_to(sim, *member, to, &e);
+                send_to(sim, *member, to, &p);
+                act.fired = true;
+            }
+            Byzantine::FakeRefs { member, from_ms, of, n } if !act.fired => {
+                if sim.net.now_us < from_ms * 1000 {
+                    continue;
+                }
+                sim_mut(sim, *member, 1).fake_refs = Some((*of, *n));
+                act.fired = true;
+            }
+            Byzantine::NoopSetrole { member, from_ms, every_ms, role, to, while_member_at } => {
+                let t = sim.net.now_us;
+                if !due(sim, *member, *from_ms, *while_member_at) || t < act.mix.0 + every_ms * 1000 {
+                    continue;
+                }
+                act.mix.0 = t;
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
+                send_to(sim, *member, to, &e);
+            }
+            Byzantine::AdminWedge { member, at_ms, role, a_to, part, others, part_ms, others_ms } => {
+                // The spike's step machine: at most one step per millisecond.
+                let t = sim.net.now_us;
+                if act.step == 0 && t >= at_ms * 1000 {
+                    let r = sim_mut(sim, *member, 1);
+                    let epoch = r.epoch;
+                    let a = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
+                    let b = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..a.clone() };
+                    act.forged_vote.set(b.id());
+                    act.fork_entry = Some(b);
+                    send_to(sim, *member, a_to, &a);
+                    act.step = 1;
+                } else if act.step == 1 {
+                    let all = others.iter().all(|&m| sim.replica(m, 1).sim.all_entries().iter().any(|e| e.member == m && matches!(e.payload, Payload::Precommit { .. })));
+                    if all {
+                        act.silent.set(true);
+                        act.crash_at = Some(t);
+                        act.step = 2;
+                    }
+                } else if act.step == 2 && t >= part_ms * 1000 {
+                    sim.net.send(1, *member, *part, &Msg::Entry(act.fork_entry.clone().unwrap()));
+                    act.step = 3;
+                } else if act.step == 3 && t >= others_ms * 1000 {
+                    for &m in others {
+                        sim.net.send(1, *member, m, &Msg::Entry(act.fork_entry.clone().unwrap()));
+                    }
+                    act.step = 4;
+                }
+            }
+            Byzantine::GoSilent { member, from_ms, holds_own } if !act.fired => {
+                if sim.net.now_us < from_ms * 1000 {
+                    continue;
+                }
+                let nonnil = holds_own == "nonnil_prevote";
+                let held = sim.replica(*member, 1).sim.all_entries().iter().any(|e| e.member == *member && matches!(e.payload, Payload::Prevote { value, .. } if !nonnil || value != 0));
+                if held {
+                    act.silent.set(true);
+                    act.fired = true;
+                }
+            }
+            Byzantine::MixRefs { member, of, from_ms, every_ms, refresh_ms } => {
+                let t = sim.net.now_us;
+                if t < from_ms * 1000 || t < act.mix.0 + every_ms * 1000 {
+                    continue;
+                }
+                act.mix.0 = t;
+                act.mix.2 = !act.mix.2;
+                let r = sim_mut(sim, *member, 1);
+                if act.mix.2 {
+                    if t >= act.mix.1 + refresh_ms * 1000 {
+                        act.mix.1 = t;
+                        r.freeze_others();
+                    }
+                    r.fake_refs = Some((*of, 0));
+                } else {
+                    r.fake_refs = None;
+                }
+            }
+            Byzantine::AdminFork { member, at_ms, target, role, a_to, b_to, prevote_to } if !act.fired => {
+                if sim.net.now_us < at_ms * 1000 {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let a = r.author(Payload::SetRole { epoch, member: *target, role: *role }, None);
+                let b = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..a.clone() };
+                act.forged_vote.set(a.id());
+                r.byz_change = Some(Change { epoch, admin: vec![(a.id(), true)], ..Default::default() });
+                let p = r.author(Payload::Prevote { epoch, round: 0, value: 0 }, None);
+                send_to(sim, *member, a_to, &a);
+                send_to(sim, *member, b_to, &b);
+                send_to(sim, *member, prevote_to, &p);
+                act.fired = true;
+            }
+            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to } if !act.fired => {
+                if sim.net.now_us < from_ms * 1000 {
+                    continue;
+                }
+                let r = &sim.replica(*member, 1).sim;
+                let pv = r.all_entries().into_iter().find(|e| e.member == *member && matches!(e.payload, Payload::Prevote { round: 0, .. }));
+                let prop = r.all_entries().into_iter().find(|e| e.member == *member && matches!(e.payload, Payload::Propose { round: 0, .. }));
+                let (Some(pv), Some(Payload::Propose { change, .. })) = (pv, prop.map(|e| e.payload)) else { continue };
+                let Payload::Prevote { epoch, round, .. } = pv.payload else { unreachable!() };
+                let mut vv = pv.clone();
+                vv.payload = Payload::Prevote { epoch, round, value: change.value() };
+                let mut nil = pv.clone();
+                nil.payload = Payload::Prevote { epoch, round, value: 0 };
+                act.forged_ids.borrow_mut().insert(vv.id());
+                act.forged_ids.borrow_mut().insert(nil.id());
+                send_to(sim, *member, value_to, &vv);
+                send_to(sim, *member, nil_to, &nil);
+                act.fired = true;
+            }
+            Byzantine::BackdatedKick { member, at_frame, target, back, to } if !act.fired => {
+                if sim.replica(*member, 1).sim.frame < *at_frame {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author_backdated(Payload::Kick { epoch, target: *target }, *back);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
             _ => {}
         }
     }
+}
+
+/// ForkBranch's state (session-sim p24r.rs `fork_run`'s locals).
+#[derive(Default)]
+pub struct Fork {
+    /// When it forked, and the first sequence number of branch B (MAX until then).
+    t: Rc<Cell<u64>>,
+    seq: Rc<Cell<u32>>,
+    started: bool,
+    b_id: BTreeMap<u32, EntryId>,
+    backdated: bool,
+    b_last: Option<Entry>,
+    b_ack: Option<Payload>,
+    extra: u32,
+    next_t: u64,
+}
+
+/// Whether a precommit or fake-ack behaviour acts at this millisecond.
+fn due(sim: &Sim, member: MemberId, from_ms: u64, while_member_at: Option<MemberId>) -> bool {
+    sim.net.now_us >= from_ms * 1000 && while_member_at.is_none_or(|m| sim.replica(m, 1).sim.members.contains(&member))
+}
+
+/// Send `e` from `from` to each of `to` but itself, in order.
+/// An entry id written as "0x..." hex (TOML integers stop at i64).
+fn hex_id(s: &str) -> Result<EntryId, String> {
+    s.strip_prefix("0x").and_then(|h| u64::from_str_radix(&h.replace('_', ""), 16).ok()).ok_or_else(|| format!("precommit: polka id `{s}` is not 0x-prefixed hex"))
+}
+
+fn send_to(sim: &mut Sim, from: MemberId, to: &[MemberId], e: &Entry) {
+    for &m in to {
+        if m != from {
+            sim.net.send(1, from, m, &Msg::Entry(e.clone()));
+        }
+    }
+}
+
+/// session-sim p24r.rs `fork_run`'s per-millisecond loop, unchanged but for its parameters.
+#[allow(clippy::too_many_arguments)]
+fn fork_branch(sim: &mut Sim, (f, crafted): (&mut Fork, &Rc<RefCell<BTreeSet<EntryId>>>), member: MemberId, at_frame: u64, a_to: &[MemberId], b_to: MemberId, live_us: u64, backdate: bool) {
+    if !f.started {
+        f.t.set(u64::MAX);
+        f.seq.set(u32::MAX);
+        f.backdated = !backdate;
+        f.started = true;
+    }
+    let now = sim.net.now_us;
+    if f.seq.get() == u32::MAX {
+        let r9 = &sim.replica(member, 1).sim;
+        if r9.frame >= at_frame {
+            let top = r9.all_entries().iter().filter(|e| e.member == member).map(|e| e.seq).max().unwrap_or(0);
+            f.seq.set(top + 1);
+            f.t.set(now);
+        }
+        return;
+    }
+    let s0 = f.seq.get();
+    if !f.backdated && now >= f.t.get() + 100_000 {
+        // On A only (the filter keeps its chain past the fork from b_to): a touch backdated 90
+        // frames, a horizon violation on that branch.
+        let e = sim_mut(sim, member, 1).author_backdated(Payload::Touch { obj: 20, impulse: [0.0, 4.0, 0.0], grab: false }, 90);
+        for &m in a_to {
+            sim.net.send(1, member, m, &Msg::Entry(e.clone()));
+        }
+        f.backdated = true;
+    }
+    if now < f.t.get() + live_us {
+        // Branch B: its entries from the fork on, re-linked, with its touch a no-op.
+        let mut mine: Vec<Entry> = sim.replica(member, 1).sim.all_entries().into_iter().filter(|e| e.member == member && e.seq >= s0 && !f.b_id.contains_key(&e.seq)).collect();
+        mine.sort_by_key(|e| e.seq);
+        for e in mine {
+            let mut b = e.clone();
+            if b.seq > s0 {
+                b.prev = f.b_id[&(b.seq - 1)];
+            }
+            if matches!(b.payload, Payload::Touch { .. }) {
+                b.payload = Payload::Attest { fact: 0, sig: 0 };
+                b.carried = None;
+            }
+            if matches!(b.payload, Payload::Ack { .. }) {
+                f.b_ack = Some(b.payload.clone());
+            }
+            f.b_id.insert(b.seq, b.id());
+            crafted.borrow_mut().insert(b.id());
+            sim.net.send(1, member, b_to, &Msg::Entry(b.clone()));
+            f.b_last = Some(b);
+        }
+    } else if f.extra < 10 && now >= f.next_t {
+        // Ten more acks on B only, so b_to's copy of its chain is longer than A.
+        let (Some(last), Some(Payload::Ack { horizon, heads, check, epoch })) = (f.b_last.clone(), f.b_ack.clone()) else { return };
+        let b = Entry { member, seq: last.seq + 1, prev: last.id(), stamp: last.stamp + 3, payload: Payload::Ack { horizon: horizon + 3, heads, check, epoch }, carried: None };
+        f.b_ack = Some(b.payload.clone());
+        crafted.borrow_mut().insert(b.id());
+        sim.net.send(1, member, b_to, &Msg::Entry(b.clone()));
+        f.b_last = Some(b);
+        f.extra += 1;
+        f.next_t = now + 50_000;
+    }
+}
+
+fn sim_mut(sim: &mut Sim, member: MemberId, w: WorldId) -> &mut WorldSim {
+    let i = sim.peers.iter().position(|p| p.id == member).unwrap();
+    &mut sim.peers[i].worlds.get_mut(&w).unwrap().sim
+}
+
+/// Before the step: the join requests due (each once, at the first millisecond at or after its
+/// time), in file order.
+pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result<(), String> {
+    for (j, done) in joins.iter().zip(sent.iter_mut()) {
+        if *done || sim.net.now_us < j.at_ms * 1000 {
+            continue;
+        }
+        let attests = j.attests.iter().map(|a| Ok(attest(crate::setup::rel(&a.rel)?, j.member, a.with, a.world))).collect::<Result<Vec<_>, String>>()?;
+        // P2-4 round 5 (VC4R-6): a join request is signed over its session and expiry, so it is valid in
+        // that session only. The spike's scenarios send it with no expiry (u64::MAX), as here; a
+        // fixture's `sig` overrides the signature (a forged request) and carries the same expiry.
+        let from = j.from.unwrap_or(j.member);
+        for &m in &j.to {
+            let a = if j.attests_to.as_ref().is_none_or(|t| t.contains(&m)) { attests.clone() } else { vec![] };
+            let msg = match j.sig {
+                None => join_msg(sim.replica(m, j.world).sim.session(), j.member, a, u64::MAX),
+                Some(sig) => Msg::Join { member: j.member, attests: a, sig, expires: u64::MAX },
+            };
+            sim.net.send(j.world, from, m, &msg);
+        }
+        if let Some(from) = j.log_from {
+            // In (author, seq) order, as the spike's relays: an order by entry id would change with
+            // the id scheme (pe-session's ids are hashes).
+            let mut log = sim.replica(from, j.world).sim.all_entries();
+            log.sort_by_key(|e| (e.member, e.seq));
+            for e in log {
+                sim.net.send(j.world, from, j.member, &Msg::Entry(e));
+            }
+        }
+        *done = true;
+    }
+    Ok(())
 }
 
 /// After the step: the R14 forgeries due at this millisecond.
@@ -351,7 +907,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 let in_b = sim.replica(3, 2).sim.t.objs.iter().flatten().any(|o| o.global == ga(52));
                 if let (true, Some(Seen::Left { transfer: t1, dest: 6, .. })) = (in_b, a.t.seen.get(&ga(52)).cloned()) {
                     let cert = a.cert(fact_committed(1, t1, ga(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, cert };
+                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
                     let e = forge_from_w(sim, 1, 2, rec(ga(52), t1), vec![hop]);
                     forged.push((1, 2, e.id(), "RESIDUAL: W's majority double-spends A:52 (now in B) into A, citing its genuine hop in"));
                 }
@@ -368,7 +924,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 // A hop A -> W that A never certified: the attackers hold only member 2's key of A.
                 let fake = 0xF0F0;
                 let fact = fact_committed(1, fake, ga(54), 6, 0);
-                let hop = Hop { src: 1, dest: 6, transfer: fake, via: 0, epoch: 0, cert: vec![(2, member_sig(1, 2, fact))] };
+                let hop = Hop { src: 1, dest: 6, transfer: fake, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert: vec![(2, member_sig(1, 2, fact))] };
                 let e = forge_from_w(sim, 2, 3, rec(ga(54), fake), vec![hop]);
                 forged.push((2, 3, e.id(), "W's majority forges an earlier hop (A -> W of A:54, signed by m2 of A only)"));
             }
@@ -377,7 +933,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 let a = &sim.replica(1, 1).sim;
                 if let Some(Seen::Left { transfer, dest: 6, via: 0, .. }) = a.t.seen.get(&ga(52)).cloned() {
                     if let Some(cert) = a.cert(fact_committed(1, transfer, ga(52), 6, 0)) {
-                        let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, cert };
+                        let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
                         let e = forge_from_w(sim, 2, 3, rec(ga(54), transfer), vec![hop]);
                         forged.push((2, 3, e.id(), "W's majority splices A's genuine hop of A:52 onto A:54"));
                     }
@@ -409,7 +965,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                     // signed of this hop) in place of a commit certificate.
                     let r = x.record.unwrap();
                     let cert = sim.replica(2, 1).sim.cert(fact_departed(1, x.depart, &r, 6, x.deadline, chain_hash(&[]))).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, cert };
+                    let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
                     let e = forge_from_w(sim, 2, 3, rec(ga(55), transfer), vec![hop]);
                     forged.push((2, 3, e.id(), "refund and keep: W exports A:55 (refunded to A) into B with A's departure certificate"));
                 }
@@ -439,7 +995,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 let first = sim.peers.iter().flat_map(|p| p.jobs.iter()).find(|j| j.src == 1 && j.dst == 6 && j.record.is_some_and(|r| r.global == ga(52))).map(|j| j.transfer);
                 if let (true, Some(t1)) = (back, first) {
                     let cert = a.cert(fact_committed(1, t1, ga(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, cert };
+                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
                     let e = forge_from_w(sim, 2, 3, rec(ga(52), t1), vec![hop.clone()]);
                     forged.push((2, 3, e.id(), "W's majority resurrects A:52 into B, which it has left for A since"));
                     let e = forge_from_w(sim, 1, 2, rec(ga(52), t1), vec![hop]);

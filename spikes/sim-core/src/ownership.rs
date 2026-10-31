@@ -648,7 +648,7 @@ impl Book {
     /// Insert many, in any order (OWNS-9), keeping under-signed ones. Returns what was refused
     /// (OWNS-10: junk is skipped, not fatal).
     pub fn insert_all(&mut self, certs: &[Cert]) -> Vec<(CertId, OwnError)> {
-        self.insert_attested(certs, &[], &crate::provenance::StaticEpochs::default())
+        self.insert_attested(certs, &[], &crate::provenance::EpochBook::default())
     }
 
     /// As [`Book::insert_all`], with the sessions' attestations, in any order within the batch. The

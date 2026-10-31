@@ -5,24 +5,31 @@ use spike::{Fate, Filter, Sim};
 
 use crate::scenario::{Crash, FaultRule};
 
-pub const MSG_CLASSES: &[&str] = &["entry", "fetch", "batch", "touch", "hand", "ack", "vote", "unvote", "attest", "depart", "arrive", "verdict", "portal", "ownership"];
+pub const MSG_CLASSES: &[&str] =
+    &["entry", "fetch", "batch", "join", "touch", "hand", "ack", "vote", "propose", "prevote", "precommit", "kick", "setrole", "definerole", "attest", "depart", "arrive", "verdict", "portal", "provenance", "ownership"];
 
 /// Does `m` belong to message class `c` (see [`FaultRule::msg`])?
 pub fn is_class(m: &Msg, c: &str) -> bool {
     match (m, c) {
-        (Msg::Entry(_), "entry") | (Msg::Fetch { .. }, "fetch") | (Msg::Batch(_), "batch") => true,
+        (Msg::Entry(_), "entry") | (Msg::Fetch { .. }, "fetch") | (Msg::Batch(_), "batch") | (Msg::Join { .. }, "join") => true,
         (Msg::Entry(e), _) => matches!(
             (&e.payload, c),
             (Payload::Touch { .. }, "touch")
                 | (Payload::Hand { .. }, "hand")
                 | (Payload::Ack { .. }, "ack")
                 | (Payload::Vote { .. }, "vote")
-                | (Payload::Unvote { .. }, "unvote")
+                | (Payload::Propose { .. }, "propose")
+                | (Payload::Prevote { .. }, "prevote")
+                | (Payload::Precommit { .. }, "precommit")
+                | (Payload::Kick { .. }, "kick")
+                | (Payload::SetRole { .. }, "setrole")
+                | (Payload::DefineRole { .. }, "definerole")
                 | (Payload::Attest { .. }, "attest")
                 | (Payload::Depart { .. }, "depart")
                 | (Payload::Arrive { .. }, "arrive")
                 | (Payload::Verdict { .. }, "verdict")
                 | (Payload::Portal { .. }, "portal")
+                | (Payload::Provenance { .. }, "provenance")
                 | (Payload::Ownership { .. }, "ownership")
         ),
         _ => false,
@@ -30,16 +37,25 @@ pub fn is_class(m: &Msg, c: &str) -> bool {
 }
 
 pub fn validate(r: &FaultRule) -> Result<(), String> {
-    if r.drop == r.delay_ms.is_some() {
-        return Err(format!("fault rule needs exactly one of `drop = true` or `delay_ms`: {r:?}"));
+    if [r.drop, r.delay_ms.is_some(), r.deliver].iter().filter(|&&x| x).count() != 1 {
+        return Err(format!("fault rule needs exactly one of `drop = true`, `delay_ms` or `deliver = true`: {r:?}"));
     }
     if let Some(c) = &r.msg {
         if !MSG_CLASSES.contains(&c.as_str()) {
             return Err(format!("fault rule: unknown msg class `{c}` (one of {MSG_CLASSES:?})"));
         }
     }
-    if (r.stamp.is_some() || r.seq.is_some()) && r.msg.as_deref().is_some_and(|c| c == "fetch" || c == "batch") {
+    if (r.stamp.is_some() || r.seq.is_some()) && r.msg.as_deref().is_some_and(|c| c == "fetch" || c == "batch" || c == "join") {
         return Err(format!("fault rule: stamp and seq apply to chain entries only: {r:?}"));
+    }
+    if r.round.is_some() && !matches!(r.msg.as_deref(), Some("propose" | "prevote" | "precommit")) {
+        return Err(format!("fault rule: round needs msg propose, prevote or precommit: {r:?}"));
+    }
+    if r.nil.is_some() && !matches!(r.msg.as_deref(), Some("prevote" | "precommit")) {
+        return Err(format!("fault rule: nil needs msg prevote or precommit: {r:?}"));
+    }
+    if r.delay_grows && (r.delay_ms.is_none() || r.after_ms.is_none()) {
+        return Err(format!("fault rule: delay_grows needs delay_ms and after_ms: {r:?}"));
     }
     Ok(())
 }
@@ -62,6 +78,11 @@ fn matches(r: &FaultRule, t_us: u64, w: u32, from: u32, to: u32, m: &Msg) -> boo
         && r.msg.as_ref().is_none_or(|c| is_class(m, c))
         && r.stamp.is_none_or(|s| entry.is_some_and(|e| e.stamp == s))
         && r.seq.is_none_or(|s| entry.is_some_and(|e| e.seq == s))
+        && r.author.as_ref().is_none_or(|x| entry.is_some_and(|e| x.contains(e.member)))
+        && r.round.is_none_or(|x| {
+            entry.is_some_and(|e| matches!(e.payload, Payload::Propose { round, .. } | Payload::Prevote { round, .. } | Payload::Precommit { round, .. } if round == x))
+        })
+        && r.nil.is_none_or(|x| entry.is_some_and(|e| matches!(e.payload, Payload::Prevote { value, .. } | Payload::Precommit { value, .. } if (value == 0) == x)))
 }
 
 /// A filter from a Byzantine behaviour: `Some(fate)` decides the message.
@@ -88,7 +109,13 @@ pub fn filter(rules: Vec<FaultRule>, hooks: Vec<Hook>) -> Option<Filter> {
             if let Some(k) = n.as_mut() {
                 *k -= 1;
             }
-            return if r.drop { Fate::Drop } else { Fate::Delay(r.delay_ms.unwrap() * 1000) };
+            return match (r.drop, r.delay_ms) {
+                (true, _) => Fate::Drop,
+                // delay_grows: the delay grows with the send time (a link growing slower).
+                (false, Some(d)) if r.delay_grows => Fate::Delay(t - r.after_ms.unwrap_or(0) * 1000 + d * 1000),
+                (false, Some(d)) => Fate::Delay(d * 1000),
+                (false, None) => Fate::Deliver,
+            };
         }
         Fate::Deliver
     }))
@@ -127,7 +154,7 @@ mod tests {
     }
 
     fn ack(member: u32) -> Msg {
-        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None }, carried: None })
+        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None, epoch: 0 }, carried: None })
     }
 
     fn fate(f: &mut Filter, t_ms: u64, from: u32, to: u32, m: &Msg) -> String {
@@ -163,11 +190,53 @@ mod tests {
     }
 
     #[test]
+    fn author_and_deliver() {
+        // As p2-4-aheadlink: 4's own acks pass, every other entry to 3 is delayed.
+        let mut f = filter(vec![rule("to = 3\nfrom = 4\nauthor = 4\nmsg = \"ack\"\ndeliver = true"), rule("to = 3\nmsg = \"entry\"\ndelay_ms = 5")], vec![]).unwrap();
+        assert_eq!(fate(&mut f, 0, 4, 3, &ack(4)), "deliver");
+        assert_eq!(fate(&mut f, 0, 4, 3, &ack(1)), "delay 5", "relayed: authored by 1");
+        assert_eq!(fate(&mut f, 0, 4, 3, &touch(4, 1, 0)), "delay 5", "not an ack");
+        assert_eq!(fate(&mut f, 0, 4, 2, &touch(4, 1, 0)), "deliver");
+    }
+
+    fn vote(member: u32, payload: Payload) -> Msg {
+        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload, carried: None })
+    }
+
+    #[test]
+    fn join_round_nil_and_growing_delay() {
+        let mut f = filter(
+            vec![
+                rule("to = 3\nmsg = \"join\"\ndrop = true"),
+                rule("from = 9\nmsg = \"prevote\"\nround = 0\nnil = false\ndrop = true"),
+                rule("from = 8\nafter_ms = 2000\ndelay_ms = 30\ndelay_grows = true"),
+            ],
+            vec![],
+        )
+        .unwrap();
+        let join = Msg::Join { member: 5, attests: vec![], sig: 0, expires: u64::MAX };
+        assert_eq!(fate(&mut f, 0, 5, 3, &join), "drop");
+        assert_eq!(fate(&mut f, 0, 5, 2, &join), "deliver");
+        assert_eq!(fate(&mut f, 0, 9, 1, &vote(9, Payload::Prevote { epoch: 0, round: 0, value: 7 })), "drop");
+        assert_eq!(fate(&mut f, 0, 9, 1, &vote(9, Payload::Prevote { epoch: 0, round: 0, value: 0 })), "deliver", "nil");
+        assert_eq!(fate(&mut f, 0, 9, 1, &vote(9, Payload::Prevote { epoch: 0, round: 1, value: 7 })), "deliver", "round 1");
+        assert_eq!(fate(&mut f, 1999, 8, 1, &ack(8)), "deliver");
+        assert_eq!(fate(&mut f, 2000, 8, 1, &ack(8)), "delay 30");
+        assert_eq!(fate(&mut f, 3000, 8, 1, &ack(8)), "delay 1030", "slowref: sent at t, arrives near 2t - 2 s");
+    }
+
+    #[test]
     fn validation() {
         assert!(validate(&rule("from = 1")).is_err(), "needs an action");
         assert!(validate(&rule("drop = true\ndelay_ms = 3")).is_err(), "one action only");
+        assert!(validate(&rule("deliver = true\ndrop = true")).is_err(), "one action only");
+        assert!(validate(&rule("deliver = true")).is_ok());
         assert!(validate(&rule("msg = \"tuch\"\ndrop = true")).is_err());
         assert!(validate(&rule("msg = \"fetch\"\nseq = 1\ndrop = true")).is_err());
         assert!(validate(&rule("msg = \"vote\"\ndrop = true")).is_ok());
+        assert!(validate(&rule("msg = \"vote\"\nround = 0\ndrop = true")).is_err());
+        assert!(validate(&rule("msg = \"propose\"\nnil = true\ndrop = true")).is_err());
+        assert!(validate(&rule("delay_ms = 5\ndelay_grows = true")).is_err(), "needs after_ms");
+        assert!(validate(&rule("msg = \"join\"\nseq = 1\ndrop = true")).is_err());
     }
 }

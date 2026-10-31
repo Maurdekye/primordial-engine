@@ -2,7 +2,7 @@
 //! failing-first versions are in commits cbcdadb and 5083c64.
 
 use super::*;
-use crate::provenance::StaticEpochs;
+use crate::provenance::EpochBook;
 
 const S: Key = 10; // the seller / creator
 const A: Key = 11;
@@ -70,10 +70,10 @@ fn insert_all(b: &mut Book, certs: &[Cert]) -> Result<(), Vec<(CertId, OwnError)
     if r.is_empty() { Ok(()) } else { Err(r) }
 }
 
-fn sessions() -> StaticEpochs {
-    let mut s = StaticEpochs::default();
-    s.worlds.insert(L1, (vec![1, 2, 3], 0));
-    s.worlds.insert(L2, (vec![4, 5], 0));
+fn sessions() -> EpochBook {
+    let mut s = EpochBook::default();
+    s.genesis(L1, &[1, 2, 3], 0);
+    s.genesis(L2, &[4, 5], 0);
     s
 }
 
@@ -737,9 +737,9 @@ fn reviewer_mutated_words_never_panic() {
 // ---- review round 4 (OWNT-*), from @design-reviewer's repros (runs13/own4-reviewer-tests.patch),
 // asserting the safe outcome. Failing first at 7acc6e2: see commit 'OWNT failing-first'.
 
-fn s9() -> StaticEpochs {
+fn s9() -> EpochBook {
     let mut s = sessions();
-    s.worlds.insert(L9, (vec![99], 0));
+    s.genesis(L9, &[99], 0);
     s
 }
 

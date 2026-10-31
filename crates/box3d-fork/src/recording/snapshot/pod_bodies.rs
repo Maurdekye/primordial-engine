@@ -79,6 +79,10 @@ pub fn des_body(r: &mut SnapReader<'_>) -> Body {
     }
 }
 
+/// Lower bounds on a record's image size (the true sizes are larger), for count checks.
+pub(crate) const BODY_SIM_MIN_BYTES: i32 = 100;
+pub(crate) const BODY_STATE_MIN_BYTES: i32 = 40;
+
 pub fn ser_body_sim(buf: &mut RecBuffer, s: &BodySim) {
     buf.append_world_xf(s.transform);
     buf.append_pos(s.center);
@@ -163,26 +167,27 @@ pub fn ser_solver_set(buf: &mut RecBuffer, set: &SolverSet) {
 }
 
 pub fn des_solver_set(r: &mut SnapReader<'_>) -> SolverSet {
+    // Minimum image bytes per record bound every count (see SnapReader::count).
     let set_index = r.i32();
-    let n = r.i32();
-    let mut body_sims = Vec::with_capacity(n.max(0) as usize);
-    for _ in 0..n.max(0) {
+    let n = r.count(BODY_SIM_MIN_BYTES);
+    let mut body_sims = Vec::with_capacity(n as usize);
+    for _ in 0..n {
         body_sims.push(des_body_sim(r));
     }
-    let n = r.i32();
-    let mut body_states = Vec::with_capacity(n.max(0) as usize);
-    for _ in 0..n.max(0) {
+    let n = r.count(BODY_STATE_MIN_BYTES);
+    let mut body_states = Vec::with_capacity(n as usize);
+    for _ in 0..n {
         body_states.push(des_body_state(r));
     }
-    let n = r.i32();
-    let mut joint_sims = Vec::with_capacity(n.max(0) as usize);
-    for _ in 0..n.max(0) {
+    let n = r.count(super::joints::JOINT_SIM_MIN_BYTES);
+    let mut joint_sims = Vec::with_capacity(n as usize);
+    for _ in 0..n {
         joint_sims.push(des_joint_sim(r));
     }
     let contact_indices = des_i32_array(r);
-    let n = r.i32();
-    let mut island_sims = Vec::with_capacity(n.max(0) as usize);
-    for _ in 0..n.max(0) {
+    let n = r.count(4);
+    let mut island_sims = Vec::with_capacity(n as usize);
+    for _ in 0..n {
         island_sims.push(crate::island::IslandSim { island_id: r.i32() });
     }
     SolverSet {
@@ -204,9 +209,9 @@ pub fn ser_visitors(buf: &mut RecBuffer, arr: &[Visitor]) {
 }
 
 pub fn des_visitors(r: &mut SnapReader<'_>) -> Vec<Visitor> {
-    let cnt = r.i32();
-    let mut out = Vec::with_capacity(cnt.max(0) as usize);
-    for _ in 0..cnt.max(0) {
+    let cnt = r.count(6);
+    let mut out = Vec::with_capacity(cnt as usize);
+    for _ in 0..cnt {
         out.push(Visitor {
             shape_id: r.i32(),
             generation: r.u16(),
@@ -225,9 +230,9 @@ pub fn ser_contact_links(buf: &mut RecBuffer, arr: &[ContactLink]) {
 }
 
 pub fn des_contact_links(r: &mut SnapReader<'_>) -> Vec<ContactLink> {
-    let cnt = r.i32();
-    let mut out = Vec::with_capacity(cnt.max(0) as usize);
-    for _ in 0..cnt.max(0) {
+    let cnt = r.count(12);
+    let mut out = Vec::with_capacity(cnt as usize);
+    for _ in 0..cnt {
         out.push(ContactLink {
             contact_id: r.i32(),
             body_id_a: r.i32(),
@@ -247,9 +252,9 @@ pub fn ser_joint_links(buf: &mut RecBuffer, arr: &[JointLink]) {
 }
 
 pub fn des_joint_links(r: &mut SnapReader<'_>) -> Vec<JointLink> {
-    let cnt = r.i32();
-    let mut out = Vec::with_capacity(cnt.max(0) as usize);
-    for _ in 0..cnt.max(0) {
+    let cnt = r.count(12);
+    let mut out = Vec::with_capacity(cnt as usize);
+    for _ in 0..cnt {
         out.push(JointLink {
             joint_id: r.i32(),
             body_id_a: r.i32(),

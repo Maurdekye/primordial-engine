@@ -1,0 +1,42 @@
+description = """
+P2-4 review round 3, VCR-6: fork9, with 9 also signing, on branch A only, a touch backdated 90 \
+frames 100 ms after the fork: a horizon violation on the cut branch, which 3 does not hold. Part 1 \
+runs with VCR-6's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 8000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+9 = [{ at = 120, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+1 = [{ at = 60, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+from = 3
+msg = "vote"
+delay_ms = 300
+
+[[byzantine]]
+kind = "fork_branch"
+member = 9
+at_frame = 110
+a_to = [1, 2]
+b_to = 3
+live_ms = 700
+backdate = true
+
+[[part]]
+world.1.fixes_off = ["VCR6"]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold)", fix = "VCR-6's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "fork_info" },
+    { kind = "membership", honest = [1, 2, 3], label = "cutbackdate" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "cutbackdate" },
+    { kind = "verdict", honest = [1, 2, 3], label = "cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold)" },
+]

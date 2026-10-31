@@ -1,0 +1,43 @@
+description = """
+P2-4 review round 4, VC3R-1 (the reviewer's repro): from 2 s 9's acks climb to epoch 1 with no \
+decision behind it, while from 1.9 s it sends each of its entries to one honest member only, in \
+turn. Part 1 runs that with VC3R-1's fix switched off. As shipped, each half alone and both: \
+rotating alone is harmless (fetches fill every gap), climbing gets 9 voted out."""
+include = ["../common/review.toml"]
+end_ms = 12000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 600, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[part]]
+world.1.fixes_off = ["VC3R1"]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }, { kind = "rotate_entries", member = 9, from_ms = 1900, to = [1, 2, 3] }]
+report = [
+    { kind = "line", text = "  9 removed: {removed_s@1:9}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: true)", fix = "VC3R-1's fix" },
+]
+
+[[part]]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }]
+report = [
+    { kind = "check", case = "aheadshield", text = "climb=true rotate=false", at = 1, target = 9, honest = [1, 2, 3], expect = "voted_out" },
+    { kind = "verdict", honest = [1, 2, 3], label = "aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: false)" },
+]
+
+[[part]]
+byzantine = [{ kind = "rotate_entries", member = 9, from_ms = 1900, to = [1, 2, 3] }]
+report = [
+    { kind = "check", case = "aheadshield", text = "climb=false rotate=true", at = 1, target = 9, honest = [1, 2, 3], expect = "harmless", conf_min = 600 },
+    { kind = "verdict", honest = [1, 2, 3], label = "aheadshield (from 2 s, 9's acks claim epoch 1: false; 9 sends each of its entries to one honest member only, in turn: true)" },
+]
+
+[[part]]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }, { kind = "rotate_entries", member = 9, from_ms = 1900, to = [1, 2, 3] }]
+report = [
+    { kind = "check", case = "aheadshield", text = "climb=true rotate=true", at = 1, target = 9, honest = [1, 2, 3], expect = "voted_out" },
+    { kind = "verdict", honest = [1, 2, 3], label = "aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: true)" },
+]

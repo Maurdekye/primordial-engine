@@ -1,0 +1,4 @@
+# Committed logs of scripts/run_session_sim.sh that are not mirrored as scenario files yet, one
+# name per line. `regress` reports them instead of failing on them as orphans; each name leaves this
+# list when its scenario file arrives (see README). Empty: every committed log has its scenario,
+# apart from the spike's property tests in not-scenarios.txt (main de3dbf9, P2-4 round 7).

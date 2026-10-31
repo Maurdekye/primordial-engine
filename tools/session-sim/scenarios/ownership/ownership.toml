@@ -15,7 +15,7 @@ members = [1, 2, 3]
 scene = { pile = { side = 4, layers = 2 } }
 epoch_ms = 100
 seed = 0x0E
-owners = { keys = [10], rule = "all", nonce = 1 }
+ownership = { keys = [10], rule = "all", nonce = 1 }
 
 # Keys: 10 the creator, 20 and 30 co-owners, 40 and 41 two buyers, 50 10's backup key, 52 30's,
 # 60 41's, 66 a stranger. Members publish certificates that key holders signed (spike signatures).

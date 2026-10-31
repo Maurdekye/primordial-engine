@@ -1,0 +1,46 @@
+description = """
+P2-4 review round 3, VCR-7: friends-only join rules (a friend of an admin joins as guest, role 1); \
+every member is an admin. At 2 s joiner 5, a friend of admin 1, asks to join and shows the \
+friendship to 1 and 2 only; 9 backs everything and prevotes but never precommits. Part 1 runs \
+with VCR-7's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+guests = { role = 1, admins = [1, 2, 3, 9] }
+join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }] }
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of the run (frame 593): it never
+# fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[world.1.member.9]
+byz_ally = true
+byz_no_precommit = true
+
+[[join]]
+at_ms = 2000
+member = 5
+to = [1, 2, 3, 9]
+attests = [{ rel = "friend", with = 1 }]
+attests_to = [1, 2]
+
+[[part]]
+world.1.fixes_off = ["VCR7"]
+report = [
+    { kind = "line", text = "  5's role at m3: {role@3:5}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits)", fix = "VCR-7's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "joinattests" },
+    { kind = "admin", honest = [1, 2, 3], label = "joinattests", roles = true },
+    { kind = "check", case = "joinattests", label = "joinattests", at = 3, target = 5, role = 1, honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits)" },
+]

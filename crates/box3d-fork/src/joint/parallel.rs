@@ -184,7 +184,7 @@ pub fn prepare_parallel_joint(world: &World, base: &mut JointSim, context: &Step
     joint.softness = make_soft(joint.hertz, joint.damping_ratio, context.h);
 
     if !context.enable_warm_starting {
-        joint.perp_impulse = Vec2 { x: 0.0, y: 0.0 };
+        joint.reset_impulses();
     }
 }
 

@@ -1,0 +1,40 @@
+description = """
+D80: the only admin (1; the others are guests) falls silent at t = 3 s; removing it closes the \
+session, at the same frame everywhere."""
+include = ["../common/review.toml"]
+end_ms = 15000
+
+[world.1]
+members = [1, 2, 3]
+guests = { role = 1, admins = [1] }
+
+[world.1.plan]
+2 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+involves = 1
+after_ms = 3000
+drop = true
+
+[[report]]
+kind = "view_changes"
+honest = [2, 3]
+label = "adminclose"
+
+[[report]]
+kind = "admin"
+honest = [2, 3]
+label = "adminclose"
+roles = true
+
+[[report]]
+kind = "check"
+case = "adminclose"
+label = "adminclose"
+text = "the only admin (1) silent from 3 s"
+honest = [2, 3]
+
+[[report]]
+kind = "verdict"
+honest = [2, 3]
+label = "adminclose (the only admin goes silent at t=3 s)"

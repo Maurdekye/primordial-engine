@@ -578,6 +578,41 @@
     },
     "outputSchema": {
       "$defs": {
+        "Decision": {
+          "description": "One view-change decision, as the driven peer applied it.",
+          "properties": {
+            "epoch": {
+              "description": "The epoch the decision started.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "frame": {
+              "description": "The peer's clock frame when it applied the decision.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "removed": {
+              "description": "The members it removed (empty: a reset or a join).",
+              "items": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "round": {
+              "description": "The view-change round that decided it.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "epoch",
+            "frame",
+            "round",
+            "removed"
+          ],
+          "type": "object"
+        },
         "Eviction": {
           "properties": {
             "cut_seq": {
@@ -626,6 +661,13 @@
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "decisions": {
+          "description": "Every decision this peer applied, oldest first.",
+          "items": {
+            "$ref": "#/$defs/Decision"
+          },
+          "type": "array"
+        },
         "demotions": {
           "minimum": 0,
           "type": "integer"
@@ -652,12 +694,18 @@
           },
           "type": "array"
         },
+        "resets": {
+          "description": "Decisions that removed no one: a vote overruled for a member heard from again.",
+          "minimum": 0,
+          "type": "integer"
+        },
         "suspicions": {
           "description": "Members this peer presumed crashed and voted to remove.",
           "minimum": 0,
           "type": "integer"
         },
-        "withdrawn_votes": {
+        "view_changes": {
+          "description": "View-change decisions this peer applied (design 10.8), resets included.",
           "minimum": 0,
           "type": "integer"
         }
@@ -668,9 +716,11 @@
         "members",
         "suspicions",
         "demotions",
-        "withdrawn_votes",
+        "view_changes",
+        "resets",
         "equivocations",
-        "lying_votes"
+        "lying_votes",
+        "decisions"
       ],
       "type": "object"
     }

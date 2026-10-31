@@ -1,0 +1,39 @@
+description = """
+P2-4 review round 4, VC3R-2, the residual: from 2 to 10 s, in every epoch, 9 votes against 2, whom \
+everyone hears, so each vote forces a reset; at frame 600 (10 s) admin 1 kicks 9. What the churn \
+costs in resets and in member 1's confirmation lag (sampled every 100 ms from 0.5 s), and that the \
+kick ends it. Part 1 runs with VC3R-2's fix switched off (round 3's strikes), part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 16000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 600, kick = { target = 9 } }, { at = 800, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+2 = [{ at = 300, touch = { obj = 20, impulse = [0.0, 4.0, 0.0] } }, { at = 500, touch = { obj = 21, impulse = [0.0, 4.0, 0.0] } }]
+
+[[byzantine]]
+kind = "churn_vote"
+member = 9
+target = 2
+from_ms = 2000
+until_ms = 10000
+while_member_at = 1
+to = [1, 2, 3]
+
+[[part]]
+world.1.fixes_off = ["VC3R2"]
+report = [
+    { kind = "check", case = "votechurn_off", at = 1, target = 9, from_ms = 2000, until_ms = 10000 },
+    { kind = "before_fix", honest = [1, 2, 3], label = "votechurn (2-10 s: 9 votes against 2, whom everyone hears, in every epoch; admin 1 kicks 9 at 10 s)", fix = "VC3R-2's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "votechurn" },
+    { kind = "check", case = "votechurn", at = 1, target = 9, from_ms = 2000, until_ms = 10000 },
+    { kind = "confs", honest = [1, 2, 3], label = "votechurn" },
+    { kind = "verdict", honest = [1, 2, 3], label = "votechurn (2-10 s: 9 votes against 2, whom everyone hears, in every epoch; admin 1 kicks 9 at 10 s)" },
+]

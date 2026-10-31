@@ -1,5 +1,5 @@
-  m1 world 1: rollbacks 9 max depth 55 resim frames 154 (197.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 33 bad 0 nonfinite 0 conf 536 frame 593
-  m2 world 1: rollbacks 9 max depth 2 resim frames 23 (26.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 36 bad 0 nonfinite 0 conf 538 frame 594
-  m3 world 1: rollbacks 12 max depth 2 resim frames 27 (27.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 36 bad 0 nonfinite 0 conf 538 frame 593
-  bytes: entries 34 msgs 3400 B (avg 100 B), acks 2007 msgs 175944 B, dropped 155
+  m1 world 1: rollbacks 9 max depth 60 resim frames 200 (99.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 33 bad 0 nonfinite 0 conf 538 frame 593
+  m2 world 1: rollbacks 9 max depth 2 resim frames 23 (14.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 36 bad 0 nonfinite 0 conf 534 frame 594
+  m3 world 1: rollbacks 12 max depth 2 resim frames 26 (15.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 36 bad 0 nonfinite 0 conf 534 frame 593
+  bytes: entries 34 msgs 3400 B (avg 100 B), acks 2009 msgs 176120 B, dropped 156
 RESULT fault-capped world 1: frames 0..530 digests m1=2d40ba98b0df6147 m2=2d40ba98b0df6147 m3=2d40ba98b0df6147 | offline replay 2d40ba98b0df6147 | ALL EQUAL
