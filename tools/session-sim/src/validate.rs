@@ -410,6 +410,32 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 to.iter().for_each(|&m| v.member(1, m, "void_admin to"));
                 v.time(*at_ms, "void_admin");
             }
+            Byzantine::GoSilent { member, from_ms, .. } => {
+                v.member(1, *member, "go_silent");
+                v.time(*from_ms, "go_silent");
+            }
+            Byzantine::MixRefs { member, of, from_ms, every_ms, .. } => {
+                v.member(1, *member, "mix_refs");
+                v.member(1, *of, "mix_refs of");
+                v.time(*from_ms, "mix_refs");
+                if *every_ms == 0 {
+                    v.err("mix_refs: every_ms is 0".into());
+                }
+            }
+            Byzantine::AdminFork { member, at_ms, target, a_to, b_to, prevote_to, .. } => {
+                v.member(1, *member, "admin_fork");
+                v.member(1, *target, "admin_fork target");
+                a_to.iter().chain(b_to).chain(prevote_to).for_each(|&m| v.member(1, m, "admin_fork to"));
+                v.time(*at_ms, "admin_fork");
+                if a_to.iter().any(|m| b_to.contains(m)) {
+                    v.err("admin_fork: a_to and b_to overlap".into());
+                }
+            }
+            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to } => {
+                v.member(1, *member, "equivocate_prevote");
+                value_to.iter().chain(nil_to).for_each(|&m| v.member(1, m, "equivocate_prevote to"));
+                v.time(*from_ms, "equivocate_prevote");
+            }
             Byzantine::FakeRefs { member, from_ms, of, .. } => {
                 v.member(1, *member, "fake_refs");
                 v.member(1, *of, "fake_refs of");
@@ -520,7 +546,10 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     }
                     "fakeref" | "capstale" | "lagchurn" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
                     "votechurn" | "votechurn_off" => at.is_some() && target.is_some() && from_ms.is_some() && until_ms.is_some(),
-                    "adminvoid" | "joinskip" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "adminvoid" | "joinskip" | "slowref" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "joinwedge" | "adminfork" => at.is_some() && target.is_some() && members.len() == 1 && !honest.is_empty(),
+                    "fakemix" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
+                    "prevotefork" | "prevotefork_off" => at.is_some() && target.is_some() && event.is_some(),
                     // The silence start must be a fault rule's, so the two cannot drift apart.
                     "vcscale" => matches!(r, Report::Check { silent: Some(_), from_ms: Some(t), .. } if s.fault.iter().any(|f| f.drop && f.after_ms == Some(*t))),
                     _ => true,

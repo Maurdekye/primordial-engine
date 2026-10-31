@@ -1,7 +1,7 @@
 # Native glibc build and test in WSL2 Ubuntu-24.04: Linux 6.6.87.2-microsoft-standard-WSL2 x86_64; rustc 1.99.1; gcc 13.3.0; sources: git archive of HEAD 5ff2117 into ~/pe-mcp-glibc, every file touched; binary: ELF 64-bit PIE, dynamically linked (glibc); 2026-10-30T21:47:41Z. Command: bash crates/pe-mcp/run-linux-tests.sh glibc (through heavy.sh).
 # Early WSL output is lost from this capture (the script's header and the lib/main summary lines); the 5 auth unit tests' 'ok' lines are below. 46 tests: 5 auth + 9 http + 1 live_guard + 7 pipe + 24 tools.
-   Compiling box3d-rust v0.5.0 (/home/<user>/pe-mcp-glibc/crates/box3d-fork)
-   Compiling pe-sim-core v0.0.1 (/home/<user>/pe-mcp-glibc/spikes/sim-core)
+   Compiling box3d-rust v0.5.0 (<home>/pe-mcp-glibc/crates/box3d-fork)
+   Compiling pe-sim-core v0.0.1 (<home>/pe-mcp-glibc/spikes/sim-core)
   
 running 5 tests
 test auth::tests::issue_authenticate_revoke ... ok

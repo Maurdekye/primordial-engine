@@ -1,6 +1,6 @@
 P2-7 cross-OS module identity, 2026-10-30 (design 13.2). Hashes: first 16 hex digits of SHA-256.
 
-1. Before the fixes (matrix run 1; <laptop> Windows vs WSL Ubuntu 24.04 Linux, rustc 1.99.0, release guests):
+1. Before the fixes (matrix run 1; Intel laptop Windows vs WSL Ubuntu 24.04 Linux, rustc 1.99.0, release guests):
    logic_v1 df0bf5ba..., logic_v2 f9c5e895..., logic_runaway 19f59dba...   equal on both OSes
    physics_in_wasm  Windows 4ee3b3bb...  Linux 01f18b62...   (3,474 differing bytes, same size)
    logic_mono       Windows 3cff7336...  Linux eff7c136...   (20 differing bytes: '\' vs '/')
@@ -17,5 +17,5 @@ P2-7 cross-OS module identity, 2026-10-30 (design 13.2). Hashes: first 16 hex di
 
 4. Profile rel-fast (opt 3, no LTO, 16 CGUs, incremental), with the remaps:
    logic_mono 0dd9a3dd..., logic_wasm f9af0850...   Windows == Linux.
-   On <laptop> (same OS, two checkout paths, separate targets): rel-fast, rel-s and dev-nodbg each byte-identical
+   On the Intel laptop (same OS, two checkout paths, separate targets): rel-fast, rel-s and dev-nodbg each byte-identical
    at both paths, and an incremental edit+revert rebuild equals the clean build (runs: design-reviewer runs12/).

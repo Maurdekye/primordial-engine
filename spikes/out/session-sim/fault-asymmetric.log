@@ -1,7 +1,6 @@
-RESULT fault-asymmetric acceptance, uncontended checks: 33/33 equal at that instant and 33/33 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
-RESULT fault-asymmetric acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 42/43 equal to the author's copy at that instant, 42/43 equal to the author's final history
-  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 120; equal to the author's final history: false
-  m1 world 1: rollbacks 3 max depth 4 resim frames 16 (25.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 579 frame 593
-  m2 world 1: rollbacks 9 max depth 12 resim frames 84 (134.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 577 frame 594
-  m3 world 1: rollbacks 12 max depth 2 resim frames 28 (77.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 579 frame 593
+RESULT fault-asymmetric acceptance, uncontended checks: 32/32 equal at that instant and 32/32 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 13
+RESULT fault-asymmetric acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 45/45 equal to the author's copy at that instant, 45/45 equal to the author's final history
+  m1 world 1: rollbacks 3 max depth 4 resim frames 16 (9.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 579 frame 593
+  m2 world 1: rollbacks 9 max depth 13 resim frames 86 (40.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 577 frame 594
+  m3 world 1: rollbacks 12 max depth 10 resim frames 33 (17.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 575 frame 593
 RESULT fault-asymmetric world 1: frames 0..550 digests m1=b4641cd8ae3cdcea m2=b4641cd8ae3cdcea m3=b4641cd8ae3cdcea | offline replay b4641cd8ae3cdcea | ALL EQUAL

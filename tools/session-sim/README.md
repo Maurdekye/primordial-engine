@@ -45,12 +45,13 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 26 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `p2-4-review/` | 30 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref (round 5; prevotefork waits for its round-7 re-mirror, see spike-only.txt); adminfork (round 6); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
+| `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
 
-All but `faults/` are the suite of `scripts/run_session_sim.sh` (74 scenarios and the three controls of
+All but `faults/` are the suite of `scripts/run_session_sim.sh` (79 scenarios and the three controls of
 P2-5 and P2-4, whose logs are in `spikes/out/session-sim/p2-5-controls/` and `p2-4-controls/`); their
 logs are identical to the committed ones. The `faults/` logs are new in P2-9. All of them are
 identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`,
@@ -58,10 +59,17 @@ identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress
 
 A committed log without a scenario file yet is listed in `scenarios/spike-only.txt`: a full
 `regress` lists it as spike-only instead of failing on it as an orphan. The list only shrinks: a
-listed name that has a scenario file, or no committed log, is an error. It is empty now: every
-committed log has its scenario file. (`handowner` was held for a while: the spike's check covered
+listed name that has a scenario file, or no committed log, is an error. It now lists P2-4 round 7's
+four repros (capfake, fakeadmin and adminwedge are new; prevotefork changed and its round-6 mirror
+is removed) until the round-7 mirror arrives. (`handowner` was held for a while: the spike's check covered
 6 frames past the lowest confirmed one, which `check_world` flags as UNCONFIRMED. P2-4's round 4
 fixed the spike.)
+
+`scenarios/not-scenarios.txt` lists the committed logs that are not scenarios at all: the spike's
+property tests (`randsched`, P2-4 round 5's randomized schedule generator, which checks its own
+invariants over 12 seeds). The spike suite runs and checks them; `regress` neither mirrors them nor
+counts them as orphans, and reports each as "not a scenario". A listed name with a scenario file,
+or with no committed log, is an error.
 
 The spike's review repros run once with their fix switched off (`fixes_off`), printing an
 informational line (`before_fix`), and once as shipped. A run with its fix switched off may stop
@@ -127,7 +135,8 @@ routes = [2]                        # R14 genesis route list
 quorum = "majority"                 # D80 quorum rule; default "bft"
 ack_heads = false                   # acks without heads (design 25.5.2); default true
 ack_every_frames = 30               # every replica acks this often
-fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1
+fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1,
+                                    #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
@@ -195,10 +204,15 @@ delay, or `deliver = true` (so no later rule matches it). Conditions:
 - `world`.
 - `from`, `to`, `involves`: a member id or a list; `involves` means sent by or to.
 - `partition = [[1, 2], [3]]`: sender and receiver are in different groups. Members in no group are unaffected.
-- `msg`: `entry`, `fetch`, `batch`, or an entry payload: `touch`, `hand`, `ack`, `vote`, `propose`, `prevote`, `precommit`, `kick`, `setrole`, `definerole`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `provenance`.
+- `msg`: `entry`, `fetch`, `batch`, `join` (a join request), or an entry payload: `touch`, `hand`, `ack`, `vote`, `propose`, `prevote`, `precommit`, `kick`, `setrole`, `definerole`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `provenance`.
 - `stamp`, `seq`: chain entries only.
 - `author`: chain entries authored by this member (or list), whoever sends them.
+- `round`: `propose`, `prevote` or `precommit` entries of this round; `nil = true` (or `false`):
+  `prevote` or `precommit` entries for nil (or for a value).
 - `times = N`: the rule applies to at most N messages.
+
+With `delay_grows = true` (and `after_ms`), the delay grows with the send time t to
+t - after_ms + delay_ms: a link growing slower (p2-4-slowref).
 
 A silent member (every message to and from it lost) is `involves = 3` with `drop = true`.
 
@@ -261,6 +275,18 @@ behaviour `x` has fired.
   (whom everyone hears), forcing a reset.
 - `void_admin`: review VC3R-3: `member` signs a horizon-void SetRole and proposes a change listing it.
 - `fake_refs`: from `from_ms`, `member`'s acks claim `n` more of `of`'s chain than it holds.
+- `go_silent`: from `from_ms`, once `member` holds an entry of its own of kind `holds_own`
+  (`prevote` or `nonnil_prevote`), every message it sends is lost; it still receives and ticks
+  (the spike's crash after a prevote).
+- `mix_refs`: review VC5R-2: from `from_ms`, every `every_ms` `member` alternates between acks
+  naming a fake id at its current seq of `of`'s chain and acks naming a stale real head, re-frozen
+  (`freeze_others`) at a fake turn at least `refresh_ms` after the last.
+- `admin_fork`: review VC5R-1: at `at_ms`, admin `member` forks one seq, a SetRole giving `target`
+  role `role` to `a_to` and an Attest in its place to `b_to` (never the SetRole), proposes a change
+  listing the SetRole, and prevotes nil to `prevote_to`.
+- `equivocate_prevote`: review VC4R-1: from `from_ms`, once round-0 proposer `member` holds its
+  round-0 prevote and proposal, it sends the proposal's value to `value_to` and nil to `nil_to` as
+  two versions of that prevote; its genuine round-0 prevotes reach nobody.
 - `hand_forgery`: review HO-1: `member` sends `to` a grab of another member's `hand` at `grab_ms`,
   a departure of it at `carry_ms`, and a touch carrying a state for it at `plant_ms`.
 
@@ -289,7 +315,8 @@ Reports print after the run, in file order, in the spike's formats:
   `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink`, `onesided`, `removed`, `strikeframe`,
   `strikeframe_total` (over kept runs), `aheadshield`, `fakeref`, `capstale`, `lagchurn`,
   `votechurn` (it samples a confirmation lag before each step, every 100 ms), `votechurn_off`,
-  `adminvoid`, `joinskip`. The fields each reads are listed in scenario.rs (`Report::Check`).
+  `adminvoid`, `joinskip`, `joinwedge`, `slowref`, `fakemix`, `adminfork`, `prevotefork`,
+  `prevotefork_off`. The fields each reads are listed in scenario.rs (`Report::Check`).
 - `handowner`: review HO-1 over three kept runs (`forged`, `clean`, `fixoff`).
 - `stats`.
 - `membership`.

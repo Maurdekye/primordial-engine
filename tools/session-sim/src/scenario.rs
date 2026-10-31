@@ -452,11 +452,19 @@ pub struct FaultRule {
     /// Chain entries only: this stamp, this sequence number.
     pub stamp: Option<u64>,
     pub seq: Option<u32>,
+    /// `propose`, `prevote` or `precommit` entries of this round only.
+    pub round: Option<u32>,
+    /// `prevote` or `precommit` entries for nil (value 0), or (`false`) for a value.
+    pub nil: Option<bool>,
     /// Apply to at most this many messages, then stop matching.
     pub times: Option<u64>,
     #[serde(default)]
     pub drop: bool,
     pub delay_ms: Option<u64>,
+    /// With `delay_ms` and `after_ms`: the delay grows with the send time t, to
+    /// t - after_ms + delay_ms (a link growing slower).
+    #[serde(default)]
+    pub delay_grows: bool,
     /// Deliver it as is (so a later rule does not match it).
     #[serde(default)]
     pub deliver: bool,
@@ -674,6 +682,47 @@ pub enum Byzantine {
         from_ms: u64,
         of: u32,
         n: u32,
+    },
+    /// From `from_ms`, once `member`'s replica holds an entry of its own of kind `holds_own`
+    /// (`prevote`, or `nonnil_prevote`), every message it sends is lost (the spike's crash after a
+    /// prevote: it still receives and ticks).
+    GoSilent {
+        member: u32,
+        from_ms: u64,
+        holds_own: String,
+    },
+    /// Review VC5R-2: from `from_ms`, every `every_ms` `member` alternates between acks naming a
+    /// fake id at its current seq of `of`'s chain (`fake_refs` with n = 0) and acks naming a stale
+    /// real head; the stale heads are re-frozen (`freeze_others`) at a fake turn at least
+    /// `refresh_ms` after the last freeze.
+    MixRefs {
+        member: u32,
+        of: u32,
+        from_ms: u64,
+        every_ms: u64,
+        refresh_ms: u64,
+    },
+    /// Review VC5R-1: at `at_ms`, faulty admin `member` forks one seq: a SetRole giving `target`
+    /// role `role`, sent to `a_to`, and an Attest in its place, sent to `b_to` (who never receive
+    /// the SetRole from it). It proposes a change listing the SetRole in every round it proposes
+    /// (`byz_change`) and sends a nil prevote to `prevote_to`.
+    AdminFork {
+        member: u32,
+        at_ms: u64,
+        target: u32,
+        role: u16,
+        a_to: Vec<u32>,
+        b_to: Vec<u32>,
+        prevote_to: Vec<u32>,
+    },
+    /// Review VC4R-1: `member`, the round-0 proposer, equivocates its round-0 prevote once it holds
+    /// it and its round-0 proposal (from `from_ms`): the proposal's value to `value_to`, nil to
+    /// `nil_to`. Its genuine round-0 prevotes reach nobody.
+    EquivocatePrevote {
+        member: u32,
+        from_ms: u64,
+        value_to: Vec<u32>,
+        nil_to: Vec<u32>,
     },
     /// Once `member`'s frame reaches `at_frame`, it signs a kick of `target` backdated `back`
     /// frames; sent to `to`.

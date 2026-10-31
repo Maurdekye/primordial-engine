@@ -1232,7 +1232,7 @@ fn handowner() {
         let u = (fr - a0) as f64 / (a1 - a0) as f64;
         [((from + (to - from) * u) * 1000.0).round() as i32, 400, (z * 1000.0).round() as i32]
     };
-    let run = |forge: bool, fixes_off: u32| {
+    let run = |forge: bool, fixes_off: u64| {
         let ids = [1, 2];
         let peers: Vec<Peer> = ids
             .iter()
