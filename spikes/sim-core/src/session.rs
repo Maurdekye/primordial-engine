@@ -38,7 +38,7 @@ use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
-    birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
+    birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
 
 pub type MemberId = u32;
@@ -124,11 +124,13 @@ pub enum Payload {
     /// this deadline, is confirmed" (reviews NEW-4, R3-8); without it the entry does nothing.
     /// `deadline` is a frame of the destination world: a later arrival is refused (R3-6).
     /// P2-5: `chain` is the object's provenance from its birth into the source world; the
-    /// certificate covers its hash.
-    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop> },
+    /// certificate covers its hash. `proof` names the source's epoch at the departure frame
+    /// (`record.src_frame`) with its epoch certificates: the signers are that epoch's (22.7, R3-8b).
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop>, proof: EpochProof },
     /// R14, source world: the destination's confirmed verdict, with a strict majority of the
-    /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
-    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
+    /// destination's members' signatures over it (review NEW-3). Anyone may relay it. `frame` is the
+    /// destination's arrival frame, and `proof` its epoch there with its epoch certificates.
+    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)>, frame: u64, proof: EpochProof },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
     Attest { fact: u64, sig: u64 },
@@ -759,6 +761,7 @@ impl Wr {
         self.u32(c.proofs.len() as u32); for e in &c.proofs { self.entry(e) }
     }
     fn chain(&mut self, c: &[Hop]) { self.u32(c.len() as u32); for h in c { self.hop(h) } }
+    fn epoch_proof(&mut self, p: &EpochProof) { self.u32(p.epoch); self.u32(p.certs.len() as u32); for c in &p.certs { self.epoch_cert(c) } }
     fn attests(&mut self, a: &[Attest]) {
         assert!(a.len() <= MAX_ATTESTS, "{} attestations: at most {MAX_ATTESTS} travel", a.len());
         self.u32(a.len() as u32);
@@ -780,14 +783,14 @@ impl Wr {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
                 match hop { Some(h) => { self.u8(1); self.hop(h) } None => self.u8(0) }
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain, proof } => {
                 self.u8(4); self.u64(*transfer); self.u64(record.global); self.u8(record.kind);
                 self.state(&record.state); self.u32(record.src_world); self.u64(record.src_frame); self.u64(record.via);
-                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain);
+                self.u64(*depart); self.u64(*deadline); self.cert(cert); self.chain(chain); self.epoch_proof(proof);
             }
             Payload::Provenance { hop } => { self.u8(16); self.hop(hop) }
-            Payload::Verdict { transfer, accepted, cert } => {
-                self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
+            Payload::Verdict { transfer, accepted, cert, frame, proof } => {
+                self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert); self.u64(*frame); self.epoch_proof(proof);
             }
             Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
@@ -905,6 +908,13 @@ impl Rd<'_> {
         for _ in 0..n { certs.push(self.epoch_cert()?) }
         Some(Hop { src, dest, transfer, via, epoch, frame, certs, cert: self.cert()? })
     }
+    fn epoch_proof(&mut self) -> Option<EpochProof> {
+        let epoch = self.u32()?;
+        let n = self.u32()? as usize;
+        let mut certs = Vec::with_capacity(n.min(64));
+        for _ in 0..n { certs.push(self.epoch_cert()?) }
+        Some(EpochProof { epoch, certs })
+    }
     fn epoch_cert(&mut self) -> Option<EpochCert> {
         let (world, epoch, change, round) = (self.u32()?, self.u32()?, self.change()?, self.u32()?);
         let n = self.u32()? as usize;
@@ -963,10 +973,10 @@ impl Rd<'_> {
                     global: self.u64()?, kind: self.u8()?, state: self.state()?, src_world: self.u32()?, src_frame: self.u64()?,
                     via: self.u64()?,
                 };
-                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()? }
+                Payload::Arrive { transfer, record, depart: self.u64()?, deadline: self.u64()?, cert: self.cert()?, chain: self.chain()?, proof: self.epoch_proof()? }
             }
             16 => Payload::Provenance { hop: self.hop()? },
-            5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
+            5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()?, frame: self.u64()?, proof: self.epoch_proof()? },
             9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
             tag @ (7 | 14) => {
@@ -1112,10 +1122,11 @@ pub const MAX_ARRIVAL_SPIN: f32 = 2000.0;
 /// it bounds how long a transfer stays open and its id must be kept. World config in production.
 pub const MAX_DEADLINE_FRAMES: u64 = 3600;
 
-/// P25-3: the source's certified departure carried by an `Arrive`, as one export of a fork proof.
-/// The spike's certificates have no epochs yet (P2-4): epoch 0.
-fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, u64)]) -> Export {
-    Export::Departed { src, epoch: 0, depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
+/// P25-3: the source's certified departure carried by an `Arrive`, as one export of a fork proof,
+/// with the source's epoch proof, so a third party checks it from the source's genesis.
+#[allow(clippy::too_many_arguments)]
+fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, u64)], proof: &EpochProof) -> Export {
+    Export::Departed { src, proof: proof.clone(), depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
 }
 
 /// A transfer this world committed, as its members attest it: (transfer, global id, destination, the
@@ -1128,11 +1139,13 @@ pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
 }
 
 /// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
-/// (a frame of `dest`), with provenance `chain` (its [`chain_hash`])." Covers every field of the
-/// record (review R3-8) and the chain (P2-5), so a relayer can neither strip nor swap the chain.
-pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64) -> u64 {
+/// (a frame of `dest`), with provenance `chain` (its [`chain_hash`]), in its epoch `epoch`." Covers
+/// every field of the record (review R3-8), its departure frame `src_frame` included, and the chain
+/// (P2-5), so a relayer can neither strip nor swap the chain, nor relabel the epoch.
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, epoch: u32) -> u64 {
     fnv_u64s([
         1,
+        epoch as u64,
         record.via,
         chain,
         src as u64,
@@ -1147,9 +1160,10 @@ pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, d
     ])
 }
 
-/// "World `dst` confirmed transfer `transfer` as accepted / rejected."
-pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool) -> u64 {
-    fnv_u64s([2, dst as u64, transfer, accepted as u64])
+/// "World `dst` confirmed transfer `transfer` as accepted / rejected at its frame `frame`, in its
+/// epoch `epoch`."
+pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool, frame: u64, epoch: u32) -> u64 {
+    fnv_u64s([2, dst as u64, transfer, accepted as u64, frame, epoch as u64])
 }
 
 /// Spike model of member `member` of world `world` signing `fact`. Production: an Ed25519
@@ -4670,7 +4684,7 @@ impl WorldSim {
             if let (EscrowStatus::Pending, Some(rec)) = (esc.status, esc.record) {
                 if esc.depart_frame < self.conf {
                     let chain = self.chain_hash_of(rec.global);
-                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain));
+                    facts.push(fact_departed(self.world_id, esc.depart, &rec, esc.dest, esc.deadline, chain, self.epoch_at(rec.src_frame)));
                 }
             }
         }
@@ -4687,7 +4701,7 @@ impl WorldSim {
                 Arrival::Rejected { frame, .. } => (*frame, false),
             };
             if frame < self.conf {
-                facts.push(fact_verdict(self.world_id, *t, accepted));
+                facts.push(fact_verdict(self.world_id, *t, accepted, frame, self.epoch_at(frame)));
             }
         }
         let mut out = Vec::new();
@@ -4759,7 +4773,6 @@ impl WorldSim {
         })
     }
 
-    /// The provenance chain of an object here: what its next departure's `Arrive` carries.
     /// The cached hash of [`Self::chain_of`] (what a departure certificate covers).
     pub fn chain_hash_of(&self, g: u64) -> u64 {
         match self.t.seen.get(&g) {
@@ -4768,6 +4781,7 @@ impl WorldSim {
         }
     }
 
+    /// The provenance chain of an object here: what its next departure's `Arrive` carries.
     pub fn chain_of(&self, g: u64) -> Vec<Hop> {
         match self.seen_of(g) {
             Some(Seen::Here { chain, .. }) => chain,
@@ -4790,6 +4804,16 @@ impl WorldSim {
         })
     }
 
+    /// A certificate from this world's log for a fact about its `frame`, `fact(epoch)` naming the
+    /// epoch active there, with the epoch proof a partner checks it by: the certificates up to that
+    /// epoch, and the next one once decided, since `cert_at` then leaves out the members it excluded
+    /// by proof (VC-8). None until that epoch's majority has attested it.
+    pub fn vouch(&self, frame: u64, fact: impl Fn(u32) -> u64) -> Option<(EpochProof, Vec<(MemberId, u64)>)> {
+        let (epoch, cert) = self.cert_at(fact(self.epoch_at(frame)), frame)?;
+        let certs = self.epoch_certs_upto(epoch + 1).or_else(|| self.epoch_certs_upto(epoch))?;
+        Some((EpochProof { epoch, certs }, cert))
+    }
+
     /// The certified hop of transfer `transfer` of object `global` that this world committed, from its
     /// own log: what a relayer copies into the destination (P2-5). Signed by a majority of the epoch
     /// active at the commit frame, with this world's certificates up to it, and the next one once
@@ -4799,9 +4823,7 @@ impl WorldSim {
             Some(Seen::Left { transfer: t, dest, via, frame, .. }) if *t == transfer => (*dest, *via, *frame),
             _ => self.commits.iter().find(|c| c.0 == transfer && c.1 == global).map(|c| (c.2, c.3, c.4))?,
         };
-        let fact = fact_committed(self.world_id, transfer, global, dest, via, frame, self.epoch_at(frame));
-        let (epoch, cert) = self.cert_at(fact, frame)?;
-        let certs = self.epoch_certs_upto(epoch + 1).or_else(|| self.epoch_certs_upto(epoch))?;
+        let (EpochProof { epoch, certs }, cert) = self.vouch(frame, |e| fact_committed(self.world_id, transfer, global, dest, via, frame, e))?;
         Some(Hop { src: self.world_id, dest, transfer, via, epoch, frame, certs, cert })
     }
 
@@ -4976,13 +4998,18 @@ impl WorldSim {
                 self.t.escrow.insert(*transfer, Escrow { record: Some(record), status: EscrowStatus::Pending, ..gone });
                 Outcome::Accepted
             }
-            Payload::Arrive { transfer, record, depart, deadline, cert, chain } => {
+            Payload::Arrive { transfer, record, depart, deadline, cert, chain, proof } => {
                 let src = record.src_world;
                 // Reviews R3-4, R3-5: only a world on the agreed route list can vouch for an object.
-                let Some(members) = self.peers_of.get(&src).cloned() else { return Outcome::RejectedNoRoute };
+                if !self.peers_of.contains_key(&src) {
+                    return Outcome::RejectedNoRoute;
+                }
+                // R3-8b: signed by the source's epoch at the departure frame, checked from its
+                // genesis through the epoch certificates the `Arrive` carries, so a member the source
+                // has removed no longer counts.
                 let chash = chain_hash(chain);
-                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chash);
-                if *transfer != transfer_id(src, *depart) || !cert_ok(&members, src, fact, cert) {
+                let fact = fact_departed(src, *depart, record, self.world_id, *deadline, chash, proof.epoch);
+                if *transfer != transfer_id(src, *depart) || !self.epochs.vouched(src, record.src_frame, proof, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
@@ -5020,7 +5047,7 @@ impl WorldSim {
                         return Outcome::RejectedPolicy;
                     }
                     let known = self.seen_of(record.global);
-                    let arrival = arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert);
+                    let arrival = arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert, proof);
                     if let Some(p) = known.as_ref().and_then(|k| fork_proof(k, record.global, chain, &arrival)) {
                         if record_effects {
                             self.frame_effects.entry(f).or_default().1.push(p);
@@ -5062,19 +5089,20 @@ impl WorldSim {
                 }
                 let obj = self.spawn(record, Pos { x: 0.0, y: 2.0, z: 0.0 });
                 self.t.arrivals.insert(*transfer, Arrival::Accepted { obj, frame: f });
-                let entry = Some(Box::new(arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert)));
+                let entry = Some(Box::new(arrival_export(src, *depart, record, self.world_id, *deadline, chash, cert, proof)));
                 let here = Seen::Here { via: *transfer, from: src, from_via: record.via, chain: chain.clone(), chash, settled: false, entry };
                 self.t.seen.insert(record.global, here);
                 self.watched.insert(obj);
                 Outcome::Accepted
             }
-            Payload::Verdict { transfer, accepted, cert } => {
+            Payload::Verdict { transfer, accepted, cert, frame, proof } => {
                 let Some(esc) = self.t.escrow.get(transfer).copied() else { return Outcome::RejectedGone };
                 if esc.status != EscrowStatus::Pending {
                     return Outcome::RejectedDuplicate;
                 }
-                let members = self.peers_of.get(&esc.dest).cloned().unwrap_or_default();
-                if !cert_ok(&members, esc.dest, fact_verdict(esc.dest, *transfer, *accepted), cert) {
+                // R3-8b, as for `Arrive`: the destination's epoch at its arrival frame.
+                let fact = fact_verdict(esc.dest, *transfer, *accepted, *frame, proof.epoch);
+                if !self.peers_of.contains_key(&esc.dest) || !self.epochs.vouched(esc.dest, *frame, proof, fact, cert) {
                     return Outcome::RejectedNoProof;
                 }
                 if *accepted {
