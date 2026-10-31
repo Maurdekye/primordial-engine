@@ -1,15 +1,4 @@
 # Committed logs of scripts/run_session_sim.sh that are not mirrored as scenario files yet, one
 # name per line. `regress` reports them instead of failing on them as orphans; each name leaves this
-# list when its scenario file arrives (see README).
-#
-# P2-4 round 7 (on main) waits for @ballpit-viz's delta 5. No log here was re-blessed.
-#
-# New spike scenarios of round 7, with no scenario file yet:
-p2-4-adminwedge     # VC6R-3: a forked admin entry after the lock; admin validity is pure
-p2-4-capfake        # VC6R-1: a capped precommit whose polka names an id that exists nowhere
-p2-4-fakeadmin      # VC6R-4: a faker forcing a decision every 2 s with a no-op admin entry
-#
-# Changed by round 7: the fixture no longer loses 9's prevote for good (beyond t = 1), and the run
-# gains a PF-1 control and liveness checks. The round-6 mirror is removed until re-mirrored; restore
-# it from 7ac2de9:tools/session-sim/scenarios/p2-4-review/p2-4-prevotefork.toml.
-p2-4-prevotefork
+# list when its scenario file arrives (see README). Empty: every committed log has its scenario,
+# apart from the spike's property tests in not-scenarios.txt (main de3dbf9, P2-4 round 7).
