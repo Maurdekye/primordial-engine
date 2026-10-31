@@ -1,5 +1,5 @@
 # pe-session-sim regress at 7646329 (main 5ba3eab + f05324f, P2-4 round 6.2), Linux: WSL2 6.6.87.2-microsoft-standard-WSL2 x86_64, Ubuntu glibc 2.39, rustc 1.99.0 (pinned), release (built from a fresh git archive of 7646329, touched sources), --jobs 2, 2026-10-31
-regress: 89 scenarios from /home/<user>/pe-p2-9/tools/session-sim/scenarios, logs to /home/<user>/pe-p2-9/target/session-sim, expected /home/<user>/pe-p2-9/spikes/out/session-sim
+regress: 89 scenarios from <home>/pe-p2-9/tools/session-sim/scenarios, logs to <home>/pe-p2-9/target/session-sim, expected <home>/pe-p2-9/spikes/out/session-sim
 == backdate: identical
 RESULT backdate part 1 world 1: frames 0..600 digests m1=154a1f2b17360d56 m2=154a1f2b17360d56 m3=154a1f2b17360d56 | offline replay 154a1f2b17360d56 | ALL EQUAL
 RESULT backdate part 2: removed from the session (cut, from frame): {3: (102, 1)}
