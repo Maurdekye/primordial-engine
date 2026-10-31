@@ -1,0 +1,200 @@
+   Compiling pe-session v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\app\crates\pe-session)
+   Compiling pe-app v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\app\crates\pe-app)
+    Finished `release` profile [optimized] target(s) in 21.88s
+     Running unittests src\main.rs (target\release\deps\pe_app-d70fcba31a3205c2.exe)
+
+running 6 tests
+test node::tests::timestamps_wrap_and_buckets_expire_by_time ... ok
+test node::tests::loss_from_sequence_gaps ... ok
+test node::tests::queue_delay_over_the_base ... ok
+test wire::tests::roundtrip_and_relay ... ok
+test wire::tests::rejects ... ok
+test wire::tests::packing_respects_the_mtu ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (target\release\deps\pe_mcp-28feff4581a67a96.exe)
+
+running 5 tests
+test auth::tests::issue_authenticate_revoke ... ok
+test auth::tests::revoke_all_ends_the_session ... ok
+test auth::tests::secrets_are_distinct_and_redacted ... ok
+test auth::tests::wrong_malformed_and_other_tokens ... ok
+test auth::tests::idle_ttl_expires_and_use_refreshes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.40s
+
+     Running unittests src\main.rs (target\release\deps\pe_mcp-13f650c384f6c99d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\http.rs (target\release\deps\http-f025d8c40ce438bc.exe)
+
+running 9 tests
+test binds_loopback_only ... ok
+test preflight_gets_no_cors ... ok
+test ipv6_loopback_when_available ... ok
+test foreign_host_is_refused ... ok
+test revoked_token_stops_working ... ok
+test valid_request_is_served ... ok
+test origin_is_refused_unless_allowed ... ok
+test scopes_come_from_the_token ... ok
+test token_is_required_and_checked ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\live_guard.rs (target\release\deps\live_guard-b927b1ce1adf4109.exe)
+
+running 2 tests
+test live_peer_refuses_scenario_tools_before_and_after_a_fault ... ok
+test a_panic_in_tick_is_reported_by_faulted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\pipe.rs (target\release\deps\pipe-54a60f4d38fe8887.exe)
+
+running 7 tests
+test wrong_or_malformed_handshake_is_refused ... ok
+test pipe_dacl_admits_only_the_current_user ... ok
+test handshake_then_mcp_as_the_tokens_principal ... ok
+test revocation_takes_effect_on_an_open_connection ... ok
+test two_principals_share_one_peer ... ok
+pe-mcp: pipe \\.\pipe\primordial-mcp-103224-64c63f55c96d4418d6ce0c01
+test bridge_without_environment_fails ... ok
+test serve_launches_bridge_end_to_end ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests\tools.rs (target\release\deps\tools-3b5c785f19532ba4.exe)
+
+running 24 tests
+test interaction_status_errors_and_isolation ... ok
+test scenario_fault_arguments ... ok
+test schema_file_is_current ... ok
+test propose_validates_arguments ... ok
+test resources_list_and_read ... ok
+test forbidden_without_scope ... ok
+test scenario_load_validates_and_resets ... ok
+test engine_panic_faults_the_session_until_reload ... ok
+test driven_peer_crash ... ok
+test world_get_object_and_errors ... ok
+test unknown_tool_is_a_protocol_error ... ok
+test tools_list_follows_scopes ... ok
+test world_state_resource_holds_every_object ... ok
+test world_get_state_pages_and_errors ... ok
+test hands_in_the_ball_pit ... ok
+test session_info_reports_principal_and_session ... ok
+test propose_touch_resolves_and_moves_the_object ... ok
+test rate_limit_on_unresolved_interactions ... ok
+test world_hashes_range ... ok
+test crash_pause_eviction_and_recovery ... ok
+test same_scenario_same_run ... ok
+test world_step_arguments ... ok
+test partition_heal_and_slow_links_stay_consistent ... ok
+test claims_reject_contending_touches ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+     Running unittests src\lib.rs (target\release\deps\pe_session-568071dc733cd7ac.exe)
+
+running 22 tests
+test provenance::tests::import_policy ... ok
+test session::replay::round3_tests::change_attests_round_trip ... ok
+test session::replay::round3_tests::an_epoch_at_the_flag_bit_is_not_encoded - should panic ... ok
+test session::replay::round3_tests::wide_role_ids_are_refused ... ok
+test session::replay::round3_tests::join_with_too_many_attests_is_refused ... ok
+test session::replay::round3_tests::large_polka_round_trips ... ok
+test session::transfer::tests::state_messages_round_trip ... ok
+test provenance::tests::fork_proof_convinces_a_third_party ... ok
+test session::transfer::tests::tables_reader_refuses_non_canonical_bytes ... ok
+test session::transfer::tests::tables_round_trip ... ok
+test session::replay::round3_tests::signed_join_and_branch_fetch_round_trip ... ok
+test provenance::tests::a_b_c_a ... ok
+test peer::tests::authoring_rules ... ok
+test sign::tests::facts_are_bound_to_their_kind_and_session ... ok
+test peer::tests::the_core_verifies_entries ... ok
+test sign::tests::replicas_drop_bad_signatures_and_relay_good_ones ... ok
+test sign::tests::sign_and_verify ... ok
+test provenance::tests::epochs_from_certificates ... ok
+test sign::tests::fact_signatures ... ok
+test session::store::tests::a_keyframe_kept_past_a_compaction_is_refused ... ok
+test peer::tests::two_cores_confirm_and_agree ... ok
+test session::seam::tests::static_membership_keeps_its_members ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\compaction.rs (target\release\deps\compaction-9b65253d79954d9d.exe)
+
+running 1 test
+test compaction_is_invisible_to_the_simulation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\engine_store.rs (target\release\deps\engine_store-6881ec662c0de71d.exe)
+
+running 3 tests
+test object_indices_are_never_reused ... ok
+test the_store_survives_its_serialization ... ok
+test claims_and_cooldowns_roll_back_with_the_keyframe ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\hand_pacing.rs (target\release\deps\hand_pacing-0b8218ae312c023e.exe)
+
+running 1 test
+test a_hand_never_stops_while_its_author_keeps_sending_through_every_level_change ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\physics_check_hash.rs (target\release\deps\physics_check_hash-74ec92ee8e1266fc.exe)
+
+running 2 tests
+test check_hash_after_repeated_rollbacks_across_a_destroy ... ok
+test check_hash_is_the_same_after_a_destroy_whichever_path ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\review_p23.rs (target\release\deps\review_p23-4a0d8bdc17418880.exe)
+
+running 7 tests
+test p23_1_trailing_bytes_are_refused ... ok
+test p23_1_a_batch_holds_no_batch ... ok
+test p23_1_hops_nest_at_most_max_hop_nesting_deep ... ok
+test p23_4_requests_from_outside_the_audience_are_not_answered ... ok
+test p23_4_one_state_per_requester_per_interval_and_answers_are_repairs ... ok
+test p23_3_a_joiner_takes_one_answer_per_request_and_only_from_that_donor ... ok
+test p23_3_a_running_member_refuses_an_old_state_it_never_asked_for ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests\state_transfer.rs (target\release\deps\state_transfer-3ffeaef4f1cab954.exe)
+
+running 2 tests
+test a_joiner_refuses_what_a_quorum_did_not_vouch_for ... ok
+test a_joiner_restores_a_quorum_vouched_state_and_keeps_step ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests\validity.rs (target\release\deps\validity-13b5679d639d4bcb.exe)
+
+running 3 tests
+test a_touch_carries_only_its_own_object ... ok
+test a_touch_on_another_members_held_object_does_not_place_it ... ok
+test only_grabs_claim_and_only_grabs_are_refused ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pe_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pe_session
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

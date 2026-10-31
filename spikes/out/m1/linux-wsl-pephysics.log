@@ -150,7 +150,7 @@ core v1.0.229
    Compiling ident_case v1.0.1
    Compiling tower-service v0.3.3
    Compiling darling_core v0.24.1
-   Compiling pe-core v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-core)
+   Compiling pe-core v0.1.0 (<home>/pe-app-glibc/crates/pe-core)
    Compiling http-body-util v0.1.5
    Compiling curve25519-dalek-derive v0.1.1
    Compiling serde_json v1.0.154
@@ -166,7 +166,7 @@ core v1.0.229
    Compiling rand_core v0.10.1
    Compiling ed25519 v3.0.0
    Compiling darling_macro v0.24.1
-   Compiling pe-sim v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-sim)
+   Compiling pe-sim v0.1.0 (<home>/pe-app-glibc/crates/pe-sim)
    Compiling sha2 v0.11.1
    Compiling ref-cast-impl v1.0.27
    Compiling serde_derive_internals v0.30.0
@@ -174,14 +174,14 @@ core v1.0.229
    Compiling sync_wrapper v1.0.2
    Compiling thiserror v2.0.21
    Compiling atomic-waker v1.1.2
-   Compiling box3d-rust v0.5.0 (/home/<user>/pe-app-glibc/crates/box3d-fork)
+   Compiling box3d-rust v0.5.0 (<home>/pe-app-glibc/crates/box3d-fork)
    Compiling httpdate v1.0.3
    Compiling smallvec v1.16.4
    Compiling once_cell v1.21.4
    Compiling tracing-core v0.1.36
    Compiling hyper v1.12.0
    Compiling schemars_derive v1.2.3
-   Compiling pe-physics v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-physics)
+   Compiling pe-physics v0.1.0 (<home>/pe-app-glibc/crates/pe-physics)
    Compiling ed25519-dalek v3.0.0
    Compiling chrono v0.4.45
    Compiling darling v0.24.1
@@ -202,7 +202,7 @@ core v1.0.229
    Compiling rand v0.10.3
    Compiling uuid v1.20.0
    Compiling rmcp-macros v3.8.0
-   Compiling pe-session v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-session)
+   Compiling pe-session v0.1.0 (<home>/pe-app-glibc/crates/pe-session)
    Compiling hyper-util v0.1.20
    Compiling tower v0.5.3
    Compiling sse-stream v0.2.6
@@ -214,9 +214,9 @@ core v1.0.229
    Compiling base64 v0.23.1
    Compiling percent-encoding v2.3.2
    Compiling axum v0.8.4
-   Compiling pe-session-harness v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-session-harness)
-   Compiling pe-mcp v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-mcp)
-   Compiling pe-app v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-app)
+   Compiling pe-session-harness v0.1.0 (<home>/pe-app-glibc/crates/pe-session-harness)
+   Compiling pe-mcp v0.1.0 (<home>/pe-app-glibc/crates/pe-mcp)
+   Compiling pe-app v0.1.0 (<home>/pe-app-glibc/crates/pe-app)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 44.53s
      Running unittests src/main.rs (target/debug/deps/pe_app-794e270c2e4b5c3b)
      Running unittests src/lib.rs (target/debug/deps/pe_mcp-5194f62bd90e5523)

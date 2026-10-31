@@ -140,14 +140,14 @@ piling serde_json v1.0.154
    Compiling subtle v2.6.1
    Compiling mime v0.3.17
    Compiling hashbrown v0.17.1
-   Compiling box3d-rust v0.5.0 (/home/<user>/pe-app-glibc/crates/box3d-fork)
+   Compiling box3d-rust v0.5.0 (<home>/pe-app-glibc/crates/box3d-fork)
    Compiling rmcp v3.8.0
    Compiling equivalent v1.0.3
    Compiling dyn-clone v1.0.20
    Compiling schemars v1.2.3
    Compiling indexmap v2.14.2
    Compiling axum-core v0.5.2
-   Compiling pe-sim-core v0.0.1 (/home/<user>/pe-app-glibc/spikes/sim-core)
+   Compiling pe-sim-core v0.0.1 (<home>/pe-app-glibc/spikes/sim-core)
    Compiling tracing v0.1.44
    Compiling futures v0.3.34
    Compiling rand v0.10.3
@@ -164,7 +164,7 @@ piling serde_json v1.0.154
    Compiling percent-encoding v2.3.2
    Compiling pastey v0.2.3
    Compiling axum v0.8.4
-   Compiling pe-spike-session-sim v0.0.1 (/home/<user>/pe-app-glibc/spikes/session-sim)
+   Compiling pe-spike-session-sim v0.0.1 (<home>/pe-app-glibc/spikes/session-sim)
    Compiling typenum v1.20.1
    Compiling hybrid-array v0.4.15
    Compiling semver v1.0.28
@@ -179,8 +179,8 @@ piling serde_json v1.0.154
    Compiling ed25519 v3.0.0
    Compiling sha2 v0.11.1
    Compiling ed25519-dalek v3.0.0
-   Compiling pe-mcp v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-mcp)
-   Compiling pe-app v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-app)
+   Compiling pe-mcp v0.1.0 (<home>/pe-app-glibc/crates/pe-mcp)
+   Compiling pe-app v0.1.0 (<home>/pe-app-glibc/crates/pe-app)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 46.68s
      Running unittests src/main.rs (target/debug/deps/pe_app-61a35d5f6218f35e)
      Running unittests src/lib.rs (target/debug/deps/pe_mcp-c5da21f5bb789793)
