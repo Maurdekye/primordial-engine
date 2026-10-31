@@ -1,0 +1,45 @@
+description = """
+P2-4 review round 5, VC4R-3 (a halt): fakeref, but 9 stays connected and grows slower (a message \
+it sends at t >= 2 s arrives about 2t - 2 s), while from 2 s 8 (which takes no part in view \
+changes) claims in its acks 5 more of 9's entries than anyone holds. With the fix off the claim \
+shields 9 for good; with it, it spares 9 only a silence limit and 9 is demoted. Part 1 runs with \
+VC4R-3's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 16000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4, 5, 8, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 900, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[world.1.member.8]
+withhold_vc = true
+
+[[fault]]
+from = 9
+after_ms = 2000
+delay_ms = 30
+delay_grows = true
+
+[[byzantine]]
+kind = "fake_refs"
+member = 8
+from_ms = 2000
+of = 9
+n = 5
+
+[[part]]
+world.1.fixes_off = ["VC4R3"]
+report = [
+    { kind = "line", text = "  9 removed: {removed_s@1:9}" },
+    { kind = "before_fix", honest = [1, 2, 3, 4, 5], label = "slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds)", fix = "VC4R-3's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3, 4, 5], label = "slowref" },
+    { kind = "check", case = "slowref", label = "slowref", at = 1, target = 9, honest = [1, 2, 3, 4, 5] },
+    { kind = "verdict", honest = [1, 2, 3, 4, 5], label = "slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds)" },
+]
