@@ -157,3 +157,72 @@ fn trailing_bytes_refused() {
     bytes.push(0);
     assert!(!restore(&bytes));
 }
+
+/// A live world's image equals the image of a world restored from it: freed slots (destroyed
+/// bodies of every shape type, a destroyed joint) carry nothing the reader does not restore.
+/// Otherwise a peer that never restored since a destroy and one that did would save different
+/// bytes for the same state, and their check hashes would differ (P2-3, world-chunks' r14
+/// dumps: a destroyed sphere's freed slot kept its shape type).
+#[test]
+fn live_images_are_canonical() {
+    use crate::body::destroy_body;
+    use crate::geometry::Capsule;
+    use crate::joint::destroy_joint;
+    use crate::shape::create_capsule_shape;
+    let def = default_world_def();
+    let mut world = World::new(&def);
+    let ground = create_body(&mut world, &default_body_def());
+    create_hull_shape(&mut world, ground, &default_shape_def(), &make_box_hull(10.0, 1.0, 10.0).base);
+    let mut bodies = Vec::new();
+    for i in 0..9 {
+        let mut body_def = default_body_def();
+        body_def.type_ = BodyType::Dynamic;
+        body_def.position.x = (1.2 * (i % 3) as f32) as _;
+        body_def.position.y = (1.5 + 1.1 * (i / 3) as f32) as _;
+        let body = create_body(&mut world, &body_def);
+        let shape = default_shape_def();
+        match i % 3 {
+            0 => {
+                create_sphere_shape(&mut world, body, &shape, &Sphere { center: VEC3_ZERO, radius: 0.5 });
+            }
+            1 => {
+                create_hull_shape(&mut world, body, &shape, &make_box_hull(0.4, 0.4, 0.4).base);
+            }
+            _ => {
+                let capsule = Capsule { center1: Vec3 { x: -0.3, y: 0.0, z: 0.0 }, center2: Vec3 { x: 0.3, y: 0.0, z: 0.0 }, radius: 0.3 };
+                create_capsule_shape(&mut world, body, &shape, &capsule);
+            }
+        }
+        bodies.push(body);
+    }
+    let mut joint = default_spherical_joint_def();
+    joint.base.body_id_a = bodies[3];
+    joint.base.body_id_b = bodies[4];
+    let joint = create_spherical_joint(&mut world, &joint);
+    let canonical = |world: &World, when: &str| {
+        let (bytes, registry) = image(world);
+        let mut slots = registry.to_slots();
+        let mut shell = World::new(&def);
+        assert!(deserialize_into_shell(&bytes, &mut shell, &mut slots), "{when}: restore");
+        let again = image(&shell).0;
+        let first = bytes.iter().zip(&again).position(|(a, b)| a != b);
+        assert!(bytes == again, "{when}: live image not canonical, first differing byte {first:?} of {}", bytes.len());
+    };
+    for _ in 0..120 {
+        world.step(1.0 / 60.0, 4);
+    }
+    canonical(&world, "settled");
+    // A resting sphere, hull and capsule, then the joint, each destroyed and stepped past.
+    for (k, &b) in [bodies[0], bodies[1], bodies[2]].iter().enumerate() {
+        destroy_body(&mut world, b);
+        canonical(&world, &format!("destroy {k}"));
+        world.step(1.0 / 60.0, 4);
+        canonical(&world, &format!("destroy {k}, then a step"));
+    }
+    destroy_joint(&mut world, joint, true);
+    canonical(&world, "joint destroyed");
+    for _ in 0..30 {
+        world.step(1.0 / 60.0, 4);
+    }
+    canonical(&world, "30 steps later");
+}
