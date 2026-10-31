@@ -114,3 +114,17 @@ fn ownership_entries_round_trip_and_an_oversized_one_is_refused() {
     w.sig(&[0; 64]); // the entry's signature
     assert_eq!(decode_msg(&w.0), None);
 }
+
+/// Review OWNP-1 (the reviewer's probe): a Target::Owner rule with Rel::Named(n) tests the joiner, as
+/// the spike does (`n == j`), not whether member n holds an owner key.
+#[test]
+fn a_named_owner_rule_tests_the_joiner() {
+    let mut s = world(&[2]);
+    assert_eq!(s.key_of(2), Some(k(2)));
+    s.vcm.join_rules = JoinRules { rules: vec![JoinRule { target: Target::Owner, all: false, rel: Rel::Named(2), role: Some(ADMIN) }], fallback: Some(GUEST) };
+    let exp = 1000;
+    let mk = |role| Change { epoch: s.vcm.epoch, add: vec![9], add_roles: vec![role], add_attests: vec![vec![]], add_reqs: vec![(test_join_sig(9, &s.session(), exp), exp)], boundary: 10, ..Default::default() };
+    let (ca, cg) = (mk(ADMIN), mk(GUEST));
+    // Joiner 9 is not member 2: the fallback, GUEST.
+    assert_eq!((s.change_valid(&ca), s.change_valid(&cg)), (Some(false), Some(true)));
+}

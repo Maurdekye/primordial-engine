@@ -2575,6 +2575,10 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
     directory maps it to exactly one session id, which `fact_message` binds into every signature.
   * `key_of(member)` reads the member's key from the session's key directory; in production the join
     certificate carries the player's identity key, signed by it [I]. A member with no key owns nothing.
+    Validity (row 0, the owner join target, Q27) depends on that key, so production must take it from
+    logged, signed state (the join request a change carries, or an earlier entry), never from a local
+    directory: replicas whose directories differed would disagree on a change's validity (review
+    OWNP-2; liveness, since decisions stay agreed).
   * The 22.10 lease is out of scope: commits prove ownership history, not trade.
 * **Valid, attested, counting.**
   * **Valid:** a certificate's signatures satisfy the rule of the owner set at its parent. That is a

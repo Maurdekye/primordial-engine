@@ -839,10 +839,11 @@ impl WorldSim {
             _ => attests.iter().any(|a| a.rel == rel && a.with == g && attest_ok(&self.keys.public, a, j, self.world_id)),
         };
         // An owner is a key (12.5), who need not be a member: a relationship counts with an owner if the
-        // member it names holds that owner's key.
+        // member it names holds that owner's key. `Named(n)` names the joiner, as for every target
+        // (review OWNP-1).
         let has_owner = |rel: Rel, o: Key| match rel {
             Rel::Is => jk == Some(o),
-            Rel::Named(n) => self.key_of(n) == Some(o),
+            Rel::Named(n) => n == j,
             _ => attests.iter().any(|a| a.rel == rel && self.key_of(a.with) == Some(o) && attest_ok(&self.keys.public, a, j, self.world_id)),
         };
         for rule in &self.vcm.join_rules.rules {
