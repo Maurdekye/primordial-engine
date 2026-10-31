@@ -1307,3 +1307,73 @@ fn ownv7_attestations_forward_and_missing_parents() {
     assert_eq!(fresh.clone().insert(certs[1].clone()), Err(OwnError::MissingParent));
     assert_eq!(fresh.missing_parents(&certs[1]), [certs[0].id()]);
 }
+
+// ---- design-reviewer round 7 (OWNW-*), as asserting tests; they fail at 1c5979c ----
+
+/// OWNW-1: a stolen recovery key with a full quota can't get an honest owner's gossiped proposal
+/// dropped by sending a copy with its own signature, and no merged signature is lost.
+#[test]
+fn rv7_ownw1_cosign_veto() {
+    for rule in [SignRule::All, SignRule::Any] {
+        let mut b = Book::new(Cert::genesis(&[S, B], rule, 1)).unwrap();
+        commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+        let h1 = head(&b);
+        commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B], 2).unwrap();
+        let h2 = head(&b);
+        for i in 0..UNATTESTED_PER_KEY as u32 + 4 {
+            let _ = b.insert(next(&b, h1, Change::StartRecover { owner: S, new_key: 900_000 + i }, &[R]));
+        }
+        let p = next(&b, h2, Change::Add { key: X }, &[S]);
+        let pid = p.id();
+        let _ = b.insert(p.clone());
+        let _ = b.insert(Cert { sigs: vec![], ..p.clone() }.signed(&[R]));
+        let held = |b: &Book| b.cert(pid).or_else(|| b.inner.parked.get(&pid)).map(|c| c.signers());
+        assert!(held(&b).is_some_and(|s| s.contains(&S)), "{rule:?}: S's proposal dropped");
+        let _ = b.insert(Cert { sigs: vec![], ..p.clone() }.signed(&[B]));
+        assert!(held(&b).is_some_and(|s| s.contains(&S) && s.contains(&B)), "{rule:?}: a merged signature was lost");
+    }
+}
+
+/// OWNW-3: what others do never takes away an honest owner's remaining share: S keeps its 28.
+#[test]
+fn rv7_ownw3_world_cap_overrides_shares() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let mut f = 1u64;
+    for i in 0..100u32 {
+        commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(20_000 + i) }, &[S], f).unwrap();
+        f += 1;
+    }
+    let mut bu = 0;
+    while commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(30_000 + bu) }, &[B], f).is_ok() {
+        bu += 1;
+        f += 1;
+    }
+    commit(&mut b, Change::Add { key: C }, &[S, B], f).unwrap();
+    f += 1;
+    let mut cu = 0u32;
+    while commit(&mut b, Change::SetRecovery { owner: C, recovery: Some(40_000 + cu) }, &[C], f).is_ok() {
+        cu += 1;
+        f += 1;
+    }
+    // S had 28 left before C joined; joining took at most its gift, signed by S itself.
+    let mut su = 0;
+    while commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(50_000 + su) }, &[S], f).is_ok() {
+        su += 1;
+        f += 1;
+    }
+    assert!(su >= 18, "S could make only {su} more after C joined (B used {bu}, C {cu})");
+}
+
+/// OWNW-4: a batch judges its unattested certificates against the heads its attested ones made.
+#[test]
+fn rv7_ownw4_batch_uses_old_head_keys() {
+    let mut src = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let b0 = src.clone();
+    commit(&mut src, Change::Add { key: C }, &[S, B], 1).unwrap();
+    let c1 = src.cert(head(&src)).unwrap().clone();
+    let x = next(&src, c1.id(), Change::SetRecovery { owner: C, recovery: Some(R) }, &[C]);
+    let mut fresh = b0.clone();
+    let refused = fresh.insert_attested(&[c1.clone(), x.clone()], &[attest_of(&b0, &c1, L1, 1)], &sessions());
+    assert!(refused.is_empty(), "{refused:?}");
+    assert!(fresh.cert(x.id()).is_some());
+}
