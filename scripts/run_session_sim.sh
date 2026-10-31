@@ -9,7 +9,8 @@
 # <dir>/session-sim (or <dir>/session-sim-pe) instead of spikes/out (both used by scripts/run_matrix.sh).
 set -u
 cd "$(dirname "$0")/.."
-if [ "${1:-}" = --pe ]; then
+pe=no; [ "${1:-}" = --pe ] && pe=yes
+if [ $pe = yes ]; then
   [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-session-harness || exit 1
   B=${PE_BIN:-target/release}/pe-session-harness
   O=${PE_OUT:-spikes/out}/session-sim-pe
@@ -18,8 +19,11 @@ else
   B=${PE_BIN:-target/release}/pe-spike-session-sim
   O=${PE_OUT:-spikes/out}/session-sim
 fi
-mkdir -p $O
-run() { local name=$1; shift; "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }
+mkdir -p "$O" || exit 1
+# Every log this run must write: a missing log, or one without a RESULT line, fails the run (a log
+# that could not be written must never pass as ALL EQUAL; chunks-reviewer, P2-3 + D58 review).
+expect=()
+run() { local name=$1; shift; expect+=("$name"); "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }
 run c1 c1
 run c2 c2
 run state-frame state-frame
@@ -28,17 +32,17 @@ run loss loss
 run ties ties
 run claims claims
 # P2-3 S4: grab races under D72 (only grabs claim; --pe only, the spike core has the earlier rule).
-if [ "${1:-}" = --pe ]; then run grabrace grabrace; fi
+if [ $pe = yes ]; then run grabrace grabrace; fi
 # P2-3 S5: a joiner catches up by state transfer (design 9.5, P22S-1; --pe only).
-if [ "${1:-}" = --pe ]; then run p2-3-statejoin statejoin; fi
+if [ $pe = yes ]; then run p2-3-statejoin statejoin; fi
 run backdate backdate
 for v in ok abort reject throttle forge late crash chain chain-epoch; do run r14-$v r14 $v; done
 for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done
 # P2-5 controls, outside the pass/fail check below (both are expected NOT CONSERVED): the forge
 # attacks with provenance checks off, and the double spend that provenance chains cannot stop.
-mkdir -p $O/p2-5-controls
+mkdir -p "$O/p2-5-controls" || exit 1
 for c in "r14-forge-no-provenance r14 forge --no-provenance" "r14-doublespend r14 doublespend"; do
-  set -- $c; name=$1; shift; "$B" "$@" > "$O/p2-5-controls/$name.log" 2>&1; echo "== control $name"; grep "^RESULT" "$O/p2-5-controls/$name.log"
+  set -- $c; name=$1; shift; expect+=("p2-5-controls/$name"); "$B" "$@" > "$O/p2-5-controls/$name.log" 2>&1; echo "== control $name"; grep "^RESULT" "$O/p2-5-controls/$name.log"
 done
 run ballpit-60hz ballpit
 run ballpit-60hz-noloss ballpit --loss 0
@@ -70,18 +74,28 @@ for v in fakemix adminfork; do run p2-4-$v $v; done
 # P2-4 review round 6, fixed in round 7 (design 10.8): three halts by one faulty member; each
 # repro also reports its run with the fix switched off.
 for v in capfake fakeadmin adminwedge; do run p2-4-$v $v; done
+# P2-4 review rounds 7-8, fixed in round 8 (design 10.8): admin validity along the entry's own
+# ancestry, a capper's fetch budget at the slow-member allowance, and a forker's prevotes in polkas.
+# Spike only: pe-session has round 7, not round 8, yet (tools/session-sim/scenarios/pe-pending.txt).
+if [ $pe = no ]; then for v in voidfork slowcapper voiddeep plainfork pfsilent; do run p2-4-$v $v; done; fi
 # The randomized Byzantine schedule generator (not a scenario file): a fixed seed range, checked
 # against the written invariants (spikes/out/session-sim/INVARIANTS.md). A larger run is separate.
-"$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"
+expect+=(randsched); "$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"
 # Review VC-1, a control outside the check below (expected to fork): three of six collude, above the
 # bound of t(6) = 1 faulty member.
-mkdir -p $O/p2-4-controls
-"$B" onesided > "$O/p2-4-controls/onesided.log" 2>&1; echo "== control onesided"; grep "^RESULT" "$O/p2-4-controls/onesided.log"
+mkdir -p "$O/p2-4-controls" || exit 1
+expect+=(p2-4-controls/onesided); "$B" onesided > "$O/p2-4-controls/onesided.log" 2>&1; echo "== control onesided"; grep "^RESULT" "$O/p2-4-controls/onesided.log"
 run p2-4-vcscale-64 vcscale --members 64 --silent 2
 run p2-4-vcscale-256 vcscale --members 256 --silent 2 --no-heads
 # Fail on any fork, replay mismatch, panic, false check or lost/duplicated object (reviews NEW-2, NEW-7).
-bad=$(grep -lE "MISMATCH|DIFFER|FAIL|PANIC|panicked|NOT CONSERVED" $O/*.log)
-falsechecks=$(grep -hoE "checks ok [0-9]+ bad [1-9][0-9]*|nonfinite [1-9][0-9]*" $O/*.log | head -5)
+missing=""
+for n in "${expect[@]}"; do grep -q "^RESULT" "$O/$n.log" 2>/dev/null || missing="$missing $n"; done
+if [ -n "$missing" ]; then
+  echo "SUMMARY: FAILED: missing or empty logs (no RESULT line):$missing"
+  exit 1
+fi
+bad=$(grep -lE "MISMATCH|DIFFER|FAIL|PANIC|panicked|NOT CONSERVED" "$O"/*.log)
+falsechecks=$(grep -hoE "checks ok [0-9]+ bad [1-9][0-9]*|nonfinite [1-9][0-9]*" "$O"/*.log | head -5)
 if [ -n "$bad$falsechecks" ]; then
   echo "SUMMARY: FAILED: $bad $falsechecks"
   exit 1
