@@ -163,8 +163,8 @@ pub enum Payload {
     /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
     /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
     /// target's chain for the cut, never to approve it. The view change commits it in order with
-    /// every other membership change. Its author's peer issues it again in the next epoch while it
-    /// still may and the target is still a member.
+    /// every other membership change. Like every admin entry it stays pending across epochs until a
+    /// decision applies or refuses it; `epoch` is the first epoch whose change may include it.
     Kick { epoch: u32, target: MemberId },
     /// Give `member` the role `role`, for the view change that ends `epoch` (ROLES permission).
     /// Refused if it would leave the session without an admin.
@@ -1534,8 +1534,6 @@ pub struct WorldSim {
     pub owners: BTreeSet<MemberId>,
     /// This epoch's admin entries from members allowed to make them, as held.
     admin_pending: BTreeSet<EntryId>,
-    /// My kicks not carried out yet: target -> the epoch I last issued it in.
-    my_kicks: BTreeMap<MemberId, u32>,
     /// Admin entries as the decided changes judged them: applied, or refused.
     pub admin_outcomes: BTreeMap<EntryId, bool>,
     /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
@@ -1547,6 +1545,8 @@ pub struct WorldSim {
     pub fake_ack_epoch: Option<u32>,
     /// VC-5: per member, my present when its acks first declared an epoch newer than mine.
     newer_since: BTreeMap<MemberId, u64>,
+    /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
+    adopting: bool,
     /// Values decided by a quorum of precommits that this replica holds no proposal for:
     /// (member to ask, value), and every pair asked so far.
     value_wants: Vec<(MemberId, u64)>,
@@ -1685,12 +1685,12 @@ impl WorldSim {
             join_attests: BTreeMap::new(),
             owners: BTreeSet::new(),
             admin_pending: BTreeSet::new(),
-            my_kicks: BTreeMap::new(),
             admin_outcomes: BTreeMap::new(),
             closed_at: None,
             fixes_off: 0,
             fake_ack_epoch: None,
             newer_since: BTreeMap::new(),
+            adopting: false,
             value_wants: Vec::new(),
             value_asked: BTreeSet::new(),
             wants: Vec::new(),
@@ -2090,6 +2090,8 @@ impl WorldSim {
     /// * any other entry is void if stamped at or before a horizon its author declared earlier.
     fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
+        // D80: an admin entry stays pending across epochs until a decision judges it.
+        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, epoch, .. } => {
@@ -2166,7 +2168,7 @@ impl WorldSim {
             | Payload::DefineRole { epoch, .. } => {
                 if epoch > self.epoch {
                     self.vc_later.entry(epoch).or_default().push(id);
-                } else if epoch == self.epoch {
+                } else if epoch == self.epoch || admin_entry {
                     self.record_vc(m, id, out);
                 }
             }
@@ -2211,6 +2213,9 @@ impl WorldSim {
     /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
     /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     fn recompute_conf(&mut self) {
+        if self.adopting {
+            return;
+        }
         let mut c = u64::MAX;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
@@ -2320,15 +2325,25 @@ impl WorldSim {
             return vec![];
         }
         let mut out = Vec::new();
-        // D80: a kick not carried out in its epoch is issued again while its author still may.
-        let mine = self.perms_of(self.me);
-        let again: Vec<MemberId> = self.my_kicks.iter().filter(|&(t, &ep)| ep < self.epoch && self.members.contains(t)).map(|(t, _)| *t).collect();
-        self.my_kicks.retain(|t, _| self.members.contains(t));
-        if mine & perm::KICK == 0 {
-            self.my_kicks.clear();
-        } else {
-            for t in again {
-                out.push(self.kick(t));
+        // D80: a pending kick outlives an epoch that did not carry it out: freeze its target again.
+        let kicks: Vec<(EntryId, MemberId, MemberId)> = self
+            .admin_pending
+            .iter()
+            .filter_map(|id| {
+                let e = self.entries.get(id)?;
+                match e.payload {
+                    Payload::Kick { target, .. } => Some((*id, e.member, target)),
+                    _ => None,
+                }
+            })
+            .collect();
+        for (id, author, t) in kicks {
+            if self.members.contains(&t) && self.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.withhold_vc {
+                if t == self.me {
+                    out.extend(self.self_kick_vote(id));
+                } else {
+                    out.extend(self.freeze_and_vote(t, 0, id));
+                }
             }
         }
         // A proof outlives an epoch that did not remove its member: vote again.
@@ -2586,7 +2601,7 @@ impl WorldSim {
                 }
             }
             Payload::Kick { target, .. } => {
-                if self.perms_of(m) & perm::KICK == 0 || target == m || !self.members.contains(&target) {
+                if self.admin_outcomes.contains_key(&id) || self.perms_of(m) & perm::KICK == 0 || target == m || !self.members.contains(&target) {
                     return;
                 }
                 self.admin_pending.insert(id);
@@ -2601,7 +2616,7 @@ impl WorldSim {
                 }
             }
             Payload::SetRole { .. } | Payload::DefineRole { .. } => {
-                if self.perms_of(m) & perm::ROLES != 0 {
+                if !self.admin_outcomes.contains_key(&id) && self.perms_of(m) & perm::ROLES != 0 {
                     self.admin_pending.insert(id);
                 }
             }
@@ -2632,7 +2647,6 @@ impl WorldSim {
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
     /// every replica judges it.
     pub fn kick(&mut self, target: MemberId) -> Entry {
-        self.my_kicks.insert(target, self.epoch);
         let epoch = self.epoch;
         self.author_vc(Payload::Kick { epoch, target })
     }
@@ -2990,7 +3004,7 @@ impl WorldSim {
                 _ => return Some(false),
             };
             let key = admin_key(&e);
-            if epoch != self.epoch || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
+            if epoch > self.epoch || self.admin_outcomes.contains_key(&id) || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
                 return Some(false);
             }
             prev = Some(key);
@@ -3382,8 +3396,22 @@ impl WorldSim {
             self.join_requests.remove(&j);
             self.join_attests.remove(&j);
         }
-        self.admin_pending.clear();
-        self.my_kicks.retain(|t, _| self.members.contains(t));
+        for (id, _) in &c.admin {
+            self.admin_pending.remove(id);
+        }
+        // A pending entry about a member no longer here can never apply: drop it unjudged.
+        let gone: Vec<EntryId> = self
+            .admin_pending
+            .iter()
+            .copied()
+            .filter(|id| match self.entries.get(id).map(|e| &e.payload) {
+                Some(Payload::Kick { target: x, .. }) | Some(Payload::SetRole { member: x, .. }) => !self.members.contains(x),
+                _ => false,
+            })
+            .collect();
+        for id in gone {
+            self.admin_pending.remove(&id);
+        }
         // Review VC-6: a decided epoch restarts the slowness and unbacked-epoch timers, so one
         // borderline view cannot vote again the instant a reset ends.
         self.lagging.clear();
@@ -3405,7 +3433,7 @@ impl WorldSim {
         self.epoch += 1;
         self.vc_log.push((self.epoch, self.now, round, removed.clone()));
         self.stats.view_changes += 1;
-        if removed.is_empty() && c.add.is_empty() {
+        if removed.is_empty() && c.add.is_empty() && c.admin.is_empty() {
             self.stats.resets += 1;
         }
         self.ev(format!(
@@ -3494,8 +3522,17 @@ impl WorldSim {
                 self.chain_state.remove(&x);
                 self.ack_hist.remove(&x);
             }
+            // Re-validating the cut's branch replays its acks, and each ack recomputes confirmation.
+            // Confirming then, before that branch's entries act, would confirm frames whose
+            // entries are about to change (found by fork9, review VC-2): settle first, confirm after.
+            let fixed = self.fixes_off & fix::VC2 == 0;
+            self.adopting = fixed;
+            if fixed {
+                self.reconcile(x);
+            }
             let mut out = Vec::new();
             self.extend_chain(x, &mut out);
+            self.adopting = false;
         }
         self.reconcile(x);
         if self.contiguous.get(&x).copied().unwrap_or(0) >= cut {
@@ -3503,6 +3540,9 @@ impl WorldSim {
             self.evicted.insert(x, (cut, v));
             self.cut_done.insert(x);
             self.ev(format!("member {x} evicted (epoch {}): its chain is cut at seq {cut}; it no longer counts from frame {v}", self.epoch));
+        }
+        if self.fixes_off & fix::VC2 == 0 {
+            self.recompute_conf();
         }
     }
 
