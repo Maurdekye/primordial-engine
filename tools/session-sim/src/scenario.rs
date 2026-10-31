@@ -106,17 +106,15 @@ fn all() -> String {
     "all".into()
 }
 
-/// An ownership certificate to publish: `change` is `add`, `leave`, `remove` (rule C only),
-/// `challenge`, `remove_dormant`, `finish_recover` (with `key`), `set_recovery` (`key` names the owner,
-/// `recovery` the key or none), `start_recover` (`key` the owner, `new_key` its replacement),
-/// `set_rule` (`rule`) or `merge`; `signers` sign it.
+/// An ownership certificate to publish: `change` is `add`, `leave`, `remove` (rule C only, with
+/// `key`), `set_recovery` (`key` names the owner, `recovery` its backup key or none), `set_rule`
+/// (`rule`) or `merge`; `signers` sign it (an owner's recovery key acts as the owner).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnerSpec {
     pub change: String,
     pub key: Option<u32>,
     pub recovery: Option<u32>,
-    pub new_key: Option<u32>,
     pub rule: Option<String>,
     pub signers: Vec<u32>,
 }
