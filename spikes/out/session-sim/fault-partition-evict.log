@@ -3,4 +3,4 @@ RESULT fault-partition-evict: m2 members {1, 2} evicted {3: (56, 112)} conf 707 
 RESULT fault-partition-evict (minority member 3): m3 world 1 conf 108 members {1, 2, 3} evicted {} -> OK
   m1: conf 705 frame 713 members {1, 2} evicted {3: (56, 112)} rollbacks 6 max depth 2 violations 0 equivocations 0 checks ok 24 bad 0
   m2: conf 707 frame 714 members {1, 2} evicted {3: (56, 112)} rollbacks 5 max depth 2 violations 0 equivocations 0 checks ok 24 bad 0
-RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=ad74fa3c37d3aafb m2=ad74fa3c37d3aafb | offline replay ad74fa3c37d3aafb | ALL EQUAL, NO FALSE CHECKS ; checks ok 48 bad 0
+RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=62b5a5f4db116cb5 m2=62b5a5f4db116cb5 | offline replay 62b5a5f4db116cb5 | ALL EQUAL, NO FALSE CHECKS ; checks ok 48 bad 0

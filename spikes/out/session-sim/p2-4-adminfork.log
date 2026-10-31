@@ -5,7 +5,7 @@ RESULT adminfork: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest
   m1: conf 705 frame 713 members {1, 2, 3} evicted {9: (56, 112)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 46 bad 0
   m2: conf 705 frame 713 members {1, 2, 3} evicted {9: (56, 112)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 46 bad 0
   m3: conf 705 frame 713 members {1, 2, 3} evicted {9: (56, 112)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 46 bad 0
-RESULT adminfork fixed=false: frames 0..712 honest m1=4325770138869e74 m2=4325770138869e74 m3=4325770138869e74 | offline replay 4325770138869e74 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT adminfork fixed=false: frames 0..712 honest m1=d7426cc2a50bf0be m2=d7426cc2a50bf0be m3=d7426cc2a50bf0be | offline replay d7426cc2a50bf0be | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
 REPRO adminfork fixed=true: 9 crashed true; 9 removed at 4.55 s; 3's role at m1 Some(1); m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 705 of frame 713
 RESULT adminfork: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 3) | epoch 1 at frame 240 (t=4.10 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
 RESULT adminfork: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 3) | epoch 1 at frame 241 (t=4.12 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
@@ -13,4 +13,4 @@ RESULT adminfork: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest
   m1: conf 705 frame 713 members {1, 2, 3} evicted {9: (56, 112)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 46 bad 0
   m2: conf 705 frame 713 members {1, 2, 3} evicted {9: (56, 112)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 46 bad 0
   m3: conf 705 frame 713 members {1, 2, 3} evicted {9: (56, 112)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 46 bad 0
-RESULT adminfork fixed=true: frames 0..712 honest m1=4325770138869e74 m2=4325770138869e74 m3=4325770138869e74 | offline replay 4325770138869e74 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT adminfork fixed=true: frames 0..712 honest m1=d7426cc2a50bf0be m2=d7426cc2a50bf0be m3=d7426cc2a50bf0be | offline replay d7426cc2a50bf0be | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
