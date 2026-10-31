@@ -2535,6 +2535,28 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   retired.
 * **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
   the genesis certificate [I]. (The spike uses the genesis certificate's id.)
+* **Signatures and ids in pe-session** (agreed with @world-chunks and @engine-architect, 2026-10-31)
+  [V: pe-session ownership unit tests and harness]:
+  * `Key` is the owner's 32-byte Ed25519 verifying key. A certificate's signatures are checked against
+    the keys it carries, with no directory, so backup keys and owners who left still verify.
+  * The id (`CertId`) is the `FactKind::OwnerCert` digest (BLAKE3, 256 bits) of the body's one
+    encoding: `world` 32 B, `seq` u32, the parents (u32 count, 32 B each), the change (a code, then
+    fixed-width fields). A 64-bit id would let copies with different signatures merge on a 2^32
+    birthday collision.
+  * Owner keys sign `"pe-own  " | id`: their own domain, with **no world and no session**. This is
+    the one exception to P23R-3's session-bound facts (`"pe-fact " | world | session_of(world)`): a
+    certificate belongs to the world, must verify in every session of it, and the id already covers
+    its `world`.
+  * The world id is the genesis certificate's id (its own `world` is zero) until the genesis document
+    exists [I]. The genesis nonce is 32 bytes, as SX-1's session nonce, and the genesis owners are
+    strictly increasing, so a genesis has one encoding and one id.
+  * An attestation is the `FactKind::OwnerCommit` fact (world, certificate, lineage, epoch, frame, the
+    committed key signatures), signed by a strict majority of the lineage's members and checked through
+    P2-4's epoch certificates (`EpochCerts::cert_ok`). A lineage is one session: the verifier's
+    directory maps it to exactly one session id, which `fact_message` binds into every signature.
+  * `key_of(member)` reads the member's key from the session's key directory; in production the join
+    certificate carries the player's identity key, signed by it [I]. A member with no key owns nothing.
+  * The 22.10 lease is out of scope: commits prove ownership history, not trade.
 * **Valid, attested, counting.**
   * **Valid:** a certificate's signatures satisfy the rule of the owner set at its parent. That is a
     function of its causal past alone (OWN-5). A certificate whose parent isn't held is refused, never
