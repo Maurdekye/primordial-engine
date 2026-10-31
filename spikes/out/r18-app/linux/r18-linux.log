@@ -1,4 +1,4 @@
-   Compiling pe-core v0.1.0 (/home/<user>/pe-app-glibc/crates/pe-core)
+   Compiling pe-core v0.1.0 (<home>/pe-app-glibc/crates/pe-core)
    Compiling box3d-rust v0.5.0 (/home/
 running 3 tests
 test wire::tests::rejects ... ok
