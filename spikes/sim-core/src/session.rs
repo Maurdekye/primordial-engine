@@ -278,6 +278,11 @@ pub const MAX_ATTESTS: usize = 64;
 /// quorum, so honest code never exceeds it; a decode of more is refused.
 pub const MAX_POLKA: usize = 512;
 
+/// Review P25E-3: the most epoch certificates a hop or an epoch proof carries; a decode of more is
+/// refused. The spike sends every certificate from the partner's genesis; production sends only the
+/// ones the receiver lacks [I].
+pub const MAX_EPOCH_CERTS: usize = 1024;
+
 /// Round 3 only (`fix::VC3R2` off, review VC3R-2): a member whose votes or caps resets overruled in
 /// this many of the last `STRIKE_EPOCHS` epochs is voted out.
 pub const STRIKES_OUT: usize = 3;
@@ -766,6 +771,7 @@ impl Wr {
     fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
     fn hop(&mut self, h: &Hop) {
         self.u32(h.src); self.u32(h.dest); self.u64(h.transfer); self.u64(h.via); self.u32(h.epoch); self.u64(h.frame);
+        assert!(h.certs.len() <= MAX_EPOCH_CERTS, "a hop carries at most {MAX_EPOCH_CERTS} epoch certificates");
         self.u32(h.certs.len() as u32); for c in &h.certs { self.epoch_cert(c) }
         self.cert(&h.cert)
     }
@@ -776,7 +782,10 @@ impl Wr {
         self.u32(c.proofs.len() as u32); for e in &c.proofs { self.entry(e) }
     }
     fn chain(&mut self, c: &[Hop]) { self.u32(c.len() as u32); for h in c { self.hop(h) } }
-    fn epoch_proof(&mut self, p: &EpochProof) { self.u32(p.epoch); self.u32(p.certs.len() as u32); for c in &p.certs { self.epoch_cert(c) } }
+    fn epoch_proof(&mut self, p: &EpochProof) {
+        assert!(p.certs.len() <= MAX_EPOCH_CERTS, "an epoch proof carries at most {MAX_EPOCH_CERTS} certificates");
+        self.u32(p.epoch); self.u32(p.certs.len() as u32); for c in &p.certs { self.epoch_cert(c) }
+    }
     fn attests(&mut self, a: &[Attest]) {
         assert!(a.len() <= MAX_ATTESTS, "{} attestations: at most {MAX_ATTESTS} travel", a.len());
         self.u32(a.len() as u32);
@@ -919,6 +928,7 @@ impl Rd<'_> {
     fn hop(&mut self) -> Option<Hop> {
         let (src, dest, transfer, via, epoch, frame) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?, self.u32()?, self.u64()?);
         let n = self.u32()? as usize;
+        if n > MAX_EPOCH_CERTS { return None; }
         let mut certs = Vec::with_capacity(n.min(64));
         for _ in 0..n { certs.push(self.epoch_cert()?) }
         Some(Hop { src, dest, transfer, via, epoch, frame, certs, cert: self.cert()? })
@@ -926,6 +936,7 @@ impl Rd<'_> {
     fn epoch_proof(&mut self) -> Option<EpochProof> {
         let epoch = self.u32()?;
         let n = self.u32()? as usize;
+        if n > MAX_EPOCH_CERTS { return None; }
         let mut certs = Vec::with_capacity(n.min(64));
         for _ in 0..n { certs.push(self.epoch_cert()?) }
         Some(EpochProof { epoch, certs })

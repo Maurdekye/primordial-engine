@@ -1796,11 +1796,12 @@ is fixed once the author's chain is contiguous up to it.
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
   * **Epoch-at-frame for R14 facts** (reviews VC-7, VC-8; P2-5's follow-up, branch
-    `p2/provenance-epochs`):
+    on main):
     * a hop's, departure's and verdict's frame and epoch are in the signed fact, so a third party's
       check of the epoch active at that frame no longer trusts the carrier's labels. A member signs
-      with the epoch of that frame in its own log, and signs again if a later decision moves the frame
-      into another epoch (22.7) [V provenance unit tests];
+      with the epoch of that frame in its own log [V provenance unit tests], and signs again if a later
+      decision moves the frame into another epoch (22.7) [read: the fact changes with `epoch_at(frame)`;
+      no test or scenario moves a boundary after signing];
     * `cert_at` and a third party count a majority the same way: over the epoch's members minus those
       the next epoch's certificate excluded by proof, which then travels with the fact (`EpochCerts::
       quorum`) [V unit test `excluded_members_leave_the_quorum`].
