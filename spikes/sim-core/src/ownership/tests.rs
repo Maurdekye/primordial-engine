@@ -830,3 +830,193 @@ fn owns12_session_builds_only_on_its_own_commits() {
     let c = next(&b, other, Change::Add { key: C }, &[S, B]);
     assert_eq!(b.commit_local(c, L1, 2), Err(OwnError::Stale));
 }
+
+/// Hostile input: mutated encodings of real certificates, decoded and inserted, then the view.
+#[test]
+fn reviewer_mutated_words_never_panic() {
+    let (b0, certs) = double_sale();
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut decoded = 0;
+    for round in 0..20_000 {
+        let c = &certs[round % certs.len()];
+        let mut w = c.to_words();
+        for _ in 0..1 + rnd() % 3 {
+            let i = (rnd() as usize) % w.len();
+            w[i] = match rnd() % 4 {
+                0 => rnd(),
+                1 => w[i] ^ (1 << (rnd() % 64)),
+                2 => u64::MAX,
+                _ => 0,
+            };
+        }
+        if let Some(c) = Cert::from_words(&w) {
+            decoded += 1;
+            let mut b = b0.clone();
+            let _ = b.insert(c);
+            let _ = b.view();
+            let _ = b.digest();
+        }
+    }
+    println!("REPRO fuzz: {decoded} of 20000 mutated encodings decoded; no panic");
+}
+
+// ---- review round 4 (OWNT-*), from @design-reviewer's repros (runs13/own4-reviewer-tests.patch),
+// asserting the safe outcome. Failing first at 7acc6e2: see commit 'OWNT failing-first'.
+
+fn s9() -> StaticEpochs {
+    let mut s = sessions();
+    s.worlds.insert(L9, (vec![99], 0));
+    s
+}
+
+#[test]
+#[ignore = "deferred: window and recovery machinery, removed under OT(a); see D87"]
+fn rv4_owt1_attest_claims_absent_signer() {
+    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::Challenge { key: S }, &[B, C], 5).unwrap();
+    commit(&mut b, Change::RemoveDormant { key: S }, &[B, C], 5 + W).unwrap();
+    let rd = head(&b);
+    commit(&mut b, Change::Add { key: X }, &[B, C], 6 + W).unwrap();
+    let before = owners(&b);
+    let ok = b.attest(&Attest::make(b.world, rd, L9, 1, &[S, B, C].into(), &[99]), &s9());
+    println!("REPRO OWNT-1 (no key, one-member session claims S signed the RemoveDormant): attest accepted {ok}; owners {before:?} -> {:?}", owners(&b));
+}
+
+#[test]
+#[ignore = "deferred: window and recovery machinery, removed under OT(a); see D87"]
+fn rv4_owt1b_reattest_undoes_recovery() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    commit(&mut b, Change::StartRecover { owner: S, new_key: N }, &[R], 2).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B], 3).unwrap();
+    let y = head(&b);
+    commit(&mut b, Change::FinishRecover { owner: S }, &[R], 2 + RF).unwrap();
+    commit(&mut b, Change::Add { key: X }, &[B, N], 3 + RF).unwrap();
+    let before = owners(&b);
+    let ok = b.attest(&Attest::make(b.world, y, L9, 7, &[S, B].into(), &[99]), &s9());
+    println!("REPRO OWNT-1b (re-attest B's cert inside the delay with S added): accepted {ok}; owners {before:?} -> {:?}", owners(&b));
+}
+
+#[test]
+fn rv4_owt2_minted_keys_fill_the_cap() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::Add { key: B }, &[S], 1).unwrap();
+    commit(&mut b, Change::Leave { key: S }, &[S], 2).unwrap();
+    let (mut p, mut me) = (b.genesis, S);
+    for k in 5000..5000 + MAX_CERTS as Key {
+        let add = next(&b, p, Change::Add { key: k }, &[me]);
+        let _ = b.insert(add.clone());
+        let lv = next(&b, add.id(), Change::Leave { key: me }, &[me]);
+        let _ = b.insert(lv.clone());
+        p = lv.id();
+        me = k;
+    }
+    assert!(b.len() <= 3 + UNATTESTED_PER_KEY, "{} certs stored", b.len());
+    assert_eq!(commit(&mut b, Change::Add { key: C }, &[B], 3), Ok(Insert::Applied));
+}
+
+#[test]
+#[ignore = "deferred: window and recovery machinery, removed under OT(a); see D87"]
+fn rv4_owt3_recovery_key_fills_the_session() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    let mut n = 0;
+    let mut stop = None;
+    for i in 0..MAX_CERTS as u32 {
+        match commit(&mut b, Change::StartRecover { owner: S, new_key: 5000 + i }, &[R], 2 + i as u64) {
+            Ok(_) => n += 1,
+            Err(e) => {
+                stop = Some(e);
+                break;
+            }
+        }
+    }
+    let r = commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S], 5000);
+    println!("REPRO OWNT-3 (stolen recovery key commits StartRecovers in the session): {n} committed (stopped {stop:?}); owner's cancel -> {r:?}");
+}
+
+#[test]
+fn rv4_owt4_new_lineage_and_merge() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::Add { key: B }, &[S], 1).unwrap();
+    commit(&mut b, Change::Leave { key: S }, &[S], 2).unwrap();
+    let c = next(&b, head(&b), Change::Add { key: C }, &[B]);
+    assert_eq!(b.commit_local(c, L2, 3), Ok(Insert::Applied), "a second session adopts the chain");
+    let (b0, certs) = double_sale();
+    let mut b = sold_twice(&b0, &certs);
+    let m = merge(&b, &[B]);
+    assert_eq!(b.commit_local(m, L1, 10), Ok(Insert::Applied), "a session commits a merge");
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let c = next(&b, b.genesis, Change::Add { key: X }, &[S, B]);
+    b.insert(c.clone()).unwrap();
+    assert_eq!(b.commit_local(c, L1, 1), Ok(Insert::Applied), "a relayed cert is committed");
+    assert_eq!(owners(&b), [S, B, X]);
+}
+
+#[test]
+fn rv4_owt5_attests_after_certs() {
+    let mut l = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    for i in 0..20 {
+        commit(&mut l, Change::SetRecovery { owner: S, recovery: Some(1000 + i) }, &[S], i as u64 + 1).unwrap();
+    }
+    let h = head(&l);
+    let x = next(&l, h, Change::Add { key: X }, &[S, B]);
+    let y = next(&l, h, Change::Add { key: C }, &[S, B]);
+    assert!(ForkProof { world: l.world, a: x, b: y }.verify(&l.prefix_of(h)));
+    let mut b = Book::new(l.cert(l.genesis).unwrap().clone()).unwrap();
+    for c in l.prefix_of(h).into_iter().filter(|c| c.seq > 0) {
+        let _ = b.insert(c);
+    }
+    for a in l.export(L1, &[1, 2, 3]) {
+        b.attest(&a, &sessions());
+    }
+    assert_eq!(b.view().owners, l.view().owners);
+}
+
+#[test]
+fn rv4_owt6_equal_frame_attests() {
+    let mut b0 = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+    commit(&mut b0, Change::Challenge { key: S }, &[B, C], 5).unwrap();
+    let x = next(&b0, head(&b0), Change::SetRecovery { owner: B, recovery: Some(R) }, &[B, S]);
+    b0.insert(x.clone()).unwrap();
+    let a1 = Attest::make(b0.world, x.id(), L9, 7, &[B].into(), &[99]);
+    let a2 = Attest::make(b0.world, x.id(), L9, 7, &[B, S].into(), &[99]);
+    let (mut p, mut q) = (b0.clone(), b0.clone());
+    p.attest(&a1, &s9());
+    p.attest(&a2, &s9());
+    q.attest(&a2, &s9());
+    q.attest(&a1, &s9());
+    assert_eq!(p.view(), q.view());
+    assert_eq!(p.digest(), q.digest());
+}
+
+#[test]
+fn rv4_owt7_rule_join_order() {
+    let mut b = Book::new(Cert::genesis(&[A, B, C], SignRule::Threshold(1), 1)).unwrap();
+    let g = b.genesis;
+    put(&mut b, g, Change::SetRule { rule: SignRule::Any }, &[A, B, C], Some((L1, 1)));
+    put(&mut b, g, Change::SetRecovery { owner: C, recovery: Some(R) }, &[C], Some((L2, 1)));
+    let m = merge(&b, &[A]);
+    b.insert(m.clone()).unwrap();
+    b.record(m.id(), L1, 2);
+    assert_eq!(commit(&mut b, Change::Remove { key: B }, &[A], 3), Err(OwnError::NotAllowed));
+    assert_eq!(commit(&mut b, Change::Add { key: X }, &[A], 3), Err(OwnError::Signers));
+    assert_eq!(owners(&b), [A, B, C]);
+}
+
+#[test]
+fn rv4_owt8_mutual_removal_dispute() {
+    let mut b = Book::new(Cert::genesis(&[A, B], SignRule::Threshold(1), 1)).unwrap();
+    let g = b.genesis;
+    put(&mut b, g, Change::Remove { key: B }, &[A], Some((L1, 1)));
+    put(&mut b, g, Change::Remove { key: A }, &[B], Some((L2, 1)));
+    let v = b.view();
+    assert_eq!(set(&v), [A, B]);
+    assert!(v.disputed);
+}
