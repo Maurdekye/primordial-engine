@@ -2,7 +2,7 @@
 
 Author: @vdw-physics. Follow-up to P2-2, docket
 @item:primordial-engine/p2-2-follow-up-turn-box3d-double-precision-on-d5. Branch
-`p2/double-precision`. Status: records re-blessed; P2-6 matrix next.
+`p2/double-precision`. Status: records re-blessed, P2-6 matrix PASS; in review.
 
 Tags: **[V]** tested here, **[I]** inferred or proposed.
 
@@ -57,7 +57,11 @@ else.
 
 Not re-recorded: records that are evidence of a named earlier commit and were built in f32 (the
 phase-1 files at the top of `spikes/out/`, `chunks/`, `fork/`, `p2-1/`, `p2-7/`, `par/`,
-`iter-bench/`, `mcp/`, `d58/`). `matrix/` is rewritten by the P2-6 matrix run that follows.
+`iter-bench/`, `mcp/`, `d58/`).
+
+P2-6 matrix at 063f0ce [V]: `scripts/run_matrix.sh` on this PC (Windows), its WSL (glibc and
+musl) and the Intel laptop (Windows, over ssh at idle priority): every column's determinism set
+passes and all 124 outputs are equal on the 4 machines (`spikes/out/matrix/matrix.txt`).
 
 ## Code that assumed f32 positions
 
