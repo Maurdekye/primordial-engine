@@ -146,9 +146,9 @@ pub fn colluders() {
         if equivocated && !forged {
             let v = sim.replica(8, 1).sim.all_entries().into_iter().find(|e| e.member == 8 && matches!(e.payload, Payload::Vote { .. }));
             if let Some(v) = v {
-                if let Payload::Vote { epoch, target, seq, .. } = v.payload {
+                if let Payload::Vote { epoch, target, seq, kick, .. } = v.payload {
                     let mut f = v.clone();
-                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0) };
+                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0), kick };
                     forged_vote.set(f.id());
                     for to in [1, 2, 3] {
                         sim.net.send(1, 8, to, &Msg::Entry(f.clone()));
@@ -199,7 +199,7 @@ pub fn badproposer() {
         if let Some(g) = genuine {
             if let Payload::Propose { epoch, round, valid_round, ref change } = g.payload {
                 let mut f = g.clone();
-                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone() };
+                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![] };
                 f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
                 forged.set(f.id());
                 for &to in &fooled {
@@ -342,7 +342,7 @@ pub fn join() {
     let panic_at = run_to_end(&mut sim, |sim| {
         if !asked && sim.net.now_us >= 2_000_000 {
             for m in [1, 2, 3] {
-                sim.net.send(1, joiner, m, &Msg::Join { member: joiner });
+                sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
             }
             asked = true;
         }

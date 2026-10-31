@@ -78,9 +78,9 @@ pub fn badvote() {
         if equivocated && !forged {
             let v = sim.replica(8, 1).sim.all_entries().into_iter().find(|e| e.member == 8 && matches!(e.payload, Payload::Vote { .. }));
             if let Some(v) = v {
-                if let Payload::Vote { epoch, target, seq, .. } = v.payload {
+                if let Payload::Vote { epoch, target, seq, kick, .. } = v.payload {
                     let mut f = v.clone();
-                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0) };
+                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0), kick };
                     forged_vote.set(f.id());
                     for to in [1, 2] {
                         sim.net.send(1, 8, to, &Msg::Entry(f.clone()));

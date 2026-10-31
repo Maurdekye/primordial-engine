@@ -44,7 +44,7 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
 
 impl WorldSim {
     /// Offline reference: load a final log with its effective frames and simulate `frames`.
-    fn run_log(mut self, log: &[(Entry, u64)], frames: u64) -> WorldSim {
+    pub(super) fn run_log(mut self, log: &[(Entry, u64)], frames: u64) -> WorldSim {
         for (e, eff) in log {
             let id = e.id();
             self.by_author.insert((e.member, e.seq), id);

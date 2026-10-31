@@ -34,7 +34,8 @@ impl WorldSim {
         // touches the simulation.
         let counted = e.member == LOGIC || self.members.contains(&e.member) || self.evicted.contains_key(&e.member);
         let acts = counted && !is_protocol(&e.payload);
-        let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
+        let open = self.closed_at.is_none_or(|c| e.stamp < c);
+        let new = if acts && open && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
             return;
@@ -147,7 +148,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp,
-            payload: Payload::Ack { horizon, heads, check, epoch: self.epoch },
+            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
             carried: None,
         };
         self.publish(e)
@@ -168,6 +169,10 @@ impl WorldSim {
             self.note_proposal(id);
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
+            // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
+            if self.evicted.contains_key(&e.member) && self.fixes_off & fix::VC2 == 0 {
+                self.adopt_cut(e.member);
+            }
             return out;
         }
         self.by_author.insert((e.member, e.seq), id);
@@ -246,10 +251,29 @@ impl WorldSim {
     /// * any other entry is void if stamped at or before a horizon its author declared earlier.
     pub(super) fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
+        // D80: an admin entry stays pending across epochs until a decision judges it.
+        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
-            Payload::Ack { horizon, .. } => e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp,
-            Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => true,
+            Payload::Ack { horizon, epoch, .. } => {
+                // Review VC-5: an author's epoch never falls and rises by at most one per ack.
+                let prev = self.ack_epoch_from.get(&m).and_then(|a| a.keys().next_back()).copied().unwrap_or(0);
+                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && *epoch <= prev + 1);
+                e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp && epoch_ok
+            }
+            // Review VC-4: a precommit's boundary caps its author's acks, so it must lie ahead of the
+            // horizon the author has declared, by at most two join leads.
+            Payload::Precommit { boundary, .. } if *boundary > 0 && self.fixes_off & fix::VC4 == 0 => {
+                let h = max_h.unwrap_or(0);
+                *boundary > h && *boundary <= h + 2 * self.cfg.join_lead
+            }
+            Payload::Vote { .. }
+            | Payload::Propose { .. }
+            | Payload::Prevote { .. }
+            | Payload::Precommit { .. }
+            | Payload::Kick { .. }
+            | Payload::SetRole { .. }
+            | Payload::DefineRole { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
             _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
         };
@@ -262,8 +286,6 @@ impl WorldSim {
         }
         match e.payload {
             Payload::Ack { horizon, heads, check, epoch } => {
-                // HELD (P2-3): ported as at b01ebdf for digest equivalence; design-reviewer/review-p2-4.md VC-5: an
-                // uncertified future epoch caps its author's stable seq. Replace with @engine-architect's fix.
                 if epoch > 0 {
                     self.ack_epoch_from.entry(m).or_default().entry(epoch).or_insert(e.seq);
                 }
@@ -298,10 +320,16 @@ impl WorldSim {
                 self.recompute_conf();
                 self.evaluate_checks();
             }
-            Payload::Vote { epoch, .. } | Payload::Propose { epoch, .. } | Payload::Prevote { epoch, .. } | Payload::Precommit { epoch, .. } => {
+            Payload::Vote { epoch, .. }
+            | Payload::Propose { epoch, .. }
+            | Payload::Prevote { epoch, .. }
+            | Payload::Precommit { epoch, .. }
+            | Payload::Kick { epoch, .. }
+            | Payload::SetRole { epoch, .. }
+            | Payload::DefineRole { epoch, .. } => {
                 if epoch > self.epoch {
                     self.vc_later.entry(epoch).or_default().push(id);
-                } else if epoch == self.epoch {
+                } else if epoch == self.epoch || admin_entry {
                     self.record_vc(m, id, out);
                 }
             }
@@ -346,6 +374,9 @@ impl WorldSim {
     /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
     /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     pub(super) fn recompute_conf(&mut self) {
+        if self.adopting {
+            return;
+        }
         let mut c = u64::MAX;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
@@ -373,14 +404,15 @@ impl WorldSim {
         // may not hold them all yet. Until it does, it confirms only the frames that the acks it
         // holds of that prefix cover: an entry stamped at or before a declared horizon must come
         // before that ack in the chain (8.2).
-        // HELD (P2-3): ported as at b01ebdf for digest equivalence; design-reviewer/review-p2-4.md VC-2 (critical):
-        // a replica on the wrong branch of a removed member's fork bounds by its own branch's acks.
-        // Replace with @engine-architect's fix (bound up to `stable_hi`, adopt_cut on the duplicate path).
         for (&x, &(cut, _)) in &self.evicted {
             let held = self.contiguous.get(&x).copied().unwrap_or(0);
             let right = self.cut_ids.get(&x).is_none_or(|&cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
             if held < cut || !right {
-                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=held.min(cut)).next_back()).map_or(0, |(_, h)| h + 1);
+                // Review VC-2: past the prefix verified against every member's references, my copy may
+                // be another branch of a fork, so only that prefix's acks bound confirmation; the
+                // robust cut contains it.
+                let upto = if self.fixes_off & fix::VC2 == 0 { self.stable_hi.get(&x).copied().unwrap_or(0).min(cut) } else { held.min(cut) };
+                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=upto).next_back()).map_or(0, |(_, h)| h + 1);
                 c = c.min(h);
             }
         }
