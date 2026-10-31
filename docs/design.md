@@ -2155,8 +2155,20 @@ and the engager's hand replayed after the gesture had ended.
          a coarser hand, but no stall. We don't re-base automatically, because a long standing queue
          from cross-traffic (someone else's upload filling the uplink) is exactly when we should thin.
          Seen in testing: 25 ms of scripted delay added at session start read as 25-33 ms of queue [V].
+       * *Standing queues longer than the base window* (review AR-1). Cross-traffic that fills the uplink
+         for over 2 minutes becomes the base: q then reads about 0, and the level falls while the queue
+         stays full. RFC 6817 uses 10 minutes. We keep 2 [proposal]: a longer base keeps a route
+         change's false queue reading longer (thinning for up to 10 minutes), and thinning our own
+         stream does not shorten a queue that another flow fills; it only yields bandwidth to it.
        * *Clock drift.* At up to 100 ppm, drift moves the estimate by at most 12 ms over the 2-minute
          window, below the 40 ms trigger.
+       * *Below level 5's rate* (review AR-3). A link below what level 5 still sends, about 60 kbit/s
+         per link for a member sweeping its hand, cannot carry the member: at 40 kbit/s, member 1 was
+         removed at 6.8 s [V @design-reviewer, pe-app r18-app].
+       * *One faulty report* (review AR-4). The sender takes the largest report, so one faulty member
+         reporting a full queue holds every sender at level 5. That costs bandwidth and hand precision,
+         not safety or liveness. Ignoring the top report would stop it, but would also ignore one
+         member's genuinely congested downlink, and does not work with two members [I].
        * *AQM bottlenecks.* On a bottleneck running fq_codel or CAKE (common on SQM home routers), queueing
          delay stays near 5-20 ms and congestion shows as drops. A delay-only controller then never
          reaches 40 ms and never thins, and repairs compete with the stream. A loss rule is the
