@@ -1,0 +1,11 @@
+# The review repros' set-up (session-sim review2.rs `peers`): world 1 is the phase-1 pile from
+# 100 ms, no clock skew, 30 +- 10 ms links.
+
+[world.1]
+members = [1, 2, 3]
+scene = { pile = { side = 8, layers = 4 } }
+epoch_ms = 100
+
+[net]
+seed = 7
+link = { delay_ms = 30, jitter_ms = 10 }

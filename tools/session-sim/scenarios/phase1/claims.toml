@@ -1,0 +1,28 @@
+description = """
+Claims (review M3): member 1 nudges object 50 every 29 frames, member 2 every frame; plain \
+impulses claim once and never renew, so neither locks the other out."""
+include = ["../common/pile.toml"]
+end_ms = 13000
+
+[world.1]
+members = [1, 2]
+scene = { pile = { side = 8, layers = 2 } }
+
+[world.1.plan]
+1 = [{ at = 100, every = 29, count = 21, touch = { obj = 50, impulse = [0.0, 0.2, 0.0] } }]
+2 = [{ at = 100, every = 1, count = 600, touch = { obj = 50, impulse = [0.0, 0.2, 0.0] } }]
+
+[net]
+seed = 9
+link = { delay_ms = 30, jitter_ms = 10 }
+
+[[report]]
+kind = "outcomes"
+at = 1
+mode = "tally"
+prefix = "RESULT claims (member 1 nudges every 29 frames, member 2 every frame, impulses do not renew claims): "
+
+[[report]]
+kind = "check_world"
+frames = 750
+label = "claims"

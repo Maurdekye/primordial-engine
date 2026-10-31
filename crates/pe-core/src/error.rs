@@ -22,6 +22,10 @@ pub enum Error {
     BadLayout(String),
     /// Raw bytes have the wrong length for the component.
     WrongSize { component: u32, expected: usize, got: usize },
+    /// A plain edit would give `object` a frame while its root transform has a non-zero `chunk` (for
+    /// example a root that `maintain_transforms` has rebased). Use the keep-world edit instead
+    /// (`set_parent_keep_world` or `insert_transform_keep_world`), which recomputes the chunk.
+    ChunkUnderFrame { object: ObjectId },
     /// A reparent would make an object its own ancestor.
     Cycle { child: ObjectId, parent: ObjectId },
     /// A snapshot was taken with a different component schema than the store has now.
