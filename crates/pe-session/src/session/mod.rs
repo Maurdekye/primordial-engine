@@ -33,6 +33,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use pe_physics::{BodyDesc, BodyKind, Geometry, ObjectId, PhysicsConfig, PhysicsWorld, Pose, Push, ShapeDesc, WorldImage};
 
+use pe_core::Frame;
+use pe_sim::{SimStore, Snapshot};
+
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES};
 pub use crate::sign::{sig_words, test_fact_sig, test_sign, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
 pub use crate::provenance::{
@@ -47,6 +50,7 @@ mod fetch;
 mod check;
 mod r14;
 mod sim;
+mod store;
 mod replay;
 mod seam;
 
@@ -55,6 +59,7 @@ pub use membership::*;
 pub use seam::*;
 pub use r14::*;
 pub use sim::*;
+pub use store::*;
 pub use replay::*;
 
 // ---- rollback state ------------------------------------------------------------------------------
@@ -97,24 +102,19 @@ pub enum Arrival {
 /// and id pools; the tables cover engine state.
 #[derive(Clone, Default)]
 pub struct Tables {
-    pub objs: Vec<Option<Obj>>,
-    pub claims: BTreeMap<u32, Claim>,
-    /// After a claim expires, its holder may not claim the object again for CLAIM_COOLDOWN frames,
-    /// so repeated impulses cannot monopolize an object (review M3).
-    pub cooldown: BTreeMap<u32, (MemberId, u64)>,
     pub escrow: BTreeMap<u64, Escrow>,
     pub arrivals: BTreeMap<u64, Arrival>,
     /// P2-5: per global id, here (with its provenance) or the transfer that last took it away.
     /// Never pruned: a world's own last exit is what lets it refuse a forked chain.
     pub seen: BTreeMap<u64, Seen>,
     pub portal_open: bool,
-    /// Active hands: frames since the hand's last entry (dead reckoning, `SimConfig::hand_predict`).
-    pub hand_idle: BTreeMap<u32, u64>,
 }
 
 #[derive(Clone)]
 struct Keyframe {
     image: WorldImage,
+    /// The per-object engine tables: shares the store's buffers copy-on-write.
+    store: Snapshot,
     t: Tables,
 }
 
@@ -371,6 +371,10 @@ pub struct WorldSim {
     pub cfg: SimConfig,
     /// The physics world (S2: through pe-physics).
     pub world: PhysicsWorld,
+    /// S5b: the per-object engine tables (session/store.rs). Object index `i` is
+    /// [`object_id`]`(i)`, here and in the physics world.
+    pub store: SimStore,
+    /// The world-level engine tables.
     pub t: Tables,
     pub frame: u64,
     ring: BTreeMap<u64, Keyframe>,
@@ -656,7 +660,8 @@ impl WorldSim {
             },
             cfg,
             world,
-            t: Tables { objs, portal_open: true, ..Default::default() },
+            store: object_store(&objs),
+            t: Tables { portal_open: true, ..Default::default() },
             frame: 0,
             ring: BTreeMap::new(),
             peers_of: BTreeMap::new(),

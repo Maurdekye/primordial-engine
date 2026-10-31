@@ -1200,8 +1200,11 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "box3d-rust",
+ "bytemuck",
  "ed25519-dalek",
+ "pe-core",
  "pe-physics",
+ "pe-sim",
  "sha2",
 ]
 

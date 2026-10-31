@@ -11,6 +11,9 @@ box3d-rust.workspace = true
 # S2: the session sim's only door to Box3D (box3d-rust stays for the phase-1 harness in lib.rs).
 pe-physics = { path = "../pe-physics" }
 pe-core = { path = "../pe-core" }
+# S5b: the per-object engine tables are pe-sim components (design 6.1).
+pe-sim = { path = "../pe-sim" }
+bytemuck = { version = "1.25", features = ["derive"] }
 ed25519-dalek = "3"
 # Entry ids (S3b). No `asm` feature: the engine is 100% Rust.
 sha2 = "0.11"
