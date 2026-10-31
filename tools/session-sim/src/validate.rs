@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use spike::Sim;
 
-use crate::scenario::{id, ActionSpec, Byzantine, Ids, Report, Scenario, When};
-use crate::setup::{end_us, hz, peer_order};
+use crate::scenario::{id, ActionSpec, Byzantine, Honest, Ids, Report, Scenario, When};
+use crate::setup::{end_us, fixes_off, hz, peer_order, rel};
 
 struct V<'a> {
     s: &'a Scenario,
@@ -75,6 +75,25 @@ impl V<'_> {
         ((self.end_us as i64 + p.skew_us).max(0) as u64).saturating_sub(r.epoch_us) / r.dt_us
     }
 
+    fn honest(&mut self, h: &Honest, what: &str) {
+        match h {
+            Honest::List(v) => {
+                if v.is_empty() {
+                    self.err(format!("{what}: no members"));
+                }
+                v.iter().for_each(|&m| self.member(1, m, what));
+            }
+            Honest::At { members_at } => self.member(1, *members_at, what),
+        }
+    }
+
+    fn members(&mut self, v: &[u32], what: &str) {
+        if v.is_empty() {
+            self.err(format!("{what}: no members"));
+        }
+        v.iter().for_each(|&m| self.member(1, m, what));
+    }
+
     fn object(&mut self, w: u32, obj: u32, what: &str) {
         let r = self.sim.peers.iter().find_map(|p| p.worlds.get(&w));
         let ok = r.is_some_and(|r| r.sim.t.objs.get(obj as usize).is_some_and(|o| o.is_some()));
@@ -136,6 +155,32 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 v.err(format!("world {wid}: routes to world {r}, which does not exist"));
             }
         }
+        for j in &w.joiners {
+            if w.members.contains(j) {
+                v.err(format!("world {wid}: joiner {j} is already a member"));
+            }
+            if !peers.contains(j) {
+                v.err(format!("world {wid}: joiner {j} is not in `peers`"));
+            }
+        }
+        if let Some(q) = &w.quorum {
+            if q != "bft" && q != "majority" {
+                v.err(format!("world {wid}: quorum must be bft or majority, not `{q}`"));
+            }
+        }
+        if let Err(e) = fixes_off(w) {
+            v.err(format!("world {wid}: {e}"));
+        }
+        if w.ack_every_frames == Some(0) {
+            v.err(format!("world {wid}: ack_every_frames must be at least 1"));
+        }
+        if let Some(g) = &w.guests {
+            for a in &g.admins {
+                if !w.members.contains(a) {
+                    v.err(format!("world {wid}: guests: admin {a} is not a member"));
+                }
+            }
+        }
     }
     // Links and caps.
     let n = &s.net;
@@ -170,7 +215,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
         let wid = id(wk)?;
         for (mk, acts) in &w.plan {
             let m = id(mk)?;
-            if !w.members.contains(&m) {
+            if !w.members.contains(&m) && !w.joiners.contains(&m) {
                 continue; // an empty plan for a non-member (setup refuses a non-empty one)
             }
             for a in acts {
@@ -220,6 +265,24 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 v.err(format!("crash: recover_ms {r} is not after at_ms {}", c.at_ms));
             }
             v.time(r, "crash recover");
+        }
+    }
+    // Join requests.
+    for j in &s.join {
+        if v.world(j.world, "join") {
+            v.member(j.world, j.member, "join");
+            j.to.iter().for_each(|&m| v.member(j.world, m, "join to"));
+            j.attests_to.iter().flatten().for_each(|&m| v.member(j.world, m, "join attests_to"));
+            if let Some(f) = j.log_from {
+                v.member(j.world, f, "join log_from");
+            }
+        }
+        v.time(j.at_ms, "join");
+        for a in &j.attests {
+            if let Err(e) = rel(&a.rel) {
+                v.err(format!("join attests: {e}"));
+            }
+            v.peer(a.with, "join attests with");
         }
     }
     // Byzantine behaviour.
@@ -273,6 +336,24 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.member(*world, *member, "byzantine");
                 }
             }
+            Byzantine::HideRefs { world, member, from_ms, until_ms, .. } => {
+                if v.world(*world, "hide_refs") {
+                    v.member(*world, *member, "hide_refs");
+                }
+                v.time(*from_ms, "hide_refs");
+                if let Some(u) = until_ms {
+                    if u <= from_ms {
+                        v.err(format!("hide_refs: until_ms {u} is not after from_ms {from_ms}"));
+                    }
+                    v.time(*u, "hide_refs until");
+                }
+            }
+            Byzantine::ForgeProposal { world, member, to } => {
+                if v.world(*world, "forge_proposal") {
+                    v.member(*world, *member, "forge_proposal");
+                    to.iter().for_each(|&m| v.member(*world, m, "forge_proposal to"));
+                }
+            }
             Byzantine::R14Forgeries { attacks } => {
                 for (w, m) in [(1, 1), (1, 2), (2, 1), (2, 3)] {
                     if v.world(w, "r14_forgeries (r14's worlds)") {
@@ -305,12 +386,39 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
             Report::Verdict { honest, .. } => {
                 checks += 1;
                 v.world(1, "verdict");
-                honest.iter().for_each(|&m| v.member(1, m, "verdict honest"));
-                if honest.is_empty() {
-                    v.err("verdict: no honest members".into());
+                v.honest(honest, "verdict honest");
+            }
+            Report::Membership { honest, .. } => v.honest(honest, "membership"),
+            Report::ViewChanges { honest, .. } => v.honest(honest, "view_changes"),
+            Report::Admin { honest, .. } => v.honest(honest, "admin"),
+            Report::Admitted { honest, joiner } => {
+                v.members(honest, "admitted");
+                v.member(1, *joiner, "admitted joiner");
+            }
+            Report::Confs { honest, .. } => v.members(honest, "confs"),
+            Report::BeforeFix { honest, .. } => {
+                checks += 1;
+                v.members(honest, "before_fix");
+            }
+            Report::Check { case, honest, sides, at, members, target, .. } => {
+                checks += 1;
+                honest.iter().for_each(|&m| v.member(1, m, "check honest"));
+                sides.iter().flatten().for_each(|&m| v.member(1, m, "check sides"));
+                members.iter().filter(|_| case != "joinrules").for_each(|&m| v.member(1, m, "check members"));
+                at.iter().chain(target).for_each(|&m| v.member(1, m, "check"));
+                let want = match case.as_str() {
+                    "bridge" => sides.len() == 2 && sides.iter().all(|s| !s.is_empty()) && !honest.is_empty(),
+                    "kickwar" => at.is_some() && members.len() == 2,
+                    "kickpartition" => members.len() == 2 && target.is_some(),
+                    "lastadmin" => !honest.is_empty(),
+                    "adminclose" => honest.len() == 2,
+                    "joinrules" => members.len() == 4,
+                    _ => true,
+                };
+                if !want {
+                    v.err(format!("check {case}: missing or malformed fields (see scenario.rs `Report::Check`)"));
                 }
             }
-            Report::Membership { honest, .. } => honest.iter().for_each(|&m| v.member(1, m, "membership")),
             Report::Stats { world } | Report::Events { world, .. } | Report::Traffic { world } | Report::Line { world, .. } => {
                 v.world(*world, "report");
             }

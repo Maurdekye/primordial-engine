@@ -43,17 +43,29 @@ fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Pro
 
 /// Run one part of a scenario and print its log; true if the simulator panicked.
 fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
-    let has_verdict = s.report.iter().any(|r| matches!(r, Report::Verdict { .. }));
+    // A report that states a panic itself (a verdict, or a run with its fix switched off).
+    let has_verdict = s.report.iter().any(|r| matches!(r, Report::Verdict { .. } | Report::BeforeFix { .. } | Report::Check { .. }));
     let (s, mut sim, mut actors, mut probes) = prepare(s)?;
     for a in &actors {
         a.configure(&mut sim)?;
     }
     sim.net.filter = faults::filter(s.fault.clone(), actors.iter().filter_map(|a| a.hook()).collect());
     let mut ctx = Ctx::default();
-    // The spike's scenario loops: crashes and Byzantine sends before a millisecond's step,
+    for t in &s.intro {
+        println!("{}", report::template(t, &report::Vars { sim: &sim, world: 1, entry: None }));
+    }
+    let mut joined = vec![false; s.join.len()];
+    ctx.started = Some(std::time::Instant::now());
+    let hook = s.quiet_panics.then(|| {
+        let h = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        h
+    });
+    // The spike's scenario loops: crashes, joins and Byzantine sends before a millisecond's step,
     // R14 forgeries and probes after it.
     while sim.net.now_us <= sim.end_us {
         faults::apply_crashes(&mut sim, &s.crash);
+        byzantine::send_joins(&mut sim, &s.join, &mut joined)?;
         byzantine::before_step(&mut sim, &mut actors);
         if catch_unwind(AssertUnwindSafe(|| sim.step_ms())).is_err() {
             ctx.panic_at_ms = Some(sim.net.now_us / 1000);
@@ -64,6 +76,9 @@ fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
             p.sample(&sim);
         }
         sim.net.now_us += 1000;
+    }
+    if let Some(h) = hook {
+        std::panic::set_hook(h);
     }
     if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
         println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
