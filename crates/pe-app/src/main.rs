@@ -173,8 +173,12 @@ async fn run(mut a: Args) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(100)).await;
         // A panic in the node faults the engine, which then stops ticking it: end the process with
         // the message rather than look like a stalled member (review of 2f9ca05).
-        if let Ok(Some(why)) = engine.call(|e| Ok(e.faulted().map(str::to_string))).await {
-            return Err(format!("member {me}: the peer stopped: {why}"));
+        // An error means the engine thread itself is gone (a panic outside catch_unwind, e.g. in
+        // Node::new): stopped too.
+        match engine.call(|e| Ok(e.faulted().map(str::to_string))).await {
+            Ok(None) => {}
+            Ok(Some(why)) => return Err(format!("member {me}: the peer stopped: {why}")),
+            Err(e) => return Err(format!("member {me}: the engine thread is gone: {}", e.message)),
         }
     }
     let path = out_dir.join(format!("summary-{me}.json"));
