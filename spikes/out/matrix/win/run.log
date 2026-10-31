@@ -1,0 +1,59 @@
+== build
+== physics: goldens, 600-frame trace, snapshot images, rollback (release and debug)
+OK    engine goldens (release)
+OK    Box3D C goldens with --upstream (release)
+OK    trace 600 (release) == vdW branch record
+OK    trace 600 --upstream (release) == phase-1 record
+OK    snapshot images (release) == vdW branch record
+OK    rollback T1-T5 (release)
+OK    engine goldens (debug)
+OK    Box3D C goldens with --upstream (debug)
+OK    trace 600 (debug) == vdW branch record
+OK    trace 600 --upstream (debug) == phase-1 record
+OK    snapshot images (debug) == vdW branch record
+OK    rollback T1-T5 (debug)
+OK    trace 600: release == debug
+trace: 600 frames, 256 bodies, release profile, 189.2933ms total (315.5 us/frame), digest 80839f4a54133e13, final world 
+images: 13 snapshots, digest 7a47a3bfcdbd7eda -> spikes/out/matrix/win/o/integration/images-vdw-release.txt
+== wasm guests and hot-swap (d1-d4, eager and lazy)
+ae109ced8629e8dfeb474734dadc4030891e7de798229b0ff8467f61ff0b67d5 *spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v1.wasm
+391910115c6145153fc6e76bc900527572e9f0423317eb016e4a19bbbd908ffe *spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v2.wasm
+4bbde67ef4ffc7fcc3f499c858329097063cc13c7da39175abe7adc134ee6af5 *spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_runaway.wasm
+ee57b239784612888ab22f9668ed0837e4c2c63f51c97aa41e7334f6c37d3df4 *target/wasm32-unknown-unknown/wasm-guest/physics_in_wasm.wasm
+8a87f7defc5b93d89254e014d110347ac45bdcdd03335c9193bc44851099db3c *spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_mono.wasm
+1196c2f6604d4975ab738f62d50a2f38fa869e03c0e9df09c9a65a9ab8ce8229 *spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_wasm.wasm
+OK    wasm-hotswap d1-d4 (eager): the wasm32 pile's digest == native
+RESULT: FAIL
+== module identity: the guests built again at a second checkout path (review M8)
+spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v1.wasm: raw sha256 ae109ced8629e8df (508 B) | canonical sha256 ae109ced8629e8df (508 B) | custom sections removed: []
+spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v2.wasm: raw sha256 391910115c614515 (653 B) | canonical sha256 391910115c614515 (653 B) | custom sections removed: []
+spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_runaway.wasm: raw sha256 4bbde67ef4ffc7fc (277 B) | canonical sha256 4bbde67ef4ffc7fc (277 B) | custom sections removed: []
+target/wasm32-unknown-unknown/wasm-guest/physics_in_wasm.wasm: raw sha256 ee57b23978461288 (461047 B) | canonical sha256 ee57b23978461288 (461047 B) | custom sections removed: []
+spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_mono.wasm: raw sha256 8a87f7defc5b93d8 (253825 B) | canonical sha256 8a87f7defc5b93d8 (253825 B) | custom sections removed: []
+spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_wasm.wasm: raw sha256 1196c2f6604d4975 (250359 B) | canonical sha256 1196c2f6604d4975 (250359 B) | custom sections removed: []
+<copy at another path>/spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v1.wasm: raw sha256 ae109ced8629e8df (508 B) | canonical sha256 ae109ced8629e8df (508 B) | custom sections removed: []
+<copy at another path>/spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v2.wasm: raw sha256 391910115c614515 (653 B) | canonical sha256 391910115c614515 (653 B) | custom sections removed: []
+<copy at another path>/spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_runaway.wasm: raw sha256 4bbde67ef4ffc7fc (277 B) | canonical sha256 4bbde67ef4ffc7fc (277 B) | custom sections removed: []
+<copy at another path>/target/wasm32-unknown-unknown/wasm-guest/physics_in_wasm.wasm: raw sha256 ee57b23978461288 (461047 B) | canonical sha256 ee57b23978461288 (461047 B) | custom sections removed: []
+<copy at another path>/spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_mono.wasm: raw sha256 8a87f7defc5b93d8 (253825 B) | canonical sha256 8a87f7defc5b93d8 (253825 B) | custom sections removed: []
+<copy at another path>/spikes/iter-bench/guests/target/wasm32-unknown-unknown/release/logic_wasm.wasm: raw sha256 1196c2f6604d4975 (250359 B) | canonical sha256 1196c2f6604d4975 (250359 B) | custom sections removed: []
+OK    each of the 6 modules byte-identical (raw hash) at both paths
+OK    no local path inside any module, at either path
+== MCP stub
+OK    MCP stub: 10 of 10 responses
+== session simulator suite
+SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states
+OK    session-sim suite
+== R18 caps
+OK    run_r18.sh
+65
+== R15 hooks (call counts with the engine default)
+RESULT r15 hooks, phase-1 pile (stays active), 240 frames; timings noisy (low priority, shared machine)
+RESULT    256 bodies (awake at end 253): pre-solve 160 calls/step avg, 291 max; friction+restitution mixing 319.3/step; step 0.353 ms plain, 0.348 ms with native hooks
+RESULT   1024 bodies (awake at end 1015): pre-solve 610 calls/step avg, 985 max; friction+restitution mixing 1220.1/step; step 1.785 ms plain, 1.835 ms with native hooks
+RESULT r15 hooks: calls per step of box3d-rust's existing hooks, 240 frames of a collapsing pile (4 substeps, 60 Hz); timings noisy (low priority, shared machine)
+RESULT    256 bodies (awake at end 0): pre-solve 1 calls/step avg, 64 max; pair filter 9.8/step; friction+restitution mixing 2.1/step; step 0.058 ms plain, 0.060 ms with native hooks
+RESULT   1024 bodies (awake at end 0): pre-solve 4 calls/step avg, 256 max; pair filter 43.0/step; friction+restitution mixing 8.5/step; step 0.233 ms plain, 0.230 ms with native hooks
+RESULT: PASS
+SUMMARY: determinism set PASSED ( physics wasm mcp session r18 hooks )
+EXIT 0

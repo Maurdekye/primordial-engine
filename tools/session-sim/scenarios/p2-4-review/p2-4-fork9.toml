@@ -1,0 +1,42 @@
+description = """
+P2-4 review round 2, VC-2: 9 forks its chain at frame 110. 1 and 2 hold branch A, with its touch; \
+3 holds branch B, without it and longer. The change cuts 9 at A's head; 3 must not confirm B's \
+frames. 3's votes reach the others 300 ms late. Part 1 runs with VC-2's fix switched off (an \
+informational line), part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 8000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+9 = [{ at = 120, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+1 = [{ at = 60, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+from = 3
+msg = "vote"
+delay_ms = 300
+
+[[byzantine]]
+kind = "fork_branch"
+member = 9
+at_frame = 110
+a_to = [1, 2]
+b_to = 3
+live_ms = 700
+
+[[part]]
+world.1.fixes_off = ["VC2"]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)", fix = "VC-2's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "fork_info" },
+    { kind = "membership", honest = [1, 2, 3], label = "fork9" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "fork9" },
+    { kind = "verdict", honest = [1, 2, 3], label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)" },
+]

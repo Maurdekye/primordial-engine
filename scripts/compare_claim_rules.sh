@@ -16,7 +16,7 @@ mask() { sed -E 's/[0-9]+(\.[0-9]+)? ?(ms|us|µs|s)\b/T/g'; }
 same=0; differ=0
 for f in $(git ls-tree -r --name-only "$REF" spikes/out/session-sim-pe/ | grep '\.log$'); do
   rel=${f#spikes/out/session-sim-pe/}
-  if diff -q <(git show "$REF:$f" | mask) <(mask < "$O/spike/$rel") > /dev/null; then same=$((same+1)); else echo "DIFFER (spike rule) $rel"; differ=$((differ+1)); fi
+  if diff -q <(git show "$REF:$f" | mask) <(mask < "$O/spike/session-sim-pe/$rel") > /dev/null; then same=$((same+1)); else echo "DIFFER (spike rule) $rel"; differ=$((differ+1)); fi
 done
 echo "step 1: spike claim rule vs $REF: $same logs identical, $differ different (timings masked)"
 PE_DUMP_OUTCOMES=1 PE_CLAIM_RULE=spike PE_OUT=$O/spike-out bash scripts/run_session_sim.sh --pe > /dev/null 2>&1

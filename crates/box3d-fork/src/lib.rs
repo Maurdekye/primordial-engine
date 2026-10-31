@@ -258,6 +258,9 @@ mod name_cache_tests;
 mod serialize_corruption_tests;
 
 #[cfg(test)]
+mod snapshot_hostile_tests;
+
+#[cfg(test)]
 mod shape_tests;
 
 #[cfg(test)]
