@@ -16,6 +16,11 @@ or MCP servers: the init record lists only the `pe` server and Claude Code's two
 token reached Claude Code only through `PE_MCP_TOKEN` in its environment, and the configs refer to it as
 `${PE_MCP_TOKEN}`. Neither transcript contains it.
 
+The two `.jsonl` files are trimmed from Claude Code's stream-json output, for publication: they keep the
+`pe` tool list, every assistant text and tool call, every tool result, and the final outcome (turns, wall
+time, cost, the agent's report). Session ids, message ids, local paths, token usage, rate-limit events,
+thinking blocks and Claude Code's own environment listing were removed.
+
 | | pipe (`run-pipe.jsonl`) | HTTP (`run-http.jsonl`) |
 |---|---|---|
 | Transport | `\\.\pipe\primordial-mcp-…` via `pe-mcp bridge` | `http://127.0.0.1:53375/mcp` (IPv6 too), bearer token |
