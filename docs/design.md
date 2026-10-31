@@ -2924,9 +2924,10 @@ so nothing is ever lost"):
   owners' choice on the compare card. "Keep this one" keeps the other head this way too.
 * **Every player of the world sees them,** not only owners and the Load backups role, and can preview
   them. The list rule above does not apply to this kind. Loading one into a live session still needs Load
-  backups (@coordinator-opus's reading, sent to the user). Opening one as a new world is open to every
-  player [proposal: @coordinator-opus's suggestion, since nothing may be lost; @gnosarium-ux settles how
-  it fits Copy world].
+  backups (@coordinator-opus's reading, sent to the user). Opening one as a new world needs Copy world,
+  as any full copy does (code and assets included), so owners keep control over full copies
+  (@coordinator-opus's ruling (b), 12:53Z, which the user may reverse; 8a.10). "Nothing is ever lost" is
+  met by every player seeing and previewing every before-merge version, and by none being deleted.
 * They are never thinned and never deleted, owners included [proposal: "always available ... at all
   times" rules out both].
 * Each costs a manifest and any blobs the merge dropped, because it shares the rest with the merged head
@@ -3007,7 +3008,7 @@ on storage space, in a similar manner to how resonite works"):
   as above. The next session starts from it.
 * **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
   owner is whoever opens it. It needs the Copy world permission, held only by owners by default
-  (@coordinator-opus's direction, 08:35Z); a before-merge backup is the proposed exception (above). The copy re-mints its objects' births in the new world, so
+  (@coordinator-opus's direction, 08:35Z). Before-merge backups follow the same rule (above). The copy re-mints its objects' births in the new world, so
   they can later be exported from it (SV-11).
 
 **Regions** (25.5; @design-reviewer's proposal): a save is a world-log entry stamped at a check frame F.
