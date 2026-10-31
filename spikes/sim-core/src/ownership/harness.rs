@@ -439,20 +439,39 @@ fn check_charges(v: &Book, ctx: &str) {
         }
     }
     // Each key, and each certificate carrying inherited ones, within its quota (those an attestation
-    // depends on aside).
-    let mut own: BTreeMap<Key, usize> = BTreeMap::new();
-    let mut inherited: BTreeMap<CertId, usize> = BTreeMap::new();
+    // depends on aside). A certificate fits if any key (root) it is charged to has room and then counts
+    // against all of them (OWNW-1), so a key's total can pass its quota through co-signed certificates;
+    // what is bounded is the room each admission takes: certificates charged to one key alone stay
+    // within its quota, and all of them within the quota times the keys (roots) charged.
+    let mut alone: BTreeMap<Key, usize> = BTreeMap::new();
+    let mut alone_r: BTreeMap<CertId, usize> = BTreeMap::new();
+    let (mut keyed, mut rooted) = (0, 0);
+    let (mut keys, mut roots): (BTreeSet<Key>, BTreeSet<CertId>) = Default::default();
     for (id, ch) in &v.inner.charged {
         if needed.contains(id) {
             continue;
         }
         match ch {
-            Charge::Keys(ks) => ks.iter().for_each(|k| *own.entry(*k).or_default() += 1),
-            Charge::Roots(rs) => rs.iter().for_each(|r| *inherited.entry(*r).or_default() += 1),
+            Charge::Keys(ks) => {
+                keyed += 1;
+                keys.extend(ks.iter().copied());
+                if let [k] = ks.iter().copied().collect::<Vec<_>>()[..] {
+                    *alone.entry(k).or_default() += 1;
+                }
+            }
+            Charge::Roots(rs) => {
+                rooted += 1;
+                roots.extend(rs.iter().copied());
+                if let [r] = rs.iter().copied().collect::<Vec<_>>()[..] {
+                    *alone_r.entry(r).or_default() += 1;
+                }
+            }
         }
     }
-    assert!(own.values().all(|&n| n <= UNATTESTED_PER_KEY), "{ctx}: a key over its quota: {own:?}");
-    assert!(inherited.values().all(|&n| n <= INHERITED_PER_CERT), "{ctx}: a certificate over its inherited quota");
+    assert!(alone.values().all(|&n| n <= UNATTESTED_PER_KEY), "{ctx}: a key over its quota: {alone:?}");
+    assert!(keyed <= UNATTESTED_PER_KEY * keys.len(), "{ctx}: {keyed} key-charged certificates for {} keys", keys.len());
+    assert!(alone_r.values().all(|&n| n <= INHERITED_PER_CERT), "{ctx}: a certificate over its inherited quota");
+    assert!(rooted <= INHERITED_PER_CERT * roots.len(), "{ctx}: {rooted} inherited certificates for {} roots", roots.len());
 }
 
 type Essence = (BTreeSet<Key>, SignRule, bool, BTreeMap<Key, BTreeMap<Key, CertId>>, Vec<CertId>, bool);
@@ -639,8 +658,8 @@ fn check(seed: u64, residual: &mut Residual) {
         // 5: bounded. A keyless relay stores nothing (asserted in relay_flood). Every unattested
         // certificate, held or kept, is charged, unless an attestation depends on it: to its own
         // signers that matter at a current head (never to a key that didn't sign it, OWNV-1), or to
-        // the unattested certificates it hangs from. A key's own charges stay within its quota, and
-        // a certificate's inherited ones within theirs.
+        // the unattested certificates it hangs from. Each admission takes room from a key (root)
+        // that had it, so the keys' and roots' quotas bound what is held.
         check_charges(&v, &ctx);
         // 4: the view and the digest don't depend on arrival order.
         for batch in [true, false] {
