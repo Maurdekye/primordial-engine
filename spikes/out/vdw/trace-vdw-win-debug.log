@@ -1,3 +1,3 @@
-trace: 600 frames, 256 bodies, debug profile, 2.2147958s total (3691.3 us/frame), digest 80839f4a54133e13, final world hash f80fc458c3f6fffe -> spikes/out/vdw/trace-vdw-win-debug.txt
-build: debug profile, target x86_64, contact recycling: scale-dependent (engine default)
+trace: 600 frames, 256 bodies, debug profile, 2.4499868s total (4083.3 us/frame), digest cc60208f048dd6d7, final world hash 3c80f05627415299 -> spikes/out/vdw/trace-vdw-win-debug.txt
+build: debug profile, target x86_64, contact recycling: scale-dependent (engine default), worker threads: 1
 RESULT: PASS
