@@ -532,8 +532,11 @@ struct Residual {
     honest_owner_lost: u32,
     owner_gained: u32,
     rule_loosened: u32,
-    /// The rule loosened while the owners stayed the same: concurrent rules must take the strictest.
+    /// The rule loosened with no takeover (the owners the same and no honest change voided):
+    /// concurrent rules must take the strictest.
     loosened_without_takeover: u32,
+    /// Runs in which an honest counting change no longer counts.
+    honest_voided: u32,
     /// Honest histories that forked into two lineages and merged.
     forked: u32,
     /// One-by-one rebuilds that had to send certificates again (a quota or an early attestation).
@@ -622,9 +625,12 @@ fn check(seed: u64, residual: &mut Residual) {
             if !vo.owners.is_subset(&ho.owners) {
                 residual.owner_gained += 1;
             }
+            // A takeover: an owner lost or gained, or an honest change voided.
+            let voided = h.book.inner.certs.keys().any(|id| h.book.counts(*id) && !v.counts(*id));
+            residual.honest_voided += voided as u32;
             if vo.rule < ho.rule || (vo.rule == SignRule::Any) != (ho.rule == SignRule::Any) && vo.rule == SignRule::Any {
                 residual.rule_loosened += 1;
-                if vo.owners == ho.owners {
+                if vo.owners == ho.owners && !voided {
                     residual.loosened_without_takeover += 1;
                 }
             }
@@ -642,8 +648,8 @@ fn adversarial_harness() {
         check(seed, &mut residual);
     }
     println!(
-        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, rule loosened {} (always with a takeover); {} one-by-one rebuilds sent certificates again, then converged",
-        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.rule_loosened, residual.resent
+        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, an honest change voided {}, rule loosened {} (always with a takeover: an owner lost or gained, or an honest change voided); {} one-by-one rebuilds sent certificates again, then converged",
+        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.honest_voided, residual.rule_loosened, residual.resent
     );
     assert_eq!(residual.loosened_without_takeover, 0, "concurrent rules take the strictest; only a takeover loosens");
 }
