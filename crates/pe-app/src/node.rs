@@ -14,7 +14,8 @@ use std::io::Write;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::AtomicU64;
+use std::sync::mpsc::{self, Receiver, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,7 +37,10 @@ const LINGER_US: u64 = 3_000_000;
 
 // R18 link signal (design 10.9): a LEDBAT-style one-way queueing delay (RFC 6817), measured by the
 // receiver from each datagram's send time and echoed back in the datagram stamp (`qrep`).
-/// The base delay is the minimum one-way delay over 12 buckets of 10 s (2 minutes).
+/// The base delay is the minimum one-way delay over 12 buckets of 10 s (2 minutes), expired by time.
+/// Not RFC 6817's 10 minutes (coordinator, review AR-1): clock drift of 100 ppm would move the estimate
+/// by 60 ms over 10 minutes, past the 40 ms trigger. A queue standing longer than 2 minutes becomes the
+/// base (design 10.9's limits; standing queues are the loss rule's job).
 const BASE_BUCKET_US: u64 = 10_000_000;
 const BASE_BUCKETS: usize = 12;
 /// The current delay is the minimum over the last 100 ms or the last 4 samples, whichever spans more.
@@ -55,6 +59,10 @@ const CODEL_TARGET_US: u64 = 5_000;
 const CODEL_INTERVAL_US: u64 = 100_000;
 /// One row of the link series every 250 ms of session time.
 const SERIES_US: u64 = 250_000;
+/// Datagrams the receive thread may hold for the engine; beyond that it drops, as a full kernel
+/// socket buffer would (review AR-2: a flood must not grow memory). The default UDP receive buffers
+/// (64 KB on Windows, about 208 KB on Linux) hold a few hundred to about a thousand of our datagrams.
+const RX_QUEUE: usize = 1024;
 
 /// A scripted change to this node's outgoing links, at a session time.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -143,6 +151,10 @@ impl RxLink {
                 }
             }
         }
+        // Buckets also expire by time (review AR-5): after a long silence the old ones must not stay.
+        while self.base.front().is_some_and(|b| b.0 + BASE_BUCKET_US * BASE_BUCKETS as u64 <= recv_us) {
+            self.base.pop_front();
+        }
         self.recent.push_back((recv_us, owd));
         while self.recent.len() > CURRENT_SAMPLES && self.recent.front().is_some_and(|r| r.0 + CURRENT_US < recv_us) {
             self.recent.pop_front();
@@ -222,6 +234,9 @@ pub struct Traffic {
     pub datagrams_dropped_by_cap: u64,
     #[serde(default)]
     pub datagrams_dropped_by_codel: u64,
+    /// Dropped by the receive thread because the engine's queue was full.
+    #[serde(default)]
+    pub datagrams_dropped_rx_full: u64,
     pub datagrams_received: u64,
     pub bytes_sent: u64,
     pub rejected: BTreeMap<String, u64>,
@@ -263,6 +278,7 @@ pub struct Node {
     sock: UdpSocket,
     /// Datagrams from the receive thread, each with its arrival time (µs since `origin`).
     net_rx: Receiver<(u64, Vec<u8>)>,
+    rx_full: Arc<AtomicU64>,
     origin: Instant,
     leader: u32,
     /// Session time = local time + offset.
@@ -342,7 +358,9 @@ impl Node {
         // the receive time is taken at the socket), so the engine's tick time never reads as R18
         // queueing. The engine thread only sends.
         let origin = Instant::now();
-        let (net_tx, net_rx) = mpsc::channel();
+        let (net_tx, net_rx) = mpsc::sync_channel(RX_QUEUE);
+        let rx_full = Arc::new(AtomicU64::new(0));
+        let full = rx_full.clone();
         let rsock = o.socket.try_clone().expect("clone the socket");
         rsock.set_read_timeout(Some(Duration::from_millis(100))).expect("read timeout");
         std::thread::Builder::new()
@@ -353,8 +371,12 @@ impl Node {
                     match rsock.recv_from(&mut buf) {
                         Ok((n, _)) => {
                             let t = origin.elapsed().as_micros() as u64;
-                            if net_tx.send((t, buf[..n].to_vec())).is_err() {
-                                break;
+                            match net_tx.try_send((t, buf[..n].to_vec())) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    full.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(TrySendError::Disconnected(_)) => break,
                             }
                         }
                         // A timeout lets nothing through; Windows reports an ICMP port-unreachable
@@ -379,6 +401,7 @@ impl Node {
             key: o.key,
             sock: o.socket,
             net_rx,
+            rx_full,
             origin,
             offset_us: 0,
             best_rtt_us: u64::MAX,
@@ -871,7 +894,7 @@ impl Node {
             entries_authored: self.authored,
             clock_offset_us: self.offset_us,
             best_rtt_us: self.best_rtt_us,
-            traffic: self.traffic.clone(),
+            traffic: Traffic { datagrams_dropped_rx_full: self.rx_full.load(Ordering::Relaxed), ..self.traffic.clone() },
             link: LinkSummary {
                 signal_fed: self.link_signal,
                 level_ticks: self.core.level_ms.to_vec(),
@@ -1047,5 +1070,62 @@ impl DrivenPeer for Node {
     }
     fn tick(&mut self) {
         self.step();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A datagram sent at `send_us` (sender clock) arriving at `recv_us` (receiver clock).
+    fn feed(r: &mut RxLink, seq: u16, send_us: u64, recv_us: u64) {
+        r.sample(Stamp { ts: send_us as u32, seq, qrep: QREP_NONE }, recv_us);
+    }
+
+    #[test]
+    fn queue_delay_over_the_base() {
+        let mut r = RxLink::default();
+        // An arbitrary clock offset (3 s) and a steady 25 ms path: no queue.
+        for i in 0..50u64 {
+            feed(&mut r, i as u16, i * 16_667, i * 16_667 + 3_025_000);
+        }
+        assert_eq!(r.q_us, Some(0));
+        // A queue builds to 60 ms and stands: the current filter's minimum follows it.
+        for i in 50..100u64 {
+            feed(&mut r, i as u16, i * 16_667, i * 16_667 + 3_085_000);
+        }
+        assert_eq!(r.q_us, Some(60_000));
+        // One early (unqueued) datagram among late ones: within 4 samples or 100 ms the minimum drops.
+        feed(&mut r, 100, 100 * 16_667, 100 * 16_667 + 3_025_000);
+        assert_eq!(r.q_us, Some(0));
+        assert_eq!((r.received, r.lost), (101, 0));
+    }
+
+    #[test]
+    fn timestamps_wrap_and_buckets_expire_by_time() {
+        let mut r = RxLink::default();
+        // The sender's u32 clock wraps (every 71.6 minutes) between these two datagrams.
+        let s0 = u32::MAX as u64 - 5_000;
+        feed(&mut r, 1, s0, 1_000_000);
+        feed(&mut r, 2, s0 + 10_000, 1_010_000);
+        assert_eq!(r.q_us, Some(0));
+        // 11 minutes of silence (longer than the 2-minute window), then the path is 30 ms longer: the
+        // old base has expired, so the new path is the base, not a 30 ms queue (review AR-5).
+        let t = 1_010_000 + 11 * 60_000_000;
+        feed(&mut r, 3, s0 + 10_000 + 11 * 60_000_000, t + 30_000);
+        assert_eq!(r.q_us, Some(0));
+        assert_eq!(r.base.len(), 1);
+    }
+
+    #[test]
+    fn loss_from_sequence_gaps() {
+        let mut r = RxLink::default();
+        for (i, seq) in [1u16, 2, 5, 4, 6, 65535, 0].into_iter().enumerate() {
+            feed(&mut r, seq, i as u64 * 1000, i as u64 * 1000 + 500);
+        }
+        // 2 → 5 counts 3 and 4 as lost (the late 4 is ignored, not undone); 65535 and 0 are backward
+        // jumps from 6 (reordered or duplicated), ignored.
+        assert_eq!(r.received, 7);
+        assert_eq!(r.lost, 2);
     }
 }
