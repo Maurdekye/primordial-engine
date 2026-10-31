@@ -23,12 +23,12 @@ RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
 RESULT r14 chain: departure of local 48 from C to world 1 (hop in carried: true) -> Some(Accepted)
 RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
 RESULT r14 chain (reverse order): A:40 live copies A 1 (Some("here, chain 2 hops, settled false")), B 0 (Some("left for 3")), C 0 (Some("left for 1")) ; pending escrows 0 -> CONSERVED (back in A, nothing in limbo)
-  m1 world 1: rollbacks 2 max depth 3 resim frames 8 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 15 max depth 3 resim frames 63 (7.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 2 max depth 3 resim frames 6 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 3 max depth 3 resim frames 11 (1.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
-  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
-  m4 world 3: rollbacks 3 max depth 4 resim frames 17 (1.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
+  m1 world 1: rollbacks 2 max depth 3 resim frames 8 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
+  m2 world 1: rollbacks 15 max depth 3 resim frames 63 (8.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 2 max depth 3 resim frames 6 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 11 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
+  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
+  m4 world 3: rollbacks 3 max depth 4 resim frames 17 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 532
 RESULT r14 chain A world 1: frames 0..500 digests m1=a3c7579f1b88e398 m2=a3c7579f1b88e398 | offline replay a3c7579f1b88e398 | ALL EQUAL
 RESULT r14 chain B world 2: frames 0..400 digests m1=74475afa1cbf7ed8 m3=74475afa1cbf7ed8 | offline replay 74475afa1cbf7ed8 | ALL EQUAL
 RESULT r14 chain C world 3: frames 0..480 digests m1=b77c234f750813b9 m4=b77c234f750813b9 | offline replay b77c234f750813b9 | ALL EQUAL

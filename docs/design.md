@@ -816,12 +816,22 @@ every player, perfectly synced, and optimized for CPU and memory.
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
   2. step;
-  3. for each carried body, overwrite its state with the carried bits **only if they differ**.
-* **Why the rule is deterministic:** whether the overwrite fires depends only on the state at *f*. That
-  state depends only on the log. So every peer holding the same log does the same thing, and the result is
-  bit-identical.
+  3. for each carried body, write its state with the carried bits, **always**, whether or not they already
+     match (review SET-1). Writing a pose recomputes the body's centre of mass, rotation0 and world
+     inertia, so a peer that skipped a write that changed nothing would still diverge at the next step on
+     an off-centre body. The touch's impulse wakes the body at *f* on every peer first, so it is awake
+     everywhere when the state is written (SET-2).
+* **Why the rule is deterministic:** the write is the same operation on every peer, at the same frame,
+  with bits taken from the log. In the confirmed history every peer holds the same log, so its world at
+  *f* is the same, contact cache included, and the result is bit-identical.
+* **Known gap, speculative only** [V D58 probe, @vdw-physics]: the write sets the body's bits but not its
+  contact cache. A receiver whose copy differed (it lacked an entry, or is behind) gets the author's bits
+  at *f* but keeps its own contacts, so its copy drifts by about 1e-12 after the next step. The confirmed
+  history is unaffected, since every peer's cache is the same there. A pe-physics item is resetting the
+  body's contacts on a write.
 * **What the rule buys:**
-  * a peer already on the author's world line skips the overwrite and is bit-exact by determinism;
+  * a peer already on the author's world line writes the bits it already holds and stays bit-exact by
+    determinism;
   * a peer that had diverged (it lacked an earlier entry, or hit a bug) gets the touched object pulled onto
     the author's world line at once;
   * so every interaction is also an immediate, object-scoped sync check: R6's "this sync also runs
@@ -1248,7 +1258,15 @@ if our bulk transport proves weak.
   * Ids are never chosen by the peer and never reused.
   * A peer that crashes and rejoins is admitted again under a **new** MemberId, so its sequence numbers
     can never collide with its earlier incarnation's (review C2).
-  * Object ids `(creator MemberId, counter)` stay unique for the life of the session.
+  * Object ids `(creator MemberId, counter)` stay unique for the life of the session. Objects that
+    persist in the world beyond it are stored under the world-scoped form (session id, creator MemberId,
+    counter), so ids from different sessions never collide in a save, a load or a merge (16.10).
+* **The session id** is the BLAKE3 hash of the session's signed genesis entry, which names the world,
+  the genesis members and a fresh random nonce of 256 bits (review SX-1). Two sessions of one world with
+  the same genesis members, such as a home opened twice or an owner reopening a world alone, therefore
+  get different ids. Join requests (10.8) and persisting object ids depend on that. The spike models the
+  session id as a hash of the world and the genesis members only (`session_id`), which is enough for its
+  scenarios, where no two sessions of one world run with the same genesis.
 * **Entries (review C2):**
   * every entry is signed by its author and carries the id of the author's previous entry, so each
     member's entries form a hash chain;
@@ -1481,6 +1499,18 @@ is fixed once the author's chain is contiguous up to it.
   * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
     of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
     **decides** it.
+  * **A proven forker's precommit counts by its signature** (review PF-1, found by @ballpit-viz). Chain
+    order governs every other use of an entry. A replica keeps the first version of a seq it receives,
+    and a member that forks a seq may continue its chain from a version some honest members never hold,
+    so they cannot link its later entries. If its precommit was in the quorum the others decided on,
+    those members could never check that quorum and stayed in the old epoch for good. So the
+    precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
+    in any version, and its proposals are kept by value the same way. This is Tendermint's commit rule,
+    which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
+    member, and an honest member precommits one value per round. Honest members' entries always link,
+    so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
+    own version. Every member decides the join, 1 is removed at 4.23 s, and confirmation goes on. Before
+    the fix, 3, 9 and the joiner stayed in epoch 0 and confirmation stopped at frame 53].
   * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
     together leave in one change [V twosilent].
   * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
@@ -1595,9 +1625,11 @@ is fixed once the author's chain is contiguous up to it.
     attestation in any of them counts. Round 3 kept a joiner's first request, so any peer could pre-empt
     it with an empty one in the joiner's name [V joinsquat: 9 asks in 5's name at 1.9 s, and 5 asks at
     2.0 s with no attestation and at 2.5 s as admin 1's friend; 5 joins as Guest at 2.63 s. Before the
-    fix: never admitted]. The signature names the session (its world and genesis members) and an expiry,
-    so a request cannot be replayed into a later session of the same world, and a change is not proposed
-    with a request whose expiry is before its boundary (review VC4R-6).
+    fix: never admitted]. The signature names the session id and an expiry, so a request cannot be
+    replayed into another session of the same world, and a change is not proposed with a request whose
+    expiry is before its boundary (review VC4R-6). That needs a session id unique per session, even
+    between two sessions of one world with the same genesis members: 10.3's id includes the genesis
+    entry's random nonce (review SX-1).
   * **The change carries the joiner's signed request** (review VC4R-2), and every member judges the join
     from it, never from a request it happens to hold. A joiner's request may reach only some members
     (an outside joiner choosing recipients, or loss); carrying it in the change means a member that
@@ -1621,10 +1653,15 @@ is fixed once the author's chain is contiguous up to it.
     and they would vote the honest capper out. So before a member votes a capper out for an unexplained
     cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
     either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
-    two versions of one prevote proves the proposer equivocated and removes it. Locks and decisions still
-    count one version per member [V prevotefork: proposer 1 sends its prevote for the join to capper 2
-    and nil to observer 3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps
-    2].
+    two versions of one prevote proves the proposer equivocated and removes it. Locks still count one
+    version per member; decisions count a proven forker's precommits in any version (PF-1, under
+    Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
+    3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
+  * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
+    round trip, so if ids the cap named are still missing a further half window after the cap ripened,
+    they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
+    polka id that exists nowhere; 9 is removed at 4.15 s. With the fix off the id is fetched for good, 9 is
+    never removed and confirmation stops at frame 143].
   * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
     member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
     prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
@@ -1701,6 +1738,14 @@ is fixed once the author's chain is contiguous up to it.
     fell behind (review VC4R-3): references that never deliver no longer spare it without end. The silent
     member is removed regardless, because its own references stop [V fakeref: 9 falls silent at 2 s while
     8 fakes references to 9's chain; 9 is removed at 5.2 s].
+  * **A decision resets only the timers its cleared votes made stale** (review VC6R-4). A decision
+    clears every vote of the epoch. A voter froze its target's chain, so its reference to that chain stood
+    still, and the targets of this replica's own votes looked silent or slow to it: only those timers,
+    and new members', restart. Round 6 cleared every reference and suspicion timer at every decision, so a
+    member that forces decisions, with a no-op admin entry every 2 s, kept its own timers from ever
+    ripening [V fakeadmin: 8 fakes references and authors a no-op SetRole every 2 s; 8 is removed at 5.23 s.
+    With the fix off, six decisions reset its timers, 8 is never removed and confirmation stops at frame
+    110].
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
   signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
@@ -1783,16 +1828,20 @@ is fixed once the author's chain is contiguous up to it.
   * A validator accepts a listed admin entry only once it has validated its author's chain up to it, and
     refuses one that validation voided, so a faulty proposer cannot commit a backdated entry either
     (review VC3R-3) [V adminvoid: 9 signs a horizon-void SetRole demoting 3 and proposes a change that
-    lists it; refused, and 3 stays Admin. Before the fix it applied]. The listed entry must also be this
-    member's canonical version at its seq and not disputed, so a forked admin version held only as a
-    duplicate, which a proposer never lists, cannot be committed at one replica and not another (review
-    VC3R-3's low). A forked admin entry does not wedge a lock (review VC5R-1): a change is prevoted or
-    locked only once `change_valid` returns true, which needs the listed entry held, validated and
-    canonical here; and a member proposes only entries that are stable, so an honest round's proposal
-    cannot later turn invalid at an honest member. A fork of the entry that arrives afterwards proves the
-    author equivocated and excludes it, which only shrinks the quorum; it does not unmake a decision a
-    quorum already reached. @design-reviewer could not reproduce a wedge (`adminfork` removes the faulty
-    admin either way); this is the argument, not a run [I].
+    lists it; refused, and 3 stays Admin. Before the fix it applied].
+  * **An admin entry's validity is a pure function of the entry and its ancestry** (review VC6R-3):
+    held, its author's chain validated up to it, and not voided, the same at every replica once it holds
+    the entry. Listing a canonical, undisputed version is only the proposer's choice. Every replica
+    applies the version the change lists, with the outcome the change carries, so a fork cannot be
+    committed at one replica and not another. Round 5 also required the listed version to be canonical
+    and undisputed at the validator (VC3R-3's low), arguing that a member proposes only stable entries,
+    so no lock could turn invalid (VC5R-1). That premise was false: a proposer lists what it has
+    validated, not what is stable. A fork that arrived after members had locked made their value invalid
+    at them, and nothing releases a lock [V adminwedge: faulty admin 9 sends a SetRole to three members
+    while a fourth is cut off, drops its precommits once they lock, crashes, and its fork of the same seq
+    arrives later; 9 is removed at 4.03 s. With the fix off, the locked members find their value's entry
+    disputed, 9 is never removed and confirmation stops at frame 112]. A fork of a listed entry still
+    proves its author equivocated and excludes it, which only shrinks the quorum.
   * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
     admin is a permission of its own, held by default only by admins (V1); the roles permission counts
     as Admin, since it can grant Admin (V2 = (b)); and when the last admin times out the session closes,
@@ -2067,7 +2116,8 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   * No MCP tool issues, widens or renews a certificate.
   * Agents cannot open the dialog either: the user starts the flow from the panel UI.
 * **Agents never get admin scope.** These actions are human-only, and no certificate can carry them:
-  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10) and delegation.
+  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10), delegation, and loading a backup
+  (16.10).
 * **Sub-certificates for restricted sessions (21.3).**
   * A panel key may issue sub-certificates to the restricted sessions it runs (inbox and decider
     sessions, 21.6).
@@ -2110,8 +2160,9 @@ entries that the view change commits (10.8).
   * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
     removes every other player, tells everyone that the session has closed, and allows no further change
     to the world. There is no longer grace period and no automatic handover (V3, 08:31Z).
-    * [proposal] Since the roles permission counts as Admin (V2), a member whose role holds it counts as
-      an admin here, so the session does not close while such a member remains.
+    * Since the roles permission counts as Admin (V2), a member whose role holds it counts as an admin
+      here, so the session does not close while such a member remains (@coordinator-opus's call,
+      following V2, 09:24Z).
 * **Roles.** Admin is built in, holds every permission and is by default the only role. Other roles are
   named subsets of a permission catalogue that admins create and give, live (22:15Z). Resonite's role
   system inspired the catalogue and live reassignment (22:14Z). Ours differs because no single peer
@@ -2119,8 +2170,8 @@ entries that the view change commits (10.8).
   with every other membership change by the view change.
   * The catalogue [proposal]: kick; kick admins (V1: admins only by default); define and give roles,
     which counts as Admin because it can grant Admin (V2 = (b), 08:31Z); change the join rules; interact (touch, grab,
-    hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn
-    and save; use agent panels. The spike checks the first two (10.8).
+    hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn;
+    save checkpoints, load backups and copy world (16.10); use agent panels. The spike checks the first two (10.8).
   * How 12.2's repository roles (`owner`, `builder`, `editor`, `player`, `spectator`) relate to session
     roles is open [proposal: the world's ACL caps what any session role can grant; world owners are
     the ownership chain's, below].
@@ -2705,33 +2756,150 @@ Assets live in the same world repository tree as code and shaders. Large blobs a
   They become signed interactions, are checked against the ACL, and take effect at a frame.
 * Prefabs and assets: `prefab.save` and `asset.import` / `asset.get` / `asset.list`. These become commits.
 
-### 16.10 World saves: autosave, saved checkpoints and backups (Q29, user 08:31Z)
+### 16.10 Keeping a world: autosave, checkpoints and backups (Q29, user 08:31Z)
 
-The user ruled (Q29, 08:31Z): worlds autosave, players also make saved checkpoints by hand, and every
-world keeps a list of backups that can be loaded at any time. @gnosarium-ux designs the UI; this is the
-storage. Everything below beyond the ruling is a proposal [proposal; I, nothing built].
+The user ruled (Q29, 08:31Z): worlds autosave, players also save checkpoints by hand, and every world
+keeps a list of backups that can be loaded at any time. The UI is Gnosarium UX 8a.10, approved by
+@shader-reviewer at 08:40Z; this is the storage and the engine rules it asks for (its need 2i).
+Everything here is a proposal unless marked as a ruling [proposal; I, nothing built]. Revised after
+@design-reviewer's round 1 (SV-1 to SV-11).
 
-* **A save is a content-addressed snapshot of confirmed state.** Its manifest names, by BLAKE3 hash
-  (D16): the world repository commit (logic, shaders and assets; 15, 16.8), the world's state at a
-  confirmed frame, the session configuration that lives with the world (roles and join rules, 12.4) and
-  the head of the world's ownership chain (12.4). Only confirmed state is saved, never speculative state,
-  so a save is the same whoever makes it, and loading it reproduces the check hash of its frame (9.1).
-  With regions (25.5), a save gathers each region's latest confirmed checkpoint; making those agree on
-  one frame is open.
-* **Saves share storage:** records and blobs are stored by hash, so a save costs only what changed since
-  the previous one. The region checkpoints of 25.5 are already such records.
-* **Autosave:** at a confirmed frame every few minutes while the world changes, and once as a session
-  closes, since nothing may change after that (V3, 12.4). Older autosaves thin out, as keyframes do (6.7).
-* **Saved checkpoints:** a member whose role holds "spawn and save" (12.4) names one; checkpoints are
-  never thinned or deleted automatically.
-* **The backup list:** every autosave and checkpoint, with its time, author, label and size, kept with
-  the world by the peers that hold it, its owners first; the blobs travel like assets (16.7).
-* **Loading a backup** during a session is a world-log entry: an admin's signed restore, ordered by the
-  view change like a kick. At its frame every replica replaces the world's state with the save's,
-  verified by hash, so all stay equal. With no session running, a player starts one from any backup.
-* **For the user, through @coordinator-opus:** how often to autosave and how long autosaves are kept;
-  who may load a backup (admins only, or a permission of its own); and whether a checkpoint can be
-  deleted, and by whom.
+**What a load may change** (@coordinator-opus's rulings, 09:34Z, on SV-2 and SV-1):
+* **A load restores world content, never governance.** Ownership, the ACL (`acl/`), roles, join rules,
+  route lists and provenance stay at their current state across a load. So a non-owner Admin cannot use a
+  load to undo a revocation or a demotion, or to bring back a former owner.
+* **Cross-world exits, arrivals, escrow and the seen tables never rewind** (22.6, 22.7). An object that
+  left stays gone, and one that arrived stays: the restored world is the backup's content, minus the
+  objects whose current last-exit record says they have left since, plus the objects that have arrived
+  since, in their current state.
+
+**What a backup is:**
+* **Content:** the world's content tree at a commit (chunk files, logic modules, shaders and assets, by
+  BLAKE3 hash, D16; the tree of 15.1 without `acl/` and the governance fields of `world.toml`) and the
+  runtime image at a check frame (9.2), so restored objects and the logic that runs them always match.
+  Blobs are stored by hash, so a backup costs only what changed since the previous one.
+* **Bound to authority** (SV-8): every backup is taken at a check frame and stores that frame's BLAKE3
+  check hash with the quorum's signed acks of it (9.1, 9.5), and the epoch certificates that say who the
+  quorum was, so a later verifier can check the acks (SW-7). An autosave is also the writing owner's
+  signed commit. A checkpoint row is signed by its saver and carries proof that the saver's role held
+  Save checkpoints at that frame. So a holder cannot plant a backup, and a load checks it against signed
+  data, not only its own bytes. A single-member session has no quorum (9.5), so its backups rest on the
+  owner's signature alone (SW-7).
+* **Object ids that persist are world-scoped** (SW-2): (the creating session's id, creator MemberId,
+  counter), where the session id hashes the session's signed genesis entry with its fresh nonce, so two
+  sessions of one world never share it, even with the same genesis members (10.3, SX-1). A session's own
+  entries may name its own objects by 10.3's session-local (creator, counter); everything stored,
+  loaded or merged uses the world-scoped form. So objects from different sessions never share an id:
+  across a load from an earlier session's backup, with arrivals carried forward, across a head merge,
+  and when the next session opens from either.
+* **The engine build** (SV-4) is recorded in each backup. A load on the same build restores the runtime
+  image exactly. On another build the image's memory layouts no longer apply (9.5, 4.3 rule 7), so the
+  load restores from the version-neutral layer, which every backup writes for that purpose (SW-3): the
+  chunk files and dormant records (25.5.7) for every body, not only for frozen chunks, with logic rebuilt
+  from source under the current toolchain pin.
+  * A module's declared state arena (7.4, 13.4), such as scores or quest flags, is raw guest memory whose
+    layout the build decides, so it crosses builds only through the module's `pe_migrate` (13.4). A
+    module with no migration path from the backup's version restores its components and starts with
+    its arena reset, and the load card names those modules.
+  * A cross-build load also loses the physics caches (contacts, warm starts, sleep timers). Every
+    backup therefore stays loadable at any time, exactly so on its own build, and with these stated
+    losses on another.
+
+**Autosave:**
+* Every 5 minutes while the world changes, and once as a session ends (V3), the session's edits are
+  written into the world, so the next session starts with them. Until then the engine keeps them as
+  session state (25.5.7).
+* A write is a commit to the world repository (15), signed by an owner's client while an owner is
+  present. With no owner present, edits wait as session state, listed for the owners, and are written
+  when an owner next joins, unless the owners let builders write (8a.10). Builders writing needs a
+  delegation certificate from an owner (as in 12.3) that lets them sign head references; under it the
+  head tie-break below is in builders' hands too (SW-5). Until they are written, a new session starts
+  without the pending edits, from the world's current head.
+* **The world's head** (SV-3) is an owner-signed head reference: "head = commit C, from parent P". Every
+  holder computes the same head from signed data alone; arrival order never counts. Two references from
+  the same parent are a detectable conflict, as in the ownership chain:
+  * if their changes touch disjoint paths, they merge as 15.3 merges two commits from one parent, and no
+    card is shown;
+  * if they overlap, both heads are kept and the owners see 8a.10's compare card (Keep this one, or Keep
+    both as versions). Until they choose, every holder opens from the head whose reference has the lower
+    hash. A writer can grind that tie-break, but it only decides which version opens until the owners
+    choose, and both stay kept;
+  * owner-less edits written later name as parent the head their session started from, so they follow
+    the same rule.
+  * Runtime state is stored per chunk (the dormant records above), so two autosaves overlap only where
+    they changed the same chunks (SW-6). Shared tables have their own rules: creator counters merge by
+    maximum, and the cross-world tables change only in the trading-lease holder's head (below), so a
+    merge never has to combine them.
+* **Two live instances and cross-world trade** (SW-1; @coordinator-opus's ruling (a), 09:51Z): only one
+  live session of a world trades across worlds at a time. It holds a trading lease bound to the
+  owner-signed head reference, and other instances refuse `Depart` and `Arrive`. The lease (granting,
+  fencing, hand-off, expiry, what other instances show) is designed in
+  @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t.
+
+**The backup list** holds four kinds (8a.10): **checkpoints**, kept until an owner deletes them;
+**autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
+(8a.10's schedule); **session ends**, one for each closed session; and **before load**, one for each load.
+* Owners, and anyone whose role has Load backups (the Admin role has it), see the list. Anyone who sees
+  it may rename a backup; only owners delete.
+* Renames and deletions are signed and versioned (SV-8). A deletion is a signed tombstone, so a deleted
+  checkpoint does not come back from another holder.
+* Every holder of the world keeps the list and thins autosaves by the schedule, locally. A thinned
+  autosave that another holder still offers is authentic, only older, so thinning needs no signature.
+* Backups travel with the world, like its chunk files.
+
+**Loading a backup:**
+* It is a human action: no agent certificate can carry it (12.3). It needs the Load backups permission,
+  checked at the load entry's ordered frame like a kick, so a load queued by an admin demoted earlier in
+  that order is refused. The entry names the backup by its manifest hash, not by its row (SV-10).
+* **In a live session** it lands like a divergence repair, as a state transfer (9.5) at an activation
+  frame A. This section owns the rule (9.3 and 9.5 have no such step):
+  * The load entry is ordered by the view change, like a kick, and fixes the peer set: the members of
+    the epoch that ordered it, less any removed meanwhile (SV-6). Joiners during the wait do not count.
+  * Each member confirms in its acks that it holds the backup (its chunks and runtime image, fetched if
+    missing). A is the frame at which the last confirmation is confirmed plus a lead of at least the
+    speculation window W and a margin (SV-5), rounded up so that A − 1 is a check frame (SW-7). Both
+    are functions of the log, so every peer computes the same A.
+  * **The deadline** (SW-4): if 30 s after the ordered frame not every member has confirmed, the load
+    activates only if a quorum of the fixed peer set has. Otherwise it is cancelled and everyone is
+    told, so a member that never confirms can only cause a retry, which an admin can follow with a kick.
+    On the deadline path A is set the same way, from the frame at which the deadline was reached.
+  * At A, a member still without the backup (at most n − q of them) pauses, as for a missing artifact
+    (D17), and the view-change timers, which keep their quorum, remove it if it stays paused. Admins see
+    who has not confirmed.
+  * Once the load entry is ordered, new departures to other worlds are refused until A (SV-9), so the
+    transfers in flight are a fixed set. The load waits for them to settle; an arrival stamped at or
+    after A applies to the restored world.
+  * **The before-load backup** (SV-7) is the world at A − 1, a check frame: a pure function of the log,
+    so every peer produces the same one, and its check hash, signed by the quorum's acks, is stored with
+    it. The load entry names it by that frame, not by its hash, and it needs no signature of its own.
+  * **Entries after the switch** (SV-5): an entry stamped at or after A counts only if its author's
+    chain acknowledged the activation before it, that is, holds an ack referencing the entry that fixed
+    A (the last confirmation, or on the deadline path the load entry; SW-7). Any other was authored
+    against the pre-load world, so it is rejected deterministically, carried state and all. The lead of
+    at least W lets an honest author acknowledge in time.
+  * **Object ids** (SV-5, SW-2): restored objects keep their world-scoped ids, so none collides with
+    another session's. Within this session each creator's counter continues from the larger of its
+    current and restored values, so no new id reuses a restored one. Every entry counted after A was
+    authored against the restored world, so an id always names the restored object; entries before A
+    named pre-load objects and applied before the switch.
+  * The restored store's frame field becomes A, so check hashes after the load compare from A.
+  * People are not world state: avatars, scale and voice stay; anyone inside restored geometry moves to
+    the nearest clear spot; held objects are released and restored.
+  * Two loads activate in log order, even if the second's confirmations finish first (SV-10).
+* **With nobody in the world** (SV-11): a load is an owner-signed commit outside any session that moves
+  the world's head to the backup's content, with governance and the cross-world tables carried forward
+  as above. The next session starts from it.
+* **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
+  owner is whoever opens it. It needs the Copy world permission, held only by owners by default
+  (@coordinator-opus's direction, 08:35Z). The copy re-mints its objects' births in the new world, so
+  they can later be exported from it (SV-11).
+
+**Regions** (25.5; @design-reviewer's proposal): a save is a world-log entry stamped at a check frame F.
+Each region writes its checkpoint at F once it has confirmed F, a pure function as the before-load
+backup is; frozen regions contribute their `Frozen` records; cross-region perturbations stamped before F
+belong to their source region's state at F (25.5.5). The backup is complete when every region has
+confirmed F. This costs each region either images kept back to F or a re-simulation from its last
+checkpoint before F. A load activates per region at one world-log frame, by the same rule.
 
 ---
 
@@ -4698,7 +4866,7 @@ What moved, and why:
    remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), the 60 Hz fallback (D76) and
    opt-in input delay (D41).
 2. **Determinism beyond the machines tested.** With the engine's physics (vdW on), main (d79f160) is
-   byte-identical on this PC in five build settings, on <laptop> (Intel, also with `target-cpu=native`) and
+   byte-identical on this PC in five build settings, on a second Windows machine (an Intel laptop, also with `target-cpu=native`) and
    as a Linux musl build, the four wasm modules included [V @design-reviewer's re-check; report
    `determinism-main-d79f160.md` in its working folder]. ARM and macOS never ran. Parallel stepping (D2) must
    stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
@@ -4740,7 +4908,7 @@ What moved, and why:
 
 Phase 2 split into packages that can be staffed in parallel, one agent each. @engine-architect keeps the
 protocol core (P2-3, P2-4) and design ownership, and integrates. Already running and not listed: the
-parallel Box3D feasibility study (D2, @vdw-physics) and the <laptop> and Linux determinism re-check on main
+parallel Box3D feasibility study (D2, @vdw-physics) and the Intel-laptop and Linux determinism re-check on main
 (@design-reviewer).
 
 Rules for every package:
@@ -4815,18 +4983,30 @@ Rules for every package:
   behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
   windows), and the RG-1 control fails L1. **Landed on main at 5ba3eab (31 October)**, with the P2-9
   tool brought onto the landed API at f05324f.
-  **Three one-faulty-member liveness halts are known open, to be fixed as round 7 on main** (they do not
-  touch safety — every replica still agrees — only liveness):
-  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, proposes a change listing the honest
-    version, and crashes; honest members lock on it and the fork that arrives later disputes the version
-    they hold, so the lock never clears. The round-5 argument (a proposer lists only stable entries) was
-    wrong: `admin_pending` fills at validation. Fix: admin validity a pure function of the change's
-    bytes, or listed admin entries must be stable at the validator.
-  * **VC6R-1** (`capfake`): a capped precommit whose polka lists an id that exists nowhere is retried
-    forever and never votes the capper out. Fix: after one fetch budget, vote it out.
-  * **VC6R-4** (`fakeadmin`): a member authoring a no-op admin entry every epoch, plus a pure fake
-    reference, has its reference timers cleared by every decision (VC5R-4 clears them all). Fix: clear
-    only the pairs whose vote a decision answered.
+  **Round 7 on main fixed the three one-faulty-member liveness halts that round 6's review found, and a
+  fourth that @ballpit-viz found while mirroring `prevotefork`** (none touched safety: every replica
+  still agreed). Each repro fails with its fix switched off and passes with it, and each now checks that
+  confirmation is still live at the end of the run. Round 6's `prevotefork` checked only the vote it
+  targeted, and passed while the session had halted:
+  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, honest members lock on a change listing one
+    version, and the fork arriving later disputed it, so the lock never cleared. Admin validity is now a
+    pure function of the entry and its ancestry (`fix::VC6R3`) [V: 9 removed at 4.03 s; off: never,
+    confirmation stops at frame 112].
+  * **VC6R-1** (`capfake`): a capped precommit whose polka names an id that exists nowhere was fetched
+    forever. The fetch now has a budget of a further half window, after which the capper is voted out
+    (`fix::VC6R1`) [V: 9 removed at 4.15 s; off: never, frame 143].
+  * **VC6R-4** (`fakeadmin`): a member forcing a decision every 2 s with a no-op admin entry kept its own
+    reference timers from ripening, because every decision cleared them all. A decision now resets only
+    the timers its cleared votes made stale (`fix::VC6R4`) [V: 8 removed at 5.23 s; off: never, frame
+    110].
+  * **PF-1** (`prevotefork`): a member that forks one seq continued its chain from a version that some
+    honest members never held. They could not link its later entries, so they could not count its
+    precommit in the quorum the others decided on, and they stayed in the old epoch. A proven forker's
+    precommits now count toward a decision wherever they sit in its chain (`fix::PF1`) [V: every member
+    decides, the forker is removed at 4.23 s; off: 3, 9 and the joiner stay in epoch 0, and confirmation
+    stops at frame 53]. The fixture had also lost 9's prevote for good, repairs included. That made 9 a
+    second faulty member of four, beyond t = 1, so the loss now ends at 2.5 s. `fixes_off` is now 64 bits
+    wide.
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
@@ -4846,7 +5026,7 @@ Rules for every package:
   x86-64 CPUs. ARM64 is deferred: no ARM machine is available.
 * Skills: build and CI engineering, cross-compilation, scripting.
 * Depends on: nothing. **Settled (user, 19:58Z): CI runs on local machines only:** this PC's Windows and
-  WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
+  WSL, plus an Intel laptop; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
 * **Status (2026-10-31)** [V]: `scripts/run_matrix.sh`, with columns win, glibc, musl and laptop (docs/p2-6-p2-7-matrix.md). **PASS: 72 outputs equal on 4 machines** (spikes/out/matrix/matrix.txt). A difference names its first differing output and line.

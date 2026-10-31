@@ -2,22 +2,14 @@
 # name per line. `regress` reports them instead of failing on them as orphans; each name leaves this
 # list when its scenario file arrives (see README).
 #
-# Landing P2-4 on main (5ba3eab) brought the spike to round 6.2 while this tool carried the round-4
-# mirror (a2b0b17), so these wait for @ballpit-viz's round-5/6 mirror. No log here was re-blessed.
+# P2-4 round 7 (on main) waits for @ballpit-viz's delta 5. No log here was re-blessed.
 #
-# New spike scenarios of rounds 5-6, with no scenario file yet:
-p2-4-adminfork      # round 6 (VC5R-1's argument): a faulty admin's forked entry
-p2-4-fakemix        # round 6 (reviewer): fake references mixed with a live offset
-p2-4-joinwedge      # round 5 (VC4R-2): a join request seen by part of the session, plus a crash
-p2-4-prevotefork    # round 6 (VC4R-1): an equivocated prevote; the capped precommit's polka
-p2-4-slowref        # round 5 (VC4R-3): fake references shielding a slow member
-randsched           # round 5: the randomized schedule generator; to become a non-log check
+# New spike scenarios of round 7, with no scenario file yet:
+p2-4-adminwedge     # VC6R-3: a forked admin entry after the lock; admin validity is pure
+p2-4-capfake        # VC6R-1: a capped precommit whose polka names an id that exists nowhere
+p2-4-fakeadmin      # VC6R-4: a faker forcing a decision every 2 s with a no-op admin entry
 #
-# P2-9 fault scenarios whose output shifted with P2-4 rounds 5-6. Each still runs ALL EQUAL with a
-# matching offline replay and no false checks; only counts and timings moved. Their scenario files
-# are removed until re-mirrored: restore them from 5ba3eab:tools/session-sim/scenarios/faults/.
-fault-asymmetric
-fault-capped
-fault-crash-recover
-fault-partition-evict
-fault-partition-heal
+# Changed by round 7: the fixture no longer loses 9's prevote for good (beyond t = 1), and the run
+# gains a PF-1 control and liveness checks. The round-6 mirror is removed until re-mirrored; restore
+# it from 7ac2de9:tools/session-sim/scenarios/p2-4-review/p2-4-prevotefork.toml.
+p2-4-prevotefork
