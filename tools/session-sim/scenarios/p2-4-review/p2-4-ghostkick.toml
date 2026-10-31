@@ -1,0 +1,33 @@
+description = """
+P2-4 review round 3, VCR-1: at 2 s, 9 votes against 2 for a kick that does not exist. Part 1 runs \
+with VCR-1's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[byzantine]]
+kind = "ghost_vote"
+member = 9
+at_ms = 2000
+target = 2
+kick = 0xDEADBEEF
+to = [1, 2, 3]
+
+[[part]]
+world.1.fixes_off = ["VCR1"]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist)", fix = "VCR-1's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "ghostkick" },
+    { kind = "confs", honest = [1, 2, 3], label = "ghostkick" },
+    { kind = "verdict", honest = [1, 2, 3], label = "ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist)" },
+]

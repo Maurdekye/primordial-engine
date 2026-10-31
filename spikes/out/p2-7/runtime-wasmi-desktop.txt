@@ -1,0 +1,46 @@
+# Run time under wasmi (iter-host, wasmi-eager), this PC through heavy.sh: noisy. Built with the reproducible flags (sepmap).
+# logic_mono: iter-host matrix <wasm> wasmi-eager (tick_ms_median, 200 frames); physics_in_wasm: iter-host physics <wasm> wasmi-eager (600-frame pile).
+# Profiles: logic_mono release = opt 3, LTO, 1 CGU; rel-fast = opt 3, no LTO, 16 CGUs, incremental.
+#   physics_in_wasm guest = wasm-guest (opt s, LTO, 1 CGU); lto3 = the same at opt 3; fast = opt 3, no LTO, 16 CGUs, incremental.
+# Sizes: logic_mono release 253825 B, rel-fast 249543 B; physics guest 461047 B, lto3 585416 B, fast 623002 B.
+# Medians of 3 runs (raw lines below):
+#   logic_mono n=1000:  release 0.522 ms/tick, rel-fast 0.508
+#   logic_mono n=10000: release 7.194 ms/tick, rel-fast 7.532
+#   physics_in_wasm:    guest 8.064 ms/frame (compile 8.73 ms), lto3 7.099 (11.33 ms), fast 7.191 (16.85 ms)
+# digest 80839f4a54133e13 in every physics run (iter-host's digest_matches_native compares with its upstream-physics native run).
+== logic_mono release rep 1
+{"kind":"tick","rt":"wasmi-eager","n":1000,"frames":200,"tick_ms_median":0.5508,"tick_ms_p10":0.4876,"tick_ms_p90":0.6600,"tick_ms_mean":0.5676,"fuel_per_frame":0,"alive_end":779,"wall_ms_incl_warmup":130.7}
+{"kind":"tick","rt":"wasmi-eager","n":10000,"frames":200,"tick_ms_median":7.4180,"tick_ms_p10":6.0029,"tick_ms_p90":8.7642,"tick_ms_mean":7.4701,"fuel_per_frame":0,"alive_end":6050,"wall_ms_incl_warmup":1775.2}
+== logic_mono rel-fast rep 1
+{"kind":"tick","rt":"wasmi-eager","n":1000,"frames":200,"tick_ms_median":0.5081,"tick_ms_p10":0.4558,"tick_ms_p90":0.6285,"tick_ms_mean":0.5355,"fuel_per_frame":0,"alive_end":779,"wall_ms_incl_warmup":125.0}
+{"kind":"tick","rt":"wasmi-eager","n":10000,"frames":200,"tick_ms_median":7.5321,"tick_ms_p10":5.8310,"tick_ms_p90":10.0892,"tick_ms_mean":7.7733,"fuel_per_frame":0,"alive_end":6050,"wall_ms_incl_warmup":1890.8}
+== physics guest rep 1
+{"kind":"physics","rt":"wasmi-eager","compile_ms":8.73,"ms_per_frame_median":8.5396,"digest":"80839f4a54133e13","digest_matches_native":false}
+== physics lto3 rep 1
+{"kind":"physics","rt":"wasmi-eager","compile_ms":11.33,"ms_per_frame_median":7.1266,"digest":"80839f4a54133e13","digest_matches_native":false}
+== physics fast rep 1
+{"kind":"physics","rt":"wasmi-eager","compile_ms":17.26,"ms_per_frame_median":7.0248,"digest":"80839f4a54133e13","digest_matches_native":false}
+== logic_mono release rep 2
+{"kind":"tick","rt":"wasmi-eager","n":1000,"frames":200,"tick_ms_median":0.4958,"tick_ms_p10":0.4608,"tick_ms_p90":0.5355,"tick_ms_mean":0.4973,"fuel_per_frame":0,"alive_end":779,"wall_ms_incl_warmup":115.9}
+{"kind":"tick","rt":"wasmi-eager","n":10000,"frames":200,"tick_ms_median":7.1937,"tick_ms_p10":5.2229,"tick_ms_p90":9.2426,"tick_ms_mean":7.1650,"fuel_per_frame":0,"alive_end":6050,"wall_ms_incl_warmup":1698.2}
+== logic_mono rel-fast rep 2
+{"kind":"tick","rt":"wasmi-eager","n":1000,"frames":200,"tick_ms_median":0.4829,"tick_ms_p10":0.4326,"tick_ms_p90":0.5956,"tick_ms_mean":0.4961,"fuel_per_frame":0,"alive_end":779,"wall_ms_incl_warmup":115.5}
+{"kind":"tick","rt":"wasmi-eager","n":10000,"frames":200,"tick_ms_median":7.2937,"tick_ms_p10":5.4103,"tick_ms_p90":9.3357,"tick_ms_mean":7.4040,"fuel_per_frame":0,"alive_end":6050,"wall_ms_incl_warmup":1803.4}
+== physics guest rep 2
+{"kind":"physics","rt":"wasmi-eager","compile_ms":8.29,"ms_per_frame_median":7.6243,"digest":"80839f4a54133e13","digest_matches_native":false}
+== physics lto3 rep 2
+{"kind":"physics","rt":"wasmi-eager","compile_ms":11.07,"ms_per_frame_median":7.0987,"digest":"80839f4a54133e13","digest_matches_native":false}
+== physics fast rep 2
+{"kind":"physics","rt":"wasmi-eager","compile_ms":13.48,"ms_per_frame_median":7.2148,"digest":"80839f4a54133e13","digest_matches_native":false}
+== logic_mono release rep 3
+{"kind":"tick","rt":"wasmi-eager","n":1000,"frames":200,"tick_ms_median":0.5225,"tick_ms_p10":0.4711,"tick_ms_p90":0.6435,"tick_ms_mean":0.5402,"fuel_per_frame":0,"alive_end":779,"wall_ms_incl_warmup":125.2}
+{"kind":"tick","rt":"wasmi-eager","n":10000,"frames":200,"tick_ms_median":6.7170,"tick_ms_p10":5.0965,"tick_ms_p90":8.4628,"tick_ms_mean":6.8314,"fuel_per_frame":0,"alive_end":6050,"wall_ms_incl_warmup":1654.1}
+== logic_mono rel-fast rep 3
+{"kind":"tick","rt":"wasmi-eager","n":1000,"frames":200,"tick_ms_median":0.5241,"tick_ms_p10":0.4576,"tick_ms_p90":0.6581,"tick_ms_mean":0.5437,"fuel_per_frame":0,"alive_end":779,"wall_ms_incl_warmup":126.3}
+{"kind":"tick","rt":"wasmi-eager","n":10000,"frames":200,"tick_ms_median":7.6999,"tick_ms_p10":5.7771,"tick_ms_p90":9.5840,"tick_ms_mean":7.7390,"fuel_per_frame":0,"alive_end":6050,"wall_ms_incl_warmup":1879.0}
+== physics guest rep 3
+{"kind":"physics","rt":"wasmi-eager","compile_ms":9.82,"ms_per_frame_median":8.0644,"digest":"80839f4a54133e13","digest_matches_native":false}
+== physics lto3 rep 3
+{"kind":"physics","rt":"wasmi-eager","compile_ms":15.78,"ms_per_frame_median":6.7049,"digest":"80839f4a54133e13","digest_matches_native":false}
+== physics fast rep 3
+{"kind":"physics","rt":"wasmi-eager","compile_ms":16.85,"ms_per_frame_median":7.1910,"digest":"80839f4a54133e13","digest_matches_native":false}

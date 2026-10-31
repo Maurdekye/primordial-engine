@@ -33,10 +33,10 @@ RESULT r14 doublespend: dishonest-majority W (provenance on): A:52 A 1 B 1 pendi
 RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 12946805040218634843 (transfers 6882476687751125207 and 4587218560037585746); verifies for a third party: true
   m2 world 6: rollbacks 2 max depth 4 resim frames 11 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
   m3 world 6: rollbacks 1 max depth 3 resim frames 3 (0.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
-  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (3.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (8.4 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (3.8 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (9.5 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
   m1 world 2: rollbacks 3 max depth 3 resim frames 9 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (1.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (2.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 doublespend A world 1: frames 0..500 digests m1=1a078eb019999fbc m2=1a078eb019999fbc | offline replay 1a078eb019999fbc | ALL EQUAL
 RESULT r14 doublespend B world 2: frames 0..400 digests m1=14f89337f1e4c15e m3=14f89337f1e4c15e | offline replay 14f89337f1e4c15e | ALL EQUAL
 RESULT r14 doublespend W world 6: frames 0..480 digests m2=1e35feadc06afc87 m3=1e35feadc06afc87 | offline replay 1e35feadc06afc87 | ALL EQUAL

@@ -1,0 +1,5 @@
+description = "As ballpit-60hz, with 4 frames of input delay: hand entries are stamped 4 frames ahead."
+include = ["ballpit-60hz.toml"]
+
+[world.1.plan]
+1 = [{ ballpit_sweep = { ahead = 4 } }]

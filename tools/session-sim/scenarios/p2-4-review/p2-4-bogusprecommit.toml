@@ -1,0 +1,45 @@
+description = """
+P2-4 review round 2, VC-4: at 2 s, 9 signs a precommit for no proposal whose boundary is 1 (parts \
+1 and 2), or just ahead of its horizon (parts 3 and 4). Confirmation must not stop for good. Each \
+case runs with VC-4's fix switched off, then as shipped."""
+include = ["../common/review.toml"]
+end_ms = 9000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[part]]
+world.1.fixes_off = ["VC4"]
+byzantine = [{ kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, boundary = 1, to = [1, 2, 3] }]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "bogusprecommit part 1 (9 signs a precommit with boundary 1)", fix = "VC-4's fix" },
+]
+
+[[part]]
+byzantine = [{ kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, boundary = 1, to = [1, 2, 3] }]
+report = [
+    { kind = "membership", honest = [1, 2, 3], label = "bogusprecommit-1" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "bogusprecommit-1" },
+    { kind = "confs", honest = [1, 2, 3], label = "bogusprecommit-1" },
+    { kind = "verdict", honest = [1, 2, 3], label = "bogusprecommit part 1 (9 signs a precommit with boundary 1)" },
+]
+
+[[part]]
+world.1.fixes_off = ["VC4"]
+byzantine = [{ kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, ahead = 30, to = [1, 2, 3] }]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon)", fix = "VC-4's fix" },
+]
+
+[[part]]
+byzantine = [{ kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, ahead = 30, to = [1, 2, 3] }]
+report = [
+    { kind = "membership", honest = [1, 2, 3], label = "bogusprecommit-2" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "bogusprecommit-2" },
+    { kind = "confs", honest = [1, 2, 3], label = "bogusprecommit-2" },
+    { kind = "verdict", honest = [1, 2, 3], label = "bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon)" },
+]

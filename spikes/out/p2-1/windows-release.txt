@@ -1,11 +1,11 @@
-commit c3e75c71c0c5c457a3966d68852ca4033431365c
+commit a71c2a332b1431d19a261585285f8139f2418458
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
    Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-core)
    Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
-    Finished `release` profile [optimized] target(s) in 3.77s
+    Finished `release` profile [optimized] target(s) in 3.28s
      Running unittests src\lib.rs (target\release\deps\pe_core-29ac9d17aaef031b.exe)
 
 running 19 tests
@@ -53,7 +53,7 @@ test rollback_resimulation_is_identical ... ok
 test serialization_round_trip_is_bit_exact ... ok
 test snapshot_is_isolated_from_later_writes ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
      Running tests\store.rs (target\release\deps\store-85e5ac7963473179.exe)
 

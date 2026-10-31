@@ -33,6 +33,7 @@ pub use session::{
 };
 pub use snapshot::{
     clone_world_via_snapshot, compute_layout_hash, deserialize_into_shell, serialize_world,
+    image_world_settings, world_settings,
     SNAP_FLAG_DOUBLE_PRECISION, SNAP_FLAG_VALIDATION, SNAP_LAYOUT_VERSION, SNAP_MAGIC,
     SNAP_VERSION,
 };

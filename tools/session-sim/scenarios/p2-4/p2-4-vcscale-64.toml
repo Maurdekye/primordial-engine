@@ -1,0 +1,25 @@
+description = """
+World-log eviction at scale (design 25.5.2): 64 members in a log-only world (no bodies), acks \
+every 30 frames; the last 2 go silent at t = 1 s. Reports when each other member decided. The \
+line ends with the run's wall time, which regress masks."""
+end_ms = 7000
+
+[world.1]
+members_range = [1, 64]
+scene = "empty"
+epoch_ms = 100
+ack_every_frames = 30
+
+[net]
+seed = 7
+link = { delay_ms = 30, jitter_ms = 10 }
+
+[[fault]]
+involves = [63, 64]
+after_ms = 1000
+drop = true
+
+[[report]]
+kind = "check"
+case = "vcscale"
+silent = 2
