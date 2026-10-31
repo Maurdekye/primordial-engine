@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use pe_physics::{
     BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig, PhysicsError,
-    PhysicsWorld, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
+    PhysicsWorld, Pose, Push, ShapeDesc, Transfer, WorldImage, WriteBack,
 };
 use pe_sim::{Registry, SimStore, Transform};
 
@@ -561,4 +561,70 @@ fn hull_and_shape_counts_bounded() {
     pw.add_body(id(3), &many).unwrap();
     assert!(invalid(pw.add_body(id(4), &many.clone().with_shape(sphere()))));
     assert_eq!(pw.body_count(), 2);
+}
+
+fn bits(p: Pose, v: ([f32; 3], [f32; 3])) -> Vec<u64> {
+    let f32s = p.rotation.iter().chain(&v.0).chain(&v.1).map(|c| c.to_bits() as u64);
+    p.position.iter().map(|c| c.to_bits()).chain(f32s).collect()
+}
+
+/// Carried state (P2-3): a pose and velocities read from one world and written into a body of
+/// another land bit for bit, and the two then step identically. Refusals change nothing.
+#[test]
+fn carried_state_lands_exactly() {
+    let mut a = world(PhysicsConfig::engine());
+    let mut b = world(PhysicsConfig::engine());
+    for pw in [&mut a, &mut b] {
+        pw.add_body(id(1), &ground()).unwrap();
+    }
+    a.add_body(id(2), &ball(3.0).with_velocity([0.7, 0.0, -0.2], [0.3, 1.1, 0.0])).unwrap();
+    b.add_body(id(2), &ball(9.0)).unwrap();
+    run(&mut a, 37);
+    let (pose, vel) = (a.pose(id(2)).unwrap(), a.velocity(id(2)).unwrap());
+    assert_ne!(pose.rotation, [0.0, 0.0, 0.0, 1.0], "a rotation that is not trivially unit");
+    b.set_pose(id(2), pose).unwrap();
+    b.set_velocity(id(2), vel.0, vel.1).unwrap();
+    assert_eq!(bits(b.pose(id(2)).unwrap(), b.velocity(id(2)).unwrap()), bits(pose, vel), "exact bits");
+    assert_eq!(b.box3d_hash().unwrap(), a.box3d_hash().unwrap());
+    assert_eq!(run(&mut b, 30), run(&mut a, 30), "then they step identically");
+
+    let before = b.state_hash().unwrap();
+    let pose = b.pose(id(2)).unwrap();
+    assert!(invalid(b.set_pose(id(2), Pose { rotation: [0.0, 0.0, 0.0, 1.001], ..pose })), "not unit: refused, not renormalized");
+    assert!(invalid(b.set_pose(id(2), Pose { rotation: [f32::NAN, 0.0, 0.0, 1.0], ..pose })));
+    assert!(invalid(b.set_pose(id(2), Pose { position: [f64::NAN, 0.0, 0.0], ..pose })));
+    assert!(invalid(b.set_pose(id(2), Pose { position: [2.0e6, 0.0, 0.0], ..pose })));
+    assert!(invalid(b.set_velocity(id(2), [1.0e5, 0.0, 0.0], [0.0; 3])));
+    assert!(invalid(b.set_velocity(id(2), [0.0; 3], [f32::NAN, 0.0, 0.0])), "the linear part is not written either");
+    assert!(invalid(b.set_pose(id(1), pose)), "static body");
+    assert!(invalid(b.set_velocity(id(1), [1.0, 0.0, 0.0], [0.0; 3])), "static body");
+    assert_eq!(b.set_pose(id(7), pose), Err(PhysicsError::NotBound(id(7))));
+    assert_eq!(b.state_hash().unwrap(), before, "a refused call changed the world");
+}
+
+/// set_target (hands): a kinematic body reaches its target pose after dt.
+#[test]
+fn targets_drive_hands() {
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    let hand = BodyDesc::new(BodyKind::Kinematic, [0.0, 1.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
+    pw.add_body(id(2), &hand).unwrap();
+    // 30 degrees about y: Box3D turns a body by at most 45 degrees per step.
+    let (s, c) = 15f32.to_radians().sin_cos();
+    let target = Pose { position: [0.5, 1.2, -0.3], rotation: [0.0, s, 0.0, c] };
+    pw.set_target(id(2), target, DT, true).unwrap();
+    pw.step(DT).unwrap();
+    let got = pw.pose(id(2)).unwrap();
+    let d = got.position.iter().zip(&target.position).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let dot: f32 = got.rotation.iter().zip(&target.rotation).map(|(a, b)| a * b).sum();
+    assert!(d < 1.0e-5 && dot.abs() > 1.0 - 1.0e-5, "hand at {got:?}, target {target:?}");
+
+    let before = pw.state_hash().unwrap();
+    for dt in [0.0, -1.0, 1.0e-4, 2.0, f32::NAN] {
+        assert!(invalid(pw.set_target(id(2), target, dt, true)), "dt {dt}");
+    }
+    assert!(invalid(pw.set_target(id(2), Pose { rotation: [0.0, 0.0, 0.0, 0.5], ..target }, DT, true)));
+    assert!(invalid(pw.set_target(id(2), Pose { position: [0.0, f64::INFINITY, 0.0], ..target }, DT, true)));
+    assert!(invalid(pw.set_target(id(1), target, DT, true)), "static body");
+    assert_eq!(pw.state_hash().unwrap(), before);
 }
