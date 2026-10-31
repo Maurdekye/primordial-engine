@@ -32,4 +32,5 @@ done <<< "$bins"
 wsl.exe -e sh -c "uname -srm" < /dev/null
 rm -rf target/linux-out
 low wsl.exe -e bash -c "cd \"\$(wslpath '$root')\" && PE_BIN=target/$target/release PE_OUT=target/linux-out bash scripts/run_session_sim.sh --pe > target/linux-run-full.log 2>&1; tail -1 target/linux-run-full.log" < /dev/null
-SKIP='^fault-' BASE=spikes/out/session-sim-pe MINE=target/linux-out/session-sim-pe bash scripts/compare_session_logs.sh HEAD
+# The tool's own goldens (fault-*, ownership: tool scenarios only) are checked by run_linux_regress.sh.
+SKIP='^fault-|^ownership\.log$' BASE=spikes/out/session-sim-pe MINE=target/linux-out/session-sim-pe bash scripts/compare_session_logs.sh HEAD
