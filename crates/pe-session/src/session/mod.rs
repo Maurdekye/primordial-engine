@@ -241,6 +241,19 @@ pub struct SimConfig {
     pub ack_heads: bool,
     /// How far ahead of its present a proposer puts a join's boundary frame (P2-4).
     pub join_lead: u64,
+    /// Which touches claim (8.4). `D72` is the rule; `Spike` keeps the spike's earlier rule only so
+    /// the P2-3 S4 comparison can show the switch is the one change. Removed after P2-3's review.
+    pub claim_rule: ClaimRule,
+}
+
+/// See [`SimConfig::claim_rule`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimRule {
+    /// D72: only grabs claim, and only a grab can be refused.
+    D72,
+    /// The spike: every touch claims its object for CLAIM_FRAMES (a grab renews a held claim), and
+    /// any touch can be refused.
+    Spike,
 }
 
 impl Default for SimConfig {
@@ -259,6 +272,7 @@ impl Default for SimConfig {
             vc_timeout_step: 10,
             ack_heads: true,
             join_lead: 60,
+            claim_rule: ClaimRule::D72,
         }
     }
 }

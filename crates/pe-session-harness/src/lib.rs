@@ -418,7 +418,11 @@ impl Peer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn join(&mut self, world: WorldId, members: &[MemberId], scene: SceneKind, cfg: SimConfig, epoch_us: u64, plan: BTreeMap<u64, Vec<Action>>) {
+    pub fn join(&mut self, world: WorldId, members: &[MemberId], scene: SceneKind, mut cfg: SimConfig, epoch_us: u64, plan: BTreeMap<u64, Vec<Action>>) {
+        // P2-3 S4 comparison only (scripts/compare_claim_rules.sh): run with the spike's claim rule.
+        if std::env::var("PE_CLAIM_RULE").as_deref() == Ok("spike") {
+            cfg.claim_rule = ClaimRule::Spike;
+        }
         let dt_us = (cfg.dt as f64 * 1e6).round() as u64;
         self.worlds.insert(
             world,

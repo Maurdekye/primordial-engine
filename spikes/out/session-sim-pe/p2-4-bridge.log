@@ -9,10 +9,10 @@ RESULT bridge-majority: m4 epoch 2 members {3, 4} view changes 2 (resets 0, high
 RESULT bridge-majority: member lists after the partition healed: m1 {1, 2}, m3 {3, 4} -> FORKED (two sessions)
   m1: conf 1187 frame 1193 members {1, 2} evicted {3: (85, 171), 4: (85, 171), 8: (197, 387)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 51 bad 0
   m2: conf 1187 frame 1193 members {1, 2} evicted {3: (85, 171), 4: (85, 171), 8: (197, 387)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 51 bad 0
-RESULT bridge-majority side {1,2}: frames 0..1192 honest m1=903125b05ad66362 m2=903125b05ad66362 | offline replay 903125b05ad66362 | ALL EQUAL, NO FALSE CHECKS ; checks ok 102 bad 0
+RESULT bridge-majority side {1,2}: frames 0..1192 honest m1=992e718441290e1e m2=992e718441290e1e | offline replay 992e718441290e1e | ALL EQUAL, NO FALSE CHECKS ; checks ok 102 bad 0
   m3: conf 1187 frame 1193 members {3, 4} evicted {1: (86, 171), 2: (85, 171), 8: (245, 477)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 49 bad 0
   m4: conf 1187 frame 1193 members {3, 4} evicted {1: (86, 171), 2: (85, 171), 8: (245, 477)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
-RESULT bridge-majority side {3,4}: frames 0..1192 honest m3=903125b05ad66362 m4=903125b05ad66362 | offline replay 903125b05ad66362 | ALL EQUAL, NO FALSE CHECKS ; checks ok 97 bad 0
+RESULT bridge-majority side {3,4}: frames 0..1192 honest m3=992e718441290e1e m4=992e718441290e1e | offline replay 992e718441290e1e | ALL EQUAL, NO FALSE CHECKS ; checks ok 97 bad 0
 RESULT bridge-bft: m1 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 529 lying votes found 0
 RESULT bridge-bft: m2 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 529 lying votes found 0
 RESULT bridge-bft: m3 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 529 lying votes found 0
@@ -26,4 +26,4 @@ RESULT bridge-bft: member lists after the partition healed: m1 {1, 2, 3, 4, 8}, 
   m2: conf 1187 frame 1193 members {1, 2, 3, 4, 8} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 76 bad 0
   m3: conf 1187 frame 1193 members {1, 2, 3, 4, 8} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 76 bad 0
   m4: conf 1187 frame 1193 members {1, 2, 3, 4, 8} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 76 bad 0
-RESULT bridge-bft (partition {1,2} | {3,4} 3-12 s, faulty 8 backs both sides): frames 0..1192 honest m1=903125b05ad66362 m2=903125b05ad66362 m3=903125b05ad66362 m4=903125b05ad66362 | offline replay 903125b05ad66362 | ALL EQUAL, NO FALSE CHECKS ; checks ok 304 bad 0
+RESULT bridge-bft (partition {1,2} | {3,4} 3-12 s, faulty 8 backs both sides): frames 0..1192 honest m1=992e718441290e1e m2=992e718441290e1e m3=992e718441290e1e m4=992e718441290e1e | offline replay 992e718441290e1e | ALL EQUAL, NO FALSE CHECKS ; checks ok 304 bad 0

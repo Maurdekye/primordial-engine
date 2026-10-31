@@ -277,8 +277,17 @@ impl WorldSim {
                 if self.not_owner(*obj, e.member) {
                     return Outcome::RejectedNotOwner;
                 }
+                // HO-1 (round 2): a touch carries the state of the object it touches, never another
+                // (which could move a hand its author does not own); refused before any claim.
+                if e.carried.is_some_and(|(c, _)| c != *obj) {
+                    return Outcome::RejectedInvalid;
+                }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
-                if e.member != LOGIC {
+                // D72 (8.4): only grabs claim, and only a grab can be refused. Every other touch
+                // applies, on a held object too; world logic never claims.
+                let spike = self.cfg.claim_rule == ClaimRule::Spike;
+                let claims = (*grab || spike) && e.member != LOGIC;
+                if claims {
                     if let Some(c) = self.t.claims.get(obj) {
                         if c.member != e.member && c.until > f {
                             return Outcome::RejectedClaimed { by: c.member, until: c.until };
@@ -292,16 +301,13 @@ impl WorldSim {
                 }
                 let imp = Vec3 { x: impulse[0], y: impulse[1], z: impulse[2] };
                 body_apply_linear_impulse_to_center(&mut self.world, o.body, imp, true);
-                if e.member != LOGIC {
-                    match self.t.claims.get(obj).copied() {
-                        Some(c) if c.member == e.member && c.until > f => {
-                            if *grab {
-                                self.t.claims.insert(*obj, Claim { member: e.member, until: f + CLAIM_FRAMES });
-                            }
-                        }
-                        _ => {
-                            self.t.claims.insert(*obj, Claim { member: e.member, until: f + CLAIM_FRAMES });
-                        }
+                if claims {
+                    // Takes the claim, or renews the holder's: held while the grab keeps renewing it,
+                    // it lapses CLAIM_FRAMES after the last renewal, then the holder's cooldown starts.
+                    // (The spike rule renewed only on a grab.)
+                    let held = self.t.claims.get(obj).is_some_and(|c| c.member == e.member && c.until > f);
+                    if *grab || !held {
+                        self.t.claims.insert(*obj, Claim { member: e.member, until: f + CLAIM_FRAMES });
                     }
                 }
                 if let Some((cobj, st)) = e.carried {

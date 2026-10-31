@@ -9,4 +9,4 @@ RESULT badproposer: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highe
   m2: conf 887 frame 893 members {2, 3, 4} evicted {1: (181, 359), 5: (86, 173)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 61 bad 0
   m3: conf 887 frame 893 members {2, 3, 4} evicted {1: (181, 359), 5: (86, 173)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 61 bad 0
   m4: conf 887 frame 893 members {2, 3, 4} evicted {1: (181, 359), 5: (86, 173)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 60 bad 0
-RESULT badproposer (proposer 1 equivocates; member 5 silent from t=3 s): frames 0..892 honest m2=1a07e00b737b0f28 m3=1a07e00b737b0f28 m4=1a07e00b737b0f28 | offline replay 1a07e00b737b0f28 | ALL EQUAL, NO FALSE CHECKS ; checks ok 182 bad 0
+RESULT badproposer (proposer 1 equivocates; member 5 silent from t=3 s): frames 0..892 honest m2=37ca780ce222992c m3=37ca780ce222992c m4=37ca780ce222992c | offline replay 37ca780ce222992c | ALL EQUAL, NO FALSE CHECKS ; checks ok 182 bad 0

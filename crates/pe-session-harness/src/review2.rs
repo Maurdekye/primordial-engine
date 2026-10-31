@@ -66,6 +66,7 @@ pub(crate) fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Opt
     }
     let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(honest[0], 1).sim;
+    crate::dump_outcomes(first, 1, label);
     let members: Vec<MemberId> = first.members.iter().copied().collect();
     let reference = replay(1, SceneKind::Pile { side: 8, layers: 4 }, first.cfg, &members, &final_log(first), frames);
     let rd = digest(&reference, frames);
