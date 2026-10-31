@@ -21,7 +21,9 @@ pe-session-sim list                                              # every scenari
 ```
 
 `regress` runs each scenario as a child process and writes its log to `target/session-sim/<name>.log`.
-It then compares the log line by line with `spikes/out/session-sim/<name>.log`. Only the four CPU
+It then compares the log line by line with `spikes/out/session-sim-pe/<name>.log`, the log of the
+same scenario on pe-session's harness (P2-3; the spike's logs in `spikes/out/session-sim/` stay as the
+reference of the spike comparison report, `docs/p2-9-spike-comparison.md`). Only the four CPU
 timings the logs print are masked: `resim frames N (<t> ms)`, `re-sim <t> ms per rendered sim
 frame`, `(<t> ms over the window)` and `step avg <t> ms;`.
 
@@ -51,10 +53,10 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 | `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
 
-All but `faults/` are the suite of `scripts/run_session_sim.sh` (79 scenarios and the three controls of
-P2-5 and P2-4, whose logs are in `spikes/out/session-sim/p2-5-controls/` and `p2-4-controls/`); their
-logs are identical to the committed ones. The `faults/` logs are new in P2-9. All of them are
-identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`,
+All but `faults/` are the suite of `scripts/run_session_sim.sh --pe` (and the three controls of P2-5
+and P2-4, whose logs are in `spikes/out/session-sim-pe/p2-5-controls/` and `p2-4-controls/`); their
+logs are identical to the committed ones. The `faults/` logs are new in P2-9, blessed on pe-session.
+All of them are identical on Windows and on Linux (WSL2): `spikes/out/session-sim-pe/regress-windows.txt`,
 `regress-linux.txt`.
 
 A committed log without a scenario file yet is listed in `scenarios/spike-only.txt`: a full

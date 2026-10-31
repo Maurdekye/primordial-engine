@@ -1,4 +1,8 @@
 # Committed logs of scripts/run_session_sim.sh that are not mirrored as scenario files yet, one
 # name per line. `regress` reports them instead of failing on them as orphans; each name leaves this
-# list when its scenario file arrives (see README). Empty: every committed log has its scenario,
+# list when its scenario file arrives (see README). Every spike log has its scenario,
 # apart from the spike's property tests in not-scenarios.txt (main 5ba3eab, P2-4 round 6.2).
+#
+# P2-3: scenarios of pe-session's harness (scripts/run_session_sim.sh --pe) with no tool behaviour yet.
+grabrace            # S4, D72: grab races (losers first see their grab accepted, then undone)
+p2-3-statejoin      # S5g, 9.5: a joiner restores a state transfer; a tampered one is refused

@@ -1,7 +1,8 @@
 description = """
-Fault kinds (P2-9): every link capped at 16 kbit/s, below what the pile's acks need at 60 Hz, \
-with no congestion controller (R18 off). The queues overflow, confirmation stalls by frame 114 \
-of about 590 and the members pause at the speculation limit. Safety holds: the confirmed prefix \
+Fault kinds (P2-9): every link capped at 46 kbit/s (P2-3: the spike's 16 kbit/s scaled to \
+pe-session's messages), below what the pile's acks need at 60 Hz, with no congestion controller \
+(R18 off). The queues overflow (534 datagrams dropped), confirmation stalls by frame 104 of about \
+590 and the members pause at the speculation limit. Safety holds: the confirmed prefix \
 is equal on every replica and to the offline replay. fault-capped-r18 is the same link with the \
 controller on."""
 include = ["../common/pile.toml", "../common/scripted.toml"]
@@ -10,7 +11,7 @@ end_ms = 10000
 [net]
 seed = 35
 link = { delay_ms = 30, jitter_ms = 10 }
-cap = { kbps = 16 }
+cap = { kbps = 46 }
 
 [[report]]
 kind = "stats"

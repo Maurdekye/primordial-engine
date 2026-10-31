@@ -1,7 +1,8 @@
 description = """
-Fault kinds (P2-9): as fault-capped-collapse (16 kbit/s on every link), with R18's per-tick \
+Fault kinds (P2-9): as fault-capped-collapse (46 kbit/s on every link), with R18's per-tick \
 batching and congestion controller on every member: hand entries and acks thin out as the uplink \
-queue grows. Nothing is dropped, confirmation keeps within about 25 frames of the present, and \
+queue grows (1158 acks against collapse's 1752). Nothing is dropped, confirmation keeps within \
+about 10 frames of the present, and \
 every replica equals the offline replay."""
 include = ["fault-capped-collapse.toml"]
 
