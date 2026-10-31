@@ -18,6 +18,7 @@ mod review2;
 mod p24r;
 mod p24r3;
 mod p24r4;
+mod randsched;
 mod review3;
 mod viewchange;
 
@@ -1421,6 +1422,9 @@ fn main() {
         Some("strikeframe") => p24r4::strikeframe(),
         Some("aheadshield") => p24r4::aheadshield(),
         Some("fakeref") => p24r4::fakeref(),
+        Some("joinwedge") => p24r4::joinwedge(),
+        Some("slowref") => p24r4::slowref(),
+        Some("randsched") => randsched::main(&args),
         Some("capstale") => p24r4::capstale(),
         Some("lagchurn") => p24r4::lagchurn(),
         Some("votechurn") => p24r4::votechurn(),

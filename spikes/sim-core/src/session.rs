@@ -235,6 +235,23 @@ pub mod fix {
     /// decision, so a member forcing a reset every few hundred ms kept a slow one from demotion); a
     /// member alone in a vote that a decision answered holds off instead (VC-6).
     pub const LAGKEEP: u32 = 1 << 21;
+    /// Round 5, VC4R-2: a change carries each joiner's signed request and is judged from it, never
+    /// from a request the validator happens to hold.
+    pub const VC4R2: u32 = 1 << 22;
+    /// VC4R-3: a member's claim to hold more of a chain than this replica does spares that chain's
+    /// author for a silence limit at most, after which an undelivered claim gets its maker voted out.
+    pub const VC4R3: u32 = 1 << 23;
+    /// VC4R-1: the cap rule counts a prevote in any version this replica holds.
+    pub const VC4R1: u32 = 1 << 24;
+    /// VC4R-4: entry fetches by id are retried with backoff instead of asked once.
+    pub const VC4R4: u32 = 1 << 25;
+    /// VC4R-5: a vote whose frozen head nobody delivers stops holding resets back, and its voter is
+    /// voted out.
+    pub const VC4R5: u32 = 1 << 26;
+    /// VC4R-6: a join request's signature names the session and an expiry.
+    pub const VC4R6: u32 = 1 << 27;
+    /// Round 5, VC3R-3's low: a listed admin entry must be stable here (every member holds that version).
+    pub const VC3R3S: u32 = 1 << 28;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -296,6 +313,9 @@ pub struct Change {
     /// Every replica judges the join rules from these, signature-checked, never from its own copy, so
     /// a joiner that sends each member something different cannot split them.
     pub add_attests: Vec<Vec<Attest>>,
+    /// Review VC4R-2: each added member's signed request, (signature, expiry), in `add`'s order, so a
+    /// member that never received the request validates the join all the same.
+    pub add_reqs: Vec<(u64, u64)>,
 }
 
 /// Commit order of admin entries (D80): stamp, then author, then seq.
@@ -503,14 +523,36 @@ pub fn attest_ok(a: &Attest, joiner: MemberId, world: u32) -> bool {
         && a.sig_joiner == member_sig(0, joiner, f)
 }
 
-/// "`joiner` asks to join world `world`" (review VC3R-4).
+/// Round 4's join fact (review VC3R-4): "`joiner` asks to join world `world`". Replayable in any later
+/// session of the world (VC4R-6); kept for the fix-off runs.
 pub fn fact_join(world: u32, joiner: MemberId) -> u64 {
     fnv_u64s([37, world as u64, joiner as u64])
 }
 
-/// The joiner's signature on its join request (spike model of its Ed25519 key, as for attestations).
+/// Round 4's join signature, over [`fact_join`].
 pub fn join_sig(world: u32, joiner: MemberId) -> u64 {
     member_sig(0, joiner, fact_join(world, joiner))
+}
+
+/// A session's id: its world and its genesis members (P2-3: the session id in the key ring).
+pub fn session_id(world: u32, genesis: &[MemberId]) -> u64 {
+    fnv_u64s([43, world as u64].into_iter().chain(genesis.iter().map(|&m| m as u64)))
+}
+
+/// Review VC4R-6: "`joiner` asks to join session `session`, until the change admitting it has a
+/// boundary past `expires`", under its own domain tag (47), so it is valid in that session only.
+pub fn fact_join_in(session: u64, joiner: MemberId, expires: u64) -> u64 {
+    fnv_u64s([47, session, joiner as u64, expires])
+}
+
+/// The joiner's signature on its join request (spike model of its Ed25519 key, as for attestations).
+pub fn join_sig_in(session: u64, joiner: MemberId, expires: u64) -> u64 {
+    member_sig(0, joiner, fact_join_in(session, joiner, expires))
+}
+
+/// A signed join request from `joiner` to session `session`.
+pub fn join_msg(session: u64, joiner: MemberId, attests: Vec<Attest>, expires: u64) -> Msg {
+    Msg::Join { member: joiner, attests, sig: join_sig_in(session, joiner, expires), expires }
 }
 
 impl Change {
@@ -674,8 +716,9 @@ pub enum Msg {
     FetchValue { value: u64 },
     /// A non-member asks to join the world (P2-4), after an invite or the world's ACL admits it (12).
     /// `attests`: the relationships it shows for the world's join rules (D80). `sig`: its own
-    /// signature over [`fact_join`] (review VC3R-4), so no one else can make or pre-empt its request.
-    Join { member: MemberId, attests: Vec<Attest>, sig: u64 },
+    /// signature over [`fact_join_in`] (reviews VC3R-4, VC4R-6), so no one else can make or pre-empt its
+    /// request, and it is valid in this session only, until a change with a boundary past `expires`.
+    Join { member: MemberId, attests: Vec<Attest>, sig: u64, expires: u64 },
     /// Review VCR-8: ask for the entry with this id (an admin entry a decided change lists), and
     /// (review VC3R-7) up to `back` of its predecessors down its prev links, so the reply is exactly
     /// that branch of a forked chain.
@@ -779,7 +822,8 @@ impl Wr {
         let ext = !c.admin.is_empty()
             || c.remove.iter().any(|r| r.kick != 0)
             || c.add_roles.iter().any(|&r| r != ADMIN)
-            || c.add_attests.iter().any(|a| !a.is_empty());
+            || c.add_attests.iter().any(|a| !a.is_empty())
+            || !c.add_reqs.is_empty();
         // Review VCR-11: the top bit marks the layout, so an epoch must stay below it.
         assert!(c.epoch < CHANGE_EXT, "epoch {} does not fit a change's encoding", c.epoch);
         self.u32(if ext { c.epoch | CHANGE_EXT } else { c.epoch });
@@ -804,6 +848,8 @@ impl Wr {
             for r in &c.add_roles { self.u32(*r as u32) }
             self.u32(c.add_attests.len() as u32);
             for a in &c.add_attests { self.attests(a) }
+            self.u32(c.add_reqs.len() as u32);
+            for (sig, exp) in &c.add_reqs { self.u64(*sig); self.u64(*exp) }
         }
     }
     pub fn msg(&mut self, m: &Msg) {
@@ -812,8 +858,8 @@ impl Wr {
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
-            Msg::Join { member, attests, sig } => {
-                self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member); self.u64(*sig);
+            Msg::Join { member, attests, sig, expires } => {
+                self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member); self.u64(*sig); self.u64(*expires);
                 if !attests.is_empty() {
                     self.attests(attests);
                 }
@@ -965,6 +1011,7 @@ impl Rd<'_> {
         let mut admin = Vec::new();
         let mut add_roles = vec![ADMIN; add.len()];
         let mut add_attests = vec![Vec::new(); add.len()];
+        let mut add_reqs = Vec::new();
         if ext {
             let n = self.u32()? as usize;
             for _ in 0..n { admin.push((self.u64()?, self.u8()? != 0)) }
@@ -974,8 +1021,11 @@ impl Rd<'_> {
             let n = self.u32()? as usize;
             add_attests = Vec::with_capacity(n.min(256));
             for _ in 0..n { add_attests.push(self.attests()?) }
+            let n = self.u32()? as usize;
+            add_reqs = Vec::with_capacity(n.min(256));
+            for _ in 0..n { add_reqs.push((self.u64()?, self.u64()?)) }
         }
-        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles, add_attests })
+        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles, add_attests, add_reqs })
     }
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
@@ -991,8 +1041,9 @@ impl Rd<'_> {
             tag @ (6 | 7) => {
                 let member = self.u32()?;
                 let sig = self.u64()?;
+                let expires = self.u64()?;
                 let attests = if tag == 7 { self.attests()? } else { Vec::new() };
-                Msg::Join { member, attests, sig }
+                Msg::Join { member, attests, sig, expires }
             }
             8 => Msg::FetchEntry { id: self.u64()?, back: 0 },
             9 => Msg::FetchEntry { id: self.u64()?, back: self.u8()? },
@@ -1501,6 +1552,8 @@ struct Vc {
     precommit_timer: BTreeMap<u32, u64>,
     /// Review VC3R-2: value -> my present when its proposal by the round's proposer first reached me.
     seen_at: BTreeMap<u64, u64>,
+    /// Review VC4R-1: (round, value) -> every member a prevote for it is held from, in any version.
+    any_prevotes: BTreeMap<(u32, u64), BTreeSet<MemberId>>,
 }
 
 pub struct WorldSim {
@@ -1607,6 +1660,10 @@ pub struct WorldSim {
     pub followers: BTreeSet<MemberId>,
     /// Members that asked to join and are not admitted yet.
     join_requests: BTreeSet<MemberId>,
+    /// Review VC4R-2: per pending joiner, its signed request (signature, expiry) with the latest expiry.
+    join_reqs: BTreeMap<MemberId, (u64, u64)>,
+    /// Review VC4R-6: this session's id ([`session_id`]).
+    session: u64,
     /// Admitted members: the first frame each counts for.
     pub admitted: BTreeMap<MemberId, u64>,
     /// This epoch: members that precommitted a value adding members, at seq, with its boundary. Their
@@ -1662,6 +1719,16 @@ pub struct WorldSim {
     /// how many predecessors too), and every pair asked so far.
     entry_wants: Vec<(MemberId, EntryId, u8)>,
     entry_asked: BTreeSet<(MemberId, EntryId)>,
+    /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
+    entry_backoff: BTreeMap<(MemberId, EntryId), (u64, u64)>,
+    /// Review VC4R-3 (and the generator's RG-1): (claimant, author) -> (the highest seq of the author's
+    /// chain the claimant has referenced that I hold in the named version, and my present when that last
+    /// rose). A member faking a reference advances its raw reference but not this verified one, so the
+    /// withholding rule catches it; a real backlog clears once I fetch the entries, advancing it.
+    ref_seen: BTreeMap<(MemberId, MemberId), (u32, u64)>,
+    /// Review VC4R-3: per member suspected silent or slow, my present when it first was, so the fetch
+    /// exemption that spares it while I chase another member's claim about it is bounded in time.
+    suspect_since: BTreeMap<MemberId, u64>,
     /// Review VC3R-2: per member, its first capped precommit of this epoch: (round, value, my present
     /// when I recorded it).
     cap_seen: BTreeMap<MemberId, (u32, u64, u64)>,
@@ -1809,6 +1876,8 @@ impl WorldSim {
             withhold_checked: 0,
             followers: BTreeSet::new(),
             join_requests: BTreeSet::new(),
+            join_reqs: BTreeMap::new(),
+            session: session_id(world_id, members),
             admitted: BTreeMap::new(),
             join_caps: BTreeMap::new(),
             ack_epoch_from: BTreeMap::new(),
@@ -1828,6 +1897,9 @@ impl WorldSim {
             strikes: BTreeMap::new(),
             entry_wants: Vec::new(),
             entry_asked: BTreeSet::new(),
+            entry_backoff: BTreeMap::new(),
+            ref_seen: BTreeMap::new(),
+            suspect_since: BTreeMap::new(),
             cap_seen: BTreeMap::new(),
             admitted_epoch: BTreeMap::new(),
             vote_hold: BTreeMap::new(),
@@ -2158,6 +2230,12 @@ impl WorldSim {
             self.disputed.insert(id);
             // Another version of a proposal still names a value someone may decide (P2-4).
             self.note_proposal(id);
+            // Review VC4R-1: another version of a prevote may be the one a capped precommit counted.
+            if let Payload::Prevote { epoch, round, value } = e.payload {
+                if epoch == self.epoch && self.members.contains(&e.member) {
+                    self.vc.any_prevotes.entry((round, value)).or_default().insert(e.member);
+                }
+            }
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
             // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
@@ -2585,7 +2663,10 @@ impl WorldSim {
             let caps: Vec<(MemberId, u64)> = self
                 .cap_seen
                 .iter()
-                .filter(|(m, (r, v, at))| **m != self.me && self.now >= at + after && !self.quorum_for(&self.vc.prevotes, *r, *v))
+                .filter(|(m, (r, v, at))| {
+                    let justified = if self.fixes_off & fix::VC4R1 == 0 { self.polka_any(*r, *v) } else { self.quorum_for(&self.vc.prevotes, *r, *v) };
+                    **m != self.me && self.now >= at + after && !justified
+                })
                 .map(|(m, _)| (*m, self.join_caps.get(m).map_or(0, |c| c.1)))
                 .collect();
             for (m, b) in caps {
@@ -2605,6 +2686,54 @@ impl WorldSim {
                 if self.members.contains(&v) && !self.voted(v) && !self.held(v) {
                     self.ev(format!("member {v}'s vote names kick {kick:016x}, which nobody has delivered in {after} frames: vote to remove it"));
                     out.extend(self.freeze_and_vote(v, 0, 0));
+                }
+            }
+        }
+        // Review VC4R-3, and the generator's RG-1: a member whose acks reference more of some chain
+        // than I hold, I fetch the difference from. The references that count toward stability
+        // (`stable_seq`) and against a withholder (`withholders_due`) are only the verified ones: a
+        // seq I hold in the version the reference names. A faulty member that references entries
+        // nobody has (a fake head, with or without a small live offset) advances its raw reference
+        // but not its verified one, so it is caught as a withholder, and its fake head never caps
+        // confirmation. Here I only issue the fetches; the counting is in those two functions.
+        if self.fixes_off & fix::VC4R3 == 0 {
+            let members: Vec<MemberId> = self.members.iter().copied().collect();
+            let want: Vec<(MemberId, MemberId, u32, u32)> = self
+                .refs
+                .iter()
+                .filter(|((k, y), _)| *k != self.me && *k != *y && members.contains(k) && members.contains(y))
+                .filter_map(|((k, y), r)| {
+                    let mine = self.contiguous.get(y).copied().unwrap_or(0);
+                    r.keys().next_back().filter(|&&top| top > mine).map(|&top| (*k, *y, mine + 1, top))
+                })
+                .collect();
+            for (k, y, from, to) in want {
+                self.want_from(k, y, from, to);
+            }
+        }
+        // Review VC4R-4 and VC4R-5: what is still missing is asked for again. A removed member's cut
+        // branch is walked again; a standing kick vote's kick and a standing vote's frozen head are
+        // fetched by id; a vote whose frozen head nobody delivers within half the window froze a chain
+        // for nothing, and its voter is voted out, as a ghost kick's is.
+        if self.fixes_off & fix::VC4R4 == 0 {
+            let pending: Vec<MemberId> = self.evicted.keys().copied().filter(|x| !self.cut_done.contains(x)).collect();
+            for x in pending {
+                self.adopt_cut(x);
+            }
+        }
+        if self.fixes_off & (fix::VC4R4 | fix::VC4R5) == 0 {
+            let standing: Vec<(MemberId, MemberId, VoteRec)> = self.votes.iter().flat_map(|(y, vs)| vs.iter().map(move |(v, r)| (*y, *v, *r))).collect();
+            for (y, v, r) in standing {
+                if r.kick != 0 && !self.entries.contains_key(&r.kick) {
+                    self.want_entry_all(r.kick, 0);
+                }
+                if r.frozen.0 > 0 && !self.head_held(y, r.frozen) {
+                    self.want_entry(v, r.frozen.1, 15);
+                    self.want_entry_all(r.frozen.1, 15);
+                    if v != self.me && self.now >= r.at + self.cfg.window / 2 && self.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.withhold_vc {
+                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {} frames: vote to remove it", r.frozen.0, self.cfg.window / 2));
+                        out.extend(self.freeze_and_vote(v, 0, 0));
+                    }
                 }
             }
         }
@@ -2645,8 +2774,10 @@ impl WorldSim {
             let silent = self.now >= heard + self.cfg.suspect_after;
             let slow = self.now >= since + self.cfg.suspect_after;
             if !silent && !slow {
+                self.suspect_since.remove(&j);
                 continue;
             }
+            let suspect_first = *self.suspect_since.entry(j).or_insert(self.now);
             let mine = self.contiguous.get(&j).copied().unwrap_or(0);
             let ahead: Vec<(MemberId, u32)> = self
                 .refs
@@ -2655,10 +2786,18 @@ impl WorldSim {
                 .filter_map(|((k, _), r)| r.keys().next_back().filter(|&&s| s > mine).map(|&s| (*k, s)))
                 .collect();
             if !ahead.is_empty() {
+                // Review VC4R-3: another member's reference to more of j's chain than I hold spares j
+                // while I fetch the difference, but only for a silence limit from when j first fell
+                // behind. Round 4 spared j for as long as any such reference stood, so a faulty member's
+                // fake reference could spare a slow colluder for good; the bound is now a fixed time, so
+                // references that never deliver stop sparing it.
+                let bounded = self.fixes_off & fix::VC4R3 == 0;
                 for (k, s) in ahead {
                     self.want_from(k, j, mine + 1, s);
                 }
-                continue;
+                if !bounded || self.now < suspect_first + self.cfg.suspect_after {
+                    continue;
+                }
             }
             if self.withhold_vc {
                 continue;
@@ -2687,7 +2826,32 @@ impl WorldSim {
         }
         self.withhold_checked = self.now;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
-        let newest = |s: &Self, k: MemberId, y: MemberId| s.refs.get(&(k, y)).and_then(|r| r.keys().next_back()).copied().unwrap_or(0);
+        // Review VC4R-3: a reference counts only once I hold the entry it names (`verified_ref`). A
+        // member's verified reference, and my present when it last rose, are kept so the timer measures
+        // real stalling, not the raw head a faulty member can advance with fakes.
+        let verified = self.fixes_off & fix::VC4R3 == 0;
+        let now = self.now;
+        if verified {
+            for &k in &members {
+                for &y in &members {
+                    if k == y || k == self.me {
+                        continue;
+                    }
+                    let v = self.verified_ref(k, y);
+                    let rec = self.ref_seen.entry((k, y)).or_insert((v, now));
+                    if v > rec.0 {
+                        *rec = (v, now);
+                    }
+                }
+            }
+        }
+        let newest = |s: &Self, k: MemberId, y: MemberId| {
+            if verified {
+                s.verified_ref(k, y)
+            } else {
+                s.refs.get(&(k, y)).and_then(|r| r.keys().next_back()).copied().unwrap_or(0)
+            }
+        };
         // Per chain y: the two lowest references to it among the other members, so "every member but
         // j" is one comparison (O(n^2) per check, not O(n^3)).
         let mut low: BTreeMap<MemberId, ((u32, MemberId), u32)> = BTreeMap::new();
@@ -2724,7 +2888,12 @@ impl WorldSim {
                 let mine = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
                 let others = mine.min(if who == j { min2 } else { min1 });
                 let theirs = newest(self, j, y);
-                let still = self.ref_advanced.get(&(j, y)).map_or(self.now >= self.cfg.suspect_after, |&t| self.now >= t + self.cfg.suspect_after);
+                let since = if verified {
+                    self.ref_seen.get(&(j, y)).map(|&(_, t)| t)
+                } else {
+                    self.ref_advanced.get(&(j, y)).copied()
+                };
+                let still = since.map_or(self.now >= self.cfg.suspect_after, |t| self.now >= t + self.cfg.suspect_after);
                 if theirs < others && still {
                     blocks = Some(y);
                     break;
@@ -2737,6 +2906,18 @@ impl WorldSim {
             }
         }
         out
+    }
+
+    /// Review VC4R-3: the highest seq of `y`'s chain that `k`'s acks referenced and that I hold in the
+    /// version the reference names. References to entries I do not hold, or to a fork, do not count;
+    /// a faulty member that references what nobody has cannot advance this, so it is caught as a
+    /// withholder and its reference never caps `y`'s stability.
+    fn verified_ref(&self, k: MemberId, y: MemberId) -> u32 {
+        let held = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
+        self.refs
+            .get(&(k, y))
+            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, _))| self.by_author.get(&(y, **s)) == Some(hid)).map(|(s, _)| *s))
+            .unwrap_or(0)
     }
 
     /// Which of `m`'s entries count after an equivocation proof (review NEW-2): until a view change
@@ -2820,12 +3001,7 @@ impl WorldSim {
                 // Review VC3R-2: a kick vote names its kick; fetch one not held, from its voter and
                 // everyone, so a real kick arrives long before its voter could count as a ghost.
                 if kick != 0 && !self.entries.contains_key(&kick) && self.fixes_off & fix::VC3R2 == 0 {
-                    let known: Vec<MemberId> = self.known.iter().copied().filter(|&k| k != self.me).collect();
-                    for k in known {
-                        if self.entry_asked.insert((k, kick)) {
-                            self.entry_wants.push((k, kick, 0));
-                        }
-                    }
+                    self.want_entry_all(kick, 0);
                 }
                 if let VoteCheck::Lie(ack) = self.vote_check(target, m, frozen) {
                     self.on_lie(m, ack, id);
@@ -2843,6 +3019,7 @@ impl WorldSim {
             }
             Payload::Prevote { round, value, .. } => {
                 self.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
+                self.vc.any_prevotes.entry((round, value)).or_default().insert(m);
             }
             Payload::Precommit { round, value, boundary, .. } => {
                 self.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
@@ -2886,6 +3063,11 @@ impl WorldSim {
     /// D80: the permissions member `m` holds in this epoch.
     pub fn perms_of(&self, m: MemberId) -> u64 {
         self.admin_run().perms(m)
+    }
+
+    /// Review VC4R-6: this session's id, which a join request must name.
+    pub fn session(&self) -> u64 {
+        self.session
     }
 
     /// D80: this epoch's admins.
@@ -3079,6 +3261,15 @@ impl WorldSim {
     }
 
     /// Whether a quorum (counted as the change `v` defines it) sent `v` in `round` of `votes`.
+    /// Review VC4R-1: whether prevotes for `v` in `round`, in any version held, come from a quorum: the
+    /// test of a cap's justification, which an equivocated prevote must not defeat. (Locks and decisions
+    /// still use `quorum_for`, one version per member.)
+    fn polka_any(&self, round: u32, v: u64) -> bool {
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        self.vc.any_prevotes.get(&(round, v)).is_some_and(|ms| ms.iter().filter(|m| base.contains(m)).count() >= q)
+    }
+
     fn quorum_for(&self, votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, v: u64) -> bool {
         let Some(xs) = self.excluded_of(v) else { return false };
         let (base, _, q) = self.base(&xs);
@@ -3190,6 +3381,12 @@ impl WorldSim {
         let mut admin = Vec::new();
         for (_, id) in order {
             let e = self.entries[&id].clone();
+            // Round 5 (VC3R-3's low): in commit order, up to the first admin entry that is not this
+            // member's canonical version at that seq, or is disputed (a fork). A forked version held
+            // only as a duplicate is never proposed, so a validator need not weigh it.
+            if self.fixes_off & fix::VC3R3S == 0 && (self.by_author.get(&(e.member, e.seq)) != Some(&id) || self.disputed.contains(&id)) {
+                break;
+            }
             let mut trial = run.clone();
             let ok = trial.apply(&e);
             if let (true, Payload::Kick { target, .. }) = (ok, &e.payload) {
@@ -3225,7 +3422,10 @@ impl WorldSim {
         // replica is still fetching, must not be overtaken by a reset.
         let mut waiting = false;
         for x in targets {
-            let raw = self.votes.get(&x).map_or(0, |v| v.iter().filter(|(m, r)| base.contains(m) && r.kick == 0).count());
+            // Review VC4R-5: a vote whose frozen head is still unresolved half a window after it was
+            // recorded counts for nothing here, so one faulty vote cannot hold every reset back.
+            let fresh = |r: &VoteRec| self.fixes_off & fix::VC4R5 != 0 || self.now < r.at + self.cfg.window / 2 || self.head_held(x, r.frozen);
+            let raw = self.votes.get(&x).map_or(0, |v| v.iter().filter(|(m, r)| base.contains(m) && r.kick == 0 && fresh(r)).count());
             let mut usable = self.removal_votes(x, &base, false);
             if self.fixes_off & fix::VCR2 == 0 {
                 usable.retain(|(_, r)| self.head_held(x, r.frozen));
@@ -3243,26 +3443,37 @@ impl WorldSim {
             run.members.remove(&x);
             run.roles.remove(&x);
         }
-        let joins: Vec<(MemberId, RoleId, Vec<Attest>)> = self
+        // A join's boundary is about now plus a join lead: a request expiring before it is not proposed.
+        let lead_at = (self.now + self.cfg.join_lead).max(self.decided.last().map_or(0, |d| d.0.boundary));
+        let carry = self.fixes_off & fix::VC4R2 == 0;
+        let joins: Vec<(MemberId, RoleId, Vec<Attest>, (u64, u64))> = self
             .join_requests
             .iter()
             .copied()
             .filter(|j| !self.members.contains(j) && !self.evicted.contains_key(j))
             .filter_map(|j| {
+                let req = self.join_reqs.get(&j).copied().unwrap_or((0, u64::MAX));
+                if carry && req.1 < lead_at {
+                    return None;
+                }
                 let attests = self.join_attests.get(&j).cloned().unwrap_or_default();
-                self.join_role(j, &attests, &run).map(|r| (j, r, attests))
+                self.join_role(j, &attests, &run).map(|r| (j, r, attests, req))
             })
             .collect();
         let mut add = Vec::new();
         let mut add_roles = Vec::new();
         let mut add_attests = Vec::new();
-        for (j, r, a) in joins {
+        let mut add_reqs = Vec::new();
+        for (j, r, a, req) in joins {
             add.push(j);
             add_roles.push(r);
             add_attests.push(if self.fixes_off & fix::VCR7 == 0 { a } else { Vec::new() });
+            if carry {
+                add_reqs.push(req);
+            }
         }
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
-        let mut c = Change { epoch: self.epoch, remove, add, boundary: 0, excluded, admin, add_roles, add_attests };
+        let mut c = Change { epoch: self.epoch, remove, add, boundary: 0, excluded, admin, add_roles, add_attests, add_reqs };
         c.boundary = if self.change_leads(&c) { (self.now + self.cfg.join_lead).max(last) } else { self.now.max(last) };
         if c.remove.is_empty() && c.add.is_empty() && c.admin.is_empty() {
             // A reset answers a suspicion vote against a member heard from again, never a kick vote;
@@ -3312,11 +3523,24 @@ impl WorldSim {
         // Joins: requests this replica holds, from non-members, with a boundary still ahead of it
         // and not too far ahead (10.8). A change that closes the session needs the same lead (D80).
         let mut joiners = BTreeSet::new();
-        for &j in &c.add {
+        let carried = self.fixes_off & fix::VC4R2 == 0;
+        if carried && c.add_reqs.len() != c.add.len() {
+            return Some(false);
+        }
+        for (i, &j) in c.add.iter().enumerate() {
             if self.members.contains(&j) || self.evicted.contains_key(&j) || !joiners.insert(j) {
                 return Some(false);
             }
-            if !self.join_requests.contains(&j) {
+            // Review VC4R-2: the change carries the joiner's signed request, so every validator judges
+            // it alike; waiting for a copy of its own let a request that reached only some members wedge
+            // the members locked on the join.
+            if carried {
+                let (sig, expires) = c.add_reqs[i];
+                let ok = if self.fixes_off & fix::VC4R6 != 0 { sig == join_sig(self.world_id, j) } else { sig == join_sig_in(self.session, j, expires) };
+                if !ok || c.boundary > expires {
+                    return Some(false);
+                }
+            } else if !self.join_requests.contains(&j) {
                 return None;
             }
         }
@@ -3329,6 +3553,21 @@ impl WorldSim {
                     return None;
                 }
                 if self.violations.contains(&id) {
+                    return Some(false);
+                }
+            }
+        }
+        // Round 5 (VC3R-3's low): a listed admin entry must be this member's canonical version at that
+        // seq and not disputed. A forked version, held only as a duplicate, passed the VC3R-3 check
+        // (held and not in `violations`); this refuses it, so a fork cannot be committed as an admin
+        // entry at some replicas and not others.
+        if self.fixes_off & fix::VC3R3S == 0 {
+            for &(id, _) in &c.admin {
+                let (m, sq) = match self.entries.get(&id) {
+                    Some(e) => (e.member, e.seq),
+                    None => return None,
+                };
+                if self.by_author.get(&(m, sq)) != Some(&id) || self.disputed.contains(&id) {
                     return Some(false);
                 }
             }
@@ -3712,9 +3951,7 @@ impl WorldSim {
                     let askers: Vec<MemberId> = self.vc.precommits.get(&rr).map(|ms| ms.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
                     for id in missing {
                         for &m in &askers {
-                            if m != self.me && self.entry_asked.insert((m, id)) {
-                                self.entry_wants.push((m, id, 0));
-                            }
+                            self.want_entry(m, id, 0);
                         }
                     }
                     continue;
@@ -3781,6 +4018,7 @@ impl WorldSim {
             self.followers.remove(&j);
             self.join_requests.remove(&j);
             self.join_attests.remove(&j);
+            self.join_reqs.remove(&j);
         }
         for (id, _) in &c.admin {
             self.admin_pending.remove(id);
@@ -3964,12 +4202,7 @@ impl WorldSim {
                     // Review VC3R-7: the walk knows the exact id it lacks, so ask for it and the 15 entries
                     // below it down its prev links: a member holding the other branch answers nothing.
                     if self.fixes_off & fix::VC3R7 == 0 {
-                        let known: Vec<MemberId> = self.known.iter().copied().filter(|&k| k != self.me).collect();
-                        for k in known {
-                            if self.entry_asked.insert((k, id)) {
-                                self.entry_wants.push((k, id, 15));
-                            }
-                        }
+                        self.want_entry_all(id, 15);
                         return;
                     }
                     // One request for the whole missing stretch of the cut's branch (review VC-2).
@@ -4088,10 +4321,20 @@ impl WorldSim {
     }
 
     /// A non-member asks to join (P2-4): keep its request, store its entries, send it the log.
-    pub fn on_join(&mut self, j: MemberId, attests: Vec<Attest>, sig: u64) {
-        let signed = self.fixes_off & fix::VC3R4 != 0 || sig == join_sig(self.world_id, j);
+    pub fn on_join(&mut self, j: MemberId, attests: Vec<Attest>, sig: u64, expires: u64) {
+        let signed = if self.fixes_off & fix::VC3R4 != 0 {
+            true
+        } else if self.fixes_off & fix::VC4R6 != 0 {
+            sig == join_sig(self.world_id, j)
+        } else {
+            sig == join_sig_in(self.session, j, expires) && expires > self.now
+        };
         if !self.members.contains(&j) && !self.evicted.contains_key(&j) && j != self.me && signed {
             self.join_requests.insert(j);
+            let r = self.join_reqs.entry(j).or_insert((sig, expires));
+            if expires > r.1 {
+                *r = (sig, expires);
+            }
             if self.fixes_off & fix::VC3R4 == 0 {
                 // Review VC3R-4: only the joiner can make its request, and every valid attestation in
                 // any of its requests counts, so no request can hide another's (VCR-7's "the first
@@ -4184,6 +4427,26 @@ impl WorldSim {
         self.proposal_ids.get(&value).and_then(|id| self.entries.get(id)).map(|e| vec![Msg::Entry(e.clone())]).unwrap_or_default()
     }
 
+    /// Ask `holder` for entry `id` (and `back` of its predecessors). Review VC4R-4: asked again with
+    /// backoff while still missing (`take_fetches`); round 4 asked once, so one lost reply stopped a
+    /// cut walk, an admin-entry fetch or a kick fetch for good.
+    fn want_entry(&mut self, holder: MemberId, id: EntryId, back: u8) {
+        if holder == self.me {
+            return;
+        }
+        if self.fixes_off & fix::VC4R4 == 0 || self.entry_asked.insert((holder, id)) {
+            self.entry_wants.push((holder, id, back));
+        }
+    }
+
+    /// [`Self::want_entry`] from every member this replica knows.
+    fn want_entry_all(&mut self, id: EntryId, back: u8) {
+        let known: Vec<MemberId> = self.known.iter().copied().collect();
+        for k in known {
+            self.want_entry(k, id, back);
+        }
+    }
+
     fn want_from(&mut self, holder: MemberId, author: MemberId, from: u32, to: u32) {
         if holder != self.me && from <= to {
             self.wants.push((holder, author, from, to));
@@ -4227,7 +4490,21 @@ impl WorldSim {
         for (to, value) in std::mem::take(&mut self.value_wants) {
             out.push((to, Msg::FetchValue { value }));
         }
+        let mut asked_now = BTreeSet::new();
         for (to, id, back) in std::mem::take(&mut self.entry_wants) {
+            if self.fixes_off & fix::VC4R4 == 0 {
+                // Review VC4R-4: the same 60 ms doubling up to 2 s as range fetches, per (holder, id),
+                // for as long as the entry is missing.
+                if self.entries.contains_key(&id) || !asked_now.insert((to, id)) {
+                    continue;
+                }
+                let wait = match self.entry_backoff.get(&(to, id)).copied() {
+                    Some((t, w)) if now_ms < t + w => continue,
+                    Some((_, w)) => (w * 2).min(2000),
+                    None => 60,
+                };
+                self.entry_backoff.insert((to, id), (now_ms, wait));
+            }
             out.push((to, Msg::FetchEntry { id, back }));
         }
         out
@@ -5027,8 +5304,8 @@ mod round3_tests {
     fn signed_join_and_branch_fetch_round_trip() {
         // Review VC3R-4 and VC3R-7 (round 4): the join's signature and the fetch's depth travel.
         for m in [
-            Msg::Join { member: 5, attests: vec![], sig: join_sig(1, 5) },
-            Msg::Join { member: 5, attests: vec![attest(Rel::Friend, 5, 1, 1)], sig: join_sig(1, 5) },
+            join_msg(session_id(1, &[1, 2, 3]), 5, vec![], 900),
+            join_msg(session_id(1, &[1, 2, 3]), 5, vec![attest(Rel::Friend, 5, 1, 1)], u64::MAX),
             Msg::FetchEntry { id: 77, back: 0 },
             Msg::FetchEntry { id: 77, back: 15 },
         ] {
@@ -5036,6 +5313,14 @@ mod round3_tests {
         }
         assert_ne!(join_sig(1, 5), join_sig(2, 5));
         assert_ne!(join_sig(1, 5), join_sig(1, 6));
+        // Review VC4R-6: another session of the same world, or another expiry, is another signature.
+        let (a, b) = (session_id(1, &[1, 2, 3]), session_id(1, &[1, 2, 4]));
+        assert_ne!(join_sig_in(a, 5, 900), join_sig_in(b, 5, 900));
+        assert_ne!(join_sig_in(a, 5, 900), join_sig_in(a, 5, 901));
+        // A change that adds a member carries its request, in the extended layout.
+        let c = Change { epoch: 2, add: vec![5], add_roles: vec![ADMIN], add_attests: vec![vec![]], add_reqs: vec![(join_sig_in(a, 5, 900), 900)], boundary: 7, ..Default::default() };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Propose { epoch: 2, round: 0, valid_round: NO_ROUND, change: c }, carried: None };
+        assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
     }
 
     fn join_bytes(n: u32) -> Vec<u8> {
@@ -5043,6 +5328,7 @@ mod round3_tests {
         w.u8(7);
         w.u32(5);
         w.u64(join_sig(1, 5));
+        w.u64(u64::MAX);
         w.u32(n);
         for _ in 0..n {
             w.u8(Rel::Friend.tag());

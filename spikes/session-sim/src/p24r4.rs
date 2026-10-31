@@ -422,17 +422,17 @@ pub fn joinsquat() {
             // none yet; 2.5 s: 5 asks again with admin 1's friendship.
             if step == 0 && t >= 1_900_000 {
                 for m in [1, 2, 3] {
-                    sim.net.send(1, 9, m, &Msg::Join { member: joiner, attests: vec![], sig: 0 });
+                    sim.net.send(1, 9, m, &Msg::Join { member: joiner, attests: vec![], sig: 0, expires: u64::MAX });
                 }
                 step = 1;
             } else if step == 1 && t >= 2_000_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
                 step = 2;
             } else if step == 2 && t >= 2_500_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![attest(Rel::Friend, joiner, 1, 1)], sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![attest(Rel::Friend, joiner, 1, 1)], u64::MAX));
                 }
                 step = 3;
             }
@@ -476,7 +476,7 @@ pub fn joinskip() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !asked && sim.net.now_us >= 3_000_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
                 for e in sim.replica(1, 1).sim.all_entries() {
                     sim.net.send(1, 1, joiner, &Msg::Entry(e));
@@ -495,5 +495,118 @@ pub fn joinskip() {
         vc_report(&sim, &all, "joinskip");
         println!("RESULT joinskip: members at m1 {members:?} -> {}; {}", if members.contains(&joiner) { "5 STAYS" } else { "FAIL" }, confs(&sim, &all));
         verdict(&sim, &all, label, stopped);
+    }
+}
+
+/// VC4R-2 (design-reviewer's round-4 repro): 5's signed join request reaches 1, 2 and 9 only, and 9
+/// crashes after its first prevote, so the join needs 3, which never received the request. With the fix
+/// off the change waits on a local copy and the session wedges; with it the request travels in the
+/// change and 3 validates it. The `reach3` control (the request also reaches 3) always succeeds.
+pub fn joinwedge() {
+    for fixed in RUNS {
+        for reach3 in [false, true] {
+            let ids = [1, 2, 3, 9];
+            let joiner: MemberId = 5;
+            let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (600, touch(33, 3.0))]) } else { BTreeMap::new() });
+            let mut p = Peer::new(joiner, 0);
+            p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
+            ps.push(p);
+            for p in ps.iter_mut().filter(|p| p.id != joiner) {
+                p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
+            }
+            each_sim(&mut ps, |s| s.join_rules = JoinRules::friends_only(GUEST));
+            guests(&mut ps, &[1, 2, 3, 9]);
+            if !fixed {
+                each_sim(&mut ps, |s| s.fixes_off = fix::VC4R2);
+            }
+            let crashed = std::rc::Rc::new(std::cell::Cell::new(false));
+            let c2 = crashed.clone();
+            let mut net = Net::new(link(30, 10, 0), 7);
+            net.filter = Some(Box::new(move |_t, _w, from, to, m| {
+                if from == 9 && (c2.get() || matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Precommit { .. }))) {
+                    return Fate::Drop;
+                }
+                if !reach3 && to == 3 && matches!(m, Msg::Join { .. }) {
+                    return Fate::Drop;
+                }
+                Fate::Deliver
+            }));
+            let mut sim = Sim::new(net, ps, 14_000_000);
+            let mut sent = false;
+            let stopped = run_quiet(&mut sim, |sim| {
+                let t = sim.net.now_us;
+                if !sent && t >= 2_000_000 {
+                    for m in ids {
+                        sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![attest(Rel::Friend, joiner, 1, 1)], u64::MAX));
+                    }
+                    sent = true;
+                }
+                if sent && !crashed.get() && sim.replica(9, 1).sim.all_entries().iter().any(|e| e.member == 9 && matches!(e.payload, Payload::Prevote { .. })) {
+                    crashed.set(true);
+                }
+            });
+            let honest = [1, 2, 3];
+            let admitted = sim.replica(1, 1).sim.members.contains(&joiner);
+            let label = format!("joinwedge (request reaches 3: {reach3}; 9 crashes after its first prevote)");
+            if !fixed {
+                if reach3 {
+                    continue;
+                }
+                println!("  5 admitted at m1: {admitted}");
+                before_fix(&label, "VC4R-2's fix", &sim, &honest, stopped);
+                continue;
+            }
+            vc_report(&sim, &honest, "joinwedge");
+            println!(
+                "RESULT joinwedge reach3={reach3}: 5 admitted {admitted}, 9 removed at {} -> {}; {}",
+                secs(removed_at(&sim, 1, 9)),
+                if admitted { "ADMITTED" } else { "FAIL" },
+                confs(&sim, &honest)
+            );
+            verdict(&sim, &[1, 2, 3, 5], &label, stopped);
+        }
+    }
+}
+
+/// VC4R-3 (design-reviewer's round-4 repro): fakeref, but 9 stays connected and grows slower (a message
+/// sent at t arrives at 2t - 2 s), while 8's acks claim 5 more of 9's entries than anyone holds. With
+/// the fix off that claim shields 9 for good and the session halts; with it the claim spares 9 only a
+/// silence limit, and 9 is demoted.
+pub fn slowref() {
+    for fixed in RUNS {
+        let ids = [1, 2, 3, 4, 5, 8, 9];
+        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (900, touch(33, 3.0))]) } else { BTreeMap::new() });
+        for p in ps.iter_mut().filter(|p| p.id == 8) {
+            p.worlds.get_mut(&1).unwrap().sim.withhold_vc = true;
+        }
+        if !fixed {
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC4R3);
+        }
+        let mut net = Net::new(link(30, 10, 0), 7);
+        net.filter = Some(Box::new(|t, _w, from, _to, _m| if from == 9 && t >= 2_000_000 { Fate::Delay(t - 2_000_000 + 30_000) } else { Fate::Deliver }));
+        let mut sim = Sim::new(net, ps, 16_000_000);
+        let mut set = false;
+        let stopped = run_quiet(&mut sim, |sim| {
+            if !set && sim.net.now_us >= 2_000_000 {
+                sim_mut(sim, 8).fake_refs = Some((9, 5));
+                set = true;
+            }
+        });
+        let honest = [1, 2, 3, 4, 5];
+        let removed = removed_at(&sim, 1, 9);
+        let label = "slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds)";
+        if !fixed {
+            println!("  9 removed: {}", secs(removed));
+            before_fix(label, "VC4R-3's fix", &sim, &honest, stopped);
+            continue;
+        }
+        vc_report(&sim, &honest, "slowref");
+        println!(
+            "RESULT slowref: 9 removed at {} -> {}; {}",
+            secs(removed),
+            if removed.is_some() { "DEMOTED" } else { "FAIL" },
+            confs(&sim, &honest)
+        );
+        verdict(&sim, &honest, label, stopped);
     }
 }

@@ -637,9 +637,39 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     entries.
   * Every other scenario keeps its outcome: `kickpartition` decides 2 frames sooner, `bridge` under (b)
     ends with two resets after the heal instead of one, and timings move by a frame or two.
+* **Round 5** (@design-reviewer's review of 452e1f7 asked for changes: VC4R-1 to VC4R-6, two of them
+  halting the session). All are fixed on `viewchange`:
+
+    | Repro | With the fix switched off | With the fix |
+    |---|---|---|
+    | `joinwedge` (VC4R-2, the reviewer's) | a join seen by only part of the session, plus a crash, wedges it; stuck at frame 114 | 5 admitted at 2.6 s, 9 removed at 5.6 s |
+    | `slowref` (VC4R-3, the reviewer's) | fake references shield a slow member; stuck at frame 108 | the slow member removed at 7.4 s |
+
+  * VC4R-1: a cap is justified by its polka counted in any prevote version a reader holds, so an
+    equivocated prevote cannot get an honest capper voted out. VC4R-4: fetches by id retry with backoff.
+    VC4R-5: a vote whose frozen head nobody delivers blocks no reset and removes its voter. VC4R-6: a join
+    signature names the session and an expiry. VC3R-3's low: a listed admin entry must be the canonical,
+    undisputed version.
+  * **A reference now counts only once the entry it names is held**, both toward stability and against a
+    withholder (VC4R-3). This is also what caught the generator's finding below.
+* **A randomized Byzantine schedule generator** (`randsched`, coordinator's request). Each seed draws a
+  membership of 4 to 7, a faulty set within `t`, a behaviour per faulty member (crash, delay, selective
+  delivery, fake references, a climbing epoch, a withheld vote, a bogus cap, suspicion churn, a ghost
+  vote), an optional partial-delivery joiner, and a GST, then checks the written invariants S1-S5 and L1
+  (`spikes/out/session-sim/INVARIANTS.md`). 80 seeds hold every invariant on the round-5 protocol.
+  * **It found RG-1**, a hole the four hand reviews had not: a faulty member that references a healthy
+    member's chain a little beyond what it holds, so the fake hides inside normal lag, caps that chain's
+    stability without being caught as a withholder. `randsched --fixes-off 0x800000` reproduces it
+    (seed 1); the verified-reference rule fixes it.
+  * **Coverage of the earlier rounds' holes, measured** by running the generator with each fix switched
+    off: 40 seeds find VC4R-3/RG-1 at once, but do not reproduce VC4R-2 (`joinwedge` needs a crash timed
+    to a particular prevote), VCR-12 or VC-5 within that budget, and the generator does not yet craft
+    equivocated view-change votes (VC4R-1). So it complements the hand repros rather than replacing them
+    yet; strengthening its join and equivocation draws is the next step.
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
-  (22.7); VCR-10 and V4 wait for the user.
+  (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
+  widened.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 

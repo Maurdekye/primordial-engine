@@ -1,7 +1,7 @@
-RESULT loss acceptance, uncontended checks: 25/25 equal at that instant and 25/25 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
-RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 35/35 equal to the author's copy at that instant, 35/35 equal to the author's final history
-  m1 world 1: rollbacks 9 max depth 3 resim frames 34 (17.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 756 frame 773
-  m2 world 1: rollbacks 9 max depth 4 resim frames 36 (16.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 754 frame 774
-  m3 world 1: rollbacks 12 max depth 11 resim frames 54 (22.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 750 frame 773
-  bytes: entries 38 msgs 3800 B (avg 100 B), acks 3579 msgs 313544 B, dropped 426
+RESULT loss acceptance, uncontended checks: 31/31 equal at that instant and 31/31 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 14
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 45/45 equal to the author's copy at that instant, 44/45 equal to the author's final history
+  m1 world 1: rollbacks 9 max depth 3 resim frames 35 (17.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
+  m2 world 1: rollbacks 9 max depth 11 resim frames 40 (18.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 760 frame 774
+  m3 world 1: rollbacks 12 max depth 3 resim frames 42 (19.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
+  bytes: entries 50 msgs 5000 B (avg 100 B), acks 3680 msgs 322448 B, dropped 442
 RESULT loss world 1: frames 0..700 digests m1=255efbf3d9457fdd m2=255efbf3d9457fdd m3=255efbf3d9457fdd | offline replay 255efbf3d9457fdd | ALL EQUAL
