@@ -242,9 +242,10 @@ pub fn body_set_transform(world: &mut World, body_id: BodyId, position: Pos, rot
 /// only on its state and the rest of the world (carried state, design 7.3). Its contacts are
 /// destroyed (with their manifolds: recycled anchors and warm-start impulses), its fat AABBs
 /// are rebuilt around its transform and buffered as moved, so the next step recreates its
-/// contacts in sorted pair-key order, and its sleep timer is reset. Touch-begin events fire again
-/// for those contacts, and the body has no warm start for one step. Bodies touching it are not
-/// woken by the destroy.
+/// contacts in sorted pair-key order, the accumulated impulses of every joint attached to it are
+/// zeroed (joints keep their own warm starts; grabs are joints), and its sleep timer is reset.
+/// Touch-begin events fire again for those contacts, and the body and its joints have no warm
+/// start for one step. Bodies touching it are not woken by the destroy.
 pub fn body_reset_history(world: &mut World, body_id: BodyId) {
     crate::recording::with_recording(world, |rec| {
         rec.write_body_reset_history(body_id);
@@ -258,6 +259,13 @@ pub fn body_reset_history(world: &mut World, body_id: BodyId) {
     let body_index = get_body_full_id(world, body_id);
     super::lifecycle::destroy_body_contacts(world, body_index, false);
     world.bodies[body_index as usize].sleep_time = 0.0;
+
+    let mut joint_key = world.bodies[body_index as usize].head_joint_key;
+    while joint_key != NULL_INDEX {
+        let joint_id = joint_key >> 1;
+        joint_key = world.joints[joint_id as usize].edges[(joint_key & 1) as usize].next_key;
+        crate::joint::get_joint_sim(world, joint_id).reset_impulses();
+    }
 
     let body = &world.bodies[body_index as usize];
     let transform = world.solver_sets[body.set_index as usize].body_sims[body.local_index as usize].transform;
