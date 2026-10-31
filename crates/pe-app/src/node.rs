@@ -318,6 +318,8 @@ pub struct Node {
     hand: Option<u32>,
     hand_frame: u64,
     hand_entries: u64,
+    /// An agent's held hand target (pe-mcp, D52 ruling (a)).
+    hold: sim_view::HandHold,
     series: Vec<LinkRow>,
     row_start_us: u64,
     row_bytes: u64,
@@ -447,6 +449,7 @@ impl Node {
             hand,
             hand_frame: u64::MAX,
             hand_entries: 0,
+            hold: Default::default(),
             series: Vec::new(),
             row_start_us: 0,
             row_bytes: 0,
@@ -969,6 +972,9 @@ impl Node {
             if let Some(cf) = self.core.begin_tick(now, false) {
                 self.run_plan(cf);
                 self.run_hand(cf);
+                if self.hold.tick(&mut self.core).is_some() {
+                    self.authored += 1;
+                }
             }
             self.core.end_tick(now);
             self.record_row(now);
@@ -1040,6 +1046,31 @@ impl DrivenPeer for Node {
             return Err(ToolError::new(ErrorCode::NotReady, "the session has not started yet (waiting for every member)"));
         }
         sim_view::check_interaction(&self.core.sim, &i, self.me)?;
+        // A hand target is held and re-sent at every pose slot; its first pose goes out at the next
+        // slot (at most one stride), stepping the node meanwhile.
+        match i {
+            Interaction::Hand { object, target_mm, active: true } => {
+                self.hold.set(object, target_mm);
+                let end = self.local_us() + sim_view::HOLD_WAIT_MS * 1000;
+                loop {
+                    if self.hold.tick(&mut self.core).is_some() {
+                        self.authored += 1;
+                    }
+                    if let Some(e) = self.hold.first() {
+                        let a = Authored { entry: e.id(), stamp: e.stamp, seq: e.seq };
+                        self.flush_out();
+                        return Ok(a);
+                    }
+                    if self.local_us() >= end {
+                        self.hold.release();
+                        return Err(ToolError::new(ErrorCode::NotReady, "no pose slot for the hand within 1 s; step and retry"));
+                    }
+                    self.step();
+                }
+            }
+            Interaction::Hand { active: false, .. } => self.hold.release(),
+            Interaction::Touch { .. } => {}
+        }
         let payload = match i {
             Interaction::Touch { object, impulse, grab } => Payload::Touch { obj: object, impulse, grab },
             Interaction::Hand { object, target_mm, active } => Payload::Hand { obj: object, target_mm, active, span: 1 },

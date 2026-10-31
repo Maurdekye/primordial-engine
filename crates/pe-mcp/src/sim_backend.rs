@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use pe_session_sim::{Action, Fate, Link, Net, Peer, Sim};
 use pe_session::session::{
-    final_log, replay_sim_like, Msg, SceneKind, SimConfig, WorldSim,
+    final_log, replay_sim_like, Msg, SceneKind, SignedEntry, SimConfig, WorldSim,
 };
 use pe_session::splitmix64;
 
@@ -32,6 +32,8 @@ pub struct SimSession {
     /// Partition: member -> group. Shared with the network filter.
     partition: Rc<RefCell<BTreeMap<MemberId, usize>>>,
     faults: Vec<String>,
+    /// The agent's held hand target (D52 ruling (a)).
+    hold: sim_view::HandHold,
 }
 
 fn range<T: PartialOrd + Copy + std::fmt::Display>(field: &str, v: Option<T>, default: T, lo: T, hi: T) -> ToolResult<T> {
@@ -110,7 +112,7 @@ impl SimSession {
             "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} {}/s; window {window}; seed {seed:x}",
             if grabs { "grabs" } else { "touches" }
         );
-        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new() })
+        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new(), hold: Default::default() })
     }
 
     fn replica(&self) -> &WorldSim {
@@ -119,6 +121,23 @@ impl SimSession {
 
     fn peer(&self, m: MemberId) -> &Peer {
         self.sim.peers.iter().find(|p| p.id == m).expect("member")
+    }
+
+    /// One millisecond of simulated time, then the held hand pose if one is due. It goes out with
+    /// the member's next tick (the harness drains the core's outbox there).
+    fn step_one_ms(&mut self) {
+        self.sim.step_ms();
+        self.sim.net.now_us += 1000;
+        self.tick_hold();
+    }
+
+    fn tick_hold(&mut self) -> Option<SignedEntry> {
+        let me = self.me;
+        let peer = self.sim.peers.iter_mut().find(|p| p.id == me).expect("me");
+        if peer.crashed {
+            return None;
+        }
+        self.hold.tick(&mut peer.worlds.get_mut(&WORLD).expect("world").core)
     }
 
     fn check_member(&self, field: &str, m: Option<u32>) -> ToolResult<MemberId> {
@@ -179,6 +198,25 @@ impl DrivenPeer for SimSession {
             return Err(ToolError::new(ErrorCode::PeerCrashed, format!("member {me} (the driven peer) has crashed")));
         }
         sim_view::check_interaction(self.replica(), &i, me)?;
+        // A hand target is held: its first pose goes out at the next pose slot (at most one stride).
+        match i {
+            Interaction::Hand { object, target_mm, active: true } => {
+                self.hold.set(object, target_mm);
+                self.tick_hold();
+                let mut waited = 0;
+                while self.hold.first().is_none() && waited < sim_view::HOLD_WAIT_MS {
+                    self.step_one_ms();
+                    waited += 1;
+                }
+                let Some(e) = self.hold.first() else {
+                    self.hold.release();
+                    return Err(ToolError::new(ErrorCode::NotReady, "no pose slot for the hand within 1 s; step and retry"));
+                };
+                return Ok(Authored { entry: e.id(), stamp: e.stamp, seq: e.seq });
+            }
+            Interaction::Hand { active: false, .. } => self.hold.release(),
+            Interaction::Touch { .. } => {}
+        }
         let peer = self.sim.peers.iter_mut().find(|p| p.id == me).expect("me");
         let r = peer.worlds.get_mut(&WORLD).expect("world");
         let e = sim_view::author(&mut r.sim, i);
@@ -196,8 +234,7 @@ impl DrivenPeer for SimSession {
 
     fn advance_ms(&mut self, ms: u64) -> ToolResult<()> {
         for _ in 0..ms {
-            self.sim.step_ms();
-            self.sim.net.now_us += 1000;
+            self.step_one_ms();
         }
         Ok(())
     }

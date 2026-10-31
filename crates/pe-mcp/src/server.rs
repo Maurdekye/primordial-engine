@@ -164,7 +164,7 @@ impl PeerServer {
         self.run(move |e| e.object(&p)).await
     }
 
-    #[tool(name = "world_propose_interaction", description = "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes). Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.")]
+    #[tool(name = "world_propose_interaction", description = "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes) and holds it at the target until a new target or active: false. Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.")]
     async fn world_propose_interaction(&self, Parameters(p): Parameters<m::ProposeParams>, ctx: RequestContext<RoleServer>) -> Result<Json<m::Proposed>, CallToolResult> {
         let who = self.require(&ctx, "world_propose_interaction")?;
         self.run(move |e| e.propose(&who, &p)).await

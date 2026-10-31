@@ -1277,7 +1277,7 @@
   },
   {
     "name": "world_propose_interaction",
-    "description": "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes). Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.",
+    "description": "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes) and holds it at the target until a new target or active: false. Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.",
     "inputSchema": {
       "$defs": {
         "InteractionAction": {
@@ -1294,7 +1294,7 @@
             },
             {
               "const": "hand",
-              "description": "Move one of the kinematic hands (ball-pit scenes) to `target_mm`.",
+              "description": "Move one of the kinematic hands (ball-pit scenes) to `target_mm`. The target is held (sent\nagain at every pose slot, as a held controller would) until a new target or `active: false`.",
               "type": "string"
             }
           ]
@@ -1307,7 +1307,7 @@
         },
         "active": {
           "default": null,
-          "description": "hand: false parks the hand (default true).",
+          "description": "hand: false releases the held target and parks the hand (default true).",
           "type": [
             "boolean",
             "null"

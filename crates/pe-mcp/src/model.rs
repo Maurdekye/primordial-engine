@@ -220,7 +220,8 @@ pub enum InteractionAction {
     Touch,
     /// An impulse that is a held grab: renews the claim.
     Grab,
-    /// Move one of the kinematic hands (ball-pit scenes) to `target_mm`.
+    /// Move one of the kinematic hands (ball-pit scenes) to `target_mm`. The target is held (sent
+    /// again at every pose slot, as a held controller would) until a new target or `active: false`.
     Hand,
 }
 
@@ -234,7 +235,7 @@ pub struct ProposeParams {
     /// hand: target position in millimetres, each within +-100000.
     #[serde(default)]
     pub target_mm: Option<[i64; 3]>,
-    /// hand: false parks the hand (default true).
+    /// hand: false releases the held target and parks the hand (default true).
     #[serde(default)]
     pub active: Option<bool>,
 }

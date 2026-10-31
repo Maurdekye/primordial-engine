@@ -2,6 +2,7 @@
 //! use these: the session simulator (`sim_backend`) and a live peer (`pe-app`), so a tool returns the
 //! same shapes whichever drives it.
 
+use pe_session::peer::SessionCore;
 use pe_session::session::{CheckHash, EntryId, Outcome, Payload, SignedEntry, WorldSim};
 
 use crate::backend::*;
@@ -106,6 +107,42 @@ pub fn check_interaction(s: &WorldSim, i: &Interaction, me: MemberId) -> ToolRes
 }
 
 /// Author a checked interaction at the present frame: the same `WorldSim` calls a player's input uses.
+/// An agent's hand target, held until a new target or `active: false` (D52 ruling (a), 2026-10-31).
+/// A hand moves only while its author keeps sending (design 6.10: it follows a pose over its span,
+/// coasts at most `hand_predict` frames, then holds), so the backend re-authors the target at every
+/// pose the congestion stride allows, as a held controller would.
+#[derive(Default)]
+pub struct HandHold {
+    target: Option<(u32, [i32; 3])>,
+    /// The first pose sent for the current target: what `propose` returns.
+    first: Option<SignedEntry>,
+}
+
+impl HandHold {
+    pub fn set(&mut self, obj: u32, target_mm: [i32; 3]) {
+        self.target = Some((obj, target_mm));
+        self.first = None;
+    }
+    pub fn release(&mut self) {
+        self.target = None;
+        self.first = None;
+    }
+    /// Send the held pose if one is due at this frame (call it every tick); returns it.
+    pub fn tick(&mut self, core: &mut SessionCore) -> Option<SignedEntry> {
+        let (obj, target_mm) = self.target?;
+        let e = core.author(Payload::Hand { obj, target_mm, active: true, span: 1 }, 0).ok()?;
+        self.first.get_or_insert_with(|| e.clone());
+        Some(e)
+    }
+    pub fn first(&self) -> Option<&SignedEntry> {
+        self.first.as_ref()
+    }
+}
+
+/// How long `propose` waits for the first pose of a new hand target: a pose slot comes at least
+/// every 8 frames (R18's widest stride), so this only runs out on a stalled peer.
+pub const HOLD_WAIT_MS: u64 = 1000;
+
 pub fn author(s: &mut WorldSim, i: Interaction) -> SignedEntry {
     match i {
         Interaction::Touch { object, impulse, grab } => s.author(Payload::Touch { obj: object, impulse, grab }, Some(object)),
