@@ -1429,6 +1429,8 @@ fn main() {
         Some("adminfork") => p24r4::adminfork(),
         Some("randsched") => randsched::main(&args),
         Some("capfake") => p24r4::capfake(),
+        Some("voidfork") => p24r4::voidfork(),
+        Some("slowcapper") => p24r4::slowcapper(),
         Some("fakeadmin") => p24r4::fakeadmin(),
         Some("bigjoin") => p24r4::bigjoin(),
         Some("adminwedge") => p24r4::adminwedge(),

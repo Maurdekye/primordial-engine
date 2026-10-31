@@ -664,14 +664,15 @@ pub fn fakemix() {
 
 /// VC5R-1: faulty admin 9 forks one seq (a SetRole demoting 3 to 1 and 2, an Attest to 3), proposes
 /// a change listing the SetRole, drops its precommits, then crashes; the proof reaches 1 and 2 after
-/// they lock. Fix off (`VC3R3S`) as the control.
+/// they lock. The control switches round 5's canonical check back on (`VC3R3S | VC6R3`: since round 7,
+/// `VC3R3S` acts only with `VC6R3` off, review VC7R-7).
 pub fn adminfork() {
     for fixed in RUNS {
         let ids = [1, 2, 3, 9];
         let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (600, touch(33, 3.0))]) } else { BTreeMap::new() });
         guests(&mut ps, &[1, 2, 3, 9]);
         if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VC3R3S);
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC3R3S | fix::VC6R3);
         }
         let a_id = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let crashed = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -732,6 +733,78 @@ pub fn adminfork() {
     }
 }
 
+/// prevotefork's members: the equivocating proposer, the capper, the observer, the joiner.
+const PREVOTEFORK: (MemberId, MemberId, MemberId, MemberId) = (1, 2, 3, 5);
+
+/// prevotefork's run (members 1, 2, 3, 9 and joiner 5) with `off` switched off; 9's round-0 prevote is
+/// lost until `nine_until_us`. `slow_us` > 0 delays every delivery of 1's forked value-prevote to the
+/// observer by that much (`slowcapper`, VC7R-2): the capper alone holds it, so its replies are what the
+/// observer's fetch waits for.
+fn prevotefork_sim(off: u64, slow_us: u64, nine_until_us: u64) -> (Sim, Option<u64>) {
+    let ids = [1, 2, 3, 9];
+    let proposer = peers_of(&ids, |_| BTreeMap::new())[0].worlds[&1].sim.proposer_of(0, 0).unwrap();
+    assert_eq!(proposer, 1, "prevotefork assumes member 1 is the round-0 proposer");
+    let (equiv, capper, obs, joiner) = PREVOTEFORK;
+    let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (600, touch(33, 3.0))]) } else { BTreeMap::new() });
+    let mut p = Peer::new(joiner, 0);
+    p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
+    ps.push(p);
+    for p in ps.iter_mut().filter(|p| p.id != joiner) {
+        p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
+    }
+    each_sim(&mut ps, |s| s.join_rules = JoinRules::public(GUEST));
+    if off != 0 {
+        each_sim(&mut ps, move |s| s.fixes_off = off);
+    }
+    let forged = std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::<EntryId>::new()));
+    let vv_id = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let (fg, fv) = (forged.clone(), vv_id.clone());
+    let mut net = Net::new(link(30, 10, 0), 7);
+    net.filter = Some(Box::new(move |t, _w, from, to, m| match m {
+        Msg::Entry(e) if slow_us > 0 && to == obs && fv.get() != 0 && e.id() == fv.get() => Fate::Delay(slow_us),
+        Msg::Entry(e) if from == equiv && matches!(e.payload, Payload::Prevote { round: 0, .. }) && !fg.borrow().contains(&e.id()) => Fate::Drop,
+        // 9's round-0 prevote is lost until 2.5 s, past the cap's judgment, then repaired as after GST.
+        // Round 6 dropped it for good, repairs included, which made 9 a second faulty member (two of
+        // four, beyond t = 1) and halted the session (@ballpit-viz's finding).
+        Msg::Entry(e) if from == 9 && t < nine_until_us && matches!(e.payload, Payload::Prevote { round: 0, .. }) => Fate::Drop,
+        _ => Fate::Deliver,
+    }));
+    let mut sim = Sim::new(net, ps, 10_000_000);
+    let mut asked = false;
+    let mut forked = false;
+    let stopped = run_quiet(&mut sim, |sim| {
+        let now = sim.net.now_us;
+        if !asked && now >= 1_000_000 {
+            for m in ids {
+                sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
+            }
+            asked = true;
+        }
+        if asked && !forked {
+            let r = &sim.replica(equiv, 1).sim;
+            let pv = r.all_entries().into_iter().find(|e| e.member == equiv && matches!(e.payload, Payload::Prevote { round: 0, .. }));
+            let prop = r.all_entries().into_iter().find(|e| e.member == equiv && matches!(e.payload, Payload::Propose { round: 0, .. }));
+            if let (Some(pv), Some(Payload::Propose { change, .. })) = (pv, prop.map(|e| e.payload)) {
+                let v = change.value();
+                let Payload::Prevote { epoch, round, .. } = pv.payload else { return };
+                let mut vv = pv.clone();
+                vv.payload = Payload::Prevote { epoch, round, value: v };
+                let mut nil = pv.clone();
+                nil.payload = Payload::Prevote { epoch, round, value: 0 };
+                forged.borrow_mut().insert(vv.id());
+                forged.borrow_mut().insert(nil.id());
+                vv_id.set(vv.id());
+                sim.net.send(1, equiv, capper, &Msg::Entry(vv));
+                for m in [obs, 9] {
+                    sim.net.send(1, equiv, m, &Msg::Entry(nil.clone()));
+                }
+                forked = true;
+            }
+        }
+    });
+    (sim, stopped)
+}
+
 /// VC4R-1 (design-reviewer's inferred finding, built in round 5): an equivocated prevote gets an honest
 /// capper voted out. The round-0 proposer (member 1) equivocates its own prevote for the join's value
 /// `v`: the real value to capper 2, nil to observer 3. Member 9's prevote is dropped, so without 1's
@@ -745,66 +818,9 @@ pub fn adminfork() {
 /// entries. 1 and 2 decide the join on precommits {1, 2, 9}; with PF-1 off, 3, 9 and the joiner cannot
 /// count 1's precommit, stay in epoch 0, and confirmation halts for good.
 pub fn prevotefork() {
+    let (_, capper, obs, joiner) = PREVOTEFORK;
     for off in [fix::VC4R1, fix::PF1, 0] {
-        let ids = [1, 2, 3, 9];
-        let proposer = peers_of(&ids, |_| BTreeMap::new())[0].worlds[&1].sim.proposer_of(0, 0).unwrap();
-        assert_eq!(proposer, 1, "prevotefork assumes member 1 is the round-0 proposer");
-        let (equiv, capper, obs) = (1u32, 2u32, 3u32);
-        let joiner: MemberId = 5;
-        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (600, touch(33, 3.0))]) } else { BTreeMap::new() });
-        let mut p = Peer::new(joiner, 0);
-        p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
-        ps.push(p);
-        for p in ps.iter_mut().filter(|p| p.id != joiner) {
-            p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
-        }
-        each_sim(&mut ps, |s| s.join_rules = JoinRules::public(GUEST));
-        if off != 0 {
-            each_sim(&mut ps, move |s| s.fixes_off = off);
-        }
-        let forged = std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::<EntryId>::new()));
-        let fg = forged.clone();
-        let mut net = Net::new(link(30, 10, 0), 7);
-        net.filter = Some(Box::new(move |t, _w, from, _to, m| match m {
-            Msg::Entry(e) if from == equiv && matches!(e.payload, Payload::Prevote { round: 0, .. }) && !fg.borrow().contains(&e.id()) => Fate::Drop,
-            // 9's round-0 prevote is lost until 2.5 s, past the cap's judgment, then repaired as after GST.
-            // Round 6 dropped it for good, repairs included, which made 9 a second faulty member (two of
-            // four, beyond t = 1) and halted the session (@ballpit-viz's finding).
-            Msg::Entry(e) if from == 9 && t < 2_500_000 && matches!(e.payload, Payload::Prevote { round: 0, .. }) => Fate::Drop,
-            _ => Fate::Deliver,
-        }));
-        let mut sim = Sim::new(net, ps, 10_000_000);
-        let mut asked = false;
-        let mut forked = false;
-        let stopped = run_quiet(&mut sim, |sim| {
-            let now = sim.net.now_us;
-            if !asked && now >= 1_000_000 {
-                for m in ids {
-                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
-                }
-                asked = true;
-            }
-            if asked && !forked {
-                let r = &sim.replica(equiv, 1).sim;
-                let pv = r.all_entries().into_iter().find(|e| e.member == equiv && matches!(e.payload, Payload::Prevote { round: 0, .. }));
-                let prop = r.all_entries().into_iter().find(|e| e.member == equiv && matches!(e.payload, Payload::Propose { round: 0, .. }));
-                if let (Some(pv), Some(Payload::Propose { change, .. })) = (pv, prop.map(|e| e.payload)) {
-                    let v = change.value();
-                    let Payload::Prevote { epoch, round, .. } = pv.payload else { return };
-                    let mut vv = pv.clone();
-                    vv.payload = Payload::Prevote { epoch, round, value: v };
-                    let mut nil = pv.clone();
-                    nil.payload = Payload::Prevote { epoch, round, value: 0 };
-                    forged.borrow_mut().insert(vv.id());
-                    forged.borrow_mut().insert(nil.id());
-                    sim.net.send(1, equiv, capper, &Msg::Entry(vv));
-                    for m in [obs, 9] {
-                        sim.net.send(1, equiv, m, &Msg::Entry(nil.clone()));
-                    }
-                    forked = true;
-                }
-            }
-        });
+        let (sim, stopped) = prevotefork_sim(off, 0, 2_500_000);
         let honest = [1, 2, 3];
         // 1 is the faulty member (its prevote is forked) and is removed; liveness is the others'.
         let remaining = [capper, obs, 9, joiner];
@@ -844,6 +860,14 @@ fn live(sim: &Sim, honest: &[MemberId]) -> bool {
     })
 }
 
+/// The verdict of a round-7 or round-8 repro (@ballpit-viz's request): the fix-off run must still show
+/// the failure it was written for, and the run as shipped must pass; anything else prints FAIL, which
+/// the suite's check catches whatever the bytes around it.
+fn repro_verdict(name: &str, fixed: bool, ok: bool, pass: &str, control: &str) {
+    let what = if fixed { pass } else { control };
+    println!("RESULT {name} fixed={fixed}: -> {}", if ok { what } else { "FAIL" });
+}
+
 /// VC6R-1: capstale, but 9's capped precommit names a polka id that exists nowhere. Fix off (VC6R1):
 /// the missing id is fetched for good and 9 is never removed.
 pub fn capfake() {
@@ -870,6 +894,8 @@ pub fn capfake() {
         });
         let honest = [1, 2, 3];
         println!("REPRO capfake fixed={fixed}: 9 removed at {}; live at the end: {}; {}", secs(removed_at(&sim, 1, 9)), live(&sim, &honest), confs(&sim, &honest));
+        let (gone, up) = (removed_at(&sim, 1, 9).is_some(), live(&sim, &honest));
+        repro_verdict("capfake", fixed, if fixed { gone && up } else { !gone && !up }, "VOTED OUT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
         verdict(&sim, &honest, &format!("capfake fixed={fixed}"), stopped);
     }
 }
@@ -904,6 +930,8 @@ pub fn fakeadmin() {
         let honest = [1, 2, 3, 4];
         let vcs = sim.replica(1, 1).sim.vc_log.len();
         println!("REPRO fakeadmin fixed={fixed} (no-op SetRole every 2 s): 8 removed at {}; decisions at m1 {vcs}; live at the end: {}; {}", secs(removed_at(&sim, 1, 8)), live(&sim, &honest), confs(&sim, &honest));
+        let (gone, up) = (removed_at(&sim, 1, 8).is_some(), live(&sim, &honest));
+        repro_verdict("fakeadmin", fixed, if fixed { gone && up } else { !gone && !up }, "VOTED OUT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
         verdict(&sim, &honest, &format!("fakeadmin fixed={fixed}"), stopped);
     }
 }
@@ -1011,7 +1039,113 @@ pub fn adminwedge() {
             live(&sim, &honest),
             confs(&sim, &honest)
         );
+        let (gone, up) = (removed_at(&sim, 1, 9).is_some(), live(&sim, &honest));
+        repro_verdict("adminwedge", fixed, if fixed { gone && up } else { !gone && !up }, "REMOVED, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
         vc_report(&sim, &honest, "adminwedge");
         verdict(&sim, &honest, &format!("adminwedge fixed={fixed}"), stopped);
+    }
+}
+
+// ---- design-reviewer round-7 repros, fixed in round 8 ---------------------------------------------
+
+/// VC7R-1: round 7's admin validity still followed the branch of its author's chain a replica had linked.
+/// Faulty member f, the round-0 proposer, authors an Attest `b` as its seq s and forges `a`, a SetRole
+/// with the same seq and parent, stamped behind the horizon f has declared (horizon-void, VCR-9). `a`
+/// reaches member P first and the others second; `b` the others first and P second. f's own chain goes
+/// on from `b`, so the others follow it; f proposes a change listing `a`, prevotes it (its own code
+/// skips the admin checks), drops its precommits, and crashes once the others have precommitted. P
+/// linked `a`, so it is void there; the others hold it as a duplicate, which round 7 never validated, so
+/// with the fix off (`VC7R1`) they lock on the change while P prevotes nil for it forever.
+pub fn voidfork() {
+    for fixed in RUNS {
+        let ids = [1, 2, 3, 4];
+        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
+        let f = ps[0].worlds[&1].sim.proposer_of(0, 0).unwrap();
+        let honest: Vec<MemberId> = ids.iter().copied().filter(|&m| m != f).collect();
+        let p = *honest.last().unwrap();
+        let others: Vec<MemberId> = honest.iter().copied().filter(|&m| m != p).collect();
+        guests(&mut ps, &ids);
+        if !fixed {
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC7R1);
+        }
+        for pe in ps.iter_mut().filter(|pe| pe.id == f) {
+            pe.worlds.get_mut(&1).unwrap().sim.fixes_off |= fix::VC3R3;
+        }
+        let crashed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let fc = crashed.clone();
+        let mut net = Net::new(link(30, 10, 0), 7);
+        net.filter = Some(Box::new(move |_t, _w, from, _to, m| {
+            if from == f && (fc.get() || matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Precommit { .. }))) {
+                return Fate::Drop;
+            }
+            Fate::Deliver
+        }));
+        let mut sim = Sim::new(net, ps, 14_000_000);
+        let mut step = 0;
+        let mut fork: Option<(Entry, Entry)> = None;
+        let mut crash_at = None;
+        let stopped = run_quiet(&mut sim, |sim| {
+            let t = sim.net.now_us;
+            if step == 0 && t >= 2_000_000 {
+                let rf = sim_mut(sim, f);
+                let epoch = rf.epoch;
+                let b = rf.author(Payload::Attest { fact: 1, sig: 0 }, None);
+                let a = Entry { payload: Payload::SetRole { epoch, member: p, role: GUEST }, stamp: b.stamp.saturating_sub(60), ..b.clone() };
+                rf.byz_change = Some(Change { epoch, admin: vec![(a.id(), true)], ..Default::default() });
+                send_all(sim, f, &others, &b);
+                sim.net.send(1, f, p, &Msg::Entry(a.clone()));
+                fork = Some((a, b));
+                step = 1;
+            } else if step == 1 && t >= 2_100_000 {
+                let (a, b) = fork.clone().unwrap();
+                send_all(sim, f, &others, &a);
+                sim.net.send(1, f, p, &Msg::Entry(b));
+                step = 2;
+            } else if step == 2 {
+                let all_pc = others.iter().all(|&m| sim.replica(m, 1).sim.all_entries().iter().any(|e| e.member == m && matches!(e.payload, Payload::Precommit { .. })));
+                if all_pc {
+                    crashed.set(true);
+                    crash_at = Some(t);
+                    step = 3;
+                }
+            }
+        });
+        println!(
+            "REPRO voidfork fixed={fixed}: proposer(0,0)={f}, linked the void version first: {p}; step reached {step}, {f} crashed at {crash_at:?} us; {f} removed at {}; live at the end: {}; {}",
+            secs(removed_at(&sim, honest[0], f)),
+            live(&sim, &honest),
+            confs(&sim, &honest)
+        );
+        let (gone, up) = (removed_at(&sim, honest[0], f).is_some(), live(&sim, &honest));
+        repro_verdict("voidfork", fixed, if fixed { gone && up } else { !gone && !up }, "THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
+        vc_report(&sim, &honest, "voidfork");
+        verdict(&sim, &honest, &format!("voidfork fixed={fixed}"), stopped);
+    }
+}
+
+/// VC7R-2: prevotefork's layout, with every delivery of the forked value-prevote to observer 3 delayed
+/// 1.5 s, and 9's prevote lost until 5 s (in prevotefork it is back at 2.5 s and completes the polka by
+/// itself). Only capper 2 holds the forked prevote, so 3's fetch waits on 2's replies: longer than round
+/// 7's budget (a further half window, 1 s) and well inside the allowance a slow member gets
+/// (`suspect_after`, 3 s). With the fix off (`VC7R2`), 3 votes honest capper 2 out before it arrives:
+/// here for 2's vote against 1, whose frozen head lies past 1's fork on the branch 3 lacks the forked
+/// prevote of (the same budget, VC4R-5's).
+pub fn slowcapper() {
+    let (_, capper, obs, joiner) = PREVOTEFORK;
+    for fixed in RUNS {
+        let (sim, stopped) = prevotefork_sim(if fixed { 0 } else { fix::VC7R2 }, 1_500_000, 5_000_000);
+        let honest = [1, 2, 3];
+        let remaining = [capper, obs, 9, joiner];
+        let voted = sim.replica(obs, 1).sim.all_entries().iter().any(|e| e.member == obs && matches!(e.payload, Payload::Vote { target, .. } if target == capper));
+        let kept = sim.replica(obs, 1).sim.members.contains(&capper);
+        vc_report(&sim, &honest, "slowcapper");
+        println!(
+            "REPRO slowcapper fixed={fixed} (3 receives the cap's polka prevote 1.5 s late): m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; live at the end (2, 3, 9, 5): {}; {}",
+            live(&sim, &remaining),
+            confs(&sim, &honest)
+        );
+        let up = live(&sim, &remaining);
+        repro_verdict("slowcapper", fixed, if fixed { !voted && kept && up } else { voted }, "THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON", "3 VOTES THE HONEST CAPPER OUT, AS BEFORE THE FIX");
+        verdict(&sim, &honest, &format!("slowcapper fixed={fixed}"), stopped);
     }
 }

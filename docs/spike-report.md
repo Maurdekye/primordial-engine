@@ -711,6 +711,24 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
   * PF-1 changes no other scenario's log: beyond wall-clock timings, the suite differs only in the
     round-7 repros' new liveness fields. `fixes_off` is now 64 bits wide (PF-1 is bit 32).
 
+* **Round 8** (round 7's review asked for changes: VC7R-1 High, VC7R-2 Medium, five lows), on a branch
+  until @design-reviewer's OK. Each repro fails with its fix switched off and passes with it, and every
+  round-7 and round-8 repro now prints a verdict line, so a lost liveness fails on its own (@ballpit-viz):
+
+  | Repro | Fix | With the fix | Fix off |
+  |---|---|---|---|
+  | `voidfork` (VC7R-1) | a listed admin entry is judged along its own ancestry, not by the branch the validator linked | the void listing is refused everywhere; faulty proposer removed at 2.25 s | two members lock on it, one prevotes nil for good; stops at 110 |
+  | `slowcapper` (VC7R-2) | evidence an honest member must deliver gets the 3 s slow-member allowance; named prevotes count once held | the slow capper is kept, confirmation goes on | the capper is voted against after 1 s |
+
+  * capfake's faker is removed at 6.17 s instead of 4.15 s (the new budget); adminwedge decides 30 ms
+    sooner (VC7R-1 no longer waits for the faulty member's chain to be linked up to the listed entry,
+    checked with VC7R1 alone switched off: 4.03 s again).
+  * Found while building `slowcapper`: a re-pointed cut re-validated the removed member's chain with the
+    abandoned branch's ack-epoch history, voiding its acks at the replicas that switched and not at the
+    others (`fix::RECUT`). prevotefork's 28 such voids are gone.
+  * Lows: VC7R-4 (PF-1's exception named), VC7R-5 (certificates carry exactly a quorum), VC7R-6
+    (bounded scans), VC7R-7 (adminfork's control fixed; its log is unchanged, since the scenario removes
+    the faulty admin either way). VC7R-3 stays inferred.
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
   (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
