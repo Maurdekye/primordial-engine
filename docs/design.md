@@ -686,9 +686,19 @@ inexact.
    Before this change (3d0f98a), a hand without an entry stopped dead.
    * A thinned entry (10.9) is followed over its declared span first, and the coast covers only a gap
      past it: a hand moves while n ≤ (span − 1) + 6 frames after its last entry, then holds (D52, D53).
-     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163]. The
-     spike's rule is still flat (n ≤ `hand_predict`) and off by default (0); it follows with its next
-     change [V].
+     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163], and so
+     does the spike since p2/spike-hand: it follows the span uncapped, then coasts at most 3 m/s, and
+     `hand_predict` defaults to 6 there too.
+   * **The coast continues only a stream** (@coordinator-opus, 2026-10-31; a clarification of D52). An
+     entry that arrives more than the previous entry's span + `hand_predict` frames after it, such as a
+     one-shot target or a gesture's start, is followed over its span and then held, never coasted past
+     it. A one-shot target used to overshoot by up to 0.3 m (an MCP agent's hand, pe-mcp's
+     `hands_in_the_ball_pit`) [V spike]. pe-session mirrors it with D73 (@world-chunks).
+     * **A requirement on the sender's IO** (review SH-1), like the joiner's hold in 9.5: a held hand keeps
+       sending its entries while still. A transport that dropped unchanged poses would leave the last
+       moving entry flagged as a stream, and the confirmed hand would coast up to 0.3 m past the author's.
+       So neither D73's packs nor any later bandwidth saving may stop a held hand's entries, for example to
+       let idle thinning (7.6) start: a still, held hand keeps its member busy.
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
@@ -2236,13 +2246,14 @@ and the engager's hand replayed after the gesture had ended.
        reckoning (6.10) covers the gaps. Every peer, the author included, follows a thinned entry over
        its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
        most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
-       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
+       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled), and only within a stream: an entry
+       more than its predecessor's span + 6 frames after it is followed over its span and held (6.10).
      * A hand pose falls on a frame aligned to its level's stride, the first such frame after the last
        pose; at a level change it is not held back to last + k. So the gap after a change is at most the
        new stride, and a hand never stops while its author keeps sending. Before, a pose also had to be k
        frames after the last, and at 4→5 pose 258 was followed by 272, freezing the hand 2 frames even
        with span then coast (@shader-reviewer's matrix finding M1; fixed in pe-session at 649a77f, with a
-       test through every level change [V @world-chunks]). The spike follows with its next change.
+       test through every level change [V @world-chunks]). The spike does the same since p2/spike-hand.
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
@@ -2295,7 +2306,8 @@ datagram per message with the controller off unless a run opts in, so the protoc
 transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
-500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
+500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3;
+adaptive cells re-run with span then coast and the level-change rule, p2/spike-hand]:
 
 | Cap | Transport | Uplink m1 | Max queue, drops | Stalled frames | Max confirmation lag | Back to real time after the gesture | End state |
 |---|---|---|---|---|---|---|---|
@@ -2305,18 +2317,24 @@ transport; the R18 runs opt in [V @world-chunks].
 | 48 kbit/s | per message | 76 kbit/s | 499 ms, 52 | 238 / 262 | 328 frames | never in the run | not converged |
 | 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 22 | 139 frames | 2.4 s | equal |
 | 48 kbit/s | **batched + adaptive** | 57 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
-| 32 kbit/s | **batched + adaptive** | 41 kbit/s | **105 ms**, 0 | **0 / 0** | 15 frames | **at once** | equal |
-| 16 kbit/s | **batched + adaptive** (30 s run) | 17 kbit/s | **364 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
-| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 484 ms, 11 | 1,201 / 1,214 | 1,332 frames | 19.3 s | equal |
+| 32 kbit/s | **batched + adaptive** | 39 kbit/s | **105 ms**, 0 | **0 / 0** | 16 frames | **at once** | equal |
+| 16 kbit/s | **batched + adaptive** (30 s run) | 17 kbit/s | **414 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
+| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 492 ms, 12 | 1,323 / 1,335 | 1,453 frames | 21.7 s | equal |
 | 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 35 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
-| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 36 kbit/s | **343 ms**, 0 | **0 / 0** | 33 frames | **60 ms** | equal |
-| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 68 kbit/s | **215 ms**, 0 | **0** (all four) | 33 frames | **at once** | all four equal |
+| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 36 kbit/s | **393 ms**, 0 | **0 / 0** | 35 frames | **61 ms** | equal |
+| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 66 kbit/s | **198 ms**, 0 | **0** (all four) | 34 frames | **at once** | all four equal |
 | 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 30 kbit/s | 498 ms on member 3's links | 135 / 135 before the demotion | 255 frames | at once | member 3 demoted after 3 s of lag; members 1 and 2 equal |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
-  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 20 s of the gesture's end, and a
+  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 22 s of the gesture's end, and a
   member too slow for the session is demoted.
+* **Span then coast and the level-change rule (p2/spike-hand)** moved the adaptive cells a little, and no
+  cell changed state [V spikes/out/r18]: peaks rose at 16 kbit/s (364 → 414 ms) and in the step (343 →
+  393 ms), 12 kbit/s recovers 2.4 s later (19.3 → 21.7 s), and the shared uplink's peak fell (215 → 198
+  ms). The likely cause [I]: after a level change, a pose may now come up to one stride sooner, which adds
+  an entry while the queue builds. That is the cost of a hand that never stops while its author sends.
+  The other transports changed only in digests.
 * **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
   even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
   wire format]. Below the floor a two-member session stalls, because it cannot demote either member
@@ -6637,6 +6655,9 @@ entry says so.
   * Recommend:
     * Dead reckoning as the world rule for hand sources: keep the last commanded velocity, capped at
       3 m/s, for up to 6 frames, then hold. It cuts the observer's error by about 4-18x [V observer].
+    * Clarified (@coordinator-opus, 2026-10-31): the coast covers a gap in a stream. An entry that
+      arrives more than its predecessor's span + 6 frames after it (a one-shot target, a gesture's
+      start) is followed over its span and then held (6.10).
     * Plus render-only smoothing: τ = 50 ms below 5 cm, a glide of up to 100 ms above that, and a snap
       above 0.5 m [I].
   * Alternatives:
