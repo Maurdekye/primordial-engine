@@ -2,7 +2,7 @@
 # Re-records every committed record that depends on Box3D's arithmetic, from source, in one
 # command (D58, double precision on; rule of 2026-10-31: no hand-edited logs). Whichever branch
 # lands second on main reruns it on the merged tree and commits the result.
-#   nice -n 19 bash scripts/rebless_physics_records.sh [--no-linux]
+#   PE_HEAVY=<lock wrapper> nice -n 19 bash scripts/rebless_physics_records.sh [--no-linux]
 # Do not run it under heavy.sh: heavy.sh is not re-entrant, and every cargo command below
 # already takes the org-wide lock itself (PE_HEAVY for run_determinism.sh, `low` in
 # run_p2_2_tests.sh). Everything else inherits the idle priority from `nice`.
@@ -23,8 +23,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 linux=--linux
 [ "${1:-}" = --no-linux ] && linux=""
-export PE_HEAVY=${PE_HEAVY:-/c/Users/<user>/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh}
-low() { bash "$PE_HEAVY" "$@"; }
+# PE_HEAVY: an optional wrapper script every cargo job runs through (as in run_p2_2_tests.sh).
+low() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }
 step() { echo; echo "== $*"; }
 
 step "build the physics spike (release and debug)"
