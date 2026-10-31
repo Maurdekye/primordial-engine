@@ -11,7 +11,7 @@
   m3 world B: object 40 live copies 1; escrow []; arrivals ["T4196791878994343820:Accepted { obj: 75, frame: 140 }"]
 RESULT r14 ok: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
   m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (7.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m2 world 1: rollbacks 15 max depth 3 resim frames 62 (8.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
   m1 world 2: rollbacks 2 max depth 8 resim frames 11 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
   m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 ok A world 1: frames 0..500 digests m1=08379e43c2f24eaf m2=08379e43c2f24eaf | offline replay 08379e43c2f24eaf | ALL EQUAL
