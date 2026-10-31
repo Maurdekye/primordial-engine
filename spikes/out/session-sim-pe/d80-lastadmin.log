@@ -11,4 +11,4 @@ RESULT lastadmin: admins at the end [[2], [2], [2]] -> the release was refused, 
   m1: conf 467 frame 473 members {1, 2, 3} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 32 bad 0
   m2: conf 469 frame 473 members {1, 2, 3} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 32 bad 0
   m3: conf 467 frame 473 members {1, 2, 3} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 32 bad 0
-RESULT lastadmin (the only admin releases its role, then hands it to 2 and releases): frames 0..472 honest m1=b74f5d1ba95d2d08 m2=b74f5d1ba95d2d08 m3=b74f5d1ba95d2d08 | offline replay b74f5d1ba95d2d08 | ALL EQUAL, NO FALSE CHECKS ; checks ok 96 bad 0
+RESULT lastadmin (the only admin releases its role, then hands it to 2 and releases): frames 0..472 honest m1=906e5dd2b4724f9e m2=906e5dd2b4724f9e m3=906e5dd2b4724f9e | offline replay 906e5dd2b4724f9e | ALL EQUAL, NO FALSE CHECKS ; checks ok 96 bad 0

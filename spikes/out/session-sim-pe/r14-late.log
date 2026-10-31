@@ -1,17 +1,17 @@
   carrier: t=2766ms depart authored in world 1 at frame 160
   carrier: t=2964ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 140
   carrier: t=3197ms arrival confirmed in world 2 (frame 140, accepted=false); verdict authored in world 1 at frame 185 (its sim there at frame 185)
-  carrier: t=3354ms verdict confirmed in world 1; transfer 11308292931106750874 resolved
+  carrier: t=3354ms verdict confirmed in world 1; transfer 8700545133512062529 resolved
   carrier: phase Done accepted Some(false)
   carrier: depart entry final outcome at A frame 160: Accepted
-  m1 world A: object 40 live copies 1; escrow ["T11308292931106750874:Returned"]; arrivals []
-  m2 world A: object 40 live copies 1; escrow ["T11308292931106750874:Returned"]; arrivals []
-  m1 world B: object 40 live copies 0; escrow []; arrivals ["T11308292931106750874:Rejected { frame: 140, until: 132 }"]
-  m3 world B: object 40 live copies 0; escrow []; arrivals ["T11308292931106750874:Rejected { frame: 140, until: 132 }"]
+  m1 world A: object 40 live copies 1; escrow ["T8700545133512062529:Returned"]; arrivals []
+  m2 world A: object 40 live copies 1; escrow ["T8700545133512062529:Returned"]; arrivals []
+  m1 world B: object 40 live copies 0; escrow []; arrivals ["T8700545133512062529:Rejected { frame: 140, until: 132 }"]
+  m3 world B: object 40 live copies 0; escrow []; arrivals ["T8700545133512062529:Rejected { frame: 140, until: 132 }"]
 RESULT r14 late: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 14 max depth 3 resim frames 59 (7.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 1: rollbacks 3 max depth 3 resim frames 14 (1.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 14 max depth 3 resim frames 59 (7.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
   m1 world 2: rollbacks 2 max depth 8 resim frames 11 (1.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
   m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-RESULT r14 late A world 1: frames 0..500 digests m1=fc6b25a6e1870722 m2=fc6b25a6e1870722 | offline replay fc6b25a6e1870722 | ALL EQUAL
-RESULT r14 late B world 2: frames 0..400 digests m1=b531c2f5602e7b82 m3=b531c2f5602e7b82 | offline replay b531c2f5602e7b82 | ALL EQUAL
+RESULT r14 late A world 1: frames 0..500 digests m1=bc52b44ce1c46134 m2=bc52b44ce1c46134 | offline replay bc52b44ce1c46134 | ALL EQUAL
+RESULT r14 late B world 2: frames 0..400 digests m1=295c13f84dff61cb m3=295c13f84dff61cb | offline replay 295c13f84dff61cb | ALL EQUAL

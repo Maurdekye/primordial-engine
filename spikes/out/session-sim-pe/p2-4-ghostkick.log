@@ -6,4 +6,4 @@ RESULT ghostkick: m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 58
   m1: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 51 bad 0
   m2: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 51 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 50 bad 0
-RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist): frames 0..592 honest m1=7bbef1b4ec5e54d0 m2=7bbef1b4ec5e54d0 m3=7bbef1b4ec5e54d0 | offline replay 7bbef1b4ec5e54d0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 152 bad 0
+RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist): frames 0..592 honest m1=e0f4bff2c7a5c37d m2=e0f4bff2c7a5c37d m3=e0f4bff2c7a5c37d | offline replay e0f4bff2c7a5c37d | ALL EQUAL, NO FALSE CHECKS ; checks ok 152 bad 0

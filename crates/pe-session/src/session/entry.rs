@@ -220,6 +220,10 @@ pub enum Msg {
     Join { member: MemberId, attests: Vec<Attest> },
     /// Review VCR-8: ask for the entry with this id (an admin entry a decided change lists).
     FetchEntry { id: EntryId },
+    /// Design 9.5: a joiner asks a member for its newest confirmed check-frame state.
+    FetchState,
+    /// The answer: a state transfer, which the joiner restores only after its checks (P22S-1).
+    State(Box<StateTransfer>),
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -241,6 +245,7 @@ impl Wr {
     pub(super) fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     pub(super) fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
     pub(super) fn sig(&mut self, s: &Sig) { self.0.extend_from_slice(s) }
+    pub(super) fn blob(&mut self, b: &[u8]) { self.u32(b.len() as u32); self.0.extend_from_slice(b) }
     pub(super) fn cert(&mut self, c: &[(MemberId, Sig)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.sig(s) } }
     pub(super) fn hop(&mut self, h: &Hop) {
         self.u32(h.src); self.u32(h.dest); self.u64(h.transfer); self.u64(h.via); self.u32(h.epoch); self.u64(h.frame);
@@ -361,6 +366,11 @@ impl Wr {
                 }
             }
             Msg::FetchEntry { id } => { self.u8(8); self.id(*id) }
+            Msg::FetchState => self.u8(9),
+            Msg::State(st) => {
+                self.u8(10); self.u32(st.world); self.u64(st.frame);
+                self.blob(&st.physics); self.blob(&st.store); self.blob(&st.tables);
+            }
         }
     }
 }
@@ -379,6 +389,7 @@ impl Rd<'_> {
     pub(super) fn i32(&mut self) -> Option<i32> { Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     pub(super) fn f32(&mut self) -> Option<f32> { Some(f32::from_bits(self.u32()?)) }
     pub(super) fn sig(&mut self) -> Option<Sig> { self.take(64)?.try_into().ok() }
+    pub(super) fn blob(&mut self) -> Option<Vec<u8>> { let n = self.u32()? as usize; Some(self.take(n)?.to_vec()) }
     pub(super) fn cert(&mut self) -> Option<Vec<(MemberId, Sig)>> {
         let n = self.u32()? as usize;
         let mut c = Vec::with_capacity(n.min(64));
@@ -537,6 +548,10 @@ impl Rd<'_> {
                 Msg::Join { member, attests }
             }
             8 => Msg::FetchEntry { id: self.id()? },
+            9 => Msg::FetchState,
+            10 => Msg::State(Box::new(StateTransfer {
+                world: self.u32()?, frame: self.u64()?, physics: self.blob()?, store: self.blob()?, tables: self.blob()?,
+            })),
             _ => return None,
         })
     }
