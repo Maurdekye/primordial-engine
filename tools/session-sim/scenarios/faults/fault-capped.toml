@@ -1,17 +1,20 @@
 description = """
-Fault kinds (P2-9): one capped link. Member 3's uplink to member 1 is capped at 12 kbit/s (4 kB \
+Fault kinds (P2-9): one capped link. Member 3's uplink to member 1 is capped at 52 kbit/s (4 kB \
 burst, 500 ms queue, tail drop), below what its acks need at 60 Hz without the R18 congestion \
-controller: 156 datagrams are dropped and member 1's confirmation lags. The 64 kbit/s cap on \
-every other link leaves headroom: without the 3-to-1 cap, this run drops nothing and equals the \
-uncapped one (fault-capped-collapse shows a cap that binds everywhere)."""
+controller: 56 datagrams are dropped; member 1 rolls back up to 45 frames (the others 2) and its \
+confirmation lags (552 against 556). The \
+186 kbit/s cap on every other link leaves headroom: without the 3-to-1 cap, this run drops nothing \
+(fault-capped-collapse shows a cap that binds everywhere). P2-3: the caps are the spike's 12 and 64 \
+kbit/s scaled to pe-session's larger messages (signatures, 256-bit ids, BLAKE3 checks), under which \
+the run tests the same thing again."""
 include = ["../common/pile.toml", "../common/scripted.toml"]
 end_ms = 10000
 
 [net]
 seed = 35
 link = { delay_ms = 30, jitter_ms = 10 }
-cap = { kbps = 64 }
-caps = [{ from = 3, to = 1, kbps = 12 }]
+cap = { kbps = 186 }
+caps = [{ from = 3, to = 1, kbps = 52 }]
 
 [[report]]
 kind = "stats"
