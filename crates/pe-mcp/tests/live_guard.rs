@@ -55,7 +55,7 @@ impl DrivenPeer for FakeLive {
     fn propose(&mut self, _: Interaction) -> ToolResult<Authored> {
         Err(ToolError::new(ErrorCode::UnknownObject, "no objects"))
     }
-    fn status(&self, _: u64) -> Option<EntryStatus> {
+    fn status(&self, _: EntryId) -> Option<EntryStatus> {
         None
     }
     fn advance_ms(&mut self, _: u64) -> ToolResult<()> {

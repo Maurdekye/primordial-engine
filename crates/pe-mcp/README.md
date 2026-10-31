@@ -1,9 +1,10 @@
 # pe-mcp
 
 The engine's MCP server (design 17): the phase-2 test and driver interface (design 23.4, P2-8). An agent
-drives **one peer** of a session. In phase 2 that peer is one member of the in-process session simulator
-(`spikes/session-sim`), with the other members running scripted plans over simulated links. P2-3's
-`pe-session` replaces it behind the `DrivenPeer` trait (`src/backend.rs`), with no change to the tools.
+drives **one peer** of a session. That peer is either one member of the in-process scenario harness
+(`crates/pe-session-harness`), with the other members running scripted plans over simulated links, or a
+live `pe-app` peer over UDP. Both run P2-3's `pe-session` core behind the `DrivenPeer` trait
+(`src/backend.rs`), with the same tools. Entry ids are 32 bytes, 64 hex digits.
 
 Built on `rmcp` 3.8.0 (the official Rust SDK). The full tool schemas, as the server advertises them, are in
 [`schema/tools.json`](schema/tools.json). A test keeps that file current; regenerate it with
@@ -92,7 +93,7 @@ below it is confirmed and can never be rolled back. Hashes are 16 hex digits.
 | `world_hashes` | State hash after each frame in `[from, to)` (≤ 600 frames), and the check hashes compared with other members | none |
 | `session_members` | Members with evictions (`cut_seq`, `from_frame`), epoch, vote counters | none |
 | `session_sync_status` | Frame, clock, `conf`, speculation and its window, `paused`, `caught_up`, check hashes matched and mismatched, rollback counters | none |
-| `scenario_load` | Starts a fresh session (tickets are cleared): `members` 2..=8, `me`, `scene` (`pile` with `size` 1..=8, or `ballpit` with 1..=500 balls), `delay_ms`, `jitter_ms`, `loss_pct`, `background_touches_per_s`, `window`, `seed`. The same parameters and seed give the same run. A failed load leaves the session as it was. It also clears `session_faulted` | `no_scenario_control` (live peer) |
+| `scenario_load` | Starts a fresh session (tickets are cleared): `members` 2..=8, `me`, `scene` (`pile` with `size` 1..=8, or `ballpit` with 1..=500 balls), `delay_ms`, `jitter_ms`, `loss_pct`, `background_touches_per_s`, `background_grabs` (background touches are grabs: only a grab claims, design D72), `window`, `seed`. The same parameters and seed give the same run. A failed load leaves the session as it was. It also clears `session_faulted` | `no_scenario_control` (live peer) |
 | `scenario_fault` | `crash` a member (permanent); set a `link` (`from`, `to`, delay, jitter, loss, `one_way`); `partition` into `groups`; `heal` | `no_scenario_control` |
 | `scenario_check` | The oracle, over the frames every live member has confirmed: every live member's hashes against the driven peer's, and the driven peer's against an offline replay of its final log. Reports `first_divergence` | `no_scenario_control` |
 

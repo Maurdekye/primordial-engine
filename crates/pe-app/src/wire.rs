@@ -1,21 +1,22 @@
-//! Datagrams on the wire. Every datagram is signed by its sender (Ed25519), and every entry inside
-//! carries its author's own signature, so an entry relayed by a third member (fetch repair,
-//! equivocation proofs) stays verifiable. Keys are pinned from the session file; nothing is trusted
-//! on first use. Noise encryption and NAT traversal come in phase 3.
+//! Datagrams on the wire. Every datagram is signed by its sender (Ed25519) with the key pinned in the
+//! session file, so the sender is authenticated; nothing is trusted on first use. Entries carry their
+//! author's own signature inside the protocol message (pe-session's `SignedEntry`), and the session
+//! core verifies those itself, so an entry relayed by a third member (fetch repair, equivocation
+//! proofs) stays checkable. Noise encryption and NAT traversal come in phase 3.
 //!
 //! ```text
 //! datagram = "PE" | version u8 | session u64 | sender u32 | count u16 | item* | signature[64]
-//! item     = 1 entry: len u16 | entry bytes | author signature[64]
-//!          | 2 fetch: len u16 | fetch bytes
+//! item     = 1 protocol message: len u16 | pe-session encoding (an entry includes its signature)
 //!          | 3 ping: t u64 | 4 pong: t u64, r u64 | 5 start: epoch u64 | 6 start-ack | 7 ready
 //! ```
-//! Signatures cover a domain tag and the session id, so nothing replays across sessions or kinds.
+//! The datagram signature covers a domain tag and the session id, so no datagram replays across
+//! sessions; entry signatures are bound to the session's 32-byte genesis id by pe-session.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use pe_sim_core::session::{decode_msg, encode_msg, Entry, MemberId, Msg};
+use pe_session::session::{decode_msg, encode_msg, MemberId, Msg};
 
 const MAGIC: &[u8; 2] = b"PE";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const HEADER: usize = 2 + 1 + 8 + 4 + 2;
 pub const SIG: usize = 64;
 /// Largest datagram we send (bytes, before IP/UDP headers).
@@ -23,9 +24,9 @@ pub const MTU: usize = 1200;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
-    /// An entry with its author's signature.
-    Entry(Entry, [u8; SIG]),
-    Fetch(Msg),
+    /// A session protocol message: an entry (with its author's signature) or a fetch request or
+    /// answer. Joins and batches are not sent in M1.
+    Msg(Msg),
     /// Clock sync: my send time; the reply carries it back with the replier's time.
     Ping(u64),
     Pong(u64, u64),
@@ -36,33 +37,11 @@ pub enum Item {
     Ready,
 }
 
-pub fn entry_signing_bytes(session: u64, e: &Entry) -> Vec<u8> {
-    let mut b = b"pe-entry".to_vec();
-    b.extend_from_slice(&session.to_le_bytes());
-    b.extend_from_slice(&encode_msg(&Msg::Entry(e.clone())));
-    b
-}
-
-pub fn sign_entry(key: &SigningKey, session: u64, e: &Entry) -> [u8; SIG] {
-    key.sign(&entry_signing_bytes(session, e)).to_bytes()
-}
-
-pub fn verify_entry(key: &VerifyingKey, session: u64, e: &Entry, sig: &[u8; SIG]) -> bool {
-    key.verify(&entry_signing_bytes(session, e), &Signature::from_bytes(sig)).is_ok()
-}
-
 fn item_bytes(i: &Item, out: &mut Vec<u8>) {
     match i {
-        Item::Entry(e, sig) => {
-            let b = encode_msg(&Msg::Entry(e.clone()));
-            out.push(1);
-            out.extend_from_slice(&(b.len() as u16).to_le_bytes());
-            out.extend_from_slice(&b);
-            out.extend_from_slice(sig);
-        }
-        Item::Fetch(m) => {
+        Item::Msg(m) => {
             let b = encode_msg(m);
-            out.push(2);
+            out.push(1);
             out.extend_from_slice(&(b.len() as u16).to_le_bytes());
             out.extend_from_slice(&b);
         }
@@ -127,21 +106,11 @@ pub enum Reject {
     WrongSession,
     UnknownSender,
     BadSignature,
-    /// An entry whose author signature does not verify (or whose author is unknown).
-    BadEntrySignature,
 }
 
-/// Verify and decode a datagram. `key_of` maps a member to its pinned key. Entries whose author
-/// signature fails make the whole datagram invalid: its sender relayed a forgery. `held` says whether
-/// the receiver already holds an entry with this id (same id, same content): its signature was
-/// verified on first receipt and is not checked again. Repair resends held entries often, and an
-/// Ed25519 verification costs far more than the rest of the datagram.
-pub fn unpack(
-    session: u64,
-    buf: &[u8],
-    key_of: impl Fn(MemberId) -> Option<VerifyingKey>,
-    held: impl Fn(&Entry) -> bool,
-) -> Result<(MemberId, Vec<Item>), Reject> {
+/// Verify and decode a datagram. `key_of` maps a member to its pinned key. Entry signatures are the
+/// session core's to check (it skips entries it already holds, which repair resends often).
+pub fn unpack(session: u64, buf: &[u8], key_of: impl Fn(MemberId) -> Option<VerifyingKey>) -> Result<(MemberId, Vec<Item>), Reject> {
     if buf.len() < HEADER + SIG || &buf[0..2] != MAGIC || buf[2] != VERSION {
         return Err(Reject::Malformed);
     }
@@ -168,21 +137,10 @@ pub fn unpack(
     for _ in 0..n {
         let kind = take(&mut p, 1)?[0];
         let item = match kind {
-            1 | 2 => {
+            1 => {
                 let len = u16::from_le_bytes(take(&mut p, 2)?.try_into().unwrap()) as usize;
-                let m = decode_msg(&take(&mut p, len)?).ok_or(Reject::Malformed)?;
-                match (kind, m) {
-                    (1, Msg::Entry(e)) => {
-                        let s: [u8; SIG] = take(&mut p, SIG)?.try_into().unwrap();
-                        if !held(&e) {
-                            let k = key_of(e.member).ok_or(Reject::BadEntrySignature)?;
-                            if !verify_entry(&k, session, &e, &s) {
-                                return Err(Reject::BadEntrySignature);
-                            }
-                        }
-                        Item::Entry(e, s)
-                    }
-                    (2, m @ Msg::Fetch { .. }) => Item::Fetch(m),
+                match decode_msg(&take(&mut p, len)?).ok_or(Reject::Malformed)? {
+                    m @ (Msg::Entry(_) | Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. }) => Item::Msg(m),
                     _ => return Err(Reject::Malformed),
                 }
             }
@@ -204,14 +162,15 @@ pub fn unpack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pe_sim_core::session::Payload;
+    use pe_session::session::{test_sign, Entry, EntryId, Payload};
 
     fn key(i: u8) -> SigningKey {
         SigningKey::from_bytes(&[i; 32])
     }
 
-    fn entry(member: MemberId, seq: u32) -> Entry {
-        Entry { member, seq, prev: 0, stamp: 7, payload: Payload::Touch { obj: 3, impulse: [0.0, 1.0, 0.0], grab: false }, carried: None }
+    fn entry(member: MemberId, seq: u32) -> Msg {
+        let e = Entry { member, seq, prev: EntryId::NONE, stamp: 7, payload: Payload::Touch { obj: 3, impulse: [0.0, 1.0, 0.0], grab: false }, carried: None };
+        Msg::Entry(test_sign(1, e))
     }
 
     fn keys(m: MemberId) -> Option<VerifyingKey> {
@@ -220,51 +179,39 @@ mod tests {
 
     #[test]
     fn roundtrip_and_relay() {
-        let e2 = entry(2, 1);
-        let s2 = sign_entry(&key(2), 9, &e2);
-        let items = vec![Item::Ping(5), Item::Entry(e2.clone(), s2), Item::Fetch(Msg::Fetch { author: 2, from: 1, to: 3 }), Item::Start(77), Item::Ready];
-        // Member 1 relays member 2's entry: fine, the author signature travels with it.
+        // Member 1 relays member 2's entry: its author signature travels inside the message.
+        let items = vec![Item::Ping(5), Item::Msg(entry(2, 1)), Item::Msg(Msg::Fetch { author: 2, from: 1, to: 3 }), Item::Start(77), Item::Ready];
         let d = pack(9, 1, &items, &key(1));
         assert_eq!(d.len(), 1);
-        let (from, got) = unpack(9, &d[0], keys, |_| false).unwrap();
+        let (from, got) = unpack(9, &d[0], keys).unwrap();
         assert_eq!((from, got), (1, items));
     }
 
     #[test]
     fn rejects() {
-        let e = entry(2, 1);
-        let good = pack(9, 1, &[Item::Entry(e.clone(), sign_entry(&key(2), 9, &e))], &key(1)).remove(0);
-        let none = |_: &Entry| false;
-        assert_eq!(unpack(10, &good, keys, none), Err(Reject::WrongSession));
+        let good = pack(9, 1, &[Item::Msg(entry(2, 1))], &key(1)).remove(0);
+        assert_eq!(unpack(10, &good, keys), Err(Reject::WrongSession));
         let mut flipped = good.clone();
         flipped[20] ^= 1;
-        assert!(unpack(9, &flipped, keys, none).is_err());
+        assert!(unpack(9, &flipped, keys).is_err());
         // Signed by the wrong datagram key.
         let imp = pack(9, 1, &[Item::Ping(1)], &key(3)).remove(0);
-        assert_eq!(unpack(9, &imp, keys, none), Err(Reject::BadSignature));
-        // An entry "by member 2" signed by member 1: a forgery, even inside 1's valid datagram.
-        let forged = pack(9, 1, &[Item::Entry(e.clone(), sign_entry(&key(1), 9, &e))], &key(1)).remove(0);
-        assert_eq!(unpack(9, &forged, keys, none), Err(Reject::BadEntrySignature));
-        // A held entry is not re-verified (its first copy was), so a relayed copy passes.
-        assert!(unpack(9, &forged, keys, |x| *x == e).is_ok());
-        // An entry signed for another session.
-        let other = pack(9, 1, &[Item::Entry(e.clone(), sign_entry(&key(2), 8, &e))], &key(1)).remove(0);
-        assert_eq!(unpack(9, &other, keys, none), Err(Reject::BadEntrySignature));
+        assert_eq!(unpack(9, &imp, keys), Err(Reject::BadSignature));
         let unknown = pack(9, 4, &[Item::Ping(1)], &key(4)).remove(0);
-        assert_eq!(unpack(9, &unknown, keys, none), Err(Reject::UnknownSender));
-        assert_eq!(unpack(9, &good[..10], keys, none), Err(Reject::Malformed));
+        assert_eq!(unpack(9, &unknown, keys), Err(Reject::UnknownSender));
+        assert_eq!(unpack(9, &good[..10], keys), Err(Reject::Malformed));
+        // Joins are not part of M1.
+        let join = pack(9, 1, &[Item::Msg(Msg::Join { member: 1, attests: vec![] })], &key(1)).remove(0);
+        assert_eq!(unpack(9, &join, keys), Err(Reject::Malformed));
     }
 
     #[test]
     fn packing_respects_the_mtu() {
-        let items: Vec<Item> = (1..=40).map(|s| {
-            let e = entry(2, s);
-            Item::Entry(e.clone(), sign_entry(&key(2), 9, &e))
-        }).collect();
+        let items: Vec<Item> = (1..=40).map(|s| Item::Msg(entry(2, s))).collect();
         let d = pack(9, 2, &items, &key(2));
         assert!(d.len() > 1);
         assert!(d.iter().all(|x| x.len() <= MTU));
-        let all: Vec<Item> = d.iter().flat_map(|x| unpack(9, x, keys, |_| false).unwrap().1).collect();
+        let all: Vec<Item> = d.iter().flat_map(|x| unpack(9, x, keys).unwrap().1).collect();
         assert_eq!(all, items);
     }
 }

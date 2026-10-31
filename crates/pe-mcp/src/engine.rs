@@ -21,7 +21,7 @@ const MAX_EVENTS: usize = 50;
 struct Book {
     next: u64,
     /// ticket -> (entry id, last status reported to this principal)
-    tickets: BTreeMap<u64, (u64, Option<InteractionStatus>)>,
+    tickets: BTreeMap<u64, (EntryId, Option<InteractionStatus>)>,
     events_seen: usize,
 }
 
@@ -35,10 +35,15 @@ pub struct Engine {
     books: BTreeMap<String, Book>,
 }
 
-fn status_of(ticket: u64, entry: u64, s: EntryStatus) -> InteractionStatus {
+/// An entry id as tool output: its 32 bytes in hex.
+pub fn entry_hex(e: EntryId) -> String {
+    e.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn status_of(ticket: u64, entry: EntryId, s: EntryStatus) -> InteractionStatus {
     InteractionStatus {
         ticket,
-        entry: format!("{entry:016x}"),
+        entry: entry_hex(entry),
         stamp: s.stamp,
         state: s.state,
         reason: s.reason,
@@ -175,7 +180,7 @@ impl Engine {
         book.tickets.insert(ticket, (a.entry, None));
         Ok(Proposed {
             ticket,
-            entry: format!("{:016x}", a.entry),
+            entry: entry_hex(a.entry),
             stamp: a.stamp,
             seq: a.seq,
             note: "resolved when its frame is simulated; final once confirmed (world_interaction_status, world_step)".into(),
