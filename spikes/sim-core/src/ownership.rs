@@ -181,10 +181,10 @@ impl Cert {
         fnv_u64s(self.body())
     }
 
-    /// The certificate's id: its body and the set of keys that validly signed it (OWNR-4).
+    /// The certificate's id: its body hash. Copies with different signatures are one certificate; a
+    /// book merges their signatures that matter until a session attests it (OWNR-4, OWNS-5).
     pub fn id(&self) -> CertId {
-        let s = self.signers();
-        fnv_u64s([self.body_hash(), s.len() as u64].into_iter().chain(s.iter().map(|&k| k as u64)))
+        self.body_hash()
     }
 
     pub fn signed(mut self, keys: &[Key]) -> Cert {
@@ -263,29 +263,35 @@ impl Cert {
     }
 }
 
-/// "Session `lineage` (in membership epoch `epoch`) committed certificate `cert` of world `world` at
-/// world frame `frame`", signed by a strict majority of that session's members. Production: P2-4's
-/// epoch certificates over a session id derived from its genesis [I].
+/// "Session `lineage` (in membership epoch `epoch`) committed certificate `cert` of world `world`,
+/// signed by `signers`, at frame `frame` of that session", signed by a strict majority of the
+/// session's members. Production: P2-4's epoch certificates over a session id [I]. Who may be a
+/// trusted lineage is the open trust-root question (D87); the spike trusts any valid attestation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attest {
     pub cert: CertId,
     pub lineage: Lineage,
     pub epoch: u32,
     pub frame: u64,
+    /// The certificate's signer set the session committed (its signatures are frozen from then on).
+    pub signers: Vec<Key>,
     pub sigs: Vec<(MemberId, u64)>,
 }
 
 impl Attest {
-    pub fn fact(world: u64, cert: CertId, lineage: Lineage, frame: u64) -> u64 {
-        fnv_u64s([0x00A7_7E57, world, cert, lineage as u64, frame])
+    pub fn fact(world: u64, cert: CertId, lineage: Lineage, epoch: u32, frame: u64, signers: &[Key]) -> u64 {
+        let head = [0x00A7_7E57, world, cert, lineage as u64, epoch as u64, frame, signers.len() as u64];
+        fnv_u64s(head.into_iter().chain(signers.iter().map(|&k| k as u64)))
     }
     /// Signed by every member given (spike signatures).
-    pub fn make(world: u64, cert: CertId, lineage: Lineage, frame: u64, members: &[MemberId]) -> Attest {
-        let f = Attest::fact(world, cert, lineage, frame);
-        Attest { cert, lineage, epoch: 0, frame, sigs: members.iter().map(|&m| (m, member_sig(lineage, m, f))).collect() }
+    pub fn make(world: u64, cert: CertId, lineage: Lineage, frame: u64, signers: &BTreeSet<Key>, members: &[MemberId]) -> Attest {
+        let signers: Vec<Key> = signers.iter().copied().collect();
+        let f = Attest::fact(world, cert, lineage, 0, frame, &signers);
+        Attest { cert, lineage, epoch: 0, frame, signers, sigs: members.iter().map(|&m| (m, member_sig(lineage, m, f))).collect() }
     }
     pub fn verify(&self, world: u64, sessions: &dyn EpochCerts) -> bool {
-        sessions.cert_ok(self.lineage, self.epoch, Attest::fact(world, self.cert, self.lineage, self.frame), &self.sigs)
+        let f = Attest::fact(world, self.cert, self.lineage, self.epoch, self.frame, &self.signers);
+        sessions.cert_ok(self.lineage, self.epoch, f, &self.sigs)
     }
 }
 
@@ -300,8 +306,8 @@ pub enum OwnError {
     /// `seq` does not follow its parents, or `prev` is wrong for the change (a merge of parents
     /// that are not pairwise concurrent, OWN-1).
     BadLink,
-    /// The signatures do not satisfy the rule of the owner set at the parent (including owners
-    /// added on concurrent branches, OWN-3).
+    /// The signatures do not satisfy the rule of the owner set at the parent (for removals,
+    /// including owners added on concurrent branches, OWN-3).
     Signers,
     AlreadyOwner,
     NotOwner,
@@ -313,15 +319,20 @@ pub enum OwnError {
     WindowOpen,
     /// No session has attested the certificate (or, for a window, both of its ends in one session).
     Unattested,
-    /// A session commits only certificates built on its current head.
+    /// A session commits only certificates built on the head of what it committed itself.
     Stale,
-    /// Two concurrent removals each remove a signer of the other (OWNR-7).
+    /// Two concurrent counting removals each remove a signer of the other (OWNR-7).
     Conflict,
-    /// The recovery key had been replaced, attested, before it acted.
+    /// The recovery key had been replaced, attested in the same session earlier, before it acted.
     Revoked,
     /// The book holds [`MAX_CERTS`] certificates.
     Full,
+    /// Every signer already has [`UNATTESTED_PER_KEY`] unattested certificates in the book (OWNS-5).
+    Quota,
 }
+
+/// Unattested certificates one key may have in a book (OWNS-5: nobody floods it).
+pub const UNATTESTED_PER_KEY: usize = 16;
 
 /// A recovery in progress: `by` started replacing its owner with `new_key` at certificate `start`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,8 +347,6 @@ pub struct Recovering {
 pub struct Owners {
     pub owners: BTreeSet<Key>,
     pub rule: SignRule,
-    /// The certificate that set `rule` (genesis or a `SetRule`).
-    pub rule_tag: CertId,
     /// Observed-remove bookkeeping: each owner's live add tags (the certificates that added them).
     /// The tags a removal has seen are derived when heads join, from the removals in their past.
     tags: BTreeMap<Key, BTreeSet<CertId>>,
@@ -368,8 +377,13 @@ impl Owners {
         self.recovering.remove(&key);
     }
 
+    /// Keys whose signatures matter on a certificate built on this state: owners and recovery keys.
+    fn relevant(&self, k: Key) -> bool {
+        self.owners.contains(&k) || self.recovery.values().any(|r| r.contains_key(&k))
+    }
+
     pub fn digest(&self) -> u64 {
-        let mut v = vec![self.rule.code(), self.rule_tag, self.seq as u64, self.owners.len() as u64];
+        let mut v = vec![self.rule.code(), self.seq as u64, self.owners.len() as u64];
         for (k, t) in &self.tags {
             v.extend([*k as u64, t.len() as u64]);
             v.extend(t);
@@ -388,8 +402,10 @@ impl Owners {
 /// that don't count, with why.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct View {
+    /// Counting certificates with no counting child.
     pub heads: Vec<CertId>,
-    /// More than one head: show "Ownership disputed" until a merge covers them.
+    /// Two counting certificates ever shared a parent: "Ownership disputed". It comes from the fork
+    /// history, so no merge clears it (OWNS-8); the fork proofs say who forked.
     pub disputed: bool,
     pub owners: Owners,
     pub refused: Vec<(CertId, OwnError)>,
@@ -397,22 +413,22 @@ pub struct View {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct Inner {
+    /// Every held certificate by id (its body hash), with the signatures of every copy seen that
+    /// matter (owners' and recovery keys' at its parent), merged until a session attests it.
     certs: BTreeMap<CertId, Cert>,
-    signers: BTreeMap<CertId, BTreeSet<Key>>,
-    /// [`Cert::digest`] of each, computed once (OWNR-6).
-    digests: BTreeMap<CertId, u64>,
-    /// Each certificate's state along its own history (validity).
-    linear: BTreeMap<CertId, Owners>,
     /// Each certificate's causal past, itself included. Production: an ancestry index [I].
     anc: BTreeMap<CertId, BTreeSet<CertId>>,
-    /// Attested commits: certificate -> lineage -> world frame (the earliest attested).
-    commits: BTreeMap<CertId, BTreeMap<Lineage, u64>>,
-    /// Cached results of the effective pass.
+    /// Attested commits: certificate -> lineage -> (frame, the signer set committed).
+    commits: BTreeMap<CertId, BTreeMap<Lineage, (u64, BTreeSet<Key>)>>,
+    /// Results of the last pass: signer sets, linear validity and state, the view, the digest.
+    signers: BTreeMap<CertId, BTreeSet<Key>>,
+    linear: BTreeMap<CertId, Owners>,
+    invalid: BTreeSet<CertId>,
     view: View,
     digest: u64,
 }
 
-/// What one verifier holds of a world's ownership. Cloning shares everything until the next insert
+/// What one verifier holds of a world's ownership. Cloning shares everything until the next change
 /// (keyframes, OWNR-6).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Book {
@@ -438,18 +454,10 @@ impl Book {
             return Err(OwnError::BadGenesis);
         }
         let id = genesis.id();
-        let mut s = Owners { rule: *rule, rule_tag: id, ..Default::default() };
-        for &k in &set {
-            s.add_owner(k, id);
-        }
-        let inner = Inner {
-            signers: [(id, genesis.signers())].into(),
-            digests: [(id, genesis.digest())].into(),
-            certs: [(id, genesis)].into(),
-            linear: [(id, s)].into(),
-            anc: [(id, [id].into())].into(),
-            ..Default::default()
-        };
+        let mut g = genesis;
+        let h = g.body_hash();
+        g.sigs.retain(|&(k, s)| set.contains(&k) && s == key_sig(k, h));
+        let inner = Inner { anc: [(id, [id].into())].into(), certs: [(id, g)].into(), ..Default::default() };
         let mut b = Book { world: id, genesis: id, inner: Arc::new(inner) };
         b.recompute();
         Ok(b)
@@ -467,30 +475,75 @@ impl Book {
         self.inner.certs.is_empty()
     }
 
-    /// Store `c` if it is valid against its parent's state. It counts only once attested.
+    /// Store `c` if it is valid against its parent's state (subject to the per-key quota of
+    /// unattested certificates). It counts only once attested. A copy of a held certificate adds its
+    /// missing signatures, until a session attests it.
     pub fn insert(&mut self, c: Cert) -> Result<Insert, OwnError> {
-        let r = self.insert_raw(c)?;
-        if r == Insert::Applied {
-            self.recompute();
-        }
+        let r = self.insert_raw(c, true)?;
+        self.recompute();
         Ok(r)
     }
 
-    /// The local session committed `id` at world `frame` (its own record; exported as an [`Attest`]).
-    pub fn record(&mut self, id: CertId, lineage: Lineage, frame: u64) {
-        if self.inner.certs.contains_key(&id) {
-            let inner = Arc::make_mut(&mut self.inner);
-            let f = inner.commits.entry(id).or_default().entry(lineage).or_insert(frame);
-            *f = (*f).min(frame);
+    /// Insert many, in any order, then run the pass once (OWNS-9). Returns what was refused
+    /// (OWNS-10: junk is skipped, not fatal).
+    pub fn insert_all(&mut self, certs: &[Cert]) -> Vec<(CertId, OwnError)> {
+        let mut todo: Vec<&Cert> = certs.iter().collect();
+        let mut refused = Vec::new();
+        loop {
+            let n = todo.len();
+            let mut rest = Vec::new();
+            for c in todo {
+                match self.insert_raw(c.clone(), true) {
+                    Ok(_) => {}
+                    Err(OwnError::MissingParent) => rest.push(c),
+                    Err(e) => refused.push((c.id(), e)),
+                }
+            }
+            if rest.is_empty() || rest.len() == n {
+                refused.extend(rest.iter().map(|c| (c.id(), OwnError::MissingParent)));
+                break;
+            }
+            // Parents may have arrived; the linear states are refreshed for the next round.
             self.recompute();
+            todo = rest;
+        }
+        self.recompute();
+        refused
+    }
+
+    /// The local session committed `id` at its `frame` (its own record; exported as an [`Attest`]),
+    /// with the certificate's signer set as it holds it now.
+    pub fn record(&mut self, id: CertId, lineage: Lineage, frame: u64) {
+        let Some(c) = self.inner.certs.get(&id) else { return };
+        let signers = c.signers();
+        self.record_raw(id, lineage, frame, signers);
+        self.recompute();
+    }
+
+    fn record_raw(&mut self, id: CertId, lineage: Lineage, frame: u64, signers: BTreeSet<Key>) {
+        if !self.inner.certs.contains_key(&id) {
+            return;
+        }
+        let inner = Arc::make_mut(&mut self.inner);
+        let e = inner.commits.entry(id).or_default().entry(lineage).or_insert((frame, signers.clone()));
+        if frame < e.0 {
+            *e = (frame, signers);
         }
     }
 
     /// Import another session's attestation of a held certificate, if its signatures check out.
     pub fn attest(&mut self, a: &Attest, sessions: &dyn EpochCerts) -> bool {
+        let ok = self.attest_raw(a, sessions);
+        if ok {
+            self.recompute();
+        }
+        ok
+    }
+
+    fn attest_raw(&mut self, a: &Attest, sessions: &dyn EpochCerts) -> bool {
         let ok = self.inner.certs.contains_key(&a.cert) && a.verify(self.world, sessions);
         if ok {
-            self.record(a.cert, a.lineage, a.frame);
+            self.record_raw(a.cert, a.lineage, a.frame, a.signers.iter().copied().collect());
         }
         ok
     }
@@ -500,27 +553,37 @@ impl Book {
         self.inner
             .commits
             .iter()
-            .filter_map(|(c, m)| m.get(&lineage).map(|&f| Attest::make(self.world, *c, lineage, f, members)))
+            .filter_map(|(c, m)| m.get(&lineage).map(|(f, s)| Attest::make(self.world, *c, lineage, *f, s, members)))
             .collect()
     }
 
-    /// A session commits `c` at world `frame`: only on its current head (or a merge of heads), and
-    /// only if it then counts. Otherwise nothing changes.
+    /// What session `lineage` committed with no committed child there: where it builds next.
+    fn lineage_heads(&self, lineage: Lineage) -> BTreeSet<CertId> {
+        let mine: BTreeSet<CertId> = self.inner.commits.iter().filter(|(_, m)| m.contains_key(&lineage)).map(|(c, _)| *c).collect();
+        if mine.is_empty() {
+            return [self.genesis].into();
+        }
+        let parents: BTreeSet<CertId> = mine.iter().flat_map(|c| self.inner.certs[c].prev.iter().copied()).collect();
+        mine.difference(&parents).copied().collect()
+    }
+
+    /// A session commits `c` at its `frame`: only on the head of what it committed itself (OWNS-12),
+    /// and only if it then counts. Otherwise nothing changes.
     pub fn commit_local(&mut self, c: Cert, lineage: Lineage, frame: u64) -> Result<Insert, OwnError> {
         if self.inner.certs.contains_key(&c.id()) {
             return Ok(Insert::Duplicate);
         }
-        let heads = self.heads();
+        let heads = self.lineage_heads(lineage);
         let known = c.prev.iter().all(|p| self.inner.certs.contains_key(p));
         if known && !c.prev.is_empty() && !c.prev.iter().all(|p| heads.contains(p)) {
             return Err(OwnError::Stale);
         }
         let mut b = self.clone();
         let id = c.id();
-        if b.insert_raw(c)? == Insert::Duplicate {
-            return Ok(Insert::Duplicate);
-        }
-        b.record(id, lineage, frame);
+        b.insert_raw(c, false)?;
+        let signers = b.inner.certs[&id].signers();
+        b.record_raw(id, lineage, frame, signers);
+        b.recompute();
         if let Some(&(_, e)) = b.inner.view.refused.iter().find(|(r, _)| *r == id) {
             return Err(e);
         }
@@ -528,16 +591,17 @@ impl Book {
         Ok(Insert::Applied)
     }
 
-    fn insert_raw(&mut self, c: Cert) -> Result<Insert, OwnError> {
+    /// The state a certificate built on `prev` is judged against, as of the last pass.
+    fn parent_state(&self, prev: &[CertId]) -> Option<Owners> {
+        match prev {
+            [p] => (!self.inner.invalid.contains(p)).then(|| self.inner.linear[p].clone()),
+            ps => Some(self.join(ps, &self.inner.linear, &|x| !self.inner.invalid.contains(&x))),
+        }
+    }
+
+    fn insert_raw(&mut self, mut c: Cert, quota: bool) -> Result<Insert, OwnError> {
         if c.world != self.world {
             return Err(OwnError::WrongWorld);
-        }
-        let id = c.id();
-        if self.inner.certs.contains_key(&id) {
-            return Ok(Insert::Duplicate);
-        }
-        if self.inner.certs.len() >= MAX_CERTS {
-            return Err(OwnError::Full);
         }
         if c.prev.is_empty() {
             return Err(OwnError::BadGenesis);
@@ -545,38 +609,65 @@ impl Book {
         if !c.prev.iter().all(|p| self.inner.certs.contains_key(p)) {
             return Err(OwnError::MissingParent);
         }
+        if c.prev.iter().any(|p| !self.inner.linear.contains_key(p)) {
+            // A parent inserted in this batch: refresh the pass before judging its child.
+            self.recompute();
+        }
+        let id = c.id();
+        let h = c.body_hash();
+        let Some(p) = self.parent_state(&c.prev) else { return Err(OwnError::BadLink) };
+        // Only signatures that can matter: owners' and recovery keys' at the parent (OWNS-5).
+        c.sigs.retain(|&(k, s)| p.relevant(k) && s == key_sig(k, h));
+        c.sigs.sort_unstable();
+        c.sigs.dedup_by_key(|x| x.0);
+        if let Some(held) = self.inner.certs.get(&id) {
+            if self.inner.commits.contains_key(&id) {
+                return Ok(Insert::Duplicate);
+            }
+            let have = held.signers();
+            let more: Vec<(Key, u64)> = c.sigs.iter().copied().filter(|(k, _)| !have.contains(k)).collect();
+            if !more.is_empty() {
+                let inner = Arc::make_mut(&mut self.inner);
+                let held = inner.certs.get_mut(&id).unwrap();
+                held.sigs.extend(more);
+                held.sigs.sort_unstable();
+            }
+            return Ok(Insert::Duplicate);
+        }
+        if self.inner.certs.len() >= MAX_CERTS {
+            return Err(OwnError::Full);
+        }
         let signers = c.signers();
-        let s = if c.change == Change::Merge {
-            let mut p = c.prev.clone();
-            p.sort_unstable();
-            p.dedup();
+        if quota {
+            let unattested = |k: Key| {
+                self.inner.certs.iter().filter(|(i, x)| !self.inner.commits.contains_key(i) && x.sigs.iter().any(|s| s.0 == k)).count()
+            };
+            if !signers.is_empty() && signers.iter().all(|&k| unattested(k) >= UNATTESTED_PER_KEY) {
+                return Err(OwnError::Quota);
+            }
+        }
+        if c.change == Change::Merge {
+            let mut ps = c.prev.clone();
+            ps.sort_unstable();
+            ps.dedup();
             // OWN-1: only certificates that really diverged can be joined.
-            let concurrent = p.iter().enumerate().all(|(i, a)| p[i + 1..].iter().all(|b| self.concurrent(*a, *b)));
-            if p.len() < 2 || p != c.prev || !concurrent {
+            let concurrent = ps.iter().enumerate().all(|(i, a)| ps[i + 1..].iter().all(|b| self.concurrent(*a, *b)));
+            if ps.len() < 2 || ps != c.prev || !concurrent || c.seq != p.seq + 1 {
                 return Err(OwnError::BadLink);
             }
-            let mut m = self.join(&p, &self.inner.linear, &|_| true);
-            if c.seq != m.seq + 1 {
-                return Err(OwnError::BadLink);
-            }
-            if !SignRule::Any.met(&signers, &m.owners) {
+            if !SignRule::Any.met(&signers, &p.owners) {
                 return Err(OwnError::Signers);
             }
-            m.seq = c.seq;
-            m
         } else {
             if c.prev.len() != 1 {
                 return Err(OwnError::BadLink);
             }
-            self.step(&self.inner.linear[&c.prev[0]], &c, id, &signers, false)?
-        };
+            self.step(&p, &c, id, &signers, false)?;
+        }
         let mut anc: BTreeSet<CertId> = c.prev.iter().flat_map(|p| self.inner.anc[p].iter().copied()).collect();
         anc.insert(id);
         let inner = Arc::make_mut(&mut self.inner);
         inner.anc.insert(id, anc);
-        inner.linear.insert(id, s);
-        inner.signers.insert(id, signers);
-        inner.digests.insert(id, c.digest());
         inner.certs.insert(id, c);
         Ok(Insert::Applied)
     }
@@ -590,33 +681,57 @@ impl Book {
         (c.prev.len() == 1).then(|| c.prev[0])
     }
 
-    fn first_frame(&self, id: CertId) -> Option<u64> {
-        self.inner.commits.get(&id).and_then(|m| m.values().min().copied())
+    /// The certificate's signers: the sets sessions committed, if any attested it, else every
+    /// signature held.
+    fn signers_of(&self, id: CertId) -> BTreeSet<Key> {
+        match self.inner.commits.get(&id) {
+            Some(m) => m.values().flat_map(|(_, s)| s.iter().copied()).collect(),
+            None => self.inner.certs[&id].signers(),
+        }
     }
 
-    /// The window from `start` to `end` ran `frames` in one session lineage that attested both: the
-    /// frames of both ends there.
-    fn window(&self, start: CertId, end: CertId, frames: u64) -> Result<(u64, u64), OwnError> {
+    fn frame_in(&self, id: CertId, lineage: Lineage) -> Option<u64> {
+        self.inner.commits.get(&id).and_then(|m| m.get(&lineage)).map(|(f, _)| *f)
+    }
+
+    /// The lineages in which the window from `start` to `end` ran `frames`, with both ends' frames
+    /// there. Frames are compared only within one lineage (OWNS-1c).
+    fn windows(&self, start: CertId, end: CertId, frames: u64) -> Result<Vec<(Lineage, u64, u64)>, OwnError> {
         let (Some(s), Some(e)) = (self.inner.commits.get(&start), self.inner.commits.get(&end)) else { return Err(OwnError::Unattested) };
-        let common: Vec<(u64, u64)> = s.iter().filter_map(|(l, &fs)| e.get(l).map(|&fe| (fs, fe))).collect();
+        let common: Vec<(Lineage, u64, u64)> = s.iter().filter_map(|(l, (fs, _))| e.get(l).map(|(fe, _)| (*l, *fs, *fe))).collect();
         if common.is_empty() {
             return Err(OwnError::Unattested);
         }
-        common.into_iter().find(|&(fs, fe)| fe >= fs.saturating_add(frames)).ok_or(OwnError::WindowOpen)
+        let ran: Vec<_> = common.into_iter().filter(|&(_, fs, fe)| fe >= fs.saturating_add(frames)).collect();
+        if ran.is_empty() {
+            return Err(OwnError::WindowOpen);
+        }
+        Ok(ran)
     }
 
-    /// `k` signed a certificate outside `start`'s past that some session attested at a world frame
-    /// in `[from, to)`: the window was cancelled (OWNR-2: unattested signatures, and signatures after
-    /// the completion, never count).
-    fn signed_between(&self, k: Key, start: CertId, from: u64, to: u64) -> bool {
+    /// `k` signed a certificate outside `start`'s past that `lineage` attested at a frame in
+    /// `[from, to)`: the window was cancelled there (OWNR-2: unattested signatures, signatures after
+    /// the completion and signatures in other lineages never count).
+    fn signed_between(&self, k: Key, start: CertId, lineage: Lineage, from: u64, to: u64) -> bool {
         self.inner.commits.iter().any(|(e, m)| {
-            *e != start && !self.inner.anc[&start].contains(e) && self.inner.signers[e].contains(&k) && m.values().any(|&f| f >= from && f < to)
+            *e != start
+                && !self.inner.anc[&start].contains(e)
+                && m.get(&lineage).is_some_and(|(f, s)| *f >= from && *f < to && s.contains(&k))
         })
     }
 
+    /// A completion counts if in some lineage the window ran and the target didn't cancel there.
+    fn completed(&self, target: Key, start: CertId, end: CertId, frames: u64) -> Result<(), OwnError> {
+        let ran = self.windows(start, end, frames)?;
+        if ran.iter().any(|&(l, fs, fe)| !self.signed_between(target, start, l, fs, fe)) {
+            Ok(())
+        } else {
+            Err(OwnError::WindowOpen)
+        }
+    }
+
     /// The state after `c` (id `id`), whose single parent left state `p`. `effective`: also check what
-    /// depends on attestations (windows, cancellation, revocation); validity alone leaves them to the
-    /// effective pass.
+    /// depends on attestations (windows, cancellation, revocation).
     fn step(&self, p: &Owners, c: &Cert, id: CertId, signers: &BTreeSet<Key>, effective: bool) -> Result<Owners, OwnError> {
         if c.seq != p.seq + 1 {
             return Err(OwnError::BadLink);
@@ -679,7 +794,6 @@ impl Book {
                     return Err(OwnError::Signers);
                 }
                 s.rule = rule;
-                s.rule_tag = id;
             }
             Change::SetRecovery { owner, recovery } => {
                 if !p.owners.contains(&owner) || recovery.is_some_and(|r| p.owners.contains(&r) || r == owner) {
@@ -704,10 +818,7 @@ impl Book {
                 }
                 removal(key)?;
                 if effective {
-                    let (from, to) = self.window(ch, id, OBJECTION_FRAMES)?;
-                    if self.signed_between(key, ch, from, to) {
-                        return Err(OwnError::WindowOpen);
-                    }
+                    self.completed(key, ch, id, OBJECTION_FRAMES)?;
                 }
                 s.drop_owner(key);
             }
@@ -718,16 +829,19 @@ impl Book {
                 let Some((&by, &named)) = p.recovery.get(&owner).and_then(|r| r.iter().find(|(k, _)| signers.contains(k))) else {
                     return Err(OwnError::Signers);
                 };
-                // A recovery key the owner replaced or cleared, attested before it acted, is dead.
+                // A recovery key the owner replaced or cleared, attested earlier in the same session,
+                // is dead there. It counts only if some session attested it before any such rotation.
                 if effective {
-                    let at = self.first_frame(id).unwrap_or(u64::MAX);
-                    let revoked = self.inner.certs.iter().any(|(e, x)| {
-                        matches!(x.change, Change::SetRecovery { owner: o, .. } if o == owner)
-                            && *e != named
-                            && self.inner.anc[e].contains(&named)
-                            && self.first_frame(*e).is_some_and(|f| f < at)
-                    });
-                    if revoked {
+                    let rotated_before = |l: Lineage, at: u64| {
+                        self.inner.certs.iter().any(|(e, x)| {
+                            matches!(x.change, Change::SetRecovery { owner: o, .. } if o == owner)
+                                && *e != named
+                                && self.inner.anc[e].contains(&named)
+                                && self.frame_in(*e, l).is_some_and(|f| f < at)
+                        })
+                    };
+                    let alive = self.inner.commits.get(&id).is_some_and(|m| m.iter().any(|(&l, (f, _))| !rotated_before(l, *f)));
+                    if !alive {
                         return Err(OwnError::Revoked);
                     }
                 }
@@ -739,10 +853,7 @@ impl Book {
                     return Err(OwnError::Signers);
                 }
                 if effective {
-                    let (from, to) = self.window(r.start, id, RECOVERY_FRAMES)?;
-                    if self.signed_between(owner, r.start, from, to) {
-                        return Err(OwnError::WindowOpen);
-                    }
+                    self.completed(owner, r.start, id, RECOVERY_FRAMES)?;
                 }
                 s.drop_owner(owner);
                 s.add_owner(r.new_key, id);
@@ -768,7 +879,7 @@ impl Book {
         let mut dead_rec: BTreeSet<CertId> = BTreeSet::new();
         for &r in past.iter().filter(|&&r| counts(r)) {
             let Some(p) = self.parent(r) else { continue };
-            let ps = &states[&p];
+            let Some(ps) = states.get(&p) else { continue };
             let gone = match self.inner.certs[&r].change {
                 Change::Leave { key } | Change::Remove { key } | Change::RemoveDormant { key } => Some(key),
                 Change::FinishRecover { owner } => Some(owner),
@@ -809,8 +920,10 @@ impl Book {
                 }
             }
         }
-        // A window stays open unless its target signed an attested certificate since it opened.
-        let open = |k: Key, start: CertId| !self.signed_between(k, start, self.first_frame(start).unwrap_or(0), u64::MAX);
+        // A window stays open unless its target cancelled it in a lineage that attested its start.
+        let open = |k: Key, start: CertId| {
+            !self.inner.commits.get(&start).is_some_and(|m| m.iter().any(|(&l, (f, _))| self.signed_between(k, start, l, *f, u64::MAX)))
+        };
         let mut challenges: BTreeMap<Key, CertId> = BTreeMap::new();
         let mut recovering: BTreeMap<Key, Recovering> = BTreeMap::new();
         for s in &st {
@@ -829,14 +942,10 @@ impl Book {
                 }
             }
         }
-        // The rule: the newest by causality; among concurrent ones, the strictest (OWNR-9).
-        let newest: Vec<&&Owners> =
-            st.iter().filter(|s| !st.iter().any(|o| o.rule_tag != s.rule_tag && self.inner.anc[&o.rule_tag].contains(&s.rule_tag))).collect();
-        let (rule, rule_tag) = newest.iter().map(|s| (s.rule, s.rule_tag)).max_by_key(|&(r, t)| (r, std::cmp::Reverse(t))).unwrap();
         Owners {
             owners,
-            rule,
-            rule_tag,
+            // OWNS-4: concurrent rules take the strictest; owners loosen it again after a merge.
+            rule: st.iter().map(|s| s.rule).max().unwrap_or_default(),
             tags,
             recovery,
             challenges,
@@ -845,40 +954,124 @@ impl Book {
         }
     }
 
-    /// The effective pass (OWNR-1): every held certificate in causal order, applied to its parent's
-    /// effective state only if it counts there.
+    /// Every certificate in causal order: the linear pass (validity, with the signatures held now),
+    /// then the effective pass (OWNR-1): a certificate applies to its parent's effective state only if
+    /// it counts there; otherwise its branch inherits the parent's state.
     fn recompute(&mut self) {
-        let inner = &self.inner;
-        let mut order: Vec<CertId> = inner.certs.keys().copied().collect();
-        order.sort_by_key(|id| (inner.certs[id].seq, *id));
-        // OWNR-7: concurrent removals that each remove a signer of the other void each other.
-        let removals: Vec<CertId> = order.iter().copied().filter(|id| inner.certs[id].change.removes().is_some()).collect();
+        let mut order: Vec<CertId> = self.inner.certs.keys().copied().collect();
+        order.sort_by_key(|id| (self.inner.certs[id].seq, *id));
+        let signers: BTreeMap<CertId, BTreeSet<Key>> = order.iter().map(|&id| (id, self.signers_of(id))).collect();
+        // Linear pass.
+        let mut linear: BTreeMap<CertId, Owners> = BTreeMap::new();
+        let mut invalid: BTreeSet<CertId> = BTreeSet::new();
+        for &id in &order {
+            let c = &self.inner.certs[&id];
+            let s = if c.prev.is_empty() {
+                let Change::Genesis { owners, rule, .. } = &c.change else { unreachable!() };
+                let mut s = Owners { rule: *rule, ..Default::default() };
+                for &k in owners {
+                    s.add_owner(k, id);
+                }
+                Some(s)
+            } else if c.prev.iter().any(|p| invalid.contains(p)) {
+                None
+            } else if c.change == Change::Merge {
+                let mut m = self.join(&c.prev, &linear, &|x| !invalid.contains(&x));
+                let ok = SignRule::Any.met(&signers[&id], &m.owners) && c.seq == m.seq + 1;
+                m.seq = c.seq;
+                ok.then_some(m)
+            } else {
+                self.step(&linear[&c.prev[0]], c, id, &signers[&id], false).ok()
+            };
+            match s {
+                Some(s) => {
+                    linear.insert(id, s);
+                }
+                None => {
+                    invalid.insert(id);
+                    let mut s = c.prev.first().map(|p| linear[p].clone()).unwrap_or_default();
+                    s.seq = c.seq;
+                    linear.insert(id, s);
+                }
+            }
+        }
+        {
+            let inner = Arc::make_mut(&mut self.inner);
+            inner.signers = signers;
+            inner.linear = linear;
+            inner.invalid = invalid;
+        }
+        // Effective pass, twice if concurrent counting removals void each other (OWNR-7, OWNS-2).
+        let (mut eff, mut counted, mut refused) = self.effective(&order, &BTreeSet::new());
+        let removals: Vec<CertId> = counted.iter().copied().filter(|id| self.inner.certs[id].change.removes().is_some()).collect();
         let voided: BTreeSet<CertId> = removals
             .iter()
             .copied()
             .filter(|&a| {
                 removals.iter().any(|&b| {
-                    let (ta, tb) = (inner.certs[&a].change.removes().unwrap(), inner.certs[&b].change.removes().unwrap());
-                    a != b && self.concurrent(a, b) && inner.signers[&b].contains(&ta) && inner.signers[&a].contains(&tb)
+                    let (ta, tb) = (self.inner.certs[&a].change.removes().unwrap(), self.inner.certs[&b].change.removes().unwrap());
+                    a != b && self.concurrent(a, b) && self.inner.signers[&b].contains(&ta) && self.inner.signers[&a].contains(&tb)
                 })
             })
             .collect();
+        if !voided.is_empty() {
+            (eff, counted, refused) = self.effective(&order, &voided);
+        }
+        // Heads: counting certificates with no counting child.
+        let parents: BTreeSet<CertId> = counted.iter().flat_map(|c| self.inner.certs[c].prev.iter().copied()).collect();
+        let heads: Vec<CertId> = counted.iter().copied().filter(|id| !parents.contains(id)).collect();
+        let owners = match &heads[..] {
+            [h] => eff[h].clone(),
+            hs => self.join(hs, &eff, &|x| counted.contains(&x)),
+        };
+        // OWNS-8: disputed if two counting certificates ever shared a parent.
+        let mut by_prev: BTreeMap<CertId, usize> = BTreeMap::new();
+        for c in counted.iter().map(|c| &self.inner.certs[c]).filter(|c| c.prev.len() == 1) {
+            *by_prev.entry(c.prev[0]).or_default() += 1;
+        }
+        let disputed = by_prev.values().any(|&n| n > 1);
+        let view = View { disputed, heads, owners, refused };
+        let mut v = vec![self.world, self.inner.certs.len() as u64];
+        v.extend(self.inner.certs.values().map(Cert::digest));
+        for (c, m) in &self.inner.commits {
+            v.push(*c);
+            for (l, (f, s)) in m {
+                v.extend([*l as u64, *f, s.len() as u64]);
+                v.extend(s.iter().map(|&k| k as u64));
+            }
+        }
+        v.push(view.owners.digest());
+        let digest = fnv_u64s(v);
+        let inner = Arc::make_mut(&mut self.inner);
+        inner.view = view;
+        inner.digest = digest;
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn effective(&self, order: &[CertId], voided: &BTreeSet<CertId>) -> (BTreeMap<CertId, Owners>, BTreeSet<CertId>, Vec<(CertId, OwnError)>) {
+        let inner = &self.inner;
         let mut eff: BTreeMap<CertId, Owners> = BTreeMap::new();
         let mut counted: BTreeSet<CertId> = BTreeSet::new();
         let mut refused: Vec<(CertId, OwnError)> = Vec::new();
-        for &id in &order {
+        for &id in order {
             let c = &inner.certs[&id];
             let s = if c.prev.is_empty() {
                 counted.insert(id);
                 inner.linear[&id].clone()
             } else if c.change == Change::Merge {
-                counted.insert(id);
+                if inner.invalid.contains(&id) {
+                    refused.push((id, OwnError::Signers));
+                } else {
+                    counted.insert(id);
+                }
                 let mut m = self.join(&c.prev, &eff, &|x| counted.contains(&x));
                 m.seq = c.seq;
                 m
             } else {
                 let base = &eff[&c.prev[0]];
-                let r = if !inner.commits.contains_key(&id) {
+                let r = if inner.invalid.contains(&id) {
+                    Err(OwnError::Signers)
+                } else if !inner.commits.contains_key(&id) {
                     Err(OwnError::Unattested)
                 } else if voided.contains(&id) {
                     Err(OwnError::Conflict)
@@ -902,29 +1095,16 @@ impl Book {
             };
             eff.insert(id, s);
         }
-        let parents: BTreeSet<CertId> = inner.certs.values().flat_map(|c| c.prev.iter().copied()).collect();
-        let heads: Vec<CertId> = inner.certs.keys().copied().filter(|id| !parents.contains(id)).collect();
-        let owners = match &heads[..] {
-            [h] => eff[h].clone(),
-            hs => self.join(hs, &eff, &|x| counted.contains(&x)),
-        };
-        let view = View { disputed: heads.len() > 1, heads, owners, refused };
-        let mut v = vec![self.world, inner.certs.len() as u64];
-        v.extend(inner.digests.values());
-        v.extend(inner.commits.iter().flat_map(|(c, m)| std::iter::once(*c).chain(m.iter().flat_map(|(&l, &f)| [l as u64, f]))));
-        v.push(view.owners.digest());
-        let digest = fnv_u64s(v);
-        let inner = Arc::make_mut(&mut self.inner);
-        inner.view = view;
-        inner.digest = digest;
+        (eff, counted, refused)
     }
 
-    /// OWN-3: a change made on one branch also needs the owners that counting additions on concurrent
-    /// branches added since it split off (their parent is a strict ancestor of its parent).
+    /// OWN-3: a removal made on one branch also needs the owners that counting additions on
+    /// concurrent branches added since it split off (their parent is a strict ancestor of its
+    /// parent). Additions don't: each copy's owners add independently, and the copies join
+    /// (OWNS-3: an old-state fork never voids a later addition).
     fn approved_elsewhere(&self, id: CertId, c: &Cert, base: &Owners, counted: &BTreeSet<CertId>, eff: &BTreeMap<CertId, Owners>) -> bool {
         let target = match c.change {
-            Change::Add { .. } | Change::SetRule { .. } => None,
-            Change::Challenge { key } | Change::RemoveDormant { key } | Change::Remove { key } => Some(key),
+            Change::Challenge { key } | Change::RemoveDormant { key } | Change::Remove { key } => key,
             _ => return true,
         };
         let p = c.prev[0];
@@ -943,17 +1123,11 @@ impl Book {
             return true;
         }
         let mut need: BTreeSet<Key> = base.owners.union(&added).copied().collect();
-        if let Some(t) = target {
-            need.remove(&t);
-        }
-        let signers = &self.inner.signers[&id];
-        match c.change {
-            Change::SetRule { .. } => SignRule::All.met(signers, &need),
-            _ => base.rule.met(signers, &need),
-        }
+        need.remove(&target);
+        base.rule.met(&self.inner.signers[&id], &need)
     }
 
-    /// The heads: held certificates with no held child.
+    /// The heads: counting certificates with no counting child.
     pub fn heads(&self) -> Vec<CertId> {
         self.inner.view.heads.clone()
     }
@@ -962,34 +1136,36 @@ impl Book {
         self.inner.view.clone()
     }
 
-    /// Does `id` count (held, attested, valid at its effective parent)?
+    /// Does `id` count (held, valid, attested, valid at its effective parent)?
     pub fn counts(&self, id: CertId) -> bool {
         self.inner.certs.contains_key(&id) && !self.inner.view.refused.iter().any(|(r, _)| *r == id)
     }
 
-    /// Every pair of held certificates with one parent and different changes: concurrent changes,
+    /// Every pair of valid certificates with one parent and different changes: concurrent changes,
     /// and when a key signed both, a transferable equivocation proof against it.
     pub fn forks(&self) -> Vec<ForkProof> {
         let mut by_prev: BTreeMap<CertId, Vec<&Cert>> = BTreeMap::new();
-        for c in self.inner.certs.values().filter(|c| c.prev.len() == 1) {
-            by_prev.entry(c.prev[0]).or_default().push(c);
+        for (id, c) in &self.inner.certs {
+            if c.prev.len() == 1 && !self.inner.invalid.contains(id) {
+                by_prev.entry(c.prev[0]).or_default().push(c);
+            }
         }
         let mut out = Vec::new();
         for v in by_prev.values() {
             for (i, a) in v.iter().enumerate() {
                 for b in &v[i + 1..] {
-                    if a.body_hash() != b.body_hash() {
-                        out.push(ForkProof { world: self.world, a: (*a).clone(), b: (*b).clone() });
-                    }
+                    out.push(ForkProof { world: self.world, a: (*a).clone(), b: (*b).clone() });
                 }
             }
         }
         out
     }
 
-    /// The whole causal past of `id` (itself included), oldest first: a verifier's prefix.
+    /// The whole causal past of `id` (itself included), oldest first: a verifier's prefix. Empty for
+    /// an id the book doesn't hold (OWNS-11).
     pub fn prefix_of(&self, id: CertId) -> Vec<Cert> {
-        let mut v: Vec<&Cert> = self.inner.anc[&id].iter().map(|a| &self.inner.certs[a]).collect();
+        let Some(a) = self.inner.anc.get(&id) else { return vec![] };
+        let mut v: Vec<&Cert> = a.iter().map(|a| &self.inner.certs[a]).collect();
         v.sort_by_key(|c| (c.seq, c.id()));
         v.into_iter().cloned().collect()
     }
@@ -1000,37 +1176,16 @@ impl Book {
     }
 }
 
-/// Insert certificates in any order: each round inserts what has its parents. Stops at the first
-/// refusal; leftovers whose parents never arrive are `MissingParent`.
-fn insert_all(book: &mut Book, certs: &[Cert]) -> Result<(), OwnError> {
-    let mut todo: Vec<&Cert> = certs.iter().collect();
-    while !todo.is_empty() {
-        let n = todo.len();
-        let mut rest = Vec::new();
-        for c in todo {
-            match book.insert(c.clone()) {
-                Ok(_) => {}
-                Err(OwnError::MissingParent) => rest.push(c),
-                Err(e) => return Err(e),
-            }
-        }
-        if rest.len() == n {
-            return Err(OwnError::MissingParent);
-        }
-        todo = rest;
-    }
-    Ok(())
-}
-
-/// Check a whole chain offline, in any order, with the sessions' attestations (each checked against
-/// `sessions`' members; a forged one is ignored). It must be complete; the answer may be disputed,
-/// and lists what doesn't count.
+/// Check a chain offline, in any order, with the sessions' attestations (each checked against
+/// `sessions`' members; a forged one is ignored). Junk is skipped (OWNS-10); the view lists what
+/// doesn't count, and may be disputed.
 pub fn verify_chain(genesis: &Cert, rest: &[Cert], attests: &[Attest], sessions: &dyn EpochCerts) -> Result<View, OwnError> {
     let mut b = Book::new(genesis.clone())?;
-    insert_all(&mut b, rest)?;
+    b.insert_all(rest);
     for a in attests {
-        b.attest(a, sessions);
+        b.attest_raw(a, sessions);
     }
+    b.recompute();
     Ok(b.view())
 }
 
@@ -1049,13 +1204,14 @@ impl ForkProof {
         let Some(g) = prefix.iter().find(|c| c.seq == 0) else { return false };
         let Ok(mut book) = Book::new(g.clone()) else { return false };
         let rest: Vec<Cert> = prefix.iter().filter(|c| c.seq > 0).cloned().collect();
+        let refused = book.insert_all(&rest);
         book.world == self.world
-            && insert_all(&mut book, &rest).is_ok()
+            && refused.is_empty()
             && self.a.prev.len() == 1
             && self.a.prev == self.b.prev
-            && self.a.body_hash() != self.b.body_hash()
-            && book.insert(self.a.clone()) == Ok(Insert::Applied)
-            && book.insert(self.b.clone()) == Ok(Insert::Applied)
+            && self.a.id() != self.b.id()
+            && book.insert_raw(self.a.clone(), false) == Ok(Insert::Applied)
+            && book.insert_raw(self.b.clone(), false) == Ok(Insert::Applied)
     }
 
     /// The keys that signed both: whoever a client's own policy may distrust. Empty for honest
