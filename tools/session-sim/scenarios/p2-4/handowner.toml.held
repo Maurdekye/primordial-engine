@@ -1,0 +1,58 @@
+# HELD (not run: regress reads only *.toml). Identical to spikes/out/session-sim/handowner.log but for
+# one line the tool adds: the spike's final check covers frames 0..352 while the lowest confirmed
+# frame is 346, and check_world flags a check that reaches speculative frames (UNCONFIRMED).
+# Rename to handowner.toml once the spike's check stops at the confirmed frame.
+description = """
+Design 8.4, P2-8 review HO-1: a member moves only its own hand, and touches or carries no one \
+else's. A 100-ball pit with two hands: member 1 moves hand 100 and member 2 hand 101 across the \
+pit from 1 s to 4 s, and 1 touches its own hand at frame 126. In the forged runs member 2 also \
+sends hand entries for 100 every 4th frame, a grab of it at 2 s, a departure of it at 2.2 s, and \
+at 2.4 s a touch of ball 5 carrying a state for 100, 2 m above where it sees it. Three runs: with \
+the forgeries, without them, and with them and HO-1's round-2 fix switched off. Every forgery \
+must be refused at every replica, and the history must equal the run without them."""
+end_ms = 6000
+
+[world.1]
+members = [1, 2]
+scene = { ballpit = { balls = 100, hands = 2 } }
+epoch_ms = 100
+
+[world.1.plan]
+1 = [
+    { hand_path = { obj = 100, from_frame = 60, to_frame = 240, from_x = -0.6, to_x = 0.6, y_mm = 400, z = 0.0 } },
+    { at = 126, touch = { obj = 100, impulse = [0.0, 0.5, 0.0] } },
+    { at = 241, hand = { obj = 100, target_mm = [0, 1500, 0], active = false } },
+]
+2 = [
+    { hand_path = { obj = 101, from_frame = 60, to_frame = 240, from_x = 0.6, to_x = -0.6, y_mm = 400, z = 0.5 } },
+    { at = 241, hand = { obj = 101, target_mm = [0, 1500, 0], active = false } },
+]
+
+[net]
+seed = 7
+link = { delay_ms = 30, jitter_ms = 10 }
+
+[[part]]
+keep = "forged"
+world.1.plan.2 = [
+    { hand_path = { obj = 101, from_frame = 60, to_frame = 240, from_x = 0.6, to_x = -0.6, y_mm = 400, z = 0.5 } },
+    { at = 60, every = 4, count = 46, hand = { obj = 100, target_mm = [0, 3000, 0], active = true } },
+    { at = 241, hand = { obj = 101, target_mm = [0, 1500, 0], active = false } },
+]
+byzantine = [{ kind = "hand_forgery", member = 2, hand = 100, to = 1, grab_ms = 2000, carry_ms = 2200, plant_ms = 2400 }]
+
+[[part]]
+keep = "clean"
+
+[[part]]
+keep = "fixoff"
+world.1.fixes_off = ["HO1"]
+world.1.plan.2 = [
+    { hand_path = { obj = 101, from_frame = 60, to_frame = 240, from_x = 0.6, to_x = -0.6, y_mm = 400, z = 0.5 } },
+    { at = 60, every = 4, count = 46, hand = { obj = 100, target_mm = [0, 3000, 0], active = true } },
+    { at = 241, hand = { obj = 101, target_mm = [0, 1500, 0], active = false } },
+]
+byzantine = [{ kind = "hand_forgery", member = 2, hand = 100, to = 1, grab_ms = 2000, carry_ms = 2200, plant_ms = 2400 }]
+report = [
+    { kind = "handowner", forged = "forged", clean = "clean", fixoff = "fixoff", member = 2, hand = 100, label = "handowner (member 2 also sends hand entries for member 1's hand)" },
+]

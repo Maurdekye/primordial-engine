@@ -1,0 +1,44 @@
+description = """
+C1 (design review): confirmation by acks instead of the phase-1 TooLate rule. Member 3's link \
+is congested for about 2 s, so its frame-50 entry reaches member 1 at about frame 169 and \
+member 2 at about frame 171; every replica still ends equal to the offline replay."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 12500
+
+[world.1.plan]
+3 = [{ at = 50, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[net]
+seed = 7
+link = { delay_ms = 30, jitter_ms = 10 }
+
+# Everything member 3 sends between 0.9 s and 2.95 s is delayed by about 2 s.
+[[fault]]
+from = 3
+to = 1
+after_ms = 900
+before_ms = 2950
+delay_ms = 1950
+
+[[fault]]
+from = 3
+after_ms = 900
+before_ms = 2950
+delay_ms = 1983
+
+[[report]]
+kind = "phase1_rule"
+case = "c1"
+
+[[report]]
+kind = "first_entry_frame"
+author = 3
+text = "holds member 3's frame-50 entry"
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "check_world"
+frames = 700
+label = "c1 after"

@@ -1,0 +1,50 @@
+description = """
+Round-3 review: 9 signs a second version of an already-confirmed touch; colluding member 8 forks \
+its own vote and shows the honest members a copy with a frozen head of (0, 0). Before, the cut \
+fell to 0 and every honest member panicked. Now the forged vote never becomes stable among the \
+remaining members, so the eviction waits: two colluders of four can stall the session, but \
+cannot rewrite confirmed history."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 8, 9]
+
+[world.1.plan]
+9 = [{ at = 50, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[[byzantine]]
+kind = "equivocate"
+name = "equivocation"
+member = 9
+entry = "first_touch"
+when = { conf_above = { at = 1, frame = 200 } }
+touch = { obj = 10, impulse = [6.0, 0.0, 0.0] }
+to = [1, 2, 8]
+say = "  t={t_ms} ms: 9's touch s{x.seq} at frame {x.stamp} confirmed at m1: {x.confirmed@1}, at m2: {x.confirmed@2} (m1 conf {conf@1}) -> 9 signs a second version"
+
+# 8's genuine vote never leaves 8 (nor does any fetch of it); only the forged copy does.
+[[byzantine]]
+kind = "fork_vote"
+after = "equivocation"
+member = 8
+frozen = [0, 0]
+to = [1, 2]
+hide_real = true
+say = "  t={t_ms} ms: 8 sends members 1 and 2 a forged vote against {x.target} with frozen head (0, 0)"
+
+[[report]]
+kind = "touches"
+author = 9
+at = [1, 2]
+text = "9's touches at m{m}"
+
+[[report]]
+kind = "membership"
+honest = [1, 2]
+label = "badvote"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2]
+label = "badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head)"

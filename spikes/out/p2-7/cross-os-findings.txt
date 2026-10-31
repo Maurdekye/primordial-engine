@@ -1,0 +1,21 @@
+P2-7 cross-OS module identity, 2026-10-30 (design 13.2). Hashes: first 16 hex digits of SHA-256.
+
+1. Before the fixes (matrix run 1; <laptop> Windows vs WSL Ubuntu 24.04 Linux, rustc 1.99.0, release guests):
+   logic_v1 df0bf5ba..., logic_v2 f9c5e895..., logic_runaway 19f59dba...   equal on both OSes
+   physics_in_wasm  Windows 4ee3b3bb...  Linux 01f18b62...   (3,474 differing bytes, same size)
+   logic_mono       Windows 3cff7336...  Linux eff7c136...   (20 differing bytes: '\' vs '/')
+   logic_wasm       Windows 27761c61...  Linux c8f913e1...   (18 differing bytes: '\' vs '/')
+   e.g. Windows "logic_mono\src\sys_inventory.rs", Linux "logic_mono/src/sys_inventory.rs" (panic locations,
+   workspace-relative, not touched by the root --remap-path-prefix). Each OS was equal to itself at two paths.
+
+2. With per-directory separator remaps on Windows (sepmap in scripts/build_wasm_guests.sh), this PC's Windows:
+   logic_mono eff7c136..., logic_wasm c8f913e1...   == Linux
+   physics_in_wasm fdfac10d... vs Linux 01f18b62...: canonical hash equal (89e759b3...); remaining bytes all in
+   the `name` custom section (mangled crate disambiguators of spikes/sim-core and crates/box3d-fork differ).
+
+3. With strip = "symbols" (no name section): physics_in_wasm Windows ee57b239... == Linux ee57b239...
+
+4. Profile rel-fast (opt 3, no LTO, 16 CGUs, incremental), with the remaps:
+   logic_mono 0dd9a3dd..., logic_wasm f9af0850...   Windows == Linux.
+   On <laptop> (same OS, two checkout paths, separate targets): rel-fast, rel-s and dev-nodbg each byte-identical
+   at both paths, and an incremental edit+revert rebuild equals the clean build (runs: design-reviewer runs12/).

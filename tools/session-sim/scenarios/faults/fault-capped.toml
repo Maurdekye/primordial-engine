@@ -1,0 +1,25 @@
+description = """
+Fault kinds (P2-9): one capped link. Member 3's uplink to member 1 is capped at 12 kbit/s (4 kB \
+burst, 500 ms queue, tail drop), below what its acks need at 60 Hz without the R18 congestion \
+controller: 155 datagrams are dropped and member 1's confirmation lags. The 64 kbit/s cap on \
+every other link leaves headroom: without the 3-to-1 cap, this run drops nothing and equals the \
+uncapped one (fault-capped-collapse shows a cap that binds everywhere)."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 10000
+
+[net]
+seed = 35
+link = { delay_ms = 30, jitter_ms = 10 }
+cap = { kbps = 64 }
+caps = [{ from = 3, to = 1, kbps = 12 }]
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "traffic"
+
+[[report]]
+kind = "check_world"
+frames = 530
+label = "fault-capped"

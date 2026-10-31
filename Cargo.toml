@@ -12,6 +12,8 @@ members = [
     "crates/pe-mcp",
     "crates/pe-core",
     "crates/pe-sim",
+    "crates/pe-physics",
+    "tools/session-sim",
     "crates/pe-session",
     "crates/pe-session-harness",
 ]
@@ -43,3 +45,7 @@ opt-level = "s"
 lto = true
 panic = "abort"
 codegen-units = 1
+# No name section (design 13.2, P2-7): cargo's crate identity for a nested workspace member
+# (spikes/sim-core, crates/box3d-fork) depends on the host OS's path spelling, and the mangled
+# names carry it, so Windows and Linux builds differed there and nowhere else.
+strip = "symbols"
