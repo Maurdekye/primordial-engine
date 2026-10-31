@@ -943,3 +943,11 @@ pub fn ballpit_sweep(hz: u64, member: MemberId, ahead: u64) -> Vec<(u64, Action)
     v.push((s3 + 1, Action::Hand { obj, target_mm: [0, 1500, 0], active: false, ahead }));
     v
 }
+
+/// An entry id no entry has, for forged-reference fixtures (S3b: ids are 256-bit).
+pub fn fake_id(x: u64) -> EntryId {
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&x.to_le_bytes());
+    b[8] = 0xfa;
+    EntryId(b)
+}

@@ -113,7 +113,7 @@ pub fn ackfork() {
     }));
     let mut sim = Sim::new(net, ps, 8_000_000);
     // 9 signs a second chain for member 2: acks with honest horizons, and no touch.
-    let mut forged: (u32, EntryId) = (0, 0);
+    let mut forged: (u32, EntryId) = (0, EntryId::NONE);
     let panic_at = run_to_end(&mut sim, |sim| {
         if sim.net.now_us % 33_000 == 0 {
             let now = sim.replica(9, 1).sim.now;
