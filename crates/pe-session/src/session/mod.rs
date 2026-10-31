@@ -540,6 +540,12 @@ pub struct WorldSim {
     my_seq: u32,
     /// Test fixture (review H5): publish horizons this many frames behind the present.
     pub horizon_lag: u64,
+    /// D73(a): this member's own hand poses waiting for their pack, by (frame, hand): applied at their
+    /// frames on this replica only (`step_frame`). Set by `SessionCore`.
+    pub own_pending: BTreeMap<(u64, u32), [i32; 3]>,
+    /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
+    /// it, so nothing it confirms can miss the pack.
+    pub hold_horizon_below: Option<u64>,
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
@@ -822,6 +828,8 @@ impl WorldSim {
             now: 0,
             my_seq: 0,
             horizon_lag: 0,
+            own_pending: BTreeMap::new(),
+            hold_horizon_below: None,
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
