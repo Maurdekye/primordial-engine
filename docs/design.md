@@ -4262,7 +4262,10 @@ Rules for every package:
   Review round 5 (changes requested: VC4R-1's stronger fix, VC5R-2, an L1 lag bound) is answered in
   round 6, with the reviewer's `prevotefork` and `fakemix` repros; VC5R-1 is reopened as VC6R-3 below.
   Round 6's review bounded the polka ids a precommit carries (VC6R-2, honest code panicked above 64 in a
-  large session) and tightened the generator's lag bound; with those two in, the branch lands.
+  large session; at most a quorum, `MAX_POLKA` = 512) and tightened the generator's lag bound. The
+  delta re-check caught that the bound measured the speculative sim frame, which a halt pins one window
+  behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
+  windows), and the RG-1 control fails L1. With those in, the branch lands.
   **Three one-faulty-member liveness halts are known open, to be fixed as round 7 on main** (they do not
   touch safety — every replica still agrees — only liveness):
   * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, proposes a change listing the honest
