@@ -45,7 +45,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 31 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5); adminfork (round 6); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `p2-4-review/` | 30 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref (round 5; prevotefork waits for its round-7 re-mirror, see spike-only.txt); adminfork (round 6); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
@@ -59,8 +59,9 @@ identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress
 
 A committed log without a scenario file yet is listed in `scenarios/spike-only.txt`: a full
 `regress` lists it as spike-only instead of failing on it as an orphan. The list only shrinks: a
-listed name that has a scenario file, or no committed log, is an error. It is empty now: every
-committed log has its scenario file. (`handowner` was held for a while: the spike's check covered
+listed name that has a scenario file, or no committed log, is an error. It now lists P2-4 round 7's
+four repros (capfake, fakeadmin and adminwedge are new; prevotefork changed and its round-6 mirror
+is removed) until the round-7 mirror arrives. (`handowner` was held for a while: the spike's check covered
 6 frames past the lowest confirmed one, which `check_world` flags as UNCONFIRMED. P2-4's round 4
 fixed the spike.)
 
