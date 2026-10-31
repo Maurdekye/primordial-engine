@@ -13,73 +13,88 @@ pub(super) const CHANGE_EXT: u32 = 1 << 31;
 pub mod fix {
     /// VC-2: confirmation past a removed member's fork bounded by the verified prefix; the cut's
     /// branch adopted on the duplicate path.
-    pub const VC2: u32 = 1 << 0;
+    pub const VC2: u64 = 1 << 0;
     /// VC-3: a join's (or close's) boundary checked only for fresh proposals; late precommits.
-    pub const VC3: u32 = 1 << 1;
+    pub const VC3: u64 = 1 << 1;
     /// VC-4: a precommit's boundary must lie just ahead of its author's horizon; stale caps reset.
-    pub const VC4: u32 = 1 << 2;
+    pub const VC4: u64 = 1 << 2;
     /// VC-5: an ack's epoch rises by at most one; an epoch newer than mine left unbacked is voted out.
-    pub const VC5: u32 = 1 << 3;
+    pub const VC5: u64 = 1 << 3;
     /// Round 3, VCR-1: a reset answers a kick vote that names no held, pending kick of its target.
-    pub const VCR1: u32 = 1 << 4;
+    pub const VCR1: u64 = 1 << 4;
     /// VCR-2: a vote on its own kick freezes exactly its author's previous entry; a cut uses only
     /// votes whose frozen heads this replica can walk.
-    pub const VCR2: u32 = 1 << 5;
+    pub const VCR2: u64 = 1 << 5;
     /// VCR-3: a member acks as soon as it enters a new epoch, so its acks never skip one.
-    pub const VCR3: u32 = 1 << 6;
+    pub const VCR3: u64 = 1 << 6;
     /// VCR-4: newer-epoch timers survive decisions. (Round 3 also counted resets against the members
     /// whose votes and caps they overruled; that part is now `VC3R2`'s.)
-    pub const VCR4: u32 = 1 << 7;
+    pub const VCR4: u64 = 1 << 7;
     /// VCR-5: a cut's branch is fetched from its highest missing stretch down.
-    pub const VCR5: u32 = 1 << 8;
+    pub const VCR5: u64 = 1 << 8;
     /// VCR-6: no reconcile before a cut's branch is re-validated.
-    pub const VCR6: u32 = 1 << 9;
+    pub const VCR6: u64 = 1 << 9;
     /// VCR-7: joiners' attestations travel in the change, and a join request is never overwritten.
-    pub const VCR7: u32 = 1 << 10;
+    pub const VCR7: u64 = 1 << 10;
     /// VCR-8: a decision applies only once every admin entry it lists is held.
-    pub const VCR8: u32 = 1 << 11;
+    pub const VCR8: u64 = 1 << 11;
     /// VCR-9: admin entries obey their author's horizon; a proposer lists them without skipping one.
-    pub const VCR9: u32 = 1 << 12;
+    pub const VCR9: u64 = 1 << 12;
     /// VCR-12 and VC3R-5: a precommit's boundary need only lie ahead of its author's horizon. Round 2
     /// also bounded it from above, from that horizon, which voided a lagging member's precommits.
-    pub const VCR12: u32 = 1 << 13;
+    pub const VCR12: u64 = 1 << 13;
     /// HO-1, round 2: a touch carries the touched object's state only.
-    pub const HO1: u32 = 1 << 14;
+    pub const HO1: u64 = 1 << 14;
     /// Round 4, VC3R-1: the newer-epoch timer runs whatever other members' acks show. Round 3 paused
     /// it while this replica looked behind, which a climbing member could keep true for good.
-    pub const VC3R1: u32 = 1 << 15;
+    pub const VC3R1: u64 = 1 << 15;
     /// VC3R-2: no strikes. A stale cap, or a kick vote whose kick nobody delivers, gets its author
     /// voted out instead of answered by a reset, and a reset waits briefly for votes to gather.
-    pub const VC3R2: u32 = 1 << 16;
+    pub const VC3R2: u64 = 1 << 16;
     /// VC3R-3: a change lists only admin entries this replica has validated and found not void.
-    pub const VC3R3: u32 = 1 << 17;
+    pub const VC3R3: u64 = 1 << 17;
     /// VC3R-4: a join request is signed by its joiner, and the attestations of its requests merge.
-    pub const VC3R4: u32 = 1 << 18;
+    pub const VC3R4: u64 = 1 << 18;
     /// VC3R-6: a joiner's acks may declare its admission epoch at once.
-    pub const VC3R6: u32 = 1 << 19;
+    pub const VC3R6: u64 = 1 << 19;
     /// VC3R-7: a cut's branch is fetched by entry id, down the prev links.
-    pub const VC3R7: u32 = 1 << 20;
+    pub const VC3R7: u64 = 1 << 20;
     /// Round 4, with `VC3R2`: slowness timers survive decisions (round 3 restarted every one at each
     /// decision, so a member forcing a reset every few hundred ms kept a slow one from demotion); a
     /// member alone in a vote that a decision answered holds off instead (VC-6).
-    pub const LAGKEEP: u32 = 1 << 21;
+    pub const LAGKEEP: u64 = 1 << 21;
     /// Round 5, VC4R-2: a change carries each joiner's signed request and is judged from it, never
     /// from a request the validator happens to hold.
-    pub const VC4R2: u32 = 1 << 22;
+    pub const VC4R2: u64 = 1 << 22;
     /// VC4R-3: a member's claim to hold more of a chain than this replica does spares that chain's
     /// author for a silence limit at most, after which an undelivered claim gets its maker voted out.
-    pub const VC4R3: u32 = 1 << 23;
+    pub const VC4R3: u64 = 1 << 23;
     /// VC4R-1: the cap rule counts a prevote in any version this replica holds.
-    pub const VC4R1: u32 = 1 << 24;
+    pub const VC4R1: u64 = 1 << 24;
     /// VC4R-4: entry fetches by id are retried with backoff instead of asked once.
-    pub const VC4R4: u32 = 1 << 25;
+    pub const VC4R4: u64 = 1 << 25;
     /// VC4R-5: a vote whose frozen head nobody delivers stops holding resets back, and its voter is
     /// voted out.
-    pub const VC4R5: u32 = 1 << 26;
+    pub const VC4R5: u64 = 1 << 26;
     /// VC4R-6: a join request's signature names the session and an expiry.
-    pub const VC4R6: u32 = 1 << 27;
+    pub const VC4R6: u64 = 1 << 27;
     /// Round 5, VC3R-3's low: a listed admin entry must be stable here (every member holds that version).
-    pub const VC3R3S: u32 = 1 << 28;
+    pub const VC3R3S: u64 = 1 << 28;
+    /// Round 7, VC6R-1: a capper whose polka names prevotes nobody delivers within a further half window
+    /// is voted out, instead of the fetch being retried for good.
+    pub const VC6R1: u64 = 1 << 29;
+    /// VC6R-3: a listed admin entry's validity is a pure function of the entry and its ancestry (held,
+    /// its author's chain validated up to it, not voided). Canonical and undisputed are the proposer's
+    /// choice only, so a fork arriving later cannot invalidate a value a quorum locked on.
+    pub const VC6R3: u64 = 1 << 30;
+    /// VC6R-4: a decision resets only the timers its cleared votes made stale (each voter's reference to
+    /// its target, and my own votes' targets) and new members', not every timer.
+    pub const VC6R4: u64 = 1 << 31;
+    /// PF-1 (@ballpit-viz, mirroring prevotefork): a proven member's precommits count toward a
+    /// decision wherever they sit in its chain, and its proposals are kept by value the same way. A
+    /// replica keeps the first version of a seq it receives, so a forker's chain past its fork may
+    /// never link here, and its precommit in a quorum others decided on held this replica back.
+    pub const PF1: u64 = 1 << 32;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -831,6 +846,28 @@ impl WorldSim {
         votes.get(&round).is_some_and(|r| r.iter().filter(|&(m, &x)| x == v && base.contains(m)).count() >= q)
     }
 
+    /// The members whose precommit for `v` in `round` counts toward deciding it: those recorded in
+    /// chain order, and (review PF-1) every member proven to have forked its chain that signed one
+    /// held here, wherever it sits in that chain. A replica keeps the first version of a seq it
+    /// receives, so a forker's chain past its fork may never link here; its precommit in a quorum
+    /// others decided on would hold this replica in the old epoch for good. Any version counts: a
+    /// faulty member's precommit counts once per value, as Tendermint's commit rule counts signatures.
+    pub(super) fn precommitters(&self, round: u32, v: u64) -> BTreeSet<MemberId> {
+        let mut ms: BTreeSet<MemberId> = self.vcm.vc.precommits.get(&round).map(|r| r.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
+        if self.fixes_off & fix::PF1 == 0 {
+            if let Some(held) = self.pc_held.get(&(self.vcm.epoch, round, v)) {
+                ms.extend(held.keys().filter(|m| self.vcm.proofs.contains_key(m)));
+            }
+        }
+        ms
+    }
+
+    pub(super) fn precommit_quorum(&self, round: u32, v: u64) -> bool {
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        self.precommitters(round, v).iter().filter(|m| base.contains(m)).count() >= q
+    }
+
     /// Members of `base` that sent anything (`nil_only`: nil) in `round` of `votes`.
     pub(super) fn count_round(votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, base: &BTreeSet<MemberId>, nil_only: bool) -> usize {
         votes.get(&round).map_or(0, |r| r.iter().filter(|&(m, &x)| base.contains(m) && (!nil_only || x == 0)).count())
@@ -1112,11 +1149,15 @@ impl WorldSim {
                 }
             }
         }
-        // Round 5 (VC3R-3's low): a listed admin entry must be this member's canonical version at that
-        // seq and not disputed. A forked version, held only as a duplicate, passed the VC3R-3 check
-        // (held and not in `violations`); this refuses it, so a fork cannot be committed as an admin
-        // entry at some replicas and not others.
-        if self.fixes_off & fix::VC3R3S == 0 {
+        // Round 5 (VC3R-3's low), now only with VC6R-3 switched off: a listed admin entry had to be this
+        // member's canonical version at that seq and not disputed. Both change as forks arrive, so a
+        // value a quorum had locked on could turn invalid at the locked members, and nothing releases a
+        // lock (review VC6R-3, `adminwedge`). Validity is now a pure function of the entry and its
+        // ancestry (the VC3R-3 checks above), the same at every replica once it holds the entry; whether
+        // to list a canonical, undisputed version is the proposer's choice (`build_change`). Every
+        // replica applies the version the change lists, with the outcome the change carries, so a fork
+        // cannot be committed at some replicas and not others.
+        if self.fixes_off & fix::VC3R3S == 0 && self.fixes_off & fix::VC6R3 != 0 {
             for &(id, _) in &c.admin {
                 let (m, sq) = match self.entries.get(&id) {
                     Some(e) => (e.member, e.seq),
@@ -1510,7 +1551,7 @@ impl WorldSim {
             for (v, ms) in vals {
                 if !self.vcm.vc.changes.contains_key(&v) {
                     unknown.push((v, ms));
-                } else if self.quorum_for(&self.vcm.vc.precommits, rr, v) {
+                } else if self.precommit_quorum(rr, v) {
                     candidates.push((rr, v));
                 }
             }
@@ -1560,12 +1601,14 @@ impl WorldSim {
     pub(super) fn apply_change(&mut self, c: Change, round: u32, out: &mut Vec<Entry>) {
         let v = c.value();
         let xs: BTreeSet<MemberId> = c.excluded.iter().map(|(m, _)| *m).collect();
+        // PF-1: a proven forker's precommit counts by its signature, held at insert (`pc_held`).
+        let held = self.pc_held.get(&(self.vcm.epoch, round, v));
         let sigs: Vec<(MemberId, Sig)> = self
-            .vcm.vc
-            .precommits
-            .get(&round)
-            .map(|ms| ms.iter().filter(|&(m, &x)| x == v && !xs.contains(m)).map(|(&m, _)| (m, self.vcm.vc.precommit_sigs[&(round, m)])).collect())
-            .unwrap_or_default();
+            .precommitters(round, v)
+            .into_iter()
+            .filter(|m| !xs.contains(m))
+            .map(|m| (m, *self.vcm.vc.precommit_sigs.get(&(round, m)).or_else(|| held.and_then(|h| h.get(&m))).expect("a counted precommit's signature is held")))
+            .collect();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
         // D80: role entries in commit order (kicks are among the removals), then the removals, then
         // each joiner's starting role against the membership they leave.
@@ -1705,10 +1748,32 @@ impl WorldSim {
         self.vcm.join_caps.clear();
         self.cap_seen.clear();
         self.cap_polka.clear();
-        // Review VC5R-4: the verified-reference timers and the silence spare-window are per-epoch; a
-        // decision clears them so a stale entry does not vote a member out in the new epoch.
-        self.ref_seen.clear();
-        self.suspect_since.clear();
+        if self.fixes_off & fix::VC6R4 == 0 {
+            // Review VC6R-4: reset only the timers a cleared vote made stale (this decision clears every
+            // vote, below). A voter froze its target's chain, so its reference to that chain stood still
+            // (`ref_seen`), and the targets of my own votes looked silent or slow to me
+            // (`suspect_since`); new members count from admission. Round 6 cleared every timer at every
+            // decision, so a member that forces decisions (a no-op admin entry every 2 s) kept its own
+            // timers from ever ripening.
+            for (y, vs) in &self.vcm.votes {
+                for v in vs.keys() {
+                    self.ref_seen.remove(&(*v, *y));
+                    if *v == self.me {
+                        self.suspect_since.remove(y);
+                    }
+                }
+            }
+            for &j in &c.add {
+                self.ref_seen.retain(|&(k, a), _| k != j && a != j);
+                self.suspect_since.remove(&j);
+            }
+        } else {
+            // Review VC5R-4 (round 6): the verified-reference timers and the silence spare-window are
+            // per-epoch; a decision clears them so a stale entry does not vote a member out in the new
+            // epoch.
+            self.ref_seen.clear();
+            self.suspect_since.clear();
+        }
         for &j in &c.add {
             self.admitted_epoch.insert(j, c.epoch + 1);
             // Review VC3R-6: a new member's silence counts from its admission, not from its last entry
@@ -1739,6 +1804,7 @@ impl WorldSim {
         // A new epoch: the old one's votes, freezes and view-change state end.
         self.vcm.votes.clear();
         self.vcm.vc = Vc::default();
+        self.pc_held.retain(|&(e, _, _), _| e >= self.vcm.epoch);
         let unfreeze: Vec<MemberId> = self.vcm.frozen.keys().copied().filter(|m| !self.vcm.evicted.contains_key(m)).collect();
         for m in unfreeze {
             self.vcm.frozen.remove(&m);
@@ -1769,6 +1835,14 @@ impl WorldSim {
             for id in ids {
                 let m = self.entries[&id].member;
                 self.record_vc(m, id, out);
+            }
+        }
+        // Review PF-1: proposals of the new epoch kept by value before it began (another version, or a
+        // proven forker's past its fork) name values it may decide.
+        if self.fixes_off & fix::PF1 == 0 {
+            let held: Vec<EntryId> = self.vcm.proposal_ids.values().copied().collect();
+            for id in held {
+                self.note_proposal(id);
             }
         }
         self.recompute_conf();

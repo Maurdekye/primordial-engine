@@ -478,6 +478,10 @@ pub struct WorldSim {
     stable_hi: BTreeMap<MemberId, u32>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
+    /// Review PF-1: every signed precommit held for a value, any version, linked into its author's
+    /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
+    /// counted from it (`precommitters`); everyone else counts in chain order.
+    pc_held: BTreeMap<(u32, u32, u64), BTreeMap<MemberId, Sig>>,
     /// Review VC4R-2: per pending joiner, its signed request (signature, expiry) with the latest expiry.
     join_reqs: BTreeMap<MemberId, (Sig, u64)>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
@@ -485,7 +489,7 @@ pub struct WorldSim {
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
     /// Test fixture: review fixes switched off (see [`fix`]).
-    pub fixes_off: u32,
+    pub fixes_off: u64,
     /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
     entry_backoff: BTreeMap<(MemberId, EntryId), (u64, u64)>,
     /// Review VC4R-3 (and the generator's RG-1): (claimant, author) -> (the highest seq of the author's
@@ -770,6 +774,7 @@ impl WorldSim {
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
+            pc_held: BTreeMap::new(),
             hidden: None,
             join_reqs: BTreeMap::new(),
             genesis: members.to_vec(),

@@ -67,6 +67,9 @@ for v in strikeframe aheadshield fakeref capstale lagchurn votechurn adminvoid j
 # P2-4 review round 5 (design 10.8): the join wedge and the slow/fake-reference halt.
 for v in joinwedge slowref prevotefork; do run p2-4-$v $v; done
 for v in fakemix adminfork; do run p2-4-$v $v; done
+# P2-4 review round 6, fixed in round 7 (design 10.8): three halts by one faulty member; each
+# repro also reports its run with the fix switched off.
+for v in capfake fakeadmin adminwedge; do run p2-4-$v $v; done
 # The randomized Byzantine schedule generator (not a scenario file): a fixed seed range, checked
 # against the written invariants (spikes/out/session-sim/INVARIANTS.md). A larger run is separate.
 "$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"
