@@ -221,6 +221,24 @@ impl LogicPeer {
     }
 }
 
+/// The physics spike's reference run, natively: the code `physics_in_wasm`'s `pe_run_trace`
+/// runs inside the interpreter (spikes/physics-in-wasm/src/lib.rs), so D4 compares the two in
+/// one process whatever precision Box3D was built with (D58).
+fn native_trace_digest(frames: u64) -> u64 {
+    let inputs = scripted_inputs();
+    let mut gs = GameState::new(build_pile_scene(8, 4), SEED);
+    let mut state = Vec::with_capacity(frames as usize);
+    let mut world = Vec::with_capacity(frames as usize);
+    while gs.frame < frames {
+        let f = gs.frame;
+        let now: Vec<Interaction> = inputs.iter().copied().filter(|i| i.frame == f).collect();
+        gs.advance(&now);
+        state.push(gs.hash());
+        world.push(gs.world_hash());
+    }
+    fnv_u64s(state.iter().copied().chain(world.iter().copied()))
+}
+
 fn load(dir: &str, name: &str) -> Vec<u8> {
     let p = format!("{dir}/{name}.wasm");
     std::fs::read(&p).unwrap_or_else(|e| panic!("read {p}: {e} (run scripts/build_wasm_guests.sh first)"))
@@ -373,11 +391,13 @@ fn main() {
         let t = Instant::now();
         let digest = run.call(&mut store, FRAMES as i32).expect("run") as u64;
         let el = t.elapsed();
+        let native = native_trace_digest(FRAMES);
         all &= check(
             "D4 Box3D pile run compiled to wasm32 + wasmi == native digest",
-            digest == 0x8083_9f4a_5413_3e13,
+            digest == native,
             format!(
-                "digest {digest:016x} (native 80839f4a54133e13, engine world def); module compile {compile:?}; {FRAMES} frames in {el:?} ({:.0} us/frame interpreted)",
+                "digest {digest:016x} (native {native:016x}, engine world def, double precision {}); module compile {compile:?}; {FRAMES} frames in {el:?} ({:.0} us/frame interpreted)",
+                box3d_rust::core::is_double_precision(),
                 el.as_secs_f64() * 1e6 / FRAMES as f64
             ),
         );
