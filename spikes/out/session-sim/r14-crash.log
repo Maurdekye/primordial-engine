@@ -16,11 +16,11 @@ RESULT r14 crash: world 2 at m3: members {3, 4} evicted {1: (68, 134)} conf 434 
   m3 world B: object 40 live copies 1; escrow []; arrivals ["T12195243429767318519:Accepted { obj: 75, frame: 325 }"]
   m4 world B: object 40 live copies 1; escrow []; arrivals ["T12195243429767318519:Accepted { obj: 75, frame: 325 }"]
 RESULT r14 crash: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 157 frame 165
-  m2 world 1: rollbacks 14 max depth 3 resim frames 59 (8.0 ms) overwrites 0 paused frames 88 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 526 frame 533
-  m4 world 1: rollbacks 16 max depth 3 resim frames 71 (9.0 ms) overwrites 0 paused frames 78 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 524 frame 534
-  m1 world 2: rollbacks 1 max depth 3 resim frames 3 (0.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 9 bad 0 nonfinite 0 conf 126 frame 135
+  m1 world 1: rollbacks 1 max depth 3 resim frames 3 (0.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 157 frame 165
+  m2 world 1: rollbacks 14 max depth 3 resim frames 59 (8.2 ms) overwrites 0 paused frames 88 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 526 frame 533
+  m4 world 1: rollbacks 16 max depth 3 resim frames 71 (9.5 ms) overwrites 0 paused frames 78 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 524 frame 534
+  m1 world 2: rollbacks 1 max depth 3 resim frames 3 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 9 bad 0 nonfinite 0 conf 126 frame 135
   m3 world 2: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 77 violations 0 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 434 frame 442
-  m4 world 2: rollbacks 2 max depth 2 resim frames 4 (0.6 ms) overwrites 0 paused frames 74 violations 0 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 434 frame 442
+  m4 world 2: rollbacks 2 max depth 2 resim frames 4 (0.7 ms) overwrites 0 paused frames 74 violations 0 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 crash A world 1: frames 0..500 digests m2=794324b546d16c2a m4=794324b546d16c2a | offline replay 794324b546d16c2a | ALL EQUAL
 RESULT r14 crash B world 2: frames 0..400 digests m3=66456700923f363e m4=66456700923f363e | offline replay 66456700923f363e | ALL EQUAL

@@ -252,6 +252,16 @@ pub mod fix {
     pub const VC4R6: u32 = 1 << 27;
     /// Round 5, VC3R-3's low: a listed admin entry must be stable here (every member holds that version).
     pub const VC3R3S: u32 = 1 << 28;
+    /// Round 7, VC6R-1: a capper whose polka names prevotes nobody delivers within a further half window
+    /// is voted out, instead of the fetch being retried for good.
+    pub const VC6R1: u32 = 1 << 29;
+    /// VC6R-3: a listed admin entry's validity is a pure function of the entry and its ancestry (held,
+    /// its author's chain validated up to it, not voided). Canonical and undisputed are the proposer's
+    /// choice only, so a fork arriving later cannot invalidate a value a quorum locked on.
+    pub const VC6R3: u32 = 1 << 30;
+    /// VC6R-4: a decision resets only the timers its cleared votes made stale (each voter's reference to
+    /// its target, and my own votes' targets) and new members', not every timer.
+    pub const VC6R4: u32 = 1 << 31;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -2724,13 +2734,13 @@ impl WorldSim {
             // member faking the cap would be voted out, so I first fetch the prevote ids its precommit
             // named (fetching a forked one records it, or proves the proposer equivocated), and vote it
             // out only once I hold them all and they are still no quorum.
-            let ripe: Vec<(MemberId, u32, u64, u64)> = self
+            let ripe: Vec<(MemberId, u32, u64, u64, u64)> = self
                 .cap_seen
                 .iter()
                 .filter(|(m, (_, _, at))| **m != self.me && self.now >= *at + after)
-                .map(|(m, (r, v, _))| (*m, *r, *v, self.join_caps.get(m).map_or(0, |c| c.1)))
+                .map(|(m, (r, v, at))| (*m, *r, *v, self.join_caps.get(m).map_or(0, |c| c.1), *at))
                 .collect();
-            for (m, r, v, b) in ripe {
+            for (m, r, v, b, at) in ripe {
                 let old_rule = self.fixes_off & fix::VC4R1 != 0;
                 if old_rule {
                     if !self.quorum_for(&self.vc.prevotes, r, v) && self.members.contains(&m) && !self.voted(m) && !self.held(m) {
@@ -2745,6 +2755,17 @@ impl WorldSim {
                 let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
                 let missing: Vec<EntryId> = ids.iter().copied().filter(|id| !self.entries.contains_key(id)).collect();
                 if !missing.is_empty() {
+                    // Review VC6R-1: an honest capper holds its own polka and answers a fetch within a
+                    // round trip, so ids still missing a further half window after the cap ripened name
+                    // prevotes nobody holds. The capper is voted out instead of the fetch being retried
+                    // for good.
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                        if self.members.contains(&m) && !self.voted(m) && !self.held(m) {
+                            self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
+                            out.extend(self.freeze_and_vote(m, 0, 0));
+                        }
+                        continue;
+                    }
                     for id in missing {
                         self.want_entry_all(id, 0);
                     }
@@ -3641,11 +3662,15 @@ impl WorldSim {
                 }
             }
         }
-        // Round 5 (VC3R-3's low): a listed admin entry must be this member's canonical version at that
-        // seq and not disputed. A forked version, held only as a duplicate, passed the VC3R-3 check
-        // (held and not in `violations`); this refuses it, so a fork cannot be committed as an admin
-        // entry at some replicas and not others.
-        if self.fixes_off & fix::VC3R3S == 0 {
+        // Round 5 (VC3R-3's low), now only with VC6R-3 switched off: a listed admin entry had to be this
+        // member's canonical version at that seq and not disputed. Both change as forks arrive, so a
+        // value a quorum had locked on could turn invalid at the locked members, and nothing releases a
+        // lock (review VC6R-3, `adminwedge`). Validity is now a pure function of the entry and its
+        // ancestry (the VC3R-3 checks above), the same at every replica once it holds the entry; whether
+        // to list a canonical, undisputed version is the proposer's choice (`build_change`). Every
+        // replica applies the version the change lists, with the outcome the change carries, so a fork
+        // cannot be committed at some replicas and not others.
+        if self.fixes_off & fix::VC3R3S == 0 && self.fixes_off & fix::VC6R3 != 0 {
             for &(id, _) in &c.admin {
                 let (m, sq) = match self.entries.get(&id) {
                     Some(e) => (e.member, e.seq),
@@ -4220,10 +4245,32 @@ impl WorldSim {
         self.join_caps.clear();
         self.cap_seen.clear();
         self.cap_polka.clear();
-        // Review VC5R-4: the verified-reference timers and the silence spare-window are per-epoch; a
-        // decision clears them so a stale entry does not vote a member out in the new epoch.
-        self.ref_seen.clear();
-        self.suspect_since.clear();
+        if self.fixes_off & fix::VC6R4 == 0 {
+            // Review VC6R-4: reset only the timers a cleared vote made stale (this decision clears every
+            // vote, below). A voter froze its target's chain, so its reference to that chain stood still
+            // (`ref_seen`), and the targets of my own votes looked silent or slow to me
+            // (`suspect_since`); new members count from admission. Round 6 cleared every timer at every
+            // decision, so a member that forces decisions (a no-op admin entry every 2 s) kept its own
+            // timers from ever ripening.
+            for (y, vs) in &self.votes {
+                for v in vs.keys() {
+                    self.ref_seen.remove(&(*v, *y));
+                    if *v == self.me {
+                        self.suspect_since.remove(y);
+                    }
+                }
+            }
+            for &j in &c.add {
+                self.ref_seen.retain(|&(k, a), _| k != j && a != j);
+                self.suspect_since.remove(&j);
+            }
+        } else {
+            // Review VC5R-4 (round 6): the verified-reference timers and the silence spare-window are
+            // per-epoch; a decision clears them so a stale entry does not vote a member out in the new
+            // epoch.
+            self.ref_seen.clear();
+            self.suspect_since.clear();
+        }
         for &j in &c.add {
             self.admitted_epoch.insert(j, c.epoch + 1);
             // Review VC3R-6: a new member's silence counts from its admission, not from its last entry

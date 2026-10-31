@@ -691,8 +691,17 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
   fixed (at most a quorum of ids, `MAX_POLKA` = 512; a 300-id polka round-trips, unit test) and L1 fixed
   to measure the clock-frame present (`now - conf`, two windows) after the delta re-check found the
   earlier sim-frame measure could not fire on a halt (it is pinned one window behind the clock); the
-  RG-1 control now fails L1 (lag 653 > 240), 80 seeds pass. The three halts are known open, fixed as
-  round 7 on main (design 10.8); each has a reviewer repro (not in the suite until fixed).
+  RG-1 control now fails L1 (lag 653 > 240), 80 seeds pass. The three halts were left for round 7 on
+  main. P2-4 landed on main at 5ba3eab.
+* **Round 7** (on main) fixes the three halts, each behind a fix flag, and the reviewer's repros join the
+  suite. Each fails with its fix switched off and passes with it:
+
+  | Repro | Fix | With the fix | Fix off |
+  |---|---|---|---|
+  | `adminwedge` (VC6R-3) | admin validity a pure function of the entry and its ancestry, so a later fork cannot invalidate a locked value | 9 removed at 4.03 s, confirmation to 826 | 9 never removed, confirmation stops at 112 |
+  | `capfake` (VC6R-1) | a cap's polka fetch has a budget of a further half window, then the capper is voted out | 9 removed at 4.15 s | never removed, stops at 143 |
+  | `fakeadmin` (VC6R-4) | a decision resets only the timers its cleared votes made stale | 8 removed at 5.23 s (3 decisions) | never removed (6 decisions), stops at 110 |
+
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
   (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
