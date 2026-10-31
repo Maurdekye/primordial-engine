@@ -1167,3 +1167,111 @@ fn rv5_ownu7_record_of_unheld_changes_nothing() {
     }
     assert_eq!(b, before);
 }
+
+// ---- design-reviewer round 6 (OWNV-*), as asserting tests; they fail at a5ad363 ----
+
+/// OWNV-1: a stolen recovery key's certificates hung under an honest owner's proposal are charged to
+/// the key that signed them, not to the honest owner.
+#[test]
+fn rv6_ownv1_quota_charged_to_an_honest_key() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    let h = head(&b);
+    let x = next(&b, h, Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B]);
+    let xid = x.id();
+    assert_eq!(b.insert(x), Ok(Insert::Applied));
+    for i in 0..UNATTESTED_PER_KEY as u32 {
+        let _ = b.insert(next(&b, xid, Change::StartRecover { owner: S, new_key: 700_000 + i }, &[R]));
+    }
+    let p1 = next(&b, h, Change::SetRecovery { owner: B, recovery: Some(R2 + 1) }, &[B]);
+    assert_eq!(b.clone().insert(p1), Ok(Insert::Applied));
+    b.record(xid, L1, 2);
+    let p2 = next(&b, head(&b), Change::SetRecovery { owner: B, recovery: Some(R2 + 2) }, &[B]);
+    assert_eq!(b.insert(p2), Ok(Insert::Applied));
+}
+
+/// OWNV-1 variant: a key invited by an unattested joint Add can't spend its inviters' quota.
+#[test]
+fn rv6_ownv1_invited_key_spends_inviters_quota() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let x = next(&b, b.genesis, Change::Add { key: K }, &[S, B]);
+    let xid = x.id();
+    let _ = b.insert(x);
+    for i in 0..UNATTESTED_PER_KEY as u32 {
+        let _ = b.insert(next(&b, xid, Change::SetRecovery { owner: K, recovery: Some(710_000 + i) }, &[K]));
+    }
+    let ps = next(&b, b.genesis, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S]);
+    assert_eq!(b.insert(ps), Ok(Insert::Applied));
+}
+
+/// OWNV-2: a stolen recovery key that spent its owner's solo share can still be revoked by the owner
+/// alone: clearing one's own recovery key is never capped.
+#[test]
+fn rv6_ownv2_recovery_key_spends_owner_share() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    for i in 0..MAX_CERTS as u32 {
+        if commit(&mut b, Change::StartRecover { owner: S, new_key: 800_000 + i }, &[R], 2 + i as u64).is_err() {
+            break;
+        }
+    }
+    assert_eq!(commit(&mut b, Change::SetRecovery { owner: S, recovery: None }, &[S], 9000), Ok(Insert::Applied));
+    assert!(b.view().owners.recovery.get(&S).is_none());
+}
+
+/// OWNV-3: under rule B, "add a new key of mine, then leave" can't fill the book: the solo cap is
+/// world-wide, and a joint change still gets in.
+#[test]
+fn rv6_ownv3_solo_cap_churn() {
+    let mut b = Book::new(Cert::genesis(&[S, A], SignRule::Any, 1)).unwrap();
+    let (mut cur, mut f, mut cycles) = (A, 1u64, 0u32);
+    let stop = loop {
+        let m = 100_000 + cycles;
+        if let Err(e) = commit(&mut b, Change::Add { key: m }, &[cur], f) {
+            break e;
+        }
+        if let Err(e) = commit(&mut b, Change::Leave { key: cur }, &[cur], f + 1) {
+            break e;
+        }
+        cur = m;
+        f += 2;
+        cycles += 1;
+    };
+    assert_ne!(stop, OwnError::Full, "stopped after {cycles} cycles");
+    assert_eq!(commit(&mut b, Change::Add { key: X }, &[S, cur], f + 2), Ok(Insert::Applied));
+}
+
+/// OWNV-4: adding owners never shrinks the solo share the others already had.
+#[test]
+fn rv6_ownv4_solo_share_never_shrinks() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let mut f = 1u64;
+    for i in 0..100u32 {
+        for k in [S, B] {
+            commit(&mut b, Change::SetRecovery { owner: k, recovery: Some(10_000 + 2 * i + (k == B) as u32) }, &[k], f).unwrap();
+            f += 1;
+        }
+    }
+    let mut all = vec![S, B];
+    for k in [C, I, J, Z] {
+        commit(&mut b, Change::Add { key: k }, &all, f).unwrap();
+        all.push(k);
+        f += 1;
+    }
+    assert_eq!(commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], f), Ok(Insert::Applied));
+}
+
+/// OWNV-5: a certificate more signatures can't fix is not kept, and a former owner's certificate on an
+/// old state is charged to nobody, so it isn't kept either.
+#[test]
+fn rv6_ownv5_unfixable_and_stale_certs_are_not_kept() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::Any, 1)).unwrap();
+    let g = b.genesis;
+    commit(&mut b, Change::Leave { key: B }, &[B], 1).unwrap();
+    let before = b.clone();
+    // Not an owner any more: no signature fixes that.
+    let _ = b.insert(next(&b, head(&b), Change::Leave { key: B }, &[S]));
+    // B, a former owner, on the genesis.
+    let _ = b.insert(next(&b, g, Change::Add { key: X }, &[B]));
+    assert_eq!(b, before);
+}
