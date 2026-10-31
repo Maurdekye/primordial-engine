@@ -1,7 +1,23 @@
-# Committed logs of scripts/run_session_sim.sh that are not mirrored as scenario files yet: P2-4's
-# view change, the D80 admin layer, P2-4's review repros, handowner and r14 chain-epoch (spike
-# session-sim at land/viewchange 62eb871). `regress` reports them instead of failing on them as
-# orphans; each name leaves this list when its scenario file arrives (see README).
-# handowner: mirrored in p2-4/handowner.toml.held, identical but for the UNCONFIRMED line the tool
-# adds (the spike checks frames 0..352; the lowest confirmed frame is 346).
-handowner
+# Committed logs of scripts/run_session_sim.sh that are not mirrored as scenario files yet, one
+# name per line. `regress` reports them instead of failing on them as orphans; each name leaves this
+# list when its scenario file arrives (see README).
+#
+# Landing P2-4 on main (5ba3eab) brought the spike to round 6.2 while this tool carried the round-4
+# mirror (a2b0b17), so these wait for @ballpit-viz's round-5/6 mirror. No log here was re-blessed.
+#
+# New spike scenarios of rounds 5-6, with no scenario file yet:
+p2-4-adminfork      # round 6 (VC5R-1's argument): a faulty admin's forked entry
+p2-4-fakemix        # round 6 (reviewer): fake references mixed with a live offset
+p2-4-joinwedge      # round 5 (VC4R-2): a join request seen by part of the session, plus a crash
+p2-4-prevotefork    # round 6 (VC4R-1): an equivocated prevote; the capped precommit's polka
+p2-4-slowref        # round 5 (VC4R-3): fake references shielding a slow member
+randsched           # round 5: the randomized schedule generator; to become a non-log check
+#
+# P2-9 fault scenarios whose output shifted with P2-4 rounds 5-6. Each still runs ALL EQUAL with a
+# matching offline replay and no false checks; only counts and timings moved. Their scenario files
+# are removed until re-mirrored: restore them from 5ba3eab:tools/session-sim/scenarios/faults/.
+fault-asymmetric
+fault-capped
+fault-crash-recover
+fault-partition-evict
+fault-partition-heal

@@ -1,7 +1,7 @@
 //! P2-4 review round 3: the fixtures for design-reviewer's round-2 findings (review-p2-4.md,
 //! "Round 2"). Each runs twice: once with its fix switched off (`WorldSim::fixes_off`), reported as an
 //! informational line, and once as shipped, with the RESULT verdict.
-//! * `ghostkick` (VCR-1): 9 votes against 2 for a kick that does not exist.
+//! * `ghostkick` (VCR-1): 9 votes against 2 for a kick that does not exist. Round 4 (VC3R-2): 9 is voted out.
 //! * `selfkickhead` (VCR-2): admin 1 kicks 4; 4's vote on its own kick names a head it never signed.
 //! * `ackgap` (VCR-3): 3 acks once a second while two decisions fall between two of its acks.
 //! * `latejoin` (VCR-3): a joiner that catches up on two decisions at once, then joins at epoch 2.
@@ -14,7 +14,8 @@
 //! * `slowadmin` (VCR-8): a follower decides from precommits before it holds the admin entry.
 //! * `kickbackdate` (VCR-9): `kickwar`, with 2's kick backdated to come first.
 //! * `lagprecommit` (VCR-12): a member that acks once every 1.5 s precommits a join that needs it.
-//! * `aheadlink` (VCR-12): a member cut off from all but one other member while that one moves on.
+//! * `aheadlink` (VCR-12; a check since round 4, VC3R-8): a member cut off from all but one other member
+//!   while that one moves on votes against the members ahead, harmlessly.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,6 +72,14 @@ pub fn ghostkick() {
         }
         vc_report(&sim, &honest, "ghostkick");
         println!("RESULT ghostkick: {}", confs(&sim, &honest));
+        // Round 4 (VC3R-2): the vote names a kick nobody can deliver, so its voter is voted out.
+        let r1 = sim.replica(1, 1);
+        let removed = r1.sim.vc_log.iter().find(|d| d.3.contains(&9)).map(|d| sim_secs(r1, d.1));
+        println!(
+            "RESULT ghostkick: 9 removed at {} -> {}",
+            removed.map_or("never".to_string(), |t| format!("{t:.2} s")),
+            if removed.is_some() { "VOTED OUT" } else { "FAIL" }
+        );
         verdict(&sim, &honest, label, stopped);
     }
 }
@@ -167,7 +176,8 @@ pub fn latejoin() {
         p.join(1, &ids, SCENE, SimConfig::default(), 100_000, BTreeMap::new());
         ps.push(p);
         if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VCR3);
+            // Round 4's admission-epoch floor (VC3R-6) would let the joiner through as well.
+            each_sim(&mut ps, |s| s.fixes_off = fix::VCR3 | fix::VC3R6);
         }
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 10_000_000);
         let mut asked = false;
@@ -176,9 +186,11 @@ pub fn latejoin() {
                 // The joiner asks, and member 1 hands it the whole log at once: it catches up on both
                 // decisions within a tick.
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
-                for e in sim.replica(1, 1).sim.all_entries() {
+                let mut log = sim.replica(1, 1).sim.all_entries();
+                log.sort_by_key(|e| (e.member, e.seq));
+                for e in log {
                     sim.net.send(1, 1, joiner, &Msg::Entry(e));
                 }
                 asked = true;
@@ -203,7 +215,8 @@ pub fn capchurn() {
         let ids = [1, 2, 3, 9];
         let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
         if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VCR4);
+            // Round 4's cap rule (VC3R-2) would vote 9 out as well.
+            each_sim(&mut ps, |s| s.fixes_off = fix::VCR4 | fix::VC3R2);
         }
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut capped: BTreeSet<u32> = BTreeSet::new();
@@ -217,7 +230,7 @@ pub fn capchurn() {
             r9.fake_ack_epoch = Some(epoch + 1);
             if capped.insert(epoch) {
                 let boundary = r9.now + 30;
-                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary }, None);
+                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka: vec![] }, None);
                 send_all(sim, 9, &ids, &e);
             }
         });
@@ -245,7 +258,8 @@ pub fn capchurn() {
 
 pub fn deepfork() {
     for fixed in RUNS {
-        let off = if fixed { 0 } else { fix::VCR5 };
+        // Round 4's fetch by id (VC3R-7) would fetch the branch as well.
+        let off = if fixed { 0 } else { fix::VCR5 | fix::VC3R7 };
         let (sim, stopped, info) = fork_run(off, 1_600_000, false, 1_500_000);
         let honest = [1, 2, 3];
         let label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)";
@@ -305,7 +319,7 @@ pub fn joinattests() {
                 let friend = vec![attest(Rel::Friend, joiner, 1, 1)];
                 for m in ids {
                     let attests = if m == 1 || m == 2 { friend.clone() } else { vec![] };
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, attests, u64::MAX));
                 }
                 asked = true;
             }
@@ -442,7 +456,7 @@ pub fn lagprecommit() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !asked && sim.net.now_us >= 2_800_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
                 asked = true;
             }
@@ -461,55 +475,48 @@ pub fn lagprecommit() {
     }
 }
 
+/// Not a repro since round 4 (review VC3R-8): round 3's exemption (VC3R-1) is gone, so there is no
+/// fix to switch off. A check that a member cut off from all but one other member, while the others
+/// decide an epoch, votes against the members ahead harmlessly: its votes are cast in an epoch the
+/// others have left, and an epoch decides once.
 pub fn aheadlink() {
-    for fixed in RUNS {
-        let ids = [1, 2, 3, 4];
-        let mut ps = peers_of(&ids, |m| match m {
-            2 => plan(&[(60, touch(10, 6.0)), (120, Action::DefineRole { role: GUEST, perms: 0 }), (600, touch(33, 3.0))]),
-            _ => BTreeMap::new(),
-        });
-        if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VCR12);
+    let ids = [1, 2, 3, 4];
+    let ps = peers_of(&ids, |m| match m {
+        2 => plan(&[(60, touch(10, 6.0)), (120, Action::DefineRole { role: GUEST, perms: 0 }), (600, touch(33, 3.0))]),
+        _ => BTreeMap::new(),
+    });
+    let mut net = Net::new(link(30, 10, 0), 7);
+    // 3 hears only 4's own acks on time from 1.9 s to 7 s; everything else reaches it 5 s late.
+    net.filter = Some(Box::new(|t, _w, from, to, m| {
+        let during = (1_900_000..7_000_000).contains(&t);
+        match m {
+            Msg::Entry(e) if during && to == 3 && !(from == 4 && e.member == 4 && matches!(e.payload, Payload::Ack { .. })) => Fate::Delay(5_000_000),
+            _ if during && to == 3 && from != 4 => Fate::Delay(5_000_000),
+            _ => Fate::Deliver,
         }
-        let mut net = Net::new(link(30, 10, 0), 7);
-        // 3 hears only 4's own acks on time from 1.9 s to 7 s; everything else reaches it 5 s late.
-        net.filter = Some(Box::new(|t, _w, from, to, m| {
-            let during = (1_900_000..7_000_000).contains(&t);
-            match m {
-                Msg::Entry(e) if during && to == 3 && !(from == 4 && e.member == 4 && matches!(e.payload, Payload::Ack { .. })) => Fate::Delay(5_000_000),
-                _ if during && to == 3 && from != 4 => Fate::Delay(5_000_000),
-                _ => Fate::Deliver,
-            }
-        }));
-        let mut sim = Sim::new(net, ps, 14_000_000);
-        let stopped = run_quiet(&mut sim, |_| {});
-        let honest = [1, 2, 3, 4];
-        let r3 = &sim.replica(3, 1).sim;
-        let votes: Vec<MemberId> = r3
-            .all_entries()
-            .into_iter()
-            .filter(|e| e.member == 3)
-            .filter_map(|e| match e.payload {
-                Payload::Vote { target, kick: 0, .. } => Some(target),
-                _ => None,
-            })
-            .collect();
-        let label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)";
-        if !fixed {
-            println!("  3's votes: {votes:?}");
-            before_fix(label, "VCR-12's fix", &sim, &honest, stopped);
-            continue;
-        }
-        vc_report(&sim, &honest, "aheadlink");
-        // 3's votes are cast in an epoch the others have left, so none of the members ahead is removed.
-        let members = sim.replica(1, 1).sim.members.clone();
-        let kept = [1, 2, 4].iter().all(|m| members.contains(m));
-        println!(
-            "RESULT aheadlink: 3's votes against the members ahead {votes:?}; members {members:?} -> {}",
-            if kept { "THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
-        );
-        verdict(&sim, &honest, label, stopped);
-    }
+    }));
+    let mut sim = Sim::new(net, ps, 14_000_000);
+    let stopped = run_quiet(&mut sim, |_| {});
+    let honest = [1, 2, 3, 4];
+    let r3 = &sim.replica(3, 1).sim;
+    let votes: Vec<(u32, MemberId)> = r3
+        .all_entries()
+        .into_iter()
+        .filter(|e| e.member == 3)
+        .filter_map(|e| match e.payload {
+            Payload::Vote { epoch, target, kick: 0, .. } => Some((epoch, target)),
+            _ => None,
+        })
+        .collect();
+    let label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)";
+    vc_report(&sim, &honest, "aheadlink");
+    let members = sim.replica(1, 1).sim.members.clone();
+    let kept = [1, 2, 4].iter().all(|m| members.contains(m));
+    println!(
+        "RESULT aheadlink: 3's votes against the members ahead, by (epoch, target): {votes:?}; members {members:?} -> {}",
+        if kept && !votes.is_empty() { "CAST, AND THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
+    );
+    verdict(&sim, &honest, label, stopped);
 }
 
 #[allow(dead_code)]

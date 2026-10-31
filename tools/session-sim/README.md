@@ -43,14 +43,14 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `r14/` | 15 | R14 settled handoff: ok, abort, reject, throttle, forge (16 attacks, P2-5's dishonest-majority world W included), late, crash, chain (P2-5: A -> B -> C -> A), chain-epoch (a provenance chain across a view change), and ok/abort/reject/chain in reverse peer order; plus P2-5's two controls, forge-no-provenance and doublespend |
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
-| `p2-4/` | 10 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and `handowner.toml.held` (see below) |
+| `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 17 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit, aheadlink (round 3); and the control onesided (VC-1) |
+| `p2-4-review/` | 26 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 
-All but `faults/` are the suite of `scripts/run_session_sim.sh` (64 scenarios and the three controls of
+All but `faults/` are the suite of `scripts/run_session_sim.sh` (74 scenarios and the three controls of
 P2-5 and P2-4, whose logs are in `spikes/out/session-sim/p2-5-controls/` and `p2-4-controls/`); their
 logs are identical to the committed ones. The `faults/` logs are new in P2-9. All of them are
 identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`,
@@ -58,18 +58,17 @@ identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress
 
 A committed log without a scenario file yet is listed in `scenarios/spike-only.txt`: a full
 `regress` lists it as spike-only instead of failing on it as an orphan. The list only shrinks: a
-listed name that has a scenario file, or no committed log, is an error. One is left, `handowner`.
-Its scenario, `p2-4/handowner.toml.held` (not run: `regress` reads only `.toml` files), reproduces
-the committed log but for one line the tool adds: the spike's final check covers frames 0..352
-while the lowest confirmed frame is 346, and `check_world` flags a check that reaches speculative
-frames (UNCONFIRMED). It becomes `handowner.toml` once the spike's check stops at the confirmed
-frame.
+listed name that has a scenario file, or no committed log, is an error. It is empty now: every
+committed log has its scenario file. (`handowner` was held for a while: the spike's check covered
+6 frames past the lowest confirmed one, which `check_world` flags as UNCONFIRMED. P2-4's round 4
+fixed the spike.)
 
 The spike's review repros run once with their fix switched off (`fixes_off`), printing an
 informational line (`before_fix`), and once as shipped. A run with its fix switched off may stop
-at an assertion: that is what it shows, so it is not counted as a failure. Two of them,
-`joinattests` and `lagprecommit`, leave out a touch the spike plans at frame 600, past the end of
-the run (frame 593): it never fires, and the tool refuses an action its member never reaches.
+at an assertion: that is what it shows, so it is not counted as a failure. Five of them,
+`joinattests`, `lagprecommit`, `adminvoid`, `joinsquat` and `fakeref`, leave out a touch the spike
+plans past the end of the run (frame 600 of 593, or 900 of 833): it never fires, and the tool
+refuses an action its member never reaches.
 
 A control run (`control = true`) switches a protection off to show what it prevents, so it is
 expected to print failures such as NOT CONSERVED. `regress` still compares its log, but does not
@@ -157,6 +156,7 @@ ack_every_ms = 1000                 # this member acks this often
 withhold_vc = true                  # Byzantine: casts no view-change entry
 byz_ally = true                     # Byzantine: backs every vote and proposal, applies no decision
 byz_no_precommit = true             # Byzantine: prevotes but never precommits
+quiet_until_member = true           # a joiner that authors no ack before it is admitted
 
 [net]
 seed = 7                            # link RNG (loss, jitter)
@@ -176,6 +176,8 @@ provenance = false                  # P2-5 control only: arrivals skip provenanc
 at_ms = 2000
 member = 5
 to = [1, 2, 3, 9]
+from = 9                            # sent by 9 in 5's name (default: by the member itself)
+sig = 0                             # a forged signature (default: the member's genuine one)
 attests = [{ rel = "friend", with = 1 }]   # rel: friend, confidant, invited; world default 1
 attests_to = [1, 2]                 # only these get the attestations
 log_from = 1                        # then member 1 sends the joiner every entry it holds
@@ -253,6 +255,12 @@ behaviour `x` has fired.
 - `self_kick_vote`: once `member` holds a kick against itself, it votes on it naming `frozen`.
 - `backdated_kick`: once `member` reaches `at_frame`, it signs a kick of `target` backdated `back`
   frames.
+- `rotate_entries`: from `from_ms`, `member` sends each of `to` only its own entries whose sequence
+  number modulo the length of `to` is that member's index in it.
+- `churn_vote`: from `from_ms` to `until_ms`, in every epoch, `member` votes against `target`
+  (whom everyone hears), forcing a reset.
+- `void_admin`: review VC3R-3: `member` signs a horizon-void SetRole and proposes a change listing it.
+- `fake_refs`: from `from_ms`, `member`'s acks claim `n` more of `of`'s chain than it holds.
 - `hand_forgery`: review HO-1: `member` sends `to` a grab of another member's `hand` at `grab_ms`,
   a departure of it at `carry_ms`, and a touch carrying a state for it at `plant_ms`.
 
@@ -266,8 +274,9 @@ Reports print after the run, in file order, in the spike's formats:
 - `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
 
-  `verdict`, `membership`, `view_changes`, `admin` and `before_fix` take `honest = [1, 2, 3]`, or
-  `honest = { members_at = 3 }`: the membership member 3 holds at the end of the run.
+  `verdict`, `membership`, `view_changes`, `admin` and `before_fix` take `honest = [1, 2, 3]`,
+  `honest = { members_at = 3 }` (the membership member 3 holds at the end of the run), or
+  `honest = { members_at = 2, among = [1, 2, 3] }` (those of `among` in it).
 - `view_changes`: every decision of each member: epoch, frame, round, removed.
 - `admitted`: each member's admissions and `joiner`'s touches.
 - `admin`: per member, the admin entries' outcomes (`outcomes = true`) and/or its members, roles,
@@ -277,8 +286,10 @@ Reports print after the run, in file order, in the spike's formats:
 - `fork_info`: where `fork_branch` forked and how long branch B is.
 - `check`: the spike's one-off checks, ported verbatim: `bridge`, `kickwar`, `kickpartition`,
   `lastadmin`, `adminclose`, `joinrules`, `vcscale`, `selfkickhead`, `capchurn`, `joinattests`,
-  `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink`, `onesided`. The fields each reads are
-  listed in scenario.rs (`Report::Check`).
+  `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink`, `onesided`, `removed`, `strikeframe`,
+  `strikeframe_total` (over kept runs), `aheadshield`, `fakeref`, `capstale`, `lagchurn`,
+  `votechurn` (it samples a confirmation lag before each step, every 100 ms), `votechurn_off`,
+  `adminvoid`, `joinskip`. The fields each reads are listed in scenario.rs (`Report::Check`).
 - `handowner`: review HO-1 over three kept runs (`forged`, `clean`, `fixoff`).
 - `stats`.
 - `membership`.
@@ -301,13 +312,13 @@ Templates (`say`, `line`, `intro`) substitute the following; `{{` and `}}` are l
 - `{conf@M}`, `{frame@M}`, `{now@M}`.
 - `{member@M:X}`, `{members@M}` (a set), `{member_list@M}` (a list), `{evicted@M}`.
 - `{touches@M:A}`.
-- `{proposer@M}` (the first proposer), `{role@M:X}`, `{removed@M:X}` (when M removed X, in s),
-  `{resets@M}`, `{votes@M}` (the targets of M's own votes).
+- `{proposer@M}` (the first proposer), `{role@M:X}`, `{removed@M:X}` (when M removed X, in s,
+  as an Option), `{removed_s@M:X}` (the same as "2.50 s" or "never"), `{resets@M}`, `{strikes@M}`,
+  `{votes@M}` (the targets of M's own votes).
 - For a behaviour's entry: `{x.stamp}`, `{x.seq}`, `{x.target}`, `{x.confirmed@M}`.
 
 ## Not yet
 
-- **`handowner`**: held, see Scenarios.
 - **`pe-session` (P2-3).** The driver moves to it when it exists.
 - **Not ported:** the spike's exploratory subcommands that are not in the suite (`snap`,
   `observer`, `capped`).

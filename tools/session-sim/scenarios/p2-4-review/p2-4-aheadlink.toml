@@ -1,8 +1,8 @@
 description = """
 P2-4 review round 3, VCR-12: from 1.9 s to 7 s, 3 hears only 4's own acks on time; everything else \
 reaches it 5 s late, while the others decide an epoch. 3 is removed for not keeping up, and its \
-votes, cast in an epoch the others have left, remove none of the members ahead. Part 1 runs with \
-VCR-12's fix switched off, part 2 as shipped."""
+votes, cast in an epoch the others have left, remove none of the members ahead. A check since \
+round 4 (VC3R-8): round 3's exemption is gone, so there is no fix to switch off."""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
@@ -47,16 +47,20 @@ before_ms = 7000
 to = 3
 delay_ms = 5000
 
-[[part]]
-world.1.fixes_off = ["VCR12"]
-report = [
-    { kind = "line", text = "  3's votes: {votes@3}" },
-    { kind = "before_fix", honest = [1, 2, 3, 4], label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)", fix = "VCR-12's fix" },
-]
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3, 4]
+label = "aheadlink"
 
-[[part]]
-report = [
-    { kind = "view_changes", honest = [1, 2, 3, 4], label = "aheadlink" },
-    { kind = "check", case = "aheadlink", label = "aheadlink", at = 3, members = [1, 2, 4], honest = [1, 2, 3, 4] },
-    { kind = "verdict", honest = [1, 2, 3, 4], label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)" },
-]
+[[report]]
+kind = "check"
+case = "aheadlink"
+label = "aheadlink"
+at = 3
+members = [1, 2, 4]
+honest = [1, 2, 3, 4]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4]
+label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)"
