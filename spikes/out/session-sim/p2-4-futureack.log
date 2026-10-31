@@ -9,7 +9,7 @@ RESULT futureack-1: m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 
   m1: conf 705 frame 713 members {1, 2, 3} evicted {9: (147, 112)} rollbacks 0 max depth 0 violations 95 equivocations 0 checks ok 42 bad 0
   m2: conf 705 frame 713 members {1, 2, 3} evicted {9: (147, 112)} rollbacks 2 max depth 2 violations 95 equivocations 0 checks ok 42 bad 0
   m3: conf 705 frame 713 members {1, 2, 3} evicted {9: (147, 112)} rollbacks 2 max depth 2 violations 95 equivocations 0 checks ok 42 bad 0
-RESULT futureack part 1 (from t=2 s 9's acks claim epoch 999): frames 0..712 honest m1=4325770138869e74 m2=4325770138869e74 m3=4325770138869e74 | offline replay 4325770138869e74 | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
+RESULT futureack part 1 (from t=2 s 9's acks claim epoch 999): frames 0..712 honest m1=d7426cc2a50bf0be m2=d7426cc2a50bf0be m3=d7426cc2a50bf0be | offline replay d7426cc2a50bf0be | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
   futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision) with VC-5's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 112 of frame 232, m2 conf 112 of frame 232, m3 conf 112 of frame 232; at m1: members {1, 2, 3, 9}, evicted []
 RESULT futureack-2: m1 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
 RESULT futureack-2: m2 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
@@ -21,4 +21,4 @@ RESULT futureack-2: m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 
   m1: conf 705 frame 713 members {1, 2, 3} evicted {9: (145, 293)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 44 bad 0
   m2: conf 705 frame 713 members {1, 2, 3} evicted {9: (145, 293)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
   m3: conf 705 frame 713 members {1, 2, 3} evicted {9: (145, 293)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
-RESULT futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision): frames 0..712 honest m1=4325770138869e74 m2=4325770138869e74 m3=4325770138869e74 | offline replay 4325770138869e74 | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
+RESULT futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision): frames 0..712 honest m1=d7426cc2a50bf0be m2=d7426cc2a50bf0be m3=d7426cc2a50bf0be | offline replay d7426cc2a50bf0be | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
