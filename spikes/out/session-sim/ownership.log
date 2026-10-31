@@ -1,27 +1,25 @@
-RESULT ownership world 1: offline replay owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} | ALL EQUAL
-  m1: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9ae528adfd3d870e
-  m2: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9ae528adfd3d870e
-  m3: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60} digest 9ae528adfd3d870e
+RESULT ownership world 1: offline replay owners {10, 41} rule All heads 1 recovery {41: [60]} | ALL EQUAL
+  m1: owners {10, 41} rule All heads 1 recovery {41: [60]} digest bda131448f1eb34a
+  m2: owners {10, 41} rule All heads 1 recovery {41: [60]} digest bda131448f1eb34a
+  m3: owners {10, 41} rule All heads 1 recovery {41: [60]} digest bda131448f1eb34a
   cert m1s31@60: seq 1 Add { key: 20 } by {10} -> applied
   cert m2s46@90: seq 2 Add { key: 66 } by {66} -> refused Some(RejectedOwnership(Signers))
   cert m3s60@120: seq 2 Add { key: 66 } by {20} -> refused Some(RejectedOwnership(Signers))
   cert m1s77@150: seq 2 SetRecovery { owner: 10, recovery: Some(50) } by {10} -> applied
-  cert m2s91@180: seq 3 Add { key: 30 } by {20, 50} -> refused Some(RejectedOwnership(Signers))
-  cert m3s101@200: seq 3 Add { key: 30 } by {10, 20} -> applied
-  cert m1s112@220: seq 4 Remove { key: 30 } by {10, 20} -> refused Some(RejectedOwnership(NotAllowed))
-  cert m2s117@230: seq 4 Challenge { key: 30 } by {10, 20} -> applied
-  cert m3s121@240: seq 5 SetRecovery { owner: 30, recovery: Some(52) } by {30} -> applied
-  cert m1s128@250: seq 6 RemoveDormant { key: 30 } by {10, 20} -> refused Some(RejectedOwnership(WindowOpen))
-  cert m3s132@260: seq 6 Leave { key: 20 } by {20} -> applied
-  cert m2s143@280: seq 7 Leave { key: 30 } by {30} -> applied
-  cert m1s149@290: seq 8 Leave { key: 10 } by {10} -> refused Some(RejectedOwnership(LastOwner))
-  cert m1s155@300: seq 8 Add { key: 40 } by {10} -> refused Some(RejectedOwnership(Stale))
-  cert m2s154@300: seq 8 Add { key: 41 } by {10} -> applied
-  cert m3s167@330: seq 9 Merge by {40} -> refused Some(RejectedOwnership(BadLink))
-  cert m2s174@340: seq 9 StartRecover { owner: 10, new_key: 60 } by {50} -> applied
-  cert m3s178@350: seq 10 FinishRecover { owner: 10 } by {50} -> refused Some(RejectedOwnership(WindowOpen))
-  cert m1s185@360: seq 10 Add { key: 66 } by {10} -> refused Some(RejectedOwnership(Signers))
-  after frame 249: owners {10, 20, 30} rule All heads 1 recovery {10: [50], 30: [52]}
+  cert m2s91@180: seq 3 Add { key: 30 } by {20, 50} -> applied
+  cert m3s101@200: seq 4 Remove { key: 30 } by {10, 20} -> refused Some(RejectedOwnership(NotAllowed))
+  cert m1s112@220: seq 4 SetRecovery { owner: 30, recovery: Some(52) } by {30} -> applied
+  cert m2s117@230: seq 5 Leave { key: 20 } by {20} -> applied
+  cert m3s121@240: seq 6 Leave { key: 30 } by {52} -> applied
+  cert m1s148@290: seq 7 Leave { key: 10 } by {10} -> refused Some(RejectedOwnership(LastOwner))
+  cert m1s154@300: seq 7 Add { key: 40 } by {10} -> refused Some(RejectedOwnership(Stale))
+  cert m2s153@300: seq 7 Add { key: 41 } by {10} -> applied
+  cert m3s166@330: seq 8 Merge by {40} -> refused Some(RejectedOwnership(BadLink))
+  cert m2s173@340: seq 8 SetRecovery { owner: 10, recovery: None } by {50} -> applied
+  cert m3s177@350: seq 9 SetRecovery { owner: 41, recovery: Some(60) } by {41} -> applied
+  cert m1s184@360: seq 10 Add { key: 66 } by {10} -> refused Some(RejectedOwnership(Signers))
+  after frame 209: owners {10, 20, 30} rule All heads 1 recovery {10: [50]}
+  after frame 249: owners {10} rule All heads 1 recovery {10: [50]}
   after frame 319: owners {10, 41} rule All heads 1 recovery {10: [50]}
-  after frame 344: owners {10, 41} rule All heads 1 recovery {10: [50]} recovering {10: 60}
-RESULT ownership world 1: frames 0..380 digests m1=85393f058a4174e9 m2=85393f058a4174e9 m3=85393f058a4174e9 | offline replay 85393f058a4174e9 | ALL EQUAL
+  after frame 344: owners {10, 41} rule All heads 1
+RESULT ownership world 1: frames 0..380 digests m1=49143994a7d30d18 m2=49143994a7d30d18 m3=49143994a7d30d18 | offline replay 49143994a7d30d18 | ALL EQUAL
