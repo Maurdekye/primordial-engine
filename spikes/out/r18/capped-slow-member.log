@@ -2,9 +2,12 @@ RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, c
 RESULT r18 capped: member 3 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
 RESULT   per message      | 158.8 /  71.9 /  70.8 |  500 /  499 /  500 | 1208 | 112 / 117 / 1001 | 232 / 235 / 1117 | 0 (own entries moved: 0) | 28.4/s,   3 | 0 ms | m1 12624ed5cee35a55 / m2 12624ed5cee35a55 replay 12624ed5cee35a55 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 189.9 / 83.1, m2 193.0 / 85.7, m3 none of 222 confirmed
 RESULT     removed from the session (cut, from frame): {3: (43, 85)}
 RESULT   batched          | 135.1 /  69.6 /  71.2 |  500 /  500 /  500 | 1136 | 113 / 118 / 1003 | 233 / 236 / 1118 | 0 (own entries moved: 0) | 28.1/s,   3 | 0 ms | m1 12624ed5cee35a55 / m2 12624ed5cee35a55 replay 12624ed5cee35a55 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 189.8 / 83.0, m2 193.0 / 85.6, m3 none of 222 confirmed
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
 RESULT   batched+adaptive |  30.6 /  24.7 /  21.5 |  498 /  498 /  499 |   55 | 113 / 116 / 999 | 233 / 236 / 1118 | 0 (own entries moved: 0) |  3.8/s,   3 | 0 ms | m1 f5b08a682923f8b5 / m2 f5b08a682923f8b5 replay f5b08a682923f8b5 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 189.6 / 83.9, m2 192.7 / 86.5, m3 none of 29 confirmed
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [5108, 5100, 5100, 400, 400, 3794] ms
