@@ -1,5 +1,5 @@
 description = """
-World ownership (design 12.5, rule A, consent-only: user ruling OT = (a)): a world's ownership chain carried in its session log. Key 10 creates the world and is its sole owner. Refused: a stranger's forged transfer, a co-owner adding a sock puppet alone, a removal of a co-owner (rule A removes nobody against their will), and the last owner leaving. A recovery key is a plain backup of its owner's key: 10's backup key 50 co-signs an addition for 10, 30's backup key 52 makes 30 leave, and 50 clears itself. The sole owner then tries to sell twice in one frame: the session commits the first sale, and refuses the second as stale (built on an older head), so within a session there is no double sale. A merge with nothing to merge is refused. The session attests every certificate it commits at its frame. Every replica holds the same owners at every frame as an offline replay."""
+World ownership (design 12.5, rule A, consent-only: user ruling OT = (a)): a world's ownership chain carried in its session log as admin entries (D80): a view change commits each certificate in commit order, if it applies to the book the entries before it leave. Key 10 creates the world and is its sole owner. Refused: a stranger's forged transfer, a co-owner adding a sock puppet alone, a removal of a co-owner (rule A removes nobody against their will), and the last owner leaving. A recovery key is a plain backup of its owner's key: 10's backup key 50 co-signs an addition for 10, 30's backup key 52 makes 30 leave, and 50 clears itself. The sole owner then tries to sell twice in one frame: the session commits the first sale in commit order (to 40), and the second is stale (built on an older head) and never committed, so within a session there is no double sale. A merge with nothing to merge and 10 adding alone once 40 co-owns are never committed; 40 names a backup key. Then 10 and 40 make member 3's key an owner, and admin 1, not an owner, cannot kick member 3 (Q27, read from the book through key_of). An entry that cannot apply to the book as decided is not pending (V1's receipt rule), so it starts no view change. The session attests every certificate it commits at the deciding boundary. Every replica holds the same book and outcomes as an offline reference built from the decided changes."""
 
 end_ms = 7000
 
@@ -18,7 +18,7 @@ seed = 0x0E
 ownership = { keys = [10], rule = "all", nonce = 1 }
 
 # Keys: 10 the creator, 20 and 30 co-owners, 40 and 41 two buyers, 50 10's backup key, 52 30's,
-# 60 41's, 66 a stranger. Members publish certificates that key holders signed (spike signatures).
+# 60 40's, 66 a stranger. Members publish certificates that key holders signed (spike signatures).
 [world.1.plan]
 1 = [
     { at = 60, owner = { change = "add", key = 20, signers = [10] } },
@@ -27,6 +27,7 @@ ownership = { keys = [10], rule = "all", nonce = 1 }
     { at = 290, owner = { change = "leave", key = 10, signers = [10] } },
     { at = 300, owner = { change = "add", key = 40, signers = [10] } },
     { at = 360, owner = { change = "add", key = 66, signers = [10] } },
+    { at = 375, kick = { target = 3 } },
     { at = 90, touch = { obj = 5, impulse = [0.0, 5.0, 0.0] } },
 ]
 2 = [
@@ -35,6 +36,7 @@ ownership = { keys = [10], rule = "all", nonce = 1 }
     { at = 230, owner = { change = "leave", key = 20, signers = [20] } },
     { at = 300, owner = { change = "add", key = 41, signers = [10] } },
     { at = 340, owner = { change = "set_recovery", key = 10, signers = [50] } },
+    { at = 362, owner = { change = "add", key = 3, signers = [10, 40] } },
     { at = 200, touch = { obj = 12, impulse = [1.0, 5.0, 0.0] } },
 ]
 3 = [
@@ -42,7 +44,7 @@ ownership = { keys = [10], rule = "all", nonce = 1 }
     { at = 200, owner = { change = "remove", key = 30, signers = [10, 20] } },
     { at = 240, owner = { change = "leave", key = 30, signers = [52] } },
     { at = 330, owner = { change = "merge", signers = [40] } },
-    { at = 350, owner = { change = "set_recovery", key = 41, recovery = 60, signers = [41] } },
+    { at = 350, owner = { change = "set_recovery", key = 40, recovery = 60, signers = [40] } },
 ]
 
 [net]
@@ -54,6 +56,12 @@ kind = "ownership"
 frames = 380
 label = "ownership"
 at = [210, 250, 320, 345]
+[[report]]
+kind = "admin"
+honest = [1, 2, 3]
+label = "ownership"
+outcomes = true
+roles = true
 [[report]]
 kind = "check_world"
 frames = 380
