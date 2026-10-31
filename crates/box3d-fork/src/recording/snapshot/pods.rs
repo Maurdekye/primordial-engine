@@ -219,6 +219,21 @@ fn des_tree_proxy(r: &mut SnapReader<'_>) -> TreeProxy {
 }
 
 pub fn ser_world_config(buf: &mut RecBuffer, world: &World) {
+    ser_settings_head(buf, world);
+    buf.append_u64(world.step_index);
+    buf.append_i32(world.split_island_id);
+    buf.append_f32(world.inv_h);
+    buf.append_f32(world.inv_dt);
+    buf.append_i32(world.end_event_array_index);
+    buf.append_i32(world.compound_shape_count);
+    ser_capacity(buf, &world.max_capacity);
+    ser_settings_tail(buf, world);
+}
+
+// Primordial Engine fork: the config record is split around the step state (and the capacity
+// high-water marks, which grow as the world steps) so that
+// ser_world_settings can write the settings alone. The bytes are unchanged.
+fn ser_settings_head(buf: &mut RecBuffer, world: &World) {
     buf.append_vec3(world.gravity);
     buf.append_f32(world.hit_event_threshold);
     buf.append_f32(world.restitution_threshold);
@@ -229,13 +244,9 @@ pub fn ser_world_config(buf: &mut RecBuffer, world: &World) {
     buf.append_f32(world.contact_hertz);
     buf.append_f32(world.contact_damping_ratio);
     buf.append_f32(world.contact_recycle_distance);
-    buf.append_u64(world.step_index);
-    buf.append_i32(world.split_island_id);
-    buf.append_f32(world.inv_h);
-    buf.append_f32(world.inv_dt);
-    buf.append_i32(world.end_event_array_index);
-    buf.append_i32(world.compound_shape_count);
-    ser_capacity(buf, &world.max_capacity);
+}
+
+fn ser_settings_tail(buf: &mut RecBuffer, world: &World) {
     let mut flags = 0u8;
     if world.enable_sleep {
         flags |= 0x01;
@@ -298,11 +309,51 @@ pub fn des_world_config(r: &mut SnapReader<'_>, world: &mut World) {
         world.contact_recycle_scaling.length_fraction = r.f32();
         world.contact_recycle_scaling.min_distance = r.f32();
         world.contact_recycle_scaling.max_distance = r.f32();
+        let combine = r.u8();
+        // Primordial Engine fork: an unknown combine byte is a corrupt image, not Min.
+        if combine > 1 {
+            r.ok = false;
+        }
         world.contact_recycle_scaling.combine =
-            crate::recycle_scale::RecycleLengthCombine::from_u8(r.u8());
+            crate::recycle_scale::RecycleLengthCombine::from_u8(combine);
     } else {
         world.contact_recycle_scaling.enabled = false;
     }
+    // Primordial Engine fork: refuse settings World::new could never produce. The restitution
+    // iterations are clamped there; an image could otherwise make every substep loop up to
+    // 2^31 times. Every float setting must be finite.
+    let floats = [
+        world.gravity.x,
+        world.gravity.y,
+        world.gravity.z,
+        world.hit_event_threshold,
+        world.restitution_threshold,
+        world.max_linear_speed,
+        world.isotropic_inertia_tolerance,
+        world.contact_speed,
+        world.contact_hertz,
+        world.contact_damping_ratio,
+        world.contact_recycle_distance,
+        world.inv_h,
+        world.inv_dt,
+        world.contact_recycle_scaling.length_fraction,
+        world.contact_recycle_scaling.min_distance,
+        world.contact_recycle_scaling.max_distance,
+    ];
+    if !(0..=crate::constants::MAX_RESTITUTION_ITERATIONS).contains(&world.restitution_iterations)
+        || floats.iter().any(|f| !f.is_finite())
+    {
+        r.ok = false;
+    }
+}
+
+/// The settings part of the world config: everything [`ser_world_config`] writes except the
+/// step state (step index, split island, inverse step times, event array index, compound
+/// shape count, capacity high-water marks). Two worlds with equal settings bytes simulate
+/// alike.
+pub fn ser_world_settings(buf: &mut RecBuffer, world: &World) {
+    ser_settings_head(buf, world);
+    ser_settings_tail(buf, world);
 }
 
 fn ser_capacity(buf: &mut RecBuffer, c: &Capacity) {

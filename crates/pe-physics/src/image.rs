@@ -1,22 +1,32 @@
-//! World images: the physics part of a rollback snapshot and of a state transfer (6.1, 9.5).
+//! World images: the physics part of a rollback snapshot (6.1), and transfers: the physics
+//! part of a state transfer to a joining peer (9.5).
 //!
-//! An image is Box3D's own world serialization plus the engine's binding and joint tables.
-//! Geometry (hulls, meshes) is not repeated in every image: it is interned once per world in a
-//! registry, and images refer to it by index. A peer that restores an image into a fresh world
-//! (a late joiner) also needs the registry, as [`GeometryBlobs`].
+//! * A [`WorldImage`] is Box3D's own world serialization plus the engine's binding and joint
+//!   tables. Geometry (hulls, meshes) is not repeated in every image: it is interned once per
+//!   world in a registry that only grows, and images refer to it by index. Images restore only
+//!   into the world that saved them (rollback). They are trusted local data.
+//! * A [`Transfer`] is an image saved against a fresh registry, with exactly the geometry it
+//!   uses, in shape order. Its bytes depend only on the physics state, not on the world's save
+//!   history or the build profile, so [`Transfer::check_hash`] is the same on every honest
+//!   peer with that state ([`PhysicsWorld::check_hash`]). A joiner restores a transfer only
+//!   when its hash matches the confirmed one (design 9.1): the bytes come from an untrusted
+//!   donor, and Box3D cannot check that every index in them is consistent.
 
-use box3d_rust::id::{BodyId, JointId};
-use box3d_rust::recording::{
-    deserialize_into_shell, serialize_world, GeometryKind, GeometryRegistry, RecBuffer, RegistrySlot,
-};
+use std::collections::BTreeSet;
+
 use box3d_rust::body::body_is_valid;
+use box3d_rust::id::{BodyId, JointId};
 use box3d_rust::joint::joint_is_valid;
+use box3d_rust::recording::{
+    deserialize_into_shell, image_world_settings, serialize_world, world_settings, GeometryKind,
+    GeometryRegistry, RecBuffer, RegistrySlot, SNAP_FLAG_VALIDATION,
+};
 use box3d_rust::world::World;
 use pe_core::ids::ObjectId;
 
 use crate::config::PhysicsConfig;
 use crate::error::PhysicsError;
-use crate::world::{JointKey, PhysicsWorld};
+use crate::world::{JointEntry, JointKey, JointKind, PhysicsWorld};
 
 /// Per-world geometry registry and the reader slots built from it.
 #[derive(Default)]
@@ -38,19 +48,23 @@ impl ImageRegistry {
 pub struct WorldImage {
     world: Vec<u8>,
     bodies: Vec<(ObjectId, BodyId)>,
-    joints: Vec<(JointKey, JointId)>,
-    next_joint: u32,
+    joints: Vec<(JointKey, JointId, JointKind)>,
     anchor: Option<BodyId>,
 }
 
-/// The geometry a world's images refer to, in registry order.
+/// The physics state of a world for a joining peer: an image and the geometry it uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GeometryBlobs {
-    entries: Vec<(u8, Vec<u8>)>,
+pub struct Transfer {
+    geometry: Vec<(u8, Vec<u8>)>,
+    image: WorldImage,
 }
 
 const IMAGE_MAGIC: u32 = 0x5045_5049; // "PEPI"
-const IMAGE_VERSION: u32 = 1;
+const IMAGE_VERSION: u32 = 2;
+const TRANSFER_MAGIC: u32 = 0x5045_5054; // "PEPT"
+const TRANSFER_VERSION: u32 = 1;
+/// Offset of the flags word in Box3D's world bytes (after magic, version, layout hash).
+const SNAP_FLAGS_OFFSET: usize = 12;
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
@@ -75,12 +89,19 @@ impl Reader<'_> {
         self.data = rest;
         Ok(head)
     }
-    fn u32(&mut self) -> Result<u32, PhysicsError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    fn u8(&mut self) -> Result<u8, PhysicsError> {
+        Ok(self.take(1)?[0])
     }
     fn u16(&mut self) -> Result<u16, PhysicsError> {
         Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
     }
+    fn u32(&mut self) -> Result<u32, PhysicsError> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    fn u64(&mut self) -> Result<u64, PhysicsError> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+    /// A byte length that fits in what is left.
     fn len(&mut self) -> Result<usize, PhysicsError> {
         let n = self.u32()? as usize;
         if n > self.data.len() {
@@ -88,8 +109,19 @@ impl Reader<'_> {
         }
         Ok(n)
     }
+    /// An element count whose elements, at `min_bytes` each, fit in what is left.
+    fn count(&mut self, min_bytes: usize) -> Result<usize, PhysicsError> {
+        let n = self.u32()? as usize;
+        if n > self.data.len() / min_bytes {
+            return Err(PhysicsError::BadImage("count beyond the end"));
+        }
+        Ok(n)
+    }
     fn body(&mut self) -> Result<BodyId, PhysicsError> {
         Ok(BodyId { index1: self.u32()? as i32, world0: self.u16()?, generation: self.u16()? })
+    }
+    fn end(&self) -> Result<(), PhysicsError> {
+        if self.data.is_empty() { Ok(()) } else { Err(PhysicsError::BadImage("trailing bytes")) }
     }
 }
 
@@ -99,9 +131,9 @@ impl WorldImage {
         &self.world
     }
 
-    /// Canonical little-endian bytes, for state transfer.
+    /// Canonical little-endian bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.world.len() + 16 * self.bodies.len() + 64);
+        let mut out = Vec::with_capacity(self.world.len() + 16 * self.bodies.len() + 17 * self.joints.len() + 32);
         put_u32(&mut out, IMAGE_MAGIC);
         put_u32(&mut out, IMAGE_VERSION);
         put_u32(&mut out, self.world.len() as u32);
@@ -113,13 +145,13 @@ impl WorldImage {
             put_body(&mut out, body);
         }
         put_u32(&mut out, self.joints.len() as u32);
-        for &(key, joint) in &self.joints {
-            put_u32(&mut out, key.0);
+        for &(key, joint, kind) in &self.joints {
+            out.extend_from_slice(&key.0.to_le_bytes());
             put_u32(&mut out, joint.index1 as u32);
             out.extend_from_slice(&joint.world0.to_le_bytes());
             out.extend_from_slice(&joint.generation.to_le_bytes());
+            out.push(kind as u8);
         }
-        put_u32(&mut out, self.next_joint);
         match self.anchor {
             Some(b) => {
                 out.push(1);
@@ -130,168 +162,236 @@ impl WorldImage {
         out
     }
 
-    /// Parse [`Self::to_bytes`]. Checks the framing and that the tables are sorted and unique;
-    /// Box3D checks the world bytes when the image is restored.
+    /// Parse [`Self::to_bytes`]. Checks the framing and the table invariants (see
+    /// [`Self::check_tables`]). Box3D's world bytes are only checked when restored, and only
+    /// for being readable: see the module docs for what makes untrusted bytes safe.
     pub fn from_bytes(data: &[u8]) -> Result<WorldImage, PhysicsError> {
         let mut r = Reader { data };
+        let image = WorldImage::read(&mut r)?;
+        r.end()?;
+        Ok(image)
+    }
+
+    fn read(r: &mut Reader) -> Result<WorldImage, PhysicsError> {
         if r.u32()? != IMAGE_MAGIC || r.u32()? != IMAGE_VERSION {
             return Err(PhysicsError::BadImage("not a pe-physics image of this version"));
         }
         let n = r.len()?;
         let world = r.take(n)?.to_vec();
-        let count = r.u32()? as usize;
-        if count > r.data.len() / 16 {
-            return Err(PhysicsError::BadImage("body count beyond the end"));
-        }
+        let count = r.count(16)?;
         let mut bodies = Vec::with_capacity(count);
         for _ in 0..count {
             let id = ObjectId { creator: r.u32()?, counter: r.u32()? };
             bodies.push((id, r.body()?));
         }
-        let count = r.u32()? as usize;
-        if count > r.data.len() / 12 {
-            return Err(PhysicsError::BadImage("joint count beyond the end"));
-        }
+        let count = r.count(17)?;
         let mut joints = Vec::with_capacity(count);
         for _ in 0..count {
-            let key = JointKey(r.u32()?);
+            let key = JointKey(r.u64()?);
             let joint = JointId { index1: r.u32()? as i32, world0: r.u16()?, generation: r.u16()? };
-            joints.push((key, joint));
+            let kind = JointKind::from_u8(r.u8()?).ok_or(PhysicsError::BadImage("unknown joint kind"))?;
+            joints.push((key, joint, kind));
         }
-        let next_joint = r.u32()?;
-        let anchor = match r.take(1)?[0] {
+        let anchor = match r.u8()? {
             0 => None,
             1 => Some(r.body()?),
             _ => return Err(PhysicsError::BadImage("bad anchor flag")),
         };
-        if !r.data.is_empty() {
-            return Err(PhysicsError::BadImage("trailing bytes"));
-        }
-        if bodies.iter().any(|(id, _)| id.is_none())
-            || !bodies.windows(2).all(|w| w[0].0 < w[1].0)
-            || !joints.windows(2).all(|w| w[0].0 < w[1].0)
-            || joints.iter().any(|(k, _)| k.0 >= next_joint)
-        {
-            return Err(PhysicsError::BadImage("binding tables not sorted, unique and in range"));
-        }
-        Ok(WorldImage { world, bodies, joints, next_joint, anchor })
-    }
-}
-
-impl GeometryBlobs {
-    /// Canonical little-endian bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        put_u32(&mut out, self.entries.len() as u32);
-        for (kind, bytes) in &self.entries {
-            out.push(*kind);
-            put_u32(&mut out, bytes.len() as u32);
-            out.extend_from_slice(bytes);
-        }
-        out
+        let image = WorldImage { world, bodies, joints, anchor };
+        image.check_tables()?;
+        Ok(image)
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<GeometryBlobs, PhysicsError> {
-        let mut r = Reader { data };
-        let count = r.u32()? as usize;
-        if count > r.data.len() / 5 {
-            return Err(PhysicsError::BadImage("geometry count beyond the end"));
+    /// The table invariants: object ids and joint keys sorted and unique, no `NONE` object, no
+    /// two objects or joints sharing a Box3D id, the anchor not a bound body, and every id in
+    /// world 0 (the only Box3D world id the fork uses).
+    fn check_tables(&self) -> Result<(), PhysicsError> {
+        let bad = |why| Err(PhysicsError::BadImage(why));
+        if self.bodies.iter().any(|(id, _)| id.is_none()) || !self.bodies.windows(2).all(|w| w[0].0 < w[1].0) {
+            return bad("object ids not sorted and unique");
         }
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            let kind = r.take(1)?[0];
-            if kind > GeometryKind::Compound as u8 {
-                return Err(PhysicsError::BadImage("unknown geometry kind"));
+        if !self.joints.windows(2).all(|w| w[0].0 < w[1].0) {
+            return bad("joint keys not sorted and unique");
+        }
+        let mut body_ids = BTreeSet::new();
+        for &(_, b) in &self.bodies {
+            if b.world0 != 0 || !body_ids.insert(b.index1) {
+                return bad("body ids repeated or not in world 0");
             }
-            let n = r.len()?;
-            entries.push((kind, r.take(n)?.to_vec()));
         }
-        if !r.data.is_empty() {
-            return Err(PhysicsError::BadImage("trailing bytes"));
+        if self.anchor.is_some_and(|a| a.world0 != 0 || body_ids.contains(&a.index1)) {
+            return bad("anchor is a bound body or not in world 0");
         }
-        Ok(GeometryBlobs { entries })
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        let mut joint_ids = BTreeSet::new();
+        for &(_, j, _) in &self.joints {
+            if j.world0 != 0 || !joint_ids.insert(j.index1) {
+                return bad("joint ids repeated or not in world 0");
+            }
+        }
+        Ok(())
     }
 }
 
-fn kind_of(kind: u8) -> GeometryKind {
-    match kind {
+fn put_geometry(out: &mut Vec<u8>, geometry: &[(u8, Vec<u8>)]) {
+    put_u32(out, geometry.len() as u32);
+    for (kind, bytes) in geometry {
+        out.push(*kind);
+        put_u32(out, bytes.len() as u32);
+        out.extend_from_slice(bytes);
+    }
+}
+
+fn kind_of(kind: u8) -> Option<GeometryKind> {
+    Some(match kind {
         0 => GeometryKind::Hull,
         1 => GeometryKind::Mesh,
         2 => GeometryKind::HeightField,
-        _ => GeometryKind::Compound,
+        3 => GeometryKind::Compound,
+        _ => return None,
+    })
+}
+
+impl Transfer {
+    /// Canonical little-endian bytes: what [`Self::check_hash`] hashes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_u32(&mut out, TRANSFER_MAGIC);
+        put_u32(&mut out, TRANSFER_VERSION);
+        put_geometry(&mut out, &self.geometry);
+        out.extend_from_slice(&self.image.to_bytes());
+        out
+    }
+
+    /// Parse [`Self::to_bytes`], checking the framing and the image's tables. `to_bytes` of the
+    /// result gives `data` back exactly.
+    pub fn from_bytes(data: &[u8]) -> Result<Transfer, PhysicsError> {
+        let mut r = Reader { data };
+        if r.u32()? != TRANSFER_MAGIC || r.u32()? != TRANSFER_VERSION {
+            return Err(PhysicsError::BadImage("not a pe-physics transfer of this version"));
+        }
+        let count = r.count(5)?;
+        let mut geometry = Vec::with_capacity(count);
+        for _ in 0..count {
+            let kind = r.u8()?;
+            kind_of(kind).ok_or(PhysicsError::BadImage("unknown geometry kind"))?;
+            let n = r.len()?;
+            geometry.push((kind, r.take(n)?.to_vec()));
+        }
+        let image = WorldImage::read(&mut r)?;
+        r.end()?;
+        Ok(Transfer { geometry, image })
+    }
+
+    /// XXH64 (pe-core) of [`Self::to_bytes`]: the full-state check hash (design 9.1). Equal on
+    /// every peer with the same physics state, whatever its save history or build profile.
+    pub fn check_hash(&self) -> u64 {
+        pe_core::hash::xxh64(&self.to_bytes(), 0)
+    }
+
+    /// The number of geometry blobs it carries.
+    pub fn geometry_count(&self) -> usize {
+        self.geometry.len()
     }
 }
 
 impl PhysicsWorld {
-    /// Save the physics state. Images of one world share its geometry registry.
+    /// Save the physics state for rollback. Images of one world share its geometry registry.
     pub fn save_image(&mut self) -> WorldImage {
         let mut buf = RecBuffer::new();
         serialize_world(&self.world, &mut buf, &mut self.images.registry);
+        self.image_with(buf.data)
+    }
+
+    fn image_with(&self, world: Vec<u8>) -> WorldImage {
         WorldImage {
-            world: buf.data,
+            world,
             bodies: self.bodies.iter().map(|(&id, &b)| (id, b)).collect(),
-            joints: self.joints.iter().map(|(&k, &j)| (k, j)).collect(),
-            next_joint: self.next_joint,
+            joints: self.joints.iter().map(|(&k, j)| (k, j.id, j.kind)).collect(),
             anchor: self.anchor,
         }
     }
 
     /// Restore an image saved from this world (or from a world restored from the same
-    /// geometry). Box3D's world value is overwritten in place, so the worker threads and the
-    /// configuration stay. On failure the world is unchanged only if Box3D refused the bytes
-    /// before writing; callers treat a failed restore as fatal for the world.
+    /// transfer). Box3D's world value is overwritten in place, so the worker threads and the
+    /// configuration stay. An image whose settings differ from this world's is refused before
+    /// anything is written. If Box3D refuses the bytes after it has started writing, the world
+    /// is poisoned ([`PhysicsError::Poisoned`]) until a good image is restored.
     pub fn restore_image(&mut self, image: &WorldImage) -> Result<(), PhysicsError> {
         if self.world.locked {
             return Err(PhysicsError::Locked);
         }
+        check_settings(&self.world, image)?;
         self.images.refresh_slots();
+        self.poisoned = true;
         restore_into(&mut self.world, &mut self.images.slots, image)?;
-        self.set_tables(image)
+        self.set_tables(image)?;
+        self.poisoned = false;
+        Ok(())
     }
 
-    /// The geometry this world's images refer to.
-    pub fn geometry(&self) -> GeometryBlobs {
-        GeometryBlobs {
-            entries: self.images.registry.entries.iter().map(|e| (e.kind as u8, e.bytes.clone())).collect(),
+    /// The physics state for a joining peer (see [`Transfer`]).
+    pub fn save_transfer(&self) -> Transfer {
+        let mut registry = GeometryRegistry::new();
+        let mut buf = RecBuffer::new();
+        serialize_world(&self.world, &mut buf, &mut registry);
+        // The validation flag says only which build profile wrote the bytes; the reader
+        // ignores it. Clear it so debug and release peers write the same bytes.
+        let flags = SNAP_FLAGS_OFFSET..SNAP_FLAGS_OFFSET + 4;
+        let word = u32::from_le_bytes(buf.data[flags.clone()].try_into().unwrap()) & !SNAP_FLAG_VALIDATION;
+        buf.data[flags].copy_from_slice(&word.to_le_bytes());
+        Transfer {
+            geometry: registry.entries.iter().map(|e| (e.kind as u8, e.bytes.clone())).collect(),
+            image: self.image_with(buf.data),
         }
     }
 
-    /// A new world from an image and its geometry (a late joiner's path). `config` supplies
-    /// the worker count; everything that changes the simulation, contact recycling included,
-    /// comes from the image.
-    pub fn from_image(config: PhysicsConfig, geometry: &GeometryBlobs, image: &WorldImage) -> Result<PhysicsWorld, PhysicsError> {
-        let mut pw = PhysicsWorld::new(config);
-        for (kind, bytes) in &geometry.entries {
+    /// The full-state check hash ([`Transfer::check_hash`] of [`Self::save_transfer`]).
+    pub fn check_hash(&self) -> u64 {
+        self.save_transfer().check_hash()
+    }
+
+    /// A new world from a transfer (a joiner's path). Refused unless the transfer's check hash
+    /// is `confirmed`, the check hash the session confirmed for that state: only then is the
+    /// donor's data trusted. `config` must be the world's configuration; the transfer's
+    /// settings must equal it, and the worker count comes from it.
+    pub fn from_transfer(config: PhysicsConfig, transfer: &Transfer, confirmed: u64) -> Result<PhysicsWorld, PhysicsError> {
+        if transfer.check_hash() != confirmed {
+            return Err(PhysicsError::BadImage("check hash differs from the confirmed one"));
+        }
+        let mut pw = PhysicsWorld::new(config)?;
+        check_settings(&pw.world, &transfer.image)?;
+        for (kind, bytes) in &transfer.geometry {
             let h = box3d_rust::core::hash64_non_zero(bytes);
-            pw.images.registry.append(kind_of(*kind), h, bytes.clone());
+            pw.images.registry.append(kind_of(*kind).expect("checked by from_bytes"), h, bytes.clone());
         }
         pw.images.refresh_slots();
-        restore_into(&mut pw.world, &mut pw.images.slots, image)?;
-        pw.set_tables(image)?;
+        restore_into(&mut pw.world, &mut pw.images.slots, &transfer.image)?;
+        pw.set_tables(&transfer.image)?;
         Ok(pw)
     }
 
     fn set_tables(&mut self, image: &WorldImage) -> Result<(), PhysicsError> {
         let world = &self.world;
         if !image.bodies.iter().all(|&(_, b)| body_is_valid(world, b))
-            || !image.joints.iter().all(|&(_, j)| joint_is_valid(world, j))
+            || !image.joints.iter().all(|&(_, j, _)| joint_is_valid(world, j))
             || !image.anchor.is_none_or(|b| body_is_valid(world, b))
         {
             return Err(PhysicsError::BadImage("tables name bodies or joints the world does not have"));
         }
         self.bodies = image.bodies.iter().copied().collect();
-        self.joints = image.joints.iter().copied().collect();
-        self.next_joint = image.next_joint;
+        self.joints = image.joints.iter().map(|&(k, id, kind)| (k, JointEntry { id, kind })).collect();
         self.anchor = image.anchor;
         Ok(())
+    }
+}
+
+/// Refuse an image whose world settings differ from `world`'s (P22-2): an image cannot change
+/// gravity, the solver or contact recycling, or set values `World::new` would clamp.
+fn check_settings(world: &World, image: &WorldImage) -> Result<(), PhysicsError> {
+    match image_world_settings(&image.world) {
+        Some(s) if s == world_settings(world) => Ok(()),
+        Some(_) => Err(PhysicsError::BadImage("world settings differ from this world's")),
+        None => Err(PhysicsError::BadImage("world bytes too short")),
     }
 }
 

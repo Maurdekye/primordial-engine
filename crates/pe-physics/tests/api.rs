@@ -1,15 +1,18 @@
-//! The wrapper's own contract: refusals change nothing, images round-trip, joints and grabs
-//! survive images, and poses reach the sim store.
+//! The wrapper's own contract: refusals change nothing, images and transfers round-trip,
+//! hostile transfers and images are refused, joints and grabs survive images, and poses reach
+//! the sim store.
 
 use std::sync::Arc;
 
 use pe_physics::{
-    BodyDesc, BodyKind, Geometry, GeometryBlobs, JointDesc, ObjectId, PhysicsConfig, PhysicsError, PhysicsWorld,
-    Push, ShapeDesc, WorldImage,
+    BodyDesc, BodyKind, Geometry, GrabSpring, JointDesc, JointKey, JointKind, ObjectId, PhysicsConfig, PhysicsError,
+    PhysicsWorld, Push, ShapeDesc, Transfer, WorldImage,
 };
 use pe_sim::{Registry, SimStore, Transform};
 
-fn ball(y: f32) -> BodyDesc {
+const DT: f32 = 1.0 / 60.0;
+
+fn ball(y: f64) -> BodyDesc {
     BodyDesc::new(BodyKind::Dynamic, [0.0, y, 0.0]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }))
 }
 
@@ -21,37 +24,95 @@ fn id(n: u32) -> ObjectId {
     ObjectId::new(1, n)
 }
 
+fn world(config: PhysicsConfig) -> PhysicsWorld {
+    PhysicsWorld::new(config).unwrap()
+}
+
+fn run(pw: &mut PhysicsWorld, frames: usize) -> Vec<u64> {
+    (0..frames)
+        .map(|_| {
+            pw.step(DT).unwrap();
+            pw.state_hash()
+        })
+        .collect()
+}
+
+fn invalid<T>(r: Result<T, PhysicsError>) -> bool {
+    matches!(r, Err(PhysicsError::InvalidValue(_)))
+}
+
 #[test]
 fn refusals_change_nothing() {
-    let mut pw = PhysicsWorld::new(PhysicsConfig::engine());
+    let mut pw = world(PhysicsConfig::engine());
     pw.add_body(id(1), &ball(2.0)).unwrap();
     let before = pw.state_hash();
 
     assert_eq!(pw.add_body(id(1), &ball(3.0)), Err(PhysicsError::AlreadyBound(id(1))));
     assert_eq!(pw.add_body(ObjectId::NONE, &ball(3.0)), Err(PhysicsError::NoneObject));
     let mut nan = ball(3.0);
-    nan.position[1] = f32::NAN;
-    assert!(matches!(pw.add_body(id(2), &nan), Err(PhysicsError::InvalidValue(_))));
+    nan.position[1] = f64::NAN;
+    assert!(invalid(pw.add_body(id(2), &nan)));
+    let mut far = ball(3.0);
+    far.position[0] = 1.0e38;
+    assert!(invalid(pw.add_body(id(2), &far)), "position beyond MAX_POSITION");
     let mut bad_rot = ball(3.0);
     bad_rot.rotation = [0.0, 0.0, 0.0, 2.0];
-    assert!(matches!(pw.add_body(id(2), &bad_rot), Err(PhysicsError::InvalidValue(_))));
-    let bad_radius = BodyDesc::new(BodyKind::Dynamic, [0.0; 3])
-        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: -1.0 }));
-    assert!(matches!(pw.add_body(id(2), &bad_radius), Err(PhysicsError::InvalidValue(_))));
+    assert!(invalid(pw.add_body(id(2), &bad_rot)));
+    let mut fast = ball(3.0);
+    fast.linear_velocity = [1.0e30, 0.0, 0.0];
+    assert!(invalid(pw.add_body(id(2), &fast)));
+    let sphere = |radius| BodyDesc::new(BodyKind::Dynamic, [0.0; 3]).with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius }));
+    assert!(invalid(pw.add_body(id(2), &sphere(-1.0))));
+    assert!(invalid(pw.add_body(id(2), &sphere(1.0e30))), "radius beyond MAX_SIZE");
+    assert!(invalid(pw.add_body(id(2), &BodyDesc { shapes: vec![ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }).with_density(1.0e30)], ..ball(3.0) })));
     let flat = BodyDesc::new(BodyKind::Dynamic, [0.0; 3])
         .with_shape(ShapeDesc::new(Geometry::Hull { points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]] }));
     assert_eq!(pw.add_body(id(2), &flat), Err(PhysicsError::BadHull));
-    assert!(matches!(pw.push(id(1), Push::Impulse([f32::INFINITY, 0.0, 0.0])), Err(PhysicsError::InvalidValue(_))));
+    assert!(invalid(pw.push(id(1), Push::Impulse([f32::INFINITY, 0.0, 0.0]))));
+    assert!(invalid(pw.push(id(1), Push::Force([1.0e30, 0.0, 0.0]))));
+    assert!(invalid(pw.push(id(1), Push::ImpulseAt { impulse: [1.0, 0.0, 0.0], point: [1.0e7, 0.0, 0.0] })));
     assert_eq!(pw.push(id(9), Push::Impulse([0.0; 3])), Err(PhysicsError::NotBound(id(9))));
     assert_eq!(pw.remove_body(id(9)), Err(PhysicsError::NotBound(id(9))));
+    // Joints from a body to itself, and joints to unknown bodies, create nothing (not even the
+    // world anchor).
+    let same = JointDesc::Spherical { a: id(1), b: Some(id(1)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] };
+    assert_eq!(pw.add_joint(JointKey(1), &same), Err(PhysicsError::SameBody));
+    let grab_self = JointDesc::Grab { a: Some(id(1)), b: id(1), anchor_a: [0.0; 3], anchor_b: [0.0; 3], max_force: 1.0, max_torque: 1.0, spring: None };
+    assert_eq!(pw.add_joint(JointKey(1), &grab_self), Err(PhysicsError::SameBody));
+    let to_unknown = JointDesc::Weld { a: id(9), b: None, anchor_a: [0.0; 3], anchor_b: [0.0; 3] };
+    assert_eq!(pw.add_joint(JointKey(1), &to_unknown), Err(PhysicsError::NotBound(id(9))));
+    let anchor_far = JointDesc::Weld { a: id(1), b: None, anchor_a: [1.0e30, 0.0, 0.0], anchor_b: [0.0; 3] };
+    assert!(invalid(pw.add_joint(JointKey(1), &anchor_far)));
+    assert_eq!(pw.raw().bodies.len(), 1, "no world anchor was created");
+    for dt in [0.0, -DT, f32::NAN, 2.0] {
+        assert!(invalid(pw.step(dt)), "step({dt})");
+    }
 
     assert_eq!(pw.state_hash(), before, "a refused call changed the world");
     assert_eq!(pw.body_count(), 1);
+
+    let mut bad = PhysicsConfig::engine();
+    bad.gravity = [0.0, f32::NAN, 0.0];
+    assert!(invalid(PhysicsWorld::new(bad)));
+    assert_eq!(world(PhysicsConfig::engine().with_workers(100)).config().workers, 32, "worker count clamped");
+}
+
+/// A rotation slightly off unit length is normalized before it reaches Box3D (which
+/// debug-asserts unit length to about 2e-6).
+#[test]
+fn rotations_are_normalized() {
+    let mut pw = world(PhysicsConfig::engine());
+    let s = 0.5f32.sqrt() * 1.004; // 0.8% long
+    pw.add_body(id(1), &ball(2.0).with_rotation([0.0, s, 0.0, s])).unwrap();
+    let q = pw.pose(id(1)).unwrap().rotation;
+    let n2: f32 = q.iter().map(|c| c * c).sum();
+    assert!((n2 - 1.0).abs() < 1.0e-6, "{n2}");
+    run(&mut pw, 5);
 }
 
 #[test]
 fn hull_bodies_and_pushes() {
-    let mut pw = PhysicsWorld::new(PhysicsConfig::engine());
+    let mut pw = world(PhysicsConfig::engine());
     pw.add_body(id(1), &ground()).unwrap();
     let tetra = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, 0.3, 0.3]];
     pw.add_body(id(2), &BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0]).with_shape(ShapeDesc::new(Geometry::Hull { points: tetra })))
@@ -59,55 +120,144 @@ fn hull_bodies_and_pushes() {
     pw.push(id(2), Push::ImpulseAt { impulse: [1.0, 0.0, 0.0], point: [0.0, 2.5, 0.0] }).unwrap();
     pw.push(id(2), Push::Torque([0.0, 1.0, 0.0])).unwrap();
     pw.push(id(2), Push::Force([0.0, 20.0, 0.0])).unwrap();
-    pw.step(1.0 / 60.0);
+    pw.step(DT).unwrap();
     let (v, w) = pw.velocity(id(2)).unwrap();
     assert!(v[0] > 0.0 && w.iter().any(|c| *c != 0.0));
     assert_eq!(pw.objects().collect::<Vec<_>>(), vec![id(1), id(2)]);
 }
 
-/// Images restore in place and into a fresh world, through their byte form, with joints and a
-/// grab; corrupt bytes are refused.
-#[test]
-fn images_round_trip_with_joints() {
-    let run = |pw: &mut PhysicsWorld, frames: usize| -> Vec<u64> {
-        (0..frames)
-            .map(|_| {
-                pw.step(1.0 / 60.0);
-                pw.state_hash()
-            })
-            .collect()
-    };
-    let mut pw = PhysicsWorld::new(PhysicsConfig::engine().with_workers(2));
+/// A scene with every joint kind, stepped a little.
+fn jointed() -> PhysicsWorld {
+    let mut pw = world(PhysicsConfig::engine().with_workers(2));
     pw.add_body(id(1), &ground()).unwrap();
     for n in 2..6 {
-        pw.add_body(id(n), &ball(n as f32)).unwrap();
+        pw.add_body(id(n), &ball(n as f64)).unwrap();
     }
-    pw.add_joint(&JointDesc::Spherical { a: id(2), b: Some(id(3)), anchor_a: [0.0, 0.5, 0.0], anchor_b: [0.0, -0.5, 0.0] }).unwrap();
-    pw.add_joint(&JointDesc::Distance { a: id(4), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 6.0, 0.0], length: 2.0 }).unwrap();
-    let grab = pw.add_joint(&JointDesc::Grab { a: None, b: id(5), max_force: 500.0, max_torque: 50.0 }).unwrap();
-    pw.set_grab_velocity(grab, [1.0, 0.0, 0.0], [0.0; 3]).unwrap();
+    pw.add_joint(JointKey(10), &JointDesc::Spherical { a: id(2), b: Some(id(3)), anchor_a: [0.0, 0.5, 0.0], anchor_b: [0.0, -0.5, 0.0] }).unwrap();
+    pw.add_joint(JointKey(20), &JointDesc::Distance { a: id(4), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 6.0, 0.0], length: 2.0 }).unwrap();
+    let grab = JointDesc::Grab { a: None, b: id(5), anchor_a: [0.0; 3], anchor_b: [0.0; 3], max_force: 500.0, max_torque: 50.0, spring: None };
+    pw.add_joint(JointKey(30), &grab).unwrap();
+    pw.set_grab_velocity(JointKey(30), [1.0, 0.0, 0.0], [0.0; 3]).unwrap();
     run(&mut pw, 30);
+    pw
+}
 
+/// Images restore in place through their byte form; transfers restore into a fresh world;
+/// joint keys are the caller's and belong to the state.
+#[test]
+fn images_and_transfers_round_trip_with_joints() {
+    let mut pw = jointed();
     let image = pw.save_image();
     let bytes = image.to_bytes();
-    let geometry = pw.geometry().to_bytes();
+    let transfer = pw.save_transfer();
+    let confirmed = pw.check_hash();
+    assert_eq!(transfer.check_hash(), confirmed);
     let reference = run(&mut pw, 60);
 
+    // In place. A joint added after the save is gone after the restore: its key names nothing.
+    pw.add_joint(JointKey(40), &JointDesc::Weld { a: id(2), b: Some(id(4)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] }).unwrap();
     pw.restore_image(&WorldImage::from_bytes(&bytes).unwrap()).unwrap();
+    assert_eq!(pw.joint_kind(JointKey(40)), None);
+    assert_eq!(pw.remove_joint(JointKey(40)), Err(PhysicsError::UnknownJoint(40)));
     assert_eq!(run(&mut pw, 60), reference, "in place");
 
-    let geometry = GeometryBlobs::from_bytes(&geometry).unwrap();
-    let mut fresh = PhysicsWorld::from_image(PhysicsConfig::engine(), &geometry, &WorldImage::from_bytes(&bytes).unwrap()).unwrap();
+    // Into a fresh world, at another worker count.
+    let mut fresh = PhysicsWorld::from_transfer(PhysicsConfig::engine().with_workers(3), &Transfer::from_bytes(&transfer.to_bytes()).unwrap(), confirmed).unwrap();
     assert_eq!(fresh.joint_count(), 3);
+    assert_eq!(fresh.joint_kind(JointKey(30)), Some(JointKind::Grab));
+    assert_eq!(fresh.config().workers, 3);
     assert_eq!(run(&mut fresh, 60), reference, "fresh world");
 
-    // Removing a body removes its joints; the joint keys keep counting.
+    // Removing a body removes its joints; keys are the caller's, refused if in use.
     fresh.remove_body(id(3)).unwrap();
     assert_eq!(fresh.joint_count(), 2);
-    let k = fresh.add_joint(&JointDesc::Weld { a: id(2), b: Some(id(4)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] }).unwrap();
-    assert_eq!(k.0, 4);
+    let weld = JointDesc::Weld { a: id(2), b: Some(id(4)), anchor_a: [0.0; 3], anchor_b: [0.0; 3] };
+    assert_eq!(fresh.add_joint(JointKey(20), &weld), Err(PhysicsError::JointExists(20)));
+    fresh.add_joint(JointKey(10), &weld).unwrap();
+    assert_eq!(fresh.joint_kind(JointKey(10)), Some(JointKind::Weld));
+}
 
-    // Corrupt input.
+/// The check hash depends on the state only: not on the save history (the geometry registry)
+/// or on the joint creation order of equal states.
+#[test]
+fn check_hash_is_canonical() {
+    let mut a = jointed();
+    let b = jointed();
+    for _ in 0..5 {
+        a.save_image(); // a's registry and save history differ from b's
+    }
+    assert_eq!(a.check_hash(), b.check_hash());
+    assert_eq!(a.save_transfer().to_bytes(), b.save_transfer().to_bytes());
+    let mut c = jointed();
+    c.push(id(2), Push::Impulse([0.0, 1.0e-3, 0.0])).unwrap();
+    c.step(DT).unwrap();
+    let mut d = jointed();
+    d.step(DT).unwrap();
+    assert_ne!(c.check_hash(), d.check_hash(), "a different state has a different hash");
+}
+
+/// Grabs: only grab keys take grab velocities, a sleeping object wakes, and a spring keeps a
+/// held object at the hand.
+#[test]
+fn grabs() {
+    let mut pw = jointed();
+    assert_eq!(pw.set_grab_velocity(JointKey(10), [0.0; 3], [0.0; 3]), Err(PhysicsError::NotAGrab(10)));
+    assert_eq!(pw.set_grab_velocity(JointKey(99), [0.0; 3], [0.0; 3]), Err(PhysicsError::UnknownJoint(99)));
+    assert!(invalid(pw.set_grab_velocity(JointKey(30), [f32::NAN, 0.0, 0.0], [0.0; 3])));
+
+    // Wake: a ball at rest on the ground falls asleep, then a grab velocity wakes it.
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(id(1), &ground()).unwrap();
+    pw.add_body(id(2), &ball(0.5)).unwrap();
+    let grab = JointDesc::Grab { a: None, b: id(2), anchor_a: [0.0, 0.5, 0.0], anchor_b: [0.0; 3], max_force: 100.0, max_torque: 10.0, spring: None };
+    pw.add_joint(JointKey(1), &grab).unwrap();
+    let mut frames = 0;
+    while pw.is_awake(id(2)).unwrap() {
+        pw.step(DT).unwrap();
+        frames += 1;
+        assert!(frames < 600, "never slept");
+    }
+    pw.set_grab_velocity(JointKey(1), [0.5, 0.0, 0.0], [0.0; 3]).unwrap();
+    assert!(pw.is_awake(id(2)).unwrap(), "grab velocity wakes the held body");
+
+    // Spring: a kinematic hand moves at 1 m/s; the held ball (0.52 kg, under gravity) stays
+    // near it.
+    let mut pw = world(PhysicsConfig::engine());
+    let hand = BodyDesc::new(BodyKind::Kinematic, [0.0, 3.0, 0.0])
+        .with_velocity([1.0, 0.0, 0.0], [0.0; 3])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.1 }));
+    pw.add_body(id(1), &hand).unwrap();
+    let light = BodyDesc::new(BodyKind::Dynamic, [0.0, 2.0, 0.0])
+        .with_shape(ShapeDesc::new(Geometry::Sphere { center: [0.0; 3], radius: 0.5 }).with_density(1.0));
+    pw.add_body(id(2), &light).unwrap();
+    let spring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_force: 1000.0, max_torque: 100.0 };
+    let grab = JointDesc::Grab { a: Some(id(1)), b: id(2), anchor_a: [0.0, -1.0, 0.0], anchor_b: [0.0; 3], max_force: 100.0, max_torque: 10.0, spring: Some(spring) };
+    pw.add_joint(JointKey(1), &grab).unwrap();
+    run(&mut pw, 180);
+    let (h, b) = (pw.pose(id(1)).unwrap().position, pw.pose(id(2)).unwrap().position);
+    let gap = ((h[0] - b[0]).powi(2) + (h[1] - 1.0 - b[1]).powi(2) + (h[2] - b[2]).powi(2)).sqrt();
+    println!("RESULT grab spring gap after 3 s: {gap:.4} m (hand at x = {:.3})", h[0]);
+    assert!(h[0] > 2.9 && gap < 0.1, "hand {h:?}, ball {b:?}, gap {gap}");
+}
+
+/// Images from elsewhere: refused before anything is written when their settings differ, and
+/// a world poisoned by a failed restore refuses everything until a good image is restored.
+#[test]
+fn foreign_and_corrupt_images() {
+    let mut pw = jointed();
+    let good = pw.save_image();
+    let before = pw.state_hash();
+
+    // An upstream (no contact recycling) world's image does not fit an engine world.
+    let mut upstream = world(PhysicsConfig::upstream());
+    upstream.add_body(id(1), &ground()).unwrap();
+    let foreign = upstream.save_image();
+    assert!(matches!(pw.restore_image(&foreign), Err(PhysicsError::BadImage(_))));
+    assert!(!pw.is_poisoned(), "settings are checked before anything is written");
+    assert_eq!(pw.state_hash(), before);
+
+    // Framing.
+    let bytes = good.to_bytes();
     assert!(WorldImage::from_bytes(&bytes[..bytes.len() - 1]).is_err());
     let mut extended = bytes.clone();
     extended.push(0);
@@ -115,56 +265,138 @@ fn images_round_trip_with_joints() {
     let mut wrong_magic = bytes.clone();
     wrong_magic[0] ^= 1;
     assert!(WorldImage::from_bytes(&wrong_magic).is_err());
-    let mut broken_world = bytes.clone();
-    broken_world[12 + 20] ^= 0xFF;
-    if let Ok(img) = WorldImage::from_bytes(&broken_world) {
-        let mut target = PhysicsWorld::new(PhysicsConfig::engine());
-        let _ = target.restore_image(&img); // Box3D refuses or restores; it must not panic.
+
+    // Corrupt world bytes past the settings until Box3D refuses them: the world is poisoned.
+    let mut poisoned = false;
+    for at in (200..bytes.len() - 100).step_by(4) {
+        let mut broken = bytes.clone();
+        broken[12 + at..12 + at + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+        let Ok(img) = WorldImage::from_bytes(&broken) else { continue };
+        if pw.restore_image(&img).is_err() {
+            poisoned = true;
+            assert!(pw.is_poisoned());
+            assert_eq!(pw.step(DT), Err(PhysicsError::Poisoned));
+            assert_eq!(pw.push(id(2), Push::Impulse([0.0; 3])), Err(PhysicsError::Poisoned));
+            assert_eq!(pw.pose(id(2)), Err(PhysicsError::Poisoned));
+            break;
+        }
+        pw.restore_image(&good).unwrap();
     }
+    assert!(poisoned, "no corruption was refused; pick other offsets");
+    pw.restore_image(&good).unwrap();
+    assert!(!pw.is_poisoned());
+    assert_eq!(pw.state_hash(), before);
+    assert_eq!(run(&mut pw, 10), run(&mut jointed(), 10), "a good restore recovers the world");
 }
 
-/// Body poses reach root objects' Transforms, offset by the world's origin chunk and rebased;
-/// objects under a transformed parent are left to their parent.
+/// Hostile transfers: refused unless the check hash is the confirmed one, and table invariants
+/// are checked when the bytes are read.
+#[test]
+fn hostile_transfers() {
+    let pw = jointed();
+    let transfer = pw.save_transfer();
+    let confirmed = transfer.check_hash();
+    let bytes = transfer.to_bytes();
+
+    // Any changed byte changes the hash, so the joiner refuses it before Box3D reads it.
+    for at in [16, bytes.len() / 2, bytes.len() - 20] {
+        let mut b = bytes.clone();
+        b[at] ^= 0x40;
+        if let Ok(t) = Transfer::from_bytes(&b) {
+            assert!(matches!(PhysicsWorld::from_transfer(PhysicsConfig::engine(), &t, confirmed), Err(PhysicsError::BadImage(_))));
+        }
+    }
+    // Confirmed, but for another configuration: the settings are refused.
+    assert!(matches!(PhysicsWorld::from_transfer(PhysicsConfig::upstream(), &transfer, confirmed), Err(PhysicsError::BadImage(_))));
+
+    // Tables: the image part ends with the bodies (16 bytes each: object id, Box3D id), the
+    // joints (17 bytes each) and the anchor (1 + 8 bytes). Give the second object the first's
+    // Box3D id.
+    let joints = 4 + 3 * 17 + 9;
+    let bodies_end = bytes.len() - joints;
+    let body = |n: usize| bodies_end - 16 * (5 - n);
+    let mut dup = bytes.clone();
+    let first: Vec<u8> = dup[body(0) + 8..body(0) + 16].to_vec();
+    dup[body(1) + 8..body(1) + 16].copy_from_slice(&first);
+    assert!(matches!(Transfer::from_bytes(&dup), Err(PhysicsError::BadImage(_))), "duplicate Box3D body id");
+    let mut swapped = bytes.clone();
+    let (a, b) = (swapped[body(0)..body(0) + 16].to_vec(), swapped[body(1)..body(1) + 16].to_vec());
+    swapped[body(0)..body(0) + 16].copy_from_slice(&b);
+    swapped[body(1)..body(1) + 16].copy_from_slice(&a);
+    assert!(matches!(Transfer::from_bytes(&swapped), Err(PhysicsError::BadImage(_))), "unsorted objects");
+    let mut kind = bytes.clone();
+    kind[bodies_end + 4 + 16] = 9;
+    assert!(matches!(Transfer::from_bytes(&kind), Err(PhysicsError::BadImage(_))), "unknown joint kind");
+    let mut count = bytes.clone();
+    count[bodies_end..bodies_end + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(Transfer::from_bytes(&count), Err(PhysicsError::BadImage(_))), "joint count beyond the end");
+}
+
+/// Body poses reach the sim store: roots offset by the origin chunk and rebased; objects under a
+/// frame placed in it, bound frames first; scale kept; all or nothing.
 #[test]
 fn poses_reach_the_sim_store() {
     let mut store = SimStore::new(Arc::new(Registry::new()), 7);
     let root = store.create(1).unwrap();
-    let parent = store.create(1).unwrap();
+    let frame = store.create(1).unwrap();
     let child = store.create(1).unwrap();
+    let grandchild = store.create(1).unwrap();
     store.insert(root, Transform::IDENTITY.with_scale([2.0; 3])).unwrap();
-    store.insert(parent, Transform::IDENTITY).unwrap();
+    store.insert(frame, Transform::IDENTITY.with_scale([0.5; 3])).unwrap();
     store.insert(child, Transform::local([0.0, 1.0, 0.0])).unwrap();
-    store.set_parent(child, Some(parent), None).unwrap();
+    store.insert(grandchild, Transform::local([0.0, 1.0, 0.0]).with_scale([3.0; 3])).unwrap();
+    store.set_parent(child, Some(frame), None).unwrap();
+    store.set_parent(grandchild, Some(child), None).unwrap();
 
-    let mut pw = PhysicsWorld::new(PhysicsConfig::engine());
-    pw.add_body(root, &ball(3.0)).unwrap();
-    pw.add_body(child, &ball(5.0)).unwrap();
-    for _ in 0..10 {
-        pw.step(1.0 / 60.0);
+    let mut pw = world(PhysicsConfig::engine());
+    for (n, o) in [root, frame, child, grandchild].into_iter().enumerate() {
+        pw.add_body(o, &ball(3.0 + 2.0 * n as f64).with_velocity([0.3 * n as f32, 0.0, 0.1], [0.0, 1.0, 0.0])).unwrap();
     }
+    run(&mut pw, 10);
     let origin = [2, 0, -1];
-    assert_eq!(pw.write_root_transforms(&mut store, origin).unwrap(), 1);
+    assert_eq!(pw.write_root_transforms(&mut store, origin).unwrap(), 4);
     let t = *store.get::<Transform>(root).unwrap();
     let pose = pw.pose(root).unwrap();
-    let wt = store.world_transform(root).unwrap();
-    let expect = Transform { chunk: origin, pos: pose.position, rot: pose.rotation, scale: [2.0; 3], _pad: 0 }.rebased();
-    assert_eq!(t, expect);
-    assert_eq!(t.scale, [2.0; 3], "scale kept");
-    assert!(wt.pos.local.iter().all(|c| c.is_finite()));
-    assert_eq!(*store.get::<Transform>(child).unwrap(), Transform::local([0.0, 1.0, 0.0]), "child untouched");
+    assert_eq!(t, Transform { chunk: origin, pos: pose.position, rot: pose.rotation, scale: [2.0; 3], _pad: 0 }.rebased());
+    for o in [frame, child, grandchild] {
+        let w = store.world_transform(o).unwrap();
+        let p = pw.pose(o).unwrap();
+        let want = pe_core::coords::WorldPos::new(origin, p.position);
+        let d = w.pos.sub(&want);
+        assert!(d.iter().all(|c| c.abs() < 1.0e-5), "{o:?} is {d:?} from its body");
+        let dot: f32 = w.rot.iter().zip(&p.rotation).map(|(a, b)| a * b).sum();
+        assert!(dot.abs() > 1.0 - 1.0e-5, "{o:?} rotation");
+    }
+    assert_eq!(store.get::<Transform>(grandchild).unwrap().scale, [3.0; 3], "local scale kept");
     store.check_values().unwrap();
+
+    // All or nothing: a body whose rebased chunk is beyond the sim store's limit refuses the
+    // whole write, and the transform written before it is put back.
+    let mut store = SimStore::new(Arc::new(Registry::new()), 7);
+    let a = store.create(1).unwrap();
+    let b = store.create(1).unwrap();
+    store.insert(a, Transform::IDENTITY).unwrap();
+    store.insert(b, Transform::IDENTITY).unwrap();
+    let mut pw = world(PhysicsConfig::engine());
+    pw.add_body(a, &BodyDesc { position: [-3.0, 2.0, 0.0], ..ball(0.0) }).unwrap();
+    pw.add_body(b, &BodyDesc { position: [1100.0, 2.0, 0.0], ..ball(0.0) }).unwrap();
+    pw.step(DT).unwrap();
+    let edge = [pe_sim::transform::ROOT_CHUNK_LIMIT, 0, 0];
+    assert!(invalid(pw.write_root_transforms(&mut store, edge)));
+    assert_eq!(*store.get::<Transform>(a).unwrap(), Transform::IDENTITY, "first write put back");
+    assert_eq!(*store.get::<Transform>(b).unwrap(), Transform::IDENTITY);
 }
 
 #[test]
 fn worker_count_does_not_change_the_hash() {
     let build = |workers| {
-        let mut pw = PhysicsWorld::new(PhysicsConfig::engine().with_workers(workers));
+        let mut pw = world(PhysicsConfig::engine().with_workers(workers));
         pw.add_body(id(1), &ground()).unwrap();
         for n in 0..300u32 {
             let x = (n % 10) as f32 - 5.0;
             let z = ((n / 10) % 10) as f32 - 5.0;
-            let mut desc = ball(1.0 + (n / 100) as f32 * 1.1).with_velocity([x * 0.01, 0.0, z * 0.01], [0.0; 3]);
-            desc.position = [x * 1.1, desc.position[1], z * 1.1];
+            let mut desc = ball(1.0 + (n / 100) as f64 * 1.1).with_velocity([x * 0.01, 0.0, z * 0.01], [0.0; 3]);
+            desc.position = [(x * 1.1) as f64, desc.position[1], (z * 1.1) as f64];
             pw.add_body(id(2 + n), &desc).unwrap();
         }
         pw
@@ -176,9 +408,9 @@ fn worker_count_does_not_change_the_hash() {
             if f == 40 {
                 pw.set_workers(8 - workers);
             }
-            pw.step(1.0 / 60.0);
+            pw.step(DT).unwrap();
         }
-        hashes.push(pw.state_hash());
+        hashes.push((pw.state_hash(), pw.check_hash()));
     }
     assert!(hashes.windows(2).all(|w| w[0] == w[1]), "{hashes:x?}");
 }

@@ -3,6 +3,57 @@
 
 use crate::error::PhysicsError;
 
+/// Bounds on what the engine passes to Box3D. Box3D itself only debug-asserts its inputs, and a
+/// finite but huge value (a radius of 1e30, a position of 1e38) overflows to infinity or NaN
+/// inside it. These bounds are the engine's choice, far outside any planned scene.
+pub mod limits {
+    /// Largest coordinate of a body position or a world point, in metres. Physics worlds are
+    /// placed near the bodies they hold (design 5); Box3D positions are `f32` in our build.
+    pub const MAX_POSITION: f64 = 1.0e6;
+    /// Smallest and largest radius, half extent, shape offset or hull coordinate, in metres.
+    pub const MIN_SIZE: f32 = 1.0e-4;
+    pub const MAX_SIZE: f32 = 1.0e4;
+    /// Largest density, kg per cubic metre (osmium is 22,600).
+    pub const MAX_DENSITY: f32 = 1.0e5;
+    /// Largest friction, restitution or rolling resistance.
+    pub const MAX_MATERIAL: f32 = 100.0;
+    /// Largest linear (m/s) or angular (rad/s) speed.
+    pub const MAX_SPEED: f32 = 1.0e4;
+    /// Largest damping coefficient or gravity scale magnitude.
+    pub const MAX_DAMPING: f32 = 1.0e3;
+    /// Largest impulse (N s), force (N), torque (N m), or joint force or torque cap.
+    pub const MAX_PUSH: f32 = 1.0e9;
+    /// Largest gravity component, m/s^2.
+    pub const MAX_GRAVITY: f32 = 1.0e4;
+}
+
+use limits::*;
+
+pub(crate) fn bounded(v: &[f32], max: f32, what: &'static str) -> Result<(), PhysicsError> {
+    if v.iter().all(|c| c.is_finite() && c.abs() <= max) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
+}
+
+pub(crate) fn position(v: &[f64; 3], what: &'static str) -> Result<(), PhysicsError> {
+    if v.iter().all(|c| c.is_finite() && c.abs() <= MAX_POSITION) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
+}
+
+/// `q` scaled to unit length, if it is within 1% of it. `sqrt` and division are correctly
+/// rounded, so every peer gets the same bits. Box3D debug-asserts unit length to about 2e-6.
+pub(crate) fn unit_quat(q: [f32; 4], what: &'static str) -> Result<[f32; 4], PhysicsError> {
+    if !q.iter().all(|c| c.is_finite()) {
+        return Err(PhysicsError::InvalidValue(what));
+    }
+    let n2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if (n2 - 1.0).abs() > 0.02 {
+        return Err(PhysicsError::InvalidValue(what));
+    }
+    if n2 == 1.0 {
+        return Ok(q);
+    }
+    let n = n2.sqrt();
+    Ok([q[0] / n, q[1] / n, q[2] / n, q[3] / n])
+}
+
 /// How a body moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyKind {
@@ -37,8 +88,8 @@ pub struct ShapeDesc {
 }
 
 impl ShapeDesc {
-    /// Box3D's default material (friction 0.6, restitution 0, rolling resistance 0) with
-    /// density 1.
+    /// Box3D's default material (friction 0.6, restitution 0, rolling resistance 0) and
+    /// density (1000 kg per cubic metre, water's: a 0.5 m radius ball weighs 524 kg).
     pub fn new(geometry: Geometry) -> ShapeDesc {
         let def = box3d_rust::types::default_shape_def();
         ShapeDesc {
@@ -66,25 +117,22 @@ impl ShapeDesc {
     }
 
     pub(crate) fn validate(&self) -> Result<(), PhysicsError> {
-        let positive = |v: f32, what| {
-            if v.is_finite() && v > 0.0 { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
-        };
-        let finite3 = |v: &[f32; 3], what| {
-            if v.iter().all(|c| c.is_finite()) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
+        let size = |v: f32, what| {
+            if v.is_finite() && (MIN_SIZE..=MAX_SIZE).contains(&v) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
         };
         match &self.geometry {
             Geometry::Sphere { center, radius } => {
-                finite3(center, "sphere center")?;
-                positive(*radius, "sphere radius")?;
+                bounded(center, MAX_SIZE, "sphere center")?;
+                size(*radius, "sphere radius")?;
             }
             Geometry::Capsule { center1, center2, radius } => {
-                finite3(center1, "capsule center1")?;
-                finite3(center2, "capsule center2")?;
-                positive(*radius, "capsule radius")?;
+                bounded(center1, MAX_SIZE, "capsule center1")?;
+                bounded(center2, MAX_SIZE, "capsule center2")?;
+                size(*radius, "capsule radius")?;
             }
             Geometry::Box { half_extents } => {
                 for &h in half_extents {
-                    positive(h, "box half extent")?;
+                    size(h, "box half extent")?;
                 }
             }
             Geometry::Hull { points } => {
@@ -92,17 +140,17 @@ impl ShapeDesc {
                     return Err(PhysicsError::BadHull);
                 }
                 for p in points {
-                    finite3(p, "hull point")?;
+                    bounded(p, MAX_SIZE, "hull point")?;
                 }
             }
         }
-        let non_negative = |v: f32, what| {
-            if v.is_finite() && v >= 0.0 { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
+        let non_negative = |v: f32, max: f32, what| {
+            if v.is_finite() && (0.0..=max).contains(&v) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
         };
-        non_negative(self.density, "density")?;
-        non_negative(self.friction, "friction")?;
-        non_negative(self.restitution, "restitution")?;
-        non_negative(self.rolling_resistance, "rolling resistance")?;
+        non_negative(self.density, MAX_DENSITY, "density")?;
+        non_negative(self.friction, MAX_MATERIAL, "friction")?;
+        non_negative(self.restitution, MAX_MATERIAL, "restitution")?;
+        non_negative(self.rolling_resistance, MAX_MATERIAL, "rolling resistance")?;
         Ok(())
     }
 }
@@ -112,8 +160,8 @@ impl ShapeDesc {
 pub struct BodyDesc {
     pub kind: BodyKind,
     /// World position of the body origin, in the physics world's frame.
-    pub position: [f32; 3],
-    /// Unit quaternion `[x, y, z, w]`.
+    pub position: [f64; 3],
+    /// Unit quaternion `[x, y, z, w]`; within 1% of unit length, normalized before use.
     pub rotation: [f32; 4],
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
@@ -128,7 +176,7 @@ pub struct BodyDesc {
 
 impl BodyDesc {
     /// A body of `kind` at `position` with Box3D's default settings and no shapes.
-    pub fn new(kind: BodyKind, position: [f32; 3]) -> BodyDesc {
+    pub fn new(kind: BodyKind, position: [f64; 3]) -> BodyDesc {
         let def = box3d_rust::types::default_body_def();
         BodyDesc {
             kind,
@@ -161,25 +209,20 @@ impl BodyDesc {
         self
     }
 
-    pub(crate) fn validate(&self) -> Result<(), PhysicsError> {
-        let finite = |v: &[f32], what| {
-            if v.iter().all(|c| c.is_finite()) { Ok(()) } else { Err(PhysicsError::InvalidValue(what)) }
-        };
-        finite(&self.position, "body position")?;
-        finite(&self.rotation, "body rotation")?;
-        finite(&self.linear_velocity, "linear velocity")?;
-        finite(&self.angular_velocity, "angular velocity")?;
-        finite(&[self.linear_damping, self.angular_damping, self.gravity_scale], "damping or gravity scale")?;
-        let n2: f32 = self.rotation.iter().map(|c| c * c).sum();
-        if (n2 - 1.0).abs() > 0.02 {
-            return Err(PhysicsError::InvalidValue("body rotation is not a unit quaternion"));
-        }
+    /// Check every value and return the normalized rotation.
+    pub(crate) fn validate(&self) -> Result<[f32; 4], PhysicsError> {
+        position(&self.position, "body position")?;
+        let rotation = unit_quat(self.rotation, "body rotation is not a unit quaternion")?;
+        bounded(&self.linear_velocity, MAX_SPEED, "linear velocity")?;
+        bounded(&self.angular_velocity, MAX_SPEED, "angular velocity")?;
+        bounded(&[self.gravity_scale], MAX_DAMPING, "gravity scale")?;
+        bounded(&[self.linear_damping, self.angular_damping], MAX_DAMPING, "damping")?;
         if self.linear_damping < 0.0 || self.angular_damping < 0.0 {
             return Err(PhysicsError::InvalidValue("negative damping"));
         }
         for shape in &self.shapes {
             shape.validate()?;
         }
-        Ok(())
+        Ok(rotation)
     }
 }
