@@ -203,6 +203,11 @@ pub enum Payload {
     /// Define custom role `role` as the permission set `perms` (ROLES permission). Admin (role 0) is
     /// built in and cannot be redefined.
     DefineRole { epoch: u32, role: RoleId, perms: u64 },
+    /// World ownership (12.5): one signed certificate of the world's ownership chain, an admin entry
+    /// (D80) like a kick. Any member may publish one: the owners' signatures in it are its authority.
+    /// A view change commits it in commit order, and it applies if it is valid against the book
+    /// the entries before it leave, so every replica holds the same owners after each decision.
+    Ownership { epoch: u32, cert: Cert },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -337,6 +342,11 @@ impl Wr {
             Payload::Kick { epoch, target } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
             Payload::SetRole { epoch, member, role } => { self.u8(18); self.u32(*epoch); self.u32(*member); self.u32(*role as u32) }
             Payload::DefineRole { epoch, role, perms } => { self.u8(19); self.u32(*epoch); self.u32(*role as u32); self.u64(*perms) }
+            Payload::Ownership { epoch, cert } => {
+                let b = cert.encode();
+                assert!(b.len() <= MAX_CERT_BYTES, "an ownership certificate is at most {MAX_CERT_BYTES} bytes");
+                self.u8(20); self.u32(*epoch); self.blob(&b)
+            }
             Payload::Propose { epoch, round, valid_round, change } => {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
@@ -543,6 +553,13 @@ impl<'a> Rd<'a> {
             17 => Payload::Kick { epoch: self.u32()?, target: self.u32()? },
             18 => Payload::SetRole { epoch: self.u32()?, member: self.u32()?, role: self.role()? },
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
+            // Review OWNY-3: a certificate claiming more than MAX_CERT_BYTES is never read.
+            20 => {
+                let epoch = self.u32()?;
+                let n = self.u32()? as usize;
+                if n > MAX_CERT_BYTES { return None; }
+                Payload::Ownership { epoch, cert: Cert::decode(self.take(n)?)? }
+            }
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
             13 => {
@@ -661,6 +678,7 @@ pub fn is_protocol(p: &Payload) -> bool {
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
+            | Payload::Ownership { .. }
     )
 }
 
