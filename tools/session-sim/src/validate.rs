@@ -410,6 +410,25 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 to.iter().for_each(|&m| v.member(1, m, "void_admin to"));
                 v.time(*at_ms, "void_admin");
             }
+            Byzantine::NoopSetrole { member, from_ms, every_ms, to, while_member_at, .. } => {
+                v.member(1, *member, "noop_setrole");
+                to.iter().chain(while_member_at).for_each(|&m| v.member(1, m, "noop_setrole"));
+                v.time(*from_ms, "noop_setrole");
+                if *every_ms == 0 {
+                    v.err("noop_setrole: every_ms is 0".into());
+                }
+            }
+            Byzantine::AdminWedge { member, at_ms, a_to, part, others, part_ms, others_ms, .. } => {
+                v.member(1, *member, "admin_wedge");
+                a_to.iter().chain(others).chain([part]).for_each(|&m| v.member(1, m, "admin_wedge"));
+                v.time(*at_ms, "admin_wedge");
+                if !(at_ms < part_ms && part_ms <= others_ms) {
+                    v.err("admin_wedge: needs at_ms < part_ms <= others_ms".into());
+                }
+                if others.contains(part) || others.contains(member) {
+                    v.err("admin_wedge: others must not hold part or the member".into());
+                }
+            }
             Byzantine::GoSilent { member, from_ms, .. } => {
                 v.member(1, *member, "go_silent");
                 v.time(*from_ms, "go_silent");
@@ -549,7 +568,11 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "adminvoid" | "joinskip" | "slowref" => at.is_some() && target.is_some() && !honest.is_empty(),
                     "joinwedge" | "adminfork" => at.is_some() && target.is_some() && members.len() == 1 && !honest.is_empty(),
                     "fakemix" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
-                    "prevotefork" | "prevotefork_off" => at.is_some() && target.is_some() && event.is_some(),
+                    "prevotefork_off" => at.is_some() && target.is_some() && event.is_some(),
+                    "prevotefork" => at.is_some() && target.is_some() && event.is_some() && !members.is_empty() && !honest.is_empty(),
+                    "prevotefork_pf" => !members.is_empty() && !honest.is_empty(),
+                    "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "adminwedge" => target.is_some() && !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { .. })),
                     // The silence start must be a fault rule's, so the two cannot drift apart.
                     "vcscale" => matches!(r, Report::Check { silent: Some(_), from_ms: Some(t), .. } if s.fault.iter().any(|f| f.drop && f.after_ms == Some(*t))),
                     _ => true,

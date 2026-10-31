@@ -3,7 +3,7 @@
 Owner: @design-reviewer. Reviewer: @chunks-reviewer. Design: 23.4 (the packages), 13.2 (the rules).
 
 **User ruling, 2026-10-30 19:58Z:**
-* CI runs on local machines only: this PC's Windows and WSL Ubuntu-24.04, plus <laptop>.
+* CI runs on local machines only: this PC's Windows and WSL Ubuntu-24.04, plus a second Windows machine (an Intel laptop).
 * Nothing leaves the user's machines.
 * ARM is deferred.
 
@@ -22,18 +22,18 @@ Each column runs `scripts/run_determinism.sh` with the parts physics, wasm, mcp,
 | `win` | this PC (Ryzen 7 9700X), Windows 11 | x86_64-pc-windows-msvc | here | here |
 | `glibc` | this PC, WSL2 Ubuntu 24.04 | x86_64-unknown-linux-gnu | in WSL | in WSL |
 | `musl` | this PC, WSL2 Ubuntu 24.04 | x86_64-unknown-linux-musl, static, linked by rust-lld | here (no C toolchain); wasm guests natively in WSL | in WSL |
-| `laptop` | Intel i7-13620H laptop, Windows 11 | x86_64-pc-windows-msvc | there, over ssh (Tailscale) | there |
+| `laptop` | Intel i7-13620H laptop, Windows 11 | x86_64-pc-windows-msvc | there, over ssh | there |
 
 ### How the columns run
 
-* **Checkouts:** the WSL and <laptop> columns run the committed HEAD, shipped as a git bundle. Each has its own checkout, at a different path from this PC's:
+* **Checkouts:** the WSL and laptop columns run the committed HEAD, shipped as a git bundle. Each has its own checkout, at a different path from this PC's:
   * WSL: `~/pe-matrix/src`;
-  * <laptop>: `C:/Users/<user>/pe-matrix/src`, with a folder-local cargo home.
+  * the laptop: `$PE_LAPTOP_DIR/src`, with a folder-local cargo home. Its ssh route and folder are set in `scripts/matrix.local.sh`, which is gitignored (format: `scripts/matrix.local.example.sh`).
 * **Toolchain:** every column uses the channel pinned in `rust-toolchain.toml` (1.99.0).
 * **Machine-load rule:**
   * Local cargo commands go through `PE_HEAVY`, the org lock.
   * WSL jobs run at nice 19 with 2 jobs, in two locked phases (build, then run).
-  * <laptop> is unthrottled.
+  * The laptop is unthrottled.
 
 ### What it compares
 
@@ -44,7 +44,7 @@ Each column runs `scripts/run_determinism.sh` with the parts physics, wasm, mcp,
   * Virtual-clock results are compared: R18 queue and recovery times, session-sim event times, and configured latencies (review of 3b07aa5, M1).
   * Also masked: cargo progress lines, column padding, the output directory echoed in logs, and sha256sum's Windows `*` marker.
 
-**Validating the normalization:** this PC's committed d79f160 records against <laptop>'s rerun. 246 of 247 outputs were equal. The one difference was a stale committed log, which is reported on the cross-machine determinism re-check item.
+**Validating the normalization:** this PC's committed d79f160 records against the laptop's rerun. 246 of 247 outputs were equal. The one difference was a stale committed log, which is reported on the cross-machine determinism re-check item.
 
 **The comparison** (`matrix_digest.py compare`) prints one row per output and one column per machine. The run fails on any of these (review of 3b07aa5, M2 and M3), and names the first differing output and its first differing normalized line, or byte offset:
 * a difference between columns;
@@ -157,4 +157,4 @@ The cost of `rel-fast` is size: 623 KB against 585 KB and 461 KB, and a wasmi co
 
 * ARM64 (deferred by the user).
 * The `p2p` part. Its UDP runs under loss can differ between runs (spike report 5b).
-* The `history` part (about 25 minutes per machine). `PE_PARTS` can add it. It was run on <laptop> against d79f160, where every end hash was equal.
+* The `history` part (about 25 minutes per machine). `PE_PARTS` can add it. It was run on the laptop against d79f160, where every end hash was equal.

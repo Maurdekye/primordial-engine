@@ -54,8 +54,14 @@ pub struct Actor {
     refunded: Option<(u64, Escrow)>,
     /// GoSilent: its member's messages are lost from now on.
     silent: Rc<Cell<bool>>,
-    /// MixRefs: the last toggle, the last freeze, and whether this turn names the fake.
+    /// MixRefs: the last toggle, the last freeze, and whether this turn names the fake. NoopSetrole:
+    /// its last SetRole (`mix.0`).
     mix: (u64, u64, bool),
+    /// AdminWedge: the step reached, when it crashed, its fork, and the round-0 proposer.
+    step: u32,
+    crash_at: Option<u64>,
+    fork_entry: Option<Entry>,
+    p0: Cell<MemberId>,
 }
 
 impl Actor {
@@ -63,6 +69,11 @@ impl Actor {
         if let Byzantine::Equivocate { entry, .. } = &spec {
             if entry != "first" && entry != "first_touch" {
                 return Err(format!("equivocate: entry must be `first` or `first_touch`, not `{entry}`"));
+            }
+        }
+        if let Byzantine::Precommit { polka, .. } = &spec {
+            for p in polka {
+                hex_id(p)?;
             }
         }
         if let Byzantine::GoSilent { holds_own, .. } = &spec {
@@ -89,7 +100,17 @@ impl Actor {
             refunded: None,
             silent: Rc::default(),
             mix: (0, 0, false),
+            step: 0,
+            crash_at: None,
+            fork_entry: None,
+            p0: Cell::new(0),
         })
+    }
+
+    /// AdminWedge: (round-0 proposer, partitioned member, step reached, crash time in us).
+    pub fn wedge_info(&self) -> Option<(MemberId, MemberId, u32, Option<u64>)> {
+        let Byzantine::AdminWedge { part, .. } = &self.spec else { return None };
+        Some((self.p0.get(), *part, self.step, self.crash_at))
     }
 
     /// GoSilent: its member, if it went silent (the `adminfork` check).
@@ -123,6 +144,14 @@ impl Actor {
 
     /// Replica settings, applied once before the run.
     pub fn configure(&self, sim: &mut Sim) -> Result<(), String> {
+        if let Byzantine::AdminWedge { part, .. } = &self.spec {
+            let p0 = sim.peers.iter().find_map(|p| p.worlds.get(&1)).and_then(|r| r.sim.proposer_of(0, 0)).unwrap_or(0);
+            self.p0.set(p0);
+            let want = if p0 != 4 { 4 } else { 3 };
+            if *part != want {
+                return Err(format!("admin_wedge: part must be {want} (the round-0 proposer is {p0}), not {part}"));
+            }
+        }
         if let Byzantine::EquivocatePrevote { member, .. } = &self.spec {
             let p0 = sim.peers.iter().find_map(|p| p.worlds.get(&1)).and_then(|r| r.sim.proposer_of(0, 0));
             if p0 != Some(*member) {
@@ -205,6 +234,15 @@ impl Actor {
                     Msg::Entry(e) if t >= from_us && from == member && e.member == member => {
                         Some(if to[(e.seq as usize) % to.len()] == dest { Fate::Deliver } else { Fate::Drop })
                     }
+                    _ => None,
+                }))
+            }
+            Byzantine::AdminWedge { member, .. } => {
+                // The fork passes every fault; after the crash nothing else from it does.
+                let (member, crashed, fork) = (*member, self.silent.clone(), self.forged_vote.clone());
+                Some(Box::new(move |_t, _w, from, _to, m| match m {
+                    Msg::Entry(e) if fork.get() != 0 && e.id() == fork.get() => Some(Fate::Deliver),
+                    _ if from == member && crashed.get() => Some(Fate::Drop),
                     _ => None,
                 }))
             }
@@ -353,7 +391,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 act.fired = true;
             }
             Byzantine::ForkBranch { member, at_frame, a_to, b_to, live_ms, backdate, .. } => fork_branch(sim, (&mut act.fork, &act.forged_ids), *member, *at_frame, a_to, *b_to, live_ms * 1000, *backdate),
-            Byzantine::Precommit { member, from_ms, value, boundary, ahead, to, every_epoch, while_member_at } => {
+            Byzantine::Precommit { member, from_ms, value, boundary, ahead, to, every_epoch, while_member_at, polka } => {
                 if !due(sim, *member, *from_ms, *while_member_at) || (!every_epoch && act.fired) {
                     continue;
                 }
@@ -364,7 +402,8 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 let b = boundary.unwrap_or_else(|| r.now + ahead.unwrap_or(0));
                 let v = if *every_epoch { value ^ epoch as u64 } else { *value };
-                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b, polka: vec![] }, None);
+                let polka = polka.iter().map(|p| hex_id(p).unwrap()).collect();
+                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b, polka }, None);
                 send_to(sim, *member, to, &e);
                 act.fired = true;
             }
@@ -458,6 +497,46 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 sim_mut(sim, *member, 1).fake_refs = Some((*of, *n));
                 act.fired = true;
+            }
+            Byzantine::NoopSetrole { member, from_ms, every_ms, role, to, while_member_at } => {
+                let t = sim.net.now_us;
+                if !due(sim, *member, *from_ms, *while_member_at) || t < act.mix.0 + every_ms * 1000 {
+                    continue;
+                }
+                act.mix.0 = t;
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
+                send_to(sim, *member, to, &e);
+            }
+            Byzantine::AdminWedge { member, at_ms, role, a_to, part, others, part_ms, others_ms } => {
+                // The spike's step machine: at most one step per millisecond.
+                let t = sim.net.now_us;
+                if act.step == 0 && t >= at_ms * 1000 {
+                    let r = sim_mut(sim, *member, 1);
+                    let epoch = r.epoch;
+                    let a = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
+                    let b = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..a.clone() };
+                    act.forged_vote.set(b.id());
+                    act.fork_entry = Some(b);
+                    send_to(sim, *member, a_to, &a);
+                    act.step = 1;
+                } else if act.step == 1 {
+                    let all = others.iter().all(|&m| sim.replica(m, 1).sim.all_entries().iter().any(|e| e.member == m && matches!(e.payload, Payload::Precommit { .. })));
+                    if all {
+                        act.silent.set(true);
+                        act.crash_at = Some(t);
+                        act.step = 2;
+                    }
+                } else if act.step == 2 && t >= part_ms * 1000 {
+                    sim.net.send(1, *member, *part, &Msg::Entry(act.fork_entry.clone().unwrap()));
+                    act.step = 3;
+                } else if act.step == 3 && t >= others_ms * 1000 {
+                    for &m in others {
+                        sim.net.send(1, *member, m, &Msg::Entry(act.fork_entry.clone().unwrap()));
+                    }
+                    act.step = 4;
+                }
             }
             Byzantine::GoSilent { member, from_ms, holds_own } if !act.fired => {
                 if sim.net.now_us < from_ms * 1000 {
@@ -559,6 +638,11 @@ fn due(sim: &Sim, member: MemberId, from_ms: u64, while_member_at: Option<Member
 }
 
 /// Send `e` from `from` to each of `to` but itself, in order.
+/// An entry id written as "0x..." hex (TOML integers stop at i64).
+fn hex_id(s: &str) -> Result<EntryId, String> {
+    s.strip_prefix("0x").and_then(|h| u64::from_str_radix(&h.replace('_', ""), 16).ok()).ok_or_else(|| format!("precommit: polka id `{s}` is not 0x-prefixed hex"))
+}
+
 fn send_to(sim: &mut Sim, from: MemberId, to: &[MemberId], e: &Entry) {
     for &m in to {
         if m != from {

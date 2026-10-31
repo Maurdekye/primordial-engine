@@ -45,13 +45,13 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 31 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5); adminfork (round 6); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `p2-4-review/` | 34 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 | `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
 
-All but `faults/` are the suite of `scripts/run_session_sim.sh` (79 scenarios and the three controls of
+All but `faults/` are the suite of `scripts/run_session_sim.sh` (82 scenarios and the three controls of
 P2-5 and P2-4, whose logs are in `spikes/out/session-sim/p2-5-controls/` and `p2-4-controls/`); their
 logs are identical to the committed ones. The `faults/` logs are new in P2-9. All of them are
 identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`,
@@ -135,7 +135,8 @@ quorum = "majority"                 # D80 quorum rule; default "bft"
 ack_heads = false                   # acks without heads (design 25.5.2); default true
 ack_every_frames = 30               # every replica acks this often
 fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1,
-                                    #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S
+                                    #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S, VC6R1, VC6R3,
+                                    #   VC6R4, PF1
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
@@ -263,6 +264,8 @@ behaviour `x` has fired.
 - `precommit`: from `from_ms`, `member` signs a precommit for no proposal with `boundary` (or `ahead`
   frames past its clock) and sends it to `to`: once, or with `every_epoch = true` once per epoch
   (value `value ^ epoch`). `while_member_at = 1`: only while member 1 still has it as a member.
+  `polka = ["0xDEADBEEF00000001"]`: the prevote ids it names, as hex strings (TOML integers stop
+  at i64).
 - `fake_ack_epoch`: from `from_ms`, `member`'s acks claim `epoch`, or `ahead` epochs past its own.
 - `ghost_vote`: at `at_ms`, `member` votes against `target` for a kick `kick` that does not exist.
 - `self_kick_vote`: once `member` holds a kick against itself, it votes on it naming `frozen`.
@@ -286,6 +289,13 @@ behaviour `x` has fired.
 - `equivocate_prevote`: review VC4R-1: from `from_ms`, once round-0 proposer `member` holds its
   round-0 prevote and proposal, it sends the proposal's value to `value_to` and nil to `nil_to` as
   two versions of that prevote; its genuine round-0 prevotes reach nobody.
+- `noop_setrole`: review VC6R-4: from `from_ms` (while a member at `while_member_at`), every
+  `every_ms` `member` signs a SetRole giving itself `role`, sent to `to`.
+- `admin_wedge`: review VC6R-3 (p24r4.rs `adminwedge`): at `at_ms` `member` sends `a_to` a SetRole
+  giving itself `role` and keeps a fork of it (an Attest at the same seq); once every one of
+  `others` holds its own precommit, it crashes (everything it sends is lost), and it sends the
+  fork to `part` at `part_ms` and to `others` at `others_ms`, through any fault. `part` must be 4,
+  or 3 if 4 is the round-0 proposer, as in the spike.
 - `hand_forgery`: review HO-1: `member` sends `to` a grab of another member's `hand` at `grab_ms`,
   a departure of it at `carry_ms`, and a touch carrying a state for it at `plant_ms`.
 
@@ -315,7 +325,8 @@ Reports print after the run, in file order, in the spike's formats:
   `strikeframe_total` (over kept runs), `aheadshield`, `fakeref`, `capstale`, `lagchurn`,
   `votechurn` (it samples a confirmation lag before each step, every 100 ms), `votechurn_off`,
   `adminvoid`, `joinskip`, `joinwedge`, `slowref`, `fakemix`, `adminfork`, `prevotefork`,
-  `prevotefork_off`. The fields each reads are listed in scenario.rs (`Report::Check`).
+  `prevotefork_off`, `prevotefork_pf`, `capfake`, `fakeadmin`, `adminwedge` (the round-7 cases report
+  liveness: every listed member's frame within a window of its confirmed frame). The fields each reads are listed in scenario.rs (`Report::Check`).
 - `handowner`: review HO-1 over three kept runs (`forged`, `clean`, `fixoff`).
 - `stats`.
 - `membership`.
