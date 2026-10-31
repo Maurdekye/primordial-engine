@@ -8,4 +8,4 @@ RESULT votechurn: m1 conf 946 of frame 953, m2 conf 946 of frame 953, m3 conf 94
   m1: conf 946 frame 953 members {1, 2, 3} evicted {9: (398, 599)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 81 bad 0
   m2: conf 946 frame 953 members {1, 2, 3} evicted {9: (398, 599)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 81 bad 0
   m3: conf 946 frame 953 members {1, 2, 3} evicted {9: (398, 599)} rollbacks 4 max depth 2 violations 0 equivocations 0 checks ok 82 bad 0
-RESULT votechurn (2-10 s: 9 votes against 2, whom everyone hears, in every epoch; admin 1 kicks 9 at 10 s): frames 0..952 honest m1=5935c63e02167cbe m2=5935c63e02167cbe m3=5935c63e02167cbe | offline replay 5935c63e02167cbe | ALL EQUAL, NO FALSE CHECKS ; checks ok 244 bad 0
+RESULT votechurn (2-10 s: 9 votes against 2, whom everyone hears, in every epoch; admin 1 kicks 9 at 10 s): frames 0..952 honest m1=4a34028bbea4d569 m2=4a34028bbea4d569 m3=4a34028bbea4d569 | offline replay 4a34028bbea4d569 | ALL EQUAL, NO FALSE CHECKS ; checks ok 244 bad 0
