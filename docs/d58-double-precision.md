@@ -39,6 +39,30 @@ determinism tests already carry both sets.
 * Position constructors computed in f32 widen with `as _`; widening is exact, so f32 inputs give
   the same bits in both precisions.
 
+## Step-time cost (next to design 25.8)
+
+Measured 2026-10-31 11:03Z on Windows, both heavy.sh slots held, no VR: the chunks spike's `ab`
+benchmark (25.8's scenes and method: 30 blocks of 20 frames, 60 Hz, 4 sub-steps, 8 interleaved
+rounds, per-block minimum over rounds averaged over blocks). Four builds in the same interleave:
+box3d-rust 0.5.0 as published (25.8's setup, re-measured) and our fork at db2bc80 (fork default
+f32 there), each without and with `double-precision`. Raw: `spikes/out/d58/ab-fork-vs-upstream.log`,
+`ab-summary.txt` [measured].
+
+| Scene | fork f32 | fork f64 | fork f64 cost | 0.5.0 f64 cost | fork vs 0.5.0 (f32 / f64) |
+|---|---|---|---|---|---|
+| 1,024-body pile | 0.928 ms | 0.962 ms | +3.7% | +3.8% | -6.4% / -6.5% |
+| 2,048-body pile | 2.262 ms | 2.178 ms | -3.7% | +4.7% | -6.0% / -13.5% |
+| 500-ball pit | 0.651 ms | 0.662 ms | +1.7% | +5.2% | -6.9% / -10.0% |
+
+Per-round means varied far more than these differences (ball pit 0.67-1.03 ms, 2,048 pile
+2.25-4.97 ms), so a few percent is within the noise; the 2,048-body f64 "gain" is noise. Result:
+double precision costs at most a few percent of step time on our fork, inside 25.8's 2-10%.
+
+Build: in `spikes/chunks`, `cargo build --release` with and without `--features f64`, and the same
+with `--config 'patch.crates-io.box3d-rust.path="<checkout>/crates/box3d-fork"'`, from a checkout
+whose fork default is f32 (db2bc80); then `pe-spike-chunks ab` alternately in the four builds.
+Summarize with the estimator of `scripts/chunks_summary.py`.
+
 ## Reproduce
 
 ```bash

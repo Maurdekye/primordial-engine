@@ -1,0 +1,24 @@
+ballpit500  fk32: envelope 0.651 ms  rounds=8  per-round mean 0.673..1.031 (median 0.764)
+ballpit500  fk64: envelope 0.662 ms  rounds=8  per-round mean 0.688..0.878 (median 0.816)
+ballpit500  up32: envelope 0.699 ms  rounds=8  per-round mean 0.707..1.359 (median 0.874)
+ballpit500  up64: envelope 0.736 ms  rounds=8  per-round mean 0.745..1.409 (median 0.918)
+pile1024    fk32: envelope 0.928 ms  rounds=8  per-round mean 0.959..1.440 (median 1.083)
+pile1024    fk64: envelope 0.962 ms  rounds=8  per-round mean 0.987..1.383 (median 1.074)
+pile1024    up32: envelope 0.992 ms  rounds=8  per-round mean 1.012..2.060 (median 1.159)
+pile1024    up64: envelope 1.029 ms  rounds=8  per-round mean 1.052..1.797 (median 1.316)
+pile2048    fk32: envelope 2.262 ms  rounds=8  per-round mean 2.551..4.617 (median 2.909)
+pile2048    fk64: envelope 2.178 ms  rounds=8  per-round mean 2.246..4.967 (median 2.776)
+pile2048    up32: envelope 2.405 ms  rounds=8  per-round mean 2.461..4.389 (median 3.139)
+pile2048    up64: envelope 2.519 ms  rounds=8  per-round mean 2.544..5.094 (median 3.126)
+pile1024    up32->up64: +3.8%
+pile1024    fk32->fk64: +3.7%
+pile1024    up32->fk32: -6.4%
+pile1024    up64->fk64: -6.5%
+pile2048    up32->up64: +4.7%
+pile2048    fk32->fk64: -3.7%
+pile2048    up32->fk32: -6.0%
+pile2048    up64->fk64: -13.5%
+ballpit500  up32->up64: +5.2%
+ballpit500  fk32->fk64: +1.7%
+ballpit500  up32->fk32: -6.9%
+ballpit500  up64->fk64: -10.0%
