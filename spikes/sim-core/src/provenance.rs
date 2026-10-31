@@ -52,14 +52,25 @@ pub struct Hop {
     /// `src`'s epoch certificates 1..=`epoch` (P2-4), so any world can check `epoch` from `src`'s
     /// genesis, on its route list or not.
     pub certs: Vec<EpochCert>,
-    /// Signatures over [`fact_committed`] by a strict majority of `src`'s members in `epoch`.
+    /// Signatures over [`fact_committed`] by a strict majority of `src`'s members in `epoch` (those
+    /// not excluded by proof, when `certs` holds the next epoch's certificate: VC-8).
     pub cert: Vec<(MemberId, u64)>,
 }
 
-/// "World `src` committed transfer `transfer` of object `global` to world `dest`; the object had
-/// entered `src` by transfer `via`."
-pub fn fact_committed(src: u32, transfer: u64, global: u64, dest: u32, via: u64) -> u64 {
-    fnv_u64s([3, src as u64, transfer, global, dest as u64, via])
+impl Hop {
+    /// The fact `cert` signs for object `global`: its frame and epoch included (VC-7), so a carrier
+    /// can't relabel either.
+    pub fn fact(&self, global: u64) -> u64 {
+        fact_committed(self.src, self.transfer, global, self.dest, self.via, self.frame, self.epoch)
+    }
+}
+
+/// "World `src` committed transfer `transfer` of object `global` to world `dest` at its frame
+/// `frame`, in its epoch `epoch`; the object had entered `src` by transfer `via`." A member signs it
+/// only for the epoch active at that frame in its own log (VC-7), and signs again if a later change
+/// moves that frame into another epoch.
+pub fn fact_committed(src: u32, transfer: u64, global: u64, dest: u32, via: u64, frame: u64, epoch: u32) -> u64 {
+    fnv_u64s([3, src as u64, transfer, global, dest as u64, via, frame, epoch as u64])
 }
 
 /// Hash of a chain, certificates included, so a departure certificate pins the exact chain.
@@ -84,9 +95,15 @@ pub trait EpochCerts {
     fn members(&self, world: u32, epoch: u32) -> Option<&[MemberId]>;
     /// How many objects `world` was born with: its birth records.
     fn genesis_objects(&self, world: u32) -> Option<u64>;
-    /// `cert` holds signatures over `fact` by a strict majority of `world`'s members in `epoch`.
+    /// The members of `epoch` whose majority certifies a fact: all of them, minus those the next
+    /// epoch's certificate excluded by proof if it is known (VC-8; the source's `cert_at` counts the
+    /// same way).
+    fn quorum(&self, world: u32, epoch: u32) -> Option<Vec<MemberId>> {
+        self.members(world, epoch).map(|m| m.to_vec())
+    }
+    /// `cert` holds signatures over `fact` by a strict majority of `world`'s quorum in `epoch`.
     fn cert_ok(&self, world: u32, epoch: u32, fact: u64, cert: &[(MemberId, u64)]) -> bool {
-        self.members(world, epoch).is_some_and(|m| cert_ok(m, world, fact, cert))
+        self.quorum(world, epoch).is_some_and(|m| cert_ok(&m, world, fact, cert))
     }
 }
 
@@ -105,19 +122,37 @@ impl Default for EpochBook {
     }
 }
 
-/// One world's known epochs: members and first frame of each (epoch 0 is the genesis).
+/// A partner world's epoch at the frame a cross-world fact is about, with its epoch certificates
+/// (1..=`epoch`, and the next one once decided), so a receiver checks the signers from the partner's
+/// genesis rather than a member list fixed at startup (22.7, R3-8b). The frame comes with the fact:
+/// a departure's is its record's `src_frame`, a verdict's travels in the `Verdict`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct EpochProof {
+    pub epoch: u32,
+    pub certs: Vec<EpochCert>,
+}
+
+impl EpochProof {
+    pub fn hash(&self) -> u64 {
+        fnv_u64s([self.epoch as u64, self.certs.len() as u64].into_iter().chain(self.certs.iter().map(|c| c.hash())))
+    }
+}
+
+/// One world's known epochs: members and first frame of each (epoch 0 is the genesis), and the
+/// members of each that the next epoch's certificate excluded by proof (empty until it is known).
 #[derive(Clone, Debug, Default)]
 pub struct WorldEpochs {
     pub objects: u64,
     pub members: Vec<Vec<MemberId>>,
     pub from: Vec<u64>,
+    pub excluded: Vec<Vec<MemberId>>,
 }
 
 impl EpochBook {
     pub fn genesis(&mut self, world: u32, members: &[MemberId], objects: u64) {
         let mut m = members.to_vec();
         m.sort_unstable();
-        self.worlds.insert(world, WorldEpochs { objects, members: vec![m], from: vec![0] });
+        self.worlds.insert(world, WorldEpochs { objects, members: vec![m], from: vec![0], excluded: vec![vec![]] });
     }
 
     /// Add `cert` as its world's next epoch if it checks against the previous one. A certificate
@@ -135,8 +170,12 @@ impl EpochBook {
         if !epoch_cert_ok(rule, &w.members[e - 1], cert) || cert.from_frame() < w.from[e - 1] {
             return false;
         }
+        let mut ex: Vec<MemberId> = cert.change.excluded.iter().map(|(m, _)| *m).collect();
+        ex.sort_unstable();
+        w.excluded[e - 1] = ex;
         w.members.push(cert.members.clone());
         w.from.push(cert.from_frame());
+        w.excluded.push(Vec::new());
         true
     }
 
@@ -152,10 +191,17 @@ impl EpochBook {
         Some(w.from.iter().rposition(|&f| f <= frame)? as u32)
     }
 
+    /// `cert` is a majority of `world`'s quorum in the epoch `proof` names, which is the one active at
+    /// `frame` by the certificates `proof` carries (they must extend this book), over `fact`.
+    pub fn vouched(&self, world: u32, frame: u64, proof: &EpochProof, fact: u64, cert: &[(MemberId, u64)]) -> bool {
+        self.with(&proof.certs).is_some_and(|b| b.epoch_at(world, frame) == Some(proof.epoch) && b.cert_ok(world, proof.epoch, fact, cert))
+    }
+
     /// A hop's certificate checks: its epoch certificates extend this book, its epoch is the one
-    /// active at its frame by them, and a strict majority of that epoch signed `fact`.
-    pub fn hop_ok(&self, h: &Hop, fact: u64) -> bool {
-        self.with(&h.certs).is_some_and(|b| b.epoch_at(h.src, h.frame) == Some(h.epoch) && b.cert_ok(h.src, h.epoch, fact, &h.cert))
+    /// active at its frame by them, and a strict majority of that epoch's quorum signed its fact for
+    /// `global`.
+    pub fn hop_ok(&self, h: &Hop, global: u64) -> bool {
+        self.with(&h.certs).is_some_and(|b| b.epoch_at(h.src, h.frame) == Some(h.epoch) && b.cert_ok(h.src, h.epoch, h.fact(global), &h.cert))
     }
 }
 
@@ -165,6 +211,11 @@ impl EpochCerts for EpochBook {
     }
     fn genesis_objects(&self, world: u32) -> Option<u64> {
         self.worlds.get(&world).map(|w| w.objects)
+    }
+    fn quorum(&self, world: u32, epoch: u32) -> Option<Vec<MemberId>> {
+        let w = self.worlds.get(&world)?;
+        let ex = w.excluded.get(epoch as usize)?;
+        Some(w.members.get(epoch as usize)?.iter().copied().filter(|m| !ex.contains(m)).collect())
     }
 }
 
@@ -199,7 +250,7 @@ pub fn check_chain(book: &EpochBook, global: u64, src: u32, via: u64, chain: &[H
         if b.epoch_at(h.src, h.frame) != Some(h.epoch) {
             return Err(ChainError::Epoch(i));
         }
-        if !b.cert_ok(h.src, h.epoch, fact_committed(h.src, h.transfer, global, h.dest, h.via), &h.cert) {
+        if !b.cert_ok(h.src, h.epoch, h.fact(global), &h.cert) {
             return Err(ChainError::Cert(i));
         }
         (at, by) = (h.dest, h.transfer);
@@ -216,11 +267,9 @@ pub enum Export {
     /// The source's commit certificate ([`fact_committed`]): a hop of a chain.
     Committed(Hop),
     /// The source's departure certificate ([`fact_departed`]), as carried by the `Arrive` that
-    /// brought the object into a world. The destination checks it against its route list's members
-    /// of the source, not an epoch, so the spike records `epoch` 0; a departure signed in a later
-    /// epoch convinces a third party only if the `Arrive` also carries the source's epoch
-    /// certificates, as hops do [I].
-    Departed { src: u32, epoch: u32, depart: EntryId, record: ObjRecord, dest: u32, deadline: u64, chain: u64, cert: Vec<(MemberId, u64)> },
+    /// brought the object into a world, with the source's epoch at the departure frame and its epoch
+    /// certificates, so a third party checks it from the source's genesis.
+    Departed { src: u32, proof: EpochProof, depart: EntryId, record: ObjRecord, dest: u32, deadline: u64, chain: u64, cert: Vec<(MemberId, u64)> },
 }
 
 impl Export {
@@ -248,8 +297,8 @@ impl Export {
     pub fn digest(&self) -> u64 {
         let mut v = match self {
             Export::Committed(h) => vec![1, chain_hash(std::slice::from_ref(h))],
-            Export::Departed { src, epoch, depart, record, dest, deadline, chain, cert } => {
-                let mut v = vec![2, *src as u64, *epoch as u64, *depart, record.global, record.kind as u64, record.state.hash()];
+            Export::Departed { src, proof, depart, record, dest, deadline, chain, cert } => {
+                let mut v = vec![2, *src as u64, proof.hash(), *depart, record.global, record.kind as u64, record.state.hash()];
                 v.extend([record.src_world as u64, record.src_frame, record.via, *dest as u64, *deadline, *chain]);
                 v.extend(cert.iter().flat_map(|(m, s)| [*m as u64, *s]));
                 v
@@ -263,9 +312,10 @@ impl Export {
     /// hop's epoch is checked from the certificates it carries (P25-5).
     pub fn verify(&self, book: &EpochBook, global: u64) -> bool {
         match self {
-            Export::Committed(h) => book.hop_ok(h, fact_committed(h.src, h.transfer, global, h.dest, h.via)),
-            Export::Departed { src, epoch, depart, record, dest, deadline, chain, cert } => {
-                record.global == global && book.cert_ok(*src, *epoch, fact_departed(*src, *depart, record, *dest, *deadline, *chain), cert)
+            Export::Committed(h) => book.hop_ok(h, global),
+            Export::Departed { src, proof, depart, record, dest, deadline, chain, cert } => {
+                record.global == global
+                    && book.vouched(*src, record.src_frame, proof, fact_departed(*src, *depart, record, *dest, *deadline, *chain, proof.epoch), cert)
             }
         }
     }
@@ -380,7 +430,7 @@ mod tests {
     }
 
     fn hop(b: &EpochBook, src: u32, dest: u32, transfer: u64, via: u64, g: u64) -> Hop {
-        let fact = fact_committed(src, transfer, g, dest, via);
+        let fact = fact_committed(src, transfer, g, dest, via, 0, 0);
         let cert = b.members(src, 0).unwrap().iter().map(|&m| (m, member_sig(src, m, fact))).collect();
         Hop { src, dest, transfer, via, epoch: 0, frame: 0, certs: Vec::new(), cert }
     }
@@ -429,23 +479,93 @@ mod tests {
         let other = Change { boundary: 200, ..change.clone() };
         assert!(b.with(&[EpochCert { change: other, ..c1.clone() }]).is_none());
         let g = (1u64 << 32) | 7;
-        let fact = fact_committed(1, 21, g, 2, 0);
-        let signed = |ms: &[MemberId]| ms.iter().map(|&m| (m, member_sig(1, m, fact))).collect::<Vec<_>>();
-        let h = Hop { src: 1, dest: 2, transfer: 21, via: 0, epoch: 1, frame: 420, certs: vec![c1.clone()], cert: signed(&[1, 4]) };
+        let signed = |frame: u64, epoch: u32, ms: &[MemberId]| {
+            let fact = fact_committed(1, 21, g, 2, 0, frame, epoch);
+            ms.iter().map(|&m| (m, member_sig(1, m, fact))).collect::<Vec<_>>()
+        };
+        let h = Hop { src: 1, dest: 2, transfer: 21, via: 0, epoch: 1, frame: 420, certs: vec![c1.clone()], cert: signed(420, 1, &[1, 4]) };
         assert_eq!(check_chain(&b, g, 2, 21, &[h.clone()]), Ok(()));
         // Without the certificate, epoch 1 is unknown.
         assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![], ..h.clone() }]), Err(ChainError::Epoch(0)));
         // Epoch 0's majority (1 and 2) signing for frame 420, once epoch 1 is known: refused.
-        let old = Hop { epoch: 0, cert: signed(&[1, 2]), ..h.clone() };
+        let old = Hop { epoch: 0, cert: signed(420, 0, &[1, 2]), ..h.clone() };
         assert_eq!(check_chain(&b, g, 2, 21, &[old.clone()]), Err(ChainError::Epoch(0)));
-        // ... but accepted for a frame before epoch 1 began, or if the carrier omits epoch 1 (the
-        // long-range residual of 22.7).
-        assert_eq!(check_chain(&b, g, 2, 21, &[Hop { frame: 250, ..old.clone() }]), Ok(()));
-        assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![], ..old }]), Ok(()));
+        // ... but accepted if the carrier omits epoch 1 (the long-range residual of 22.7: only a
+        // colluding old majority signs a frame of epoch 1 as epoch 0).
+        assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![], ..old.clone() }]), Ok(()));
+        // VC-7: the frame and epoch are signed, so a carrier can't relabel them: the honest epoch-0
+        // certificate for frame 250 doesn't pass as frame 420, nor epoch 1's as epoch 0.
+        let early = Hop { epoch: 0, frame: 250, cert: signed(250, 0, &[1, 2]), ..h.clone() };
+        assert_eq!(check_chain(&b, g, 2, 21, &[early.clone()]), Ok(()));
+        assert_eq!(check_chain(&b, g, 2, 21, &[Hop { frame: 260, ..early }]), Err(ChainError::Cert(0)));
+        assert_eq!(check_chain(&b, g, 2, 21, &[Hop { frame: 250, ..h.clone() }]), Err(ChainError::Epoch(0)));
         // A tampered certificate does not check.
         let mut bad = c1;
         bad.precommits[1].1 ^= 1;
         assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![bad], ..h }]), Err(ChainError::Epoch(0)));
+    }
+
+    /// VC-8: world 1 (members 1, 2, 3, 4) excludes member 4 by proof in epoch 1's certificate. A hop
+    /// of epoch 0 signed by 1 and 2 is a majority of the quorum {1, 2, 3} once epoch 1's certificate
+    /// is carried (as the source's `cert_at` counts), and not without it (a majority of all four).
+    #[test]
+    fn excluded_members_leave_the_quorum() {
+        use crate::session::{vc_sig, Change, Entry, Payload, Proof};
+        let mut b = EpochBook::default();
+        b.genesis(1, &[1, 2, 3, 4], 100);
+        b.genesis(2, &[1, 3], 100);
+        // Member 4 signed two different entries with one seq: an equivocation proof.
+        let e = |fact| Entry { member: 4, seq: 1, prev: 0, stamp: 0, payload: Payload::Attest { fact, sig: 0 }, carried: None };
+        let (ea, eb) = (e(1), e(2));
+        let proof = Proof { a: ea.id(), b: eb.id() };
+        let change = Change { epoch: 0, remove: vec![], add: vec![], boundary: 300, excluded: vec![(4, proof)], admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };
+        let value = change.value();
+        let sig = |m| (m, vc_sig(1, m, 0, 1, value));
+        let c1 = EpochCert { world: 1, epoch: 1, change, round: 1, members: vec![1, 2, 3, 4], precommits: vec![sig(1), sig(2), sig(3)], proofs: vec![ea, eb] };
+        let with1 = b.with(&[c1.clone()]).expect("a valid epoch certificate with an exclusion");
+        assert_eq!(with1.quorum(1, 0), Some(vec![1, 2, 3]));
+        let g = (1u64 << 32) | 7;
+        let fact = fact_committed(1, 21, g, 2, 0, 100, 0);
+        let h = Hop { src: 1, dest: 2, transfer: 21, via: 0, epoch: 0, frame: 100, certs: vec![c1], cert: [1, 2].iter().map(|&m| (m, member_sig(1, m, fact))).collect() };
+        assert_eq!(check_chain(&b, g, 2, 21, &[h.clone()]), Ok(()));
+        assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![], ..h }]), Err(ChainError::Cert(0)));
+    }
+
+    /// R3-8b for departures: world 1 (members 1, 2, 4) removes member 2 from frame 300. A departure
+    /// at frame 420 signed by epoch 1 (members 1 and 4), carried with epoch 1's certificate, convinces a
+    /// third party; the old majority (1 and 2) labelled epoch 0 doesn't, once the certificate is
+    /// carried; and nobody can relabel the epoch, since the fact covers it.
+    #[test]
+    fn departures_follow_the_source_epochs() {
+        use crate::session::{fact_departed, vc_sig, BodyState, Change, ObjRecord, Removal};
+        let mut b = EpochBook::default();
+        b.genesis(1, &[1, 2, 4], 100);
+        b.genesis(2, &[1, 3], 100);
+        let change = Change { epoch: 0, remove: vec![Removal { member: 2, votes: vec![11, 12], cut: (40, 99), kick: 0 }], add: vec![], boundary: 300, excluded: vec![], admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };
+        let value = change.value();
+        let sig = |m| (m, vc_sig(1, m, 0, 1, value));
+        let c1 = EpochCert { world: 1, epoch: 1, change, round: 1, members: vec![1, 4], precommits: vec![sig(1), sig(4)], proofs: vec![] };
+        let g = (1u64 << 32) | 7;
+        let record = ObjRecord { global: g, kind: 0, state: BodyState([0; 13]), src_world: 1, src_frame: 420, via: 0 };
+        let export = |epoch: u32, certs: Vec<EpochCert>, by: &[MemberId]| {
+            let fact = fact_departed(1, 9, &record, 2, 900, chain_hash(&[]), epoch);
+            let cert = by.iter().map(|&m| (m, member_sig(1, m, fact))).collect();
+            Export::Departed { src: 1, proof: EpochProof { epoch, certs }, depart: 9, record, dest: 2, deadline: 900, chain: chain_hash(&[]), cert }
+        };
+        assert!(export(1, vec![c1.clone()], &[1, 4]).verify(&b, g));
+        // Epoch 1 unknown without its certificate.
+        assert!(!export(1, vec![], &[1, 4]).verify(&b, g));
+        // The removed member's old majority, once epoch 1's certificate is carried: refused.
+        assert!(!export(0, vec![c1.clone()], &[1, 2]).verify(&b, g));
+        // ... accepted only if the carrier omits it: the long-range residual of 22.7.
+        assert!(export(0, vec![], &[1, 2]).verify(&b, g));
+        // Epoch 1's signatures relabelled as epoch 0 (or the reverse) check against no fact.
+        let mut relabelled = export(1, vec![c1.clone()], &[1, 4]);
+        if let Export::Departed { proof, .. } = &mut relabelled {
+            proof.epoch = 0;
+            proof.certs.clear();
+        }
+        assert!(!relabelled.verify(&b, g));
     }
 
     #[test]
