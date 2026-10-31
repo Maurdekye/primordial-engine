@@ -17,7 +17,7 @@ same=0; bytes=0; ids=0; differ=0
 BASE=${BASE:-spikes/out/session-sim}  # BASE=spikes/out/session-sim-pe compares with an earlier pe-session run
 for f in $(git ls-tree -r --name-only "$REF" "$BASE/" | grep '\.log$'); do
   rel=${f#$BASE/}
-  mine=spikes/out/session-sim-pe/$rel
+  mine=${MINE:-spikes/out/session-sim-pe}/$rel
   if [ ! -f "$mine" ]; then echo "MISSING $rel"; differ=$((differ+1)); continue; fi
   d=$(diff <(git show "$REF:$f" | mask) <(mask < "$mine") | grep '^[<>]')
   if [ -z "$d" ]; then

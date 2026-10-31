@@ -1,10 +1,10 @@
-RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (147, 297)} conf 707 frame 713 paused frames 78 lying votes found 0
+RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
 RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
 RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
 RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
 RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
 RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-  m1: conf 707 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 46 bad 0
-  m2: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 46 bad 0
-  m3: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 46 bad 0
-RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=629026cdfc90c2d2 m2=629026cdfc90c2d2 m3=629026cdfc90c2d2 | offline replay 629026cdfc90c2d2 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+  m1: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 48 bad 0
+  m2: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
+  m3: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
+RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=629026cdfc90c2d2 m2=629026cdfc90c2d2 m3=629026cdfc90c2d2 | offline replay 629026cdfc90c2d2 | ALL EQUAL, NO FALSE CHECKS ; checks ok 144 bad 0

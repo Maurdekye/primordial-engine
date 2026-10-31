@@ -46,6 +46,9 @@ impl WorldSim {
         for (to, value) in std::mem::take(&mut self.value_wants) {
             out.push((to, Msg::FetchValue { value }));
         }
+        for (to, id) in std::mem::take(&mut self.entry_wants) {
+            out.push((to, Msg::FetchEntry { id }));
+        }
         out
     }
 }
