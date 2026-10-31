@@ -3566,7 +3566,8 @@ on storage space, in a similar manner to how resonite works"):
 * **Collection is mark-and-sweep, never reference counts** [proposal]. A count drifts after a crash; a
   sweep starts over each time.
   * The roots are every kept backup's manifest (by the schedule above), every head, every checkpoint and
-    before-merge backup, and every other world's roots on the machine.
+    before-merge backup, every other world's roots on the machine, and every Inventory item's manifest
+    (16.7), so an asset that only a saved Inventory item names is never swept (review EA-3).
   * **What a sweep must never take** (review DS-1):
     * writes in flight (review DS-1b): a write pins every blob its manifest will name, whether it
       writes the blob or finds it already stored (a dedup hit). It pins a blob before writing it, or in
