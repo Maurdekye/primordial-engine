@@ -266,7 +266,7 @@ pub fn jointiming() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !asked && sim.net.now_us >= 2_000_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
+                    sim.net.send(1, joiner, m, &join_msg(session_id(1, &ids), joiner, vec![], u64::MAX));
                 }
                 asked = true;
             }
@@ -529,7 +529,7 @@ pub fn joinrules() {
                     _ => vec![],
                 };
                 for m in ids {
-                    sim.net.send(1, j, m, &Msg::Join { member: j, attests: attests.clone(), sig: join_sig(1, j) });
+                    sim.net.send(1, j, m, &join_msg(session_id(1, &ids), j, attests.clone(), u64::MAX));
                 }
             }
             asked = true;

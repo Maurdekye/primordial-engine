@@ -566,7 +566,7 @@ impl Sim {
                         self.net.post(w, to, from, &e);
                     }
                 }
-                Msg::Join { member, attests, sig } => r.sim.on_join(member, attests, sig),
+                Msg::Join { member, attests, sig, expires } => r.sim.on_join(member, attests, sig, expires),
                 Msg::FetchEntry { id, back } => {
                     for e in r.sim.on_fetch_entry(id, back) {
                         self.net.post(w, to, from, &e);
