@@ -14,7 +14,7 @@ OK    snapshot images (debug) == vdW branch record
 OK    rollback T1-T5 (debug)
 OK    trace 600: release == debug
 trace: 600 frames, 256 bodies, release profile, 171.674725ms total (286.1 us/frame), digest cc60208f048dd6d7, final worl
-images: 13 snapshots, digest c6f338649541031d -> /home/<user>/pe-matrix/glibc-out/o/integration/images-vdw-release.txt
+images: 13 snapshots, digest c6f338649541031d -> <home>/pe-matrix/glibc-out/o/integration/images-vdw-release.txt
 == wasm guests and hot-swap (d1-d4, eager and lazy)
 ae109ced8629e8dfeb474734dadc4030891e7de798229b0ff8467f61ff0b67d5  spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v1.wasm
 391910115c6145153fc6e76bc900527572e9f0423317eb016e4a19bbbd908ffe  spikes/wasm-guests/target/wasm32-unknown-unknown/release/logic_v2.wasm
