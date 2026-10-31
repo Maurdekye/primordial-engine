@@ -1,7 +1,3 @@
 # Scenario files whose behaviour pe-session does not have yet, one name per line. `regress` skips
 # and reports them; each name leaves this list when its fixes are ported (see README). Their logs
 # are the spike's (spikes/out/session-sim/), from scripts/run_session_sim.sh without --pe.
-#
-# World ownership (main ae21dbd, design 12.5, D87): Payload::Ownership is spike-only so far; its port
-# to pe-session (an ownership FactKind in the FactWriter layout, agreed with provenance-eng) follows.
-ownership           # signed ownership-certificate chains as D80 admin entries

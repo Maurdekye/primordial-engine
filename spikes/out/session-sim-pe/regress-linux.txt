@@ -1,5 +1,5 @@
-# pe-session-sim regress at 87410b6 (P2-4 round 8 port), Linux: WSL2 6.6.87.2-microsoft-standard-WSL2 x86_64, static musl build (rust-lld), rustc 1.99.0, release, --jobs 2, 2026-11-01 (scripts/p2-3/run_linux_regress.sh)
-regress: 97 scenarios from tools/session-sim/scenarios, logs to target/linux-out/session-sim-tool, expected spikes/out/session-sim-pe
+# pe-session-sim regress at 13462bd (world ownership port on P2-4 round 8's port), Linux: WSL2 6.6.87.2-microsoft-standard-WSL2 x86_64, static musl build (rust-lld), rustc 1.99.0, release, --jobs 2, 2026-11-01 (scripts/p2-3/run_linux_regress.sh)
+regress: 98 scenarios from tools/session-sim/scenarios, logs to target/linux-out/session-sim-tool, expected spikes/out/session-sim-pe
 == backdate: identical
 RESULT backdate part 1 world 1: frames 0..600 digests m1=12ce1c5a8d60fa74 m2=12ce1c5a8d60fa74 m3=12ce1c5a8d60fa74 | offline replay 12ce1c5a8d60fa74 | ALL EQUAL
 RESULT backdate part 2: removed from the session (cut, from frame): {3: (102, 1)}
@@ -9,7 +9,7 @@ RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.6
 RESULT   perturbation source (hand target per frame + acks): hand entries 286 (10393 B/s payload, 14456 B/s wire est.), acks 259 (18399 B/s wire est.), all messages 33406 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 291.8 re-simulated frames/s, re-sim 3.40 ms per rendered sim frame (749 ms over the window); step avg 0.425 ms; max depth 13
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 291.8 re-simulated frames/s, re-sim 3.38 ms per rendered sim frame (743 ms over the window); step avg 0.420 ms; max depth 13
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=30e3725e864dbdf8 m2=30e3725e864dbdf8 | offline replay 30e3725e864dbdf8 | ALL EQUAL
 == ballpit-60hz-2hands: identical
@@ -17,7 +17,7 @@ RESULT ballpit 60 Hz, 2 hand(s), input delay 0 frames, loss 2%: sweep window 3.6
 RESULT   perturbation source (hand target per frame + acks): hand entries 520 (18896 B/s payload, 26284 B/s wire est.), acks 255 (18115 B/s wire est.), all messages 45358 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 380 balls changed per frame; exact state 1555709 B/s, quantized ~26 B/ball 595424 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 276.8 re-simulated frames/s, re-sim 3.81 ms per rendered sim frame (838 ms over the window); step avg 0.534 ms; max depth 12
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 276.8 re-simulated frames/s, re-sim 3.87 ms per rendered sim frame (851 ms over the window); step avg 0.541 ms; max depth 12
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 453223a7a525165a m2 453223a7a525165a -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=1aefbd3fd706136c m2=1aefbd3fd706136c | offline replay 1aefbd3fd706136c | ALL EQUAL
 == ballpit-60hz-ahead4: identical
@@ -25,7 +25,7 @@ RESULT ballpit 60 Hz, 1 hand(s), input delay 4 frames, loss 2%: sweep window 3.6
 RESULT   perturbation source (hand target per frame + acks): hand entries 286 (10393 B/s payload, 14456 B/s wire est.), acks 259 (18399 B/s wire est.), all messages 33406 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 285 balls changed per frame; exact state 1166995 B/s, quantized ~26 B/ball 446798 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 2.2 rollbacks/s, 18.6 re-simulated frames/s, re-sim 0.22 ms per rendered sim frame (48 ms over the window); step avg 0.313 ms; max depth 9
+RESULT   member 2 during the sweep: 2.2 rollbacks/s, 18.6 re-simulated frames/s, re-sim 0.23 ms per rendered sim frame (50 ms over the window); step avg 0.324 ms; max depth 9
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=8662bbbdaa34869e m2=8662bbbdaa34869e | offline replay 8662bbbdaa34869e | ALL EQUAL
 == ballpit-60hz-noloss: identical
@@ -33,7 +33,7 @@ RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 0%: sweep window 3.6
 RESULT   perturbation source (hand target per frame + acks): hand entries 228 (8285 B/s payload, 11525 B/s wire est.), acks 219 (15557 B/s wire est.), all messages 27277 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.8 re-simulated frames/s, re-sim 3.00 ms per rendered sim frame (661 ms over the window); step avg 0.406 ms; max depth 4
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.8 re-simulated frames/s, re-sim 3.02 ms per rendered sim frame (665 ms over the window); step avg 0.413 ms; max depth 4
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=30e3725e864dbdf8 m2=30e3725e864dbdf8 | offline replay 30e3725e864dbdf8 | ALL EQUAL
 == ballpit-90hz: identical
@@ -41,7 +41,7 @@ RESULT ballpit 90 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.6
 RESULT   perturbation source (hand target per frame + acks): hand entries 450 (16352 B/s payload, 22746 B/s wire est.), acks 396 (28131 B/s wire est.), all messages 51943 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 284 balls changed per frame; exact state 1734546 B/s, quantized ~26 B/ball 664097 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 88.3 rollbacks/s, 614.8 re-simulated frames/s, re-sim 4.59 ms per rendered sim frame (1510 ms over the window); step avg 0.417 ms; max depth 21
+RESULT   member 2 during the sweep: 88.3 rollbacks/s, 614.8 re-simulated frames/s, re-sim 4.63 ms per rendered sim frame (1524 ms over the window); step avg 0.414 ms; max depth 21
 RESULT   end state at frame 799 (all 500 balls, both hands, all tables): m1 c88afef9ef0b12bd m2 c88afef9ef0b12bd -> IDENTICAL
 RESULT ballpit 90Hz world 1: frames 0..765 digests m1=b08b161a6b4ce7d9 m2=b08b161a6b4ce7d9 | offline replay b08b161a6b4ce7d9 | ALL EQUAL
 == c1: identical
@@ -131,6 +131,12 @@ RESULT handowner (member 2 also sends hand entries for member 1's hand) world 1:
 RESULT loss acceptance, uncontended checks: 31/31 equal at that instant and 31/31 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 14
 RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 41/45 equal to the author's copy at that instant, 42/45 equal to the author's final history
 RESULT loss world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112baf49e9c4b m3=a97112baf49e9c4b | offline replay a97112baf49e9c4b | ALL EQUAL
+== ownership: identical
+RESULT ownership world 1: offline reference owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] | ALL EQUAL
+RESULT ownership: m1: 1 kicks 3 @375: refused
+RESULT ownership: m2: 1 kicks 3 @375: refused
+RESULT ownership: m3: 1 kicks 3 @375: refused
+RESULT ownership world 1: frames 0..380 digests m1=7a9b7251083c64ea m2=7a9b7251083c64ea m3=7a9b7251083c64ea | offline replay 7a9b7251083c64ea | ALL EQUAL
 == p2-4-ackgap: identical
 RESULT ackgap: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
 RESULT ackgap: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
@@ -508,9 +514,9 @@ RESULT twosilent5-bft: m2 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets
 RESULT twosilent5-bft: m3 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets 0, highest round 0) | no decision
 RESULT twosilent5-bft (members 4 and 5 of 5 silent from t=3 s): frames 0..288 honest m1=7b12ddfdf57c988e m2=7b12ddfdf57c988e m3=7b12ddfdf57c988e | offline replay 7b12ddfdf57c988e | ALL EQUAL, NO FALSE CHECKS ; checks ok 72 bad 0
 == p2-4-vcscale-256: identical
-RESULT vcscale n=256 silent=2 heads=false: 254 of 254 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {254}; m1 decisions [(1, 220, 0, [255, 256])]; conf 0 | no panic | wall 181.9 s
+RESULT vcscale n=256 silent=2 heads=false: 254 of 254 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {254}; m1 decisions [(1, 220, 0, [255, 256])]; conf 0 | no panic | wall 162.4 s
 == p2-4-vcscale-64: identical
-RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 360 | no panic | wall 117.1 s
+RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 360 | no panic | wall 107.8 s
 == p2-4-voiddeep: identical
 RESULT voiddeep void fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT voiddeep: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
@@ -718,5 +724,4 @@ RESULT ties world 1: frames 0..6000 digests m1=8b2b520ff4809299 m2=8b2b520ff4809
 == grabrace: spike-only (not mirrored as a scenario file yet; see spike-only.txt)
 == p2-3-statejoin: spike-only (not mirrored as a scenario file yet; see spike-only.txt)
 == randsched: not a scenario (a spike property test, run and checked by the spike suite; see not-scenarios.txt)
-== ownership: pending on pe-session (not run: drives spike fixes not ported yet; see pe-pending.txt)
-SUMMARY: 97 scenarios, 97 identical to the committed logs; 2 committed logs spike-only, not mirrored yet; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (308 s)
+SUMMARY: 98 scenarios, 98 identical to the committed logs; 2 committed logs spike-only, not mirrored yet; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (282 s)
