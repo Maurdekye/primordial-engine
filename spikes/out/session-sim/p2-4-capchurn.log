@@ -8,4 +8,4 @@ RESULT capchurn: m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826
   m1: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 58 bad 0
   m2: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 58 bad 0
   m3: conf 826 frame 833 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 58 bad 0
-RESULT capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one): frames 0..832 honest m1=c28910b15d516b7c m2=c28910b15d516b7c m3=c28910b15d516b7c | offline replay c28910b15d516b7c | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
+RESULT capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one): frames 0..832 honest m1=99d8231bd919ca9a m2=99d8231bd919ca9a m3=99d8231bd919ca9a | offline replay 99d8231bd919ca9a | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0

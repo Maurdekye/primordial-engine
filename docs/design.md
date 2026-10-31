@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state write (always*) -> hashes                  |  |
+ |  | Box3D step -> carried-state write (always, SET-1) -> hashes            |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -180,9 +180,6 @@ Rulings that shape the design:
  |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
  +------------------------------------------------------------------------------+
 ```
-
-\* Always (review SET-1) in pe-session. The spike writes carried state only when its bits differ, until
-p2/spike-reset lands (review PT-1).
 
 * **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
 * **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
@@ -517,10 +514,10 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 
 These timings come from a run at 442286f on a quieter machine, with upstream physics
 (`physics-history-upstream-442286f.log`). The integration rerun with the engine default, at low priority
-(`physics-history.log`), took 1.0-1.2x as long (noisy). One difference is not noise [V]: with the engine
-default, the 256-body pile started at frame 900 falls asleep during the replay (246 bodies awake, 26 after
-120 frames), so its deep re-simulations cost little (6.2 ms at 120 frames). The 1,024-body pile stays
-awake.
+(`physics-history.log`), took 1.0-1.2x as long (noisy). Both late piles stay awake through the replay:
+the 256-body pile started at frame 900 has 244 bodies awake before and after 120 frames, at 31-39 ms for
+depth 120 over two runs, and the 1,024-body pile keeps 992 of its 994 [V physics-history.log; review SR-2: an
+earlier note had the 256-body pile falling asleep, which no current run shows].
 
 A tick at 60 Hz has 16.7 ms. **Base-only** fits only while confirmation keeps up, because every
 rollback then re-simulates the whole confirmation lag, not just the rollback depth.
@@ -642,16 +639,19 @@ sleeping or isolated islands to re-derive themselves.
 
 * **Test 1: every body written back through the API.**
   * Setup: in a 256-body pile, every body's pose and velocity was saved at one frame. They were written back
-    50 frames later into the same world, with `body_set_transform`, `body_set_linear_velocity` and
-    `body_set_angular_velocity`.
+    50 frames later into the same world through the spike core's `BodyState::write`: the pose and both
+    velocities, the awake flag, and since p2/spike-reset the fork's `body_reset_history` (7.3).
   * Result: stepping diverged from the reference at the first frame. After 30 frames, 2 of 256 bodies were
-    bit-equal and the largest position error was 340 mm (244 mm with upstream physics).
+    bit-equal and the largest position error was 337 mm (340 mm before the reset; 244 mm with upstream
+    physics, without it) [V physics-history.log; review SR-1].
   * Control: a full image restore of the same frame matched 256 of 256.
 * **Test 2: one isolated island, everything else asleep.**
   * Setup: 64 separate 4-box stacks, all asleep. One stack got a different speculative push; the other 63
-    were checked to be unchanged and still asleep. That stack's 4 bodies were then restored through the
-    API, given the correct push, and run for 60 frames.
-  * Result: the restored stack matched 0 of 4 bodies (8.7 mm error); the other 252 bodies matched.
+    were checked to be unchanged and still asleep. That stack's 4 bodies were then restored through
+    `BodyState::write`, given the correct push, and run for 60 frames.
+  * Result: the restored stack matched 0 of 4 bodies (1.5 mm error; 8.7 mm before the reset forgot the
+    stack's stale contacts); the other 252 bodies matched. The reset narrows the gap but does not close
+    it: the state listed below is still missing [V physics-history.log; review SR-1].
 * **Why it fails.** A world image also holds what the API cannot set:
   * contact manifolds with their warm-start impulses;
   * sleep timers and island membership;
@@ -846,8 +846,9 @@ every player, perfectly synced, and optimized for CPU and memory.
   in f32 and f64, and differ at frame 0 without it or with the bits-changed variant]. Contact ids can
   still differ between such peers: all 78 contacts match by pair and colour, under other ids. Only
   speculative worlds can differ that way, and check hashes cover confirmed frames, where histories are
-  identical. The spike core's write (`BodyState::write`) does not reset yet. It will mirror the reset in
-  a commit of its own, which re-blesses the spike's logs.
+  identical. The spike core's write (`BodyState::write`) does the same since p2/spike-reset: always,
+  awake, then `body_reset_history`. Its re-bless changed digests, transfer ids and print order only; no
+  outcome moved [V session-sim suite, tool regress].
 * **A held object takes no other member's carried state** (P23-6, following 8.4). When the touched body is
   held at *f* by another member's grab, step 3 skips it: the touch acts on it only physically, through the
   grab's constraint. Whether a body is held at *f* is part of the state at *f*, so every peer skips
@@ -1232,8 +1233,7 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 ### 9.2 Cadence
 
 * **On every interaction:** the carried state is applied over the receiver's own result, always,
-  whether or not it already matches (7.3, review SET-1). That is pe-session's rule; the spike writes only
-  when the bits differ until p2/spike-reset lands (review CV-1).
+  whether or not it already matches (7.3, review SET-1), in pe-session and in the spike.
 * **Periodic:** every 30 frames, but only at **confirmed** frames that this member has finished simulating
   with the complete log. A member with a re-simulation pending never compares (viz-1).
   * There, every member holds the same entries by construction, so any mismatch is true nondeterminism,
