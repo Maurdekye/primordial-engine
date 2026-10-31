@@ -1216,11 +1216,23 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
     seen maps, each a u32 count then entries sorted by key (reusing the entry codec's hop, epoch-cert and
     cert layouts), then a u8 portal flag. `decode_tables` accepts only bytes that re-encode identically,
     are fully consumed, and whose cached chain hashes match their chains (9.5).
+  * **The composition the trading lease needs** (review TL-4, decided by @coordinator-opus 2026-10-31;
+    layout agreed with @world-chunks; built with the lease, as a re-bless). It uses three fixed-size
+    digests, each under its own BLAKE3 derive-key context, so a table checkpoint (22.10) verifies without
+    the 1.5 MB store, and a tables encoding can never pass as a store:
+    * `tables_digest = derive_key("pe-tables v1", tables bytes)`;
+    * `store_digest = derive_key("pe-store v1", store bytes)`;
+    * `check = derive_key("pe-check v2", frame u64 | physics CheckHash (32) | store_digest (32) |
+      tables_digest (32))`, little-endian; with fixed-size inputs the length prefixes go.
+    * A table checkpoint carries the tables, the physics `CheckHash`, `store_digest`, the check hash, the
+      acks and the epoch certificates. Its verifier recomputes `tables_digest` from the tables, then
+      `check`. The seen-lease table (22.10) joins the tables.
+    * The same bytes are hashed once either way, with one more finalize per part [I].
 
 ### 9.2 Cadence
 
-* **On every interaction:** the carried state is compared with, and if needed applied over, the
-  receiver's own result (7.3).
+* **On every interaction:** the carried state is applied over the receiver's own result, always,
+  whether or not it already matches (7.3, review SET-1).
 * **Periodic:** every 30 frames, but only at **confirmed** frames that this member has finished simulating
   with the complete log. A member with a re-simulation pending never compares (viz-1).
   * There, every member holds the same entries by construction, so any mismatch is true nondeterminism,
