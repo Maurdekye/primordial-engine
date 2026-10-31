@@ -38,7 +38,27 @@ committed in `spikes/out/vdw/`. `tests/common/mod.rs` rebuilds the spike's pile 
 "soonest wins" claim rule and its `RollbackSim` on pe-physics; every check runs in the engine
 configuration (`vdw`) and the upstream one (`off`), at 1, 3 and 8 worker threads.
 
-__EVIDENCE__
+| Check | Windows x64 debug | Windows x64 release | Linux x64 musl debug (WSL2) | Linux x64 musl release (WSL2) |
+|---|---|---|---|---|
+| Goldens: 4 engine + 4 Box3D C scenes, at 1/3/8 workers | PASS | PASS | PASS | PASS |
+| 600-frame trace equal to `trace-{vdw,off}-win-<profile>.txt` line for line; digests `80839f4a54133e13` (engine) and `7903109aab28ed9b` (upstream) | PASS | PASS | PASS | PASS |
+| World-image bytes every 50 frames equal to `images-*-win-<profile>.txt` | PASS | PASS | PASS | PASS |
+| Rollback T1-T5; T4 is a late joiner: transfer bytes into a fresh world at another worker count, accepted only for the check hash a second peer (one that never saved an image) computed | PASS | PASS | PASS | PASS |
+| Transfer check hash at frame 300: `fc3999792b45a32f` (engine), `27d8dd7d28d065de` (upstream), the same at 1/3/8 workers | PASS | PASS | PASS | PASS |
+| Three worlds in one process, stepped interleaved (engine at 2 and 4 workers, upstream at 1) | PASS | PASS | PASS | PASS |
+| API (10 tests): refusals and bounds; rotation normalizing; hull bodies and pushes; images and transfers with joints; canonical check hash; grabs (kinds, wake, spring); foreign, corrupt and poisoning images; hostile transfers; sim-store write-back with frames, all or nothing; worker-count changes mid-run | PASS | PASS | PASS | PASS |
+
+All [V], at commit 4f66da5 with a clean tree, rustc 1.99.0; logs in `spikes/out/p2-2/`. Each log has
+the same 49 RESULT lines (goldens, trace digests, image digests per profile, transfer check
+hashes, rollback, the grab spring), and the script fails if any differs. The Linux runs reproduce
+the Windows records byte for byte, image bytes included, and the transfer check hashes are equal
+in debug and release, which is what lets peers of either profile confirm each other.
+
+The fork's own suite passes (`cargo test -p box3d-rust --release`: 567 + 2, Windows, including the
+three hostile-image tests). `cargo clippy -p pe-physics -p box3d-rust --all-targets` is clean.
+
+Run times (Windows, idle priority, shared machine, noisy): the record tests take 13.0 s in release
+and 184 s in debug.
 
 ## Review fixes
 
