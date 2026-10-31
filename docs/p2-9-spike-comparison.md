@@ -173,6 +173,15 @@ tool's `regress` is 92 of 92 identical to the new goldens.
   up that request (Unrequested).
 - **Whole-reply repair (the R1 cause above):** fault-capped, now at its proportional cap (36 kbit/s).
 
+- **D58 (main ca33fcd, merged at 88aa129; 65dc019, goldens 90e0c22).** Box3D's positions are f64,
+  and `BodyState` is 16 words (64 B; a touch entry 200 B, 188 before). Against the review round's
+  goldens: ALL EQUAL, 0 false checks; 4 identical, 77 equal with ids and hashes masked, 7 different:
+  the 5 ball-pit logs' naive-streaming estimate (64 B a state, D58-3), and r14-forge and
+  p2-5-controls/r14-forge-no-provenance, whose world A counts one more carried-state overwrite at m1
+  and m2 (1 to 2). The spike's r14-forge moved the same way in its D58 re-bless (974c441 to ca33fcd)
+  [verified by reading the spike's logs]. The capped runs keep their points (fault-capped: 125
+  dropped, 0 paused, conf 558 at every member).
+
 ## Fixture changes made by the port
 
 - **A joiner's relayed log goes in chain order (author, seq).** pe-session's entry ids are hashes, so
