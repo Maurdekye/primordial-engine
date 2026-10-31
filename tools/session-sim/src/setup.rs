@@ -50,6 +50,10 @@ pub const FIXES: &[(&str, u64)] = &[
     ("VC6R3", fix::VC6R3),
     ("VC6R4", fix::VC6R4),
     ("PF1", fix::PF1),
+    ("VC7R1", fix::VC7R1),
+    ("VC7R2", fix::VC7R2),
+    ("RECUT", fix::RECUT),
+    ("VC8R1", fix::VC8R1),
 ];
 
 pub fn fixes_off(w: &WorldCfg) -> Result<u64, String> {

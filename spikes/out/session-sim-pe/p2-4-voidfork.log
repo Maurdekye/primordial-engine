@@ -1,0 +1,18 @@
+REPRO voidfork fixed=false: proposer(0,0)=1, linked the void version first: 4; step reached 3, 1 crashed at Some(2145000) us; 1 removed at never; live at the end: false; m2 conf 110 of frame 230, m3 conf 110 of frame 230, m4 conf 108 of frame 228
+RESULT voidfork fixed=false: -> HALTS, AS BEFORE THE FIX
+RESULT voidfork: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
+RESULT voidfork: m3 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
+RESULT voidfork: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
+  m2: conf 110 frame 230 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
+  m3: conf 110 frame 230 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
+  m4: conf 108 frame 228 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 1 equivocations 1 checks ok 12 bad 0
+RESULT voidfork fixed=false: frames 0..227 honest m2=19d05dd5d7cba657 m3=19d05dd5d7cba657 m4=19d05dd5d7cba657 | offline replay 19d05dd5d7cba657 | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
+REPRO voidfork fixed=true: proposer(0,0)=1, linked the void version first: 4; step reached 3, 1 crashed at Some(2145000) us; 1 removed at 2.25 s; live at the end: true; m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+RESULT voidfork fixed=true: -> THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON
+RESULT voidfork: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
+RESULT voidfork: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
+RESULT voidfork: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
+  m2: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 60 bad 0
+  m3: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 60 bad 0
+  m4: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 1 violations 1 equivocations 1 checks ok 60 bad 0
+RESULT voidfork fixed=true: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0

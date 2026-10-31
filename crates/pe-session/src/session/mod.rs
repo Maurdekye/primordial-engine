@@ -470,6 +470,10 @@ pub struct WorldSim {
     chain_state: BTreeMap<MemberId, (Option<u64>, u64)>,
     /// Per author: ack seq -> max horizon declared up to that seq (valid acks only).
     ack_hist: BTreeMap<MemberId, BTreeMap<u32, u64>>,
+    /// Per author: ack seq -> that valid ack's stamp. With `ack_hist` and `ack_epoch_from`, the chain
+    /// state at any seq of the validated prefix, from which a listed admin entry on another branch is
+    /// judged (review VC7R-1).
+    ack_stamps: BTreeMap<MemberId, BTreeMap<u32, u64>>,
     /// (referrer, author) -> seq -> (id, the referrer's ack that said so): what each member's acks
     /// said it holds of each chain, up to the referrer's vote against that author (review R3-1).
     /// Never pruned in the spike; production keeps only the newest reference per pair, because
@@ -480,10 +484,16 @@ pub struct WorldSim {
     stable_hi: BTreeMap<MemberId, u32>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
+    /// Review PF-1 and VC7R-6: proposal entries of later epochs kept by value before their epoch began
+    /// (another version, or a proven forker's past its fork), noted on entering it.
+    later_proposals: BTreeMap<u32, Vec<EntryId>>,
     /// Review PF-1: every signed precommit held for a value, any version, linked into its author's
     /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
     /// counted from it (`precommitters`); everyone else counts in chain order.
     pc_held: BTreeMap<(u32, u32, u64), BTreeMap<MemberId, Sig>>,
+    /// Review VC8R-1: every signed prevote held for a value, any version, linked or not, as `pc_held`
+    /// is for precommits. Only proven members are counted from it (`prevoters`).
+    pv_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
     /// Review VC4R-2: per pending joiner, its signed request (signature, expiry) with the latest expiry.
     join_reqs: BTreeMap<MemberId, (Sig, u64)>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
@@ -785,10 +795,13 @@ impl WorldSim {
             at_frame: BTreeMap::new(),
             chain_state: BTreeMap::new(),
             ack_hist: BTreeMap::new(),
+            ack_stamps: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
             heard: BTreeMap::new(),
+            later_proposals: BTreeMap::new(),
             pc_held: BTreeMap::new(),
+            pv_held: BTreeMap::new(),
             hidden: None,
             join_reqs: BTreeMap::new(),
             genesis: members.to_vec(),
