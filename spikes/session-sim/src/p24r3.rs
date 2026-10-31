@@ -443,6 +443,9 @@ pub fn lagprecommit() {
             let r = p.worlds.get_mut(&1).unwrap();
             if p.id == 3 {
                 r.ack_every_us = 1_500_000;
+                // Strictly once every 1.5 s: idle thinning's ack on leaving idle would refresh its
+                // horizon as the join begins (7.6 reduction 2), and the repro needs it stale.
+                r.ack_grid_only = true;
             }
             if p.id == 9 {
                 r.sim.withhold_vc = true;
