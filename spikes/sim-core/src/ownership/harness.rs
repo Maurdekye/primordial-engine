@@ -70,6 +70,9 @@ struct History {
     recovery_keys: BTreeSet<Key>,
     /// Check honest refusals (off where an attacker holds a current owner's key).
     strict: bool,
+    /// The view and the linear state differed at a head (the stated rule-C exception, see
+    /// `probe_capacity`).
+    diverged: bool,
 }
 
 /// Invariant 9's reference, computed from the history alone (not from the book's budget state): each
@@ -214,17 +217,32 @@ fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Inser
 }
 
 /// Invariant 9: an honest owner with share left by the reference can make a solo change now, and all
-/// owners together can make a joint one, whatever else happened (until the book is full).
-fn probe_capacity(rng: &mut Rng, h: &History) {
+/// owners together can make a joint one, whatever else happened (until the book is full). The stated
+/// exception (D87, rule C): after concurrent mutual removals that OWNR-7 voids, the targets stay owners
+/// in the view but not in the linear state that judges validity at insert, so a change about them, or
+/// one that needs their signature, is refused. The probe then picks an owner both agree on, checks the
+/// cause is a refused removal, and the history is counted (`diverged`).
+fn probe_capacity(rng: &mut Rng, h: &mut History) {
     let v = h.book.view();
     if v.heads.len() != 1 || h.book.inner.commits.len() >= MAX_CERTS {
         return;
     }
     let head = v.heads[0];
     let all: Vec<Key> = v.owners.owners.iter().copied().collect();
-    let o = rng.pick(&all).unwrap();
-    let joint = cert_on(&h.book, vec![head], Change::SetRecovery { owner: o, recovery: Some(77_777) }, &all);
-    assert_eq!(h.book.clone().commit_local(joint, L1, h.frame + 1), Ok(Insert::Applied), "a joint change by every owner was refused");
+    let linear = &h.book.inner.linear[&head].owners;
+    if *linear != v.owners.owners {
+        let refused_removal = |k: &Key| {
+            h.book.inner.view.refused.iter().any(|(r, e)| matches!(e, OwnError::Conflict | OwnError::Signers) && h.book.inner.certs[r].change.removes() == Some(*k))
+        };
+        assert!(linear.is_subset(&v.owners.owners) && v.owners.owners.difference(linear).all(refused_removal), "the view and the linear state differ, not by a refused rule-C removal: eff {:?} linear {linear:?}", v.owners.owners);
+        h.diverged = true;
+    }
+    let both: Vec<Key> = all.iter().copied().filter(|k| linear.contains(k)).collect();
+    let o = rng.pick(&both).unwrap();
+    let joint = cert_on(&h.book, vec![head], Change::SetRecovery { owner: o, recovery: Some(77_777) }, if h.diverged { &both } else { &all });
+    if !h.diverged || h.book.inner.linear[&head].rule.met(&both.iter().copied().collect(), &v.owners.owners) {
+        assert_eq!(h.book.clone().commit_local(joint, L1, h.frame + 1), Ok(Insert::Applied), "a joint change by every owner was refused: owner {o}");
+    }
     let Some(rem) = reference_remaining(&h.book, head) else { return };
     let solo = cert_on(&h.book, vec![head], Change::SetRecovery { owner: o, recovery: Some(77_778) }, &[o]);
     let r = h.book.clone().commit_local(solo, L1, h.frame + 1);
@@ -238,7 +256,7 @@ fn honest_history(rng: &mut Rng) -> History {
     let owners = [1, 2, 3];
     let rule = [SignRule::All, SignRule::All, SignRule::Threshold(2), SignRule::Any][rng.below(4)];
     let book = Book::new(Cert::genesis(&owners, rule, rng.next())).unwrap();
-    let mut h = History { book, frame: 0, next_key: 100, former: BTreeSet::new(), recovery_keys: BTreeSet::new(), strict: true };
+    let mut h = History { book, frame: 0, next_key: 100, former: BTreeSet::new(), recovery_keys: BTreeSet::new(), strict: true, diverged: false };
     let steps = if rng.chance(1) { 700 } else { rng.below(40) + 3 };
     for _ in 0..steps {
         let _ = honest_step(rng, &mut h, L1);
@@ -585,6 +603,8 @@ struct Residual {
     /// Long honest histories, and the most attested certificates in one.
     long: u32,
     max_attested: usize,
+    /// Honest histories in which the view and the linear state differed (rule C's stated exception).
+    diverged: u32,
 }
 
 fn check(seed: u64, residual: &mut Residual) {
@@ -597,6 +617,7 @@ fn check(seed: u64, residual: &mut Residual) {
         residual.long += 1;
     }
     residual.max_attested = residual.max_attested.max(h.book.inner.commits.len());
+    residual.diverged += h.diverged as u32;
     let honest = h.book.view();
     // The attacker's keys: former owners, recovery keys (stolen), strangers.
     let mut keys: Vec<Key> = h.former.iter().copied().chain(h.recovery_keys.iter().copied()).collect();
@@ -712,11 +733,14 @@ fn adversarial_harness() {
     let from: u64 = std::env::var("PE_OWN_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut residual = Residual::default();
     for seed in from..from + iters {
-        check(seed, &mut residual);
+        if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(seed, &mut residual))) {
+            eprintln!("HARNESS failing seed {seed} (rerun: PE_OWN_SEED={seed} harness_debug_seed)");
+            std::panic::resume_unwind(e);
+        }
     }
     println!(
-        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, an honest change voided {}, rule loosened {} (always with a takeover: an owner lost or gained, or an honest change voided); {} one-by-one rebuilds sent certificates again, then converged",
-        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.honest_voided, residual.rule_loosened, residual.resent
+        "HARNESS {iters} honest histories from seed {from} ({} forked into two lineages and merged; {} long, up to {} attested certs) x 2 attackers: invariants 1-7 held (A1), 1, 4, 5, 6 (Leave), 7 held (A2); A2 residual (no trust root) in {} runs: honest owner lost {}, owner gained {}, an honest change voided {}, rule loosened {} (always with a takeover: an owner lost or gained, or an honest change voided); {} one-by-one rebuilds sent certificates again, then converged; {} honest histories hit rule C's stated exception (mutual removals voided: view and linear state differ)",
+        residual.forked, residual.long, residual.max_attested, residual.runs, residual.honest_owner_lost, residual.owner_gained, residual.honest_voided, residual.rule_loosened, residual.resent, residual.diverged
     );
     assert_eq!(residual.loosened_without_takeover, 0, "concurrent rules take the strictest; only a takeover loosens");
 }
