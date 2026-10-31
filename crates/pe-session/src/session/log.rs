@@ -40,16 +40,22 @@ impl WorldSim {
         if old == new {
             return;
         }
+        // D73(a): a hand pack acts at every frame it covers.
+        let extra = e.payload.extra_frames();
         if let Some(o) = old {
-            if let Some(s) = self.at_frame.get_mut(&o) {
-                s.remove(&id);
+            for g in o..=o + extra {
+                if let Some(s) = self.at_frame.get_mut(&g) {
+                    s.remove(&id);
+                }
             }
             self.eff.remove(&id);
             self.mark_dirty(o);
         }
         if let Some(n) = new {
             self.eff.insert(id, n);
-            self.at_frame.entry(n).or_default().insert(id);
+            for g in n..=n + extra {
+                self.at_frame.entry(g).or_default().insert(id);
+            }
             self.mark_dirty(n);
         }
     }
@@ -135,6 +141,14 @@ impl WorldSim {
         self.signed(e)
     }
 
+    /// Author an entry at `stamp` (D73(a): a hand pack, stamped at its first frame, up to k - 1 frames
+    /// before the present; its author's horizon has stayed below it).
+    pub fn author_stamped(&mut self, payload: Payload, stamp: u64) -> SignedEntry {
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = self.publish(e);
+        self.signed(e)
+    }
+
     /// Test fixture (review HO-1, round 2): author `payload` carrying a chosen object state.
     pub fn author_carrying(&mut self, payload: Payload, carried: (u32, BodyState)) -> SignedEntry {
         let stamp = self.frame.max(self.now);
@@ -176,7 +190,11 @@ impl WorldSim {
             None
         };
         let stamp = self.frame.max(self.now);
-        let horizon = self.now.saturating_sub(1 + self.horizon_lag);
+        let mut horizon = self.now.saturating_sub(1 + self.horizon_lag);
+        // D73(a): below a pending pack's first frame until the pack is sent.
+        if let Some(p0) = self.hold_horizon_below {
+            horizon = horizon.min(p0.saturating_sub(1));
+        }
         let e = Entry {
             member: self.me,
             seq: self.my_seq + 1,
@@ -324,10 +342,13 @@ impl WorldSim {
         }
     }
 
-    /// Chain-local rules, in chain order (reviews NEW-1, H5; user rule 14:31Z):
+    /// Chain-local rules, in chain order (reviews NEW-1, H5; user rule 14:31Z; D73(a)):
     /// * an ack is void if its stamp goes backwards, or its horizon lags its stamp by more than
-    ///   `horizon_slack` frames (so no member can hold a backdating window open);
-    /// * any other entry is void if stamped at or before a horizon its author declared earlier.
+    ///   `horizon_slack + PACK_MAX - 1` frames (the room a pending hand pack needs, D73(a));
+    /// * any other entry is void if stamped at or before a horizon its author declared earlier;
+    /// * and, so that only hand packs get the wider window, a perturbation or admin entry is void
+    ///   unless its last frame (stamp + a pack's extra frames) is within `horizon_slack` frames of
+    ///   its author's last ack's stamp, and a pack holds at most `PACK_MAX` targets.
     pub(super) fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
         // D80: an admin entry stays pending across epochs until a decision judges it.
@@ -341,7 +362,7 @@ impl WorldSim {
                 let prev = self.membership().last_ack_epoch(m);
                 let adm = if self.fixes_off & fix::VC3R6 == 0 { self.admitted_epoch.get(&m).copied().unwrap_or(0) } else { 0 };
                 let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && (*epoch <= prev + 1 || *epoch <= adm));
-                e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp && epoch_ok
+                e.stamp >= last_ack && horizon + self.cfg.horizon_slack + PACK_MAX - 1 >= e.stamp && epoch_ok
             }
             // Review VC-4: a precommit's boundary caps its author's acks, so it must lie ahead of the
             // horizon the author has declared: a cap never takes back what its acks already confirmed.
@@ -354,7 +375,7 @@ impl WorldSim {
             // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
             // horizon like any entry: no backdating past what its author has declared.
             Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } if self.fixes_off & fix::VCR9 == 0 => {
-                max_h.is_none_or(|h| e.stamp > h)
+                max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack
             }
             Payload::Vote { .. }
             | Payload::Propose { .. }
@@ -364,7 +385,13 @@ impl WorldSim {
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
-            _ => max_h.is_none_or(|h| e.stamp > h) && self.membership().admitted(m).is_none_or(|b| e.stamp >= b),
+            _ => {
+                let extra = e.payload.extra_frames();
+                max_h.is_none_or(|h| e.stamp > h)
+                    && e.stamp + extra + self.cfg.horizon_slack > last_ack
+                    && extra < PACK_MAX
+                    && self.membership().admitted(m).is_none_or(|b| e.stamp >= b)
+            }
         };
         if !valid {
             self.stats.entries_rejected_violation += 1;

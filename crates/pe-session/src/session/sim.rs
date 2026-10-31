@@ -278,29 +278,20 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Hand { obj, target_mm, active, span } => {
+            Payload::Hand { obj, target_mm, active, span, more } => {
                 // A member moves only its own hands; the author is the signed chain's member.
                 if self.hand_owners.get(obj) != Some(&e.member) {
                     return Outcome::RejectedNotOwner;
                 }
-                let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
-                let p = if *active {
-                    [target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001]
-                } else {
-                    [0.0, 1.5, 0.0]
+                // D73(a): a pack acts at every frame it covers, target j at its effective frame + j,
+                // each with a span of 1 but the last, which has the entry's.
+                let j = f - self.eff.get(&id).copied().unwrap_or(e.stamp);
+                let (t, sp) = match j {
+                    0 if more.is_empty() => (*target_mm, *span),
+                    0 => (*target_mm, 1),
+                    j => (more[j as usize - 1], if j as usize == more.len() { *span } else { 1 }),
                 };
-                let dt = self.cfg.dt * (*span).max(1) as f32;
-                let target = Pose { position: p.map(f64::from), rotation: [0.0, 0.0, 0.0, 1.0] };
-                if self.world.set_target(o.id, target, dt, true).is_err() {
-                    return Outcome::RejectedInvalid;
-                }
-                hands_set.insert(*obj);
-                if *active {
-                    self.store.insert(o.id, HandIdle { frames: 0, span: (*span).max(1) as u64 }).expect("a live hand");
-                } else {
-                    self.store.remove::<HandIdle>(o.id).expect("a registered component");
-                }
-                Outcome::Accepted
+                self.hand_target(*obj, t, *active, sp, hands_set)
             }
             Payload::Depart { obj, dest, deadline, hop } => {
                 // Review HO-1: nobody carries another member's hand through a portal.
@@ -505,6 +496,35 @@ impl WorldSim {
         }
     }
 
+    /// Set hand `obj`'s target for this frame (a `Hand` entry's, or this member's own pending pose,
+    /// D73(a)): reached `span` frames on; `active = false` parks the hand.
+    pub(super) fn hand_target(&mut self, obj: u32, target_mm: [i32; 3], active: bool, span: u8, hands_set: &mut BTreeSet<u32>) -> Outcome {
+        let Some(o) = self.live(obj) else { return Outcome::RejectedGone };
+        let p = if active {
+            [target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001]
+        } else {
+            [0.0, 1.5, 0.0]
+        };
+        let span = span.max(1) as u64;
+        let dt = self.cfg.dt * span as f32;
+        let target = Pose { position: p.map(f64::from), rotation: [0.0, 0.0, 0.0, 1.0] };
+        if self.world.set_target(o.id, target, dt, true).is_err() {
+            return Outcome::RejectedInvalid;
+        }
+        hands_set.insert(obj);
+        if active {
+            // D52 (coordinator, 2026-10-31): the coast continues only a stream. A target that comes
+            // more than the previous one's span + `hand_predict` frames after it (a one-shot target,
+            // a gesture's start) is followed over its span, then held. The previous target was
+            // frames + 1 frames ago.
+            let stream = self.store.get::<HandIdle>(o.id).is_some_and(|h| h.frames + 1 <= h.span + self.cfg.hand_predict);
+            self.store.insert(o.id, HandIdle { frames: 0, span, stream: stream as u64 }).expect("a live hand");
+        } else {
+            self.store.remove::<HandIdle>(o.id).expect("a registered component");
+        }
+        Outcome::Accepted
+    }
+
     /// Recreate an object from a record at `at`, keeping its rotation and velocities.
     pub(super) fn spawn(&mut self, r: &ObjRecord, at: [f64; 3]) -> u32 {
         let i = self.obj_slots() as usize;
@@ -544,8 +564,18 @@ impl WorldSim {
         let mut carry = Vec::new();
         for (id, e) in self.frame_entries(f) {
             let o = self.apply(id, &e, f, &mut hands_set, &mut carry, record);
-            if record {
+            // A pack's outcome is its first frame's (D73(a)).
+            if record && self.eff.get(&id).is_none_or(|&s| s == f) {
                 self.outcomes.insert(id, (f, o));
+            }
+        }
+        // D73(a): this member's own poses not yet sent in a pack act at their frames here, so its
+        // hand follows its controller exactly. Only this replica has them; the pack, once sent,
+        // replaces them (a rollback to its first frame re-simulates with the same targets).
+        let own: Vec<(u32, [i32; 3])> = self.own_pending.range((f, 0)..=(f, u32::MAX)).map(|(&(_, o), &t)| (o, t)).collect();
+        for (obj, t) in own {
+            if !hands_set.contains(&obj) && self.hand_owners.get(&obj) == Some(&self.me) {
+                self.hand_target(obj, t, true, 1, &mut hands_set);
             }
         }
         // Hands without a target this frame: an active hand follows its last entry over that entry's
@@ -564,7 +594,7 @@ impl WorldSim {
                 Some(n) => {
                     n.frames += 1;
                     let past = n.frames.saturating_sub(n.span.saturating_sub(1));
-                    (past == 0, past > 0 && past <= predict)
+                    (past == 0, n.stream != 0 && past > 0 && past <= predict)
                 }
                 None => (false, false),
             };

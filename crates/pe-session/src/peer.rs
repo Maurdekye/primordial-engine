@@ -82,8 +82,18 @@ pub enum AuthorError {
     NotReady,
     /// A hand that is not this member's (8.4).
     NotOwner,
-    /// A hand pose that is not due at this congestion level (R18): the next one is.
+    /// A second pose for a hand in a frame that already has one.
     Stride,
+    /// Accepted, nothing to send yet: under R18 thinning the pose waits in this member's pending
+    /// pack (D73(a)) and already moves its hand here; it goes out with the pack.
+    Pending,
+}
+
+/// D73(a): a hand's poses not yet sent, for consecutive frames from `p0`, at stride `k`.
+struct Pack {
+    p0: u64,
+    k: u64,
+    targets: Vec<[i32; 3]>,
 }
 
 struct TickState {
@@ -119,6 +129,8 @@ pub struct SessionCore {
     calm_since: u64,
     queue_delay_us: u64,
     hand_last: BTreeMap<u32, u64>,
+    /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
+    packs: BTreeMap<u32, Pack>,
     /// Ticks spent at each congestion level.
     pub level_ms: [u64; 6],
     tick: Option<TickState>,
@@ -162,6 +174,7 @@ impl SessionCore {
             calm_since: 0,
             queue_delay_us: 0,
             hand_last: BTreeMap::new(),
+            packs: BTreeMap::new(),
             level_ms: [0; 6],
             tick: None,
             out: Vec::new(),
@@ -450,18 +463,39 @@ impl SessionCore {
                     return Err(AuthorError::NotOwner);
                 }
                 let k = if self.adapt { HAND_STRIDE[self.level.min(HAND_STRIDE.len() - 1)] } else { 1 };
-                if active {
-                    let f = self.tick.as_ref().map_or(self.sim.now, |t| t.clock_frame);
-                    // Poses fall on frames aligned to the stride, which spaces them k apart within a
-                    // level. At a level change the next aligned frame is taken even if it is closer
-                    // than k to the last pose: waiting for last + k too left gaps (14 frames at the
-                    // 4 -> 5 switch) longer than a hand's span plus its coast (shader-reviewer M1).
-                    if f % k != 0 || self.hand_last.get(&obj).is_some_and(|&l| f <= l) {
+                // The frame this pose is for: the stamp an entry authored now would get.
+                let s = self.sim.frame.max(self.sim.now) + ahead;
+                if !active {
+                    self.flush_pack(obj);
+                    self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead)
+                } else {
+                    if self.hand_last.get(&obj).is_some_and(|&l| s <= l) {
                         return Err(AuthorError::Stride);
                     }
-                    self.hand_last.insert(obj, f);
+                    self.hand_last.insert(obj, s);
+                    if k == 1 {
+                        self.flush_pack(obj);
+                        self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead)
+                    } else {
+                        // D73(a): under R18 thinning every frame keeps its own target. The pose moves
+                        // this member's hand at once (`own_pending`), and goes out in a pack of the
+                        // frames of one stride window, [m k, m k + k - 1], stamped at its first frame:
+                        // one entry every k frames, the author's hand exact. A stride change or a gap
+                        // sends the pack early.
+                        if self.packs.get(&obj).is_some_and(|p| p.k != k || p.p0 + p.targets.len() as u64 != s) {
+                            self.flush_pack(obj);
+                        }
+                        let p = self.packs.entry(obj).or_insert(Pack { p0: s, k, targets: Vec::new() });
+                        p.targets.push(target_mm);
+                        let full = (s + 1) % k == 0 || p.targets.len() as u64 >= k;
+                        self.sim.own_pending.insert((s, obj), target_mm);
+                        self.sim.hold_horizon_below = self.packs.values().map(|p| p.p0).min();
+                        if !full {
+                            return Err(AuthorError::Pending);
+                        }
+                        return Ok(self.flush_pack(obj).expect("a pack with a pose"));
+                    }
                 }
-                self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: k as u8 }, ahead)
             }
             p => {
                 if !self.ready() {
@@ -477,6 +511,21 @@ impl SessionCore {
             }
         };
         Ok(self.sent(e))
+    }
+
+    /// D73(a): send hand `obj`'s pending pack, if any: one entry stamped at its first frame holding a
+    /// target per frame. Its poses stop being local-only; the pack replaces them (its insertion rolls
+    /// this replica back to the first frame, which re-simulates with the same targets).
+    fn flush_pack(&mut self, obj: u32) -> Option<SignedEntry> {
+        let p = self.packs.remove(&obj)?;
+        for j in 0..p.targets.len() as u64 {
+            self.sim.own_pending.remove(&(p.p0 + j, obj));
+        }
+        self.sim.hold_horizon_below = self.packs.values().map(|p| p.p0).min();
+        let mut ts = p.targets.into_iter();
+        let target_mm = ts.next().expect("a pack holds a pose");
+        let e = self.sim.author_stamped(Payload::Hand { obj, target_mm, active: true, span: 1, more: ts.collect() }, p.p0);
+        Some(self.sent(e))
     }
 
     /// Broadcast an entry this member authored on the sim directly (scenario fixtures: backdated
@@ -592,7 +641,7 @@ mod tests {
         a.tick(0);
         let mine = *a.sim.hand_owners.iter().find(|(_, m)| **m == 1).unwrap().0;
         let theirs = *a.sim.hand_owners.iter().find(|(_, m)| **m == 2).unwrap().0;
-        let hand = |obj| Payload::Hand { obj, target_mm: [0, 500, 0], active: true, span: 1 };
+        let hand = |obj| Payload::Hand { obj, target_mm: [0, 500, 0], active: true, span: 1, more: Vec::new() };
         assert_eq!(a.author(hand(theirs), 0).unwrap_err(), AuthorError::NotOwner);
         assert!(a.author(hand(mine), 0).is_ok());
         // One pose per frame at level 0: a second one in the same frame waits for the next.
