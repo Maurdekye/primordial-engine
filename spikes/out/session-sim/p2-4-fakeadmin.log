@@ -1,0 +1,12 @@
+REPRO fakeadmin fixed=false (no-op SetRole every 2 s): 8 removed at never; decisions at m1 6; live at the end: false; m1 conf 110 of frame 230, m2 conf 110 of frame 230, m3 conf 110 of frame 230, m4 conf 110 of frame 230
+  m1: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 16 bad 0
+  m2: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
+  m3: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
+  m4: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
+RESULT fakeadmin fixed=false: frames 0..229 honest m1=e1d061cd1786ed8b m2=e1d061cd1786ed8b m3=e1d061cd1786ed8b m4=e1d061cd1786ed8b | offline replay e1d061cd1786ed8b | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
+REPRO fakeadmin fixed=true (no-op SetRole every 2 s): 8 removed at 5.23 s; decisions at m1 3; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 79 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
+  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
+RESULT fakeadmin fixed=true: frames 0..832 honest m1=1b083d5a1b988744 m2=1b083d5a1b988744 m3=1b083d5a1b988744 m4=1b083d5a1b988744 | offline replay 1b083d5a1b988744 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0

@@ -22,7 +22,7 @@
 //! certificates).
 
 use super::*;
-use crate::provenance::StaticEpochs;
+use crate::provenance::EpochBook;
 
 const L1: Lineage = 1;
 const L2: Lineage = 2;
@@ -47,10 +47,10 @@ impl Rng {
     }
 }
 
-fn sessions() -> StaticEpochs {
-    let mut s = StaticEpochs::default();
+fn sessions() -> EpochBook {
+    let mut s = EpochBook::default();
     for l in [L1, L2, L8, L9] {
-        s.worlds.insert(l, (vec![1], 0));
+        s.genesis(l, &[1], 0);
     }
     s
 }

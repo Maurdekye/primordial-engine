@@ -294,6 +294,15 @@ pub(super) fn dispatch(
             }
             let _ = (payload_start, payload_size);
         }
+        RecOp::BodyResetHistory => {
+            let mut s = rdr.snap();
+            let body = s.body_id();
+            rdr.sync_from(&s);
+            if rdr.ok {
+                crate::body::body_reset_history(world, rdr.make_body_id(body));
+            }
+            let _ = (payload_start, payload_size);
+        }
         RecOp::BodyDisable => {
             let mut s = rdr.snap();
             let body = s.body_id();

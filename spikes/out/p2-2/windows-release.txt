@@ -1,0 +1,124 @@
+commit f440165329edd6e804a30962fd284d99bcbbeaa6
+working tree changes: 0
+rustc 1.99.0 (b940084d7 2026-09-28)
+host: x86_64-pc-windows-msvc
+LLVM version: 23.1.1
+    Finished `release` profile [optimized] target(s) in 0.21s
+     Running unittests src\lib.rs (target\release\deps\pe_physics-41daad4c63025ae6.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\api.rs (target\release\deps\api-8ce4675f1ea04a4c.exe)
+
+running 21 tests
+test carried_state_exact_across_histories ... RESULT carried state across histories, at rest: 0 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, collapsing: 9 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, grabbed, at rest: 0 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, grabbed, collapsing: 8 of 18 bodies moving at the write, awake until frame 37; first differing state_hash frame of 600 None; check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, spherical joint and rope, at rest (limit): 11 of 18 bodies moving at the write, awake until frame 599; first differing state_hash frame of 600 Some(31); check_hash differs at 120 of the first 120 frames
+RESULT carried state across histories, spherical joint and rope, collapsing (limit): 12 of 18 bodies moving at the write, awake until frame 599; first differing state_hash frame of 600 Some(31); check_hash differs at 120 of the first 120 frames
+ok
+test carried_state_lands_exactly ... RESULT carried state, off-centre, spinning, both sides true: first differing frame of 120 None
+RESULT carried state, asleep on the ground, both sides true: first differing frame of 120 None
+RESULT carried state, settling, sleep timer running, both sides true: first differing frame of 120 None
+RESULT carried state, rolling in contact, both sides true: first differing frame of 120 None
+RESULT carried state, off-centre, spinning, both sides false: first differing frame of 120 Some(0)
+RESULT carried state, asleep on the ground, both sides false: first differing frame of 120 Some(0)
+RESULT carried state, settling, sleep timer running, both sides false: first differing frame of 120 Some(9)
+RESULT carried state, rolling in contact, both sides false: first differing frame of 120 None
+ok
+test check_hash_is_canonical ... ok
+test compact_images_is_exact ... RESULT compact registry 31 -> 9 blobs (20 kept images)
+ok
+test compact_images_refusal_changes_nothing ... ok
+test compaction_is_invisible_to_the_simulation ... RESULT compaction peer late by 3: registry at most 17 blobs (75 unique hulls made), now 17
+RESULT compaction peer late by 7: registry at most 20 blobs (75 unique hulls made), now 12
+ok
+test foreign_and_corrupt_images ... ok
+test forged_confirmations_still_refused ... ok
+test grabs ... RESULT grab spring gap after 3 s: 0.0000 m (hand at x = 3.000)
+ok
+test hostile_transfers ... ok
+test hull_and_shape_counts_bounded ... ok
+test hull_bodies_and_pushes ... ok
+test images_and_transfers_round_trip_with_joints ... ok
+test poses_reach_the_sim_store ... ok
+test refusals_change_nothing ... ok
+test rolled_back_peer_has_the_straight_check_hash ... RESULT rollback check_hash after 60 frames 9e86908b0f8eee4b371aef141e6a9dbbc83f440f094546e93f03b45028dcde96
+ok
+test rotations_are_normalized ... ok
+test stale_and_foreign_images_refused ... RESULT stale images after compaction: 100 of 100 refused
+ok
+test targets_drive_hands ... ok
+test transfer_canonical_after_destroy ... ok
+test worker_count_does_not_change_the_hash ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.25s
+
+     Running tests\spike_records.rs (target\release\deps\spike_records-207f697b9dc7d8da.exe)
+
+running 5 tests
+test goldens_match ... RESULT golden falling ragdolls recycle_scaling=true workers=1 Golden { sleep_step: 358, hash: 2984986542, query: None }
+RESULT golden wave pile recycle_scaling=true workers=1 Golden { sleep_step: 307, hash: 134867606, query: None }
+RESULT golden query spawn recycle_scaling=true workers=1 Golden { sleep_step: 242, hash: 2661525689, query: Some((59, 3810991933)) }
+RESULT golden mesh drop recycle_scaling=true workers=1 Golden { sleep_step: 220, hash: 3460004450, query: None }
+RESULT golden falling ragdolls recycle_scaling=false workers=1 Golden { sleep_step: 291, hash: 4283195483, query: None }
+RESULT golden wave pile recycle_scaling=false workers=1 Golden { sleep_step: 272, hash: 644842416, query: None }
+RESULT golden query spawn recycle_scaling=false workers=1 Golden { sleep_step: 242, hash: 4088241062, query: Some((59, 3810991933)) }
+RESULT golden mesh drop recycle_scaling=false workers=1 Golden { sleep_step: 226, hash: 3539928733, query: None }
+RESULT golden falling ragdolls recycle_scaling=true workers=3 Golden { sleep_step: 358, hash: 2984986542, query: None }
+RESULT golden wave pile recycle_scaling=true workers=3 Golden { sleep_step: 307, hash: 134867606, query: None }
+RESULT golden query spawn recycle_scaling=true workers=3 Golden { sleep_step: 242, hash: 2661525689, query: Some((59, 3810991933)) }
+RESULT golden mesh drop recycle_scaling=true workers=3 Golden { sleep_step: 220, hash: 3460004450, query: None }
+RESULT golden falling ragdolls recycle_scaling=false workers=3 Golden { sleep_step: 291, hash: 4283195483, query: None }
+RESULT golden wave pile recycle_scaling=false workers=3 Golden { sleep_step: 272, hash: 644842416, query: None }
+RESULT golden query spawn recycle_scaling=false workers=3 Golden { sleep_step: 242, hash: 4088241062, query: Some((59, 3810991933)) }
+RESULT golden mesh drop recycle_scaling=false workers=3 Golden { sleep_step: 226, hash: 3539928733, query: None }
+RESULT golden falling ragdolls recycle_scaling=true workers=8 Golden { sleep_step: 358, hash: 2984986542, query: None }
+RESULT golden wave pile recycle_scaling=true workers=8 Golden { sleep_step: 307, hash: 134867606, query: None }
+RESULT golden query spawn recycle_scaling=true workers=8 Golden { sleep_step: 242, hash: 2661525689, query: Some((59, 3810991933)) }
+RESULT golden mesh drop recycle_scaling=true workers=8 Golden { sleep_step: 220, hash: 3460004450, query: None }
+RESULT golden falling ragdolls recycle_scaling=false workers=8 Golden { sleep_step: 291, hash: 4283195483, query: None }
+RESULT golden wave pile recycle_scaling=false workers=8 Golden { sleep_step: 272, hash: 644842416, query: None }
+RESULT golden query spawn recycle_scaling=false workers=8 Golden { sleep_step: 242, hash: 4088241062, query: Some((59, 3810991933)) }
+RESULT golden mesh drop recycle_scaling=false workers=8 Golden { sleep_step: 226, hash: 3539928733, query: None }
+ok
+test images_match_record ... RESULT images vdw release workers=1 digest ad5d17b34bd73703
+RESULT images vdw release workers=3 digest ad5d17b34bd73703
+RESULT images vdw release workers=8 digest ad5d17b34bd73703
+RESULT images off release workers=1 digest ba9815276c0473fa
+RESULT images off release workers=3 digest ba9815276c0473fa
+RESULT images off release workers=8 digest ba9815276c0473fa
+ok
+test rollback_t1_to_t5 ... RESULT transfer vdw frame=300 workers=1 check_hash 80d8a5de696a5d2fa4b6c01be0e9e25e85e7058d07ea6a90fcadda295acf89b7 bytes 584542
+RESULT rollback T1-T5 vdw workers=1 PASS
+RESULT transfer vdw frame=300 workers=3 check_hash 80d8a5de696a5d2fa4b6c01be0e9e25e85e7058d07ea6a90fcadda295acf89b7 bytes 584542
+RESULT rollback T1-T5 vdw workers=3 PASS
+RESULT transfer vdw frame=300 workers=8 check_hash 80d8a5de696a5d2fa4b6c01be0e9e25e85e7058d07ea6a90fcadda295acf89b7 bytes 584542
+RESULT rollback T1-T5 vdw workers=8 PASS
+RESULT transfer off frame=300 workers=1 check_hash 10fbeff4bb73db7eaf83e7cd689cd71371fac25a22f9e933799de524a43d051f bytes 584391
+RESULT rollback T1-T5 off workers=1 PASS
+RESULT transfer off frame=300 workers=3 check_hash 10fbeff4bb73db7eaf83e7cd689cd71371fac25a22f9e933799de524a43d051f bytes 584391
+RESULT rollback T1-T5 off workers=3 PASS
+RESULT transfer off frame=300 workers=8 check_hash 10fbeff4bb73db7eaf83e7cd689cd71371fac25a22f9e933799de524a43d051f bytes 584391
+RESULT rollback T1-T5 off workers=8 PASS
+ok
+test several_worlds_per_process ... ok
+test trace_matches_record ... RESULT trace vdw workers=1 digest 80839f4a54133e13
+RESULT trace vdw workers=3 digest 80839f4a54133e13
+RESULT trace vdw workers=8 digest 80839f4a54133e13
+RESULT trace off workers=1 digest 7903109aab28ed9b
+RESULT trace off workers=3 digest 7903109aab28ed9b
+RESULT trace off workers=8 digest 7903109aab28ed9b
+ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.38s
+
+   Doc-tests pe_physics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,6 +1,8 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of main, 30 October 2026, after your decisions of 18:42-20:07Z. This summarises design.md section 24
+As of 31 October 2026, after your decisions of 18:42Z-22:54Z on 30 October and 08:31Z on 31 October.
+Your rulings on session admins, roles and join rules (D80, V1-V4) are on main with the view change;
+those on world ownership (D87, D88) arrive with the ownership branch. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
@@ -8,7 +10,17 @@ from measured parts; **inferred** = design reasoning, not run.
 
 ## A. Still open
 
-None. Your 19:58Z rulings settled D74-D78, the five questions your earlier rulings raised.
+One place where the design goes beyond your 08:31Z words, marked [proposal] in design.md:
+* **A best-effort secret filter on open panels** (21.4): open panels stream everything (D86 (b)).
+  Recommended: still mask key-like and token-like strings in what leaves, labelled best-effort. It
+  narrows (b), so it is your call.
+
+Following V2, @coordinator-opus settled that a member whose role can give roles counts as an admin when
+the session checks for its last admin (12.4). World saves follow the approved Gnosarium UX 8a.10, and
+the engine side is in design 16.10. There @coordinator-opus also ruled that loading a backup restores
+world content, never governance (ownership, ACL, roles, join rules, route lists, provenance), and never
+rewinds objects that have left for other worlds or arrived from them. The Gnosarium design's remaining questions are with
+@coordinator-opus.
 
 ## B. Your rulings
 
@@ -50,11 +62,26 @@ None. Your 19:58Z rulings settled D74-D78, the five questions your earlier rulin
 | D74 build mismatch | The peer pauses and the author gets a report; the peer may opt in to run the author's module for that commit | 19:58Z |
 | D75 toolchain | Shared between peers and verified by hash, with the official Rust servers as the fallback | 19:58Z |
 | D76 90 to 60 Hz | The world owner switches, warned by the engine | 19:58Z |
-| D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
+| D77 Linux voice | None in the MVP (the VR keyboard instead); **superseded at 21:51Z** by the built-in speech model on both systems (D33, below) | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
 | D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
-| Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
+| D80 who may change a session's member list | Session admins: an admin's signed kick removes anyone; the view change's two-thirds quorum only commits and orders changes. Always at least one admin, and the last cannot step down without handing on; everyone is an admin by default; the session closes when no admin is left. Admin is the only built-in role; join rules are an ordered matrix with the fixed row "an owner joins as Admin" | 22:11-22:51Z |
+| D33, D77 voice | Voice prompting with one local, offline Whisper-class model built into the engine, on Windows and Linux; Windows speech recognition only as a lighter fallback. The models ship in the installer | 21:50-21:51Z, 22:23Z |
+| Spatial context and guidance tools | Panels know where you look, what you look at and where you point; tools to point at objects, select areas and draw shapes for the agent | 21:52Z |
+| D25 launch harnesses | Claude Code, Codex and Antigravity, through one generic harness layer, as Orgtree supports them | 21:54-21:55Z |
+| Spoken replies | A text-to-speech tool the agent is encouraged to use after a spoken prompt; spoken to people nearby by default; your world mic stays open while you prompt (a setting can mute it) | 22:02Z, 22:23Z |
+| Transcript and settings | Consecutive tool calls collapse into one row (details behind an advanced setting); game settings change by talking to your agent; guests cannot change your settings | 22:03Z, 22:28Z |
+| D26 open panels | Openness first: people nearby hear prompts and replies, see guidance and watch agents work. A private-panel switch, off by default. Six things stay closed: the Locked default, approvals, credentials, inboxes, direct messages and eye tracking | 22:28Z, 22:34Z, 22:54Z |
+| D27a confidants | Friends you mark as confidants may use your panels as you, and the agent is told; they do not confirm your approvals | 22:34Z, 22:54Z |
+| Logic build profile (13.2) | "Fast builds": committed modules use `rel-fast` (no LTO) | 22:47Z |
+| Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus an Intel laptop; ARM deferred | 19:58Z |
 | Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
+| V1-V4 session admins (D80, refined) | Kicking an admin is a permission of its own, held by default only by admins (V1); a role that can give roles counts as Admin (V2 = b); when the last admin times out the session closes: every other player is removed, everyone is told, and the world allows no further change (V3); a member that keeps forcing view changes is left to admins (V4 = a) | 08:31Z (m716adebd0591) |
+| D81-D85 agent-panel proposals | As recommended: a spike before the speech model is chosen (D81); a guest's or confidant's turn carries only their own gaze and pointing (D82); annotations last until their author clears them, are never saved, and admins may clear them (D83); everyday settings change at once with undo, sensitive ones need you (D84); spoken replies are made on the panel owner's peer and streamed (D85) | 08:31Z |
+| D86 what an open panel shows | (b): everything, including the detailed tool view, raw output and file contents | 08:31Z |
+| D89 confidants' tools | (b): full access as ruled, shell included on a Full panel; no Restricted-by-default setting | 08:31Z |
+| Q29 world saves | Autosave, plus saved checkpoints made by hand; every world keeps a list of backups that can be loaded at any time (UI: Gnosarium UX 8a.10; storage and engine rules: design 16.10) | 08:31Z |
+| Cloth scope | Delegated to @coordinator-opus, who placed gameplay cloth and soft bodies in phase 4 (a pe-physics module) and cosmetic cloth in phase 5 (design 23.2) | 08:32Z |
 
 The times are yours; @coordinator-opus relayed most of these rulings.
 
@@ -70,17 +97,18 @@ The times are yours; @coordinator-opus relayed most of these rulings.
   held, no hold cap), D39, D40, the D42 and D53 parameters, D46, D47, D54-D56, D64 (compact acks at
   scale), D73 (packed hand targets).
 * **Networking and discovery:** D8 (UDP with Noise encryption); D9 and D35 (invites, LAN, peer exchange,
-  the public DHT, volunteer relays, 4-word session codes, hosts announce a relay).
+  the public DHT, volunteer relays, 4-word session codes, a code's creator announces a relay).
 * **Live code and source control:** D10 (the creator owns a world); D14a-d (one module is the merge unit,
   seats limited to the conflict, 10 s from the front of the queue); D15 (our own component store); D16
   (BLAKE3); D17 (a peer missing an asset pauses only itself).
 * **Worlds:** D43 (a player present elsewhere shows as a dimmed avatar), D44 (live portal views), D45
   (settled handoff), D48 (logic on carried objects runs only where allowed).
 * **VR, avatars, platforms:** D18b (hands collide only when reaching); D19 (clean-room import of exported
-  files, glTF preferred, a license notice, basic 3-point IK); D33 (Windows speech recognition); D65-D67
+  files, glTF preferred, a license notice, basic 3-point IK); D33 (Windows speech recognition, revised at 21:51Z to a built-in model on both systems); D65-D67
   (avatar budgets, hands push by default, per-avatar safety controls); D1 (system components and Rust
   inline assembly allowed; the Wayland C shim turned out not to be compiled at all; D24 was merged into D1).
-* **Agent panels:** D25, D25a (your own panel without shell or web by default), D26, D27c and D27e (for
+* **Agent panels:** D25, D25a (your own panel without shell or web by default), D26 (reversed at
+  22:28Z: open by default), D27c and D27e (for
   inbox and decider sessions), D28a (agent commits in shared worlds need confirmation), D29-D31 (including D30a and D30b: incoming panel messages go to a separate inbox, text only by default).
 * **Plan:** D22 (phases as planned), re-planned in section 23.2 for your rulings.
 
@@ -89,16 +117,29 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 **Built: working spike code, with tests or scenario suites**
 * Deterministic Box3D in Rust, with our van der Waals fork on by default: reference goldens, a 600-frame
   trace equal across release, debug and other build settings, snapshot and rollback. Byte-identical on
-  this PC, on <laptop> (Intel) and as a Linux build, the wasm modules included.
-* The session protocol: signed entries, confirmation, cheater proofs and eviction, removal of one crashed
-  member, demotion, transfers between two worlds, congestion control. 30 scenarios in the session
-  simulator all match their offline replays; a two-process UDP version also matches.
+  this PC, on an Intel laptop and as a Linux build, the wasm modules included.
+* The session protocol: signed entries, confirmation, cheater proofs, transfers between two worlds,
+  congestion control, and (phase 2) the view change: several members removed at once, withheld or
+  forked votes, colluders, a cheating proposer, a member that withholds references, and joins. Every
+  scenario in the session simulator matches its offline replay; a two-process UDP version also matches.
+* Per-object provenance for transfers between worlds (P2-5), checked against each world's epoch
+  certificates.
 * The ball pit (500 balls and a hand), the snapshot study behind the slider, and the ball-pit video
   matrix renderer.
 * Live game logic in WebAssembly (wasmi): hot swap at a fixed frame, rollback across it, and runaway code
   stopped by fuel. Modules are byte-identical when built at different paths on one machine.
-* An MCP stub, the iteration benchmark (0.45 s edit to first frame), physics-hook cost measurements, and
-  the R16 and R17 measurements (coordinates, relevance, spatial index, region rollback, avatar tiers).
+* The iteration benchmark (0.45 s edit to first frame), physics-hook cost measurements, and the R16 and
+  R17 measurements (coordinates, relevance, spatial index, region rollback, avatar tiers).
+
+**Built in phase 2, on main**
+* The engine's core crates: ids, the fixed-step clock, bit-exact maths, random streams, hashing, and the
+  sim store with copy-on-write snapshots and a checked state transfer (P2-1).
+* The engine's MCP server, `pe-mcp`: Claude Code drove a simulated peer through it over a named pipe and
+  over HTTP, with identical results (P2-8).
+* Multi-threaded Box3D in our fork, bit-exact across thread counts (D2).
+* The local determinism matrix (this PC's Windows and WSL, and an Intel laptop) and byte-identical logic builds
+  across Windows and Linux, with the pinned toolchain (P2-6, P2-7).
+* Provenance chains for objects carried between worlds (P2-5), and the session simulator as a tool (P2-9).
 
 **Designed only: text, not code**
 * The engine itself: renderer, VR, scene graph and components, assets, Resonite import, MCP server,
@@ -107,20 +148,24 @@ The times are yours; @coordinator-opus relayed most of these rulings.
   Orgtree bridge, multi-world rendering and portals (R14), physics layers beyond hooks (R15).
 * Regions with provisional arrival and following (R16): modelled, not built.
 * Every-peer builds (D11), logic-state snapshots (D57), compact acks, and relaying for larger sessions.
-* **First in phase 2 (MVP prerequisites since D21):** the proposer-based view change and per-object
-  provenance chains.
+* **Built in the spike, not yet in the engine:** the view change and provenance chains, both MVP
+  prerequisites since D21; they move into `pe-session` next (P2-3).
 
 ## Top 5 risks
 
-1. **Determinism on ARM and macOS:** main is byte-identical on this PC, on <laptop> (Intel) and as a Linux
+1. **Determinism on ARM and macOS:** main is byte-identical on this PC, on an Intel laptop and as a Linux
    build, but ARM and macOS have never run. Parallel physics must also stay bit-exact across thread
    counts.
 2. **CPU at 90 Hz and at scale:** the ball pit already needs about 2.8 ms of re-simulation per 60 Hz frame;
    90 Hz costs 1.5x that. Parallel physics is the chosen answer, and its feasibility is still being
    studied.
-3. **Strangers from day one:** until the phase-2 view change is built, two colluders or two members
-   failing at once stall a session (safely); cheating stays bounded, not prevented.
+3. **Strangers from day one:** the view change now removes several failed members, colluders and
+   cheaters in the simulator, and with D80 settled a session cannot fork while at most about a third of
+   its members cheat, proven or not. Above that, a partition plus one-sided proofs can fork it (measured
+   as a control). Cheating stays bounded, not prevented.
 4. **Every peer compiles:** byte-identical builds across machines and operating systems are unproven,
    joining a world means building its code, and every peer compiles other people's code (in a sandbox).
 5. **Unlocked panels:** guests act with your rights and your AI account, which you accepted; prompt
-   injection by a guest can do whatever your panel can.
+   injection by a guest can do whatever your panel can. Confidants hold the same rights at all your
+   panels. Open panels show prompts and replies to everyone nearby, so an agent that reads a secret can
+   repeat it; the filter for secrets is best-effort.
