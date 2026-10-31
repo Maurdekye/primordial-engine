@@ -30,7 +30,11 @@ named here, **[I]** inferred.
 Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states` [V];
 29 unit and integration tests in pe-session [V].
 
-**Still to do:** P2-4 rounds 4 and 5, P2-9's scenario files on this core, Linux runs.
+**Linux** (at 1404a0c; static musl builds in WSL2, kernel 6.6.87.2, `scripts/p2-3/run_linux.sh`): 29 of 29
+tests pass, and every scenario's log equals the Windows log, timings masked (70 identical, SUMMARY ALL
+EQUAL) [V].
+
+**Still to do:** P2-4 rounds 4 to 6, P2-9's scenario files on this core.
 
 ## Engine state on pe-sim (S5)
 
