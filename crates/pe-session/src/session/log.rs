@@ -131,6 +131,14 @@ impl WorldSim {
         self.signed(e)
     }
 
+    /// Test fixture (review HO-1, round 2): author `payload` carrying a chosen object state.
+    pub fn author_carrying(&mut self, payload: Payload, carried: (u32, BodyState)) -> SignedEntry {
+        let stamp = self.frame.max(self.now);
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: Some(carried) };
+        let e = self.publish(e);
+        self.signed(e)
+    }
+
     /// Test fixture for review H5: author with an arbitrary (backdated) stamp.
     pub fn author_backdated(&mut self, payload: Payload, back: u64) -> SignedEntry {
         let stamp = self.frame.max(self.now).saturating_sub(back);
@@ -304,9 +312,17 @@ impl WorldSim {
             }
             // Review VC-4: a precommit's boundary caps its author's acks, so it must lie ahead of the
             // horizon the author has declared, by at most two join leads.
+            // Review VCR-12: the upper bound counts from the entry's own stamp as well, so a member that
+            // has not acked yet, or lags, can still precommit a join.
             Payload::Precommit { boundary, .. } if *boundary > 0 && self.fixes_off & fix::VC4 == 0 => {
                 let h = max_h.unwrap_or(0);
-                *boundary > h && *boundary <= h + 2 * self.cfg.join_lead
+                let from = if self.fixes_off & fix::VCR12 == 0 { h.max(e.stamp) } else { h };
+                *boundary > h && *boundary <= from + 2 * self.cfg.join_lead
+            }
+            // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
+            // horizon like any entry: no backdating past what its author has declared.
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } if self.fixes_off & fix::VCR9 == 0 => {
+                max_h.is_none_or(|h| e.stamp > h)
             }
             Payload::Vote { .. }
             | Payload::Propose { .. }

@@ -31,12 +31,12 @@ RESULT   forged by m2 in world 1: RESIDUAL: W's majority double-spends A:52 (now
 RESULT r14 doublespend: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
 RESULT r14 doublespend: dishonest-majority W (provenance on): A:52 A 1 B 1 pending 0 (W 0); A:53 A 1 B 0 pending 0 (W 0); A:54 A 1 B 0 pending 0 (W 0); A:55 A 1 B 0 pending 0 (W 0); W:500 A 0 B 0 pending 0 (W 0) -> NOT CONSERVED in the honest worlds
 RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 8412437379442115937 (transfers 7149133257556835599 and 2726319381403336683); verifies for a third party: true
-  m2 world 6: rollbacks 2 max depth 4 resim frames 11 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
+  m2 world 6: rollbacks 2 max depth 4 resim frames 11 (0.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
   m3 world 6: rollbacks 1 max depth 3 resim frames 3 (0.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
-  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (4.5 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (11.0 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 3 max depth 3 resim frames 9 (1.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (2.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (3.7 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (9.1 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 3 max depth 3 resim frames 9 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (1.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
 RESULT r14 doublespend A world 1: frames 0..500 digests m1=8b8eb6807dc9fe21 m2=8b8eb6807dc9fe21 | offline replay 8b8eb6807dc9fe21 | ALL EQUAL
 RESULT r14 doublespend B world 2: frames 0..400 digests m1=83082cd4cc5c575a m3=83082cd4cc5c575a | offline replay 83082cd4cc5c575a | ALL EQUAL
 RESULT r14 doublespend W world 6: frames 0..480 digests m2=86144068b8cbd59b m3=86144068b8cbd59b | offline replay 86144068b8cbd59b | ALL EQUAL

@@ -199,7 +199,7 @@ pub fn badproposer() {
         if let Some(g) = genuine {
             if let Payload::Propose { epoch, round, valid_round, ref change } = g.payload {
                 let mut f = g.clone();
-                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![] };
+                let reset = Change { epoch, remove: vec![], add: vec![], boundary: 0, excluded: change.excluded.clone(), admin: vec![], add_roles: vec![], add_attests: vec![] };
                 f.payload = Payload::Propose { epoch, round, valid_round, change: reset };
                 forged.set(f.id());
                 for &to in &fooled {

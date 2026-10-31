@@ -322,6 +322,8 @@ struct VoteRec {
     id: EntryId,
     /// The kick it answers (0: none, D80).
     kick: EntryId,
+    /// My present when I recorded it (review VCR-1: how long a kick vote has named no live kick).
+    at: u64,
 }
 
 /// Result of checking a vote against its voter's own earlier acks (review R3-1).
@@ -499,6 +501,8 @@ pub struct WorldSim {
     /// rounds it holds no proposal for, never proposes, and never applies a decision, so it can
     /// back both sides of a partition in one epoch.
     pub byz_ally: bool,
+    /// Test fixture (review VCR-7): with `byz_ally`, prevote every proposal but never precommit.
+    pub byz_no_precommit: bool,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
     /// D80: each member's role. Every genesis member is an admin unless the session says otherwise.
@@ -527,6 +531,12 @@ pub struct WorldSim {
     newer_since: BTreeMap<MemberId, u64>,
     /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
     adopting: bool,
+    /// Review VCR-4: per member, the epochs reached by resets that overruled one of its votes or caps.
+    strikes: BTreeMap<MemberId, Vec<u32>>,
+    /// Review VCR-8: admin entries a decided change lists and this replica lacks: (member to ask, id),
+    /// and every pair asked so far.
+    entry_wants: Vec<(MemberId, EntryId)>,
+    entry_asked: BTreeSet<(MemberId, EntryId)>,
     /// Values decided by a quorum of precommits that this replica holds no proposal for:
     /// (member to ask, value), and every pair asked so far.
     value_wants: Vec<(MemberId, u64)>,
@@ -654,6 +664,7 @@ impl WorldSim {
             vc_log: Vec::new(),
             withhold_vc: false,
             byz_ally: false,
+            byz_no_precommit: false,
             hidden: None,
             ref_advanced: BTreeMap::new(),
             withhold_checked: 0,
@@ -675,6 +686,9 @@ impl WorldSim {
             fake_ack_epoch: None,
             newer_since: BTreeMap::new(),
             adopting: false,
+            strikes: BTreeMap::new(),
+            entry_wants: Vec::new(),
+            entry_asked: BTreeSet::new(),
             value_wants: Vec::new(),
             value_asked: BTreeSet::new(),
             wants: Vec::new(),

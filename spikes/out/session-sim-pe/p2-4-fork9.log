@@ -1,5 +1,5 @@
-  fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3) with VC-2's fix switched off (the behaviour before the fix): a replica's confirmed-frame assertion stopped the run at t=2350 ms; m1 conf 124 of frame 134, m2 conf 116 of frame 134, m3 conf 128 of frame 134
-  fork at 9's seq 55, t=1935 ms; branch B 24 entries plus 10 extra acks
+  fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3) with VC-2's fix switched off (the behaviour before the fix): the run stopped at t=2350 ms: a replica hit an assertion or a panic; m1 conf 124 of frame 134, m2 conf 116 of frame 134, m3 conf 128 of frame 134; at m1: members {1, 2, 3}, evicted [9]
+  fork at 9's seq 55, t=1935 ms; branch B 25 entries plus 10 extra acks
 RESULT fork9: m1 members {1, 2, 3} evicted {9: (63, 124)} conf 467 frame 473 paused frames 0 lying votes found 0
 RESULT fork9: m2 members {1, 2, 3} evicted {9: (63, 124)} conf 467 frame 473 paused frames 0 lying votes found 0
 RESULT fork9: m3 members {1, 2, 3} evicted {9: (63, 124)} conf 467 frame 473 paused frames 0 lying votes found 0

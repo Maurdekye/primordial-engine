@@ -125,9 +125,40 @@ impl WorldSim {
                     self.newer_since.remove(&j);
                     continue;
                 }
+                // Review VCR-12: while another member's acks show more of some chain than I hold, I am
+                // the one behind (a decision I have not seen yet): fetch, and start the timer over.
+                if self.fixes_off & fix::VCR12 == 0 {
+                    let behind: Vec<(MemberId, MemberId, u32, u32)> = self
+                        .refs
+                        .iter()
+                        .filter(|((k, y), _)| *k != self.me && *k != j && *y != self.me)
+                        .filter_map(|((k, y), r)| {
+                            let mine = self.contiguous.get(y).copied().unwrap_or(0);
+                            r.keys().next_back().filter(|&&top| top > mine).map(|&top| (*k, *y, mine + 1, top))
+                        })
+                        .collect();
+                    if !behind.is_empty() {
+                        for (k, y, a, b) in behind {
+                            self.want_from(k, y, a, b);
+                        }
+                        self.newer_since.insert(j, self.now);
+                        continue;
+                    }
+                }
                 let since = *self.newer_since.entry(j).or_insert(self.now);
                 if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.withhold_vc {
                     self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.epoch));
+                    out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
+                }
+            }
+        }
+        // Review VCR-4: a member whose votes or caps resets keep overruling forces a view change each
+        // epoch. Its record survives the decisions it forces, so it is voted out.
+        if self.fixes_off & fix::VCR4 == 0 {
+            let struck: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != self.me && !self.voted(j) && self.struck_out(j)).collect();
+            for j in struck {
+                if !self.withhold_vc {
+                    self.ev(format!("member {j}'s votes or caps were overruled in {STRIKES_OUT} of the last {STRIKE_EPOCHS} epochs: vote to remove it"));
                     out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
                 }
             }

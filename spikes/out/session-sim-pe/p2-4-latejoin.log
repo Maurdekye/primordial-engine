@@ -1,0 +1,12 @@
+  joiner admitted at m1: false
+  latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2) with VCR-3's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 363 of frame 483; at m1: members {1, 2, 3}, evicted [5]
+RESULT latejoin: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
+RESULT latejoin: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
+RESULT latejoin: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
+RESULT latejoin: m5 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 176 (t=3.03 s) round 0 removed []; epoch 2 at frame 176 (t=3.03 s) round 0 removed []; epoch 3 at frame 183 (t=3.15 s) round 0 removed []
+RESULT latejoin: m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 587 of frame 593
+  m1: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 56 bad 0
+  m2: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 56 bad 0
+  m3: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 56 bad 0
+  m5: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 80 violations 0 equivocations 0 checks ok 60 bad 0
+RESULT latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2): frames 0..592 honest m1=4d17774dea870908 m2=4d17774dea870908 m3=4d17774dea870908 m5=4d17774dea870908 | offline replay 4d17774dea870908 | ALL EQUAL, NO FALSE CHECKS ; checks ok 228 bad 0

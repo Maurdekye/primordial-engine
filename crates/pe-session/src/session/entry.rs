@@ -200,6 +200,8 @@ pub enum Msg {
     /// invite or the world's ACL admits it (12). `attests`: the relationships it shows for the
     /// world's join rules (D80).
     Join { member: MemberId, attests: Vec<Attest> },
+    /// Review VCR-8: ask for the entry with this id (an admin entry a decided change lists).
+    FetchEntry { id: EntryId },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -234,6 +236,11 @@ impl Wr {
         self.u32(c.proofs.len() as u32); for e in &c.proofs { self.entry(e) }
     }
     pub(super) fn chain(&mut self, c: &[Hop]) { self.u32(c.len() as u32); for h in c { self.hop(h) } }
+    pub(super) fn attests(&mut self, a: &[Attest]) {
+        assert!(a.len() <= MAX_ATTESTS, "{} attestations: at most {MAX_ATTESTS} travel", a.len());
+        self.u32(a.len() as u32);
+        for x in a { self.u8(x.rel.tag()); self.u32(x.with); self.sig(&x.sig_with); self.sig(&x.sig_joiner) }
+    }
     pub(super) fn entry(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
@@ -293,7 +300,12 @@ impl Wr {
     pub(super) fn change(&mut self, c: &Change) {
         // A change with admin entries or kicks sets the epoch's top bit and carries them; any other
         // keeps the P2-4 layout, so its value is unchanged (D80).
-        let ext = !c.admin.is_empty() || c.remove.iter().any(|r| r.kick != EntryId::NONE) || c.add_roles.iter().any(|&r| r != ADMIN);
+        let ext = !c.admin.is_empty()
+            || c.remove.iter().any(|r| r.kick != EntryId::NONE)
+            || c.add_roles.iter().any(|&r| r != ADMIN)
+            || c.add_attests.iter().any(|a| !a.is_empty());
+        // Review VCR-11: the top bit marks the layout, so an epoch must stay below it.
+        assert!(c.epoch < CHANGE_EXT, "epoch {} does not fit a change's encoding", c.epoch);
         self.u32(if ext { c.epoch | CHANGE_EXT } else { c.epoch });
         self.u32(c.remove.len() as u32);
         for r in &c.remove {
@@ -314,6 +326,8 @@ impl Wr {
             for (id, ok) in &c.admin { self.id(*id); self.u8(*ok as u8) }
             self.u32(c.add_roles.len() as u32);
             for r in &c.add_roles { self.u32(*r as u32) }
+            self.u32(c.add_attests.len() as u32);
+            for a in &c.add_attests { self.attests(a) }
         }
     }
     pub fn msg(&mut self, m: &Msg) {
@@ -325,10 +339,10 @@ impl Wr {
             Msg::Join { member, attests } => {
                 self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member);
                 if !attests.is_empty() {
-                    self.u32(attests.len() as u32);
-                    for a in attests { self.u8(a.rel.tag()); self.u32(a.with); self.sig(&a.sig_with); self.sig(&a.sig_joiner) }
+                    self.attests(attests);
                 }
             }
+            Msg::FetchEntry { id } => { self.u8(8); self.id(*id) }
         }
     }
 }
@@ -377,6 +391,23 @@ impl Rd<'_> {
         for _ in 0..n { c.push(self.hop()?) }
         Some(c)
     }
+    pub(super) fn attests(&mut self) -> Option<Vec<Attest>> {
+        // Review VCR-11: a longer list is refused, never read in part.
+        let n = self.u32()? as usize;
+        if n > MAX_ATTESTS {
+            return None;
+        }
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..n {
+            let rel = match self.u8()? { 1 => Rel::Friend, 2 => Rel::Confidant, 3 => Rel::Invited, _ => return None };
+            v.push(Attest { rel, with: self.u32()?, sig_with: self.sig()?, sig_joiner: self.sig()? });
+        }
+        Some(v)
+    }
+    /// Review VCR-11: a role id is 16 bits; a wider value is refused, never narrowed.
+    pub(super) fn role(&mut self) -> Option<RoleId> {
+        RoleId::try_from(self.u32()?).ok()
+    }
     pub(super) fn state(&mut self) -> Option<BodyState> {
         let mut s = [0u32; 13];
         for b in &mut s { *b = self.u32()? }
@@ -422,8 +453,8 @@ impl Rd<'_> {
                 Payload::Vote { epoch, target, seq, frozen, kick }
             }
             17 => Payload::Kick { epoch: self.u32()?, target: self.u32()? },
-            18 => Payload::SetRole { epoch: self.u32()?, member: self.u32()?, role: self.u32()? as RoleId },
-            19 => Payload::DefineRole { epoch: self.u32()?, role: self.u32()? as RoleId, perms: self.u64()? },
+            18 => Payload::SetRole { epoch: self.u32()?, member: self.u32()?, role: self.role()? },
+            19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
             13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()?, sig: self.sig()? },
@@ -458,14 +489,18 @@ impl Rd<'_> {
         for _ in 0..n { excluded.push((self.u32()?, Proof { a: self.id()?, b: self.id()? })) }
         let mut admin = Vec::new();
         let mut add_roles = vec![ADMIN; add.len()];
+        let mut add_attests = vec![Vec::new(); add.len()];
         if ext {
             let n = self.u32()? as usize;
             for _ in 0..n { admin.push((self.id()?, self.u8()? != 0)) }
             let n = self.u32()? as usize;
             add_roles = Vec::with_capacity(n.min(256));
-            for _ in 0..n { add_roles.push(self.u32()? as RoleId) }
+            for _ in 0..n { add_roles.push(self.role()?) }
+            let n = self.u32()? as usize;
+            add_attests = Vec::with_capacity(n.min(256));
+            for _ in 0..n { add_attests.push(self.attests()?) }
         }
-        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles })
+        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles, add_attests })
     }
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
@@ -480,16 +515,10 @@ impl Rd<'_> {
             5 => Msg::FetchValue { value: self.u64()? },
             tag @ (6 | 7) => {
                 let member = self.u32()?;
-                let mut attests = Vec::new();
-                if tag == 7 {
-                    let n = self.u32()? as usize;
-                    for _ in 0..n.min(64) {
-                        let rel = match self.u8()? { 1 => Rel::Friend, 2 => Rel::Confidant, 3 => Rel::Invited, _ => return None };
-                        attests.push(Attest { rel, with: self.u32()?, sig_with: self.sig()?, sig_joiner: self.sig()? });
-                    }
-                }
+                let attests = if tag == 7 { self.attests()? } else { Vec::new() };
                 Msg::Join { member, attests }
             }
+            8 => Msg::FetchEntry { id: self.id()? },
             _ => return None,
         })
     }

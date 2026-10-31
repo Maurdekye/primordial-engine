@@ -277,9 +277,10 @@ impl WorldSim {
                 if self.not_owner(*obj, e.member) {
                     return Outcome::RejectedNotOwner;
                 }
-                // HO-1 (round 2): a touch carries the state of the object it touches, never another
-                // (which could move a hand its author does not own); refused before any claim.
-                if e.carried.is_some_and(|(c, _)| c != *obj) {
+                // Review HO-1, round 2: a touch carries the touched object's resulting state and no
+                // other; a carried state for another object would overwrite it unclaimed (a member's
+                // hand included).
+                if self.fixes_off & fix::HO1 == 0 && e.carried.is_some_and(|(cobj, _)| cobj != *obj) {
                     return Outcome::RejectedInvalid;
                 }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
