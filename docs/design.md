@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state overwrite (if different) -> hashes          |  |
+ |  | Box3D step -> carried-state write (always, SET-1) -> hashes             |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -681,6 +681,11 @@ inexact.
    holds it. The rule is part of the deterministic sim, so every peer applies it identically. On a
    speculative frame it acts as a prediction, and the real entry replaces it by rollback when it arrives.
    Before this change (3d0f98a), a hand without an entry stopped dead.
+   * A thinned entry (10.9) is followed over its declared span first, and the coast covers only a gap
+     past it: a hand moves while n ≤ (span − 1) + 6 frames after its last entry, then holds (D52, D53).
+     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163]. The
+     spike's rule is still flat (n ≤ `hand_predict`) and off by default (0); it follows with its next
+     change [V].
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
@@ -2021,6 +2026,26 @@ is fixed once the author's chain is contiguous up to it.
   links [V session-sim r14];
 * the rollback window became the speculation limit (6.4).
 
+**Known limits of the port** (P2-3's review round, p2/session 7aa4163) [V @world-chunks; bounded by M1
+hardening, proposal]:
+* **P23-8:** `trusted_check` judges a joiner's check against the joiner's own view of decided changes, so
+  a joiner must hold the changes up to the check frame (the relayed log carries them). It ignores the
+  ack's epoch field. It now refuses when two hashes each reach a quorum (fixed).
+* **P23-9, unbounded growth from one faulty member:** versions per (member, seq); `pc_held` for any
+  future epoch (and `pv_held`, VC8R-1's, the same way; the spike shares both); join requests,
+  `followers` and `known`, with no limit on `expires`; `watched`, filled from any entry's carried index;
+  `Arrival::Rejected { until: u64::MAX }`, never pruned; `seen`, never pruned. Each needs a bound or a
+  prune.
+* **P23-13:** `hand_owners` is fixed from the genesis members and is not hashed state. Nothing checks
+  that a joiner was built from genesis, or that the session id is the genesis hash (SX-1 should).
+* **P23-14:** a hand sent through a portal returns as an unowned dynamic body. `frame_effects` is not in
+  a state transfer, so a joiner never attests commit facts at or before its import frame.
+* **P23-2, the open part:** facts are 256-bit BLAKE3, with the session in the signed message. But
+  `Change::value` and `chain_hash` are still 64 bits (truncated BLAKE3, no longer FNV), so a proposer
+  that grinds two changes to one value, a birthday search of about 2^32, remains possible. Widening both
+  to 256 bits changes the vote payloads and the R14 tables; it goes with P2-5's move to pe-session
+  [proposal; @provenance-eng agrees for the chain hash].
+
 ### 10.9 Recovery when the network degrades (R18)
 
 User requirement 18 (14:29Z): when the network degrades, the engine must detect it and recover. It must
@@ -2065,7 +2090,10 @@ and the engager's hand replayed after the gesture had ended.
    * a fetch for the same range is re-asked with exponential backoff, from 60 ms up to 2 s;
    * a reply holds at most 16 entries, and the requester asks again for the rest;
    * a member answers a fetch only while its uplink to the requester holds under 100 ms;
-   * every batch is split into datagrams of at most 1,200 bytes.
+   * every batch is split into datagrams of at most 1,200 bytes;
+   * a fetch's answer is sent or dropped whole, decided at its first message. Cutting a reply short
+     starved repair: at 36 kbit/s on one link of three, every member paused about 160 frames
+     [V @world-chunks, pe-session].
    * **The weakness this leaves:** repairs only yield. On a link whose steady traffic sits just under
      its cap, a repair waits behind the steady stream, its re-asks back off to 2 s, and confirmation
      crawls or stalls for good. pe-session with R18 off showed it: idle acks at 62.5 kbit/s on a 64
@@ -2090,6 +2118,12 @@ and the engager's hand replayed after the gesture had ended.
      other member holds. Others' histories are never rewritten.
 8. **Repair:** hash checks at confirmed frames and state transfer (9.3, 9.5). These cover true divergence.
    None was observed.
+
+**In pe-session** (P2-3; @coordinator-opus's split): `SessionCore` starts with R18 on (`adapt`,
+`ack_on_frames`). A production IO batches a tick's messages into one datagram per peer and reports its
+uplink queue delay (`set_link`). The test IOs (the session harness and `tools/session-sim`) send one
+datagram per message with the controller off unless a run opts in, so the protocol scenarios keep their
+transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
