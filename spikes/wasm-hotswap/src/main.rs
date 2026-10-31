@@ -174,7 +174,8 @@ impl LogicPeer {
             h.positions.clear();
             for &b in &self.gs.scene.bodies {
                 let p = body_get_position(world, b);
-                h.positions.push([p.x, p.y, p.z]);
+                // The guest ABI reads f32 positions; Box3D's are f64 (D58), narrowed for the guest.
+                h.positions.push([p.x as f32, p.y as f32, p.z as f32]);
             }
             h.impulses.clear();
         }
