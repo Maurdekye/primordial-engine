@@ -9,7 +9,7 @@ RESULT bogusprecommit-1: m1 conf 526 of frame 533, m2 conf 526 of frame 533, m3 
   m1: conf 526 frame 533 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 1 equivocations 0 checks ok 54 bad 0
   m2: conf 526 frame 533 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 1 equivocations 0 checks ok 54 bad 0
   m3: conf 526 frame 533 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 1 equivocations 0 checks ok 54 bad 0
-RESULT bogusprecommit part 1 (9 signs a precommit with boundary 1): frames 0..532 honest m1=e6654e1b955837f0 m2=e6654e1b955837f0 m3=e6654e1b955837f0 | offline replay e6654e1b955837f0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+RESULT bogusprecommit part 1 (9 signs a precommit with boundary 1): frames 0..532 honest m1=2344577f4dd43521 m2=2344577f4dd43521 m3=2344577f4dd43521 | offline replay 2344577f4dd43521 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
   bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon) with VC-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 143 of frame 263, m2 conf 143 of frame 263, m3 conf 143 of frame 263; at m1: members {1, 2, 3, 9}, evicted []
 RESULT bogusprecommit-2: m1 members {1, 2, 3} evicted {9: (91, 173)} conf 526 frame 533 paused frames 0 lying votes found 0
 RESULT bogusprecommit-2: m2 members {1, 2, 3} evicted {9: (91, 173)} conf 526 frame 533 paused frames 0 lying votes found 0
@@ -21,4 +21,4 @@ RESULT bogusprecommit-2: m1 conf 526 of frame 533, m2 conf 526 of frame 533, m3 
   m1: conf 526 frame 533 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 41 bad 0
   m2: conf 526 frame 533 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 41 bad 0
   m3: conf 526 frame 533 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 41 bad 0
-RESULT bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon): frames 0..532 honest m1=e6654e1b955837f0 m2=e6654e1b955837f0 m3=e6654e1b955837f0 | offline replay e6654e1b955837f0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 123 bad 0
+RESULT bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon): frames 0..532 honest m1=2344577f4dd43521 m2=2344577f4dd43521 m3=2344577f4dd43521 | offline replay 2344577f4dd43521 | ALL EQUAL, NO FALSE CHECKS ; checks ok 123 bad 0

@@ -1,6 +1,6 @@
-  transfer: imports 1 refused 2 (Some(Unrequested)); restored the state after frame 150; member 1's newest state then: physics 571064 B, store 20580 B, tables 13 B
+  transfer: imports 1 refused 2 (Some(Unrequested)); restored the state after frame 150; member 1's newest state then: physics 581042 B, store 20580 B, tables 13 B
 RESULT statejoin: joiner restored member 1's state after refusing member 2's tampered one; frames 151..587 at all four EQUAL; 14 check frames equal; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 587 of frame 593
   m1: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m2: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 4 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 6 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
-RESULT statejoin (5 joins by state transfer; member 2 first sends a tampered state): frames 0..592 honest m1=2059bb32f24dbf53 m2=2059bb32f24dbf53 m3=2059bb32f24dbf53 | offline replay 2059bb32f24dbf53 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+RESULT statejoin (5 joins by state transfer; member 2 first sends a tampered state): frames 0..592 honest m1=c6f6cc026a95b69a m2=c6f6cc026a95b69a m3=c6f6cc026a95b69a | offline replay c6f6cc026a95b69a | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
