@@ -137,10 +137,9 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } => "admin",
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } => "admin",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
-            Payload::Ownership { .. } => "entry/ownership",
             _ => "entry/transfer",
         },
         Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } => "fetch",
@@ -685,7 +684,7 @@ impl Sim {
                                 Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
                                 Action::Owner { change, keys } => {
                                     let Some(cert) = r.sim.owner_cert(change, &keys) else { continue };
-                                    r.sim.author(Payload::Ownership { cert }, None)
+                                    r.sim.publish_ownership(cert)
                                 }
                                 Action::Backdated { obj, impulse, back } => {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
