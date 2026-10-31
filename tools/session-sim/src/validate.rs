@@ -84,6 +84,10 @@ impl V<'_> {
                 v.iter().for_each(|&m| self.member(1, m, what));
             }
             Honest::At { members_at } => self.member(1, *members_at, what),
+            Honest::Among { members_at, among } => {
+                self.member(1, *members_at, what);
+                among.iter().for_each(|&m| self.member(1, m, what));
+            }
         }
     }
 
@@ -96,7 +100,7 @@ impl V<'_> {
 
     fn object(&mut self, w: u32, obj: u32, what: &str) {
         let r = self.sim.peers.iter().find_map(|p| p.worlds.get(&w));
-        let ok = r.is_some_and(|r| r.sim.t.objs.get(obj as usize).is_some_and(|o| o.is_some()));
+        let ok = r.is_some_and(|r| r.sim.live(obj).is_some());
         if !ok {
             self.err(format!("{what}: world {w} has no object {obj}"));
         }
@@ -271,6 +275,9 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
     for j in &s.join {
         if v.world(j.world, "join") {
             v.member(j.world, j.member, "join");
+            if let Some(f) = j.from {
+                v.member(j.world, f, "join from");
+            }
             j.to.iter().for_each(|&m| v.member(j.world, m, "join to"));
             j.attests_to.iter().flatten().for_each(|&m| v.member(j.world, m, "join attests_to"));
             if let Some(f) = j.log_from {
@@ -380,6 +387,79 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 }
                 v.time(*plant_ms, "hand_forgery");
             }
+            Byzantine::RotateEntries { member, from_ms, to } => {
+                v.member(1, *member, "rotate_entries");
+                to.iter().for_each(|&m| v.member(1, m, "rotate_entries to"));
+                v.time(*from_ms, "rotate_entries");
+                if to.is_empty() {
+                    v.err("rotate_entries: no members in to".into());
+                }
+            }
+            Byzantine::ChurnVote { member, target, from_ms, until_ms, while_member_at, to } => {
+                v.member(1, *member, "churn_vote");
+                v.member(1, *target, "churn_vote target");
+                to.iter().chain(while_member_at).for_each(|&m| v.member(1, m, "churn_vote"));
+                v.time(*from_ms, "churn_vote");
+                if until_ms.is_some_and(|u| u <= *from_ms) {
+                    v.err("churn_vote: until_ms is not after from_ms".into());
+                }
+            }
+            Byzantine::VoidAdmin { member, at_ms, target, to, .. } => {
+                v.member(1, *member, "void_admin");
+                v.member(1, *target, "void_admin target");
+                to.iter().for_each(|&m| v.member(1, m, "void_admin to"));
+                v.time(*at_ms, "void_admin");
+            }
+            Byzantine::NoopSetrole { member, from_ms, every_ms, to, while_member_at, .. } => {
+                v.member(1, *member, "noop_setrole");
+                to.iter().chain(while_member_at).for_each(|&m| v.member(1, m, "noop_setrole"));
+                v.time(*from_ms, "noop_setrole");
+                if *every_ms == 0 {
+                    v.err("noop_setrole: every_ms is 0".into());
+                }
+            }
+            Byzantine::AdminWedge { member, at_ms, a_to, part, others, part_ms, others_ms, .. } => {
+                v.member(1, *member, "admin_wedge");
+                a_to.iter().chain(others).chain([part]).for_each(|&m| v.member(1, m, "admin_wedge"));
+                v.time(*at_ms, "admin_wedge");
+                if !(at_ms < part_ms && part_ms <= others_ms) {
+                    v.err("admin_wedge: needs at_ms < part_ms <= others_ms".into());
+                }
+                if others.contains(part) || others.contains(member) {
+                    v.err("admin_wedge: others must not hold part or the member".into());
+                }
+            }
+            Byzantine::GoSilent { member, from_ms, .. } => {
+                v.member(1, *member, "go_silent");
+                v.time(*from_ms, "go_silent");
+            }
+            Byzantine::MixRefs { member, of, from_ms, every_ms, .. } => {
+                v.member(1, *member, "mix_refs");
+                v.member(1, *of, "mix_refs of");
+                v.time(*from_ms, "mix_refs");
+                if *every_ms == 0 {
+                    v.err("mix_refs: every_ms is 0".into());
+                }
+            }
+            Byzantine::AdminFork { member, at_ms, target, a_to, b_to, prevote_to, .. } => {
+                v.member(1, *member, "admin_fork");
+                v.member(1, *target, "admin_fork target");
+                a_to.iter().chain(b_to).chain(prevote_to).for_each(|&m| v.member(1, m, "admin_fork to"));
+                v.time(*at_ms, "admin_fork");
+                if a_to.iter().any(|m| b_to.contains(m)) {
+                    v.err("admin_fork: a_to and b_to overlap".into());
+                }
+            }
+            Byzantine::EquivocatePrevote { member, from_ms, value_to, nil_to } => {
+                v.member(1, *member, "equivocate_prevote");
+                value_to.iter().chain(nil_to).for_each(|&m| v.member(1, m, "equivocate_prevote to"));
+                v.time(*from_ms, "equivocate_prevote");
+            }
+            Byzantine::FakeRefs { member, from_ms, of, .. } => {
+                v.member(1, *member, "fake_refs");
+                v.member(1, *of, "fake_refs of");
+                v.time(*from_ms, "fake_refs");
+            }
             Byzantine::GhostVote { member, at_ms, target, to, .. } => {
                 v.member(1, *member, "ghost_vote");
                 v.member(1, *target, "ghost_vote target");
@@ -441,6 +521,10 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
             Report::BeforeFix { honest, .. } => {
                 checks += 1;
                 v.honest(honest, "before_fix");
+                // Its part may stop at an assertion without failing: only with a fix switched off.
+                if s.world.values().all(|w| w.fixes_off.is_empty()) {
+                    v.err("before_fix: the part switches no fix off (fixes_off), so a panic in shipped code would go unreported".into());
+                }
             }
             Report::Handowner { member, .. } => {
                 checks += 1;
@@ -451,7 +535,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.err("fork_info: no fork_branch behaviour".into());
                 }
             }
-            Report::Check { case, honest, sides, at, members, target, .. } => {
+            Report::Check { case, honest, sides, at, members, target, runs, event, expect, conf_min, from_ms, until_ms, .. } => {
                 checks += 1;
                 honest.iter().for_each(|&m| v.member(1, m, "check honest"));
                 sides.iter().flatten().for_each(|&m| v.member(1, m, "check sides"));
@@ -464,12 +548,33 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "lastadmin" => !honest.is_empty(),
                     "adminclose" => honest.len() == 2,
                     "joinrules" => members.len() == 4,
-                    "selfkickhead" | "capchurn" => at.is_some() && target.is_some(),
+                    "selfkickhead" | "capchurn" | "removed" => at.is_some() && target.is_some(),
                     "joinattests" | "lagprecommit" => at.is_some() && target.is_some() && !honest.is_empty(),
                     "slowadmin" => !honest.is_empty(),
                     "kickbackdate" => at.is_some() && !members.is_empty(),
                     "aheadlink" => at.is_some() && !members.is_empty() && !honest.is_empty(),
                     "onesided" => members.len() == 2,
+                    "strikeframe" => at.is_some() && target.is_some() && !members.is_empty(),
+                    "strikeframe_total" => at.is_some() && !members.is_empty() && !runs.is_empty(),
+                    "aheadshield" => {
+                        at.is_some()
+                            && target.is_some()
+                            && !honest.is_empty()
+                            && matches!(expect.as_deref(), Some("voted_out") | Some("harmless"))
+                            && (expect.as_deref() == Some("voted_out") || conf_min.is_some())
+                    }
+                    "fakeref" | "capstale" | "lagchurn" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
+                    "votechurn" | "votechurn_off" => at.is_some() && target.is_some() && from_ms.is_some() && until_ms.is_some(),
+                    "adminvoid" | "joinskip" | "slowref" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "joinwedge" | "adminfork" => at.is_some() && target.is_some() && members.len() == 1 && !honest.is_empty(),
+                    "fakemix" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
+                    "prevotefork_off" => at.is_some() && target.is_some() && event.is_some(),
+                    "prevotefork" => at.is_some() && target.is_some() && event.is_some() && !members.is_empty() && !honest.is_empty(),
+                    "prevotefork_pf" => !members.is_empty() && !honest.is_empty(),
+                    "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "adminwedge" => target.is_some() && !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { .. })),
+                    // The silence start must be a fault rule's, so the two cannot drift apart.
+                    "vcscale" => matches!(r, Report::Check { silent: Some(_), from_ms: Some(t), .. } if s.fault.iter().any(|f| f.drop && f.after_ms == Some(*t))),
                     _ => true,
                 };
                 if !want {

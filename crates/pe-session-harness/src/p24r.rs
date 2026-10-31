@@ -131,7 +131,7 @@ pub fn fork9() {
 /// switched off. With `backdate`, 9 also signs, on A only, a touch backdated 90 frames 100 ms after the
 /// fork. With `detect_us`, everything 3 sends 1 and 2 in the `detect_us` after the fork arrives that late,
 /// so they find the fork late and cut A deeper (round 3: `deepfork`, `cutbackdate`).
-pub(crate) fn fork_run(fixes_off: u32, live_us: u64, backdate: bool, detect_us: u64) -> (Sim, Option<u64>, String) {
+pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: u64) -> (Sim, Option<u64>, String) {
     {
         let ids = [1, 2, 3, 9];
         let mut ps = peers_of(&ids, |m| match m {
@@ -207,7 +207,7 @@ pub(crate) fn fork_run(fixes_off: u32, live_us: u64, backdate: bool, detect_us: 
                         b.prev = b_id[&(b.seq - 1)];
                     }
                     if matches!(b.payload, Payload::Touch { .. }) {
-                        b.payload = Payload::Attest { fact: 0, sig: [0; 64] };
+                        b.payload = Payload::Attest { fact: Fact::ZERO, sig: [0; 64] };
                         b.carried = None;
                     }
                     if matches!(b.payload, Payload::Ack { .. }) {
@@ -266,7 +266,7 @@ pub fn jointiming() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !asked && sim.net.now_us >= 2_000_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                    sim.net.send(1, joiner, m, &join_msg(&TEST_SESSION, joiner, vec![], u64::MAX));
                 }
                 asked = true;
             }
@@ -291,7 +291,8 @@ pub fn bogusprecommit() {
             let ids = [1, 2, 3, 9];
             let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (400, touch(33, 3.0))]) } else { BTreeMap::new() });
             if !fixed {
-                each_sim(&mut ps, |s| s.fixes_off = fix::VC4);
+                // Round 4's cap rule (VC3R-2) would vote 9 out as well.
+                each_sim(&mut ps, |s| s.fixes_off = fix::VC4 | fix::VC3R2);
             }
             let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 9_000_000);
             let mut sent = false;
@@ -300,7 +301,7 @@ pub fn bogusprecommit() {
                     let r9 = sim_mut(sim, 9);
                     let boundary = if part == 1 { 1 } else { r9.now + 30 };
                     let sig = test_fact_sig(9, 1, vc_fact(0, 0, 0xBAD0));
-                    let e = r9.author(Payload::Precommit { epoch: 0, round: 0, value: 0xBAD0, boundary, sig }, None);
+                    let e = r9.author(Payload::Precommit { epoch: 0, round: 0, value: 0xBAD0, boundary, polka: vec![], sig }, None);
                     for m in [1, 2, 3] {
                         sim.net.send(1, 9, m, &Msg::Entry(e.clone()));
                     }
@@ -529,7 +530,7 @@ pub fn joinrules() {
                     _ => vec![],
                 };
                 for m in ids {
-                    sim.net.send(1, j, m, &Msg::Join { member: j, attests: attests.clone() });
+                    sim.net.send(1, j, m, &join_msg(&TEST_SESSION, j, attests.clone(), u64::MAX));
                 }
             }
             asked = true;

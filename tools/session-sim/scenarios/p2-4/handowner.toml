@@ -1,7 +1,3 @@
-# HELD (not run: regress reads only *.toml). Identical to spikes/out/session-sim/handowner.log but for
-# one line the tool adds: the spike's final check covers frames 0..352 while the lowest confirmed
-# frame is 346, and check_world flags a check that reaches speculative frames (UNCONFIRMED).
-# Rename to handowner.toml once the spike's check stops at the confirmed frame.
 description = """
 Design 8.4, P2-8 review HO-1: a member moves only its own hand, and touches or carries no one \
 else's. A 100-ball pit with two hands: member 1 moves hand 100 and member 2 hand 101 across the \
@@ -9,7 +5,8 @@ pit from 1 s to 4 s, and 1 touches its own hand at frame 126. In the forged runs
 sends hand entries for 100 every 4th frame, a grab of it at 2 s, a departure of it at 2.2 s, and \
 at 2.4 s a touch of ball 5 carrying a state for 100, 2 m above where it sees it. Three runs: with \
 the forgeries, without them, and with them and HO-1's round-2 fix switched off. Every forgery \
-must be refused at every replica, and the history must equal the run without them."""
+must be refused at every replica, and the history must equal the run without them, over the frames \
+every compared replica has confirmed."""
 end_ms = 6000
 
 [world.1]

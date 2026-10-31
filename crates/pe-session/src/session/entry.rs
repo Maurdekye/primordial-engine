@@ -32,6 +32,11 @@ impl EntryId {
         self.words()[0]
     }
 
+    /// A test fixture's id that names no entry (`x` in every word): a reference nobody signed.
+    pub fn fake(x: u64) -> EntryId {
+        EntryId(std::array::from_fn(|i| x.to_le_bytes()[i % 8]))
+    }
+
     /// All 256 bits as four little-endian words, for 64-bit hash inputs.
     pub fn words(&self) -> [u64; 4] {
         std::array::from_fn(|i| u64::from_le_bytes(self.0[8 * i..8 * i + 8].try_into().unwrap()))
@@ -134,7 +139,7 @@ pub enum Payload {
     Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, Sig)> },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
-    Attest { fact: u64, sig: Sig },
+    Attest { fact: Fact, sig: Sig },
     /// P2-5, destination world: the source's certified commit of a transfer into this world, relayed
     /// so every member holds the hop the object's next departure must carry. Never simulated.
     Provenance { hop: Hop },
@@ -162,9 +167,10 @@ pub enum Payload {
     /// View change: this member's second-phase vote; a quorum of them decides the value. A value
     /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
     /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
-    /// `sig` is the author's signature over [`vc_fact`] (S3c): the epoch certificate collects these,
-    /// so another world can check it without the entries.
-    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, sig: Sig },
+    /// `polka` (review VC4R-1): a capped precommit carries the prevote ids of the polka that justifies
+    /// it. `sig` is the author's signature over [`vc_fact`] (S3c): the epoch certificate collects
+    /// these, so another world can check it without the entries.
+    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, polka: Vec<EntryId>, sig: Sig },
     /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
     /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
     /// target's chain for the cut, never to approve it. The view change commits it in order with
@@ -214,12 +220,16 @@ pub enum Msg {
     /// View change: ask for the proposal entry carrying `value` (a member that saw a quorum of
     /// precommits for a value it holds no proposal for; the proposer may have equivocated).
     FetchValue { value: u64 },
-    /// A non-member asks to join the world (P2-4). Production: signed by the joiner's key, after an
-    /// invite or the world's ACL admits it (12). `attests`: the relationships it shows for the
-    /// world's join rules (D80).
-    Join { member: MemberId, attests: Vec<Attest> },
-    /// Review VCR-8: ask for the entry with this id (an admin entry a decided change lists).
-    FetchEntry { id: EntryId },
+    /// A non-member asks to join the world (P2-4), after an invite or the world's ACL admits it (12).
+    /// `attests`: the relationships it shows for the world's join rules (D80). `sig`: its own
+    /// Ed25519 signature over [`crate::sign::join_message`] (reviews VC3R-4, VC4R-6), so no one else can
+    /// make or pre-empt its request, and it is valid in this session only, until a change with a
+    /// boundary past `expires`.
+    Join { member: MemberId, attests: Vec<Attest>, sig: Sig, expires: u64 },
+    /// Review VCR-8: ask for the entry with this id (an admin entry a decided change lists), and
+    /// (review VC3R-7) up to `back` of its predecessors down its prev links, so the reply is exactly
+    /// that branch of a forked chain.
+    FetchEntry { id: EntryId, back: u8 },
     /// Design 9.5: a joiner asks a member for its newest confirmed check-frame state.
     FetchState,
     /// The answer: a state transfer, which the joiner restores only after its checks (P22S-1).
@@ -289,7 +299,7 @@ impl Wr {
             Payload::Verdict { transfer, accepted, cert } => {
                 self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
             }
-            Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.sig(sig) }
+            Payload::Attest { fact, sig } => { self.u8(9); self.0.extend_from_slice(&fact.0); self.sig(sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
             Payload::Ack { horizon, heads, check, epoch } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
@@ -311,8 +321,15 @@ impl Wr {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
             Payload::Prevote { epoch, round, value } => { self.u8(12); self.u32(*epoch); self.u32(*round); self.u64(*value) }
-            Payload::Precommit { epoch, round, value, boundary, sig } => {
-                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary); self.sig(sig)
+            Payload::Precommit { epoch, round, value, boundary, polka, sig } => {
+                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary);
+                // Review VC4R-1: a capped precommit carries the prevote ids of the polka that justifies
+                // it, so a member that did not receive them (an equivocated prevote) can fetch them
+                // before it votes the capper out. At most `MAX_POLKA` so the size is bounded.
+                assert!(polka.len() <= MAX_POLKA, "a precommit carries at most {MAX_POLKA} prevote ids");
+                self.u32(polka.len() as u32);
+                for id in polka { self.id(*id) }
+                self.sig(sig)
             }
         }
         match &e.carried {
@@ -326,7 +343,8 @@ impl Wr {
         let ext = !c.admin.is_empty()
             || c.remove.iter().any(|r| r.kick != EntryId::NONE)
             || c.add_roles.iter().any(|&r| r != ADMIN)
-            || c.add_attests.iter().any(|a| !a.is_empty());
+            || c.add_attests.iter().any(|a| !a.is_empty())
+            || !c.add_reqs.is_empty();
         // Review VCR-11: the top bit marks the layout, so an epoch must stay below it.
         assert!(c.epoch < CHANGE_EXT, "epoch {} does not fit a change's encoding", c.epoch);
         self.u32(if ext { c.epoch | CHANGE_EXT } else { c.epoch });
@@ -351,6 +369,8 @@ impl Wr {
             for r in &c.add_roles { self.u32(*r as u32) }
             self.u32(c.add_attests.len() as u32);
             for a in &c.add_attests { self.attests(a) }
+            self.u32(c.add_reqs.len() as u32);
+            for (sig, exp) in &c.add_reqs { self.sig(sig); self.u64(*exp) }
         }
     }
     pub fn msg(&mut self, m: &Msg) {
@@ -359,13 +379,14 @@ impl Wr {
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
-            Msg::Join { member, attests } => {
-                self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member);
+            Msg::Join { member, attests, sig, expires } => {
+                self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member); self.sig(sig); self.u64(*expires);
                 if !attests.is_empty() {
                     self.attests(attests);
                 }
             }
-            Msg::FetchEntry { id } => { self.u8(8); self.id(*id) }
+            Msg::FetchEntry { id, back: 0 } => { self.u8(8); self.id(*id) }
+            Msg::FetchEntry { id, back } => { self.u8(11); self.id(*id); self.u8(*back) }
             Msg::FetchState => self.u8(9),
             Msg::State(st) => {
                 self.u8(10); self.u32(st.world); self.u64(st.frame);
@@ -375,8 +396,17 @@ impl Wr {
     }
 }
 
-pub struct Rd<'a>(pub &'a [u8], pub usize);
-impl Rd<'_> {
+/// A reader of untrusted bytes: the input, the read position, and how deep it is in nested hops.
+pub struct Rd<'a>(pub &'a [u8], pub usize, pub u32);
+
+/// Review P23-1: how many hops may nest (an entry's hop carries certificates whose proofs are entries,
+/// which may carry hops). Deeper input is refused, so a crafted message cannot exhaust the stack.
+pub const MAX_HOP_NESTING: u32 = 8;
+
+impl<'a> Rd<'a> {
+    pub fn new(b: &'a [u8]) -> Self {
+        Rd(b, 0, 0)
+    }
     pub(super) fn take(&mut self, n: usize) -> Option<&[u8]> {
         let s = self.0.get(self.1..self.1 + n)?;
         self.1 += n;
@@ -397,6 +427,15 @@ impl Rd<'_> {
         Some(c)
     }
     pub(super) fn hop(&mut self) -> Option<Hop> {
+        if self.2 >= MAX_HOP_NESTING {
+            return None;
+        }
+        self.2 += 1;
+        let h = self.hop_body();
+        self.2 -= 1;
+        h
+    }
+    fn hop_body(&mut self) -> Option<Hop> {
         let (src, dest, transfer, via, epoch, frame) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?, self.u32()?, self.u64()?);
         let n = self.u32()? as usize;
         let mut certs = Vec::with_capacity(n.min(64));
@@ -465,7 +504,7 @@ impl Rd<'_> {
             }
             16 => Payload::Provenance { hop: self.hop()? },
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
-            9 => Payload::Attest { fact: self.u64()?, sig: self.sig()? },
+            9 => Payload::Attest { fact: Fact(self.take(32)?.try_into().ok()?), sig: self.sig()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
             tag @ (7 | 14) => {
                 let horizon = self.u64()?;
@@ -486,7 +525,14 @@ impl Rd<'_> {
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
-            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()?, sig: self.sig()? },
+            13 => {
+                let (epoch, round, value, boundary) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?);
+                let n = self.u32()? as usize;
+                if n > MAX_POLKA { return None; }
+                let mut polka = Vec::with_capacity(n);
+                for _ in 0..n { polka.push(self.id()?) }
+                Payload::Precommit { epoch, round, value, boundary, polka, sig: self.sig()? }
+            }
             _ => return None,
         };
         let carried = match self.u8()? {
@@ -519,6 +565,7 @@ impl Rd<'_> {
         let mut admin = Vec::new();
         let mut add_roles = vec![ADMIN; add.len()];
         let mut add_attests = vec![Vec::new(); add.len()];
+        let mut add_reqs = Vec::new();
         if ext {
             let n = self.u32()? as usize;
             for _ in 0..n { admin.push((self.id()?, self.u8()? != 0)) }
@@ -528,26 +575,37 @@ impl Rd<'_> {
             let n = self.u32()? as usize;
             add_attests = Vec::with_capacity(n.min(256));
             for _ in 0..n { add_attests.push(self.attests()?) }
+            let n = self.u32()? as usize;
+            add_reqs = Vec::with_capacity(n.min(256));
+            for _ in 0..n { add_reqs.push((self.sig()?, self.u64()?)) }
         }
-        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles, add_attests })
+        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles, add_attests, add_reqs })
     }
     pub fn msg(&mut self) -> Option<Msg> {
+        self.msg_in(false)
+    }
+    /// Review P23-1: a batch holds plain messages only (one level), so decoding never recurses
+    /// further.
+    fn msg_in(&mut self, in_batch: bool) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(SignedEntry { entry: self.entry()?, sig: self.take(64)?.try_into().ok()? }),
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
-            4 => {
+            4 if !in_batch => {
                 let n = self.u32()? as usize;
                 let mut v = Vec::with_capacity(n.min(256));
-                for _ in 0..n { v.push(self.msg()?) }
+                for _ in 0..n { v.push(self.msg_in(true)?) }
                 Msg::Batch(v)
             }
             5 => Msg::FetchValue { value: self.u64()? },
             tag @ (6 | 7) => {
                 let member = self.u32()?;
+                let sig = self.sig()?;
+                let expires = self.u64()?;
                 let attests = if tag == 7 { self.attests()? } else { Vec::new() };
-                Msg::Join { member, attests }
+                Msg::Join { member, attests, sig, expires }
             }
-            8 => Msg::FetchEntry { id: self.id()? },
+            8 => Msg::FetchEntry { id: self.id()?, back: 0 },
+            11 => Msg::FetchEntry { id: self.id()?, back: self.u8()? },
             9 => Msg::FetchState,
             10 => Msg::State(Box::new(StateTransfer {
                 world: self.u32()?, frame: self.u64()?, physics: self.blob()?, store: self.blob()?, tables: self.blob()?,
@@ -562,8 +620,11 @@ pub fn encode_msg(m: &Msg) -> Vec<u8> {
     w.msg(m);
     w.0
 }
+/// Decodes one datagram's message; trailing bytes are refused (review P23-1).
 pub fn decode_msg(b: &[u8]) -> Option<Msg> {
-    Rd(b, 0).msg()
+    let mut r = Rd::new(b);
+    let m = r.msg()?;
+    (r.1 == b.len()).then_some(m)
 }
 
 /// Entries that never act on the simulation: acks, attestations and the membership protocol.

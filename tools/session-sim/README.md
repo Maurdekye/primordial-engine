@@ -21,7 +21,9 @@ pe-session-sim list                                              # every scenari
 ```
 
 `regress` runs each scenario as a child process and writes its log to `target/session-sim/<name>.log`.
-It then compares the log line by line with `spikes/out/session-sim/<name>.log`. Only the four CPU
+It then compares the log line by line with `spikes/out/session-sim-pe/<name>.log`, the log of the
+same scenario on pe-session's harness (P2-3; the spike's logs in `spikes/out/session-sim/` stay as the
+reference of the spike comparison report, `docs/p2-9-spike-comparison.md`). Only the four CPU
 timings the logs print are masked: `resim frames N (<t> ms)`, `re-sim <t> ms per rendered sim
 frame`, `(<t> ms over the window)` and `step avg <t> ms;`.
 
@@ -43,33 +45,39 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `r14/` | 15 | R14 settled handoff: ok, abort, reject, throttle, forge (16 attacks, P2-5's dishonest-majority world W included), late, crash, chain (P2-5: A -> B -> C -> A), chain-epoch (a provenance chain across a view change), and ok/abort/reject/chain in reverse peer order; plus P2-5's two controls, forge-no-provenance and doublespend |
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
-| `p2-4/` | 10 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and `handowner.toml.held` (see below) |
+| `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
-| `p2-4-review/` | 17 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit, aheadlink (round 3); and the control onesided (VC-1) |
+| `p2-4-review/` | 34 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
+| `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
 
-All but `faults/` are the suite of `scripts/run_session_sim.sh` (64 scenarios and the three controls of
-P2-5 and P2-4, whose logs are in `spikes/out/session-sim/p2-5-controls/` and `p2-4-controls/`); their
-logs are identical to the committed ones. The `faults/` logs are new in P2-9. All of them are
-identical on Windows and on Linux (WSL2, glibc): `spikes/out/session-sim/regress-windows.txt`,
+All but `faults/` are the suite of `scripts/run_session_sim.sh --pe` (and the three controls of P2-5
+and P2-4, whose logs are in `spikes/out/session-sim-pe/p2-5-controls/` and `p2-4-controls/`); their
+logs are identical to the committed ones. The `faults/` logs are new in P2-9, blessed on pe-session.
+All of them are identical on Windows and on Linux (WSL2): `spikes/out/session-sim-pe/regress-windows.txt`,
 `regress-linux.txt`.
 
 A committed log without a scenario file yet is listed in `scenarios/spike-only.txt`: a full
 `regress` lists it as spike-only instead of failing on it as an orphan. The list only shrinks: a
-listed name that has a scenario file, or no committed log, is an error. One is left, `handowner`.
-Its scenario, `p2-4/handowner.toml.held` (not run: `regress` reads only `.toml` files), reproduces
-the committed log but for one line the tool adds: the spike's final check covers frames 0..352
-while the lowest confirmed frame is 346, and `check_world` flags a check that reaches speculative
-frames (UNCONFIRMED). It becomes `handowner.toml` once the spike's check stops at the confirmed
-frame.
+listed name that has a scenario file, or no committed log, is an error. It is empty now: every
+committed log has its scenario file. (`handowner` was held for a while: the spike's check covered
+6 frames past the lowest confirmed one, which `check_world` flags as UNCONFIRMED. P2-4's round 4
+fixed the spike.)
+
+`scenarios/not-scenarios.txt` lists the committed logs that are not scenarios at all: the spike's
+property tests (`randsched`, P2-4 round 5's randomized schedule generator, which checks its own
+invariants over 12 seeds). The spike suite runs and checks them; `regress` neither mirrors them nor
+counts them as orphans, and reports each as "not a scenario". A listed name with a scenario file,
+or with no committed log, is an error.
 
 The spike's review repros run once with their fix switched off (`fixes_off`), printing an
 informational line (`before_fix`), and once as shipped. A run with its fix switched off may stop
-at an assertion: that is what it shows, so it is not counted as a failure. Two of them,
-`joinattests` and `lagprecommit`, leave out a touch the spike plans at frame 600, past the end of
-the run (frame 593): it never fires, and the tool refuses an action its member never reaches.
+at an assertion: that is what it shows, so it is not counted as a failure. Five of them,
+`joinattests`, `lagprecommit`, `adminvoid`, `joinsquat` and `fakeref`, leave out a touch the spike
+plans past the end of the run (frame 600 of 593, or 900 of 833): it never fires, and the tool
+refuses an action its member never reaches.
 
 A control run (`control = true`) switches a protection off to show what it prevents, so it is
 expected to print failures such as NOT CONSERVED. `regress` still compares its log, but does not
@@ -128,7 +136,9 @@ routes = [2]                        # R14 genesis route list
 quorum = "majority"                 # D80 quorum rule; default "bft"
 ack_heads = false                   # acks without heads (design 25.5.2); default true
 ack_every_frames = 30               # every replica acks this often
-fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1
+fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1,
+                                    #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S, VC6R1, VC6R3,
+                                    #   VC6R4, PF1
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
@@ -152,11 +162,12 @@ join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallbac
 [world.1.member.1]
 throttle_ms = 250                   # background world from throttle_from_ms (design 22.3)
 throttle_from_ms = 3000
-adapt = true                        # R18 congestion control
+adapt = true                        # R18 congestion control (opt-in here; see the note below)
 ack_every_ms = 1000                 # this member acks this often
 withhold_vc = true                  # Byzantine: casts no view-change entry
 byz_ally = true                     # Byzantine: backs every vote and proposal, applies no decision
 byz_no_precommit = true             # Byzantine: prevotes but never precommits
+quiet_until_member = true           # a joiner that authors no ack before it is admitted
 
 [net]
 seed = 7                            # link RNG (loss, jitter)
@@ -164,7 +175,7 @@ link = { delay_ms = 30, jitter_ms = 10, loss_pct = 1 }      # every link not in 
 links = [{ from = 1, to = 2, delay_ms = 150, jitter_ms = 30 }]  # asymmetric or per pair
 cap = { kbps = 64 }                 # token bucket on every link; burst_bytes 4000, max_queue_ms 500
 caps = [{ from = 3, to = 1, kbps = 12 }]
-batching = true                     # R18: one datagram per member, peer and tick
+batching = true                     # R18: one datagram per member, peer and tick (opt-in here)
 count_ms = [2100, 5760]             # count traffic in this window only
 
 [sim]
@@ -176,12 +187,23 @@ provenance = false                  # P2-5 control only: arrivals skip provenanc
 at_ms = 2000
 member = 5
 to = [1, 2, 3, 9]
+from = 9                            # sent by 9 in 5's name (default: by the member itself)
+sig = 0                             # a forged signature (default: the member's genuine one)
 attests = [{ rel = "friend", with = 1 }]   # rel: friend, confidant, invited; world default 1
 attests_to = [1, 2]                 # only these get the attestations
 log_from = 1                        # then member 1 sends the joiner every entry it holds
 
 [[part]]                            # several runs in one log, each merged onto the rest of the file
 ```
+
+**R18 in the test IO (coordinator ruling 2026-10-31).** pe-session ships with R18 on: `SessionCore`
+starts with `adapt` and `ack_on_frames` true, which is what a production IO (the LAN peer, pe-app)
+gets. This tool's IO, like the harness's, sends one datagram per message with the controller off
+unless a scenario opts in (`adapt` per member, `batching` in `[net]`): the scenarios reproduce
+protocol situations under the spike's transport, and R18 removes some of their premises (a member
+falling behind on a slow link). The R18 runs (`fault-capped-r18`, the harness's `capped` runner and
+the ball-pit matrix) opt in. An R18-on pass over the whole suite is a follow-up
+(r18-on-scenario-suite-pass).
 
 ### Fault rules: `[[fault]]`
 
@@ -193,10 +215,15 @@ delay, or `deliver = true` (so no later rule matches it). Conditions:
 - `world`.
 - `from`, `to`, `involves`: a member id or a list; `involves` means sent by or to.
 - `partition = [[1, 2], [3]]`: sender and receiver are in different groups. Members in no group are unaffected.
-- `msg`: `entry`, `fetch`, `batch`, or an entry payload: `touch`, `hand`, `ack`, `vote`, `propose`, `prevote`, `precommit`, `kick`, `setrole`, `definerole`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `provenance`.
+- `msg`: `entry`, `fetch`, `batch`, `join` (a join request), or an entry payload: `touch`, `hand`, `ack`, `vote`, `propose`, `prevote`, `precommit`, `kick`, `setrole`, `definerole`, `attest`, `depart`, `arrive`, `verdict`, `portal`, `provenance`.
 - `stamp`, `seq`: chain entries only.
 - `author`: chain entries authored by this member (or list), whoever sends them.
+- `round`: `propose`, `prevote` or `precommit` entries of this round; `nil = true` (or `false`):
+  `prevote` or `precommit` entries for nil (or for a value).
 - `times = N`: the rule applies to at most N messages.
+
+With `delay_grows = true` (and `after_ms`), the delay grows with the send time t to
+t - after_ms + delay_ms: a link growing slower (p2-4-slowref).
 
 A silent member (every message to and from it lost) is `involves = 3` with `drop = true`.
 
@@ -248,11 +275,38 @@ behaviour `x` has fired.
 - `precommit`: from `from_ms`, `member` signs a precommit for no proposal with `boundary` (or `ahead`
   frames past its clock) and sends it to `to`: once, or with `every_epoch = true` once per epoch
   (value `value ^ epoch`). `while_member_at = 1`: only while member 1 still has it as a member.
+  `polka = ["0xDEADBEEF00000001"]`: the prevote ids it names, as hex strings (TOML integers stop
+  at i64).
 - `fake_ack_epoch`: from `from_ms`, `member`'s acks claim `epoch`, or `ahead` epochs past its own.
 - `ghost_vote`: at `at_ms`, `member` votes against `target` for a kick `kick` that does not exist.
 - `self_kick_vote`: once `member` holds a kick against itself, it votes on it naming `frozen`.
 - `backdated_kick`: once `member` reaches `at_frame`, it signs a kick of `target` backdated `back`
   frames.
+- `rotate_entries`: from `from_ms`, `member` sends each of `to` only its own entries whose sequence
+  number modulo the length of `to` is that member's index in it.
+- `churn_vote`: from `from_ms` to `until_ms`, in every epoch, `member` votes against `target`
+  (whom everyone hears), forcing a reset.
+- `void_admin`: review VC3R-3: `member` signs a horizon-void SetRole and proposes a change listing it.
+- `fake_refs`: from `from_ms`, `member`'s acks claim `n` more of `of`'s chain than it holds.
+- `go_silent`: from `from_ms`, once `member` holds an entry of its own of kind `holds_own`
+  (`prevote` or `nonnil_prevote`), every message it sends is lost; it still receives and ticks
+  (the spike's crash after a prevote).
+- `mix_refs`: review VC5R-2: from `from_ms`, every `every_ms` `member` alternates between acks
+  naming a fake id at its current seq of `of`'s chain and acks naming a stale real head, re-frozen
+  (`freeze_others`) at a fake turn at least `refresh_ms` after the last.
+- `admin_fork`: review VC5R-1: at `at_ms`, admin `member` forks one seq, a SetRole giving `target`
+  role `role` to `a_to` and an Attest in its place to `b_to` (never the SetRole), proposes a change
+  listing the SetRole, and prevotes nil to `prevote_to`.
+- `equivocate_prevote`: review VC4R-1: from `from_ms`, once round-0 proposer `member` holds its
+  round-0 prevote and proposal, it sends the proposal's value to `value_to` and nil to `nil_to` as
+  two versions of that prevote; its genuine round-0 prevotes reach nobody.
+- `noop_setrole`: review VC6R-4: from `from_ms` (while a member at `while_member_at`), every
+  `every_ms` `member` signs a SetRole giving itself `role`, sent to `to`.
+- `admin_wedge`: review VC6R-3 (p24r4.rs `adminwedge`): at `at_ms` `member` sends `a_to` a SetRole
+  giving itself `role` and keeps a fork of it (an Attest at the same seq); once every one of
+  `others` holds its own precommit, it crashes (everything it sends is lost), and it sends the
+  fork to `part` at `part_ms` and to `others` at `others_ms`, through any fault. `part` must be 4,
+  or 3 if 4 is the round-0 proposer, as in the spike.
 - `hand_forgery`: review HO-1: `member` sends `to` a grab of another member's `hand` at `grab_ms`,
   a departure of it at `carry_ms`, and a touch carrying a state for it at `plant_ms`.
 
@@ -266,8 +320,9 @@ Reports print after the run, in file order, in the spike's formats:
 - `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
 
-  `verdict`, `membership`, `view_changes`, `admin` and `before_fix` take `honest = [1, 2, 3]`, or
-  `honest = { members_at = 3 }`: the membership member 3 holds at the end of the run.
+  `verdict`, `membership`, `view_changes`, `admin` and `before_fix` take `honest = [1, 2, 3]`,
+  `honest = { members_at = 3 }` (the membership member 3 holds at the end of the run), or
+  `honest = { members_at = 2, among = [1, 2, 3] }` (those of `among` in it).
 - `view_changes`: every decision of each member: epoch, frame, round, removed.
 - `admitted`: each member's admissions and `joiner`'s touches.
 - `admin`: per member, the admin entries' outcomes (`outcomes = true`) and/or its members, roles,
@@ -277,8 +332,12 @@ Reports print after the run, in file order, in the spike's formats:
 - `fork_info`: where `fork_branch` forked and how long branch B is.
 - `check`: the spike's one-off checks, ported verbatim: `bridge`, `kickwar`, `kickpartition`,
   `lastadmin`, `adminclose`, `joinrules`, `vcscale`, `selfkickhead`, `capchurn`, `joinattests`,
-  `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink`, `onesided`. The fields each reads are
-  listed in scenario.rs (`Report::Check`).
+  `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink`, `onesided`, `removed`, `strikeframe`,
+  `strikeframe_total` (over kept runs), `aheadshield`, `fakeref`, `capstale`, `lagchurn`,
+  `votechurn` (it samples a confirmation lag before each step, every 100 ms), `votechurn_off`,
+  `adminvoid`, `joinskip`, `joinwedge`, `slowref`, `fakemix`, `adminfork`, `prevotefork`,
+  `prevotefork_off`, `prevotefork_pf`, `capfake`, `fakeadmin`, `adminwedge` (the round-7 cases report
+  liveness: every listed member's frame within a window of its confirmed frame). The fields each reads are listed in scenario.rs (`Report::Check`).
 - `handowner`: review HO-1 over three kept runs (`forged`, `clean`, `fixoff`).
 - `stats`.
 - `membership`.
@@ -301,13 +360,13 @@ Templates (`say`, `line`, `intro`) substitute the following; `{{` and `}}` are l
 - `{conf@M}`, `{frame@M}`, `{now@M}`.
 - `{member@M:X}`, `{members@M}` (a set), `{member_list@M}` (a list), `{evicted@M}`.
 - `{touches@M:A}`.
-- `{proposer@M}` (the first proposer), `{role@M:X}`, `{removed@M:X}` (when M removed X, in s),
-  `{resets@M}`, `{votes@M}` (the targets of M's own votes).
+- `{proposer@M}` (the first proposer), `{role@M:X}`, `{removed@M:X}` (when M removed X, in s,
+  as an Option), `{removed_s@M:X}` (the same as "2.50 s" or "never"), `{resets@M}`, `{strikes@M}`,
+  `{votes@M}` (the targets of M's own votes).
 - For a behaviour's entry: `{x.stamp}`, `{x.seq}`, `{x.target}`, `{x.confirmed@M}`.
 
 ## Not yet
 
-- **`handowner`**: held, see Scenarios.
 - **`pe-session` (P2-3).** The driver moves to it when it exists.
 - **Not ported:** the spike's exploratory subcommands that are not in the suite (`snap`,
   `observer`, `capped`).

@@ -1,0 +1,45 @@
+description = """
+P2-4 review round 4, VC3R-6: latejoin with a joiner that authors no ack before it is admitted, as \
+a joiner that starts from a state transfer rather than replaying the log would. Admin 1 defines \
+two roles (two decisions); at 3 s joiner 5, which nobody follows, asks to join, and member 1 hands \
+it the whole log; it joins at epoch 2. Part 1 runs with VC3R-6's fix switched off, part 2 as \
+shipped: 5 stays."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3]
+joiners = [5]
+follow_joiners = false
+
+[world.1.member.5]
+quiet_until_member = true
+
+[world.1.plan]
+1 = [
+    { at = 40, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 60, define_role = { role = 1, perms = 0 } },
+    { at = 100, define_role = { role = 2, perms = 0 } },
+    { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[join]]
+at_ms = 3000
+member = 5
+to = [1, 2, 3]
+log_from = 1
+
+[[part]]
+world.1.fixes_off = ["VC3R6"]
+report = [
+    { kind = "line", text = "  members at m1: {members@1}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "joinskip (two decisions, then 5 joins at epoch 2 and authors no ack before it is admitted)", fix = "VC3R-6's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3, 5], label = "joinskip" },
+    { kind = "check", case = "joinskip", label = "joinskip", at = 1, target = 5, honest = [1, 2, 3, 5] },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "joinskip (two decisions, then 5 joins at epoch 2 and authors no ack before it is admitted)" },
+]

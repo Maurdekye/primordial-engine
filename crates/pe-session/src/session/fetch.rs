@@ -18,7 +18,8 @@ impl WorldSim {
 
     pub fn on_fetch(&self, author: MemberId, from: u32, to: u32) -> Vec<Msg> {
         // At most 16 entries per reply (review R3-9): the requester asks again for the rest.
-        (from..=to.min(from + 15))
+        // Saturating (review P23-14): a request near u32::MAX must not overflow.
+        (from..=to.min(from.saturating_add(15)))
             .filter_map(|s| self.by_author.get(&(author, s)).and_then(|id| self.signed_entry(*id)))
             .map(Msg::Entry)
             .collect()
@@ -47,8 +48,22 @@ impl WorldSim {
         for (to, value) in values {
             out.push((to, Msg::FetchValue { value }));
         }
-        for (to, id) in ids {
-            out.push((to, Msg::FetchEntry { id }));
+        let mut asked_now = BTreeSet::new();
+        for (to, id, back) in ids {
+            if self.fixes_off & fix::VC4R4 == 0 {
+                // Review VC4R-4: the same 60 ms doubling up to 2 s as range fetches, per (holder, id),
+                // for as long as the entry is missing.
+                if self.entries.contains_key(&id) || !asked_now.insert((to, id)) {
+                    continue;
+                }
+                let wait = match self.entry_backoff.get(&(to, id)).copied() {
+                    Some((t, w)) if now_ms < t + w => continue,
+                    Some((_, w)) => (w * 2).min(2000),
+                    None => 60,
+                };
+                self.entry_backoff.insert((to, id), (now_ms, wait));
+            }
+            out.push((to, Msg::FetchEntry { id, back }));
         }
         out
     }

@@ -6,4 +6,4 @@ RESULT ackgap: m1 conf 477 of frame 533, m2 conf 477 of frame 533, m3 conf 479 o
   m1: conf 477 frame 533 members {1, 2, 3} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 19 bad 0
   m2: conf 477 frame 533 members {1, 2, 3} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 19 bad 0
   m3: conf 479 frame 533 members {1, 2, 3} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 20 bad 0
-RESULT ackgap (3 acks once a second; two decisions fall between two of its acks): frames 0..532 honest m1=e9f313422de9ca97 m2=e9f313422de9ca97 m3=e9f313422de9ca97 | offline replay e9f313422de9ca97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 58 bad 0
+RESULT ackgap (3 acks once a second; two decisions fall between two of its acks): frames 0..532 honest m1=4c984781a53320a2 m2=4c984781a53320a2 m3=4c984781a53320a2 | offline replay 4c984781a53320a2 | ALL EQUAL, NO FALSE CHECKS ; checks ok 58 bad 0

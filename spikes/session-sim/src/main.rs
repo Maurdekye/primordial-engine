@@ -17,6 +17,8 @@ mod r18;
 mod review2;
 mod p24r;
 mod p24r3;
+mod p24r4;
+mod randsched;
 mod review3;
 mod viewchange;
 
@@ -1234,7 +1236,7 @@ fn handowner() {
         let u = (fr - a0) as f64 / (a1 - a0) as f64;
         [((from + (to - from) * u) * 1000.0).round() as i32, 400, (z * 1000.0).round() as i32]
     };
-    let run = |forge: bool, fixes_off: u32| {
+    let run = |forge: bool, fixes_off: u64| {
         let ids = [1, 2];
         let peers: Vec<Peer> = ids
             .iter()
@@ -1293,7 +1295,10 @@ fn handowner() {
     let (b, pb) = run(false, 0);
     // The behaviour before HO-1's round-2 fix: the carried state for member 1's hand is applied.
     let (c, pc) = run(true, fix::HO1);
-    let frames = [&a, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    // Only frames every compared replica has confirmed: past its confirmed frame a replica may still
+    // roll back (ballpit-viz, mirroring this in tools/session-sim).
+    let lowest = |ss: [&Sim; 2]| ss.iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame.saturating_sub(1).min(s.replica(m, 1).sim.conf))).min().unwrap_or(0);
+    let frames = lowest([&a, &b]);
     let mut all_refused = true;
     for m in [1, 2] {
         let r = &a.replica(m, 1).sim;
@@ -1329,7 +1334,7 @@ fn handowner() {
         all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
         println!("  m{m}: member 2's touch of a ball carrying a state for member 1's hand: {planted:?}");
     }
-    let frames_c = [&c, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let frames_c = lowest([&c, &b]);
     let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
     println!(
         "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",
@@ -1414,6 +1419,25 @@ fn main() {
         Some("kickbackdate") => p24r3::kickbackdate(),
         Some("lagprecommit") => p24r3::lagprecommit(),
         Some("aheadlink") => p24r3::aheadlink(),
+        Some("strikeframe") => p24r4::strikeframe(),
+        Some("aheadshield") => p24r4::aheadshield(),
+        Some("fakeref") => p24r4::fakeref(),
+        Some("joinwedge") => p24r4::joinwedge(),
+        Some("slowref") => p24r4::slowref(),
+        Some("prevotefork") => p24r4::prevotefork(),
+        Some("fakemix") => p24r4::fakemix(),
+        Some("adminfork") => p24r4::adminfork(),
+        Some("randsched") => randsched::main(&args),
+        Some("capfake") => p24r4::capfake(),
+        Some("fakeadmin") => p24r4::fakeadmin(),
+        Some("bigjoin") => p24r4::bigjoin(),
+        Some("adminwedge") => p24r4::adminwedge(),
+        Some("capstale") => p24r4::capstale(),
+        Some("lagchurn") => p24r4::lagchurn(),
+        Some("votechurn") => p24r4::votechurn(),
+        Some("adminvoid") => p24r4::adminvoid(),
+        Some("joinsquat") => p24r4::joinsquat(),
+        Some("joinskip") => p24r4::joinskip(),
         Some("joinrules") => p24r::joinrules(),
         Some("onesided") => p24r::onesided(),
         Some("vcscale") => viewchange::vc_scale(

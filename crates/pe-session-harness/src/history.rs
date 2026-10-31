@@ -39,7 +39,7 @@ impl Default for PitRun {
             policy: SnapPolicy::Every(4),
             switch: Vec::new(),
             switch_every: 7,
-            hand_predict: 0,
+            hand_predict: SimConfig::default().hand_predict,
             delay_ms: 60,
             jitter_ms: 10,
             loss: 2,
