@@ -388,12 +388,7 @@ pub fn prepare_prismatic_joint(world: &World, base: &mut JointSim, context: &Ste
     joint.spring_softness = make_soft(joint.hertz, joint.damping_ratio, context.h);
 
     if !context.enable_warm_starting {
-        joint.perp_impulse = Vec2 { x: 0.0, y: 0.0 };
-        joint.angular_impulse = VEC3_ZERO;
-        joint.motor_impulse = 0.0;
-        joint.spring_impulse = 0.0;
-        joint.lower_impulse = 0.0;
-        joint.upper_impulse = 0.0;
+        joint.reset_impulses();
     }
 }
 
