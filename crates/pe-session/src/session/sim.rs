@@ -272,6 +272,11 @@ impl WorldSim {
     ) -> Outcome {
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
+                // Review HO-1: an object a member owns (a hand) is touched by no one else: refused,
+                // so no claim is taken that would block the owner.
+                if self.not_owner(*obj, e.member) {
+                    return Outcome::RejectedNotOwner;
+                }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 if e.member != LOGIC {
                     if let Some(c) = self.t.claims.get(obj) {
@@ -328,6 +333,10 @@ impl WorldSim {
                 Outcome::Accepted
             }
             Payload::Depart { obj, dest, deadline, hop } => {
+                // Review HO-1: nobody carries another member's hand through a portal.
+                if self.not_owner(*obj, e.member) {
+                    return Outcome::RejectedNotOwner;
+                }
                 let transfer = &transfer_id(self.world_id, id);
                 if self.t.escrow.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
@@ -519,7 +528,10 @@ impl WorldSim {
             | Payload::Provenance { .. }
             | Payload::Propose { .. }
             | Payload::Prevote { .. }
-            | Payload::Precommit { .. } => Outcome::Accepted,
+            | Payload::Precommit { .. }
+            | Payload::Kick { .. }
+            | Payload::SetRole { .. }
+            | Payload::DefineRole { .. } => Outcome::Accepted,
         }
     }
 
