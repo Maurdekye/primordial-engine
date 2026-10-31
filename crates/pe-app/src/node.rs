@@ -14,8 +14,9 @@ use std::io::Write;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use pe_mcp::backend::{Authored, Counters, DrivenPeer, EntryId, EntryStatus, Interaction, ScenarioControl};
@@ -27,16 +28,37 @@ use pe_session::splitmix64;
 use serde::{Deserialize, Serialize};
 
 use crate::config::SessionFile;
-use crate::wire::{self, Item};
+use crate::wire::{self, Item, Stamp, QREP_NONE};
 
 pub const WORLD: u32 = 1;
 const PINGS: usize = 12;
 const LINGER_US: u64 = 3_000_000;
 
+// R18 link signal (design 10.9): a LEDBAT-style one-way queueing delay (RFC 6817), measured by the
+// receiver from each datagram's send time and echoed back in the datagram stamp (`qrep`).
+/// The base delay is the minimum one-way delay over 12 buckets of 10 s (2 minutes).
+const BASE_BUCKET_US: u64 = 10_000_000;
+const BASE_BUCKETS: usize = 12;
+/// The current delay is the minimum over the last 100 ms or the last 4 samples, whichever spans more.
+const CURRENT_US: u64 = 100_000;
+const CURRENT_SAMPLES: usize = 4;
+/// A member's report counts at its last value for 5 s (fresh within 1 s), then is ignored.
+const REPORT_HOLD_US: u64 = 5_000_000;
+/// With no report left, the controller is fed a value inside its dead band (above the 10 ms calm
+/// level, below the 40 ms trigger), so its level holds: silence is never read as calm.
+const HOLD_SIGNAL_US: u64 = 25_000;
+/// The scripted bandwidth cap's token bucket (the harness's `Cap` model).
+const CAP_BURST_BYTES: f64 = 4000.0;
+/// CoDel-like drops (scripted `codel`): drop while the sojourn time stays above 5 ms for 100 ms.
+const CODEL_TARGET_US: u64 = 5_000;
+const CODEL_INTERVAL_US: u64 = 100_000;
+/// One row of the link series every 250 ms of session time.
+const SERIES_US: u64 = 250_000;
+
 /// A scripted change to this node's outgoing links, at a session time.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct FaultStep {
-    /// Session milliseconds since the epoch.
+    /// Session milliseconds since the epoch; 0 also covers the time before it (clock sync).
     pub at_ms: u64,
     /// One destination member, or every link when absent.
     #[serde(default)]
@@ -47,6 +69,19 @@ pub struct FaultStep {
     pub delay_ms: u64,
     #[serde(default)]
     pub jitter_ms: u64,
+    /// A bandwidth cap on the link, kbit/s (0: none): a token bucket with a 4 kB burst and a
+    /// tail-drop queue of `queue_ms`, ahead of the delay. The estimator never reads this queue.
+    #[serde(default)]
+    pub rate_kbps: u64,
+    #[serde(default = "default_queue_ms")]
+    pub queue_ms: u64,
+    /// CoDel-like active queue management on the capped queue (design 10.9's AQM limit).
+    #[serde(default)]
+    pub codel: bool,
+}
+
+fn default_queue_ms() -> u64 {
+    500
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -54,6 +89,106 @@ struct Link {
     loss_pct: u32,
     delay_us: u64,
     jitter_us: u64,
+    rate_bps: u64,
+    queue_us: u64,
+    codel: bool,
+}
+
+/// The scripted cap's queue towards one member.
+#[derive(Default)]
+struct Shaper {
+    tokens: f64,
+    last_us: u64,
+    queue: std::collections::VecDeque<(u64, SocketAddr, Vec<u8>)>,
+    bytes: u64,
+    above_since: u64,
+    /// The longest sojourn in the current series row, µs (the true queue, for the evidence only).
+    row_max_us: u64,
+}
+
+/// R18: what this node measures on one member's datagrams to it.
+#[derive(Default)]
+struct RxLink {
+    /// The sender's clock, unwrapped to 64 bits from the newest value seen.
+    last_ts: Option<i64>,
+    /// (bucket start, minimum one-way delay in it), oldest first.
+    base: std::collections::VecDeque<(u64, i64)>,
+    /// (receive time, one-way delay), oldest first.
+    recent: std::collections::VecDeque<(u64, i64)>,
+    q_us: Option<u64>,
+    last_seq: Option<u16>,
+    received: u64,
+    lost: u64,
+}
+
+impl RxLink {
+    fn sample(&mut self, st: Stamp, recv_us: u64) {
+        let ts = match self.last_ts {
+            None => st.ts as i64,
+            Some(l) => l + st.ts.wrapping_sub(l as u32) as i32 as i64,
+        };
+        self.last_ts = Some(self.last_ts.map_or(ts, |l| l.max(ts)));
+        // Offset by the unknown clock difference, which is constant, so it cancels in q.
+        let owd = recv_us as i64 - ts;
+        match self.base.back_mut() {
+            Some(b) if recv_us < b.0 + BASE_BUCKET_US => b.1 = b.1.min(owd),
+            _ => {
+                self.base.push_back((recv_us, owd));
+                if self.base.len() > BASE_BUCKETS {
+                    self.base.pop_front();
+                }
+            }
+        }
+        self.recent.push_back((recv_us, owd));
+        while self.recent.len() > CURRENT_SAMPLES && self.recent.front().is_some_and(|r| r.0 + CURRENT_US < recv_us) {
+            self.recent.pop_front();
+        }
+        let base = self.base.iter().map(|b| b.1).min().unwrap_or(owd);
+        let current = self.recent.iter().map(|r| r.1).min().unwrap_or(owd);
+        self.q_us = Some((current - base).max(0) as u64);
+        // Loss from sequence gaps; a reordered or duplicated datagram counts as neither.
+        self.received += 1;
+        match self.last_seq {
+            Some(l) => {
+                let gap = st.seq.wrapping_sub(l);
+                if gap >= 1 && gap < 0x8000 {
+                    self.lost += (gap - 1) as u64;
+                    self.last_seq = Some(st.seq);
+                }
+            }
+            None => self.last_seq = Some(st.seq),
+        }
+    }
+}
+
+/// R18 evidence: one row of the link series.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkRow {
+    pub t_ms: u64,
+    pub level: usize,
+    /// What the controller was fed (or would have been, with the signal off), ms; None before any report.
+    pub signal_ms: Option<f64>,
+    pub held: bool,
+    /// The longest real sojourn in this node's scripted cap queues during the row, ms.
+    pub true_queue_ms: f64,
+    pub kbit_s: f64,
+    /// Clock frame minus confirmed frame at the row's end (a stall shows as a growing lag).
+    pub conf_lag: u64,
+    /// This node's own estimate of each member's queue towards it, ms.
+    pub rx_q_ms: BTreeMap<u32, f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LinkSummary {
+    pub signal_fed: bool,
+    /// Ticks spent at each congestion level (SessionCore's `level_ms`).
+    pub level_ticks: Vec<u64>,
+    pub max_level: usize,
+    pub max_signal_ms: f64,
+    pub max_true_queue_ms: f64,
+    pub hand_entries: u64,
+    /// Per member: (datagrams received from it, datagrams lost on its way to me).
+    pub rx: BTreeMap<u32, (u64, u64)>,
 }
 
 pub struct NodeOpts {
@@ -65,6 +200,10 @@ pub struct NodeOpts {
     /// The member stops dead at this session time (a scripted drop-out): no goodbye, no flush.
     pub crash_at_ms: Option<u64>,
     pub touches_per_s: u32,
+    /// Author this member's hand along a sweep every frame (ball pit only); R18 thins it.
+    pub hand_sweep: bool,
+    /// Feed the R18 controller the measured link signal (off: today's level-0 behaviour, for comparison).
+    pub link_signal: bool,
     pub out_dir: PathBuf,
     /// Set once the results are written and the linger time has passed.
     pub finished: Arc<AtomicBool>,
@@ -75,6 +214,10 @@ pub struct NodeOpts {
 pub struct Traffic {
     pub datagrams_sent: u64,
     pub datagrams_dropped_by_fault: u64,
+    #[serde(default)]
+    pub datagrams_dropped_by_cap: u64,
+    #[serde(default)]
+    pub datagrams_dropped_by_codel: u64,
     pub datagrams_received: u64,
     pub bytes_sent: u64,
     pub rejected: BTreeMap<String, u64>,
@@ -102,6 +245,8 @@ pub struct Summary {
     pub clock_offset_us: i64,
     pub best_rtt_us: u64,
     pub traffic: Traffic,
+    #[serde(default)]
+    pub link: LinkSummary,
     pub events: Vec<String>,
 }
 
@@ -112,6 +257,8 @@ pub struct Node {
     key: SigningKey,
     keys: BTreeMap<u32, VerifyingKey>,
     sock: UdpSocket,
+    /// Datagrams from the receive thread, each with its arrival time (µs since `origin`).
+    net_rx: Receiver<(u64, Vec<u8>)>,
     origin: Instant,
     leader: u32,
     /// Session time = local time + offset.
@@ -131,6 +278,22 @@ pub struct Node {
     links: BTreeMap<u32, Link>,
     default_link: Link,
     delayed: Vec<(u64, SocketAddr, Vec<u8>)>,
+    shapers: BTreeMap<u32, Shaper>,
+    rx: BTreeMap<u32, RxLink>,
+    out_seq: BTreeMap<u32, u16>,
+    /// Members' reports of my queue towards them: (ms, when received).
+    reports: BTreeMap<u32, (u16, u64)>,
+    link_signal: bool,
+    signal_us: Option<u64>,
+    signal_held: bool,
+    max_signal_us: u64,
+    max_true_queue_us: u64,
+    hand: Option<u32>,
+    hand_frame: u64,
+    hand_entries: u64,
+    series: Vec<LinkRow>,
+    row_start_us: u64,
+    row_bytes: u64,
     rng: u64,
     crash_at_ms: Option<u64>,
     plan: BTreeMap<u64, Vec<Payload>>,
@@ -171,7 +334,38 @@ impl Node {
                 f += period;
             }
         }
-        o.socket.set_nonblocking(true).expect("non-blocking socket");
+        // A receive thread blocks on the socket and stamps each datagram as it arrives (design 10.9:
+        // the receive time is taken at the socket), so the engine's tick time never reads as R18
+        // queueing. The engine thread only sends.
+        let origin = Instant::now();
+        let (net_tx, net_rx) = mpsc::channel();
+        let rsock = o.socket.try_clone().expect("clone the socket");
+        rsock.set_read_timeout(Some(Duration::from_millis(100))).expect("read timeout");
+        std::thread::Builder::new()
+            .name("pe-net-rx".into())
+            .spawn(move || {
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match rsock.recv_from(&mut buf) {
+                        Ok((n, _)) => {
+                            let t = origin.elapsed().as_micros() as u64;
+                            if net_tx.send((t, buf[..n].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                        // A timeout lets nothing through; Windows reports an ICMP port-unreachable
+                        // for an earlier send (a member not up yet, or gone) as a reset: skip it.
+                        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::ConnectionReset) => {}
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("spawn the receive thread");
+        // Each member's hand in the ball pit is object balls + its rank among the sorted ids.
+        let hand = match scene {
+            SceneKind::BallPit { balls, .. } if o.hand_sweep => ids.iter().position(|&m| m == o.me).map(|k| (balls + k) as u32),
+            _ => None,
+        };
         Node {
             core,
             me: o.me,
@@ -180,7 +374,8 @@ impl Node {
             session: o.session,
             key: o.key,
             sock: o.socket,
-            origin: Instant::now(),
+            net_rx,
+            origin,
             offset_us: 0,
             best_rtt_us: u64::MAX,
             pongs: 0,
@@ -196,6 +391,21 @@ impl Node {
             links: BTreeMap::new(),
             default_link: Link::default(),
             delayed: Vec::new(),
+            shapers: BTreeMap::new(),
+            rx: BTreeMap::new(),
+            out_seq: BTreeMap::new(),
+            reports: BTreeMap::new(),
+            link_signal: o.link_signal,
+            signal_us: None,
+            signal_held: false,
+            max_signal_us: 0,
+            max_true_queue_us: 0,
+            hand,
+            hand_frame: u64::MAX,
+            hand_entries: 0,
+            series: Vec::new(),
+            row_start_us: 0,
+            row_bytes: 0,
             rng: splitmix64(o.me as u64 ^ 0x5EED),
             crash_at_ms: o.crash_at_ms,
             plan,
@@ -245,21 +455,17 @@ impl Node {
     // ---- network in ---------------------------------------------------------------------------
 
     fn receive_all(&mut self) {
-        let mut buf = [0u8; 65536];
-        loop {
-            let (n, _from) = match self.sock.recv_from(&mut buf) {
-                Ok(x) => x,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                // Windows reports an ICMP port-unreachable for an earlier send (a member not up yet,
-                // or gone) as a reset on the next receive: skip it, more datagrams may be waiting.
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
-                Err(_) => break,
-            };
+        while let Ok((recv_us, buf)) = self.net_rx.try_recv() {
+            let n = buf.len();
             self.traffic.datagrams_received += 1;
             let keys = &self.keys;
             let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied());
             match r {
-                Ok((sender, items)) if sender != self.me => {
+                Ok((sender, st, items)) if sender != self.me => {
+                    self.rx.entry(sender).or_default().sample(st, recv_us);
+                    if st.qrep != QREP_NONE {
+                        self.reports.insert(sender, (st.qrep, recv_us));
+                    }
                     for i in items {
                         self.on_item(sender, i);
                     }
@@ -345,10 +551,22 @@ impl Node {
     // ---- network out ----------------------------------------------------------------------------
 
     fn apply_faults(&mut self) {
-        let Some(ms) = self.session_ms() else { return };
+        // Steps at 0 ms hold from the node's start, clock sync included: the path a session starts on.
+        let ms = match self.session_ms() {
+            Some(ms) => ms,
+            None if self.faults.first().is_some_and(|f| f.at_ms == 0) => 0,
+            None => return,
+        };
         while self.faults.first().is_some_and(|f| f.at_ms <= ms) {
             let f = self.faults.remove(0);
-            let l = Link { loss_pct: f.loss_pct, delay_us: f.delay_ms * 1000, jitter_us: f.jitter_ms * 1000 };
+            let l = Link {
+                loss_pct: f.loss_pct,
+                delay_us: f.delay_ms * 1000,
+                jitter_us: f.jitter_ms * 1000,
+                rate_bps: f.rate_kbps * 1000,
+                queue_us: f.queue_ms * 1000,
+                codel: f.codel,
+            };
             match f.to {
                 Some(m) => {
                     self.links.insert(m, l);
@@ -358,7 +576,8 @@ impl Node {
                     self.default_link = l;
                 }
             }
-            self.note(format!("fault: links to {} now {}% loss, {} ms +-{} ms", f.to.map_or("all".into(), |m| format!("member {m}")), f.loss_pct, f.delay_ms, f.jitter_ms));
+            let cap = if f.rate_kbps > 0 { format!(", cap {} kbit/s, {} ms queue{}", f.rate_kbps, f.queue_ms, if f.codel { ", CoDel" } else { "" }) } else { String::new() };
+            self.note(format!("fault: links to {} now {}% loss, {} ms +-{} ms{cap}", f.to.map_or("all".into(), |m| format!("member {m}")), f.loss_pct, f.delay_ms, f.jitter_ms));
         }
     }
 
@@ -372,24 +591,40 @@ impl Node {
                 per.entry(to).or_default().push(item.clone());
             }
         }
-        let now = self.local_us();
         for (to, items) in per {
             let Some(addr) = self.session.addr_of(to) else { continue };
             let link = self.links.get(&to).copied().unwrap_or(self.default_link);
-            for d in wire::pack(self.session.session, self.me, &items, &self.key) {
+            // The send time is stamped as the datagram is built, just before it is handed to the
+            // network (the scripted cap and delay stand for the network).
+            let now = self.local_us();
+            let qrep = self.rx.get(&to).and_then(|r| r.q_us).map_or(QREP_NONE, |q| (q / 1000).min(QREP_NONE as u64 - 1) as u16);
+            let mut seq = self.out_seq.get(&to).copied().unwrap_or(0);
+            let ds = wire::pack(self.session.session, self.me, &items, &self.key, || {
+                seq = seq.wrapping_add(1);
+                Stamp { ts: now as u32, seq, qrep }
+            });
+            self.out_seq.insert(to, seq);
+            for d in ds {
                 if link.loss_pct > 0 && self.rand() % 100 < link.loss_pct as u64 {
                     self.traffic.datagrams_dropped_by_fault += 1;
                     continue;
                 }
-                let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
-                let due = now + link.delay_us + jitter;
-                if due <= now {
-                    self.send_now(addr, &d);
+                if link.rate_bps > 0 {
+                    let sh = self.shapers.entry(to).or_default();
+                    // Tail drop once the queue would take longer than queue_ms to drain.
+                    if (sh.bytes + d.len() as u64) * 8_000_000 / link.rate_bps > link.queue_us {
+                        self.traffic.datagrams_dropped_by_cap += 1;
+                        continue;
+                    }
+                    sh.bytes += d.len() as u64;
+                    sh.queue.push_back((now, addr, d));
                 } else {
-                    self.delayed.push((due, addr, d));
+                    self.propagate(link, addr, d, now);
                 }
             }
         }
+        let now = self.local_us();
+        self.drain_shapers(now);
         let mut i = 0;
         while i < self.delayed.len() {
             if self.delayed[i].0 <= now {
@@ -401,11 +636,140 @@ impl Node {
         }
     }
 
+    /// The scripted delay and jitter, after any cap.
+    fn propagate(&mut self, link: Link, addr: SocketAddr, d: Vec<u8>, now: u64) {
+        let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
+        let due = now + link.delay_us + jitter;
+        if due <= now {
+            self.send_now(addr, &d);
+        } else {
+            self.delayed.push((due, addr, d));
+        }
+    }
+
+    /// Release what each scripted cap's token bucket allows (a cap that was lifted releases all).
+    fn drain_shapers(&mut self, now: u64) {
+        let tos: Vec<u32> = self.shapers.keys().copied().collect();
+        for to in tos {
+            let link = self.links.get(&to).copied().unwrap_or(self.default_link);
+            let mut out = Vec::new();
+            let mut codel_drops = 0;
+            {
+                let sh = self.shapers.get_mut(&to).unwrap();
+                if link.rate_bps > 0 {
+                    let dt = now.saturating_sub(sh.last_us) as f64;
+                    sh.tokens = (sh.tokens + dt * link.rate_bps as f64 / 8e6).min(CAP_BURST_BYTES);
+                } else {
+                    sh.tokens = f64::INFINITY;
+                }
+                sh.last_us = now;
+                while let Some((enq, _, d)) = sh.queue.front() {
+                    if (d.len() as f64) > sh.tokens {
+                        break;
+                    }
+                    sh.tokens -= d.len() as f64;
+                    let (enq, addr, d) = (*enq, sh.queue.front().unwrap().1, sh.queue.pop_front().unwrap().2);
+                    sh.bytes -= d.len() as u64;
+                    let sojourn = now - enq;
+                    sh.row_max_us = sh.row_max_us.max(sojourn);
+                    if link.codel {
+                        if sojourn <= CODEL_TARGET_US {
+                            sh.above_since = 0;
+                        } else if sh.above_since == 0 {
+                            sh.above_since = now;
+                        } else if now >= sh.above_since + CODEL_INTERVAL_US {
+                            sh.above_since = now;
+                            codel_drops += 1;
+                            continue;
+                        }
+                    }
+                    out.push((addr, d));
+                }
+                if !sh.tokens.is_finite() {
+                    sh.tokens = CAP_BURST_BYTES;
+                }
+            }
+            self.traffic.datagrams_dropped_by_codel += codel_drops;
+            for (addr, d) in out {
+                self.propagate(link, addr, d, now);
+            }
+        }
+    }
+
     fn send_now(&mut self, addr: SocketAddr, d: &[u8]) {
         if self.sock.send_to(d, addr).is_ok() {
             self.traffic.datagrams_sent += 1;
             self.traffic.bytes_sent += d.len() as u64;
+            self.row_bytes += d.len() as u64;
         }
+    }
+
+    // ---- R18 ----------------------------------------------------------------------------------------
+
+    /// The controller's input: the largest queue delay members report on my datagrams to them.
+    /// Reports are held at their last value for 5 s; with none left, the level holds (dead band).
+    fn feed_link(&mut self, now: u64) {
+        let live: Vec<u64> = self.reports.values().filter(|r| now < r.1 + REPORT_HOLD_US).map(|r| r.0 as u64 * 1000).collect();
+        let (v, held) = match live.iter().max() {
+            Some(&m) => (Some(m), false),
+            None if self.reports.is_empty() => (None, false),
+            None => (Some(HOLD_SIGNAL_US), true),
+        };
+        self.signal_us = v;
+        self.signal_held = held;
+        if let Some(v) = v {
+            if !held {
+                self.max_signal_us = self.max_signal_us.max(v);
+            }
+            if self.link_signal {
+                self.core.set_link(v);
+            }
+        }
+    }
+
+    /// One hand pose per clock frame along a sweep across the pit; the core keeps only those due at
+    /// its congestion level (and gives them their span).
+    fn run_hand(&mut self, cf: u64) {
+        let Some(obj) = self.hand else { return };
+        if cf == self.hand_frame || cf < 120 {
+            return;
+        }
+        self.hand_frame = cf;
+        // A 4 s period: across and back in x, 1.5 sine waves in z, just above the balls.
+        let u = (cf % 240) as f64 / 240.0;
+        let x = -0.9 + 1.8 * (1.0 - (2.0 * u - 1.0).abs());
+        let z = 0.6 * (std::f64::consts::TAU * 1.5 * u).sin();
+        let target_mm = [(x * 1000.0).round() as i32, 200, (z * 1000.0).round() as i32];
+        if self.core.author(Payload::Hand { obj, target_mm, active: true, span: 1 }, 0).is_ok() {
+            self.hand_entries += 1;
+            self.authored += 1;
+        }
+    }
+
+    fn record_row(&mut self, now: u64) {
+        let Some(t_ms) = self.session_ms() else { return };
+        if !self.core.started() || now < self.row_start_us + SERIES_US {
+            return;
+        }
+        let dt = (now - self.row_start_us).max(1) as f64;
+        let true_q = self.shapers.values().map(|s| s.row_max_us).max().unwrap_or(0);
+        self.max_true_queue_us = self.max_true_queue_us.max(true_q);
+        for sh in self.shapers.values_mut() {
+            sh.row_max_us = 0;
+        }
+        let row = LinkRow {
+            t_ms,
+            level: self.core.level,
+            signal_ms: self.signal_us.map(|v| v as f64 / 1000.0),
+            held: self.signal_held,
+            true_queue_ms: true_q as f64 / 1000.0,
+            kbit_s: if self.row_start_us == 0 { 0.0 } else { self.row_bytes as f64 * 8.0 / dt * 1000.0 },
+            conf_lag: self.core.sim.now.saturating_sub(self.core.sim.conf),
+            rx_q_ms: self.rx.iter().filter_map(|(&m, r)| r.q_us.map(|q| (m, q as f64 / 1000.0))).collect(),
+        };
+        self.series.push(row);
+        self.row_start_us = now;
+        self.row_bytes = 0;
     }
 
     // ---- the plan and the end ---------------------------------------------------------------------
@@ -485,6 +849,15 @@ impl Node {
             clock_offset_us: self.offset_us,
             best_rtt_us: self.best_rtt_us,
             traffic: self.traffic.clone(),
+            link: LinkSummary {
+                signal_fed: self.link_signal,
+                level_ticks: self.core.level_ms.to_vec(),
+                max_level: self.core.level_ms.iter().rposition(|&t| t > 0).unwrap_or(0),
+                max_signal_ms: self.max_signal_us as f64 / 1000.0,
+                max_true_queue_ms: self.max_true_queue_us as f64 / 1000.0,
+                hand_entries: self.hand_entries,
+                rx: self.rx.iter().map(|(&m, r)| (m, (r.received, r.lost))).collect(),
+            },
             events: self.log.clone(),
         }
     }
@@ -502,6 +875,13 @@ impl Node {
         }
         let sum = self.summary();
         std::fs::write(self.out_dir.join(format!("summary-{}.json", self.me)), serde_json::to_string_pretty(&sum).unwrap() + "\n")?;
+        let mut f = std::fs::File::create(self.out_dir.join(format!("link-{}.csv", self.me)))?;
+        writeln!(f, "t_ms,level,signal_ms,held,true_queue_ms,kbit_s,conf_lag,rx_q_ms")?;
+        for r in &self.series {
+            let rx: Vec<String> = r.rx_q_ms.iter().map(|(m, q)| format!("{m}:{q:.1}")).collect();
+            let sig = r.signal_ms.map_or(String::new(), |v| format!("{v:.1}"));
+            writeln!(f, "{},{},{},{},{:.1},{:.1},{},{}", r.t_ms, r.level, sig, r.held as u8, r.true_queue_ms, r.kbit_s, r.conf_lag, rx.join(" "))?;
+        }
         Ok(sum)
     }
 
@@ -521,10 +901,13 @@ impl Node {
         if self.epoch.is_some() {
             // Entries authored at a frame's start precede that tick's ack, as in the harness.
             let now = self.local_us();
+            self.feed_link(now);
             if let Some(cf) = self.core.begin_tick(now, false) {
                 self.run_plan(cf);
+                self.run_hand(cf);
             }
             self.core.end_tick(now);
+            self.record_row(now);
         }
         let t2 = self.local_us();
         self.drain_events();
@@ -539,8 +922,9 @@ impl Node {
             self.last_status = local;
             let (s, t) = (&self.core.sim, &self.traffic);
             let line = format!(
-                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} recv {} rejected {:?} bad entry sigs {}",
-                s.frame, s.now, s.conf, s.membership().members(), s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_received, t.rejected, s.stats.bad_sigs
+                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} capped {} recv {} rejected {:?} bad entry sigs {} | R18 level {} signal {:?} ms{}",
+                s.frame, s.now, s.conf, s.membership().members(), s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_dropped_by_cap, t.datagrams_received, t.rejected, s.stats.bad_sigs,
+                self.core.level, self.signal_us.map(|v| v / 1000), if self.link_signal { "" } else { " (not fed)" }
             );
             self.note(line);
         }
