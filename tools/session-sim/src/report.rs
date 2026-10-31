@@ -122,6 +122,11 @@ pub const CHECKS: &[&str] = &[
     "capfake",
     "fakeadmin",
     "adminwedge",
+    "voidfork",
+    "slowcapper",
+    "voiddeep",
+    "plainfork",
+    "pfsilent",
 ];
 
 /// What the run left for the reports besides the simulator.
@@ -137,6 +142,21 @@ pub struct Ctx {
     pub silenced: Vec<MemberId>,
     /// `admin_wedge`'s (round-0 proposer, partitioned member, step reached, crash time in us).
     pub wedge: Option<(MemberId, MemberId, u32, Option<u64>)>,
+    /// `fork_segment`'s (forker, P, step reached, crash time in us).
+    pub segment: Option<(MemberId, MemberId, u32, Option<u64>)>,
+}
+
+/// session-sim p24r4.rs `repro_verdict`: a round-7 or round-8 repro's fix-off run must still show
+/// the failure it was written for and the shipped run must pass; anything else prints FAIL.
+fn repro_verdict(name: &str, fixed: bool, ok: bool, pass: &str, control: &str) {
+    let what = if fixed { pass } else { control };
+    println!("RESULT {name} fixed={fixed}: -> {}", if ok { what } else { "FAIL" });
+}
+
+/// A repro's name and run from its label, "<name> fixed=<b>[ (...)]".
+fn name_fixed(label: &str) -> (&str, bool) {
+    let (n, f) = label.split_once(" fixed=").unwrap_or_else(|| panic!("check: label `{label}` is not `<name> fixed=<bool>`"));
+    (n, f.split(' ').next() == Some("true"))
 }
 
 /// Whether every one of `ids` still confirms near its present at the end of the run (session-sim
@@ -464,7 +484,7 @@ impl Probe {
         let (en, eb) = sim.net.bytes(1, "");
         // Wire estimate: one datagram per message with ~52 B of IP/UDP/AEAD/session overhead.
         let wire = |n: u64, b: u64| (b + 52 * n) as f64 / secs;
-        let naive_payload = p.naive_changed * (4 + 52) + p.naive_frames * 16;
+        let naive_payload = p.naive_changed * (4 + std::mem::size_of::<BodyState>() as u64) + p.naive_frames * 16; // id + exact state
         let naive_quant = p.naive_changed * (2 + 24) + p.naive_frames * 16;
         println!("RESULT ballpit {hz} Hz, {hands} hand(s), input delay {ahead} frames, loss {loss}%: sweep window {secs:.2} s, {} frames", p.naive_frames);
         println!(
@@ -991,11 +1011,17 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
         "capfake" => {
             let (a, t) = (need(at, case, "at"), need(target, case, "target"));
             println!("REPRO {label}: {t} removed at {}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
+            let (name, fixed) = name_fixed(label);
+            let (gone, up) = (removed_at(sim, a, t).is_some(), live(sim, honest));
+            repro_verdict(name, fixed, if fixed { gone && up } else { !gone && !up }, "VOTED OUT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
         }
         "fakeadmin" => {
             let (a, t) = (need(at, case, "at"), need(target, case, "target"));
             let vcs = sim.replica(a, 1).sim.vc_log.len();
             println!("REPRO {label}: {t} removed at {}; decisions at m{a} {vcs}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
+            let (name, fixed) = name_fixed(label);
+            let (gone, up) = (removed_at(sim, a, t).is_some(), live(sim, honest));
+            repro_verdict(name, fixed, if fixed { gone && up } else { !gone && !up }, "VOTED OUT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
         }
         "adminwedge" => {
             let t = need(target, case, "target");
@@ -1006,6 +1032,69 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
                 live(sim, honest),
                 confs(sim, honest)
             );
+            let (name, fixed) = name_fixed(label);
+            let (gone, up) = (removed_at(sim, 1, t).is_some(), live(sim, honest));
+            repro_verdict(name, fixed, if fixed { gone && up } else { !gone && !up }, "REMOVED, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
+        }
+        "voidfork" | "plainfork" | "voiddeep" => {
+            // session-sim p24r4.rs `voidfork`, `plainfork` and `voiddeep` (over `fork_segment_sim`).
+            let (f, p, step, crash_at) = ctx.segment.expect("validated to have a fork_segment behaviour");
+            let (gone, up) = (removed_at(sim, honest[0], f).is_some(), live(sim, honest));
+            let removed = secs(removed_at(sim, honest[0], f));
+            match case {
+                "voidfork" => {
+                    println!(
+                        "REPRO {label}: proposer(0,0)={f}, linked the void version first: {p}; step reached {step}, {f} crashed at {crash_at:?} us; {f} removed at {removed}; live at the end: {up}; {}",
+                        confs(sim, honest)
+                    );
+                    let (name, fixed) = name_fixed(label);
+                    repro_verdict(name, fixed, if fixed { gone && up } else { !gone && !up }, "THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
+                }
+                "plainfork" => {
+                    println!("REPRO {label}: f={f}, P={p}; {f} removed at {removed}; live at the end: {up}; {}", confs(sim, honest));
+                    let (name, fixed) = name_fixed(label);
+                    repro_verdict(name, fixed, if fixed { gone && up } else { !gone && !up }, "THE FORKER IS REMOVED, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
+                }
+                _ => {
+                    // The label is the spike's "voiddeep <void|valid> fixes_off=<hex>".
+                    let guest = need(role, case, "role");
+                    let demoted = honest.iter().filter(|&&m| m != p).all(|&m| sim.replica(m, 1).sim.roles.get(&p) == Some(&guest));
+                    println!("REPRO {label}: f={f}, P={p}; {f} removed at {removed}; P demoted: {demoted}; live at the end: {up}; {}", confs(sim, honest));
+                    let fixed = label.ends_with("fixes_off=0x0");
+                    if label.starts_with("voiddeep valid") {
+                        repro_verdict("voiddeep valid", true, gone && up && demoted, "THE LISTING, VALID ON ITS OWN ANCESTRY, IS DECIDED EVERYWHERE", "");
+                    } else if fixed {
+                        repro_verdict("voiddeep void", true, gone && up && !demoted, "THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON", "");
+                    } else {
+                        repro_verdict("voiddeep void", false, !gone && !up, "", "HALTS, AS BEFORE THE FIX");
+                    }
+                }
+            }
+        }
+        "pfsilent" => {
+            // session-sim p24r4.rs `pfsilent`: epochs of `members`, liveness of all of them but the
+            // forker (`target`), confirmed frames of `honest`.
+            let forker = need(target, case, "target");
+            let remaining: Vec<MemberId> = members.iter().copied().filter(|&m| m != forker).collect();
+            let up = live(sim, &remaining);
+            println!("REPRO {label} (9 silent from 1 s): epochs at the end: {}; live at the end ({}): {up}; {}", epochs(sim, members), id_list(&remaining), confs(sim, honest));
+            let (name, fixed) = name_fixed(label);
+            repro_verdict(name, fixed, if fixed { up } else { !up }, "EVERY MEMBER DECIDES ON THE FORKER'S PRECOMMIT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
+        }
+        "slowcapper" => {
+            // session-sim p24r4.rs `slowcapper`: observer `at`, capper `target`, liveness of
+            // `members`, confirmed frames of `honest`.
+            let (obs, capper) = (need(at, case, "at"), need(target, case, "target"));
+            let voted = sim.replica(obs, 1).sim.all_entries().iter().any(|e| e.member == obs && matches!(e.payload, Payload::Vote { target, .. } if target == capper));
+            let kept = sim.replica(obs, 1).sim.members.contains(&capper);
+            let up = live(sim, members);
+            println!(
+                "REPRO {label} (3 receives the cap's polka prevote 1.5 s late): m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; live at the end ({}): {up}; {}",
+                id_list(members),
+                confs(sim, honest)
+            );
+            let (name, fixed) = name_fixed(label);
+            repro_verdict(name, fixed, if fixed { !voted && kept && up } else { voted }, "THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON", "3 VOTES AGAINST THE HONEST CAPPER, AS BEFORE THE FIX");
         }
         _ => panic!("check: unknown case `{case}`"),
     }

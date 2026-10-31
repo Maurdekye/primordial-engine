@@ -760,6 +760,42 @@ pub enum Byzantine {
         from_ms: u64,
         value_to: Vec<u32>,
         nil_to: Vec<u32>,
+        /// Review VC7R-2 (`slowcapper`): every delivery of the forked value-prevote to `slow_to`,
+        /// from anyone, is delayed a further `slow_ms`.
+        #[serde(default)]
+        slow_to: Vec<u32>,
+        #[serde(default)]
+        slow_ms: u64,
+    },
+    /// Reviews VC7R-1 and VC8R-1 (session-sim p24r4.rs `voidfork` and `fork_segment_sim`): at
+    /// `at_ms`, `member` (the round-0 proposer) forks its chain. Its real branch B goes to `others`
+    /// first and to `p` at `swap_ms`; a forged branch A to `p` first and to `others` at `swap_ms`.
+    /// `segment`:
+    /// - "void_one": B is an Attest (fact 1); A a SetRole giving `p` role `role` at the same seq,
+    ///   stamped `back` frames behind it (`voidfork`), listed in `member`'s change;
+    /// - "void_role" / "valid_role": B is two Attests (facts 1, 2); A an ack declaring horizon
+    ///   B1's stamp + 40 (for "valid_role" claiming epoch + 2, so it counts for nothing) and a
+    ///   SetRole giving `p` role `role`, stamped B1's + 10, listed in `member`'s change;
+    /// - "plain": B is two Attests; A one Attest (fact 3) at B1's seq; `member` proposes an empty
+    ///   change.
+    /// Every precommit it sends is lost (a fault rule's), and once every one of `others` holds its
+    /// own precommit (or at `crash_by_ms`) it crashes: everything it sends is lost. Its own replica
+    /// runs with `own_fixes_off` switched off as well (its code skips the admin checks).
+    ForkSegment {
+        member: u32,
+        at_ms: u64,
+        swap_ms: u64,
+        p: u32,
+        others: Vec<u32>,
+        segment: String,
+        #[serde(default)]
+        role: u16,
+        #[serde(default)]
+        back: u64,
+        #[serde(default)]
+        crash_by_ms: Option<u64>,
+        #[serde(default)]
+        own_fixes_off: Vec<String>,
     },
     /// Review VC6R-4: from `from_ms` (while a member at `while_member_at`, if given), every
     /// `every_ms` `member` signs a no-op SetRole giving itself role `role`, sent to `to`.
