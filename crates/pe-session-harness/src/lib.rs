@@ -169,6 +169,9 @@ impl Net {
             shapers: BTreeMap::new(),
             cap_dropped: 0,
             wire_from: BTreeMap::new(),
+            // The test IO sends one datagram per message unless a run opts into R18's batching (the
+            // scenario suite reproduces protocol situations under the spike's transport; R18 runs,
+            // the capped faults and the matrix, opt in).
             batching: false,
             outbox: BTreeMap::new(),
             tracing: false,
@@ -430,18 +433,33 @@ impl Peer {
         }
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)));
         core.start(epoch_us);
+        // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
+        core.adapt = false;
         core.set_offset(self.skew_us);
         self.worlds.insert(world, Replica { core, scene, plan, pending_accept: Vec::new() });
     }
 }
 
 /// The IO's half of the core's outbox: every message to each of its recipients, in order. Review
-/// R3-9: a repair yields to a long uplink queue (the requester asks again).
+/// R3-9: a repair yields to a long uplink queue (the requester asks again). A reply (consecutive
+/// repairs to one member) is sent or dropped whole, decided at its first message, as the spike
+/// decides per fetch request: cutting replies short once the queue passes the limit starved repair
+/// (P2-3 stall diagnosis: at 36 kbit/s on one link every member paused about 160 frames).
 fn drain(net: &mut Net, w: WorldId, from: MemberId, core: &mut SessionCore) {
+    let mut reply: Option<(MemberId, bool)> = None;
     for o in core.outbox() {
         for to in o.to {
-            if o.class == Class::Repair && net.backlog_us(from, to) > REPAIR_MAX_BACKLOG_US {
-                continue;
+            if o.class == Class::Repair {
+                let send = match reply {
+                    Some((t, send)) if t == to => send,
+                    _ => net.backlog_us(from, to) <= REPAIR_MAX_BACKLOG_US,
+                };
+                reply = Some((to, send));
+                if !send {
+                    continue;
+                }
+            } else {
+                reply = None;
             }
             net.post(w, from, to, &o.msg);
         }
@@ -800,6 +818,11 @@ impl Sim {
 
     pub fn replica(&self, peer: MemberId, w: WorldId) -> &Replica {
         &self.peers[self.peer_index(peer)].worlds[&w]
+    }
+
+    pub fn replica_mut(&mut self, peer: MemberId, w: WorldId) -> &mut Replica {
+        let i = self.peer_index(peer);
+        self.peers[i].worlds.get_mut(&w).expect("world")
     }
 }
 

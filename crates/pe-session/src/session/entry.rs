@@ -139,7 +139,7 @@ pub enum Payload {
     Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, Sig)> },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
-    Attest { fact: u64, sig: Sig },
+    Attest { fact: Fact, sig: Sig },
     /// P2-5, destination world: the source's certified commit of a transfer into this world, relayed
     /// so every member holds the hop the object's next departure must carry. Never simulated.
     Provenance { hop: Hop },
@@ -299,7 +299,7 @@ impl Wr {
             Payload::Verdict { transfer, accepted, cert } => {
                 self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
             }
-            Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.sig(sig) }
+            Payload::Attest { fact, sig } => { self.u8(9); self.0.extend_from_slice(&fact.0); self.sig(sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
             Payload::Ack { horizon, heads, check, epoch } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
@@ -396,8 +396,17 @@ impl Wr {
     }
 }
 
-pub struct Rd<'a>(pub &'a [u8], pub usize);
-impl Rd<'_> {
+/// A reader of untrusted bytes: the input, the read position, and how deep it is in nested hops.
+pub struct Rd<'a>(pub &'a [u8], pub usize, pub u32);
+
+/// Review P23-1: how many hops may nest (an entry's hop carries certificates whose proofs are entries,
+/// which may carry hops). Deeper input is refused, so a crafted message cannot exhaust the stack.
+pub const MAX_HOP_NESTING: u32 = 8;
+
+impl<'a> Rd<'a> {
+    pub fn new(b: &'a [u8]) -> Self {
+        Rd(b, 0, 0)
+    }
     pub(super) fn take(&mut self, n: usize) -> Option<&[u8]> {
         let s = self.0.get(self.1..self.1 + n)?;
         self.1 += n;
@@ -418,6 +427,15 @@ impl Rd<'_> {
         Some(c)
     }
     pub(super) fn hop(&mut self) -> Option<Hop> {
+        if self.2 >= MAX_HOP_NESTING {
+            return None;
+        }
+        self.2 += 1;
+        let h = self.hop_body();
+        self.2 -= 1;
+        h
+    }
+    fn hop_body(&mut self) -> Option<Hop> {
         let (src, dest, transfer, via, epoch, frame) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?, self.u32()?, self.u64()?);
         let n = self.u32()? as usize;
         let mut certs = Vec::with_capacity(n.min(64));
@@ -486,7 +504,7 @@ impl Rd<'_> {
             }
             16 => Payload::Provenance { hop: self.hop()? },
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
-            9 => Payload::Attest { fact: self.u64()?, sig: self.sig()? },
+            9 => Payload::Attest { fact: Fact(self.take(32)?.try_into().ok()?), sig: self.sig()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
             tag @ (7 | 14) => {
                 let horizon = self.u64()?;
@@ -564,13 +582,18 @@ impl Rd<'_> {
         Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles, add_attests, add_reqs })
     }
     pub fn msg(&mut self) -> Option<Msg> {
+        self.msg_in(false)
+    }
+    /// Review P23-1: a batch holds plain messages only (one level), so decoding never recurses
+    /// further.
+    fn msg_in(&mut self, in_batch: bool) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(SignedEntry { entry: self.entry()?, sig: self.take(64)?.try_into().ok()? }),
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
-            4 => {
+            4 if !in_batch => {
                 let n = self.u32()? as usize;
                 let mut v = Vec::with_capacity(n.min(256));
-                for _ in 0..n { v.push(self.msg()?) }
+                for _ in 0..n { v.push(self.msg_in(true)?) }
                 Msg::Batch(v)
             }
             5 => Msg::FetchValue { value: self.u64()? },
@@ -597,8 +620,11 @@ pub fn encode_msg(m: &Msg) -> Vec<u8> {
     w.msg(m);
     w.0
 }
+/// Decodes one datagram's message; trailing bytes are refused (review P23-1).
 pub fn decode_msg(b: &[u8]) -> Option<Msg> {
-    Rd(b, 0).msg()
+    let mut r = Rd::new(b);
+    let m = r.msg()?;
+    (r.1 == b.len()).then_some(m)
 }
 
 /// Entries that never act on the simulation: acks, attestations and the membership protocol.

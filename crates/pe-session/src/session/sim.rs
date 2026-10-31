@@ -242,6 +242,9 @@ impl WorldSim {
                 // applies, on a held object too; world logic never claims.
                 let spike = self.cfg.claim_rule == ClaimRule::Spike;
                 let claims = (*grab || spike) && e.member != LOGIC;
+                // Review P23-6 (design 8.4): a touch on an object another member holds acts only
+                // through physics, against the grab's constraint; its carried state is not written.
+                let held_by_other = self.claim(*obj).is_some_and(|c| c.member != e.member && c.until > f);
                 if claims {
                     if let Some(c) = self.claim(*obj) {
                         if c.member != e.member && c.until > f {
@@ -269,7 +272,7 @@ impl WorldSim {
                     }
                 }
                 if let Some((cobj, st)) = e.carried {
-                    if self.eff.get(&id) == Some(&e.stamp) {
+                    if self.eff.get(&id) == Some(&e.stamp) && !held_by_other {
                         carry.push((cobj, st));
                     }
                 }
@@ -293,7 +296,7 @@ impl WorldSim {
                 }
                 hands_set.insert(*obj);
                 if *active {
-                    self.store.insert(o.id, HandIdle { frames: 0 }).expect("a live hand");
+                    self.store.insert(o.id, HandIdle { frames: 0, span: (*span).max(1) as u64 }).expect("a live hand");
                 } else {
                     self.store.remove::<HandIdle>(o.id).expect("a registered component");
                 }
@@ -545,8 +548,10 @@ impl WorldSim {
                 self.outcomes.insert(id, (f, o));
             }
         }
-        // Hands without a target this frame hold still, or, with `hand_predict`, an active hand
-        // keeps its last commanded velocity for up to that many frames (dead reckoning). Both are
+        // Hands without a target this frame: an active hand follows its last entry over that entry's
+        // span (R18: a thinned entry's target is reached over `span` frames, 10.9/D53), then, with
+        // `hand_predict`, coasts at its last commanded velocity for up to that many frames more
+        // (dead reckoning, D52, only for gaps past the span), then holds still. These are
         // deterministic rules of the sim: a speculative frame that lacks the author's entry
         // predicts with them, and the entry's arrival replaces the prediction by rollback.
         let hands: Vec<(u32, Obj)> = self.objects().filter(|(_, o)| o.kind == 4).collect();
@@ -554,15 +559,19 @@ impl WorldSim {
             if hands_set.contains(&i) {
                 continue;
             }
-            let coast = match self.store.get_mut::<HandIdle>(o.id) {
-                Some(n) if self.cfg.hand_predict > 0 => {
+            let predict = self.cfg.hand_predict;
+            let (follow, coast) = match self.store.get_mut::<HandIdle>(o.id) {
+                Some(n) => {
                     n.frames += 1;
-                    n.frames <= self.cfg.hand_predict
+                    let past = n.frames.saturating_sub(n.span.saturating_sub(1));
+                    (past == 0, past > 0 && past <= predict)
                 }
-                _ => false,
+                None => (false, false),
             };
             let (v, w) = self.world.velocity(o.id).expect("a bound body");
-            if !coast {
+            if follow {
+                // Within the entry's span: the commanded velocity carries the hand to its target.
+            } else if !coast {
                 self.world.set_velocity(o.id, [0.0; 3], w).expect("a bound hand");
             } else {
                 // Never coast faster than a hand moves: a jump (a teleport-like target) would

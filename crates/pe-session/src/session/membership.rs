@@ -350,10 +350,10 @@ pub struct Attest {
     pub sig_joiner: Sig,
 }
 
-pub fn fact_rel(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> u64 {
+pub fn fact_rel(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> Fact {
     let (a, b) = if rel == Rel::Friend { (joiner.min(with), joiner.max(with)) } else { (with, joiner) };
     let w = if rel == Rel::Invited { world } else { 0 };
-    fnv_u64s([31, rel.tag() as u64, a as u64, b as u64, w as u64])
+    FactWriter::new(FactKind::Rel).u32(rel.tag() as u32).u32(a).u32(b).u32(w).finish()
 }
 
 /// The attestation `with` and the joiner sign for `rel`, made with their test identities: a scenario
@@ -373,8 +373,8 @@ pub fn attest_ok(keys: &PublicKeys, a: &Attest, joiner: MemberId, world: u32) ->
 
 /// Round 4's join fact (review VC3R-4): "`joiner` asks to join world `world`". Replayable in any later
 /// session of the world (VC4R-6); kept for the fix-off runs.
-pub fn fact_join(world: u32, joiner: MemberId) -> u64 {
-    fnv_u64s([37, world as u64, joiner as u64])
+pub fn fact_join(world: u32, joiner: MemberId) -> Fact {
+    FactWriter::new(FactKind::Join).u32(world).u32(joiner).finish()
 }
 
 /// Round 4's join signature (`joiner`'s test identity over [`fact_join`]): what a fix-off scenario
@@ -395,11 +395,13 @@ pub fn join_msg(session: &SessionId, joiner: MemberId, attests: Vec<Attest>, exp
 }
 
 impl Change {
-    /// The value the view change votes on: a hash of the whole change, never 0 (0 is nil).
+    /// The value the view change votes on: a hash of the whole change, never 0 (0 is nil). BLAKE3
+    /// (review P23-2), 64 bits wide: a proposer that grinds two changes to one value (a birthday
+    /// search, about 2^32) is an open item (the value widens to 256 bits with the vote payloads).
     pub fn value(&self) -> u64 {
         let mut w = Wr(Vec::with_capacity(64));
         w.change(self);
-        fnv_bytes(&w.0) | 1
+        hash64("primordial-engine 2026 vc change value v1", &w.0) | 1
     }
 }
 
@@ -426,8 +428,8 @@ pub fn quorum(rule: QuorumRule, m: usize) -> (usize, usize) {
 
 /// The fact a member signs with its precommit of `value` in `round` of the view change that ends
 /// epoch `epoch` (S3c; signed in the world's fact domain): an epoch certificate carries these.
-pub fn vc_fact(epoch: u32, round: u32, value: u64) -> u64 {
-    fnv_u64s([3, epoch as u64, round as u64, value])
+pub fn vc_fact(epoch: u32, round: u32, value: u64) -> Fact {
+    FactWriter::new(FactKind::VcValue).u32(epoch).u32(round).u64(value).finish()
 }
 
 /// An epoch certificate (design 10.8, review R3-8b): what another world needs to follow this
@@ -462,7 +464,7 @@ impl EpochCert {
             v.extend(sig_words(s));
         }
         v.extend(self.proofs.iter().flat_map(|e| e.id().words()));
-        fnv_u64s(v)
+        hash64("primordial-engine 2026 epoch cert hash v1", &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
     }
 }
 
@@ -575,7 +577,7 @@ impl WorldSim {
                     self.stats.bad_sigs += 1;
                     return;
                 }
-                self.vcm.vc.precommit_sigs.entry((round, m)).or_insert(sig);
+                self.vcm.vc.precommit_sigs.entry((round, value, m)).or_insert(sig);
                 self.vcm.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
                 if boundary > 0 {
                     // Keep the first precommit's seq and the smallest boundary (review VC-10).
@@ -1109,7 +1111,8 @@ impl WorldSim {
     pub(super) fn change_valid(&mut self, c: &Change) -> Option<bool> {
         let last = self.vcm.decided.last().map_or(0, |d| d.0.boundary);
         let timed = self.fixes_off & fix::VC3 != 0;
-        if c.epoch != self.vcm.epoch || c.boundary < last || (timed && c.boundary > self.now + 2 * self.cfg.join_lead) {
+        // Review P23-10: member id 0 is world logic's, never a member's.
+        if c.epoch != self.vcm.epoch || c.boundary < last || (timed && c.boundary > self.now + 2 * self.cfg.join_lead) || c.add.contains(&LOGIC) {
             return Some(false);
         }
         // Joins: requests this replica holds, from non-members, with a boundary still ahead of it
@@ -1607,7 +1610,7 @@ impl WorldSim {
             .precommitters(round, v)
             .into_iter()
             .filter(|m| !xs.contains(m))
-            .map(|m| (m, *self.vcm.vc.precommit_sigs.get(&(round, m)).or_else(|| held.and_then(|h| h.get(&m))).expect("a counted precommit's signature is held")))
+            .map(|m| (m, *self.vcm.vc.precommit_sigs.get(&(round, v, m)).or_else(|| held.and_then(|h| h.get(&m))).expect("a counted precommit's signature is held")))
             .collect();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
         // D80: role entries in commit order (kicks are among the removals), then the removals, then
@@ -1952,7 +1955,7 @@ impl WorldSim {
     /// A certificate for `fact`, a fact about `frame`: Attest entries of a strict majority of the
     /// members of the epoch active at that frame (P2-5's epoch-at-frame rule). Members that the next
     /// epoch excluded by proof do not count in that majority's size.
-    pub fn cert_at(&self, fact: u64, frame: u64) -> Option<(u32, Vec<(MemberId, Sig)>)> {
+    pub fn cert_at(&self, fact: Fact, frame: u64) -> Option<(u32, Vec<(MemberId, Sig)>)> {
         let e = self.epoch_at(frame);
         let mut members: BTreeSet<MemberId> = self.members_at(e)?.into_iter().collect();
         if let Some((next, _, _)) = self.vcm.decided.get(e as usize) {
@@ -1990,7 +1993,7 @@ impl WorldSim {
 
     /// A non-member asks to join (P2-4): keep its request, store its entries, send it the log.
     pub fn on_join(&mut self, j: MemberId, attests: Vec<Attest>, sig: Sig, expires: u64) {
-        if self.is_static() {
+        if self.is_static() || j == LOGIC {
             return;
         }
         let signed = self.fixes_off & fix::VC3R4 != 0 || (self.join_sig_ok(j, &sig, expires) && (self.fixes_off & fix::VC4R6 != 0 || expires > self.now));
