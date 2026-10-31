@@ -11,7 +11,7 @@ Labels: **[V]** verified by a run or by reading the code named, **[I]** inferred
 narrow phase, contact prepare and every solver stage on worker threads it owns (pure Rust, std
 only), with results **bit-identical at every thread count and across machines**.
 
-* **Determinism [V]:** on the desktop (AMD Ryzen 7 9700X) and on <laptop> (Intel i7-13620H), the
+* **Determinism [V]:** on the desktop (AMD Ryzen 7 9700X) and on an Intel laptop (i7-13620H), the
   4 goldens, the 600-frame trace, the snapshot-image bytes and rollback T1-T5, in both engine
   and upstream modes, are byte-identical to the committed single-thread outputs at 1, 2, 3, 4,
   8, 16 and 32 threads (the debug build too, at 1-16 threads), and wasm32 still gives the
@@ -108,7 +108,7 @@ counters (not the simulation) depend on the thread count.
 
 ### 5.2 Evidence [V]
 
-| Check | Desktop, Ryzen 7 9700X | <laptop>, i7-13620H |
+| Check | Desktop, Ryzen 7 9700X | Laptop, i7-13620H |
 |---|---|---|
 | Goldens (4 engine, 4 C) at 1/2/3/4/8/16/32 threads | all PASS | all PASS |
 | 600-frame trace vs committed `trace-{vdw,off}-win-release.txt` | identical at every count (digests `80839f4a54133e13`, `7903109aab28ed9b`) | identical |
@@ -133,7 +133,7 @@ rustc 1.99.0 from a fresh target directory.
 2. **A stale worker could claim another stage's items (fixed in 7072429).** A worker that had
    seen stage *s* could read stage *s+1*'s item count before worker 0 reset the claim word,
    still tagged *s*, and claim "leftover" items against the new count. The stage's done count
-   then never matched and the step hung (<laptop>, 4 threads). Worker 0 now closes the claim
+   then never matched and the step hung (the laptop, 4 threads). Worker 0 now closes the claim
    word before publishing a stage's parameters (Release stores, Acquire loads). The pre-fix
    code hung 1 of 3 runs of the stage stress test; the hardened test
    (`every_item_once_per_stage`: 20,000 alternating small and large stages at 2/4/8/16
@@ -184,7 +184,7 @@ Rollback, restore + 6 frames (ms):
 | 2000 | 20.0 | 11.7 | 8.1 | 7.4 | 9.0 |
 | 4000 | 55.9 | 31.0 | 21.4 | 15.3 | 16.3 |
 
-### 6.2 <laptop>: i7-13620H laptop [V]
+### 6.2 Intel i7-13620H laptop [V]
 
 Intel i7-13620H (6 performance + 4 efficiency cores, 16 threads), Windows 11 Home, unloaded.
 Its 2,000- and 4,000-body times are about 4x the desktop's while 500 and 1,000 are about 1.2x;

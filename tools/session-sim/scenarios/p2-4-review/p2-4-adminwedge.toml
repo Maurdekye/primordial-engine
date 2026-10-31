@@ -1,0 +1,55 @@
+description = """
+P2-4 review round 6, VC6R-3 (a halt): every member an admin, {1, 2, 3, 4, 9}. Member 4 (not the \
+round-0 proposer, 1) is cut off from 2.0 to 3.2 s. At 2.1 s faulty 9 sends a SetRole (itself as \
+admin) to the others, its precommits lost; once 1, 2 and 3 have precommitted it crashes. Its \
+fork (an Attest at the same seq) reaches 4 at 3.1 s and the others at 3.2 s, through any fault. \
+Fix off (VC6R3): the locked members find their value's admin entry disputed, nothing releases the \
+lock, and the session halts. Part 1 runs with VC6R-3's fix switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4, 9]
+
+[[byzantine]]
+kind = "admin_wedge"
+member = 9
+at_ms = 2100
+role = 0
+a_to = [1, 2, 3, 4]
+part = 4
+others = [1, 2, 3]
+part_ms = 3100
+others_ms = 3200
+
+[[fault]]
+involves = 4
+after_ms = 2000
+before_ms = 3200
+drop = true
+
+[[fault]]
+from = 9
+after_ms = 2000
+msg = "precommit"
+drop = true
+
+[[part]]
+world.1.fixes_off = ["VC6R3"]
+# This part halts (frame 232 at the end), so the spike's touch by 1 at frame 700 never fires; the tool
+# refuses an action its member never reaches, so this part's plan leaves it out.
+world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+report = [
+    { kind = "check", case = "adminwedge", label = "adminwedge fixed=false", target = 9, honest = [1, 2, 3, 4] },
+    { kind = "view_changes", honest = [1, 2, 3, 4], label = "adminwedge" },
+    { kind = "verdict", honest = [1, 2, 3, 4], label = "adminwedge fixed=false" },
+]
+
+[[part]]
+world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+report = [
+    { kind = "check", case = "adminwedge", label = "adminwedge fixed=true", target = 9, honest = [1, 2, 3, 4] },
+    { kind = "view_changes", honest = [1, 2, 3, 4], label = "adminwedge" },
+    { kind = "verdict", honest = [1, 2, 3, 4], label = "adminwedge fixed=true" },
+]
