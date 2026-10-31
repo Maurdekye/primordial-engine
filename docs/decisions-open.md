@@ -1,6 +1,8 @@
 # Primordial Engine: decisions, what is built, and the main risks
 
-As of 30 October 2026, after your decisions of 18:42-22:51Z. This summarises design.md section 24
+As of 31 October 2026, after your decisions of 18:42Z-22:54Z on 30 October. Your rulings on session
+admins, roles and join rules (D80) arrive with the view-change branch, and those on world ownership
+(D87, D88) with the ownership branch. This summarises design.md section 24
 (and the R16 and R17 decisions in sections 25 and 26). Section numbers point into [design.md](design.md).
 
 Evidence tags: **measured** = run on this machine (spike logs in `spikes/out/`); **modelled** = computed
@@ -21,6 +23,18 @@ removed automatically. It costs latency, not safety: in the measured case the me
 from 7 to 16 frames, at 2.5 resets a second. An admin can kick it, and the session can show admins which
 member keeps forcing them. Recommended: leave it to admins. The alternative, an automatic rule, can be
 turned against honest members by a member that times its messages, as round 3's rule was (design 10.8).
+
+Seven proposals from your agent-panel rulings of 21:50Z-22:54Z, with @coordinator-opus. Each has options and
+a recommendation in design.md section 24:
+* **D81** the built-in speech models: which pure-Rust runtime, which model size, CPU or GPU (a spike first);
+* **D82** a guest's or confidant's turn carries their own gaze and pointing, never yours;
+* **D83** guidance annotations last until their author clears them, are never saved with the world, and
+  admins may clear them;
+* **D84** which settings your agent changes at once (with undo) and which need your confirmation;
+* **D85** spoken replies are made on the panel owner's machine and streamed like a voice;
+* **D86** an open panel shows others the conversation and summaries, never raw tool output;
+* **D89** confidants' turns use your panels in Restricted mode unless you untick it, or get your panel's
+  full profile, as ruled.
 
 ## B. Your rulings
 
@@ -62,10 +76,18 @@ turned against honest members by a member that times its messages, as round 3's 
 | D74 build mismatch | The peer pauses and the author gets a report; the peer may opt in to run the author's module for that commit | 19:58Z |
 | D75 toolchain | Shared between peers and verified by hash, with the official Rust servers as the fallback | 19:58Z |
 | D76 90 to 60 Hz | The world owner switches, warned by the engine | 19:58Z |
-| D77 Linux voice | None in the MVP (the VR keyboard instead); a local speech model later | 19:58Z |
+| D77 Linux voice | None in the MVP (the VR keyboard instead); **superseded at 21:51Z** by the built-in speech model on both systems (D33, below) | 19:58Z |
 | D78 default hub | No default hub | 19:58Z |
 | D79 double spend by a world that held the object | Detect only: caught by fork proofs when the copies meet, then the world is cut off; no birth-world registry, not even as an opt-in | 20:07Z |
 | D80 who may change a session's member list | Session admins: an admin's signed kick removes anyone; the view change's two-thirds quorum only commits and orders changes. Always at least one admin, and the last cannot step down without handing on; everyone is an admin by default; the session closes when no admin is left. Admin is the only built-in role; join rules are an ordered matrix with the fixed row "an owner joins as Admin" | 22:11-22:51Z |
+| D33, D77 voice | Voice prompting with one local, offline Whisper-class model built into the engine, on Windows and Linux; Windows speech recognition only as a lighter fallback. The models ship in the installer | 21:50-21:51Z, 22:23Z |
+| Spatial context and guidance tools | Panels know where you look, what you look at and where you point; tools to point at objects, select areas and draw shapes for the agent | 21:52Z |
+| D25 launch harnesses | Claude Code, Codex and Antigravity, through one generic harness layer, as Orgtree supports them | 21:54-21:55Z |
+| Spoken replies | A text-to-speech tool the agent is encouraged to use after a spoken prompt; spoken to people nearby by default; your world mic stays open while you prompt (a setting can mute it) | 22:02Z, 22:23Z |
+| Transcript and settings | Consecutive tool calls collapse into one row (details behind an advanced setting); game settings change by talking to your agent; guests cannot change your settings | 22:03Z, 22:28Z |
+| D26 open panels | Openness first: people nearby hear prompts and replies, see guidance and watch agents work. A private-panel switch, off by default. Six things stay closed: the Locked default, approvals, credentials, inboxes, direct messages and eye tracking | 22:28Z, 22:34Z, 22:54Z |
+| D27a confidants | Friends you mark as confidants may use your panels as you, and the agent is told; they do not confirm your approvals | 22:34Z, 22:54Z |
+| Logic build profile (13.2) | "Fast builds": committed modules use `rel-fast` (no LTO) | 22:47Z |
 | Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
 | Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
 
@@ -83,17 +105,18 @@ The times are yours; @coordinator-opus relayed most of these rulings.
   held, no hold cap), D39, D40, the D42 and D53 parameters, D46, D47, D54-D56, D64 (compact acks at
   scale), D73 (packed hand targets).
 * **Networking and discovery:** D8 (UDP with Noise encryption); D9 and D35 (invites, LAN, peer exchange,
-  the public DHT, volunteer relays, 4-word session codes, hosts announce a relay).
+  the public DHT, volunteer relays, 4-word session codes, a code's creator announces a relay).
 * **Live code and source control:** D10 (the creator owns a world); D14a-d (one module is the merge unit,
   seats limited to the conflict, 10 s from the front of the queue); D15 (our own component store); D16
   (BLAKE3); D17 (a peer missing an asset pauses only itself).
 * **Worlds:** D43 (a player present elsewhere shows as a dimmed avatar), D44 (live portal views), D45
   (settled handoff), D48 (logic on carried objects runs only where allowed).
 * **VR, avatars, platforms:** D18b (hands collide only when reaching); D19 (clean-room import of exported
-  files, glTF preferred, a license notice, basic 3-point IK); D33 (Windows speech recognition); D65-D67
+  files, glTF preferred, a license notice, basic 3-point IK); D33 (Windows speech recognition, revised at 21:51Z to a built-in model on both systems); D65-D67
   (avatar budgets, hands push by default, per-avatar safety controls); D1 (system components and Rust
   inline assembly allowed; the Wayland C shim turned out not to be compiled at all; D24 was merged into D1).
-* **Agent panels:** D25, D25a (your own panel without shell or web by default), D26, D27c and D27e (for
+* **Agent panels:** D25, D25a (your own panel without shell or web by default), D26 (reversed at
+  22:28Z: open by default), D27c and D27e (for
   inbox and decider sessions), D28a (agent commits in shared worlds need confirmation), D29-D31 (including D30a and D30b: incoming panel messages go to a separate inbox, text only by default).
 * **Plan:** D22 (phases as planned), re-planned in section 23.2 for your rulings.
 
@@ -113,8 +136,18 @@ The times are yours; @coordinator-opus relayed most of these rulings.
   matrix renderer.
 * Live game logic in WebAssembly (wasmi): hot swap at a fixed frame, rollback across it, and runaway code
   stopped by fuel. Modules are byte-identical when built at different paths on one machine.
-* An MCP stub, the iteration benchmark (0.45 s edit to first frame), physics-hook cost measurements, and
-  the R16 and R17 measurements (coordinates, relevance, spatial index, region rollback, avatar tiers).
+* The iteration benchmark (0.45 s edit to first frame), physics-hook cost measurements, and the R16 and
+  R17 measurements (coordinates, relevance, spatial index, region rollback, avatar tiers).
+
+**Built in phase 2, on main**
+* The engine's core crates: ids, the fixed-step clock, bit-exact maths, random streams, hashing, and the
+  sim store with copy-on-write snapshots and a checked state transfer (P2-1).
+* The engine's MCP server, `pe-mcp`: Claude Code drove a simulated peer through it over a named pipe and
+  over HTTP, with identical results (P2-8).
+* Multi-threaded Box3D in our fork, bit-exact across thread counts (D2).
+* The local determinism matrix (this PC's Windows and WSL, and <laptop>) and byte-identical logic builds
+  across Windows and Linux, with the pinned toolchain (P2-6, P2-7).
+* Provenance chains for objects carried between worlds (P2-5), and the session simulator as a tool (P2-9).
 
 **Designed only: text, not code**
 * The engine itself: renderer, VR, scene graph and components, assets, Resonite import, MCP server,
@@ -141,4 +174,6 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 4. **Every peer compiles:** byte-identical builds across machines and operating systems are unproven,
    joining a world means building its code, and every peer compiles other people's code (in a sandbox).
 5. **Unlocked panels:** guests act with your rights and your AI account, which you accepted; prompt
-   injection by a guest can do whatever your panel can.
+   injection by a guest can do whatever your panel can. Confidants hold the same rights at all your
+   panels. Open panels show prompts and replies to everyone nearby, so an agent that reads a secret can
+   repeat it; the filter for secrets is best-effort.

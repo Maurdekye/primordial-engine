@@ -1,0 +1,11 @@
+debug threads=1 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+debug threads=1 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+debug threads=2 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+debug threads=2 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+debug threads=4 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+debug threads=4 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+debug threads=8 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+debug threads=8 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+debug threads=16 vdw: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 80839f4a54133e13
+debug threads=16 off: goldens pass=4 fail=0 | trace same | images same | rollback pass=5 fail=0 | digest 7903109aab28ed9b
+RESULT: PASS (identical at every thread count)

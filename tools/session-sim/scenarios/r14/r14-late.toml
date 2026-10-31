@@ -1,0 +1,32 @@
+description = """
+R14 late (review R3-6): the carrier's deadline is 2 frames of B after the departure, shorter \
+than the certificate round: the arrival is late, B refuses it, and that certified refusal \
+returns the object to A."""
+include = ["../common/r14.toml"]
+
+[sim]
+carry_deadline_frames = 2
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "late"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 late A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 late B"

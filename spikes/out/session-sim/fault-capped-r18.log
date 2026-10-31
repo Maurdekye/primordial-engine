@@ -1,0 +1,6 @@
+  m1 world 1: rollbacks 9 max depth 24 resim frames 71 (50.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 38 bad 0 nonfinite 0 conf 568 frame 593
+  m2 world 1: rollbacks 9 max depth 19 resim frames 69 (48.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 38 bad 0 nonfinite 0 conf 568 frame 594
+  m3 world 1: rollbacks 12 max depth 24 resim frames 109 (73.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 38 bad 0 nonfinite 0 conf 570 frame 593
+  bytes: entries 10 msgs 1000 B (avg 100 B), acks 980 msgs 85536 B, dropped 0
+RESULT fault-capped-r18 (keeps confirming): m1 world 1 conf 568 members {1, 2, 3} evicted {} -> OK
+RESULT fault-capped-r18 world 1: frames 0..500 digests m1=11be5e155c6598c0 m2=11be5e155c6598c0 m3=11be5e155c6598c0 | offline replay 11be5e155c6598c0 | ALL EQUAL

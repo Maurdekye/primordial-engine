@@ -1,0 +1,56 @@
+description = """
+C2 (design review): member 9 signs two different entries with the same sequence number and \
+sends one to each honest member. The honest members detect the equivocation, evict 9 and agree."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 9]
+
+[world.1.plan]
+3 = []
+9 = [{ at = 50, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[net]
+seed = 11
+link = { delay_ms = 30, jitter_ms = 10 }
+
+# Member 2 never gets 9's genuine first entry from 9 ...
+[[fault]]
+msg = "entry"
+from = 9
+to = 2
+seq = 1
+times = 1
+drop = true
+
+# ... but a second version of it, with a different touch.
+[[byzantine]]
+kind = "equivocate"
+member = 9
+entry = "first"
+when = "exists"
+touch = { obj = 10, impulse = [6.0, 0.0, 0.0] }
+to = [2]
+
+[[report]]
+kind = "phase1_rule"
+case = "c2"
+
+[[report]]
+kind = "events"
+filter = "EQUIVOCATION"
+
+[[report]]
+kind = "events"
+filter = "evicted"
+
+[[report]]
+kind = "stats"
+
+# Member 9 keeps its own (one-sided) history; compare the honest members.
+[[report]]
+kind = "check_world"
+frames = 450
+label = "c2 after (honest members 1,2)"
+skip = [9]

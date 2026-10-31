@@ -1,0 +1,39 @@
+description = """
+R14 settled handoff (design 22.6): member 1 carries object 40 from A to B; exactly one live \
+copy at the end, nothing in limbo. After crossing, member 1 touches object 25 in A at frame 260."""
+include = ["../common/r14.toml"]
+
+[world.1.plan]
+1 = [
+    { at = 100, every = 5, count = 12, touch = { obj = 40, impulse = [0.0, 0.3, 0.0], grab = true } },
+    { at = 160, carry = { transfer = 7, obj = 40, dest = 2 } },
+    { at = 260, touch = { obj = 25, impulse = [0.0, 5.0, 0.0] } },
+]
+
+[[report]]
+kind = "r14_forged"
+[[report]]
+kind = "r14_jobs"
+[[report]]
+kind = "r14_conservation"
+label = "ok"
+[[report]]
+kind = "stats"
+world = 1
+[[report]]
+kind = "stats"
+world = 2
+[[report]]
+kind = "check_world"
+world = 1
+frames = 500
+label = "r14 ok A"
+[[report]]
+kind = "check_world"
+world = 2
+frames = 400
+label = "r14 ok B"
+[[report]]
+kind = "r14_lag"
+label = "ok"
+throttled = false

@@ -28,6 +28,16 @@ Every change is marked in the source with a `Primordial Engine fork` comment.
 | `src/recycle_scale_tests.rs` (new) | Tests for the formula, the hook, the 1 cm ledge regression, and the snapshot and recording round trips |
 | `Cargo.toml` | Fork metadata; see the header comment |
 | `src/world/validate.rs`, `src/island.rs` | `World::validate_solver_sets` and `validate_island` return at once in release builds. Upstream ran their loops in release with every assert compiled away. C compiles them out unless `B3_VALIDATE` is set. Debug builds still validate. Found by @world-chunks |
+| `src/worker_pool.rs` (new) | D2: the worlds' worker threads (`WorkerPool`), `BlockCounter`, `SharedMut`, `SharedSlice`; pure Rust, no dependencies. None on wasm32 or with 1 worker. Helpers adopt the caller's FP control register (MXCSR/FPCR, inline asm) for each job |
+| `src/types/world.rs`, `src/world/mod.rs`, `src/world/api.rs` | D2: `WorldDef::worker_count` (default 1); `World::new` applies it; `world_set_worker_count` also (re)creates the pool |
+| `src/solver/stages.rs` (new) | D2: C's `b3SolverTask` stage machine: worker 0 publishes stages, workers claim blocks with a stage-tagged compare-exchange; a panicking block is counted and re-raised on worker 0 |
+| `src/solver/solve.rs`, `src/solver/integrate.rs` | D2: `solve_stages` runs prepare, integrate, warm start, solve, relax, restitution and store as stages, serially or on the workers; joints and overflow stay on worker 0 in the serial order. Stage timers |
+| `src/contact_solver/wide/*` | D2: `*_range` block versions of the wide kernels over raw views (`view.rs`, new); prepare writes preallocated slots (`allocate_contacts_*`); gather/scatter through `StatesView` |
+| `src/contact/collide.rs`, `update.rs`, `mesh_contact.rs`, `mod.rs` | D2: the narrow phase takes a read-only `CollideEnv` plus the contact it updates instead of `&mut World`, and runs in blocks on the workers; no per-contact `Shape` clones. SAT and manifold counters are summed over workers (C scales only worker 0's by `satMultiplier`) |
+| `src/broad_phase/pairs.rs`, `src/parallel_for.rs` | D2: pair finding runs its blocks on the workers (serially if a custom filter is set); the block partition is the single-worker one at every worker count |
+| `src/stage_timer.rs` (new), `Cargo.toml` | Feature `stage-profile`: fills `world::Profile` with stage timings (off by default) |
+| `src/world/step.rs` | Stage timers |
+| `src/parallel_tests.rs` (new) | D2: determinism scenes identical at 1/2/3/4/8 workers and with the worker count changed mid-run |
 
 ### Release validators: measured effect
 
@@ -48,6 +58,10 @@ and rollback T1-T5 are byte-identical to the committed outputs in release, opt-l
 opt-level s and target-cpu=native. Debug runs the same code as before.
 
 ## Invariants
+
+* Results do not depend on `worker_count` (D2). Every parallel stage writes each output from
+  exactly one block, and blocks are combined in a fixed order or with order-independent
+  operations (sorted pair keys, ORed bit sets, integer sums). See `docs/parallel-physics.md`.
 
 * With scaling off, the simulation is bit-identical to the published crate. This was checked
   against the 4 C goldens, the 600-frame trace, the snapshot-image bytes and the crate's own test

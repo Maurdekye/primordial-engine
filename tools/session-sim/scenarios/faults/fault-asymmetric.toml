@@ -1,0 +1,27 @@
+description = """
+Fault kinds (P2-9): asymmetric links. Member 1 to 2 is 150 +- 30 ms, 2 to 1 is 10 ms, \
+everything member 3 sends takes 80 ms, the rest 30 +- 10 ms, all with 2% loss."""
+include = ["../common/pile.toml", "../common/scripted.toml"]
+end_ms = 10000
+
+[net]
+seed = 33
+link = { delay_ms = 30, jitter_ms = 10, loss_pct = 2 }
+links = [
+    { from = 1, to = 2, delay_ms = 150, jitter_ms = 30, loss_pct = 2 },
+    { from = 2, to = 1, delay_ms = 10, loss_pct = 2 },
+    { from = 3, to = 1, delay_ms = 80, loss_pct = 2 },
+    { from = 3, to = 2, delay_ms = 80, loss_pct = 2 },
+]
+
+[[report]]
+kind = "acceptance"
+label = "fault-asymmetric"
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "check_world"
+frames = 550
+label = "fault-asymmetric"

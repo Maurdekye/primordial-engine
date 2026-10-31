@@ -120,7 +120,7 @@ impl HashSet {
     }
 
     // Find the slot holding `key`, or the first empty slot on its probe chain.
-    fn find_slot(&self, key: u64, hash: u32) -> usize {
+    pub(crate) fn find_slot(&self, key: u64, hash: u32) -> usize {
         let capacity = self.cap();
         let mut index = hash & (capacity - 1);
         while self.items[index as usize].hash != 0 && self.items[index as usize].key != key {
