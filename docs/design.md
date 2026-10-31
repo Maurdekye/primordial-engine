@@ -692,9 +692,13 @@ inexact.
    * **The coast continues only a stream** (@coordinator-opus, 2026-10-31; a clarification of D52). An
      entry that arrives more than the previous entry's span + `hand_predict` frames after it, such as a
      one-shot target or a gesture's start, is followed over its span and then held, never coasted past
-     it. A held controller streams its entries even while still, so it never coasts past a still target;
-     a one-shot target used to overshoot by up to 0.3 m (an MCP agent's hand, pe-mcp's
+     it. A one-shot target used to overshoot by up to 0.3 m (an MCP agent's hand, pe-mcp's
      `hands_in_the_ball_pit`) [V spike]. pe-session mirrors it with D73 (@world-chunks).
+     * **A requirement on the sender's IO** (review SH-1), like the joiner's hold in 9.5: a held hand keeps
+       sending its entries while still. A transport that dropped unchanged poses would leave the last
+       moving entry flagged as a stream, and the confirmed hand would coast up to 0.3 m past the author's.
+       So neither D73's packs nor any later bandwidth saving may stop a held hand's entries, for example to
+       let idle thinning (7.6) start: a still, held hand keeps its member busy.
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
