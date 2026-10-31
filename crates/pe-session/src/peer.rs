@@ -15,7 +15,8 @@
 //!   that tick's ack in its datagram. `tick` is both halves for an IO that authors at other times.
 //! * **R18 lives here:** the IO reports its uplink queue delay (`set_link`); with `adapt` on, the
 //!   core raises and lowers its congestion level, which sets the ack interval and the hand-pose
-//!   stride (a pose that is not due returns `AuthorError::Stride`).
+//!   stride (a pose that is not due returns `AuthorError::Stride`). R18 is on by default (design
+//!   10.9, D56: it is how the engine works); `adapt` and `ack_on_frames` off are for control runs.
 //! * **Background worlds** (design 22.3) advance in bursts every `throttle_us`; `begin_tick`'s
 //!   `burst` forces one, for a member about to author something that carries state.
 //!
@@ -23,7 +24,7 @@
 //! (`crates/pe-session-harness`), which drives its peers through this core, reproduces the spike's
 //! digests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, TransferError, WorldSim};
 
@@ -42,7 +43,9 @@ pub enum Class {
     /// fetches by value or id.
     Control,
     /// Answers to fetches of chain ranges: the IO may drop them while its uplink queue to the
-    /// requester is long (review R3-9); the requester asks again.
+    /// requester is long (review R3-9); the requester asks again. One fetch's answer is a run of
+    /// consecutive `Repair` messages to the same member: the IO sends or drops the run whole,
+    /// deciding at its first message (cutting a reply short starves repair on a busy link).
     Repair,
 }
 
@@ -106,10 +109,10 @@ pub struct SessionCore {
     next_ack_us: u64,
     pub ack_every_us: u64,
     /// Acks on frame ticks (a multiple of the ack interval) rather than by timer: for an IO that
-    /// batches a tick's messages into one datagram (R18, viz-4).
+    /// batches a tick's messages into one datagram (R18, viz-4). On by default.
     pub ack_on_frames: bool,
     last_frame_seen: u64,
-    /// R18: adapt the hand-pose stride and ack interval to the uplink queue delay.
+    /// R18: adapt the hand-pose stride and ack interval to the uplink queue delay. On by default.
     pub adapt: bool,
     pub level: usize,
     level_t: u64,
@@ -127,7 +130,14 @@ pub struct SessionCore {
     last_epoch_log: usize,
     paused: bool,
     last_checks_bad: u64,
+    /// Review P23-3: donors asked for a state ([`SessionCore::request_state`]) and not answered yet.
+    state_asked: BTreeSet<MemberId>,
+    /// Review P23-4: when each requester last got a state from this member.
+    state_served: BTreeMap<MemberId, u64>,
 }
+
+/// Review P23-4: a member answers one `FetchState` per requester per this interval.
+pub const STATE_ANSWER_INTERVAL_US: u64 = 1_000_000;
 
 impl SessionCore {
     pub fn new(sim: WorldSim) -> Self {
@@ -144,9 +154,9 @@ impl SessionCore {
             next_ack_us: 0,
             // Saturating: hz = 0 (dt = inf) must reach a validator rather than overflow in a debug build.
             ack_every_us: dt_us.saturating_mul(2),
-            ack_on_frames: false,
+            ack_on_frames: true,
             last_frame_seen: u64::MAX,
-            adapt: false,
+            adapt: true,
             level: 0,
             level_t: 0,
             calm_since: 0,
@@ -161,6 +171,8 @@ impl SessionCore {
             last_epoch_log: 0,
             paused: false,
             last_checks_bad: 0,
+            state_asked: BTreeSet::new(),
+            state_served: BTreeMap::new(),
         }
     }
 
@@ -242,7 +254,9 @@ impl SessionCore {
     /// A joiner asks member `from` for its newest confirmed check-frame state (design 9.5). The answer
     /// is restored only against a check hash a quorum signed in the acks this replica holds (P22S-1), so
     /// it needs the log first; [`Event::Transfer`] reports the outcome.
+    /// Only the first answer from that member, to this request, is considered (review P23-3).
     pub fn request_state(&mut self, from: MemberId) {
+        self.state_asked.insert(from);
         self.send_to(from, Class::Control, Msg::FetchState);
     }
 
@@ -274,6 +288,9 @@ impl SessionCore {
                 }
                 self.fetches(now_us);
             }
+            // Review P23-4: requests are answered for the members and followers only (`audience`),
+            // and every answer is a repair, which the IO may drop under a long queue.
+            Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } | Msg::FetchState if !audience.contains(&from) => {}
             Msg::Fetch { author, from: a, to: b } => {
                 for r in self.sim.on_fetch(author, a, b) {
                     self.send_to(from, Class::Repair, r);
@@ -281,33 +298,43 @@ impl SessionCore {
             }
             Msg::FetchValue { value } => {
                 for r in self.sim.on_fetch_value(value) {
-                    self.send_to(from, Class::Control, r);
+                    self.send_to(from, Class::Repair, r);
                 }
             }
             Msg::FetchEntry { id, back } => {
                 for r in self.sim.on_fetch_entry(id, back) {
-                    self.send_to(from, Class::Control, r);
+                    self.send_to(from, Class::Repair, r);
                 }
             }
             Msg::Join { member, attests, sig, expires } => self.sim.on_join(member, attests, sig, expires),
             // Design 9.5: the state is large, so it travels as a repair (the IO may drop it under a
             // long queue; the joiner asks again).
             Msg::FetchState => {
+                // Review P23-4: one answer per requester per interval.
+                if self.state_served.get(&from).is_some_and(|&t| now_us < t + STATE_ANSWER_INTERVAL_US) {
+                    return;
+                }
                 if let Some(st) = self.sim.export_state() {
+                    self.state_served.insert(from, now_us);
                     self.send_to(from, Class::Repair, Msg::State(Box::new(st)));
                 }
             }
             Msg::State(st) => {
-                let result = self.sim.import_state(&st, from);
+                // Review P23-3: only the answer to this member's own request, from that donor.
+                let result = if self.state_asked.remove(&from) { self.sim.import_state(&st, from) } else { Err(TransferError::Unrequested) };
                 if let Err(e) = result {
                     self.sim.stats.transfers_refused += 1;
                     self.sim.stats.last_refusal = Some(e);
                 }
                 self.events.push(Event::Transfer { from, frame: st.frame, result });
             }
+            // Review P23-1: one level (the decoder refuses a batch inside a batch); a nested batch built
+            // in process is ignored rather than recursed into.
             Msg::Batch(v) => {
                 for x in v {
-                    self.receive_one(from, x, now_us, audience);
+                    if !matches!(x, Msg::Batch(_)) {
+                        self.receive_one(from, x, now_us, audience);
+                    }
                 }
             }
         }
@@ -324,7 +351,9 @@ impl SessionCore {
         self.sim.now = clock_frame;
         let audience = self.sim.audience();
         if self.adapt {
-            // R18: up fast, down slowly. The signal is this member's own uplink queue delay.
+            // R18: up fast, down slowly. The signal is this member's own uplink queue delay. `level`
+            // is public: an out-of-range value is clamped, never indexed (review P23-14).
+            self.level = self.level.min(HAND_STRIDE.len() - 1);
             let b = self.queue_delay_us;
             if b > 40_000 && now_us >= self.level_t + 100_000 && self.level < HAND_STRIDE.len() - 1 {
                 self.level += 1;
@@ -414,7 +443,7 @@ impl SessionCore {
                 if self.sim.hand_owners.get(&obj) != Some(&self.sim.me) {
                     return Err(AuthorError::NotOwner);
                 }
-                let k = if self.adapt { HAND_STRIDE[self.level] } else { 1 };
+                let k = if self.adapt { HAND_STRIDE[self.level.min(HAND_STRIDE.len() - 1)] } else { 1 };
                 if active {
                     let f = self.tick.as_ref().map_or(self.sim.now, |t| t.clock_frame);
                     if f % k != 0 || self.hand_last.get(&obj).is_some_and(|&l| f < l + k) {
@@ -465,7 +494,8 @@ impl SessionCore {
         let mut done = Vec::new();
         for (id, last) in self.mine.iter_mut() {
             let now = s.outcomes.get(id).copied();
-            let is_final = s.entry(*id).is_some_and(|e| e.stamp < s.conf);
+            // Review P23-7: final only once its frame is confirmed and simulated with no rollback pending.
+            let is_final = s.entry(*id).is_some_and(|e| s.settled(e.stamp));
             if now != *last || is_final {
                 *last = now;
                 if let Some((frame, outcome)) = now {

@@ -30,34 +30,24 @@ pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
 /// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
 /// (a frame of `dest`), with provenance `chain` (its [`chain_hash`])." Covers every field of the
 /// record (review R3-8) and the chain (P2-5), so a relayer can neither strip nor swap the chain.
-pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64) -> u64 {
-    fnv_u64s([
-        1,
-        record.via,
-        chain,
-        src as u64,
-        depart.words()[0],
-        depart.words()[1],
-        depart.words()[2],
-        depart.words()[3],
-        record.global,
-        record.kind as u64,
-        record.state.hash(),
-        record.src_world as u64,
-        record.src_frame,
-        dest as u64,
-        deadline,
-    ])
+/// Review P23-2: a BLAKE3 fact ([`FactKind::Departed`]) over the typed fields, the object's state
+/// word for word.
+pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64) -> Fact {
+    let mut w = FactWriter::new(FactKind::Departed).u64(record.via).u64(chain).u32(src).id(&depart).u64(record.global).u32(record.kind as u32);
+    for x in record.state.0 {
+        w = w.u32(x);
+    }
+    w.u32(record.src_world).u64(record.src_frame).u32(dest).u64(deadline).finish()
 }
 
 /// "World `dst` confirmed transfer `transfer` as accepted / rejected."
-pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool) -> u64 {
-    fnv_u64s([2, dst as u64, transfer, accepted as u64])
+pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool) -> Fact {
+    FactWriter::new(FactKind::Verdict).u32(dst).u64(transfer).bool(accepted).finish()
 }
 
 /// True if `cert` holds valid Ed25519 signatures over `fact` (S3c; the spike recomputed a keyless
 /// stand-in) from a strict majority of `members`, checked against their keys in `keys`.
-pub fn cert_ok(keys: &PublicKeys, members: &[MemberId], world: u32, fact: u64, cert: &[(MemberId, Sig)]) -> bool {
+pub fn cert_ok(keys: &PublicKeys, members: &[MemberId], world: u32, fact: Fact, cert: &[(MemberId, Sig)]) -> bool {
     let signers: BTreeSet<MemberId> =
         cert.iter().filter(|(m, sig)| members.contains(m) && keys.fact_ok(*m, world, fact, sig)).map(|(m, _)| *m).collect();
     !members.is_empty() && signers.len() * 2 > members.len()
@@ -118,7 +108,7 @@ impl WorldSim {
     }
 
     /// A certificate for `fact` from this world's members, once a strict majority has signed it.
-    pub fn cert(&self, fact: u64) -> Option<Vec<(MemberId, Sig)>> {
+    pub fn cert(&self, fact: Fact) -> Option<Vec<(MemberId, Sig)>> {
         let members: Vec<MemberId> = self.membership().members().iter().copied().collect();
         let mut c: BTreeMap<MemberId, Sig> = BTreeMap::new();
         for (id, e) in &self.entries {

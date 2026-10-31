@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::fnv_u64s;
 use crate::session::{cert_ok, epoch_cert_ok, fact_departed, transfer_id, EntryId, EpochCert, MemberId, ObjRecord, QuorumRule};
-use crate::sign::{sig_words, PublicKeys, Sig};
+use crate::sign::{hash64, sig_words, Fact, FactKind, FactWriter, PublicKeys, Sig};
 
 /// The world an object was born in.
 pub fn birth_world(global: u64) -> u32 {
@@ -59,11 +59,12 @@ pub struct Hop {
 
 /// "World `src` committed transfer `transfer` of object `global` to world `dest`; the object had
 /// entered `src` by transfer `via`."
-pub fn fact_committed(src: u32, transfer: u64, global: u64, dest: u32, via: u64) -> u64 {
-    fnv_u64s([3, src as u64, transfer, global, dest as u64, via])
+pub fn fact_committed(src: u32, transfer: u64, global: u64, dest: u32, via: u64) -> Fact {
+    FactWriter::new(FactKind::Committed).u32(src).u64(transfer).u64(global).u32(dest).u64(via).finish()
 }
 
-/// Hash of a chain, certificates included, so a departure certificate pins the exact chain.
+/// Hash of a chain, certificates included, so a departure certificate pins the exact chain. BLAKE3
+/// (review P23-2), 64 bits wide.
 pub fn chain_hash(chain: &[Hop]) -> u64 {
     let mut v = vec![chain.len() as u64];
     for h in chain {
@@ -75,7 +76,7 @@ pub fn chain_hash(chain: &[Hop]) -> u64 {
             v.extend(sig_words(s));
         }
     }
-    fnv_u64s(v)
+    hash64("primordial-engine 2026 chain hash v1", &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
 }
 
 /// What P2-5 needs from P2-4's epoch certificates. Production: a world id commits to its genesis
@@ -89,7 +90,7 @@ pub trait EpochCerts {
     /// The members' public keys.
     fn keys(&self) -> &PublicKeys;
     /// `cert` holds signatures over `fact` by a strict majority of `world`'s members in `epoch`.
-    fn cert_ok(&self, world: u32, epoch: u32, fact: u64, cert: &[(MemberId, Sig)]) -> bool {
+    fn cert_ok(&self, world: u32, epoch: u32, fact: Fact, cert: &[(MemberId, Sig)]) -> bool {
         self.members(world, epoch).is_some_and(|m| cert_ok(self.keys(), m, world, fact, cert))
     }
 }
@@ -160,7 +161,7 @@ impl EpochBook {
 
     /// A hop's certificate checks: its epoch certificates extend this book, its epoch is the one
     /// active at its frame by them, and a strict majority of that epoch signed `fact`.
-    pub fn hop_ok(&self, h: &Hop, fact: u64) -> bool {
+    pub fn hop_ok(&self, h: &Hop, fact: Fact) -> bool {
         self.with(&h.certs).is_some_and(|b| b.epoch_at(h.src, h.frame) == Some(h.epoch) && b.cert_ok(h.src, h.epoch, fact, &h.cert))
     }
 }

@@ -215,7 +215,7 @@ pub fn encode_tables(t: &Tables) -> Vec<u8> {
 /// must be the canonical one (it re-encodes to the same bytes: sorted unique keys, 0 or 1 for a bool,
 /// no unused layout), and each cached chain hash must match its chain.
 pub fn decode_tables(b: &[u8]) -> Option<Tables> {
-    let mut r = Rd(b, 0);
+    let mut r = Rd::new(b);
     let t = r.tables()?;
     let chains_ok = t.seen.values().all(|s| match s {
         Seen::Here { chain, chash, .. } => *chash == chain_hash(chain),
@@ -255,6 +255,11 @@ pub enum TransferError {
     Tables,
     /// The parts are canonical but their check hash is not the trusted one.
     Hash,
+    /// Review P23-3: not an answer to this member's request to that donor ([`crate::peer::SessionCore`]).
+    Unrequested,
+    /// Review P23-3: the state would not move this replica forward (its frame is not past the
+    /// replica's simulated frame), so restoring it would rewind.
+    Behind,
 }
 
 impl WorldSim {
@@ -287,7 +292,9 @@ impl WorldSim {
     /// vouch for its own transfer. Members a later epoch excluded by proof still count (unlike
     /// `cert_at`, which authorizes a live act of the current membership): their acks attested frame
     /// `frame` in its own epoch, and the verdict must not depend on how far the reader's epoch has
-    /// advanced (@engine-architect, 2026-10-31).
+    /// advanced (@engine-architect, 2026-10-31). If two hashes each reach a quorum, neither is trusted
+    /// (review P23-8). Known limit: the epoch is the joiner's own view, so it must hold the decided
+    /// changes up to `frame` (the relayed log carries them) before it asks.
     pub fn trusted_check(&self, frame: u64, donor: MemberId) -> Option<CheckHash> {
         let members = self.members_at(self.epoch_at(frame))?;
         let (_, q) = quorum(self.cfg.quorum, members.len());
@@ -304,7 +311,10 @@ impl WorldSim {
                 }
             }
         }
-        signed.into_iter().find(|(_, by)| by.len() >= q && by.iter().any(|&m| m != donor)).map(|(h, _)| h)
+        // Review P23-8: two hashes each signed by a quorum prove a fault; trust neither.
+        let mut vouched = signed.into_iter().filter(|(_, by)| by.len() >= q && by.iter().any(|&m| m != donor)).map(|(h, _)| h);
+        let h = vouched.next()?;
+        vouched.next().is_none().then_some(h)
     }
 
     /// Restores a donor's state transfer (design 9.5): only if its world matches, a quorum vouches for
@@ -316,18 +326,22 @@ impl WorldSim {
         if st.world != self.world_id {
             return Err(TransferError::OtherWorld);
         }
+        if st.frame < self.frame {
+            return Err(TransferError::Behind);
+        }
         let trusted = self.trusted_check(st.frame, donor).ok_or(TransferError::NoQuorum)?;
-        let transfer = pe_physics::Transfer::from_bytes(&st.physics).map_err(|_| TransferError::Physics)?;
+        // Review P23-1: the raw parts are hashed first, so nothing parses bytes no quorum vouched for.
         let ph = pe_physics::CheckHash::of(&st.physics);
+        let next = st.frame + 1;
+        if check_hash_of(&ph, next, &st.store, &st.tables) != trusted {
+            return Err(TransferError::Hash);
+        }
+        let transfer = pe_physics::Transfer::from_bytes(&st.physics).map_err(|_| TransferError::Physics)?;
         let snap = pe_sim::Snapshot::from_bytes(&st.store, &session_registry()).map_err(|_| TransferError::Store)?;
         if snap.to_bytes() != st.store {
             return Err(TransferError::Store);
         }
         let t = decode_tables(&st.tables).ok_or(TransferError::Tables)?;
-        let next = st.frame + 1;
-        if check_hash_of(&ph, next, &st.store, &st.tables) != trusted {
-            return Err(TransferError::Hash);
-        }
         // From here the bytes are a state a quorum, so an honest member, computed.
         let world = PhysicsWorld::from_transfer(PhysicsConfig::engine(), &transfer, &ph).map_err(|_| TransferError::Physics)?;
         self.store.restore(&snap).map_err(|_| TransferError::Store)?;

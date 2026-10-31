@@ -24,7 +24,9 @@ impl WorldSim {
             }
         }
         let mut out = Vec::new();
-        if m != self.me && self.vcm.members.contains(&m) && !self.voted(m) {
+        // Review P23-11: under static membership nobody is voted out (and `voted` is never true, so
+        // each later entry of the forker would author another vote).
+        if m != self.me && self.vcm.members.contains(&m) && !self.is_static() && !self.voted(m) {
             out.extend(self.freeze_and_vote(m, k0, EntryId::NONE));
         }
         self.reconcile(m);

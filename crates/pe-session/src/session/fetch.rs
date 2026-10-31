@@ -18,7 +18,8 @@ impl WorldSim {
 
     pub fn on_fetch(&self, author: MemberId, from: u32, to: u32) -> Vec<Msg> {
         // At most 16 entries per reply (review R3-9): the requester asks again for the rest.
-        (from..=to.min(from + 15))
+        // Saturating (review P23-14): a request near u32::MAX must not overflow.
+        (from..=to.min(from.saturating_add(15)))
             .filter_map(|s| self.by_author.get(&(author, s)).and_then(|id| self.signed_entry(*id)))
             .map(Msg::Entry)
             .collect()

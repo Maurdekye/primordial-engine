@@ -517,7 +517,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                     let r = sim_mut(sim, *member, 1);
                     let epoch = r.vcm.epoch;
                     let a = r.author(Payload::SetRole { epoch, member: *member, role: *role }, None);
-                    let b = Entry { payload: Payload::Attest { fact: 1, sig: [0; 64] }, ..a.entry.clone() };
+                    let b = Entry { payload: Payload::Attest { fact: Fact([1; 32]), sig: [0; 64] }, ..a.entry.clone() };
                     act.forged_vote.set(b.id());
                     act.fork_entry = Some(b);
                     send_to(sim, *member, a_to, &a);
@@ -575,7 +575,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let r = sim_mut(sim, *member, 1);
                 let epoch = r.vcm.epoch;
                 let a = r.author(Payload::SetRole { epoch, member: *target, role: *role }, None);
-                let b = Entry { payload: Payload::Attest { fact: 1, sig: [0; 64] }, ..a.entry.clone() };
+                let b = Entry { payload: Payload::Attest { fact: Fact([1; 32]), sig: [0; 64] }, ..a.entry.clone() };
                 act.forged_vote.set(a.id());
                 r.byz_change = Some(Change { epoch, admin: vec![(a.id(), true)], ..Default::default() });
                 let p = r.author(Payload::Prevote { epoch, round: 0, value: 0 }, None);
@@ -691,7 +691,7 @@ fn fork_branch(sim: &mut Sim, (f, crafted): (&mut Fork, &Rc<RefCell<BTreeSet<Ent
                 b.prev = f.b_id[&(b.seq - 1)];
             }
             if matches!(b.payload, Payload::Touch { .. }) {
-                b.payload = Payload::Attest { fact: 0, sig: [0; 64] };
+                b.payload = Payload::Attest { fact: Fact::ZERO, sig: [0; 64] };
                 b.carried = None;
             }
             if matches!(b.payload, Payload::Ack { .. }) {
