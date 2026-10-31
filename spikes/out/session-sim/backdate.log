@@ -1,9 +1,9 @@
   part 1: member 3 entry stamped 180 -> effective None (void: true)
   part 1: member 3 entry stamped 420 -> effective None (void: true)
   part 1: member 3 entry stamped 300 -> effective None (void: true)
-  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (3.6 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
-  m2 world 1: rollbacks 6 max depth 2 resim frames 14 (2.9 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 654
-  m3 world 1: rollbacks 12 max depth 2 resim frames 25 (6.0 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
+  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (3.9 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
+  m2 world 1: rollbacks 6 max depth 2 resim frames 14 (2.5 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 654
+  m3 world 1: rollbacks 12 max depth 2 resim frames 25 (5.5 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
 RESULT backdate part 1 world 1: frames 0..600 digests m1=154a1f2b17360d56 m2=154a1f2b17360d56 m3=154a1f2b17360d56 | offline replay 154a1f2b17360d56 | ALL EQUAL
   part 2: member 3 entry stamped 300 -> effective None (void: true)
   m1 world 1: rollbacks 3 max depth 2 resim frames 12 (2.2 ms) overwrites 0 paused frames 96 violations 104 equivocations 0 checks ok 16 bad 0 nonfinite 0 conf 646 frame 653
