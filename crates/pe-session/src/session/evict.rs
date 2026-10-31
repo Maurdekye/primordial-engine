@@ -18,7 +18,7 @@ impl WorldSim {
         self.proofs.insert(m, (k0, a0, b0));
         let mut out = Vec::new();
         if m != self.me && self.members.contains(&m) && !self.voted(m) {
-            out.extend(self.freeze_and_vote(m, k0));
+            out.extend(self.freeze_and_vote(m, k0, 0));
         }
         self.reconcile(m);
         out
@@ -31,7 +31,7 @@ impl WorldSim {
 
     /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
     /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
-    pub(super) fn freeze_and_vote(&mut self, m: MemberId, k0: u32) -> Option<Entry> {
+    pub(super) fn freeze_and_vote(&mut self, m: MemberId, k0: u32, kick: EntryId) -> Option<Entry> {
         if self.withhold_vc {
             return None;
         }
@@ -50,7 +50,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp: self.frame.max(self.now),
-            payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid) },
+            payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid), kick },
             carried: None,
         };
         Some(self.publish(v))
@@ -64,10 +64,31 @@ impl WorldSim {
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<Entry> {
-        if !self.members.contains(&self.me) {
+        if !self.members.contains(&self.me) || self.closed_at.is_some() {
             return vec![];
         }
         let mut out = Vec::new();
+        // D80: a pending kick outlives an epoch that did not carry it out: freeze its target again.
+        let kicks: Vec<(EntryId, MemberId, MemberId)> = self
+            .admin_pending
+            .iter()
+            .filter_map(|id| {
+                let e = self.entries.get(id)?;
+                match e.payload {
+                    Payload::Kick { target, .. } => Some((*id, e.member, target)),
+                    _ => None,
+                }
+            })
+            .collect();
+        for (id, author, t) in kicks {
+            if self.members.contains(&t) && self.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.withhold_vc {
+                if t == self.me {
+                    out.extend(self.self_kick_vote(id));
+                } else {
+                    out.extend(self.freeze_and_vote(t, 0, id));
+                }
+            }
+        }
         // A proof outlives an epoch that did not remove its member: vote again.
         let proven: Vec<(MemberId, u32)> = self
             .proofs
@@ -77,17 +98,34 @@ impl WorldSim {
             .collect();
         for (m, k) in proven {
             if m != self.me && self.members.contains(&m) && !self.voted(m) {
-                out.extend(self.freeze_and_vote(m, k.max(1)));
+                out.extend(self.freeze_and_vote(m, k.max(1), 0));
             }
         }
         if self.byz_ally {
             let targets: Vec<MemberId> = self.votes.keys().copied().filter(|t| *t != self.me && self.members.contains(t)).collect();
             for t in targets {
                 if !self.voted(t) {
-                    out.extend(self.freeze_and_vote(t, 0));
+                    out.extend(self.freeze_and_vote(t, 0, 0));
                 }
             }
             return out;
+        }
+        // Review VC-5: a member whose acks declare an epoch newer than mine, without my reaching it,
+        // caps what I count of its chain; for as long as a silent member is given, I vote it out.
+        if self.fixes_off & fix::VC5 == 0 {
+            let members: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != self.me).collect();
+            for j in members {
+                let newer = self.ack_epoch_from.get(&j).is_some_and(|a| a.range(self.epoch + 1..).next().is_some());
+                if !newer {
+                    self.newer_since.remove(&j);
+                    continue;
+                }
+                let since = *self.newer_since.entry(j).or_insert(self.now);
+                if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.withhold_vc {
+                    self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.epoch));
+                    out.extend(self.freeze_and_vote(j, 0, 0));
+                }
+            }
         }
         // Removal on silence needs a quorum without the removed member, so a two-member world
         // never suspects: both members pause instead (D7).
@@ -139,7 +177,7 @@ impl WorldSim {
                 self.stats.demotions += 1;
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
             }
-            out.extend(self.freeze_and_vote(j, 0));
+            out.extend(self.freeze_and_vote(j, 0, 0));
         }
         out.extend(self.withholders_due());
         out
@@ -186,7 +224,8 @@ impl WorldSim {
             }
             let mut blocks = None;
             for (&y, &((min1, who), min2)) in &low {
-                if y == j {
+                // Review VC-9: once j has voted against y, its acks no longer reference y's chain.
+                if y == j || self.votes.get(&y).is_some_and(|v| v.contains_key(&j)) {
                     continue;
                 }
                 let mine = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
@@ -201,7 +240,7 @@ impl WorldSim {
             if let Some(y) = blocks {
                 self.stats.withholders += 1;
                 self.ev(format!("member {j} has referenced no more of member {y}'s chain for {} frames while every other member has: vote to remove it", self.cfg.suspect_after));
-                out.extend(self.freeze_and_vote(j, 0));
+                out.extend(self.freeze_and_vote(j, 0, 0));
             }
         }
         out

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 mod history;
 mod r18;
 mod review2;
+mod p24r;
 mod review3;
 mod viewchange;
 
@@ -1217,8 +1218,11 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
 
 /// A member moves only its own hand (design 8.4; P2-8 review, from @shader-reviewer's probe through
 /// pe-mcp). In a 100-ball pit member 1 sweeps its hand (object 100) while member 2 sweeps its own
-/// (101) and, every fourth frame, also sends a hand entry for member 1's hand. Every replica refuses
-/// those (`RejectedNotOwner`), and the session's history equals the same run without them.
+/// (101) and, every fourth frame, also sends a hand entry for member 1's hand. Review HO-1: member 2
+/// also grabs member 1's hand at 2.0 s and carries it towards a portal at 2.2 s, and member 1 touches
+/// its own hand at 2.1 s. Every replica refuses member 2's entries (`RejectedNotOwner`), member 2's
+/// grab takes no claim, so member 1's touch is accepted, and the history equals the run without
+/// member 2's entries.
 fn handowner() {
     let hz = 60u64;
     let scene = SceneKind::BallPit { balls: 100, hands: 2 };
@@ -1239,6 +1243,9 @@ fn handowner() {
                 for fr in a0..=a1 {
                     let target_mm = if id == 1 { path(fr, -0.6, 0.6, 0.0) } else { path(fr, 0.6, -0.6, 0.5) };
                     v.push((fr, Action::Hand { obj: own, target_mm, active: true, ahead: 0 }));
+                    if id == 1 && fr == f(2.1) {
+                        v.push((fr, Action::Touch { obj: h1, impulse: [0.0, 0.5, 0.0], grab: false }));
+                    }
                     if id == 2 && forge && fr % 4 == 0 {
                         v.push((fr, Action::Hand { obj: h1, target_mm: [0, 3000, 0], active: true, ahead: 0 }));
                     }
@@ -1250,7 +1257,23 @@ fn handowner() {
             })
             .collect();
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), peers, 6_000_000);
-        let panic_at = review2::run_to_end(&mut sim, |_| {});
+        let i2 = sim.peers.iter().position(|p| p.id == 2).unwrap();
+        let (mut grabbed, mut carried) = (false, false);
+        let panic_at = review2::run_to_end(&mut sim, |sim| {
+            let now = sim.net.now_us;
+            let send = |sim: &mut Sim, p: Payload| {
+                let e = sim.peers[i2].worlds.get_mut(&1).unwrap().sim.author(p, None);
+                sim.net.send(1, 2, 1, &Msg::Entry(e));
+            };
+            if forge && !grabbed && now >= 2_000_000 {
+                send(sim, Payload::Touch { obj: h1, impulse: [0.0, 5.0, 0.0], grab: true });
+                grabbed = true;
+            }
+            if forge && !carried && now >= 2_200_000 {
+                send(sim, Payload::Depart { obj: h1, dest: 99, deadline: u64::MAX, hop: None });
+                carried = true;
+            }
+        });
         (sim, panic_at)
     };
     let (a, pa) = run(true);
@@ -1268,6 +1291,20 @@ fn handowner() {
         let refused = forged.iter().filter(|&&id| r.outcomes.get(&id).is_some_and(|(_, o)| *o == Outcome::RejectedNotOwner)).count();
         all_refused &= refused == forged.len() && !forged.is_empty();
         println!("  m{m}: member 2's hand entries for member 1's hand: {}, refused {refused}", forged.len());
+        // Review HO-1: the grab and the carry are refused too, and the grab took no claim.
+        let others: Vec<(String, Option<Outcome>)> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && matches!(e.payload, Payload::Touch { obj, .. } | Payload::Depart { obj, .. } if obj == h1))
+            .map(|e| (if matches!(e.payload, Payload::Touch { .. }) { "grab".to_string() } else { "carry".to_string() }, r.outcomes.get(&e.id()).map(|(_, o)| *o)))
+            .collect();
+        let own = r
+            .all_entries()
+            .iter()
+            .find(|e| e.member == 1 && matches!(e.payload, Payload::Touch { obj, .. } if obj == h1))
+            .and_then(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o));
+        all_refused &= others.len() == 2 && others.iter().all(|(_, o)| *o == Some(Outcome::RejectedNotOwner)) && own == Some(Outcome::Accepted);
+        println!("  m{m}: member 2's grab and carry of member 1's hand: {others:?}; member 1's own touch of it: {own:?}");
     }
     let (da, db) = (digest(&a.replica(1, 1).sim.hashes, frames), digest(&b.replica(1, 1).sim.hashes, frames));
     println!(
@@ -1327,6 +1364,16 @@ fn main() {
         Some("join") => viewchange::join(),
         Some("refwithhold") => viewchange::refwithhold(),
         Some("handowner") => handowner(),
+        Some("fork9") => p24r::fork9(),
+        Some("jointiming") => p24r::jointiming(),
+        Some("bogusprecommit") => p24r::bogusprecommit(),
+        Some("futureack") => p24r::futureack(),
+        Some("kickwar") => p24r::kickwar(),
+        Some("kickpartition") => p24r::kickpartition(),
+        Some("lastadmin") => p24r::lastadmin(),
+        Some("adminclose") => p24r::adminclose(),
+        Some("joinrules") => p24r::joinrules(),
+        Some("onesided") => p24r::onesided(),
         Some("vcscale") => viewchange::vc_scale(
             get("--members").map_or(64, |v| v.parse().unwrap()),
             get("--silent").map_or(1, |v| v.parse().unwrap()),

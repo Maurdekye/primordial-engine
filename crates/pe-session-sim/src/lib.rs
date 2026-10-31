@@ -138,6 +138,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } => "admin",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
@@ -308,6 +309,10 @@ pub enum Action {
     /// Start a cross-world transfer: depart `obj` from this world towards `dest`.
     Carry { transfer: u64, obj: u32, dest: WorldId },
     Backdated { obj: u32, impulse: [f32; 3], back: u64 },
+    /// D80: kick a member, give a member a role, define a role (admin entries).
+    Kick { target: MemberId },
+    SetRole { member: MemberId, role: RoleId },
+    DefineRole { role: RoleId, perms: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -563,7 +568,7 @@ impl Sim {
                         self.net.post(w, to, from, &e);
                     }
                 }
-                Msg::Join { member } => r.sim.on_join(member),
+                Msg::Join { member, attests } => r.sim.on_join(member, attests),
                 Msg::Batch(_) => {}
             }
         }
@@ -671,6 +676,9 @@ impl Sim {
                                 Action::Backdated { obj, impulse, back } => {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
+                                Action::Kick { target } => r.sim.kick(target),
+                                Action::SetRole { member, role } => r.sim.set_role(member, role),
+                                Action::DefineRole { role, perms } => r.sim.define_role(role, perms),
                                 Action::Carry { obj, dest, .. } => {
                                     let deadline = presents.get(&dest).map_or(u64::MAX, |p| p + deadline_frames);
                                     let hop = r.sim.pending_hop(obj);

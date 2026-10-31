@@ -167,6 +167,9 @@ pub struct Stats {
     pub max_round: u32,
     /// Members this replica voted out for withholding references (P2-4).
     pub withholders: u64,
+    /// D80: kicks and role entries the decided changes applied, and those they refused.
+    pub admin_applied: u64,
+    pub admin_refused: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -300,6 +303,8 @@ struct VoteRec {
     stamp: u64,
     /// The vote entry's id: a view change names the votes it relies on.
     id: EntryId,
+    /// The kick it answers (0: none, D80).
+    kick: EntryId,
 }
 
 /// Result of checking a vote against its voter's own earlier acks (review R3-1).
@@ -477,6 +482,32 @@ pub struct WorldSim {
     pub byz_ally: bool,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
+    /// D80: each member's role. Every genesis member is an admin unless the session says otherwise.
+    pub roles: BTreeMap<MemberId, RoleId>,
+    /// D80: custom roles, id -> permission set. Admin (role 0) is built in and holds every permission.
+    pub role_defs: BTreeMap<RoleId, u64>,
+    /// D80: who may join, and with which role.
+    pub join_rules: JoinRules,
+    /// The relationships each pending joiner showed.
+    join_attests: BTreeMap<MemberId, Vec<Attest>>,
+    /// D80 (user 22:37Z): the world's owners, signed world metadata, shareable by several people;
+    /// separate from the session's admins.
+    pub owners: BTreeSet<MemberId>,
+    /// This epoch's admin entries from members allowed to make them, as held.
+    admin_pending: BTreeSet<EntryId>,
+    /// Admin entries as the decided changes judged them: applied, or refused.
+    pub admin_outcomes: BTreeMap<EntryId, bool>,
+    /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
+    /// it acts.
+    pub closed_at: Option<u64>,
+    /// Test fixture: review fixes switched off (see [`fix`]).
+    pub fixes_off: u32,
+    /// Test fixture (review VC-5): the epoch this member's acks declare, whatever epoch it is in.
+    pub fake_ack_epoch: Option<u32>,
+    /// VC-5: per member, my present when its acks first declared an epoch newer than mine.
+    newer_since: BTreeMap<MemberId, u64>,
+    /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
+    adopting: bool,
     /// Values decided by a quorum of precommits that this replica holds no proposal for:
     /// (member to ask, value), and every pair asked so far.
     value_wants: Vec<(MemberId, u64)>,
@@ -609,6 +640,18 @@ impl WorldSim {
             join_caps: BTreeMap::new(),
             ack_epoch_from: BTreeMap::new(),
             genesis: members.to_vec(),
+            roles: members.iter().map(|&m| (m, ADMIN)).collect(),
+            role_defs: BTreeMap::new(),
+            join_rules: JoinRules::default(),
+            join_attests: BTreeMap::new(),
+            owners: BTreeSet::new(),
+            admin_pending: BTreeSet::new(),
+            admin_outcomes: BTreeMap::new(),
+            closed_at: None,
+            fixes_off: 0,
+            fake_ack_epoch: None,
+            newer_since: BTreeMap::new(),
+            adopting: false,
             value_wants: Vec::new(),
             value_asked: BTreeSet::new(),
             wants: Vec::new(),
