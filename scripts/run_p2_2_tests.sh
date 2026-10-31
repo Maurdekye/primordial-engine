@@ -4,7 +4,8 @@
 #   scripts/run_p2_2_tests.sh              Windows debug and release (Git Bash)
 #   scripts/run_p2_2_tests.sh --linux      also Linux: static musl builds, run inside WSL
 #   scripts/run_p2_2_tests.sh --check-only compare the existing logs only
-# Every cargo job goes through the org-wide lock (heavy.sh). Never runs `wsl --shutdown`.
+# Set PE_HEAVY to a wrapper script (e.g. a lock that runs one job at a time at idle priority) and every
+# cargo job runs through it as `bash $PE_HEAVY <command>`. Never runs `wsl --shutdown`.
 # Logs: spikes/out/p2-2/{windows,linux-musl}-{debug,release}.txt, each starting with the commit, the
 # working-tree state and the compiler. The RESULT lines must be equal across all four logs, except
 # the images digest, which differs between debug and release in Box3D's own snapshot header
@@ -13,8 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 out=spikes/out/p2-2
 mkdir -p "$out"
-heavy="/c/Users/<user>/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh"
-low() { bash "$heavy" "$@"; }
+low() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }
 header() {
   echo "commit $(git rev-parse HEAD)"
   echo "working tree changes: $(git status --porcelain -- crates scripts | wc -l)"
@@ -72,7 +72,7 @@ for f in "$out"/windows-*.txt "$out"/linux-musl-*.txt; do
     echo "TESTS FAILED in $f"; status=1
   fi
   n=$(results "$f" | wc -l)
-  [ "$n" = 62 ] || { echo "$f has $n RESULT lines, expected 62"; status=1; }
+  [ "$n" = 68 ] || { echo "$f has $n RESULT lines, expected 68"; status=1; }
   d=$(results "$f" | grep -v "^RESULT images" | sort)
   if [ -z "$d" ]; then echo "NO RESULT LINES in $f"; status=1; continue; fi
   if [ -z "$ref" ]; then ref="$d"; elif [ "$d" != "$ref" ]; then echo "RESULT lines differ in $f"; status=1; fi

@@ -13,37 +13,43 @@
 #           (needs rustup and build-essential in the distro)
 #   musl    this PC's WSL, x86_64-unknown-linux-musl: static binaries cross-built here with rust-lld
 #           (no C toolchain), run in WSL; the wasm guests are built natively in WSL
-#   laptop  the Intel laptop, x86_64-pc-windows-msvc, built and run there over ssh (no load limit)
-# The WSL and <laptop> columns run the committed HEAD (shipped as a git bundle), in their own checkout
+#   laptop  a second Windows machine (an Intel laptop), x86_64-pc-windows-msvc, built and run there
+#           over ssh (no load limit); its ssh route is set in scripts/matrix.local.sh (below)
+# The WSL and laptop columns run the committed HEAD (shipped as a git bundle), in their own checkout
 # at another path; uncommitted changes reach only the win column.
 #
 # Settings (environment, all optional):
 #   PE_PARTS        determinism parts (default "physics wasm mcp session r18 hooks"; add "history"
 #                   for the perturbation-history study, about 25 minutes per machine; p2p is left
 #                   out because its UDP runs can differ between runs under loss, spike report 5b)
-#   PE_HEAVY        a wrapper every local cargo command and WSL job runs through: on the desktop,
-#                   the org's heavy-job lock (_teams/1827/heavy.sh)
+#   PE_HEAVY        a wrapper every local cargo command and WSL job runs through, as
+#                   `bash $PE_HEAVY <command>` (for example a lock that runs one heavy job at a time)
 #   PE_WSL_DISTRO   default Ubuntu-24.04
 #   PE_WSL_DIR      checkout directory under the WSL home, default pe-matrix
-#   PE_LAPTOP_SSH   ssh command for <laptop>, default
-#                   "ssh -o BatchMode=yes -p <port> -i ~/.ssh/<key> <user>@<laptop address>"
-#                   (Tailscale direct; the remote-<laptop> skill has the RustDesk fallback)
-#   PE_LAPTOP_DIR   working folder on <laptop>, default C:/Users/<user>/pe-matrix; its cargo home and
-#                   build targets stay there between runs (delete the folder to clean up)
+#   PE_LAPTOP_SSH   ssh command for the laptop (required for the laptop column), e.g.
+#                   "ssh -o BatchMode=yes -o ConnectTimeout=15 -p <port> -i <key> <user>@<host>"
+#   PE_LAPTOP_DIR   working folder on the laptop (required for the laptop column), e.g.
+#                   C:/Users/<user>/pe-matrix; its cargo home and build targets stay there between runs
+#                   (delete the folder to clean up)
 #   PE_COMPARE_ONLY  run nothing: check and compare the outputs already in spikes/out/matrix
-#   PE_RUSTC        toolchain for the WSL and <laptop> runs, default the channel pinned in rust-toolchain.toml
+#   PE_CONNECT_ONLY  run nothing: check that each requested remote column (WSL, laptop) answers, then exit
+#   PE_RUSTC        toolchain for the WSL and laptop runs, default the channel pinned in rust-toolchain.toml
+# Machine-specific settings stay out of the repository: scripts/matrix.local.sh (gitignored) is sourced
+# first if it exists. Copy scripts/matrix.local.example.sh to it and fill it in; the environment can
+# still override what it sets.
 # Outputs: spikes/out/matrix/<column>/ (run.log, env.txt, o/digests.txt; the rest of o/, the full
 # outputs, is not committed) and spikes/out/matrix/matrix.txt, the comparison.
 set -u
 cd "$(dirname "$0")/.."
+[ -f scripts/matrix.local.sh ] && . scripts/matrix.local.sh
 COLS=${*:-win glibc musl laptop}
 PARTS=${PE_PARTS:-physics wasm mcp session r18 hooks}
 DISTRO=${PE_WSL_DISTRO:-Ubuntu-24.04}
 WDIR=${PE_WSL_DIR:-pe-matrix}
-NSSH=${PE_LAPTOP_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=15 -p <port> -i $HOME/.ssh/<key> <user>@<laptop address>}
-NDIR=${PE_LAPTOP_DIR:-C:/Users/<user>/pe-matrix}
+NSSH=${PE_LAPTOP_SSH:-}
+NDIR=${PE_LAPTOP_DIR:-}
 TC=${PE_RUSTC:-$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)}
-GB='"C:\Program Files\Git\bin\bash.exe"'   # <laptop>'s ssh shell is cmd.exe; Git Bash runs the job
+GB='"C:\Program Files\Git\bin\bash.exe"'   # the laptop's ssh shell is cmd.exe; Git Bash runs the job
 M=spikes/out/matrix
 REV=$(git rev-parse HEAD)
 heavy() { if [ -n "${PE_HEAVY:-}" ]; then bash "$PE_HEAVY" "$@"; else "$@"; fi; }
@@ -53,6 +59,28 @@ towsl() { local w; w=$(cygpath -m -l "$1"); printf '/mnt/%s%s\n' "$(echo "${w:0:
 mkdir -p $M
 # PE_COMPARE_ONLY=1: run nothing; check and compare the outputs already in spikes/out/matrix.
 RUNCOLS=$COLS; [ -n "${PE_COMPARE_ONLY:-}" ] && RUNCOLS=""
+case " $RUNCOLS " in *" laptop "*)
+  if [ -z "$NSSH" ] || [ -z "$NDIR" ]; then
+    echo "run_matrix: the laptop column needs PE_LAPTOP_SSH and PE_LAPTOP_DIR (see scripts/matrix.local.example.sh),"
+    echo "or name the other columns, e.g. scripts/run_matrix.sh win glibc musl"
+    exit 2
+  fi ;;
+esac
+# PE_CONNECT_ONLY=1: check that every requested remote column answers; run and change nothing.
+if [ -n "${PE_CONNECT_ONLY:-}" ]; then
+  st=0
+  for c in $RUNCOLS; do
+    case $c in
+      win) echo "win: local" ;;
+      glibc|musl)
+        if r=$(wsl_run uname -srm 2>&1); then echo "$c: WSL $DISTRO answers: $r"; else echo "$c: WSL $DISTRO does not answer: $r"; st=1; fi ;;
+      laptop)
+        if r=$($NSSH "$GB -c \"uname -srm\"" 2>&1 < /dev/null); then echo "laptop: answers: $r"; else echo "laptop: does not answer: $r"; st=1; fi ;;
+      *) echo "unknown column $c"; st=2 ;;
+    esac
+  done
+  exit $st
+fi
 # Every column must run the same commit (review of 3b07aa5): refuse uncommitted changes outside spikes/out.
 if [ -n "$RUNCOLS" ] && { ! git diff --quiet HEAD -- . ':!spikes/out' || [ -n "$(git ls-files --others --exclude-standard -- . ':!spikes/out')" ]; }; then
   echo "run_matrix: uncommitted changes outside spikes/out; commit them first (the other columns run HEAD $REV)"
@@ -62,7 +90,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 [ -n "$RUNCOLS" ] && { git bundle create -q "$TMP/pe.bundle" HEAD || exit 1; }
 
-# The job a WSL or <laptop> column runs in bash, from its working folder, as `bash job.sh build` (fetch
+# The job a WSL or laptop column runs in bash, from its working folder, as `bash job.sh build` (fetch
 # the bundle into the checkout src/, check out REV, build) and then `bash job.sh run` (run the
 # determinism set into <column>-out/o). Two phases, so each holds the heavy-job lock for less time.
 job() {  # $1 column, $2 bundle path as that machine sees it, $3 extra setup (shell lines)
