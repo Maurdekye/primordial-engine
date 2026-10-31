@@ -1063,8 +1063,10 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   choose one 32-byte stripe that restores the hash. So:
   * the **check hash** that acks carry at check frames, and that a member compares before it accepts
     state from another peer (9.5, 25.5), is **BLAKE3** (pure, as D16 uses for content), 256 bits, over the
-    canonical bytes of the check-frame image plus tables. It is one hash, so divergence detection and
-    transfer trust use the same value;
+    canonical bytes of the whole check-frame state: the physics image and the sim store's columns and
+    tables alike. The physics part already is (`pe_physics::CheckHash`, P2-2); the sim store's part,
+    today `checked_state_hash()`'s XXH64, moves to BLAKE3 too (review P22S-1). It is one hash, so
+    divergence detection and transfer trust use the same value;
   * XXH64 stays for the per-frame hash and local diagnostics, where nobody else chooses the bytes;
   * the reader of a state transfer consumes it completely: no trailing bytes, no unreferenced blobs,
     and free fields (names, bounding boxes) canonical or refused, so the hash binds exactly the state
@@ -1166,9 +1168,13 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   modules, module set, claims and asset manifest. It follows with the session log from *F*.
 * The receiver restores and fast-forwards. Restoring a world image into a fresh `World` works [V b4].
 * **It verifies before it restores** (review P22R-1): it restores only bytes whose BLAKE3 equals the check
-  hash a quorum of the epoch's members published for frame *F* (9.1), and only if it consumes them
-  completely. So a hostile donor cannot pass off another state; it can only fail to deliver, and the
-  receiver asks another member [I].
+  hash for frame *F* (9.1), and only if it consumes them completely. So a hostile donor cannot pass off
+  another state; it can only fail to deliver, and the receiver asks another member [I].
+* **Which check hash it trusts** (review P22S-1): one that a quorum of the epoch's members signed
+  identically in their acks for frame *F*, at least one of them a member other than the donor.
+  `from_transfer` checks the bytes against whatever hash it is given, so the caller must establish the
+  hash this way, never take it from the donor. A world with a single member therefore cannot vouch for
+  its own transfer: the receiver trusts that member or waits for a second one [I].
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
 * Region- or island-scoped transfer is a later optimization.
