@@ -17,6 +17,7 @@ mod r18;
 mod review2;
 mod p24r;
 mod p24r3;
+mod p23;
 mod review3;
 mod viewchange;
 
@@ -1524,6 +1525,7 @@ fn main() {
         Some("selfkickhead") => p24r3::selfkickhead(),
         Some("ackgap") => p24r3::ackgap(),
         Some("latejoin") => p24r3::latejoin(),
+        Some("statejoin") => p23::statejoin(),
         Some("capchurn") => p24r3::capchurn(),
         Some("deepfork") => p24r3::deepfork(),
         Some("cutbackdate") => p24r3::cutbackdate(),

@@ -145,6 +145,7 @@ pub fn kind(m: &Msg) -> &'static str {
         },
         Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } => "fetch",
         Msg::Join { .. } => "join",
+        Msg::FetchState | Msg::State(_) => "state",
         Msg::Batch(_) => "batch",
     }
 }

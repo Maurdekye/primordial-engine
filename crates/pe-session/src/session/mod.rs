@@ -140,6 +140,9 @@ pub struct Stats {
     pub compactions: u64,
     /// State transfers this replica restored (design 9.5).
     pub imports: u64,
+    /// State transfers refused, and the last reason.
+    pub transfers_refused: u64,
+    pub last_refusal: Option<TransferError>,
     pub compact_us: u64,
     pub max_registry_len: u64,
     /// Check hashes computed and their cost: the physics state's (pe-physics `check_hash`: canonical
