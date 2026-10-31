@@ -425,6 +425,8 @@ impl Node {
                 Event::Paused { frame } => self.note(format!("paused at frame {frame} (speculation limit)")),
                 Event::Resumed { frame } => self.note(format!("resumed at frame {frame}")),
                 Event::CheckFailed { total } => self.note(format!("CHECK HASH MISMATCH (total {total})")),
+                // Joiners only (state transfer, S5g); M1 has none, and the wire refuses its messages.
+                Event::Transfer { from, frame, result } => self.note(format!("state transfer from member {from} at frame {frame}: {result:?}")),
                 Event::Outcome { .. } | Event::Confirmed { .. } => {}
             }
         }
@@ -569,7 +571,7 @@ impl DrivenPeer for Node {
         self.core.sim.conf
     }
     fn object_count(&self) -> u32 {
-        self.core.sim.t.objs.len() as u32
+        self.core.sim.obj_slots()
     }
     fn state(&self, offset: u32, limit: u32) -> WorldState {
         sim_view::state(&self.core.sim, offset, limit)

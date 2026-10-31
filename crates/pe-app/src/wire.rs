@@ -25,7 +25,7 @@ pub const MTU: usize = 1200;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
     /// A session protocol message: an entry (with its author's signature) or a fetch request or
-    /// answer. Joins and batches are not sent in M1.
+    /// answer. Joins, batches and state transfer (joiners only) are not part of M1.
     Msg(Msg),
     /// Clock sync: my send time; the reply carries it back with the replier's time.
     Ping(u64),
