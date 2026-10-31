@@ -1204,3 +1204,63 @@ fn backup_key_acts_as_its_owner() {
     assert_eq!(owners(&b), [B, X]);
     assert!(b.view().owners.recovery.is_empty());
 }
+
+// ---- design-reviewer round 8 (OWNX-*), as asserting tests; OWNX-1, 4 and 6 fail at 0fea2d1 ----
+
+/// OWNX-1a: an attestation's signer list names J, who never signed: OWN-3 still needs J.
+#[test]
+fn rv8_ownx1a_attested_signer_list_does_not_bypass_own3() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::Threshold(2), 1)).unwrap();
+    let g = b.genesis;
+    let c1 = put(&mut b, g, Change::Add { key: I }, &[S], Some((L1, 1)));
+    let c2 = put(&mut b, c1, Change::Add { key: J }, &[S, I], Some((L1, 2)));
+    put(&mut b, c2, Change::SetRule { rule: SignRule::All }, &[S, I, J], Some((L1, 3)));
+    b.record(c1, L2, 1);
+    let x = put(&mut b, c1, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 2)));
+    let rm = next(&b, x, Change::Remove { key: I }, &[S]);
+    let att = Attest::make(b.world, rm.id(), L2, 3, &[S, J].into_iter().collect(), &[4, 5]);
+    b.insert_attested(&[rm], &[att], &sessions());
+    assert_eq!(owners(&b), [S, I, J]);
+}
+
+/// OWNX-1b: S's solo certificates attested with a signer list that also names B charge B nothing.
+#[test]
+fn rv8_ownx1b_attested_signer_list_does_not_drain_b() {
+    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
+    for i in 0..60u32 {
+        let c = next(&b, head(&b), Change::SetRecovery { owner: S, recovery: Some(9000 + i) }, &[S]);
+        let att = Attest::make(b.world, c.id(), L1, 1 + i as u64, &[S, B].into_iter().collect(), &[1, 2, 3]);
+        b.insert_attested(&[c], &[att], &sessions());
+    }
+    assert_eq!(b.view().owners.solo.get(&B).copied().unwrap_or(0), 0, "B charged for certificates it never signed");
+}
+
+/// OWNX-4: "sell the world" ten times: the owner keeps a share, and two honest owners under
+/// Threshold(2) can remove a third.
+#[test]
+fn rv8_ownx4_resales_keep_the_share() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let mut f = 1u64;
+    let mut cur = S;
+    for k in 0..10u32 {
+        let buyer = 2000 + k;
+        commit(&mut b, Change::Add { key: buyer }, &[cur], f).unwrap();
+        commit(&mut b, Change::Leave { key: cur }, &[cur], f + 1).unwrap();
+        f += 2;
+        cur = buyer;
+    }
+    assert!(b.view().owners.share.get(&cur).copied().unwrap_or(0) >= 200, "{:?}", b.view().owners.share);
+    commit(&mut b, Change::Add { key: X }, &[cur], f).unwrap();
+    commit(&mut b, Change::Add { key: Z }, &[cur, X], f + 1).unwrap();
+    commit(&mut b, Change::SetRule { rule: SignRule::Threshold(2) }, &[cur, X, Z], f + 2).unwrap();
+    assert_eq!(commit(&mut b, Change::Remove { key: Z }, &[cur, X], f + 3), Ok(Insert::Applied));
+    assert_eq!(commit(&mut b, Change::SetRecovery { owner: cur, recovery: Some(R) }, &[cur], f + 4), Ok(Insert::Applied));
+}
+
+/// OWNX-6: one backup key can't back two owners.
+#[test]
+fn rv8_ownx6_one_backup_for_one_owner() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    assert!(commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], 2).is_err());
+}
