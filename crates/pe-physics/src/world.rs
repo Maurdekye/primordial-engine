@@ -6,7 +6,8 @@ use box3d_rust::body::{
     body_apply_angular_impulse, body_apply_force, body_apply_force_to_center, body_apply_linear_impulse,
     body_apply_linear_impulse_to_center, body_apply_torque, body_get_angular_velocity,
     body_get_linear_velocity, body_get_transform, body_get_type, body_is_awake, body_is_valid,
-    body_set_angular_velocity, body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body,
+    body_set_angular_velocity, body_set_awake, body_set_linear_velocity, body_set_target_transform, body_set_transform,
+    create_body,
     destroy_body,
 };
 use box3d_rust::core::get_length_units_per_meter;
@@ -41,6 +42,17 @@ pub(crate) fn vec3(v: [f32; 3]) -> Vec3 {
 /// `f64` either way.
 pub(crate) fn pos(v: [f64; 3]) -> Pos {
     Pos { x: v[0] as _, y: v[1] as _, z: v[2] as _ }
+}
+
+/// A pose's position bounded and its rotation exactly as given, which must be unit length as
+/// Box3D judges it (`is_normalized_quat`): the exact setters never renormalize.
+fn exact_rotation(pose: &Pose) -> Result<Quat, PhysicsError> {
+    position(&pose.position, "pose position")?;
+    let q = quat(pose.rotation);
+    if !pose.rotation.iter().all(|c| c.is_finite()) || !is_normalized_quat(q) {
+        return Err(PhysicsError::InvalidValue("pose rotation is not unit length"));
+    }
+    Ok(q)
 }
 
 fn quat(q: [f32; 4]) -> Quat {
@@ -433,17 +445,39 @@ impl PhysicsWorld {
         Ok(body)
     }
 
-    /// Overwrite a body's pose with exactly these bits, as a peer receiving carried state does.
-    /// The rotation must be unit length as Box3D judges it (`is_normalized_quat`); it is taken as
-    /// it is, never renormalized, so a pose read from one world lands bit for bit in another.
-    /// Like Box3D's `body_set_transform`, this does not wake the body. Refused for static bodies.
+    /// Apply carried state (P2-3: a touch entry's resulting body state): the pose and both
+    /// velocities, exactly these bits, and the body awake with its sleep timer at zero.
+    ///
+    /// **Every peer applies it, the toucher included, at the same frame.** Writing a pose makes
+    /// Box3D recompute the body's derived state (centre of mass, inertia, broad-phase proxy)
+    /// from it, while the toucher's own body has those integrated; for a body whose centre of
+    /// mass is off its origin they differ by rounding, and `box3d_hash` / `state_hash` do not
+    /// show it until the next step (review SET-1). Sleep state is not carried: carried state is
+    /// awake by definition, so a body asleep on one peer and awake on another, or with different
+    /// sleep timers, ends the same everywhere (SET-2). Both checks run before anything is
+    /// written. Refused for static bodies.
+    pub fn set_state(&mut self, id: ObjectId, pose: Pose, linear: [f32; 3], angular: [f32; 3]) -> Result<(), PhysicsError> {
+        let body = self.moving_body(id)?;
+        let q = exact_rotation(&pose)?;
+        bounded(&linear, MAX_SPEED, "linear velocity")?;
+        bounded(&angular, MAX_SPEED, "angular velocity")?;
+        let w = &mut self.world;
+        body_set_transform(w, body, pos(pose.position), q);
+        body_set_linear_velocity(w, body, vec3(linear));
+        body_set_angular_velocity(w, body, vec3(angular));
+        body_set_awake(w, body, true);
+        // Waking resets the timer only for a body that was asleep; Box3D ids are 1-based.
+        w.bodies[(body.index1 - 1) as usize].sleep_time = 0.0;
+        Ok(())
+    }
+
+    /// Overwrite a body's pose with exactly these bits. The rotation must be unit length as
+    /// Box3D judges it (`is_normalized_quat`); it is taken as it is, never renormalized. Like
+    /// Box3D's `body_set_transform`, this does not wake the body. Carried state goes through
+    /// [`Self::set_state`] instead, on every peer. Refused for static bodies.
     pub fn set_pose(&mut self, id: ObjectId, pose: Pose) -> Result<(), PhysicsError> {
         let body = self.moving_body(id)?;
-        position(&pose.position, "pose position")?;
-        let q = quat(pose.rotation);
-        if !pose.rotation.iter().all(|c| c.is_finite()) || !is_normalized_quat(q) {
-            return Err(PhysicsError::InvalidValue("pose rotation is not unit length"));
-        }
+        let q = exact_rotation(&pose)?;
         body_set_transform(&mut self.world, body, pos(pose.position), q);
         Ok(())
     }
