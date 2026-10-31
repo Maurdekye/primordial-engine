@@ -1,10 +1,11 @@
 //! Entry signatures (P2-3 S3, design 10.8): every entry travels as a [`SignedEntry`], signed by its
-//! author with Ed25519 over `"pe-entry" | world id | entry id`. A replica verifies the signature
+//! author with Ed25519 over `"pe-entry" | world id | session id | entry id`. A replica verifies the signature
 //! before [`crate::session::WorldSim::insert`] stores the entry, and keeps it, so it can relay the
 //! entry (fetch answers, equivocation proofs) with its author's signature.
 //!
 //! The entry id is the hash of the entry's canonical encoding, so the signature covers the whole
-//! entry. The world id in the signed message keeps an entry from being replayed into another world.
+//! entry. The world id and the session id (the session's genesis) in the signed message keep an
+//! entry from being replayed into another world, or into a later session of the same world.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -35,11 +36,19 @@ impl Deref for SignedEntry {
     }
 }
 
+/// A session's identity: the hash of its genesis (members, keys, scene, config), so no two
+/// sessions share one. Production derives it from the genesis document.
+pub type SessionId = [u8; 32];
+
+/// The session id of every test identity ring ([`KeyRing::test`]).
+pub const TEST_SESSION: SessionId = *b"pe-test-session-0000000000000000";
+
 /// The bytes an entry's signature covers.
-pub fn signing_message(world: u32, id: EntryId) -> Vec<u8> {
-    let mut m = Vec::with_capacity(ENTRY_DOMAIN.len() + 4 + 32);
+pub fn signing_message(world: u32, session: &SessionId, id: EntryId) -> Vec<u8> {
+    let mut m = Vec::with_capacity(ENTRY_DOMAIN.len() + 4 + 32 + 32);
     m.extend_from_slice(ENTRY_DOMAIN);
     m.extend_from_slice(&world.to_le_bytes());
+    m.extend_from_slice(session);
     m.extend_from_slice(&id.0);
     m
 }
@@ -102,9 +111,9 @@ impl PublicKeys {
         self.get(m).is_some_and(|k| k.verify_strict(msg, &Signature::from_bytes(sig)).is_ok())
     }
 
-    /// Whether `se` carries a valid signature by its author.
-    pub fn entry_ok(&self, world: u32, se: &SignedEntry) -> bool {
-        self.verify(se.member, &signing_message(world, se.id()), &se.sig)
+    /// Whether `se` carries a valid signature by its author, for `world`'s session `session`.
+    pub fn entry_ok(&self, world: u32, session: &SessionId, se: &SignedEntry) -> bool {
+        self.verify(se.member, &signing_message(world, session, se.id()), &se.sig)
     }
 
     /// Whether `sig` is `m`'s signature over `fact` in `world`.
@@ -113,29 +122,31 @@ impl PublicKeys {
     }
 }
 
-/// This replica's signing key (none for an offline replay) and every member's public key.
+/// This replica's signing key (none for an offline replay), every member's public key, and the
+/// session the replica's entries belong to.
 #[derive(Clone)]
 pub struct KeyRing {
     secret: Option<SigningKey>,
     pub public: PublicKeys,
+    pub session: SessionId,
 }
 
 impl KeyRing {
-    pub fn new(secret: Option<SigningKey>, public: PublicKeys) -> Self {
-        KeyRing { secret, public }
+    pub fn new(secret: Option<SigningKey>, public: PublicKeys, session: SessionId) -> Self {
+        KeyRing { secret, public, session }
     }
 
     /// No keys: verifies nothing and signs nothing (the offline reference, which reads a final log
     /// that its replicas already verified).
     pub fn none() -> Self {
-        KeyRing::new(None, PublicKeys::default())
+        KeyRing::new(None, PublicKeys::default(), [0; 32])
     }
 
     /// Deterministic test identities for simulations: every member's key is derived from its id, so
     /// joiners need no key exchange and a scenario can sign as an adversarial member. Never for a
     /// real session: anyone can compute these keys.
     pub fn test(me: MemberId) -> Self {
-        KeyRing { secret: Some(test_signing_key(me)), public: PublicKeys::test() }
+        KeyRing { secret: Some(test_signing_key(me)), public: PublicKeys::test(), session: TEST_SESSION }
     }
 
     fn key(&self) -> &SigningKey {
@@ -144,7 +155,7 @@ impl KeyRing {
 
     /// Signs `e`, which must be this replica's own entry. Panics without a signing key.
     pub fn sign(&self, world: u32, e: Entry) -> SignedEntry {
-        let sig = self.key().sign(&signing_message(world, e.id())).to_bytes();
+        let sig = self.key().sign(&signing_message(world, &self.session, e.id())).to_bytes();
         SignedEntry { entry: e, sig }
     }
 
@@ -154,7 +165,7 @@ impl KeyRing {
     }
 
     pub fn verify(&self, world: u32, se: &SignedEntry) -> bool {
-        self.public.entry_ok(world, se)
+        self.public.entry_ok(world, &self.session, se)
     }
 }
 
@@ -167,9 +178,10 @@ pub fn test_signing_key(m: MemberId) -> SigningKey {
     SigningKey::from_bytes(&seed)
 }
 
-/// Signs `e` as its author's test identity: scenario fixtures for adversarial members.
+/// Signs `e` as its author's test identity, in [`TEST_SESSION`]: scenario fixtures for adversarial
+/// members.
 pub fn test_sign(world: u32, e: Entry) -> SignedEntry {
-    let sig = test_signing_key(e.member).sign(&signing_message(world, e.id())).to_bytes();
+    let sig = test_signing_key(e.member).sign(&signing_message(world, &TEST_SESSION, e.id())).to_bytes();
     SignedEntry { entry: e, sig }
 }
 
@@ -201,6 +213,10 @@ mod tests {
         let mut forged = se.clone();
         forged.entry.member = 4;
         assert!(!other.verify(7, &forged));
+        // Nor does the same entry in another session of the same world.
+        let mut later = KeyRing::test(4);
+        later.session[0] ^= 1;
+        assert!(!later.verify(7, &se));
         // Without the author's public key nothing verifies.
         assert!(!KeyRing::none().verify(7, &se));
         assert_eq!(test_sign(7, entry(3, 1)), se);
