@@ -926,6 +926,7 @@
           "type": "integer"
         },
         "position": {
+          "description": "World position in metres (f64: Box3D positions are double precision, D58).",
           "items": {
             "type": "number"
           },
@@ -1030,6 +1031,7 @@
               "type": "integer"
             },
             "position": {
+              "description": "World position in metres (f64: Box3D positions are double precision, D58).",
               "items": {
                 "type": "number"
               },
