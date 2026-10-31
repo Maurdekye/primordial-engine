@@ -1,0 +1,14 @@
+[package]
+name = "pe-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Primordial Engine core: ids, fixed-step clock, deterministic math, RNG streams, hashing, canonical coordinates"
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+
+[dev-dependencies]
+# Reference implementation, only to check our pinned XXH64 against.
+twox-hash = { version = "=2.1.5", default-features = false, features = ["xxhash64"] }

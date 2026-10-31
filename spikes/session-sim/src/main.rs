@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 mod history;
 mod r18;
 mod review2;
+mod p24r;
+mod p24r3;
 mod review3;
 mod viewchange;
 
@@ -1217,8 +1219,11 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
 
 /// A member moves only its own hand (design 8.4; P2-8 review, from @shader-reviewer's probe through
 /// pe-mcp). In a 100-ball pit member 1 sweeps its hand (object 100) while member 2 sweeps its own
-/// (101) and, every fourth frame, also sends a hand entry for member 1's hand. Every replica refuses
-/// those (`RejectedNotOwner`), and the session's history equals the same run without them.
+/// (101) and, every fourth frame, also sends a hand entry for member 1's hand. Review HO-1: member 2
+/// also grabs member 1's hand at 2.0 s and carries it towards a portal at 2.2 s, and member 1 touches
+/// its own hand at 2.1 s. Every replica refuses member 2's entries (`RejectedNotOwner`), member 2's
+/// grab takes no claim, so member 1's touch is accepted, and the history equals the run without
+/// member 2's entries.
 fn handowner() {
     let hz = 60u64;
     let scene = SceneKind::BallPit { balls: 100, hands: 2 };
@@ -1229,7 +1234,7 @@ fn handowner() {
         let u = (fr - a0) as f64 / (a1 - a0) as f64;
         [((from + (to - from) * u) * 1000.0).round() as i32, 400, (z * 1000.0).round() as i32]
     };
-    let run = |forge: bool| {
+    let run = |forge: bool, fixes_off: u32| {
         let ids = [1, 2];
         let peers: Vec<Peer> = ids
             .iter()
@@ -1239,6 +1244,9 @@ fn handowner() {
                 for fr in a0..=a1 {
                     let target_mm = if id == 1 { path(fr, -0.6, 0.6, 0.0) } else { path(fr, 0.6, -0.6, 0.5) };
                     v.push((fr, Action::Hand { obj: own, target_mm, active: true, ahead: 0 }));
+                    if id == 1 && fr == f(2.1) {
+                        v.push((fr, Action::Touch { obj: h1, impulse: [0.0, 0.5, 0.0], grab: false }));
+                    }
                     if id == 2 && forge && fr % 4 == 0 {
                         v.push((fr, Action::Hand { obj: h1, target_mm: [0, 3000, 0], active: true, ahead: 0 }));
                     }
@@ -1246,15 +1254,45 @@ fn handowner() {
                 v.push((a1 + 1, Action::Hand { obj: own, target_mm: [0, 1500, 0], active: false, ahead: 0 }));
                 let mut p = Peer::new(id, 0);
                 p.join(1, &ids, scene, cfg60(), 100_000, plan(&v));
+                p.worlds.get_mut(&1).unwrap().sim.fixes_off = fixes_off;
                 p
             })
             .collect();
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), peers, 6_000_000);
-        let panic_at = review2::run_to_end(&mut sim, |_| {});
+        let i2 = sim.peers.iter().position(|p| p.id == 2).unwrap();
+        let (mut grabbed, mut carried, mut planted) = (false, false, false);
+        let panic_at = review2::run_to_end(&mut sim, |sim| {
+            let now = sim.net.now_us;
+            let send = |sim: &mut Sim, p: Payload| {
+                let e = sim.peers[i2].worlds.get_mut(&1).unwrap().sim.author(p, None);
+                sim.net.send(1, 2, 1, &Msg::Entry(e));
+            };
+            if forge && !grabbed && now >= 2_000_000 {
+                send(sim, Payload::Touch { obj: h1, impulse: [0.0, 5.0, 0.0], grab: true });
+                grabbed = true;
+            }
+            if forge && !carried && now >= 2_200_000 {
+                send(sim, Payload::Depart { obj: h1, dest: 99, deadline: u64::MAX, hop: None });
+                carried = true;
+            }
+            // Review HO-1, round 2: a touch of a free ball that carries a state for member 1's hand,
+            // 2 m above where member 2 sees it.
+            if forge && !planted && now >= 2_400_000 {
+                let r2 = &mut sim.peers[i2].worlds.get_mut(&1).unwrap().sim;
+                if let Some(mut st) = r2.obj_state(h1) {
+                    st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                    let e = r2.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (h1, st));
+                    sim.net.send(1, 2, 1, &Msg::Entry(e));
+                }
+                planted = true;
+            }
+        });
         (sim, panic_at)
     };
-    let (a, pa) = run(true);
-    let (b, pb) = run(false);
+    let (a, pa) = run(true, 0);
+    let (b, pb) = run(false, 0);
+    // The behaviour before HO-1's round-2 fix: the carried state for member 1's hand is applied.
+    let (c, pc) = run(true, fix::HO1);
     let frames = [&a, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
     let mut all_refused = true;
     for m in [1, 2] {
@@ -1268,7 +1306,36 @@ fn handowner() {
         let refused = forged.iter().filter(|&&id| r.outcomes.get(&id).is_some_and(|(_, o)| *o == Outcome::RejectedNotOwner)).count();
         all_refused &= refused == forged.len() && !forged.is_empty();
         println!("  m{m}: member 2's hand entries for member 1's hand: {}, refused {refused}", forged.len());
+        // Review HO-1: the grab and the carry are refused too, and the grab took no claim.
+        let others: Vec<(String, Option<Outcome>)> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && matches!(e.payload, Payload::Touch { obj, .. } | Payload::Depart { obj, .. } if obj == h1))
+            .map(|e| (if matches!(e.payload, Payload::Touch { .. }) { "grab".to_string() } else { "carry".to_string() }, r.outcomes.get(&e.id()).map(|(_, o)| *o)))
+            .collect();
+        let own = r
+            .all_entries()
+            .iter()
+            .find(|e| e.member == 1 && matches!(e.payload, Payload::Touch { obj, .. } if obj == h1))
+            .and_then(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o));
+        all_refused &= others.len() == 2 && others.iter().all(|(_, o)| *o == Some(Outcome::RejectedNotOwner)) && own == Some(Outcome::Accepted);
+        println!("  m{m}: member 2's grab and carry of member 1's hand: {others:?}; member 1's own touch of it: {own:?}");
+        let planted: Vec<Option<Outcome>> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && e.carried.is_some_and(|(o, _)| o == h1))
+            .map(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o))
+            .collect();
+        all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
+        println!("  m{m}: member 2's touch of a ball carrying a state for member 1's hand: {planted:?}");
     }
+    let frames_c = [&c, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
+    println!(
+        "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",
+        if dc == dbc { "same history as without member 2's entries" } else { "member 1's history differs from the run without member 2's entries" },
+        if pc.is_some() { "; a replica stopped" } else { "" }
+    );
     let (da, db) = (digest(&a.replica(1, 1).sim.hashes, frames), digest(&b.replica(1, 1).sim.hashes, frames));
     println!(
         "RESULT handowner: member 2's entries for member 1's hand refused at every replica: {all_refused}; frames 0..{frames} with them {da:016x}, without them {db:016x} -> {}",
@@ -1327,6 +1394,28 @@ fn main() {
         Some("join") => viewchange::join(),
         Some("refwithhold") => viewchange::refwithhold(),
         Some("handowner") => handowner(),
+        Some("fork9") => p24r::fork9(),
+        Some("jointiming") => p24r::jointiming(),
+        Some("bogusprecommit") => p24r::bogusprecommit(),
+        Some("futureack") => p24r::futureack(),
+        Some("kickwar") => p24r::kickwar(),
+        Some("kickpartition") => p24r::kickpartition(),
+        Some("lastadmin") => p24r::lastadmin(),
+        Some("adminclose") => p24r::adminclose(),
+        Some("ghostkick") => p24r3::ghostkick(),
+        Some("selfkickhead") => p24r3::selfkickhead(),
+        Some("ackgap") => p24r3::ackgap(),
+        Some("latejoin") => p24r3::latejoin(),
+        Some("capchurn") => p24r3::capchurn(),
+        Some("deepfork") => p24r3::deepfork(),
+        Some("cutbackdate") => p24r3::cutbackdate(),
+        Some("joinattests") => p24r3::joinattests(),
+        Some("slowadmin") => p24r3::slowadmin(),
+        Some("kickbackdate") => p24r3::kickbackdate(),
+        Some("lagprecommit") => p24r3::lagprecommit(),
+        Some("aheadlink") => p24r3::aheadlink(),
+        Some("joinrules") => p24r::joinrules(),
+        Some("onesided") => p24r::onesided(),
         Some("vcscale") => viewchange::vc_scale(
             get("--members").map_or(64, |v| v.parse().unwrap()),
             get("--silent").map_or(1, |v| v.parse().unwrap()),

@@ -257,6 +257,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -354,6 +360,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer",
+ "const-oid",
  "crypto-common",
 ]
 
@@ -1145,6 +1152,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe-core"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "twox-hash",
+]
+
+[[package]]
 name = "pe-mcp"
 version = "0.1.0"
 dependencies = [
@@ -1160,6 +1175,30 @@ dependencies = [
  "tokio",
  "tokio-util",
  "windows-sys",
+]
+
+[[package]]
+name = "pe-session"
+version = "0.1.0"
+dependencies = [
+ "box3d-rust",
+ "ed25519-dalek",
+ "sha2",
+]
+
+[[package]]
+name = "pe-session-harness"
+version = "0.1.0"
+dependencies = [
+ "pe-session",
+]
+
+[[package]]
+name = "pe-sim"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pe-core",
 ]
 
 [[package]]
@@ -1816,6 +1855,12 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "typenum"

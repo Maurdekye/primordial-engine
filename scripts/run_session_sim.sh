@@ -2,11 +2,20 @@
 # Builds and runs every session-protocol scenario (in-process, virtual clock; deterministic).
 # Logs go to spikes/out/session-sim/; the RESULT lines are the evidence cited in docs/design.md.
 # usage: scripts/run_session_sim.sh            (from any directory; needs only a Rust toolchain)
+#        scripts/run_session_sim.sh --pe       the same scenarios on crates/pe-session through its fork
+#                                              of this harness, crates/pe-session-harness (P2-3); logs in
+#                                              spikes/out/session-sim-pe/
 set -u
 cd "$(dirname "$0")/.."
-cargo build --release -q -p pe-spike-session-sim || exit 1
-B=target/release/pe-spike-session-sim
-O=spikes/out/session-sim
+if [ "${1:-}" = --pe ]; then
+  cargo build --release -q -p pe-session-harness || exit 1
+  B=target/release/pe-session-harness
+  O=${PE_OUT:-spikes/out/session-sim-pe}
+else
+  cargo build --release -q -p pe-spike-session-sim || exit 1
+  B=target/release/pe-spike-session-sim
+  O=spikes/out/session-sim
+fi
 mkdir -p $O
 run() { local name=$1; shift; "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }
 run c1 c1
@@ -16,6 +25,8 @@ run diverged diverged
 run loss loss
 run ties ties
 run claims claims
+# P2-3 S4: grab races under D72 (only grabs claim; --pe only, the spike core has the earlier rule).
+if [ "${1:-}" = --pe ]; then run grabrace grabrace; fi
 run backdate backdate
 for v in ok abort reject throttle forge late crash chain chain-epoch; do run r14-$v r14 $v; done
 for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done
@@ -38,8 +49,19 @@ for v in badvote liar crashstall; do run review3-$v $v; done
 # equivocating proposer, a join, and the D80 quorum comparisons (twosilent5 and bridge run both rules;
 # bridge under a strict majority forks by design, and each side is checked on its own).
 for v in twosilent twosilent5 withheld colluders badproposer bridge join refwithhold; do run p2-4-$v $v; done
-# A member moves only its own hand (design 8.4; P2-8 review).
+# A member moves only its own hand, and touches or carries no one else's (design 8.4; P2-8 review, HO-1).
 run handowner handowner
+# P2-4 review round 2 (design 10.8): each repro also reports its run with the fix switched off.
+for v in fork9 jointiming bogusprecommit futureack; do run p2-4-$v $v; done
+# D80 admins and roles (design 10.8, 12.1): kicks in commit order, a kick across a partition, the last
+# admin, closing a session with no admin, the join rules.
+for v in kickwar kickpartition lastadmin adminclose joinrules; do run d80-$v $v; done
+# P2-4 review round 3 (design 10.8): each repro also reports its run with the fix switched off.
+for v in ghostkick selfkickhead ackgap latejoin capchurn deepfork cutbackdate joinattests slowadmin kickbackdate lagprecommit aheadlink; do run p2-4-$v $v; done
+# Review VC-1, a control outside the check below (expected to fork): three of six collude, above the
+# bound of t(6) = 1 faulty member.
+mkdir -p $O/p2-4-controls
+"$B" onesided > "$O/p2-4-controls/onesided.log" 2>&1; echo "== control onesided"; grep "^RESULT" "$O/p2-4-controls/onesided.log"
 run p2-4-vcscale-64 vcscale --members 64 --silent 2
 run p2-4-vcscale-256 vcscale --members 256 --silent 2 --no-heads
 # Fail on any fork, replay mismatch, panic, false check or lost/duplicated object (reviews NEW-2, NEW-7).
