@@ -846,13 +846,10 @@ impl Sim {
                     // P2-5: once A's majority has attested the commit, copy the hop into B's log.
                     let rec = j.record.expect("relayed record");
                     let src = &self.peers[pi].worlds[&j.src].sim;
-                    let fact = fact_committed(j.src, j.transfer, rec.global, j.dst, rec.via);
                     // P25-5: signed by the epoch active at the commit frame, with A's certificates
-                    // up to it, so any world can check the hop from A's genesis.
-                    let Some(Seen::Left { frame, .. }) = src.t.seen.get(&rec.global).filter(|s| matches!(s, Seen::Left { transfer, .. } if *transfer == j.transfer)).cloned() else { continue };
-                    let Some((epoch, cert)) = src.cert_at(fact, frame) else { continue };
-                    let Some(certs) = src.epoch_certs_upto(epoch) else { continue };
-                    let hop = Hop { src: j.src, dest: j.dst, transfer: j.transfer, via: rec.via, epoch, frame, certs, cert };
+                    // up to it, so any world can check the hop from A's genesis; VC-7 and VC-8 in
+                    // `own_hop`.
+                    let Some(hop) = src.own_hop(j.transfer, rec.global) else { continue };
                     let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
                     let e = dst.sim.author(Payload::Provenance { hop }, None);
                     j.log.push(format!("t={}ms commit certified in world {}; hop relayed into world {} at frame {}", now / 1000, j.src, j.dst, e.stamp));

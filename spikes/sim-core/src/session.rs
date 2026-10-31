@@ -1118,6 +1118,10 @@ fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, dead
     Export::Departed { src, epoch: 0, depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
 }
 
+/// A transfer this world committed, as its members attest it: (transfer, global id, destination, the
+/// transfer the object had entered by, commit frame). The epoch goes into the fact when it is signed.
+pub type Commit = (u64, u64, u32, u64, u64);
+
 /// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
 pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
     splitmix64(((src_world as u64) << 40) ^ depart)
@@ -1612,10 +1616,12 @@ pub struct WorldSim {
     pub fork_proofs: BTreeMap<(u32, u64, u64, u64, u64), ForkProof>,
     /// Cross-world effects of each simulated frame, kept outside the rollback state: a re-simulation
     /// of the frame replaces them, and they are acted on only once the frame is confirmed (P25-3,
-    /// P25-4): (commit facts to attest, fork proofs found).
-    frame_effects: BTreeMap<u64, (Vec<u64>, Vec<ForkProof>)>,
-    /// Confirmed commit facts not yet attested (P25-4: each attested once).
-    commits_due: Vec<u64>,
+    /// P25-4): (commits to attest, fork proofs found).
+    frame_effects: BTreeMap<u64, (Vec<Commit>, Vec<ForkProof>)>,
+    /// Confirmed commits. Each is attested once per epoch label: if a later membership change moves
+    /// its frame into another epoch, members attest the fact again with that epoch (VC-7). Kept for
+    /// the world's life in the spike; production drops one once its epoch can no longer change [I].
+    commits: Vec<Commit>,
     attested: BTreeSet<u64>,
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
@@ -1863,7 +1869,7 @@ impl WorldSim {
             hand_owners,
             fork_proofs: BTreeMap::new(),
             frame_effects: BTreeMap::new(),
-            commits_due: Vec::new(),
+            commits: Vec::new(),
             attested: BTreeSet::new(),
             known: members.iter().copied().chain([me]).collect(),
             entries: BTreeMap::new(),
@@ -4669,9 +4675,12 @@ impl WorldSim {
             }
         }
         // P2-5: a committed transfer is the hop the destination's next departure needs. P25-4: each
-        // commit is queued once, when its frame is confirmed.
+        // commit is queued once its frame is confirmed. VC-7: the fact names the frame and the epoch
+        // active at it in this replica's log.
         self.confirm_effects();
-        facts.append(&mut self.commits_due);
+        for &(t, g, dest, via, frame) in &self.commits {
+            facts.push(fact_committed(self.world_id, t, g, dest, via, frame, self.epoch_at(frame)));
+        }
         for (t, a) in &self.t.arrivals {
             let (frame, accepted) = match a {
                 Arrival::Accepted { frame, .. } => (*frame, true),
@@ -4727,7 +4736,7 @@ impl WorldSim {
                 break;
             }
             let (commits, forks) = e.remove();
-            self.commits_due.extend(commits);
+            self.commits.extend(commits);
             for p in forks {
                 let k = p.key();
                 if !self.fork_proofs.contains_key(&k) {
@@ -4781,6 +4790,21 @@ impl WorldSim {
         })
     }
 
+    /// The certified hop of transfer `transfer` of object `global` that this world committed, from its
+    /// own log: what a relayer copies into the destination (P2-5). Signed by a majority of the epoch
+    /// active at the commit frame, with this world's certificates up to it, and the next one once
+    /// decided (VC-8). None until that majority has attested it.
+    pub fn own_hop(&self, transfer: u64, global: u64) -> Option<Hop> {
+        let (dest, via, frame) = match self.t.seen.get(&global) {
+            Some(Seen::Left { transfer: t, dest, via, frame, .. }) if *t == transfer => (*dest, *via, *frame),
+            _ => self.commits.iter().find(|c| c.0 == transfer && c.1 == global).map(|c| (c.2, c.3, c.4))?,
+        };
+        let fact = fact_committed(self.world_id, transfer, global, dest, via, frame, self.epoch_at(frame));
+        let (epoch, cert) = self.cert_at(fact, frame)?;
+        let certs = self.epoch_certs_upto(epoch + 1).or_else(|| self.epoch_certs_upto(epoch))?;
+        Some(Hop { src: self.world_id, dest, transfer, via, epoch, frame, certs, cert })
+    }
+
     /// `hop` is the certified commit of the transfer that brought object `g` here.
     fn hop_in_ok(&self, g: u64, here: &Seen, hop: &Hop) -> bool {
         let Seen::Here { via, from, from_via, .. } = here else { return false };
@@ -4788,7 +4812,7 @@ impl WorldSim {
             && hop.dest == self.world_id
             && hop.transfer == *via
             && hop.via == *from_via
-            && self.epochs.hop_ok(hop, fact_committed(hop.src, hop.transfer, g, hop.dest, hop.via))
+            && self.epochs.hop_ok(hop, g)
     }
 
     // ---- simulation ------------------------------------------------------------------------------
@@ -5061,7 +5085,7 @@ impl WorldSim {
                     };
                     self.t.seen.insert(rec.global, Seen::Left { transfer: *transfer, dest: esc.dest, via: rec.via, frame: f, from, from_via, entry });
                     if record_effects {
-                        self.frame_effects.entry(f).or_default().0.push(fact_committed(self.world_id, *transfer, rec.global, esc.dest, rec.via));
+                        self.frame_effects.entry(f).or_default().0.push((*transfer, rec.global, esc.dest, rec.via, f));
                     }
                     self.t.escrow.insert(*transfer, Escrow { status: EscrowStatus::Committed, record: None, ..esc });
                 } else {

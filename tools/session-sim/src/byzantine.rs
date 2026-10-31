@@ -822,8 +822,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 let a = &sim.replica(1, 1).sim;
                 let in_b = sim.replica(3, 2).sim.t.objs.iter().flatten().any(|o| o.global == ga(52));
                 if let (true, Some(Seen::Left { transfer: t1, dest: 6, .. })) = (in_b, a.t.seen.get(&ga(52)).cloned()) {
-                    let cert = a.cert(fact_committed(1, t1, ga(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
+                    let hop = a.own_hop(t1, ga(52)).unwrap();
                     let e = forge_from_w(sim, 1, 2, rec(ga(52), t1), vec![hop]);
                     forged.push((1, 2, e.id(), "RESIDUAL: W's majority double-spends A:52 (now in B) into A, citing its genuine hop in"));
                 }
@@ -839,7 +838,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
             "w_forge_earlier_hop" => {
                 // A hop A -> W that A never certified: the attackers hold only member 2's key of A.
                 let fake = 0xF0F0;
-                let fact = fact_committed(1, fake, ga(54), 6, 0);
+                let fact = fact_committed(1, fake, ga(54), 6, 0, 0, 0);
                 let hop = Hop { src: 1, dest: 6, transfer: fake, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert: vec![(2, member_sig(1, 2, fact))] };
                 let e = forge_from_w(sim, 2, 3, rec(ga(54), fake), vec![hop]);
                 forged.push((2, 3, e.id(), "W's majority forges an earlier hop (A -> W of A:54, signed by m2 of A only)"));
@@ -848,8 +847,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 // A's genuine commit certificate of A:52's hop into W, spliced onto A:54.
                 let a = &sim.replica(1, 1).sim;
                 if let Some(Seen::Left { transfer, dest: 6, via: 0, .. }) = a.t.seen.get(&ga(52)).cloned() {
-                    if let Some(cert) = a.cert(fact_committed(1, transfer, ga(52), 6, 0)) {
-                        let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
+                    if let Some(hop) = a.own_hop(transfer, ga(52)) {
                         let e = forge_from_w(sim, 2, 3, rec(ga(54), transfer), vec![hop]);
                         forged.push((2, 3, e.id(), "W's majority splices A's genuine hop of A:52 onto A:54"));
                     }
@@ -910,8 +908,7 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
                 let back = a.t.objs.iter().flatten().any(|o| o.global == ga(52)) && matches!(a.t.seen.get(&ga(52)), Some(Seen::Here { from: 2, .. }));
                 let first = sim.peers.iter().flat_map(|p| p.jobs.iter()).find(|j| j.src == 1 && j.dst == 6 && j.record.is_some_and(|r| r.global == ga(52))).map(|j| j.transfer);
                 if let (true, Some(t1)) = (back, first) {
-                    let cert = a.cert(fact_committed(1, t1, ga(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: Vec::new(), cert };
+                    let hop = a.own_hop(t1, ga(52)).unwrap();
                     let e = forge_from_w(sim, 2, 3, rec(ga(52), t1), vec![hop.clone()]);
                     forged.push((2, 3, e.id(), "W's majority resurrects A:52 into B, which it has left for A since"));
                     let e = forge_from_w(sim, 1, 2, rec(ga(52), t1), vec![hop]);
