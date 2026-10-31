@@ -12,6 +12,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
+use pe_session::ownership::Change as OwnChange;
 use pe_session::session::*;
 use pe_session::splitmix64;
 
@@ -143,7 +144,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } => "admin",
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } => "admin",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
@@ -322,6 +323,9 @@ pub enum Action {
     Kick { target: MemberId },
     SetRole { member: MemberId, role: RoleId },
     DefineRole { role: RoleId, perms: u64 },
+    /// World ownership: publish a certificate for `change` on this replica's ownership head, signed
+    /// by test identities `keys`.
+    Owner { change: OwnChange, keys: Vec<u32> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -621,6 +625,10 @@ impl Sim {
                         Action::Kick { target } => Payload::Kick { epoch: 0, target },
                         Action::SetRole { member, role } => Payload::SetRole { epoch: 0, member, role },
                         Action::DefineRole { role, perms } => Payload::DefineRole { epoch: 0, role, perms },
+                        Action::Owner { ref change, ref keys } => {
+                            let Some(cert) = r.core.sim.owner_cert(change.clone(), keys) else { continue };
+                            Payload::Ownership { epoch: 0, cert }
+                        }
                         Action::Carry { obj, dest, .. } => {
                             if !r.core.ready() {
                                 continue;
