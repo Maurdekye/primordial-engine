@@ -1,11 +1,10 @@
-commit 9927b7bf6594189a0732113f118d380d50e436e8
+commit 3e6b86ccd9b120d1b872c2a14717ba75654fa30d
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling box3d-rust v0.5.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\setters\crates\box3d-fork)
-   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\setters\crates\pe-physics)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.94s
+   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\compact\crates\pe-physics)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.83s
      Running unittests src\lib.rs (target\debug\deps\pe_physics-46ac55e950bbb459.exe)
 
 running 0 tests
@@ -14,7 +13,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests\api.rs (target\debug\deps\api-5362cd0977d15e60.exe)
 
-running 16 tests
+running 19 tests
 test carried_state_lands_exactly ... RESULT carried state, off-centre, spinning, both sides true: first differing frame of 120 None
 RESULT carried state, asleep on the ground, both sides true: first differing frame of 120 None
 RESULT carried state, settling, sleep timer running, both sides true: first differing frame of 120 None
@@ -25,6 +24,12 @@ RESULT carried state, settling, sleep timer running, both sides false: first dif
 RESULT carried state, rolling in contact, both sides false: first differing frame of 120 None
 ok
 test check_hash_is_canonical ... ok
+test compact_images_is_exact ... RESULT compact registry 31 -> 9 blobs (20 kept images)
+ok
+test compact_images_refusal_changes_nothing ... ok
+test compaction_is_invisible_to_the_simulation ... RESULT compaction peer late by 3: registry at most 17 blobs (75 unique hulls made), now 17
+RESULT compaction peer late by 7: registry at most 20 blobs (75 unique hulls made), now 12
+ok
 test foreign_and_corrupt_images ... ok
 test forged_confirmations_still_refused ... ok
 test grabs ... RESULT grab spring gap after 3 s: 0.0000 m (hand at x = 3.000)
@@ -42,7 +47,7 @@ test targets_drive_hands ... ok
 test transfer_canonical_after_destroy ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.10s
 
      Running tests\spike_records.rs (target\debug\deps\spike_records-54e0938baa09903e.exe)
 
@@ -101,7 +106,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 165.73s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 172.41s
 
    Doc-tests pe_physics
 
