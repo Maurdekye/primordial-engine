@@ -1002,9 +1002,13 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
     So every replica refuses any entry that names a hand that is not its author's, with
     `RejectedNotOwner`: a hand move, a touch (so it takes no claim that would block the owner), and a
     carry through a portal (review HO-1). It is a validity rule like the others, not a claim: it holds at
-    every frame [V handowner: member 2's 46 hand entries, its grab and its carry of member 1's hand are
-    refused at both replicas; member 1's own touch of it right after is accepted; the history equals the
-    run without member 2's entries].
+    every frame.
+  * A touch carries the resulting state of the object it touches and no other (round 2 of HO-1): a touch
+    whose carried state names another object is refused, `RejectedInvalid`, before it takes any claim
+    [V handowner: member 2's 46 hand entries, its grab and its carry of member 1's hand, and its touch of
+    a ball carrying a state for member 1's hand are all refused at both replicas; member 1's own touch of
+    its hand right after is accepted; the history equals the run without member 2's entries. With the
+    carried-state check switched off, member 1's history changes].
   * Hands are the first owner-only objects; avatar parts and any other per-member object join the class
     as each kind is added [I]. In the spike ownership is fixed from the genesis list, so a joiner owns no
     hand (review HO-2); pe-session keeps it in the hashed state, set by a confirmed entry (P2-3).
@@ -1466,6 +1470,16 @@ is fixed once the author's chain is contiguous up to it.
   which is unsafe once a quorum rather than every member decides: after a withdrawal, the voter's later
   references can make entries stable that the withdrawn vote's frozen head drops, and a change naming
   that vote would cut them.
+  * A vote that names a kick (D80, below) freezes the target only for that kick. One that names no held,
+    pending kick of its target is answered by a reset too, once it has stood 180 frames (review VCR-1)
+    [V ghostkick: 9 votes against 2 for a kick that does not exist; a reset at 5.13 s answers it. Before
+    the fix confirmation stopped for good at frame 108].
+* **Cuts use only heads that resolve** (review VCR-2). A member's vote on its own kick must freeze exactly
+  its previous entry: no reference of its own can check any other head. A proposer computes a cut only
+  from votes whose frozen heads it can walk down to the prefix it holds, and asks every member, not
+  only the voter, for an entry it lacks [V selfkickhead: admin 1 kicks 4, and 4's own vote names a
+  head it never signed; 4 is removed at 2.28 s. Before the fix the kick never went through and
+  confirmation stopped at frame 116].
 * **Applying a decision.**
   * Epoch e + 1 starts. Removed members leave the list. Entries after each cut are void, and a removed
     member stops counting from the frame after the last horizon inside its cut.
@@ -1473,28 +1487,55 @@ is fixed once the author's chain is contiguous up to it.
     fork in it (review VC-2). Until it holds the cut's version, it confirms only the frames that the acks
     of the prefix verified against every member's references cover: an entry stamped at or before a
     declared horizon must come before that ack in its chain (8.2), and past that prefix its copy may be
-    the other branch. It asks for the cut's branch in one request, takes it even as duplicates of the
-    entries it holds, and confirms nothing while it switches, so the branch's entries act before any
-    frame they touch is confirmed [V fork9: 9 forks; 1 and 2 hold the branch with its touch, 3 a longer
-    one without. Before the fix 3 confirmed past the touch and then had to roll back below its
-    confirmed frame; now all three equal the replay].
-  * Every vote and freeze of epoch e ends, and the slowness and unbacked-epoch timers restart (review
-    VC-6). Members still silent are voted against again at once.
+    the other branch. It asks for the cut's branch from its highest missing stretch down, 16 entries per
+    reply (review VCR-5), takes it even as duplicates of the entries it holds, and confirms nothing while
+    it switches. The branch's entries are validated again before any of them acts, so one stamped at or
+    before a horizon its author declared is void, never applied below the confirmed frame (review VCR-6)
+    [V fork9: 9 forks; 1 and 2 hold the branch with its touch, 3 a longer one without. Before the fix 3
+    confirmed past the touch and then had to roll back below its confirmed frame; now all three equal
+    the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch; before the
+    fix 3 never got it all and stopped at frame 116. V cutbackdate: the cut's branch holds a touch
+    backdated 90 frames; before the fix 3 applied it below its confirmed frame and hit the rollback
+    assertion at 2.29 s].
+  * A replica applies a decision only once it holds every admin entry the change lists; it asks those
+    that precommitted it for the ones it lacks, by id (review VCR-8) [V slowadmin: an admin's entries
+    reach follower 6 2.5 s late on every path; it decides at 3.60 s once it has the entry. Before the
+    fix it panicked at 2.23 s].
+  * Every vote and freeze of epoch e ends, and the slowness timers restart (review VC-6). The timers on
+    acks from an epoch the reader has not reached do not: they end when the reader reaches that epoch
+    (review VCR-4). Members still silent are voted against again at once.
+  * The member acks at once in epoch e + 1, so its acks never skip an epoch, however many decisions fall
+    between its regular acks (review VCR-3).
 * **Joins** use the same decision: a change that adds members, with a boundary B ahead of the present
   (the proposer's present plus 60 frames) [V join].
   * The joiner asks to join, and members accept a change that adds it only if they hold its request and
     the world's join rules admit it, with the starting role they give (12.4). The role travels in the
     change, because a member can decide a join from others' precommits without holding the request.
+  * **So do the joiner's attestations** (review VCR-7). Every member judges the join rules from the
+    relationships the change carries, signature-checked, never from its own copy of the request, and a
+    joiner's first request stands. A joiner that shows each member something different cannot split
+    them [V joinattests: 5 shows its friendship with admin 1 to 1 and 2 only, and 9 prevotes but never
+    precommits; 5 joins as Guest. Before the fix 1 and 2 locked on the join while 3 refused it: no
+    decision, confirmation stuck at frame 176].
   * A member precommits a join with a **cap** while B is still ahead of it: its precommit names B, and
     from it on every reader counts that member's acks only below B (the smallest B it named, review
     VC-10) until it reaches the next epoch. A precommit whose B is not ahead of its author's declared
-    horizon, or more than two join leads past it, is void: a chain-local rule (review VC-4).
+    horizon, or more than two join leads past the later of that horizon and its own stamp, is void: a
+    chain-local rule (reviews VC-4, VCR-12; counting from the stamp too lets a member that has not acked
+    yet, or acks rarely, precommit a join) [V lagprecommit: 3 acks once every 1.5 s and the join needs
+    its precommit; 5 joins at 2.95 s. Before the fix 3's precommit was void and nothing was decided].
   * Once some member's acks are capped at or below B, others may precommit late, without a cap: every
     reader then confirms nothing from B on before the decision, whoever holds the cap (review VC-3).
   * Caps that no change explains, such as a faulty member's precommit for a value nobody proposes, are
     cleared by a reset [V bogusprecommit: a precommit with boundary 1 is void; one just ahead of its
     author's horizon caps it until a reset at 2.13 s. Before the fix confirmation stopped for good, at
     frames 112 and 143].
+  * **A reset counts against the members it overrules** (review VCR-4): the authors of the epoch's caps,
+    and of its votes against members it keeps. A member overruled in 3 of the last 8 epochs is voted out,
+    so a member that forces a reset in every epoch costs three decisions, not one per epoch for good.
+    Votes against a member already overruled that often do not count against their voters [V capchurn:
+    from 2 s, 9 signs a capped precommit for no proposal in every epoch and its acks claim the next
+    epoch; three resets, then 9 is voted out at 2.50 s. Before the fix: 88 resets, and 9 never removed].
   * Acks carry their author's epoch. An ack from an epoch newer than the reader's never counts toward the
     reader's confirmation, so a member that decides late cannot confirm a frame from B on without the
     joiner either. Together: no member confirms a frame from B on before it knows of the join.
@@ -1503,6 +1544,17 @@ is fixed once the author's chain is contiguous up to it.
     silent one (review VC-5) [V futureack: acks claiming epoch 999 are void and 9 is removed at 5.23 s
     as too slow; acks claiming epoch 1 with no decision get it voted out at 5.17 s. Before the fix
     confirmation stopped for good at frame 112].
+  * An honest member's acks never skip an epoch, because it acks on entering each (above), and a joiner
+    that catches up on several decisions at once acks each (review VCR-3) [V ackgap: 3 acks once a
+    second and two decisions fall between two of its acks; V latejoin: 5 catches up on two decisions at
+    once, then joins at epoch 3. Before the fix their later acks were all void, and each was voted out as
+    too slow].
+  * The 180-frame timer waits while another member's acks show the reader is behind (it fetches first),
+    so a reader that has not seen a decision yet does not suspect the members that have (review
+    VCR-12). A vote it casts anyway is harmless: it belongs to an epoch the others have left, and a
+    quorum locked on the decided change cannot decide another [V aheadlink: 3 hears only 4's acks for
+    5 s while the others decide; 3 is removed for not keeping up, and its votes against the members
+    ahead remove none of them].
   * Nothing the joiner signs acts before it is admitted. Once admitted, its entries stamped before B are
     void (a chain-local rule), and it counts toward confirmation from B on. It gets the state at a
     confirmed frame and the log after it (9.5); in the spike it follows the log from the start.
@@ -1541,9 +1593,11 @@ is fixed once the author's chain is contiguous up to it.
 * **Limits.**
   * Beyond the bound, a partition between honest members that a faulty member reaches on both sides lets
     each side decide its own epoch: the session forks [V bridge, under D80 (a)].
-  * A faulty member can keep forcing resets by voting against a healthy member again in each epoch. Each
-    costs one decision and stalls that member's chain while it lasts, not safety. Counting a vote that a
-    reset overrules against its author, so a repeat offender is voted out, is the rule to add [I].
+  * A faulty member that forces resets is voted out after three of them (VCR-4, above). So is an honest
+    member whose link to one other member keeps failing, which removes the member that cannot keep up
+    rather than its peer [I].
+  * A faulty proposer can still leave pending admin entries out of the changes it proposes in its own
+    rounds; the next honest proposer lists them in commit order [I].
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
   * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
@@ -1570,12 +1624,31 @@ is fixed once the author's chain is contiguous up to it.
     agreed. An entry no change has judged yet stays pending into later epochs. A kick by an admin removed
     earlier in that order is refused: of two admins kicking each other in the same frame, the first in
     commit order stays [V kickwar].
+  * An admin entry's stamp decides its place, so it obeys its author's horizon like any entry: it is void
+    if stamped at or before a horizon its author has declared (review VCR-9). A proposer lists pending
+    entries in commit order and stops at the first it cannot carry out yet (a kick still waiting for
+    frozen heads), instead of letting later ones overtake it [V kickbackdate: admins 1 and 2 kick each
+    other at frame 120, 2's kick backdated 30 frames; 2's kick is void and 2 is removed. Before the fix
+    the backdated kick came first and removed 1].
+  * **Open with the user** (review VCR-10, the user's questions V1-V3 through @coordinator-opus): a role
+    holding only the kick permission can kick the last admin, which closes the session; the roles
+    permission can grant Admin, so it equals Admin; and removing an honest but slow sole admin closes the
+    session for good. The coordinator recommends: only admins kick admins; only admins grant Admin, and
+    the roles permission grants only lesser roles; the session still closes when the last admin times
+    out, after a longer grace period. Not built until the user rules.
   * **Kicks wait out a partition** instead of forking: under the two-thirds quorum neither side of
     {1,2} | {3,4} commits anything, and after the heal the kick holds [V kickpartition].
   * **The last admin** cannot give the role up without handing it on: such an entry is refused [V lastadmin].
   * **Owners** (12.4): an owner may give up Admin, but only a co-owner demotes or kicks an owner (Q27,
     user 22:49Z and 22:51Z). An owner removed that way can rejoin as Admin through join row 0, as the user
     accepted.
+    * Agreed with @provenance-eng for the ownership chain (12.5): ownership certificates entering a
+      session are admin-layer entries, committed in order like role entries, so every replica judges each
+      against the same owners without reading frame state. Owner checks compare members' identity keys
+      (from their join certificates) with the chain's owners, and every time window in the chain's rules
+      is measured against the deciding change's boundary, never a replica's clock [I]. The spike keeps a
+      fixed owner set until @design-reviewer approves the ownership spike (its review found OWN-1 to
+      OWN-3).
   * **No admin left: the session closes.** A change that leaves no admin (a kick, a removal on silence or
     proof, a release) closes the session at its boundary. The boundary lies ahead, as a join's does, with
     the same precommit caps, so nothing confirmed is undone, and nothing stamped at or after it acts. A
@@ -1605,6 +1678,18 @@ is fixed once the author's chain is contiguous up to it.
 | `adminclose` | the only admin silent from 3 s | removed at 6.5 s; the session closes at frame 438 on both remaining members; all equal |
 | `joinrules` | rules: friends of an admin join as Guest, confidants of an owner as Admin; four ask | the friend joins as Guest, the confidant and the owner (row 0) as Admin, the stranger is refused |
 | `onesided` (control) | 3 of 6 collude, above the bound; partition {1,2} / {3}; proofs only for 1 and 2 | two different epoch-1 decisions: the session forks, as the restated bound allows |
+| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | a reset at 5.13 s answers it; confirmation goes on (before the VCR-1 fix: stuck at frame 108) |
+| `selfkickhead` | admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed | 4 removed at 2.28 s (before the VCR-2 fix: never; confirmation stuck at frame 116) |
+| `ackgap` | 3 acks once a second; two decisions 0.25 s apart fall between two of its acks | both decided, 3 stays (before the VCR-3 fix: its later acks void, and 3 voted out as too slow) |
+| `latejoin` | 5 catches up on two decisions at once, then joins at epoch 3 | admitted at 3.10 s and stays (before the VCR-3 fix: voted out after joining) |
+| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | three resets, then 9 voted out at 2.50 s (before the VCR-4 fix: 88 resets, 9 never removed) |
+| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late, so the cut lies over 16 entries past what 3 holds | 9 removed at 3.63 s; 3 fetches the branch 16 entries at a time; all equal (before the VCR-5 fix: 3 stuck at frame 116) |
+| `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.29 s) |
+| `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits | 5 joins as Guest; 9 is removed later for not referencing 5's chain (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
+| `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.60 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.23 s) |
+| `kickbackdate` | `kickwar`, with 2's kick backdated 30 frames | 2's kick is void; 2 removed at 2.27 s (before the VCR-9 fix: the backdated kick removed 1) |
+| `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.95 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224) |
+| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.23 s for not keeping up; its votes against the members ahead remove none of them |
 | `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
 
   Every scenario's honest members equal each other and the offline replay of the final log, with no false
@@ -1612,7 +1697,8 @@ is fixed once the author's chain is contiguous up to it.
   unchanged except where the view change acts: `backdate` removes its lagging member sooner (66 paused
   frames instead of 128, cut at seq 87 instead of 119), `r14 crash` pauses 5 or 6 frames longer for its
   crashed carrier, and the R14 chain digests changed because hops now carry their commit frame and epoch
-  certificates (every outcome is the same) [V 5k].
+  certificates (every outcome is the same) [V 5k]. Round 3 changes no outcome elsewhere: decision times
+  and confirmed frames move by a frame or two, because members now ack on entering an epoch [V 5k].
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -1788,6 +1874,43 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
   concern (D10).
 
+### 12.3 AI agents [I]
+
+* **Keys and certificates.** Each agent session has its own Ed25519 key. A user issues a **delegation
+  certificate**: "user U authorizes agent key A with scopes {interact, edit-objects, commit-logic,
+  commit-shaders, commit-assets}, expiring at T".
+* **Issuing a certificate is a human action, out of band.**
+  * Certificates are created only in the engine-owned approval layer (21.2), after the user confirms the
+    agent, its scopes and its expiry with local input.
+  * No MCP tool issues, widens or renews a certificate.
+  * Agents cannot open the dialog either: the user starts the flow from the panel UI.
+* **Agents never get admin scope.** These actions are human-only, and no certificate can carry them:
+  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10) and delegation.
+* **Sub-certificates for restricted sessions (21.3).**
+  * A panel key may issue sub-certificates to the restricted sessions it runs (inbox and decider
+    sessions, 21.6).
+    Each is narrower in scope, expires sooner, and names the principal it serves.
+  * The chain is at most user → panel → session.
+  * The engine issues them only when the owner unlocks the panel or accepts a connection, never at a
+    model's request.
+  * Every peer verifies the chain, and the scope must narrow at each step.
+* **The user key is held outside the MCP-reachable path.**
+  * It is stored encrypted at rest: DPAPI user scope on Windows, the OS keyring on Linux.
+  * Only the signing component behind the approval layer loads it, and that component signs only requests
+    tied to a confirmation the user just made.
+  * The MCP server and the harness adapters have no code path to it. The crates that handle MCP requests
+    do not depend on the user-key signer.
+  * Panel and session keys are separate. They sign only actions inside their certificate's scope.
+* **Effective rights** = certificate scopes ∩ the user's roles, intersected with any sub-certificate's
+  scope.
+* **Attribution.** Certificates travel in the session log. Every peer can verify agent-signed actions and
+  attribute them to user U, and to the remote party that a sub-certificate names. An action taken during
+  a guest's turn at an unlocked panel (21.5) is signed by the panel's session key with the owner's
+  authority, and records the guest as `requested_by`, from the engine's turn binding, never from text.
+* **Revocation.** Revoking a certificate (`CertRevoked {key, effective_frame}`) stops the agent at a
+  deterministic frame. The frame is a confirmed frame (6.4), so every peer stops the agent at the same
+  point. Guests hold no keys of their own, so re-locking a panel needs no log entry (21.5).
+
 ### 12.4 Session admins, roles and join rules (D80; user rulings 22:11Z-22:51Z)
 
 The world's ACL (12.2) says who may edit the world. A **session** has admins and roles of its own, which
@@ -1836,43 +1959,6 @@ entries that the view change commits (10.8).
     (D9, D35) [I].
   * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
     rows [proposal].
-
-### 12.3 AI agents [I]
-
-* **Keys and certificates.** Each agent session has its own Ed25519 key. A user issues a **delegation
-  certificate**: "user U authorizes agent key A with scopes {interact, edit-objects, commit-logic,
-  commit-shaders, commit-assets}, expiring at T".
-* **Issuing a certificate is a human action, out of band.**
-  * Certificates are created only in the engine-owned approval layer (21.2), after the user confirms the
-    agent, its scopes and its expiry with local input.
-  * No MCP tool issues, widens or renews a certificate.
-  * Agents cannot open the dialog either: the user starts the flow from the panel UI.
-* **Agents never get admin scope.** These actions are human-only, and no certificate can carry them:
-  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10) and delegation.
-* **Sub-certificates for restricted sessions (21.3).**
-  * A panel key may issue sub-certificates to the restricted sessions it runs (inbox and decider
-    sessions, 21.6).
-    Each is narrower in scope, expires sooner, and names the principal it serves.
-  * The chain is at most user → panel → session.
-  * The engine issues them only when the owner unlocks the panel or accepts a connection, never at a
-    model's request.
-  * Every peer verifies the chain, and the scope must narrow at each step.
-* **The user key is held outside the MCP-reachable path.**
-  * It is stored encrypted at rest: DPAPI user scope on Windows, the OS keyring on Linux.
-  * Only the signing component behind the approval layer loads it, and that component signs only requests
-    tied to a confirmation the user just made.
-  * The MCP server and the harness adapters have no code path to it. The crates that handle MCP requests
-    do not depend on the user-key signer.
-  * Panel and session keys are separate. They sign only actions inside their certificate's scope.
-* **Effective rights** = certificate scopes ∩ the user's roles, intersected with any sub-certificate's
-  scope.
-* **Attribution.** Certificates travel in the session log. Every peer can verify agent-signed actions and
-  attribute them to user U, and to the remote party that a sub-certificate names. An action taken during
-  a guest's turn at an unlocked panel (21.5) is signed by the panel's session key with the owner's
-  authority, and records the guest as `requested_by`, from the engine's turn binding, never from text.
-* **Revocation.** Revoking a certificate (`CertRevoked {key, effective_frame}`) stops the agent at a
-  deterministic frame. The frame is a confirmed frame (6.4), so every peer stops the agent at the same
-  point. Guests hold no keys of their own, so re-locking a panel needs no log entry (21.5).
 
 ---
 
@@ -4044,8 +4130,10 @@ Rules for every package:
 * **Status:** built in the spike on `viewchange`; review round 1 by @design-reviewer at b01ebdf (changes
   requested: VC-1 to VC-10, HO-1, HO-2), fixed in round 2 together with the D80 admin layer, each repro
   showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 go to
-  @provenance-eng's follow-up, stated in 10.8's limits and 22.7. The port into pe-session is P2-3,
-  @world-chunks's; membership reaches it through a `Membership` seam.
+  @provenance-eng's follow-up, stated in 10.8's limits and 22.7. Review round 2 at 758ff5e (changes
+  requested: VCR-1 to VCR-12, and HO-1's carried state) is fixed in round 3, again with a repro per
+  finding that fails with its fix switched off; VCR-10 waits for the user (V1-V3). The port into
+  pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
 * What: every global id bound to its birth world; each `Arrive` certificate references the certified

@@ -1,5 +1,5 @@
   t=3569 ms: m1 conf 201; 9's touch (frame 50) confirmed at m1: true, at m2: true -> 9 now signs a second version of it
   9's touches at m1: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
-  m1: conf 469 frame 473 members {1, 2} evicted {9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 23 bad 0
-  m2: conf 469 frame 473 members {1, 2} evicted {9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 23 bad 0
+  m1: conf 467 frame 473 members {1, 2} evicted {9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 23 bad 0
+  m2: conf 467 frame 473 members {1, 2} evicted {9: (103, 206)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 23 bad 0
 RESULT lateequiv (second version of a confirmed entry): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 46 bad 0

@@ -283,6 +283,11 @@ fn main() {
                         }
                     }
                     Msg::Join { .. } => {}
+                    Msg::FetchEntry { id } => {
+                        for e in sim.on_fetch_entry(id) {
+                            p.send(&Ctl::Session(e));
+                        }
+                    }
                     // The UDP spike sends one message per datagram; it never batches.
                     Msg::Batch(_) => {}
                 },
