@@ -7,6 +7,8 @@ publish.workspace = true
 description = "Primordial Engine physics: the engine's only door to the box3d fork (bodies bound to sim objects, interactions, world images, parallel stepping)"
 
 [dependencies]
+# Pure Rust (no C or assembly), as design D16 settles for content hashes.
+blake3 = { version = "1.8", default-features = false, features = ["std", "pure"] }
 box3d-rust.workspace = true
 pe-core = { path = "../pe-core" }
 pe-sim = { path = "../pe-sim" }

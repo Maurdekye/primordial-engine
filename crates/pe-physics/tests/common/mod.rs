@@ -160,7 +160,7 @@ impl Game {
 
     /// The spike's state hash: Box3D's hash, then the frame and claims mixed in.
     pub fn hash(&self) -> u64 {
-        let mut h = self.pw.box3d_hash();
+        let mut h = self.pw.box3d_hash().unwrap();
         let mut mix = |v: u64| h = (h ^ v).wrapping_mul(0x100_0000_01B3);
         mix(self.frame);
         for (&body, &(peer, until)) in &self.claims {
@@ -172,7 +172,7 @@ impl Game {
     }
 
     pub fn save(&mut self) -> Snapshot {
-        Snapshot { frame: self.frame, image: self.pw.save_image(), claims: self.claims.clone() }
+        Snapshot { frame: self.frame, image: self.pw.save_image().unwrap(), claims: self.claims.clone() }
     }
 
     pub fn restore(&mut self, s: &Snapshot) {
@@ -204,7 +204,7 @@ pub fn reference_run(config: PhysicsConfig, frames: u64) -> (Vec<u64>, Vec<u64>)
         let now: Vec<Interaction> = inputs.iter().copied().filter(|i| i.frame == f).collect();
         g.advance(&now);
         state.push(g.hash());
-        world.push(g.pw.box3d_hash());
+        world.push(g.pw.box3d_hash().unwrap());
     }
     (state, world)
 }
