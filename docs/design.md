@@ -2067,7 +2067,8 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   * No MCP tool issues, widens or renews a certificate.
   * Agents cannot open the dialog either: the user starts the flow from the panel UI.
 * **Agents never get admin scope.** These actions are human-only, and no certificate can carry them:
-  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10) and delegation.
+  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10), delegation, and loading a backup
+  (16.10).
 * **Sub-certificates for restricted sessions (21.3).**
   * A panel key may issue sub-certificates to the restricted sessions it runs (inbox and decider
     sessions, 21.6).
@@ -2110,8 +2111,9 @@ entries that the view change commits (10.8).
   * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
     removes every other player, tells everyone that the session has closed, and allows no further change
     to the world. There is no longer grace period and no automatic handover (V3, 08:31Z).
-    * [proposal] Since the roles permission counts as Admin (V2), a member whose role holds it counts as
-      an admin here, so the session does not close while such a member remains.
+    * Since the roles permission counts as Admin (V2), a member whose role holds it counts as an admin
+      here, so the session does not close while such a member remains (@coordinator-opus's call,
+      following V2, 09:24Z).
 * **Roles.** Admin is built in, holds every permission and is by default the only role. Other roles are
   named subsets of a permission catalogue that admins create and give, live (22:15Z). Resonite's role
   system inspired the catalogue and live reassignment (22:14Z). Ours differs because no single peer
@@ -2119,8 +2121,8 @@ entries that the view change commits (10.8).
   with every other membership change by the view change.
   * The catalogue [proposal]: kick; kick admins (V1: admins only by default); define and give roles,
     which counts as Admin because it can grant Admin (V2 = (b), 08:31Z); change the join rules; interact (touch, grab,
-    hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn
-    and save; use agent panels. The spike checks the first two (10.8).
+    hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn;
+    save checkpoints, load backups and copy world (16.10); use agent panels. The spike checks the first two (10.8).
   * How 12.2's repository roles (`owner`, `builder`, `editor`, `player`, `spectator`) relate to session
     roles is open [proposal: the world's ACL caps what any session role can grant; world owners are
     the ownership chain's, below].
@@ -2705,33 +2707,53 @@ Assets live in the same world repository tree as code and shaders. Large blobs a
   They become signed interactions, are checked against the ACL, and take effect at a frame.
 * Prefabs and assets: `prefab.save` and `asset.import` / `asset.get` / `asset.list`. These become commits.
 
-### 16.10 World saves: autosave, saved checkpoints and backups (Q29, user 08:31Z)
+### 16.10 Keeping a world: autosave, checkpoints and backups (Q29, user 08:31Z)
 
-The user ruled (Q29, 08:31Z): worlds autosave, players also make saved checkpoints by hand, and every
-world keeps a list of backups that can be loaded at any time. @gnosarium-ux designs the UI; this is the
-storage. Everything below beyond the ruling is a proposal [proposal; I, nothing built].
+The user ruled (Q29, 08:31Z): worlds autosave, players also save checkpoints by hand, and every world
+keeps a list of backups that can be loaded at any time. The UI is Gnosarium UX 8a.10, approved by
+@shader-reviewer at 08:40Z; this is the storage and the engine rules it asks for (its need 2i).
+Everything here is a proposal unless marked otherwise [proposal; I, nothing built].
 
-* **A save is a content-addressed snapshot of confirmed state.** Its manifest names, by BLAKE3 hash
-  (D16): the world repository commit (logic, shaders and assets; 15, 16.8), the world's state at a
-  confirmed frame, the session configuration that lives with the world (roles and join rules, 12.4) and
-  the head of the world's ownership chain (12.4). Only confirmed state is saved, never speculative state,
-  so a save is the same whoever makes it, and loading it reproduces the check hash of its frame (9.1).
-  With regions (25.5), a save gathers each region's latest confirmed checkpoint; making those agree on
-  one frame is open.
-* **Saves share storage:** records and blobs are stored by hash, so a save costs only what changed since
-  the previous one. The region checkpoints of 25.5 are already such records.
-* **Autosave:** at a confirmed frame every few minutes while the world changes, and once as a session
-  closes, since nothing may change after that (V3, 12.4). Older autosaves thin out, as keyframes do (6.7).
-* **Saved checkpoints:** a member whose role holds "spawn and save" (12.4) names one; checkpoints are
-  never thinned or deleted automatically.
-* **The backup list:** every autosave and checkpoint, with its time, author, label and size, kept with
-  the world by the peers that hold it, its owners first; the blobs travel like assets (16.7).
-* **Loading a backup** during a session is a world-log entry: an admin's signed restore, ordered by the
-  view change like a kick. At its frame every replica replaces the world's state with the save's,
-  verified by hash, so all stay equal. With no session running, a player starts one from any backup.
-* **For the user, through @coordinator-opus:** how often to autosave and how long autosaves are kept;
-  who may load a backup (admins only, or a permission of its own); and whether a checkpoint can be
-  deleted, and by whom.
+* **A backup is** the world's tree at a commit (chunk files, logic modules, shaders and assets, by BLAKE3
+  hash, D16) plus the runtime image at a confirmed frame, so restored objects and the logic that runs
+  them always match. Only confirmed state is kept, so a backup is the same whoever makes it, and loading
+  it reproduces its frame's check hash (9.1). Blobs are stored by hash, so a backup costs only what
+  changed since the previous one.
+* **Autosave writes the session's edits into the world** every 5 minutes while the world changes, and
+  once as a session ends (V3), so the next session starts with them. Until then the engine keeps them
+  as session state (25.5.7).
+  * A write is a commit to the world repository (15), signed by an owner's client while an owner is
+    present. With no owner present, edits wait as session state and are written when an owner next
+    joins, unless the owners let builders write (8a.10).
+  * Each write names its parent commit. When two sessions of one world write from the same parent (two
+    instances of a public world, or a home opened twice), the second write does not overwrite the first.
+    It becomes a second head, the world opens from the head written first, and the owners see 8a.10's
+    compare card (Keep this one, or Keep both as versions). This is the engine rule 8a.10 asks for.
+* **The backup list** holds four kinds (8a.10): **checkpoints**, saved and named by a member whose role
+  has Save checkpoints, kept until an owner deletes them; **autosaves**, every one for the last hour,
+  then hourly for a day, daily for a month and weekly after (8a.10's schedule); **session ends**, one for
+  each closed session; and **before load**, made by every load. Owners, and anyone whose role has Load
+  backups (the Admin role has it), see the list. Anyone who sees it may rename a backup; only owners
+  delete. Backups travel with the world, like its chunk files.
+* **Loading a backup** is a human action: no agent certificate can carry it (12.3). It needs the Load
+  backups permission. In a live session it lands like a divergence repair, as a state transfer (9.5) at
+  an activation frame:
+  * The loading admin signs a load entry, ordered by the view change like a kick. Its activation frame
+    is set only once every peer has confirmed it holds the backup (its chunks and runtime image, fetched
+    if missing), so every peer switches at the same frame.
+  * The before-load backup is a pure function of the log at the load frame, so every peer produces the
+    same one. The load entry names it by that frame, not by its hash, and it needs no signature of its
+    own.
+  * People are not world state: avatars, scale and voice stay; anyone inside restored geometry moves to
+    the nearest clear spot; held objects are released and restored. Cross-world transfers in flight
+    (22.6) complete first, and the load waits for them.
+  * Entries from other peers stamped at or after the load frame that touch objects the load removed are
+    rejected deterministically.
+* **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
+  owner is whoever opens it. It needs the Copy world permission, held only by owners by default
+  (@coordinator-opus's direction, 08:35Z).
+* **Open technically:** with regions (25.5), a backup gathers each region's latest confirmed
+  checkpoint; making those agree on one frame needs a rule.
 
 ---
 
