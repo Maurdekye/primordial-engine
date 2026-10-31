@@ -490,7 +490,7 @@ impl Sim {
         }
         // P2-5: epoch certificates (static stub of P2-4's interface) of every world, standing in for
         // self-certifying world ids: a chain may pass through worlds off this world's route list.
-        let mut epochs = EpochBook::default();
+        let mut epochs = EpochBook { keys: PublicKeys::test(), ..EpochBook::default() };
         for p in &peers {
             for (w, r) in &p.worlds {
                 epochs.rule = r.sim.cfg.quorum;

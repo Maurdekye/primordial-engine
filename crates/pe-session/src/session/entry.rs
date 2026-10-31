@@ -110,13 +110,13 @@ pub enum Payload {
     /// `deadline` is a frame of the destination world: a later arrival is refused (R3-6).
     /// P2-5: `chain` is the object's provenance from its birth into the source world; the
     /// certificate covers its hash.
-    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, u64)>, chain: Vec<Hop> },
+    Arrive { transfer: u64, record: ObjRecord, depart: EntryId, deadline: u64, cert: Vec<(MemberId, Sig)>, chain: Vec<Hop> },
     /// R14, source world: the destination's confirmed verdict, with a strict majority of the
     /// destination's members' signatures over it (review NEW-3). Anyone may relay it.
-    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, u64)> },
+    Verdict { transfer: u64, accepted: bool, cert: Vec<(MemberId, Sig)> },
     /// A member's signature over a cross-world fact its replica has confirmed (R14), published as
     /// a chain entry so it is equivocation-proof and fetchable.
-    Attest { fact: u64, sig: u64 },
+    Attest { fact: u64, sig: Sig },
     /// P2-5, destination world: the source's certified commit of a transfer into this world, relayed
     /// so every member holds the hop the object's next departure must carry. Never simulated.
     Provenance { hop: Hop },
@@ -144,7 +144,9 @@ pub enum Payload {
     /// View change: this member's second-phase vote; a quorum of them decides the value. A value
     /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
     /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
-    Precommit { epoch: u32, round: u32, value: u64, boundary: u64 },
+    /// `sig` is the author's signature over [`vc_fact`] (S3c): the epoch certificate collects these,
+    /// so another world can check it without the entries.
+    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, sig: Sig },
     /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
     /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
     /// target's chain for the cut, never to approve it. The view change commits it in order with
@@ -218,7 +220,8 @@ impl Wr {
     pub(super) fn id(&mut self, v: EntryId) { self.0.extend_from_slice(&v.0) }
     pub(super) fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     pub(super) fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
-    pub(super) fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
+    pub(super) fn sig(&mut self, s: &Sig) { self.0.extend_from_slice(s) }
+    pub(super) fn cert(&mut self, c: &[(MemberId, Sig)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.sig(s) } }
     pub(super) fn hop(&mut self, h: &Hop) {
         self.u32(h.src); self.u32(h.dest); self.u64(h.transfer); self.u64(h.via); self.u32(h.epoch); self.u64(h.frame);
         self.u32(h.certs.len() as u32); for c in &h.certs { self.epoch_cert(c) }
@@ -256,7 +259,7 @@ impl Wr {
             Payload::Verdict { transfer, accepted, cert } => {
                 self.u8(5); self.u64(*transfer); self.u8(*accepted as u8); self.cert(cert);
             }
-            Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.u64(*sig) }
+            Payload::Attest { fact, sig } => { self.u8(9); self.u64(*fact); self.sig(sig) }
             Payload::Portal { open } => { self.u8(6); self.u8(*open as u8) }
             Payload::Ack { horizon, heads, check, epoch } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
@@ -278,8 +281,8 @@ impl Wr {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
             Payload::Prevote { epoch, round, value } => { self.u8(12); self.u32(*epoch); self.u32(*round); self.u64(*value) }
-            Payload::Precommit { epoch, round, value, boundary } => {
-                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary)
+            Payload::Precommit { epoch, round, value, boundary, sig } => {
+                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary); self.sig(sig)
             }
         }
         match &e.carried {
@@ -323,7 +326,7 @@ impl Wr {
                 self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member);
                 if !attests.is_empty() {
                     self.u32(attests.len() as u32);
-                    for a in attests { self.u8(a.rel.tag()); self.u32(a.with); self.u64(a.sig_with); self.u64(a.sig_joiner) }
+                    for a in attests { self.u8(a.rel.tag()); self.u32(a.with); self.sig(&a.sig_with); self.sig(&a.sig_joiner) }
                 }
             }
         }
@@ -343,10 +346,11 @@ impl Rd<'_> {
     pub(super) fn id(&mut self) -> Option<EntryId> { Some(EntryId(self.take(32)?.try_into().ok()?)) }
     pub(super) fn i32(&mut self) -> Option<i32> { Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     pub(super) fn f32(&mut self) -> Option<f32> { Some(f32::from_bits(self.u32()?)) }
-    pub(super) fn cert(&mut self) -> Option<Vec<(MemberId, u64)>> {
+    pub(super) fn sig(&mut self) -> Option<Sig> { self.take(64)?.try_into().ok() }
+    pub(super) fn cert(&mut self) -> Option<Vec<(MemberId, Sig)>> {
         let n = self.u32()? as usize;
         let mut c = Vec::with_capacity(n.min(64));
-        for _ in 0..n { c.push((self.u32()?, self.u64()?)) }
+        for _ in 0..n { c.push((self.u32()?, self.sig()?)) }
         Some(c)
     }
     pub(super) fn hop(&mut self) -> Option<Hop> {
@@ -401,7 +405,7 @@ impl Rd<'_> {
             }
             16 => Payload::Provenance { hop: self.hop()? },
             5 => Payload::Verdict { transfer: self.u64()?, accepted: self.u8()? != 0, cert: self.cert()? },
-            9 => Payload::Attest { fact: self.u64()?, sig: self.u64()? },
+            9 => Payload::Attest { fact: self.u64()?, sig: self.sig()? },
             6 => Payload::Portal { open: self.u8()? != 0 },
             tag @ (7 | 14) => {
                 let horizon = self.u64()?;
@@ -422,7 +426,7 @@ impl Rd<'_> {
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.u32()? as RoleId, perms: self.u64()? },
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
-            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()? },
+            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()?, sig: self.sig()? },
             _ => return None,
         };
         let carried = match self.u8()? {
@@ -481,7 +485,7 @@ impl Rd<'_> {
                     let n = self.u32()? as usize;
                     for _ in 0..n.min(64) {
                         let rel = match self.u8()? { 1 => Rel::Friend, 2 => Rel::Confidant, 3 => Rel::Invited, _ => return None };
-                        attests.push(Attest { rel, with: self.u32()?, sig_with: self.u64()?, sig_joiner: self.u64()? });
+                        attests.push(Attest { rel, with: self.u32()?, sig_with: self.sig()?, sig_joiner: self.sig()? });
                     }
                 }
                 Msg::Join { member, attests }

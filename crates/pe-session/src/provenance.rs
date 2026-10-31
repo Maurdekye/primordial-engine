@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::fnv_u64s;
 use crate::session::{cert_ok, epoch_cert_ok, fact_departed, transfer_id, EntryId, EpochCert, MemberId, ObjRecord, QuorumRule};
+use crate::sign::{sig_words, PublicKeys, Sig};
 
 /// The world an object was born in.
 pub fn birth_world(global: u64) -> u32 {
@@ -53,7 +54,7 @@ pub struct Hop {
     /// genesis, on its route list or not.
     pub certs: Vec<EpochCert>,
     /// Signatures over [`fact_committed`] by a strict majority of `src`'s members in `epoch`.
-    pub cert: Vec<(MemberId, u64)>,
+    pub cert: Vec<(MemberId, Sig)>,
 }
 
 /// "World `src` committed transfer `transfer` of object `global` to world `dest`; the object had
@@ -70,7 +71,8 @@ pub fn chain_hash(chain: &[Hop]) -> u64 {
         v.extend(h.certs.iter().map(|c| c.hash()));
         v.push(h.cert.len() as u64);
         for (m, s) in &h.cert {
-            v.extend([*m as u64, *s]);
+            v.push(*m as u64);
+            v.extend(sig_words(s));
         }
     }
     fnv_u64s(v)
@@ -84,9 +86,11 @@ pub trait EpochCerts {
     fn members(&self, world: u32, epoch: u32) -> Option<&[MemberId]>;
     /// How many objects `world` was born with: its birth records.
     fn genesis_objects(&self, world: u32) -> Option<u64>;
+    /// The members' public keys.
+    fn keys(&self) -> &PublicKeys;
     /// `cert` holds signatures over `fact` by a strict majority of `world`'s members in `epoch`.
-    fn cert_ok(&self, world: u32, epoch: u32, fact: u64, cert: &[(MemberId, u64)]) -> bool {
-        self.members(world, epoch).is_some_and(|m| cert_ok(m, world, fact, cert))
+    fn cert_ok(&self, world: u32, epoch: u32, fact: u64, cert: &[(MemberId, Sig)]) -> bool {
+        self.members(world, epoch).is_some_and(|m| cert_ok(self.keys(), m, world, fact, cert))
     }
 }
 
@@ -97,11 +101,13 @@ pub trait EpochCerts {
 pub struct EpochBook {
     pub rule: QuorumRule,
     pub worlds: BTreeMap<u32, WorldEpochs>,
+    /// The keys certificates are checked against (S3c).
+    pub keys: PublicKeys,
 }
 
 impl Default for EpochBook {
     fn default() -> Self {
-        EpochBook { rule: QuorumRule::Bft, worlds: BTreeMap::new() }
+        EpochBook { rule: QuorumRule::Bft, worlds: BTreeMap::new(), keys: PublicKeys::default() }
     }
 }
 
@@ -132,7 +138,7 @@ impl EpochBook {
         if e < w.members.len() {
             return w.members[e] == cert.members && w.from[e] == cert.from_frame();
         }
-        if !epoch_cert_ok(rule, &w.members[e - 1], cert) || cert.from_frame() < w.from[e - 1] {
+        if !epoch_cert_ok(&self.keys, rule, &w.members[e - 1], cert) || cert.from_frame() < w.from[e - 1] {
             return false;
         }
         w.members.push(cert.members.clone());
@@ -165,6 +171,9 @@ impl EpochCerts for EpochBook {
     }
     fn genesis_objects(&self, world: u32) -> Option<u64> {
         self.worlds.get(&world).map(|w| w.objects)
+    }
+    fn keys(&self) -> &PublicKeys {
+        &self.keys
     }
 }
 
@@ -220,7 +229,7 @@ pub enum Export {
     /// of the source, not an epoch, so the spike records `epoch` 0; a departure signed in a later
     /// epoch convinces a third party only if the `Arrive` also carries the source's epoch
     /// certificates, as hops do [I].
-    Departed { src: u32, epoch: u32, depart: EntryId, record: ObjRecord, dest: u32, deadline: u64, chain: u64, cert: Vec<(MemberId, u64)> },
+    Departed { src: u32, epoch: u32, depart: EntryId, record: ObjRecord, dest: u32, deadline: u64, chain: u64, cert: Vec<(MemberId, Sig)> },
 }
 
 impl Export {
@@ -253,7 +262,7 @@ impl Export {
                 v.extend(depart.words());
                 v.extend([record.global, record.kind as u64, record.state.hash()]);
                 v.extend([record.src_world as u64, record.src_frame, record.via, *dest as u64, *deadline, *chain]);
-                v.extend(cert.iter().flat_map(|(m, s)| [*m as u64, *s]));
+                v.extend(cert.iter().flat_map(|(m, s)| std::iter::once(*m as u64).chain(sig_words(s))));
                 v
             }
         };
@@ -371,10 +380,10 @@ impl ImportPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::member_sig;
+    use crate::session::{test_fact_sig, vc_fact};
 
     fn book() -> EpochBook {
-        let mut b = EpochBook::default();
+        let mut b = EpochBook { keys: PublicKeys::test(), ..EpochBook::default() };
         b.genesis(1, &[1, 2], 100);
         b.genesis(2, &[1, 3], 100);
         b.genesis(3, &[1, 4], 100);
@@ -383,7 +392,7 @@ mod tests {
 
     fn hop(b: &EpochBook, src: u32, dest: u32, transfer: u64, via: u64, g: u64) -> Hop {
         let fact = fact_committed(src, transfer, g, dest, via);
-        let cert = b.members(src, 0).unwrap().iter().map(|&m| (m, member_sig(src, m, fact))).collect();
+        let cert = b.members(src, 0).unwrap().iter().map(|&m| (m, test_fact_sig(m, src, fact))).collect();
         Hop { src, dest, transfer, via, epoch: 0, frame: 0, certs: Vec::new(), cert }
     }
 
@@ -415,13 +424,13 @@ mod tests {
     /// world's route list; epoch 0 can no longer sign for a frame of epoch 1 once epoch 1 is known.
     #[test]
     fn epochs_from_certificates() {
-        use crate::session::{vc_sig, Change, EntryId, Removal};
-        let mut b = EpochBook::default();
+        use crate::session::{Change, EntryId, Removal};
+        let mut b = EpochBook { keys: PublicKeys::test(), ..EpochBook::default() };
         b.genesis(1, &[1, 2, 4], 100);
         b.genesis(2, &[1, 3], 100);
         let change = Change { epoch: 0, remove: vec![Removal { member: 2, votes: vec![EntryId([11; 32]), EntryId([12; 32])], cut: (40, EntryId([99; 32])), kick: EntryId::NONE }], add: vec![], boundary: 300, excluded: vec![], admin: vec![], add_roles: vec![] };
         let value = change.value();
-        let sig = |m| (m, vc_sig(1, m, 0, 1, value));
+        let sig = |m| (m, test_fact_sig(m, 1, vc_fact(0, 1, value)));
         let c1 = EpochCert { world: 1, epoch: 1, change: change.clone(), round: 1, members: vec![1, 4], precommits: vec![sig(1), sig(4)], proofs: vec![] };
         assert!(b.with(&[c1.clone()]).is_some());
         // One signature of three is no quorum; a member list that does not follow is refused.
@@ -432,7 +441,7 @@ mod tests {
         assert!(b.with(&[EpochCert { change: other, ..c1.clone() }]).is_none());
         let g = (1u64 << 32) | 7;
         let fact = fact_committed(1, 21, g, 2, 0);
-        let signed = |ms: &[MemberId]| ms.iter().map(|&m| (m, member_sig(1, m, fact))).collect::<Vec<_>>();
+        let signed = |ms: &[MemberId]| ms.iter().map(|&m| (m, test_fact_sig(m, 1, fact))).collect::<Vec<_>>();
         let h = Hop { src: 1, dest: 2, transfer: 21, via: 0, epoch: 1, frame: 420, certs: vec![c1.clone()], cert: signed(&[1, 4]) };
         assert_eq!(check_chain(&b, g, 2, 21, &[h.clone()]), Ok(()));
         // Without the certificate, epoch 1 is unknown.
@@ -446,7 +455,7 @@ mod tests {
         assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![], ..old }]), Ok(()));
         // A tampered certificate does not check.
         let mut bad = c1;
-        bad.precommits[1].1 ^= 1;
+        bad.precommits[1].1[0] ^= 1;
         assert_eq!(check_chain(&b, g, 2, 21, &[Hop { certs: vec![bad], ..h }]), Err(ChainError::Epoch(0)));
     }
 

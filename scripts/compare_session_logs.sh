@@ -14,14 +14,15 @@ mask() { sed -E 's/[0-9]+(\.[0-9]+)? ?(ms|us|µs|s)\b/T/g; s/step avg T/T/g'; }
 # --ids normalization: scripts/session_log_norm.py.
 idmask() { python -I "$(dirname "$0")/session_log_norm.py"; }
 same=0; bytes=0; ids=0; differ=0
-for f in $(git ls-tree -r --name-only "$REF" spikes/out/session-sim/ | grep '\.log$'); do
-  rel=${f#spikes/out/session-sim/}
+BASE=${BASE:-spikes/out/session-sim}  # BASE=spikes/out/session-sim-pe compares with an earlier pe-session run
+for f in $(git ls-tree -r --name-only "$REF" "$BASE/" | grep '\.log$'); do
+  rel=${f#$BASE/}
   mine=spikes/out/session-sim-pe/$rel
   if [ ! -f "$mine" ]; then echo "MISSING $rel"; differ=$((differ+1)); continue; fi
   d=$(diff <(git show "$REF:$f" | mask) <(mask < "$mine") | grep '^[<>]')
   if [ -z "$d" ]; then
     same=$((same+1))
-  elif ! echo "$d" | grep -vqE ' B( |/|$|\))'; then
+  elif ! echo "$d" | grep -vqE '[0-9] B( |/|$|\))'; then
     echo "BYTES $rel ($(echo "$d" | grep -c '^>') lines)"; bytes=$((bytes+1))
   elif [ $IDS = 1 ] && diff -q <(git show "$REF:$f" | idmask) <(idmask < "$mine") > /dev/null; then
     echo "IDS $rel"; ids=$((ids+1))

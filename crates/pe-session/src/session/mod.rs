@@ -49,7 +49,7 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
-pub use crate::sign::{test_sign, KeyRing, Sig, SignedEntry};
+pub use crate::sign::{sig_words, test_fact_sig, test_sign, KeyRing, PublicKeys, Sig, SignedEntry};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
@@ -367,6 +367,8 @@ struct Vc {
     /// Round -> member -> value (0 = nil): each member's first prevote and first precommit.
     prevotes: BTreeMap<u32, BTreeMap<MemberId, u64>>,
     precommits: BTreeMap<u32, BTreeMap<MemberId, u64>>,
+    /// (round, member) -> the signature over that precommit's fact (S3c).
+    precommit_sigs: BTreeMap<(u32, MemberId), Sig>,
     /// Rounds whose proposal this replica already saw a quorum prevote.
     polka_done: BTreeSet<u32>,
     /// Armed timeouts: round -> clock frame armed.
@@ -469,7 +471,7 @@ pub struct WorldSim {
     /// Every proposal entry seen, by value (answers `Msg::FetchValue`).
     proposal_ids: BTreeMap<u64, EntryId>,
     /// Decided changes, one per epoch boundary: (change, round, precommit signatures).
-    decided: Vec<(Change, u32, Vec<(MemberId, u64)>)>,
+    decided: Vec<(Change, u32, Vec<(MemberId, Sig)>)>,
     /// Decisions: (epoch reached, my clock frame when I decided, round, members removed).
     pub vc_log: Vec<(u32, u64, u32, Vec<MemberId>)>,
     /// Test fixture: author no vote, proposal, prevote or precommit (a member that withholds them).
@@ -615,7 +617,7 @@ impl WorldSim {
             ring: BTreeMap::new(),
             scratch: None,
             peers_of: BTreeMap::new(),
-            epochs: EpochBook::default(),
+            epochs: EpochBook { keys: keys.public.clone(), ..EpochBook::default() },
             provenance: true,
             genesis_objects,
             import_policy: ImportPolicy::default(),

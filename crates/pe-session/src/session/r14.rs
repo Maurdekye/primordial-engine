@@ -13,7 +13,7 @@ pub const MAX_DEADLINE_FRAMES: u64 = 3600;
 
 /// P25-3: the source's certified departure carried by an `Arrive`, as one export of a fork proof.
 /// The spike's certificates have no epochs yet (P2-4): epoch 0.
-pub(super) fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, u64)]) -> Export {
+pub(super) fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, deadline: u64, chain: u64, cert: &[(MemberId, Sig)]) -> Export {
     Export::Departed { src, epoch: 0, depart, record: *record, dest, deadline, chain, cert: cert.to_vec() }
 }
 
@@ -55,16 +55,11 @@ pub fn fact_verdict(dst: u32, transfer: u64, accepted: bool) -> u64 {
     fnv_u64s([2, dst as u64, transfer, accepted as u64])
 }
 
-/// Spike model of member `member` of world `world` signing `fact`. Production: an Ed25519
-/// signature by the member's key, checked against the other world's member keys (D46).
-pub fn member_sig(world: u32, member: MemberId, fact: u64) -> u64 {
-    splitmix64(fact ^ splitmix64((((world as u64) << 32) | member as u64) ^ 0x5157_4E41_5455_5245))
-}
-
-/// True if `cert` holds valid signatures over `fact` from a strict majority of `members`.
-pub fn cert_ok(members: &[MemberId], world: u32, fact: u64, cert: &[(MemberId, u64)]) -> bool {
+/// True if `cert` holds valid Ed25519 signatures over `fact` (S3c; the spike recomputed a keyless
+/// stand-in) from a strict majority of `members`, checked against their keys in `keys`.
+pub fn cert_ok(keys: &PublicKeys, members: &[MemberId], world: u32, fact: u64, cert: &[(MemberId, Sig)]) -> bool {
     let signers: BTreeSet<MemberId> =
-        cert.iter().filter(|(m, sig)| members.contains(m) && *sig == member_sig(world, *m, fact)).map(|(m, _)| *m).collect();
+        cert.iter().filter(|(m, sig)| members.contains(m) && keys.fact_ok(*m, world, fact, sig)).map(|(m, _)| *m).collect();
     !members.is_empty() && signers.len() * 2 > members.len()
 }
 
@@ -113,7 +108,7 @@ impl WorldSim {
                     seq: self.my_seq + 1,
                     prev: self.my_last,
                     stamp: self.frame.max(self.now),
-                    payload: Payload::Attest { fact, sig: member_sig(self.world_id, self.me, fact) },
+                    payload: Payload::Attest { fact, sig: self.keys.sign_fact(self.world_id, fact) },
                     carried: None,
                 };
                 out.push(self.publish(e));
@@ -123,9 +118,9 @@ impl WorldSim {
     }
 
     /// A certificate for `fact` from this world's members, once a strict majority has signed it.
-    pub fn cert(&self, fact: u64) -> Option<Vec<(MemberId, u64)>> {
+    pub fn cert(&self, fact: u64) -> Option<Vec<(MemberId, Sig)>> {
         let members: Vec<MemberId> = self.members.iter().copied().collect();
-        let mut c: BTreeMap<MemberId, u64> = BTreeMap::new();
+        let mut c: BTreeMap<MemberId, Sig> = BTreeMap::new();
         for (id, e) in &self.entries {
             if let Payload::Attest { fact: f, sig } = e.payload {
                 if f == fact && !self.is_void(*id) && members.contains(&e.member) {
@@ -133,8 +128,8 @@ impl WorldSim {
                 }
             }
         }
-        let c: Vec<(MemberId, u64)> = c.into_iter().collect();
-        cert_ok(&members, self.world_id, fact, &c).then_some(c)
+        let c: Vec<(MemberId, Sig)> = c.into_iter().collect();
+        cert_ok(&self.keys.public, &members, self.world_id, fact, &c).then_some(c)
     }
 
     // ---- P2-5 provenance ---------------------------------------------------------------------------

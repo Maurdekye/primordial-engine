@@ -3,8 +3,8 @@ RESULT diverged acceptance (after re-sim to its present frame, the receiver's co
   differs at that instant: world 1 receiver m1 author m2 obj 50 frame 128; equal to the author's final history: true
   differs at that instant: world 1 receiver m3 author m2 obj 5 frame 332; equal to the author's final history: true
   differs at that instant: world 1 receiver m1 author m2 obj 5 frame 333; equal to the author's final history: true
-  m1 world 1: rollbacks 9 max depth 4 resim frames 45 (22.0 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
-  m2 world 1: rollbacks 9 max depth 39 resim frames 77 (33.7 ms) overwrites 5 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 774
-  m3 world 1: rollbacks 12 max depth 4 resim frames 51 (23.7 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
+  m1 world 1: rollbacks 9 max depth 4 resim frames 45 (26.9 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
+  m2 world 1: rollbacks 9 max depth 39 resim frames 77 (36.2 ms) overwrites 5 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 774
+  m3 world 1: rollbacks 12 max depth 4 resim frames 51 (27.9 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
   bytes: entries 38 msgs 7144 B (avg 188 B), acks 2472 msgs 551792 B, dropped 3
 RESULT diverged world 1: frames 0..700 digests m1=6c3b3f738ca9aba5 m2=6c3b3f738ca9aba5 m3=6c3b3f738ca9aba5 | offline replay 6c3b3f738ca9aba5 | ALL EQUAL

@@ -63,7 +63,7 @@ fn quiet_equal(sim: &Sim, honest: &[MemberId]) -> bool {
     let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(honest[0], 1).sim;
     let members: Vec<MemberId> = first.members.iter().copied().collect();
-    let reference = replay(1, SCENE, first.cfg, &members, &final_log(first), frames);
+    let reference = replay(1, SCENE, first.cfg, first.public_keys(), &members, &final_log(first), frames);
     let rd = digest(&reference, frames);
     let bad: u64 = honest.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
     honest.iter().all(|&m| digest(&sim.replica(m, 1).sim.hashes, frames) == rd) && bad == 0
@@ -165,7 +165,7 @@ pub fn fork9() {
                         b.prev = b_id[&(b.seq - 1)];
                     }
                     if matches!(b.payload, Payload::Touch { .. }) {
-                        b.payload = Payload::Attest { fact: 0, sig: 0 };
+                        b.payload = Payload::Attest { fact: 0, sig: [0; 64] };
                         b.carried = None;
                     }
                     if matches!(b.payload, Payload::Ack { .. }) {
@@ -265,7 +265,8 @@ pub fn bogusprecommit() {
                 if !sent && sim.net.now_us >= 2_000_000 {
                     let r9 = sim_mut(sim, 9);
                     let boundary = if part == 1 { 1 } else { r9.now + 30 };
-                    let e = r9.author(Payload::Precommit { epoch: 0, round: 0, value: 0xBAD0, boundary }, None);
+                    let sig = test_fact_sig(9, 1, vc_fact(0, 0, 0xBAD0));
+                    let e = r9.author(Payload::Precommit { epoch: 0, round: 0, value: 0xBAD0, boundary, sig }, None);
                     for m in [1, 2, 3] {
                         sim.net.send(1, 9, m, &Msg::Entry(e.clone()));
                     }

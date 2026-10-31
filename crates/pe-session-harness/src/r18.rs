@@ -120,7 +120,7 @@ pub fn capped(o: &Opts) {
         let hs: Vec<u64> = live.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
         let r1 = &sim.replica(1, 1).sim;
         let members: Vec<MemberId> = r1.members.iter().copied().collect();
-        let rd = digest(&replay_sim_with(1, scene, r1.cfg, &members, &r1.peers_of, &final_log(r1), last).hashes, last);
+        let rd = digest(&replay_sim_with(1, scene, r1.cfg, r1.public_keys(), &members, &r1.peers_of, &final_log(r1), last).hashes, last);
         let restamped = r1.all_entries().iter().filter(|e| e.member == 1 && r1.effective_frame(e.id()).is_some_and(|f| f != e.stamp)).count();
         let join = |v: Vec<String>| v.join(" / ");
         let s2 = sim.replica(2, 1).sim.stats;

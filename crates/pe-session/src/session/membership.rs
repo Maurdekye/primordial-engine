@@ -248,8 +248,8 @@ impl Default for JoinRules {
 pub struct Attest {
     pub rel: Rel,
     pub with: MemberId,
-    pub sig_with: u64,
-    pub sig_joiner: u64,
+    pub sig_with: Sig,
+    pub sig_joiner: Sig,
 }
 
 pub fn fact_rel(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> u64 {
@@ -258,18 +258,19 @@ pub fn fact_rel(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> u64 {
     fnv_u64s([31, rel.tag() as u64, a as u64, b as u64, w as u64])
 }
 
-/// The attestation `with` and the joiner sign for `rel` (spike signature model).
+/// The attestation `with` and the joiner sign for `rel`, made with their test identities: a scenario
+/// fixture. In a session each party signs its half with its own key (S3c).
 pub fn attest(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> Attest {
     let f = fact_rel(rel, joiner, with, world);
-    Attest { rel, with, sig_with: member_sig(0, with, f), sig_joiner: member_sig(0, joiner, f) }
+    Attest { rel, with, sig_with: test_fact_sig(with, 0, f), sig_joiner: test_fact_sig(joiner, 0, f) }
 }
 
-pub fn attest_ok(a: &Attest, joiner: MemberId, world: u32) -> bool {
+pub fn attest_ok(keys: &PublicKeys, a: &Attest, joiner: MemberId, world: u32) -> bool {
     let f = fact_rel(a.rel, joiner, a.with, world);
     matches!(a.rel, Rel::Friend | Rel::Confidant | Rel::Invited)
         && a.with != joiner
-        && a.sig_with == member_sig(0, a.with, f)
-        && a.sig_joiner == member_sig(0, joiner, f)
+        && keys.fact_ok(a.with, 0, f, &a.sig_with)
+        && keys.fact_ok(joiner, 0, f, &a.sig_joiner)
 }
 
 impl Change {
@@ -302,10 +303,10 @@ pub fn quorum(rule: QuorumRule, m: usize) -> (usize, usize) {
     (t, (m + t + 2) / 2)
 }
 
-/// Spike model of a member's signature over its precommit of `value` in `round` of the view change
-/// that ends epoch `epoch` of `world`: the signatures an epoch certificate carries.
-pub fn vc_sig(world: u32, member: MemberId, epoch: u32, round: u32, value: u64) -> u64 {
-    member_sig(world, member, fnv_u64s([3, epoch as u64, round as u64, value]))
+/// The fact a member signs with its precommit of `value` in `round` of the view change that ends
+/// epoch `epoch` (S3c; signed in the world's fact domain): an epoch certificate carries these.
+pub fn vc_fact(epoch: u32, round: u32, value: u64) -> u64 {
+    fnv_u64s([3, epoch as u64, round as u64, value])
 }
 
 /// An epoch certificate (design 10.8, review R3-8b): what another world needs to follow this
@@ -321,7 +322,7 @@ pub struct EpochCert {
     /// The members of `epoch`: the previous epoch's, minus the removed, plus the added.
     pub members: Vec<MemberId>,
     /// Precommit signatures over `(world, epoch - 1, round, change value)`.
-    pub precommits: Vec<(MemberId, u64)>,
+    pub precommits: Vec<(MemberId, Sig)>,
     /// The two entries of each exclusion proof, so a verifier needs no chain of this world.
     pub proofs: Vec<Entry>,
 }
@@ -336,7 +337,8 @@ impl EpochCert {
         let mut v = vec![self.world as u64, self.epoch as u64, self.change.value(), self.round as u64];
         v.extend(self.members.iter().map(|m| *m as u64));
         for (m, s) in &self.precommits {
-            v.extend([*m as u64, *s]);
+            v.push(*m as u64);
+            v.extend(sig_words(s));
         }
         v.extend(self.proofs.iter().flat_map(|e| e.id().words()));
         fnv_u64s(v)
@@ -367,7 +369,7 @@ pub fn proof_self_contained(m: MemberId, p: Proof, a: &Entry, b: &Entry) -> bool
 /// Check `cert` against the members of the previous epoch: every exclusion proved by the entries
 /// it carries; precommits from a quorum of the members not excluded; the member list following
 /// from the change.
-pub fn epoch_cert_ok(rule: QuorumRule, prev: &[MemberId], cert: &EpochCert) -> bool {
+pub fn epoch_cert_ok(keys: &PublicKeys, rule: QuorumRule, prev: &[MemberId], cert: &EpochCert) -> bool {
     let c = &cert.change;
     if cert.epoch == 0 || c.epoch + 1 != cert.epoch {
         return false;
@@ -386,7 +388,7 @@ pub fn epoch_cert_ok(rule: QuorumRule, prev: &[MemberId], cert: &EpochCert) -> b
     let signers: BTreeSet<MemberId> = cert
         .precommits
         .iter()
-        .filter(|(m, s)| base.contains(m) && *s == vc_sig(cert.world, *m, c.epoch, cert.round, value))
+        .filter(|(m, s)| base.contains(m) && keys.fact_ok(*m, cert.world, vc_fact(c.epoch, cert.round, value), s))
         .map(|(m, _)| *m)
         .collect();
     let mut expect: BTreeSet<MemberId> = prev.iter().copied().collect();
@@ -429,7 +431,14 @@ impl WorldSim {
             Payload::Prevote { round, value, .. } => {
                 self.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
             }
-            Payload::Precommit { round, value, boundary, .. } => {
+            Payload::Precommit { epoch, round, value, boundary, sig } => {
+                // S3c: a precommit counts only with a valid signature over its fact, which the
+                // epoch certificate then carries.
+                if !self.keys.public.fact_ok(m, self.world_id, vc_fact(epoch, round, value), &sig) {
+                    self.stats.bad_sigs += 1;
+                    return;
+                }
+                self.vc.precommit_sigs.entry((round, m)).or_insert(sig);
                 self.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
                 if boundary > 0 {
                     // Keep the first precommit's seq and the smallest boundary (review VC-10).
@@ -532,7 +541,7 @@ impl WorldSim {
         let has = |rel: Rel, g: MemberId| match rel {
             Rel::Is => g == j,
             Rel::Named(n) => n == j,
-            _ => attests.iter().any(|a| a.rel == rel && a.with == g && attest_ok(a, j, self.world_id)),
+            _ => attests.iter().any(|a| a.rel == rel && a.with == g && attest_ok(&self.keys.public, a, j, self.world_id)),
         };
         for rule in &self.join_rules.rules {
             let group: Vec<MemberId> = match rule.target {
@@ -914,6 +923,12 @@ impl WorldSim {
         self.publish(e)
     }
 
+    /// A precommit, signed over its fact for the epoch certificate (S3c).
+    pub(super) fn author_precommit(&mut self, epoch: u32, round: u32, value: u64, boundary: u64) -> Entry {
+        let sig = self.keys.sign_fact(self.world_id, vc_fact(epoch, round, value));
+        self.author_vc(Payload::Precommit { epoch, round, value, boundary, sig })
+    }
+
     pub(super) fn start_round(&mut self, r: u32) {
         self.vc.round = r;
         self.vc.step = Step::Propose;
@@ -938,7 +953,7 @@ impl WorldSim {
         self.vc.step = Step::Precommit;
         if !self.withhold_vc {
             let (epoch, round) = (self.epoch, self.vc.round);
-            out.push(self.author_vc(Payload::Precommit { epoch, round, value: v, boundary }));
+            out.push(self.author_precommit(epoch, round, v, boundary));
         }
     }
 
@@ -970,7 +985,7 @@ impl WorldSim {
                     let epoch = self.epoch;
                     out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
                     let boundary = self.vc.changes.get(&v).filter(|c| self.change_leads(c)).map_or(0, |c| c.boundary);
-                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary }));
+                    out.push(self.author_precommit(epoch, r, v, boundary));
                 }
             }
             // Drive every round another member gave up on: echo its nil prevote or precommit where no
@@ -987,7 +1002,7 @@ impl WorldSim {
             }
             for r in nil_in(&self.vc.precommits) {
                 if !self.vc.proposals.contains_key(&r) {
-                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: 0, boundary: 0 }));
+                    out.push(self.author_precommit(epoch, r, 0, 0));
                 }
             }
             return out;
@@ -1196,11 +1211,11 @@ impl WorldSim {
     pub(super) fn apply_change(&mut self, c: Change, round: u32, out: &mut Vec<Entry>) {
         let v = c.value();
         let xs: BTreeSet<MemberId> = c.excluded.iter().map(|(m, _)| *m).collect();
-        let sigs: Vec<(MemberId, u64)> = self
+        let sigs: Vec<(MemberId, Sig)> = self
             .vc
             .precommits
             .get(&round)
-            .map(|ms| ms.iter().filter(|&(m, &x)| x == v && !xs.contains(m)).map(|(&m, _)| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect())
+            .map(|ms| ms.iter().filter(|&(m, &x)| x == v && !xs.contains(m)).map(|(&m, _)| (m, self.vc.precommit_sigs[&(round, m)])).collect())
             .unwrap_or_default();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
         // D80: role entries in commit order (kicks are among the removals), then the removals, then
@@ -1416,7 +1431,7 @@ impl WorldSim {
     /// A certificate for `fact`, a fact about `frame`: Attest entries of a strict majority of the
     /// members of the epoch active at that frame (P2-5's epoch-at-frame rule). Members that the next
     /// epoch excluded by proof do not count in that majority's size.
-    pub fn cert_at(&self, fact: u64, frame: u64) -> Option<(u32, Vec<(MemberId, u64)>)> {
+    pub fn cert_at(&self, fact: u64, frame: u64) -> Option<(u32, Vec<(MemberId, Sig)>)> {
         let e = self.epoch_at(frame);
         let mut members: BTreeSet<MemberId> = self.members_at(e)?.into_iter().collect();
         if let Some((next, _, _)) = self.decided.get(e as usize) {
@@ -1424,7 +1439,7 @@ impl WorldSim {
                 members.remove(m);
             }
         }
-        let mut c: BTreeMap<MemberId, u64> = BTreeMap::new();
+        let mut c: BTreeMap<MemberId, Sig> = BTreeMap::new();
         for (id, en) in &self.entries {
             if let Payload::Attest { fact: f, sig } = en.payload {
                 if f == fact && !self.is_void(*id) && members.contains(&en.member) {
