@@ -29,6 +29,8 @@ run ties ties
 run claims claims
 # P2-3 S4: grab races under D72 (only grabs claim; --pe only, the spike core has the earlier rule).
 if [ "${1:-}" = --pe ]; then run grabrace grabrace; fi
+# P2-3 S5: a joiner catches up by state transfer (design 9.5, P22S-1; --pe only).
+if [ "${1:-}" = --pe ]; then run p2-3-statejoin statejoin; fi
 run backdate backdate
 for v in ok abort reject throttle forge late crash chain chain-epoch; do run r14-$v r14 $v; done
 for v in ok abort reject chain; do run r14-$v-reverse r14 $v --reverse; done

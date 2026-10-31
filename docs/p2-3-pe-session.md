@@ -18,15 +18,86 @@ named here, **[I]** inferred.
 | S6b | `Membership` seam: trait, `ViewChangeMembership`, `StaticMembership` | 0bc32f3 | 69 of 69 identical [V] |
 | S5a | The exchanged check hash is BLAKE3, 32 bytes (P22R-1, 9.1) | 669c293 | 41 identical, 8 bytes-only (+24 B per ack with a check, exactly), 20 equal with ids masked; digests changed only in the 15 R14 logs [V] |
 | merge | `land/viewchange` 8ae7c08 (main's pe-physics, P22S-1 text) | 7455821 | 69 of 69 identical [V] |
+| SET-1 | Every peer, the toucher included, writes a touch's carried state at its frame (SET-1, SET-2) | 8f033c8 | 61 identical, 8 equal with ids masked, 0 different; digests changed in 6 R14 logs [V] |
+| S2 | The session sim's physics goes through `pe-physics` (impulses, hand targets, carried state with `set_state`, arrivals, keyframes as `WorldImage`); check hash over `pe_physics::check_hash` | c97b1d0 (on @vdw-physics's 9927b7b) | 51 identical, 18 equal with ids masked, 0 different; digests changed only in the 15 R14 logs [V] |
+| S5b | The per-object engine tables (objects, grab claims, cooldowns, hand idle counters) are `pe-sim` components in `WorldSim::store`; a keyframe is a `WorldImage`, a store `Snapshot` and the world-level tables | 7fedcff | 69 of 69 identical (the hashes kept their formula) [V] |
+| S5c | Per-frame state hash: XXH64 over `pe-physics`'s `state_hash`, the store's `checked_state_hash` and the world-level tables. Check hash: BLAKE3 over `pe_physics::check_hash`, the store's canonical serialization and the world-level tables | 044ce5d | 3 identical, 66 equal with ids masked, 0 different; with only digests and ids masked (no sorting) 63 equal, and the other 6 differ only in the order of id-keyed listings [V] |
+| S5d | Geometry-registry compaction (P22-12) after each ring trim, from the keyframes the ring keeps (the oldest at or before min(conf, frame)) and the live state; `SimConfig::compact` (`Grown { at: 1024 }` by default) | 2304cd3, on @vdw-physics's `compact_images` 33cdd7e (in review) | with compaction after every trim (`PE_COMPACT=every`), 69 of 69 logs identical to the commit before, 0 false checks; tests: replicas on four snapshot policies, three compacting after every trim and rolling back, equal state hash every frame and check hash every check frame; a keyframe image kept past a compaction is refused (`BadImage`), nothing written [V] |
+| S5e | Canonical encoding of the world-level tables (`encode_tables`/`decode_tables`); the check hash is `check_hash_of(physics, frame, store bytes, tables bytes)`, so it binds the exact bytes a transfer carries (the tables' earlier word projection was lossy) | 458c893 | 3 identical, 66 equal with ids masked, 0 different [V] |
+| S5f | State transfer to a joiner: `export_state`, `trusted_check` (P22S-1), `import_state` | 8940e78 | 69 of 69 identical; tests: a joiner that restores member 1's state has member 2's state hash every frame after it; donor-only vouching, a flipped byte in each part, trailing bytes, a relabelled frame and another world are each refused with the replica unchanged [V] |
+| S5g | `Msg::FetchState` / `Msg::State` and `SessionCore::request_state`, `Event::Transfer`; scenario `statejoin` | d3b221d | the 69 earlier logs identical; `statejoin`: a tampered state from member 2 refused (`Hash`), member 1's restored, frames 151..587 equal at all four replicas [V] |
 
 Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states` [V];
-17 unit and integration tests in pe-session [V].
+29 unit and integration tests in pe-session [V].
 
-**Still to do:** S2 (physics through `pe-physics`; @vdw-physics is adding `set_pose`, `set_velocity` and
-`set_target`), the rest of S5 (engine tables on `pe-sim`, keyframes as a `pe-sim` snapshot plus a
-`pe-physics` image, the joiner's transfer accepted only against a check hash a quorum signed, P22S-1,
-and the geometry-registry compaction P22-12), P2-4 round 4, P2-9's scenario files on this core, the
-pe-mcp adapter, Linux runs.
+**Linux** (at 1404a0c; static musl builds in WSL2, kernel 6.6.87.2, `scripts/p2-3/run_linux.sh`): 29 of 29
+tests pass, and every scenario's log equals the Windows log, timings masked (70 identical, SUMMARY ALL
+EQUAL) [V].
+
+**Still to do:** P2-4 rounds 4 to 6, P2-9's scenario files on this core.
+
+## Engine state on pe-sim (S5)
+
+* Object index `i` (the `obj` of a `Touch` or `Hand`) is the store object and the physics body
+  `object_id(i)` = `ObjectId(0, i + 1)`. Indices are never reused: `obj_slots()` is the store's
+  creator counter. Components 16 to 19 (`session/store.rs`): `ObjRow`, `ClaimRow`, `CooldownRow`,
+  `HandIdle`. Departing destroys the object's rows (measured alone first: 69 of 69 logs identical).
+* Reads: `live(i)`, `objects()`, `obj_slots()`, `claim(i)`, `claims()`; `WorldSim::store` for the rest.
+* The world-level tables (escrow, arrivals, provenance, portal) stay a plain struct, `Tables`.
+
+## State transfer (S5e to S5g; design 9.5, P22R-1, P22S-1)
+
+* A `StateTransfer` is a world's state after a check frame, in three canonical parts: the
+  `pe-physics` transfer, the store snapshot and the world-level tables. Its check hash is
+  `check_hash_of` the parts, the same hash acks carry.
+* A member keeps the parts of each check frame's state until a newer confirmed one supersedes it
+  (`check_state` builds them anyway for the check hash, so the cost is memory: at most
+  `window / check_every + 1` states, about 0.6 MB each at 256 objects [V for the size, I for the
+  bound]). `export_state()` gives the newest confirmed one.
+* `trusted_check(frame, donor)`: a check hash that a quorum of the members of the epoch active at that
+  frame signed identically in their acks, at least one of them other than the donor. The joiner needs
+  the log (the acks) first; with too few acks yet it refuses with `NoQuorum` and asks again later.
+* `import_state(st, donor)` restores only if the world matches, a quorum vouches, every part is
+  canonical and completely consumed (`Transfer::from_bytes`, `Snapshot::from_bytes` plus re-encoding,
+  `decode_tables`) and the parts hash to the trusted check hash. The replica then continues from the
+  next frame, with a floor no rollback goes below; a refusal changes nothing.
+* On the wire: `Msg::FetchState`, and `Msg::State` as a repair (large; the IO may drop it, the joiner
+  asks again). Transport chunking of a 0.5-1.7 MB message is phase 3's (10.x) [I].
+
+## Geometry-registry compaction (S5d)
+
+* In this harness's scenes the registry holds 2 blobs, so the default policy never compacts and a
+  compaction drops nothing [V: `PE_CHECK_TIMING=1` prints the registry size]. Dropping geometry is
+  covered by pe-physics's own tests (75 unique hulls) [V by @vdw-physics and @design-reviewer].
+* Cost when forced after every trim: in `r14 ok`, 0.3-0.5 ms per compaction, about 540 compactions per
+  replica over the run (in-situ, not a timing run) [V].
+* The ring is the only holder of `WorldImage`s in pe-session; a joiner's transfer is a fresh
+  `save_transfer`. An image kept anywhere else across a compaction is refused by `restore_image`
+  (review CMP-1), never misread [V by test].
+
+## Check hash cost (S5)
+
+Per check frame, measured inside the scenarios (`PE_CHECK_TIMING=1`, release build, idle priority on
+a shared machine: not a clean timing run) [V]:
+
+| scenario | objects | check hash | physics part | store and world tables | physics transfer | store snapshot |
+|---|---|---|---|---|---|---|
+| `c1` | 256 | 415-493 µs | 392-466 µs | 22-28 µs | 547 kB | 20.6 kB |
+| `ballpit --hz 90` | 502 | 1.39-1.40 ms | 1.35-1.36 ms | 39-40 µs | 1.73 MB | 40.3 kB |
+| `r14 ok` | 76-107 | 148-224 µs | 135-208 µs | 13-16 µs | 148-206 kB | 6.2-8.7 kB |
+
+The physics part, split at the end of `ballpit --hz 90`: `save_transfer` 534-540 µs, `to_bytes`
+349-356 µs, BLAKE3 351-374 µs (4.6-4.9 GB/s). In `c1`: 162-164 µs, 62-73 µs, 110-111 µs [V].
+
+* BLAKE3 is about a quarter of the check hash. The rest is the canonical save and its serialization, whose
+  size is the cost driver: about 3.4 kB per body in the ball pit [V for the sizes, I for the reason:
+  the transfer carries the full solver state].
+* The store's part is about 3 % of the check hash [V].
+* At one check frame in 30 (`SimConfig::check_every`), that is about 0.05 ms per sim frame at 502
+  objects for a peer that never rolls back. A re-simulated check frame is hashed again: in the
+  90 Hz ball pit, member 2 computed 111 check hashes over the run where member 1 computed 27, so about
+  0.19 ms per frame [V for the counts, I for the per-frame averages].
+
 
 ## The API
 
@@ -43,6 +114,9 @@ pe-mcp adapter, Linux runs.
 * `KeyRing::new(secret, PublicKeys, SessionId)`; `KeyRing::test(me)` derives test identities.
 * `session::Membership` (seam.rs): what the protocol core reads; `ViewChangeMembership` (`sim.vcm`)
   is what the view change writes.
+* Objects: `live(i)`, `objects()`, `obj_slots()`, `claim(i)`, `claims()`, `WorldSim::store` (S5b).
+* State transfer: `request_state(member)`, `Event::Transfer { from, frame, result }`;
+  `WorldSim::{export_state, trusted_check, import_state}` (S5f, S5g).
 
 ## Wire cost of signatures and ids
 
