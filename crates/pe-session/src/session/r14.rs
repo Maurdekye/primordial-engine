@@ -18,8 +18,13 @@ pub(super) fn arrival_export(src: u32, depart: EntryId, record: &ObjRecord, dest
 }
 
 /// A transfer's id: derived from the source world and its Depart entry, so nobody can squat it.
+///
+/// S3b: 64 bits derived from all 256 of the entry id. An author could grind two of its own departs
+/// to one transfer id (about 2^32 tries), which only makes its own second transfer a duplicate;
+/// squatting another member's transfer id needs a second preimage (2^64).
 pub fn transfer_id(src_world: u32, depart: EntryId) -> u64 {
-    splitmix64(((src_world as u64) << 40) ^ depart)
+    let [a, b, c, d] = depart.words();
+    splitmix64(fnv_u64s([src_world as u64, a, b, c, d]))
 }
 
 /// "World `src` confirmed departure `depart` of `record`, bound for world `dest` by `deadline`
@@ -31,7 +36,10 @@ pub fn fact_departed(src: u32, depart: EntryId, record: &ObjRecord, dest: u32, d
         record.via,
         chain,
         src as u64,
-        depart,
+        depart.words()[0],
+        depart.words()[1],
+        depart.words()[2],
+        depart.words()[3],
         record.global,
         record.kind as u64,
         record.state.hash(),

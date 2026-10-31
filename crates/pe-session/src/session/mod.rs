@@ -667,7 +667,7 @@ impl WorldSim {
             my_seq: 0,
             horizon_lag: 0,
             lie_in_votes: false,
-            my_last: 0,
+            my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
             hashes: BTreeMap::new(),
             check_hashes: BTreeMap::new(),

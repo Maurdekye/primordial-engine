@@ -267,7 +267,7 @@ impl WorldSim {
                 break;
             }
             let Some(&id) = self.by_author.get(&(m, c + 1)) else { break };
-            let prev = if c == 0 { 0 } else { self.by_author[&(m, c)] };
+            let prev = if c == 0 { EntryId::NONE } else { self.by_author[&(m, c)] };
             if self.entries[&id].prev != prev {
                 // The chain continues from a version of seq c we do not hold: fetch it. And the
                 // two signed entries already prove that m signed two versions of seq c (P2-4: a

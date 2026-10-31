@@ -338,7 +338,7 @@ impl EpochCert {
         for (m, s) in &self.precommits {
             v.extend([*m as u64, *s]);
         }
-        v.extend(self.proofs.iter().map(|e| e.id()));
+        v.extend(self.proofs.iter().flat_map(|e| e.id().words()));
         fnv_u64s(v)
     }
 }
@@ -408,7 +408,7 @@ impl WorldSim {
         let e = self.entries[&id].clone();
         match e.payload {
             Payload::Vote { target, frozen, kick, .. } => {
-                if (target == m && kick == 0) || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
+                if (target == m && kick == EntryId::NONE) || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
                     return;
                 }
                 let rec = VoteRec { frozen, stamp: e.stamp, id, kick };
@@ -416,7 +416,7 @@ impl WorldSim {
                 if let VoteCheck::Lie(ack) = self.vote_check(target, m, frozen) {
                     self.on_lie(m, ack, id);
                     if self.members.contains(&self.me) && !self.voted(m) && m != self.me {
-                        out.extend(self.freeze_and_vote(m, e.seq, 0));
+                        out.extend(self.freeze_and_vote(m, e.seq, EntryId::NONE));
                     }
                 }
             }
@@ -555,7 +555,7 @@ impl WorldSim {
         let recs: Vec<(MemberId, VoteRec)> = self
             .votes
             .get(&x)
-            .map(|v| v.iter().filter(|(v, r)| base.contains(v) && (kick || r.kick == 0)).map(|(v, r)| (*v, *r)).collect())
+            .map(|v| v.iter().filter(|(v, r)| base.contains(v) && (kick || r.kick == EntryId::NONE)).map(|(v, r)| (*v, *r)).collect())
             .unwrap_or_default();
         recs.into_iter().filter(|(v, r)| self.vote_check(x, *v, r.frozen) == VoteCheck::Valid).collect()
     }
@@ -651,7 +651,7 @@ impl WorldSim {
         let mut c = cur.iter().map(|h| h.1).max().unwrap_or(0);
         loop {
             if c == 0 || k == 0 {
-                return Some((0, 0));
+                return Some((0, EntryId::NONE));
             }
             for h in cur.iter_mut() {
                 while h.1 > c {
@@ -760,7 +760,7 @@ impl WorldSim {
             }
             let heads: Vec<(MemberId, (u32, EntryId))> = usable.iter().map(|(v, r)| (*v, r.frozen)).collect();
             let Some(cut) = self.robust_cut(x, &heads, usable.len() - t) else { continue };
-            remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut, kick: 0 });
+            remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut, kick: EntryId::NONE });
             run.members.remove(&x);
             run.roles.remove(&x);
         }
@@ -784,7 +784,7 @@ impl WorldSim {
                 let heard = self.heard.get(y).copied().unwrap_or(0);
                 !proven.contains(y)
                     && now < heard + self.cfg.suspect_after
-                    && vs.values().any(|r| r.kick == 0)
+                    && vs.values().any(|r| r.kick == EntryId::NONE)
                     && vs.get(&self.me).is_none_or(|r| heard > r.stamp)
             });
             if !reset {
@@ -860,7 +860,7 @@ impl WorldSim {
             }
             // A kick's removal needs its kick applied; a removal on suspicion or proof needs a member
             // no kick removed (D80).
-            if r.kick != 0 && kicked.get(&r.kick) != Some(&x) || r.kick == 0 && !run.members.contains(&x) {
+            if r.kick != EntryId::NONE && kicked.get(&r.kick) != Some(&x) || r.kick == EntryId::NONE && !run.members.contains(&x) {
                 return Some(false);
             }
             let mut voters = BTreeSet::new();
@@ -868,7 +868,7 @@ impl WorldSim {
             for &vid in &r.votes {
                 let e = self.entries.get(&vid)?.clone();
                 let Payload::Vote { epoch, target, frozen, kick, .. } = e.payload else { return Some(false) };
-                if epoch != self.epoch || target != x || !base.contains(&e.member) || !voters.insert(e.member) || (r.kick == 0 && kick != 0) {
+                if epoch != self.epoch || target != x || !base.contains(&e.member) || !voters.insert(e.member) || (r.kick == EntryId::NONE && kick != EntryId::NONE) {
                     return Some(false);
                 }
                 // The voter's first vote against x in this epoch, in the copy of its chain I hold.
@@ -890,7 +890,7 @@ impl WorldSim {
             if self.robust_cut(x, &heads, heads.len() - t)? != r.cut {
                 return Some(false);
             }
-            if r.kick == 0 {
+            if r.kick == EntryId::NONE {
                 run.members.remove(&x);
                 run.roles.remove(&x);
             }

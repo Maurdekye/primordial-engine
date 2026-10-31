@@ -249,7 +249,9 @@ impl Export {
         let mut v = match self {
             Export::Committed(h) => vec![1, chain_hash(std::slice::from_ref(h))],
             Export::Departed { src, epoch, depart, record, dest, deadline, chain, cert } => {
-                let mut v = vec![2, *src as u64, *epoch as u64, *depart, record.global, record.kind as u64, record.state.hash()];
+                let mut v = vec![2, *src as u64, *epoch as u64];
+                v.extend(depart.words());
+                v.extend([record.global, record.kind as u64, record.state.hash()]);
                 v.extend([record.src_world as u64, record.src_frame, record.via, *dest as u64, *deadline, *chain]);
                 v.extend(cert.iter().flat_map(|(m, s)| [*m as u64, *s]));
                 v
@@ -413,11 +415,11 @@ mod tests {
     /// world's route list; epoch 0 can no longer sign for a frame of epoch 1 once epoch 1 is known.
     #[test]
     fn epochs_from_certificates() {
-        use crate::session::{vc_sig, Change, Removal};
+        use crate::session::{vc_sig, Change, EntryId, Removal};
         let mut b = EpochBook::default();
         b.genesis(1, &[1, 2, 4], 100);
         b.genesis(2, &[1, 3], 100);
-        let change = Change { epoch: 0, remove: vec![Removal { member: 2, votes: vec![11, 12], cut: (40, 99), kick: 0 }], add: vec![], boundary: 300, excluded: vec![], admin: vec![], add_roles: vec![] };
+        let change = Change { epoch: 0, remove: vec![Removal { member: 2, votes: vec![EntryId([11; 32]), EntryId([12; 32])], cut: (40, EntryId([99; 32])), kick: EntryId::NONE }], add: vec![], boundary: 300, excluded: vec![], admin: vec![], add_roles: vec![] };
         let value = change.value();
         let sig = |m| (m, vc_sig(1, m, 0, 1, value));
         let c1 = EpochCert { world: 1, epoch: 1, change: change.clone(), round: 1, members: vec![1, 4], precommits: vec![sig(1), sig(4)], proofs: vec![] };

@@ -80,7 +80,7 @@ pub fn badvote() {
             if let Some(v) = v {
                 if let Payload::Vote { epoch, target, seq, kick, .. } = v.payload {
                     let mut f = v.clone();
-                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0), kick };
+                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, EntryId::NONE), kick };
                     forged_vote.set(f.id());
                     for to in [1, 2] {
                         sim.net.send(1, 8, to, &Msg::Entry(test_sign(1, f.clone())));
