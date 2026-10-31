@@ -910,22 +910,35 @@ fn stale_and_foreign_images_refused() {
     assert_eq!(pw.check_hash().unwrap(), live.1);
 }
 
-/// Carried state is exact across different histories (design 7.3; the contact reset in
-/// `set_state`). Two peers reach a pile by different histories in every body: a different drop
-/// height, a push on one peer, a different number of frames, so their contacts were made at
-/// different frames, with different recycled anchors, warm-start impulses, contact ids and
-/// broad-phase trees. Then every body's state is carried with `set_state` on both peers, the
-/// toucher included, and they must step identically: `state_hash` equal every frame. Without the
-/// contact reset they differ from the first frame (f32 and f64) [measured].
+/// Carried state is exact across different histories (design 7.3; the history reset in
+/// `set_state`). Two peers reach an 18-body pile by different histories in every body: a
+/// different drop height, a push on one peer, a different number of frames, so their contacts
+/// were made at different frames, with different recycled anchors, warm-start impulses, contact
+/// ids and broad-phase trees, and their joints carry different accumulated impulses. Then every
+/// body's state is carried with `set_state` on both peers, the toucher included, and they must
+/// step identically: `state_hash` equal for 600 frames. Cases: written at rest and while the pile
+/// is still collapsing, without joints and with a kinematic hand grabbing one body (D72). Without
+/// the reset they differ from the first frame (f32 and f64); with contacts reset but joints not,
+/// jointed piles do too (review SSC-1) [measured].
+///
+/// Not guaranteed, and measured only (not asserted): a pile with a spherical joint and a rope.
+/// What still follows history there is world-wide, not the written body's: Box3D gives a contact
+/// its graph colour when it begins touching, in contact-id order, and ids come from a free list,
+/// so two contacts beginning together on one body can swap colours and solve in another order
+/// (probe: the spherical joint alone, written mid-collapse, 2 of 75 pairs coloured differently,
+/// differs from frame 1); and islands split lazily, so one peer can still hold a merged island
+/// and put it to sleep at another frame (here both cases differ at frame 31, as the pile sleeps). Making colouring canonical would change every
+/// simulation and Box3D C's goldens, so speculative exactness is best effort beyond these cases;
+/// the confirmed history is unaffected.
 ///
 /// `check_hash` still differs: the image also holds what only history decides, the contact ids
-/// (the same 78 contacts under other ids, from the free list), the bodies' contact lists, the
+/// (the same contacts under other ids, from the free list), the bodies' contact lists, the
 /// islands, the broad-phase trees and the constraint graph's arrays. Such worlds exist only
 /// speculatively; check hashes are taken at confirmed frames, where every peer's history, and so
 /// all of that, is identical (design 7.3, 9.2).
 #[test]
 fn carried_state_exact_across_histories() {
-    let pile = |lift: f64, push: bool, frames: usize| {
+    let pile = |lift: f64, push: bool, frames: usize, joints: u8| {
         let mut pw = world(PhysicsConfig::engine());
         pw.add_body(id(1), &ground()).unwrap();
         for n in 0..18u32 {
@@ -937,6 +950,15 @@ fn carried_state_exact_across_histories() {
             };
             pw.add_body(id(2 + n), &desc).unwrap();
         }
+        if joints == 2 {
+            pw.add_joint(JointKey(1), &JointDesc::Spherical { a: id(2), b: Some(id(3)), anchor_a: [0.525, 0.0, 0.0], anchor_b: [-0.525, 0.0, 0.0] }).unwrap();
+            pw.add_joint(JointKey(2), &JointDesc::Distance { a: id(12), b: None, anchor_a: [0.0; 3], anchor_b: [0.0, 4.0, 0.0], length: 3.0 }).unwrap();
+        }
+        if joints == 1 {
+            pw.add_body(id(30), &BodyDesc::new(BodyKind::Kinematic, [1.05, 4.0 + lift, 1.05])).unwrap();
+            let spring = GrabSpring { hertz: 5.0, damping_ratio: 1.0, max_force: 1000.0, max_torque: 100.0 };
+            pw.add_joint(JointKey(3), &JointDesc::Grab { a: Some(id(30)), b: id(19), anchor_a: [0.0, -1.0, 0.0], anchor_b: [0.0; 3], max_force: 100.0, max_torque: 10.0, spring: Some(spring) }).unwrap();
+        }
         for f in 0..frames {
             if push && f == 30 {
                 pw.push(id(6), Push::Impulse([4.0, 2.0, 0.0])).unwrap();
@@ -945,31 +967,45 @@ fn carried_state_exact_across_histories() {
         }
         pw
     };
-    let mut a = pile(0.0, false, 150);
-    let mut b = pile(1.5, true, 240);
-    let states: Vec<_> = (2..20).map(|n| (id(n), a.pose(id(n)).unwrap(), a.velocity(id(n)).unwrap())).collect();
-    for pw in [&mut a, &mut b] {
-        for (o, pose, vel) in &states {
-            pw.set_state(*o, *pose, vel.0, vel.1).unwrap();
+    let cases = [
+        ("at rest", 150, 0, true),
+        ("collapsing", 40, 0, true),
+        ("grabbed, at rest", 150, 1, true),
+        ("grabbed, collapsing", 40, 1, true),
+        ("spherical joint and rope, at rest (limit)", 150, 2, false),
+        ("spherical joint and rope, collapsing (limit)", 40, 2, false),
+    ];
+    for (label, at, joints, exact) in cases {
+        let mut a = pile(0.0, false, at, joints);
+        let mut b = pile(1.5, true, 240, joints);
+        let objects: Vec<u32> = (2..20).chain((joints == 1).then_some(30)).collect();
+        let states: Vec<_> = objects.iter().map(|&n| (id(n), a.pose(id(n)).unwrap(), a.velocity(id(n)).unwrap())).collect();
+        let moving = states.iter().filter(|s| s.2 .0.iter().any(|v| v.abs() > 1e-3)).count();
+        for pw in [&mut a, &mut b] {
+            for (o, pose, vel) in &states {
+                pw.set_state(*o, *pose, vel.0, vel.1).unwrap();
+            }
+        }
+        assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap(), "the carried bits land on both, {label}");
+        let (mut first_state, mut check_differs, mut awake_last) = (None, 0, 0);
+        for f in 0..600 {
+            a.step(DT).unwrap();
+            b.step(DT).unwrap();
+            if first_state.is_none() && a.state_hash().unwrap() != b.state_hash().unwrap() {
+                first_state = Some(f);
+            }
+            if f < 120 && a.check_hash().unwrap() != b.check_hash().unwrap() {
+                check_differs += 1;
+            }
+            if (2..20).any(|n| a.is_awake(id(n)).unwrap()) {
+                awake_last = f;
+            }
+        }
+        println!(
+            "RESULT carried state across histories, {label}: {moving} of 18 bodies moving at the write, awake until frame {awake_last}; first differing state_hash frame of 600 {first_state:?}; check_hash differs at {check_differs} of the first 120 frames"
+        );
+        if exact {
+            assert_eq!(first_state, None, "state_hash, {label}");
         }
     }
-    assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap(), "the carried bits land on both");
-    let mut first_state = None;
-    let mut check_frames = Vec::new();
-    for f in 0..120 {
-        a.step(DT).unwrap();
-        b.step(DT).unwrap();
-        if first_state.is_none() && a.state_hash().unwrap() != b.state_hash().unwrap() {
-            first_state = Some(f);
-        }
-        if a.check_hash().unwrap() != b.check_hash().unwrap() {
-            check_frames.push(f);
-        }
-    }
-    println!(
-        "RESULT carried state across histories (18 bodies): first differing state_hash frame of 120 {first_state:?}, check_hash differs at {} of 120 frames (first {:?})",
-        check_frames.len(),
-        check_frames.first()
-    );
-    assert_eq!(first_state, None, "state_hash");
 }
