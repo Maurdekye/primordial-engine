@@ -137,7 +137,7 @@ pub fn ser_shapes(buf: &mut RecBuffer, world: &World, registry: &mut GeometryReg
     buf.append_i32(world.shapes.len() as i32);
     for (i, shape) in world.shapes.iter().enumerate() {
         let is_live = shape.id == i as i32;
-        ser_shape_scalars(buf, shape);
+        ser_shape_scalars(buf, shape, is_live);
         if !is_live {
             buf.append_i32(0); // materialCount
             buf.append_i32(-1); // geo kind sentinel
@@ -185,7 +185,10 @@ pub fn ser_shapes(buf: &mut RecBuffer, world: &World, registry: &mut GeometryReg
     }
 }
 
-fn ser_shape_scalars(buf: &mut RecBuffer, s: &Shape) {
+/// Primordial Engine fork: a freed slot's shape type is written as the reader restores it (the
+/// default geometry's), not the stale type of the shape that last lived there, so a live
+/// world's image equals the image of a world restored from it (canonical check hashes, P2-3).
+fn ser_shape_scalars(buf: &mut RecBuffer, s: &Shape, is_live: bool) {
     buf.append_i32(s.id);
     buf.append_i32(s.body_id);
     buf.append_i32(s.prev_shape_id);
@@ -204,7 +207,8 @@ fn ser_shape_scalars(buf: &mut RecBuffer, s: &Shape) {
     buf.append_u32(s.name_id);
     buf.append_u16(s.generation);
     buf.append_u8(s.flags);
-    buf.append_i32(s.shape_type() as i32);
+    let shape_type = if is_live { s.shape_type() } else { ShapeGeometry::default().shape_type() };
+    buf.append_i32(shape_type as i32);
 }
 
 pub fn des_shapes(r: &mut SnapReader<'_>, world: &mut World, slots: &mut [RegistrySlot]) {

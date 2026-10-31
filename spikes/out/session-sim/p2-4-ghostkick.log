@@ -1,0 +1,10 @@
+  ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist) with VCR-1's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 108 of frame 228, m2 conf 108 of frame 228, m3 conf 108 of frame 228; at m1: members {1, 2, 3, 9}, evicted []
+RESULT ghostkick: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT ghostkick: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT ghostkick: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
+RESULT ghostkick: m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593
+RESULT ghostkick: 9 removed at 3.17 s -> VOTED OUT
+  m1: conf 587 frame 593 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 44 bad 0
+  m2: conf 587 frame 593 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
+  m3: conf 587 frame 593 members {1, 2, 3} evicted {9: (91, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
+RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist): frames 0..592 honest m1=ec5e142ab22ae021 m2=ec5e142ab22ae021 m3=ec5e142ab22ae021 | offline replay ec5e142ab22ae021 | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
