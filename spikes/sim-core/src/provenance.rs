@@ -546,7 +546,7 @@ mod tests {
         let sig = |m| (m, vc_sig(1, m, 0, 1, value));
         let c1 = EpochCert { world: 1, epoch: 1, change, round: 1, members: vec![1, 4], precommits: vec![sig(1), sig(4)], proofs: vec![] };
         let g = (1u64 << 32) | 7;
-        let record = ObjRecord { global: g, kind: 0, state: BodyState([0; 13]), src_world: 1, src_frame: 420, via: 0 };
+        let record = ObjRecord { global: g, kind: 0, state: BodyState([0; 16]), src_world: 1, src_frame: 420, via: 0 };
         let export = |epoch: u32, certs: Vec<EpochCert>, by: &[MemberId]| {
             let fact = fact_departed(1, 9, &record, 2, 900, chain_hash(&[]), epoch);
             let cert = by.iter().map(|&m| (m, member_sig(1, m, fact))).collect();
