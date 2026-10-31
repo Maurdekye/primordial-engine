@@ -115,13 +115,13 @@ fn ledge_overhang(scaling: bool) -> f32 {
     let mut world = World::new(&def);
     let mut bd = default_body_def();
     bd.type_ = BodyType::Static;
-    bd.position = Pos { x: -10.0 * s, y: s, z: 0.0 };
+    bd.position = Pos { x: (-10.0 * s) as _, y: s as _, z: 0.0 };
     let g = create_body(&mut world, &bd);
     create_hull_shape(&mut world, g, &default_shape_def(), &make_box_hull(10.0 * s, s, 10.0 * s).base);
     let mut bd = default_body_def();
     bd.type_ = BodyType::Dynamic;
     bd.enable_sleep = false;
-    bd.position = Pos { x: -6.0 * s, y: 2.5 * s, z: 0.0 };
+    bd.position = Pos { x: (-6.0 * s) as _, y: (2.5 * s) as _, z: 0.0 };
     bd.linear_velocity = Vec3 { x: 2.0 * s, y: 0.0, z: 0.0 };
     let b = create_body(&mut world, &bd);
     let mut sd = default_shape_def();
@@ -130,7 +130,7 @@ fn ledge_overhang(scaling: bool) -> f32 {
     for _ in 0..1200 {
         world.step(1.0 / 60.0, 4);
         let p = body_get_position(&world, b);
-        if p.y < 2.45 * s {
+        if (p.y as f32) < 2.45 * s {
             return p.x as f32 / s;
         }
     }
@@ -209,13 +209,13 @@ fn recording_replays_scaling_from_world_def() {
         }
         let mut bd = default_body_def();
         bd.type_ = BodyType::Static;
-        bd.position = Pos { x: -10.0 * s, y: s, z: 0.0 };
+        bd.position = Pos { x: (-10.0 * s) as _, y: s as _, z: 0.0 };
         let g = create_body(&mut world, &bd);
         create_hull_shape(&mut world, g, &default_shape_def(), &make_box_hull(10.0 * s, s, 10.0 * s).base);
         let mut bd = default_body_def();
         bd.type_ = BodyType::Dynamic;
         bd.enable_sleep = false;
-        bd.position = Pos { x: -6.0 * s, y: 2.5 * s, z: 0.0 };
+        bd.position = Pos { x: (-6.0 * s) as _, y: (2.5 * s) as _, z: 0.0 };
         bd.linear_velocity = Vec3 { x: 2.0 * s, y: 0.0, z: 0.0 };
         let b = create_body(&mut world, &bd);
         let mut sd = default_shape_def();

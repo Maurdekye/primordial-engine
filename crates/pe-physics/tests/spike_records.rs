@@ -74,43 +74,60 @@ fn goldens(config: PhysicsConfig) -> Vec<(&'static str, Golden)> {
     out
 }
 
-/// The engine goldens (spikes/physics `goldens`) and Box3D C's goldens (`--upstream`).
+/// The engine goldens (spikes/physics `goldens`) and Box3D C's goldens (`--upstream`), for the
+/// precision Box3D was built with (D58: double by default). C's values are test_determinism.c's,
+/// as in the fork's determinism tests.
 #[test]
 fn goldens_match() {
     let g = |sleep_step, hash| Golden { sleep_step, hash, query: None };
     let q = |sleep_step, hash, hits, qh| Golden { sleep_step, hash, query: Some((hits, qh)) };
-    let engine = [
-        g(358, 0xB1EB_47AE),
-        g(307, 0x0809_EA96),
-        q(242, 0x9EA3_A8B9, 59, 0xE327_1F3D),
-        g(220, 0xCE3B_7A62),
-    ];
-    let c = [
-        g(291, 0xFF4C_605B),
-        g(272, 0x266F_83B0),
-        q(242, 0xF3AD_9BA6, 59, 0xE327_1F3D),
-        g(226, 0xD2FF_069D),
-    ];
+    let (engine, c) = if box3d_rust::core::is_double_precision() {
+        (
+            [g(326, 0x5908_8655), g(299, 0xFF78_3571), q(242, 0x92E8_FC29, 59, 0x5B44_29DC), g(221, 0x9884_84F7)],
+            [g(263, 0xA542_3F98), g(272, 0xC8E5_F3D6), q(242, 0x4895_85E6, 59, 0x5B44_29DC), g(218, 0xD378_CF04)],
+        )
+    } else {
+        (
+            [g(358, 0xB1EB_47AE), g(307, 0x0809_EA96), q(242, 0x9EA3_A8B9, 59, 0xE327_1F3D), g(220, 0xCE3B_7A62)],
+            [g(291, 0xFF4C_605B), g(272, 0x266F_83B0), q(242, 0xF3AD_9BA6, 59, 0xE327_1F3D), g(226, 0xD2FF_069D)],
+        )
+    };
+    let mut mismatches = Vec::new();
     for workers in WORKERS {
         for (config, expected) in [(PhysicsConfig::engine(), &engine), (PhysicsConfig::upstream(), &c)] {
             let got = goldens(config.with_workers(workers));
-            for (scene, got) in &got {
-                let scaling = config.contact_recycle_scaling.enabled;
-                println!("RESULT golden {scene} recycle_scaling={scaling} workers={workers} {got:?}");
-            }
+            let scaling = config.contact_recycle_scaling.enabled;
             for ((scene, got), want) in got.iter().zip(expected.iter()) {
-                assert_eq!(got, want, "{scene}, {workers} workers, recycle scaling {}", config.contact_recycle_scaling.enabled);
+                println!("RESULT golden {scene} recycle_scaling={scaling} workers={workers} {got:?}");
+                if got != want {
+                    mismatches.push(format!("{scene}, {workers} workers, recycle scaling {scaling}: got {got:?}, want {want:?}"));
+                }
             }
         }
     }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
 
 /// The 600-frame trace, line for line equal to the committed record, and its digest.
+/// The committed trace record of `mode` and its digest (FNV-64 of the state hashes, then the
+/// world hashes), so no digest is written into this file: re-recording the traces is enough.
+fn trace_record(mode: &str) -> (String, u64) {
+    let text = std::fs::read_to_string(record(&format!("trace-{mode}-win-{}.txt", profile()))).expect("record");
+    let text = text.replace("\r\n", "\n");
+    let (mut state, mut world) = (Vec::new(), Vec::new());
+    for line in text.lines() {
+        let f: Vec<&str> = line.split(' ').collect();
+        world.push(u64::from_str_radix(f[1], 16).expect("record world hash"));
+        state.push(u64::from_str_radix(f[2], 16).expect("record state hash"));
+    }
+    let digest = fnv_u64s(state.into_iter().chain(world));
+    (text, digest)
+}
+
 #[test]
 fn trace_matches_record() {
     for (config, mode) in modes() {
-        let want = std::fs::read_to_string(record(&format!("trace-{mode}-win-{}.txt", profile()))).expect("record");
-        let digest = if mode == "vdw" { 0x8083_9f4a_5413_3e13 } else { 0x7903_109a_ab28_ed9b };
+        let (want, digest) = trace_record(mode);
         for workers in WORKERS {
             let (state, world) = reference_run(config.with_workers(workers), 600);
             let got: String = state
@@ -119,7 +136,7 @@ fn trace_matches_record() {
                 .enumerate()
                 .map(|(i, (s, w))| format!("{i} {w:016x} {s:016x}\n"))
                 .collect();
-            assert!(got == want.replace("\r\n", "\n"), "trace differs from the record: {mode}, {workers} workers");
+            assert!(got == want, "trace differs from the record: {mode}, {workers} workers");
             let d = fnv_u64s(state.iter().copied().chain(world.iter().copied()));
             assert_eq!(d, digest, "trace digest, {mode}, {workers} workers");
             println!("RESULT trace {mode} workers={workers} digest {d:016x}");
@@ -279,7 +296,8 @@ fn several_worlds_per_process() {
         }
     }
     let digest = |(s, w): &(Vec<u64>, Vec<u64>)| fnv_u64s(s.iter().copied().chain(w.iter().copied()));
-    assert_eq!(digest(&hashes[0]), 0x8083_9f4a_5413_3e13);
-    assert_eq!(digest(&hashes[1]), 0x7903_109a_ab28_ed9b);
-    assert_eq!(digest(&hashes[2]), 0x8083_9f4a_5413_3e13);
+    let (vdw, off) = (trace_record("vdw").1, trace_record("off").1);
+    assert_eq!(digest(&hashes[0]), vdw);
+    assert_eq!(digest(&hashes[1]), off);
+    assert_eq!(digest(&hashes[2]), vdw);
 }
