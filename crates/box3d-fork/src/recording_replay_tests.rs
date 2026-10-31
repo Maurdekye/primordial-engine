@@ -707,3 +707,43 @@ fn isotropic_inertia_tolerance_round_trip() {
         0
     );
 }
+
+/// Primordial Engine fork: `body_reset_history` (op 0x3C) replays. A box pile settles, one box
+/// is woken and its history reset (contacts destroyed, proxies rebuilt, sleep timer zeroed), and
+/// the recording's per-frame state hashes must replay, ending in the live world's state.
+#[test]
+fn body_reset_history_round_trip() {
+    use crate::body::{body_reset_history, body_set_awake};
+    use crate::recording::{hash_world_state, RecPlayer};
+
+    let rec = Recording::new(0);
+    let mut world = World::new(&default_world_def());
+    world_start_recording(&mut world, rec);
+    let mut ground_def = default_body_def();
+    ground_def.type_ = BodyType::Static;
+    let ground_id = create_body(&mut world, &ground_def);
+    create_hull_shape(&mut world, ground_id, &default_shape_def(), &make_box_hull(20.0, 1.0, 20.0).base);
+    let mut boxes = Vec::new();
+    for (x, y) in [(0.0, 1.5), (1.0, 2.6), (0.0, 3.7), (1.0, 4.8), (0.0, 5.9), (1.0, 7.0)] {
+        let mut def = default_body_def();
+        def.type_ = BodyType::Dynamic;
+        def.position = Pos { x, y, z: 0.0 };
+        let id = create_body(&mut world, &def);
+        create_hull_shape(&mut world, id, &default_shape_def(), &make_box_hull(0.5, 0.5, 0.5).base);
+        boxes.push(id);
+    }
+    for _ in 0..240 {
+        world.step(1.0 / 60.0, 4);
+    }
+    body_set_awake(&mut world, boxes[2], true);
+    body_reset_history(&mut world, boxes[2]);
+    for _ in 0..60 {
+        world.step(1.0 / 60.0, 4);
+    }
+    let live = hash_world_state(&world);
+    let rec = world_stop_recording(&mut world).expect("recording active");
+    assert!(validate_replay(rec.data(), 1));
+    let mut player = RecPlayer::create(rec.data(), 1).expect("player");
+    while player.step_frame() {}
+    assert_eq!(hash_world_state(player.world()), live);
+}

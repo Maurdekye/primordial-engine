@@ -142,15 +142,7 @@ pub fn prepare_wheel_joint(world: &World, base: &mut JointSim, context: &StepCon
     }
 
     if !context.enable_warm_starting {
-        joint.linear_impulse = VEC2_ZERO;
-        joint.angular_impulse = VEC2_ZERO;
-        joint.spin_impulse = 0.0;
-        joint.suspension_spring_impulse = 0.0;
-        joint.lower_suspension_impulse = 0.0;
-        joint.upper_suspension_impulse = 0.0;
-        joint.steering_spring_impulse = 0.0;
-        joint.lower_steering_impulse = 0.0;
-        joint.upper_steering_impulse = 0.0;
+        joint.reset_impulses();
     }
 }
 
