@@ -31,10 +31,10 @@ use crate::review3::report;
 use crate::viewchange::{sim_secs, vc_report};
 
 /// A custom role with no permissions (the scenarios' guests).
-const GUEST: RoleId = 1;
-const SCENE: SceneKind = SceneKind::Pile { side: 8, layers: 4 };
+pub(crate) const GUEST: RoleId = 1;
+pub(crate) const SCENE: SceneKind = SceneKind::Pile { side: 8, layers: 4 };
 
-fn peers_of(ids: &[MemberId], plans: impl Fn(MemberId) -> BTreeMap<u64, Vec<Action>>) -> Vec<Peer> {
+pub(crate) fn peers_of(ids: &[MemberId], plans: impl Fn(MemberId) -> BTreeMap<u64, Vec<Action>>) -> Vec<Peer> {
     ids.iter()
         .map(|&id| {
             let mut p = Peer::new(id, 0);
@@ -44,7 +44,7 @@ fn peers_of(ids: &[MemberId], plans: impl Fn(MemberId) -> BTreeMap<u64, Vec<Acti
         .collect()
 }
 
-fn each_sim(ps: &mut [Peer], f: impl Fn(&mut WorldSim)) {
+pub(crate) fn each_sim(ps: &mut [Peer], f: impl Fn(&mut WorldSim)) {
     for p in ps.iter_mut() {
         if let Some(r) = p.worlds.get_mut(&1) {
             f(&mut r.sim);
@@ -52,7 +52,7 @@ fn each_sim(ps: &mut [Peer], f: impl Fn(&mut WorldSim)) {
     }
 }
 
-fn sim_mut(sim: &mut Sim, m: MemberId) -> &mut WorldSim {
+pub(crate) fn sim_mut(sim: &mut Sim, m: MemberId) -> &mut WorldSim {
     let i = sim.peers.iter().position(|p| p.id == m).unwrap();
     &mut sim.peers[i].worlds.get_mut(&1).unwrap().sim
 }
@@ -71,7 +71,7 @@ fn quiet_equal(sim: &Sim, honest: &[MemberId]) -> bool {
 
 /// Run to the end with a stopped run reported, not printed: a run with a fix switched off may trip
 /// the confirmed-frame assertion.
-fn run_quiet(sim: &mut Sim, each_ms: impl FnMut(&mut Sim)) -> Option<u64> {
+pub(crate) fn run_quiet(sim: &mut Sim, each_ms: impl FnMut(&mut Sim)) -> Option<u64> {
     if std::env::var("PE_SHOW_PANIC").is_ok_and(|v| !v.is_empty()) {
         return run_to_end(sim, each_ms);
     }
@@ -82,7 +82,7 @@ fn run_quiet(sim: &mut Sim, each_ms: impl FnMut(&mut Sim)) -> Option<u64> {
     r
 }
 
-fn confs(sim: &Sim, ids: &[MemberId]) -> String {
+pub(crate) fn confs(sim: &Sim, ids: &[MemberId]) -> String {
     ids.iter()
         .map(|&m| {
             let r = &sim.replica(m, 1).sim;
@@ -93,52 +93,85 @@ fn confs(sim: &Sim, ids: &[MemberId]) -> String {
 }
 
 /// The line a run with its fix switched off ends with.
-fn before_fix(label: &str, fix: &str, sim: &Sim, honest: &[MemberId], stopped: Option<u64>) {
+pub(crate) fn before_fix(label: &str, fix: &str, sim: &Sim, honest: &[MemberId], stopped: Option<u64>) {
     let state = match stopped {
-        Some(t) => format!("a replica's confirmed-frame assertion stopped the run at t={t} ms"),
+        Some(t) => format!("the run stopped at t={t} ms: a replica hit an assertion or a panic"),
         None if quiet_equal(sim, honest) => "every replica equals the replay".to_string(),
         None => "the replicas do not all equal the replay".to_string(),
     };
-    println!("  {label} with {fix} switched off (the behaviour before the fix): {state}; {}", confs(sim, honest));
+    let r = &sim.replica(honest[0], 1).sim;
+    println!(
+        "  {label} with {fix} switched off (the behaviour before the fix): {state}; {}; at m{}: members {:?}, evicted {:?}",
+        confs(sim, honest),
+        honest[0],
+        r.members,
+        r.members_evicted().keys().collect::<Vec<_>>()
+    );
 }
 
 // ---- review repros ---------------------------------------------------------------------------------
 
 pub fn fork9() {
     for fixed in [false, true] {
+        let (sim, stopped, info) = fork_run(if fixed { 0 } else { fix::VC2 }, 700_000, false, 0);
+        let honest = [1, 2, 3];
+        let label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)";
+        if !fixed {
+            before_fix(label, "VC-2's fix", &sim, &honest, stopped);
+            continue;
+        }
+        println!("  {info}");
+        report(&sim, &honest, "fork9");
+        vc_report(&sim, &honest, "fork9");
+        verdict(&sim, &honest, label, stopped);
+    }
+}
+
+/// `fork9`'s run: 9 forks at frame 110 and stays alive `live_us` (A to 1 and 2, B to 3), with `fixes_off`
+/// switched off. With `backdate`, 9 also signs, on A only, a touch backdated 90 frames 100 ms after the
+/// fork. With `detect_us`, everything 3 sends 1 and 2 in the `detect_us` after the fork arrives that late,
+/// so they find the fork late and cut A deeper (round 3: `deepfork`, `cutbackdate`).
+pub(crate) fn fork_run(fixes_off: u32, live_us: u64, backdate: bool, detect_us: u64) -> (Sim, Option<u64>, String) {
+    {
         let ids = [1, 2, 3, 9];
         let mut ps = peers_of(&ids, |m| match m {
             9 => plan(&[(120, touch(10, 6.0))]),
             1 => plan(&[(60, touch(33, 3.0))]),
             _ => BTreeMap::new(),
         });
-        if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VC2);
-        }
+        each_sim(&mut ps, |s| s.fixes_off = fixes_off);
         let fork_t: Rc<Cell<u64>> = Rc::new(Cell::new(u64::MAX));
         let fork_seq: Rc<Cell<u32>> = Rc::new(Cell::new(u32::MAX));
         let crafted: Rc<RefCell<BTreeSet<EntryId>>> = Rc::default();
         let mut net = Net::new(link(30, 10, 0), 7);
         let (ft, fs, cr) = (fork_t.clone(), fork_seq.clone(), crafted.clone());
         net.filter = Some(Box::new(move |t, _w, from, to, m| {
-            let silent = t >= ft.get().saturating_add(700_000);
+            let silent = t >= ft.get().saturating_add(live_us);
             match m {
                 Msg::Entry(e) if from == 9 && t >= ft.get() => {
                     if cr.borrow().contains(&e.id()) {
-                        Fate::Deliver
+                        // With `detect_us`, 9 does not relay B (it gets B back from 3's fetch replies):
+                        // 1 and 2 learn of the fork only from 3, late.
+                        if detect_us > 0 && to != 3 {
+                            Fate::Drop
+                        } else {
+                            Fate::Deliver
+                        }
                     } else if silent || (to == 3 && e.member == 9 && e.seq >= fs.get()) {
                         Fate::Drop
                     } else {
                         Fate::Deliver
                     }
                 }
+                _ if detect_us > 0 && from == 3 && (to == 1 || to == 2) && t >= ft.get() && t < ft.get().saturating_add(detect_us) => Fate::Delay(detect_us),
                 Msg::Entry(e) if from == 3 && matches!(e.payload, Payload::Vote { .. }) => Fate::Delay(300_000),
                 _ if from == 9 && silent => Fate::Drop,
                 _ => Fate::Deliver,
             }
         }));
-        let mut sim = Sim::new(net, ps, 8_000_000);
+        let mut sim = Sim::new(net, ps, 7_300_000 + live_us);
         let mut b_id: BTreeMap<u32, EntryId> = BTreeMap::new();
+        let mut backdated = !backdate;
         let mut b_last: Option<Entry> = None;
         let mut b_ack: Option<Payload> = None;
         let (mut extra, mut next_t) = (0u32, 0u64);
@@ -154,7 +187,16 @@ pub fn fork9() {
                 return;
             }
             let s0 = fork_seq.get();
-            if now < fork_t.get() + 700_000 {
+            if !backdated && now >= fork_t.get() + 100_000 {
+                // On A only (the filter keeps 9's chain past the fork from 3): a touch backdated 90
+                // frames, a horizon violation on that branch.
+                let e = sim_mut(sim, 9).author_backdated(Payload::Touch { obj: 20, impulse: [0.0, 4.0, 0.0], grab: false }, 90);
+                for m in [1, 2] {
+                    sim.net.send(1, 9, m, &Msg::Entry(e.clone()));
+                }
+                backdated = true;
+            }
+            if now < fork_t.get() + live_us {
                 // Branch B: 9's entries from the fork on, re-linked, with its touch a no-op.
                 let mut mine: Vec<Entry> =
                     sim.replica(9, 1).sim.all_entries().into_iter().filter(|e| e.member == 9 && e.seq >= s0 && !b_id.contains_key(&e.seq)).collect();
@@ -195,16 +237,8 @@ pub fn fork9() {
                 next_t = now + 50_000;
             }
         });
-        let honest = [1, 2, 3];
-        let label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)";
-        if !fixed {
-            before_fix(label, "VC-2's fix", &sim, &honest, stopped);
-            continue;
-        }
-        println!("  fork at 9's seq {}, t={} ms; branch B {} entries plus {extra} extra acks", fork_seq.get(), fork_t.get() / 1000, b_id.len());
-        report(&sim, &honest, "fork9");
-        vc_report(&sim, &honest, "fork9");
-        verdict(&sim, &honest, label, stopped);
+        let info = format!("fork at 9's seq {}, t={} ms; branch B {} entries plus {extra} extra acks", fork_seq.get(), fork_t.get() / 1000, b_id.len());
+        (sim, stopped, info)
     }
 }
 
@@ -319,7 +353,7 @@ pub fn futureack() {
 
 // ---- D80: admins and roles --------------------------------------------------------------------------
 
-fn outcomes(sim: &Sim, m: MemberId) -> String {
+pub(crate) fn outcomes(sim: &Sim, m: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
     let mut v: Vec<(u64, String)> = r
         .admin_outcomes
@@ -339,7 +373,7 @@ fn outcomes(sim: &Sim, m: MemberId) -> String {
     v.into_iter().map(|(_, s)| s).collect::<Vec<_>>().join("; ")
 }
 
-fn roles_line(sim: &Sim, m: MemberId) -> String {
+pub(crate) fn roles_line(sim: &Sim, m: MemberId) -> String {
     let r = &sim.replica(m, 1).sim;
     format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.members, r.roles, r.admins(), r.closed_at)
 }
@@ -393,7 +427,7 @@ pub fn kickpartition() {
     verdict(&sim, &honest, "kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s)", stopped);
 }
 
-fn guests(ps: &mut [Peer], admins: &[MemberId]) {
+pub(crate) fn guests(ps: &mut [Peer], admins: &[MemberId]) {
     let admins = admins.to_vec();
     each_sim(ps, move |s| {
         s.role_defs.insert(GUEST, 0);

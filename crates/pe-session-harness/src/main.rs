@@ -16,6 +16,7 @@ mod history;
 mod r18;
 mod review2;
 mod p24r;
+mod p24r3;
 mod review3;
 mod viewchange;
 
@@ -1320,7 +1321,7 @@ fn handowner() {
         let u = (fr - a0) as f64 / (a1 - a0) as f64;
         [((from + (to - from) * u) * 1000.0).round() as i32, 400, (z * 1000.0).round() as i32]
     };
-    let run = |forge: bool| {
+    let run = |forge: bool, fixes_off: u32| {
         let ids = [1, 2];
         let peers: Vec<Peer> = ids
             .iter()
@@ -1340,12 +1341,13 @@ fn handowner() {
                 v.push((a1 + 1, Action::Hand { obj: own, target_mm: [0, 1500, 0], active: false, ahead: 0 }));
                 let mut p = Peer::new(id, 0);
                 p.join(1, &ids, scene, cfg60(), 100_000, plan(&v));
+                p.worlds.get_mut(&1).unwrap().sim.fixes_off = fixes_off;
                 p
             })
             .collect();
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), peers, 6_000_000);
         let i2 = sim.peers.iter().position(|p| p.id == 2).unwrap();
-        let (mut grabbed, mut carried) = (false, false);
+        let (mut grabbed, mut carried, mut planted) = (false, false, false);
         let panic_at = review2::run_to_end(&mut sim, |sim| {
             let now = sim.net.now_us;
             let send = |sim: &mut Sim, p: Payload| {
@@ -1360,11 +1362,24 @@ fn handowner() {
                 send(sim, Payload::Depart { obj: h1, dest: 99, deadline: u64::MAX, hop: None });
                 carried = true;
             }
+            // Review HO-1, round 2: a touch of a free ball that carries a state for member 1's hand,
+            // 2 m above where member 2 sees it.
+            if forge && !planted && now >= 2_400_000 {
+                let r2 = &mut sim.peers[i2].worlds.get_mut(&1).unwrap().sim;
+                if let Some(mut st) = r2.obj_state(h1) {
+                    st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                    let e = r2.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (h1, st));
+                    sim.net.send(1, 2, 1, &Msg::Entry(e));
+                }
+                planted = true;
+            }
         });
         (sim, panic_at)
     };
-    let (a, pa) = run(true);
-    let (b, pb) = run(false);
+    let (a, pa) = run(true, 0);
+    let (b, pb) = run(false, 0);
+    // The behaviour before HO-1's round-2 fix: the carried state for member 1's hand is applied.
+    let (c, pc) = run(true, fix::HO1);
     let frames = [&a, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
     let mut all_refused = true;
     for m in [1, 2] {
@@ -1392,7 +1407,22 @@ fn handowner() {
             .and_then(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o));
         all_refused &= others.len() == 2 && others.iter().all(|(_, o)| *o == Some(Outcome::RejectedNotOwner)) && own == Some(Outcome::Accepted);
         println!("  m{m}: member 2's grab and carry of member 1's hand: {others:?}; member 1's own touch of it: {own:?}");
+        let planted: Vec<Option<Outcome>> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && e.carried.is_some_and(|(o, _)| o == h1))
+            .map(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o))
+            .collect();
+        all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
+        println!("  m{m}: member 2's touch of a ball carrying a state for member 1's hand: {planted:?}");
     }
+    let frames_c = [&c, &b].iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame)).min().unwrap_or(0).saturating_sub(1);
+    let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
+    println!(
+        "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",
+        if dc == dbc { "same history as without member 2's entries" } else { "member 1's history differs from the run without member 2's entries" },
+        if pc.is_some() { "; a replica stopped" } else { "" }
+    );
     let (da, db) = (digest(&a.replica(1, 1).sim.hashes, frames), digest(&b.replica(1, 1).sim.hashes, frames));
     println!(
         "RESULT handowner: member 2's entries for member 1's hand refused at every replica: {all_refused}; frames 0..{frames} with them {da:016x}, without them {db:016x} -> {}",
@@ -1460,6 +1490,18 @@ fn main() {
         Some("kickpartition") => p24r::kickpartition(),
         Some("lastadmin") => p24r::lastadmin(),
         Some("adminclose") => p24r::adminclose(),
+        Some("ghostkick") => p24r3::ghostkick(),
+        Some("selfkickhead") => p24r3::selfkickhead(),
+        Some("ackgap") => p24r3::ackgap(),
+        Some("latejoin") => p24r3::latejoin(),
+        Some("capchurn") => p24r3::capchurn(),
+        Some("deepfork") => p24r3::deepfork(),
+        Some("cutbackdate") => p24r3::cutbackdate(),
+        Some("joinattests") => p24r3::joinattests(),
+        Some("slowadmin") => p24r3::slowadmin(),
+        Some("kickbackdate") => p24r3::kickbackdate(),
+        Some("lagprecommit") => p24r3::lagprecommit(),
+        Some("aheadlink") => p24r3::aheadlink(),
         Some("joinrules") => p24r::joinrules(),
         Some("onesided") => p24r::onesided(),
         Some("vcscale") => viewchange::vc_scale(
