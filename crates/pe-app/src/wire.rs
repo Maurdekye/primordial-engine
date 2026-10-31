@@ -124,7 +124,8 @@ pub fn unpack(session: u64, buf: &[u8], key_of: impl Fn(MemberId) -> Option<Veri
     key.verify(&signing_bytes(body), &sig).map_err(|_| Reject::BadSignature)?;
     let n = u16::from_le_bytes(body[15..17].try_into().unwrap());
     let mut p = &body[HEADER..];
-    let mut items = Vec::with_capacity(n as usize);
+    // Every item takes at least one byte: never reserve more than the body could hold.
+    let mut items = Vec::with_capacity((n as usize).min(body.len() - HEADER));
     let take = |p: &mut &[u8], k: usize| -> Result<Vec<u8>, Reject> {
         if p.len() < k {
             return Err(Reject::Malformed);

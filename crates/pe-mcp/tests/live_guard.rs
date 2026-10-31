@@ -9,8 +9,11 @@ use pe_mcp::engine::{Engine, EngineHandle};
 use pe_mcp::model::*;
 use serde_json::json;
 
-/// The smallest DrivenPeer with no simulator behind it. `advance_ms` panics, to fault the session.
-struct FakeLive;
+/// The smallest DrivenPeer with no simulator behind it. `advance_ms` panics, to fault the session;
+/// so does `tick` when `tick_panics` is set.
+struct FakeLive {
+    tick_panics: bool,
+}
 
 impl DrivenPeer for FakeLive {
     fn scenario_label(&self) -> String {
@@ -98,11 +101,16 @@ impl DrivenPeer for FakeLive {
     fn scenario(&mut self) -> Option<&mut dyn ScenarioControl> {
         None
     }
+    fn tick(&mut self) {
+        if self.tick_panics {
+            panic!("fake live peer: tick panic");
+        }
+    }
 }
 
 #[tokio::test]
 async fn live_peer_refuses_scenario_tools_before_and_after_a_fault() {
-    let e = EngineHandle::spawn(|| Engine::new(Box::new(FakeLive)));
+    let e = EngineHandle::spawn(|| Engine::new(Box::new(FakeLive { tick_panics: false })));
     let c = client(&e).await;
     assert_eq!(ok(&c, "session_info", json!({})).await["backend"], "fake-live");
     for t in ["scenario_load", "scenario_check"] {
@@ -115,4 +123,20 @@ async fn live_peer_refuses_scenario_tools_before_and_after_a_fault() {
     // ...and scenario_load still refuses to swap the simulator in.
     err(&c, "scenario_load", json!({}), "no_scenario_control").await;
     err(&c, "world_get_state", json!({}), "session_faulted").await;
+}
+
+/// A panic in a ticking engine's housekeeping faults it, and `faulted()` says why, so the host (pe-app's
+/// run loop) can exit instead of waiting forever (review of 2f9ca05, medium).
+#[tokio::test]
+async fn a_panic_in_tick_is_reported_by_faulted() {
+    let e = EngineHandle::spawn_ticking(|| Engine::new(Box::new(FakeLive { tick_panics: true })), std::time::Duration::from_millis(1));
+    let mut why = None;
+    for _ in 0..200 {
+        why = e.call(|en| Ok(en.faulted().map(str::to_string))).await.unwrap();
+        if why.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(why.as_deref().is_some_and(|w| w.contains("tick panic")), "{why:?}");
 }

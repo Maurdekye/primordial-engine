@@ -52,19 +52,30 @@ pe-app compare OUT
 
 ## Evidence (`spikes/out/m1/`)
 
+All measured. The current build (pe-session at p2/session f634185, with pe-physics) is the `*-store` set.
+
 | Run | Result |
 |---|---|
-| `loopback-windows/` | Windows, release. Member 4 removed about 3.3 s after its drop-out. Members 1–3 identical over 1200 frames, replay-equal, 0 failed checks |
-| `agent-windows/` | Claude Code (Sonnet 5.5) drove member 1 of a live 4-peer session through pe-mcp over the pipe. Its touches were accepted and final, it saw member 4's eviction, and `scenario_check` was refused. Members 1–3 identical over 12000 frames |
-| `linux-wsl.log` | WSL2 Ubuntu-24.04, native glibc. pe-app and pe-mcp tests pass, and `m1-loopback.sh` gives ALL EQUAL |
-| `tests-windows.log` | pe-app and pe-mcp tests on Windows |
+| `mixed-windows-wsl-store/` | Members 1–2 on Windows, 3–4 native Linux in WSL; loss on members 2 and 3; member 4 drops out at 15 s. Members 1–3 identical over 1800 frames, replay-equal, 0 failed checks |
+| `tailscale-windows-laptop-store/` | This PC and <laptop> over Tailscale (RTT about 15 ms); loss on member 2; member 4 drops out at 15 s. Identical over 1800 frames, 0 failed checks |
+| `loopback-windows-store/`, `tests-windows-store.log` | Windows loopback (`m1-loopback.sh`): ALL EQUAL. pe-app and pe-mcp tests pass |
+| `linux-wsl-store.log` | WSL2 Ubuntu-24.04, native glibc: tests pass, `m1-loopback.sh` ALL EQUAL |
+| `agent-windows-session/` | On the first SessionCore build: Claude Code (Sonnet 5.5) drove member 1 of a live 4-peer session through pe-mcp over the pipe. Its touches were accepted and final, it saw member 4's eviction, and `scenario_check` was refused. Identical over 12000 frames |
+| `loopback-windows/`, `agent-windows/`, `linux-wsl.log`, `tailscale-windows-laptop/` | The same runs on pe-app's own core, before the port to pe-session |
 
 ## Limits
 
-* One world, static membership: crash removal works, joins are ignored.
+* One world. Membership is pe-session's view change: a member that drops out is removed. Joins are not
+  supported (no join flow, and a state transfer does not fit a UDP datagram).
 * Faults are injected on the sender. Real loss between machines comes on top.
 * The node ticks every millisecond; `next_deadline` is there for a sleeping IO.
 * Repair traffic is not deferred on a long queue. Congestion control (R18) has a slot (`set_link`) but
   stays at level 0.
-* Keys: a member's secret key is a plain hex file. Its folder's ACL is the only protection.
-* Windows Firewall: on this PC, inbound UDP from WSL is blocked unless a rule allows it on the WSL adapter.
+* An item larger than the MTU goes out as one oversized datagram.
+* Datagrams can be replayed within a session (no nonce or recipient in them) until Noise in phase 3;
+  the core drops entries it already holds.
+* The clock is synced once, before the start; long runs may drift.
+* Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
+  only protection.
+* Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe
+  path (`shader-lang\pe-app-bin\pe-app.exe`), so copy a rebuilt binary there.

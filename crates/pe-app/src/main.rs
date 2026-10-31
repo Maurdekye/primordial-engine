@@ -96,7 +96,7 @@ fn init(mut a: Args) -> Result<(), String> {
     for (i, addr) in addrs.into_iter().enumerate() {
         let id = i as u32 + 1;
         let k = new_key();
-        std::fs::write(out.join(format!("member-{id}.key")), hex(&k.to_bytes()) + "\n").map_err(|e| e.to_string())?;
+        write_secret(&out.join(format!("member-{id}.key")), &(hex(&k.to_bytes()) + "\n")).map_err(|e| e.to_string())?;
         members.push(MemberEntry { id, addr, key: hex(&k.verifying_key().to_bytes()) });
     }
     let f = SessionFile {
@@ -171,6 +171,11 @@ async fn run(mut a: Args) -> Result<(), String> {
     };
     while !finished.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(100)).await;
+        // A panic in the node faults the engine, which then stops ticking it: end the process with
+        // the message rather than look like a stalled member (review of 2f9ca05).
+        if let Ok(Some(why)) = engine.call(|e| Ok(e.faulted().map(str::to_string))).await {
+            return Err(format!("member {me}: the peer stopped: {why}"));
+        }
     }
     let path = out_dir.join(format!("summary-{me}.json"));
     let s: Summary = serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -187,6 +192,15 @@ async fn run(mut a: Args) -> Result<(), String> {
         s.checks_bad
     );
     Ok(())
+}
+
+/// Write a secret key file: readable by its owner only on Unix (Windows files inherit the folder's ACL).
+fn write_secret(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    std::io::Write::write_all(&mut o.open(path)?, text.as_bytes())
 }
 
 fn compare(mut a: Args) -> Result<bool, String> {
@@ -225,6 +239,12 @@ fn compare(mut a: Args) -> Result<bool, String> {
             s.traffic.datagrams_dropped_by_fault
         );
         ok &= s.replay_equal && s.checks_bad == 0;
+    }
+    for (s, h) in &sums {
+        if let Some(l) = h.iter().find(|l| l.ends_with("missing")) {
+            println!("member {}: no state hash for frame {}", s.member, l.split(' ').next().unwrap_or("?"));
+            ok = false;
+        }
     }
     let (first, fh) = &sums[0];
     for (s, h) in &sums[1..] {
