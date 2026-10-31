@@ -421,6 +421,12 @@ impl Peer {
         if std::env::var("PE_CLAIM_RULE").as_deref() == Ok("spike") {
             cfg.claim_rule = ClaimRule::Spike;
         }
+        // P2-3 S5 evidence only: compaction at every ring trim (or never) must leave every log unchanged.
+        match std::env::var("PE_COMPACT").as_deref() {
+            Ok("every") => cfg.compact = CompactPolicy::EveryTrim,
+            Ok("never") => cfg.compact = CompactPolicy::Never,
+            _ => {}
+        }
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)));
         core.start(epoch_us);
         core.set_offset(self.skew_us);

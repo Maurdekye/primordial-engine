@@ -166,3 +166,31 @@ impl WorldSim {
         self.store.iter::<ClaimRow>().map(|(id, c)| (obj_index(id), Claim { member: c.member, until: c.until }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review CMP-1 through the ring: a keyframe image kept outside the ring across a compaction is
+    /// refused by `restore_image`, with nothing written, rather than restored into a wrong state.
+    #[test]
+    fn a_keyframe_kept_past_a_compaction_is_refused() {
+        let cfg = SimConfig { compact: CompactPolicy::EveryTrim, ..SimConfig::default() };
+        let mut s = WorldSim::new(1, 3, &[1, 2, 3], SceneKind::Pile { side: 4, layers: 1 }, cfg, KeyRing::test(3));
+        s.advance(8);
+        let (&f, k) = s.ring.iter().next().expect("a keyframe");
+        let stale = k.image.clone();
+        assert!(s.world.restore_image(&stale).is_ok(), "before compaction it restores");
+        s.restore(&k.clone(), f);
+        s.advance(16);
+        assert!(s.stats.compactions > 0);
+        let before = (s.state_hash(), s.check_hash());
+        assert!(matches!(s.world.restore_image(&stale), Err(pe_physics::PhysicsError::BadImage(_))));
+        assert_eq!((s.state_hash(), s.check_hash()), before, "nothing written, not poisoned");
+        // The ring's own copy of that keyframe was rewritten and restores.
+        let k = s.ring.get(&f).expect("the base stays").clone();
+        s.restore(&k, f);
+        s.advance(16);
+        assert_eq!(s.state_hash(), before.0);
+    }
+}

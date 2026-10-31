@@ -22,13 +22,13 @@ named here, **[I]** inferred.
 | S2 | The session sim's physics goes through `pe-physics` (impulses, hand targets, carried state with `set_state`, arrivals, keyframes as `WorldImage`); check hash over `pe_physics::check_hash` | c97b1d0 (on @vdw-physics's 9927b7b) | 51 identical, 18 equal with ids masked, 0 different; digests changed only in the 15 R14 logs [V] |
 | S5b | The per-object engine tables (objects, grab claims, cooldowns, hand idle counters) are `pe-sim` components in `WorldSim::store`; a keyframe is a `WorldImage`, a store `Snapshot` and the world-level tables | 7fedcff | 69 of 69 identical (the hashes kept their formula) [V] |
 | S5c | Per-frame state hash: XXH64 over `pe-physics`'s `state_hash`, the store's `checked_state_hash` and the world-level tables. Check hash: BLAKE3 over `pe_physics::check_hash`, the store's canonical serialization and the world-level tables | 044ce5d | 3 identical, 66 equal with ids masked, 0 different; with only digests and ids masked (no sorting) 63 equal, and the other 6 differ only in the order of id-keyed listings [V] |
+| S5d | Geometry-registry compaction (P22-12) after each ring trim, from the keyframes the ring keeps (the oldest at or before min(conf, frame)) and the live state; `SimConfig::compact` (`Grown { at: 1024 }` by default) | (this commit), on @vdw-physics's `compact_images` 33cdd7e (in review) | with compaction after every trim (`PE_COMPACT=every`), 69 of 69 logs identical to the commit before, 0 false checks; tests: replicas on four snapshot policies, three compacting after every trim and rolling back, equal state hash every frame and check hash every check frame; a keyframe image kept past a compaction is refused (`BadImage`), nothing written [V] |
 
 Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states` [V];
-22 unit and integration tests in pe-session [V].
+24 unit and integration tests in pe-session [V].
 
 **Still to do:** the rest of S5 (the joiner's state transfer, accepted only against a check hash a
-quorum signed, P22S-1; the geometry-registry compaction P22-12 in the keyframe ring, on @vdw-physics's
-`compact_images`), P2-4 rounds 4 and 5, P2-9's scenario files on this core, Linux runs.
+quorum signed, P22S-1), P2-4 rounds 4 and 5, P2-9's scenario files on this core, Linux runs.
 
 ## Engine state on pe-sim (S5)
 
@@ -38,6 +38,17 @@ quorum signed, P22S-1; the geometry-registry compaction P22-12 in the keyframe r
   `HandIdle`. Departing destroys the object's rows (measured alone first: 69 of 69 logs identical).
 * Reads: `live(i)`, `objects()`, `obj_slots()`, `claim(i)`, `claims()`; `WorldSim::store` for the rest.
 * The world-level tables (escrow, arrivals, provenance, portal) stay a plain struct, `Tables`.
+
+## Geometry-registry compaction (S5d)
+
+* In this harness's scenes the registry holds 2 blobs, so the default policy never compacts and a
+  compaction drops nothing [V: `PE_CHECK_TIMING=1` prints the registry size]. Dropping geometry is
+  covered by pe-physics's own tests (75 unique hulls) [V by @vdw-physics and @design-reviewer].
+* Cost when forced after every trim: in `r14 ok`, 0.3-0.5 ms per compaction, about 540 compactions per
+  replica over the run (in-situ, not a timing run) [V].
+* The ring is the only holder of `WorldImage`s in pe-session; a joiner's transfer is a fresh
+  `save_transfer`. An image kept anywhere else across a compaction is refused by `restore_image`
+  (review CMP-1), never misread [V by test].
 
 ## Check hash cost (S5)
 

@@ -754,6 +754,31 @@ impl WorldSim {
         for f in drop {
             self.ring.remove(&f);
         }
+        self.compact_registry();
+    }
+
+    /// Review P22-12: rebuild the physics world's geometry registry from the keyframes the ring still
+    /// holds (the oldest is the base, at or before min(confirmed frame, simulated frame)) and the live
+    /// state, so geometry only dropped or rolled-back state used goes. Runs right after a trim, so no
+    /// re-simulation is pending. Every image this replica keeps is in the ring; an image saved before
+    /// and kept anywhere else would be refused by `restore_image` (review CMP-1), never misread.
+    fn compact_registry(&mut self) {
+        let n = self.world.registry_len();
+        self.stats.max_registry_len = self.stats.max_registry_len.max(n as u64);
+        let due = match self.cfg.compact {
+            CompactPolicy::Never => false,
+            CompactPolicy::Grown { at } => n >= at.max(2 * self.compacted_len),
+            CompactPolicy::EveryTrim => true,
+        };
+        if !due {
+            return;
+        }
+        let t0 = now_us();
+        let mut kept: Vec<&mut WorldImage> = self.ring.values_mut().map(|k| &mut k.image).collect();
+        self.world.compact_images(&mut kept).expect("the ring holds this world's own images");
+        self.compacted_len = self.world.registry_len();
+        self.stats.compactions += 1;
+        self.stats.compact_us += now_us() - t0;
     }
 
     pub fn ring_len(&self) -> usize {

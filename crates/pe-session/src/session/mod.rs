@@ -134,6 +134,10 @@ pub struct Stats {
     pub max_advance_us: u64,
     pub advance_us: u64,
     pub max_ring_bytes: u64,
+    /// Geometry-registry compactions (P22-12), their time, and the most blobs the registry held.
+    pub compactions: u64,
+    pub compact_us: u64,
+    pub max_registry_len: u64,
     /// Check hashes computed and their cost: the physics state's (pe-physics `check_hash`: canonical
     /// save plus BLAKE3) and the rest (the store's serialization, the world tables and BLAKE3 over them).
     pub checks: u64,
@@ -182,6 +186,20 @@ pub enum SnapPolicy {
     /// The base plus keyframes every `k` frames for the newest `4k` frames only: a rollback
     /// deeper than that re-simulates from the base.
     Window(u64),
+}
+
+/// When a member rebuilds its physics world's geometry registry from the images it still keeps (review
+/// P22-12, `pe_physics::PhysicsWorld::compact_images`). Purely local and invisible to the simulation,
+/// like [`SnapPolicy`]: compaction changes which blob indices images use, never a hashed or stepped value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactPolicy {
+    Never,
+    /// After a ring trim, once the registry holds at least `at` blobs and at least twice as many as
+    /// right after the last compaction (so the cost, one restore and one save per kept keyframe, is
+    /// amortized over the registry's growth).
+    Grown { at: usize },
+    /// After every ring trim (tests: the most compactions a run can have).
+    EveryTrim,
 }
 
 impl SnapPolicy {
@@ -236,6 +254,7 @@ pub struct SimConfig {
     /// Which touches claim (8.4). `D72` is the rule; `Spike` keeps the spike's earlier rule only so
     /// the P2-3 S4 comparison can show the switch is the one change. Removed after P2-3's review.
     pub claim_rule: ClaimRule,
+    pub compact: CompactPolicy,
 }
 
 /// See [`SimConfig::claim_rule`].
@@ -265,6 +284,7 @@ impl Default for SimConfig {
             ack_heads: true,
             join_lead: 60,
             claim_rule: ClaimRule::D72,
+            compact: CompactPolicy::Grown { at: 1024 },
         }
     }
 }
@@ -383,6 +403,8 @@ pub struct WorldSim {
     pub t: Tables,
     pub frame: u64,
     ring: BTreeMap<u64, Keyframe>,
+    /// Geometry blobs right after the last registry compaction (P22-12).
+    compacted_len: usize,
     /// R14: the worlds this one trades objects with, and their members: its agreed route list
     /// (D46 trust config, part of the world's genesis; reviews R3-4 to R3-6). Any other world can
     /// neither receive its objects nor vouch for one.
@@ -669,6 +691,7 @@ impl WorldSim {
             t: Tables { portal_open: true, ..Default::default() },
             frame: 0,
             ring: BTreeMap::new(),
+            compacted_len: 0,
             peers_of: BTreeMap::new(),
             epochs: EpochBook { keys: keys.public.clone(), ..EpochBook::default() },
             provenance: true,
