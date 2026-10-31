@@ -235,9 +235,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 if let Some(ms) = rc.ack_every_ms {
                     r.ack_every_us = ms * 1000;
                 }
-                r.sim.withhold_vc = rc.withhold_vc;
-                r.sim.byz_ally = rc.byz_ally;
-                r.sim.byz_no_precommit = rc.byz_no_precommit;
+                r.sim.vcm.withhold_vc = rc.withhold_vc;
+                r.sim.vcm.byz_ally = rc.byz_ally;
+                r.sim.vcm.byz_no_precommit = rc.byz_no_precommit;
                 r.sim.quiet_until_member = rc.quiet_until_member;
             }
             if !joiner && w.follow_joiners != Some(false) {
@@ -247,17 +247,17 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
             }
             if let Some(g) = &w.guests {
                 // The spike's `guests`: every member (the roles table) a guest but the admins.
-                r.sim.role_defs.insert(g.role, 0);
-                let ms: Vec<u32> = r.sim.roles.keys().copied().collect();
+                r.sim.vcm.role_defs.insert(g.role, 0);
+                let ms: Vec<u32> = r.sim.vcm.roles.keys().copied().collect();
                 for m in ms {
-                    r.sim.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
+                    r.sim.vcm.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
                 }
             }
             if !w.owners.is_empty() {
-                r.sim.owners = w.owners.iter().copied().collect();
+                r.sim.vcm.owners = w.owners.iter().copied().collect();
             }
             if let Some(j) = rules {
-                r.sim.join_rules = j;
+                r.sim.vcm.join_rules = j;
             }
             r.sim.fixes_off = off;
         }
