@@ -189,9 +189,11 @@ Backdated touches are a plan action (`backdated`).
 
 An `owner` plan action publishes a world-ownership certificate built on the member's present
 ownership head and signed by `signers` (spike signatures: any member can sign as any key). `change` is
-`add`, `leave`, `remove`, `challenge` or `remove_dormant` (with `key`), `set_recovery` (`key` is the
-owner, `recovery` the key, or none to clear it), `set_rule` (`rule`) or `merge` (joins every head). The
-world needs `owners`.
+`add`, `leave`, `remove` (rule C only), `challenge`, `remove_dormant` or `finish_recover` (with `key`),
+`set_recovery` (`key` is the owner, `recovery` the key, or none to clear it), `start_recover` (`key`
+the owner, `new_key` its replacement), `set_rule` (`rule`) or `merge` (joins every head). The world
+needs `owners`. A certificate applies at its entry's frame, which is the session time the windows
+count.
 
 ### Reports: `[[report]]`
 

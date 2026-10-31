@@ -2156,13 +2156,11 @@ impl WorldSim {
             }
             Payload::Ownership { cert } => {
                 let Some(b) = self.t.owners.as_mut() else { return Outcome::RejectedOwnership(OwnError::WrongWorld) };
-                // A certificate can't claim session time later than the frame that publishes it
-                // (the objection window counts this time).
-                if cert.time > f {
-                    return Outcome::RejectedOwnership(OwnError::BadLink);
-                }
-                match b.insert(cert.clone()) {
-                    Ok(Insert::Applied | Insert::Waiting) => Outcome::Accepted,
+                // The session records the frame it commits the certificate at: the session time the
+                // objection and recovery windows count (review OWN-7). A certificate without its
+                // parents is refused, not kept (OWN-10).
+                match b.insert_at(cert.clone(), Some(f)) {
+                    Ok(Insert::Applied) => Outcome::Accepted,
                     Ok(Insert::Duplicate) => Outcome::RejectedDuplicate,
                     Err(e) => Outcome::RejectedOwnership(e),
                 }
@@ -2425,8 +2423,8 @@ impl WorldSim {
         self.t.owners = Some(Book::new(genesis).expect("a valid genesis certificate"));
     }
 
-    /// A certificate for `change` on top of this replica's present ownership head(s), stamped with
-    /// the frame `author` will give its entry, and signed by `keys` (spike: anyone can sign as any
+    /// A certificate for `change` on top of this replica's present ownership head(s), signed by
+    /// `keys` (spike: anyone can sign as any
     /// key, standing in for a key holder handing the member a signed certificate). A merge joins
     /// every head; any other change builds on the first head.
     pub fn owner_cert(&self, change: Change, keys: &[Key]) -> Option<Cert> {
@@ -2434,7 +2432,7 @@ impl WorldSim {
         let heads = b.heads();
         let prev = if change == Change::Merge { heads } else { heads.into_iter().take(1).collect() };
         let seq = prev.iter().map(|p| b.cert(*p).map_or(0, |c| c.seq)).max()? + 1;
-        Some(Cert { world: b.world, seq, prev, change, time: self.frame.max(self.now), sigs: vec![] }.signed(keys))
+        Some(Cert { world: b.world, seq, prev, change, sigs: vec![] }.signed(keys))
     }
 }
 
