@@ -13,6 +13,9 @@ fn a_hand_never_stops_while_its_author_keeps_sending_through_every_level_change(
     let mut core = SessionCore::new(WorldSim::new(1, 1, &[1], SceneKind::BallPit { balls, hands: 1 }, SimConfig::default(), KeyRing::test(1)));
     assert!(core.adapt && core.ack_on_frames, "R18 is on by default");
     core.start(0);
+    // This test is about pacing through level changes: D56's memory (tests/r18_memory.rs) would
+    // stretch the schedule below, so it lowers after 300 ms of calm at every level here.
+    core.recall_calm_us = 300_000;
     let mut last: Option<[u32; 3]> = None;
     let (mut frozen, mut moved, mut levels_seen, mut transitions) = (Vec::new(), 0, [false; 6], 0);
     let mut level = 0;
@@ -21,7 +24,7 @@ fn a_hand_never_stops_while_its_author_keeps_sending_through_every_level_change(
     let delay = |ms: u64| if ms < 900 || (3_400..4_000).contains(&ms) { 50_000 } else { 0 };
     for ms in 0..6_500u64 {
         let now = ms * 1000;
-        core.set_link(delay(ms));
+        core.set_link(Some(delay(ms)));
         if let Some(f) = core.begin_tick(now, false) {
             // A target that keeps moving: the controller sweeps along x.
             let x = -600 + (f as i32 * 3) % 1200;
