@@ -51,8 +51,10 @@ pub fn owner_change(o: &OwnerSpec) -> Result<Change, String> {
         "remove_dormant" => Change::RemoveDormant { key: key()? },
         "set_recovery" => Change::SetRecovery { owner: key()?, recovery: o.recovery },
         "set_rule" => Change::SetRule { rule: sign_rule(o.rule.as_deref().ok_or("owner change `set_rule` needs `rule`")?)? },
+        "start_recover" => Change::StartRecover { owner: key()?, new_key: o.new_key.ok_or("owner change `start_recover` needs `new_key`")? },
+        "finish_recover" => Change::FinishRecover { owner: key()? },
         "merge" => Change::Merge,
-        c => return Err(format!("owner change `{c}`: add, leave, remove, challenge, remove_dormant, set_recovery, set_rule or merge")),
+        c => return Err(format!("owner change `{c}`: add, leave, remove, challenge, remove_dormant, set_recovery, start_recover, finish_recover, set_rule or merge")),
     })
 }
 

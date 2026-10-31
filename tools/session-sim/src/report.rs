@@ -420,12 +420,14 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
 fn view_line(v: &View) -> String {
     let o = &v.owners;
     format!(
-        "owners {:?} rule {:?} heads {}{}{}",
+        "owners {:?} rule {:?} heads {}{}{}{}{}",
         o.owners,
         o.rule,
         v.heads.len(),
         if v.disputed { " DISPUTED" } else { "" },
-        if o.recovery.is_empty() { String::new() } else { format!(" recovery {:?}", o.recovery.iter().map(|(k, r)| (*k, r.keys().copied().collect::<Vec<_>>())).collect::<BTreeMap<_, _>>()) }
+        if o.recovery.is_empty() { String::new() } else { format!(" recovery {:?}", o.recovery.iter().map(|(k, r)| (*k, r.keys().copied().collect::<Vec<_>>())).collect::<BTreeMap<_, _>>()) },
+        if o.challenges.is_empty() { String::new() } else { format!(" windows open against {:?}", o.challenges.keys().collect::<Vec<_>>()) },
+        if o.recovering.is_empty() { String::new() } else { format!(" recovering {:?}", o.recovering.iter().map(|(k, r)| (*k, r.new_key)).collect::<BTreeMap<_, _>>()) }
     )
 }
 
@@ -465,8 +467,8 @@ pub fn ownership(sim: &Sim, w: WorldId, frames: u64, label: &str, at: &[u64]) ->
         }
     }
     for p in rb.forks() {
-        let prefix = rb.path_to(p.a.prev[0]);
-        println!("  fork proof: {:?} vs {:?}, signed both by {:?}; a third party holding {} certificate(s) verifies it: {}", p.a.change, p.b.change, p.signed_both(), prefix.len(), p.verify(&prefix));
+        let prefix = rb.prefix_of(p.a.prev[0]);
+        println!("  fork: {:?} vs {:?}, signed both by {:?} ({}); a third party holding {} certificate(s) verifies it: {}", p.a.change, p.b.change, p.signed_both(), if p.equivocation() { "equivocation" } else { "concurrent changes" }, prefix.len(), p.verify(&prefix));
     }
     for &f in at {
         let rs = replay_sim_like(&r.sim, r.scene, &members, &final_log(&r.sim), f);
