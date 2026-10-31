@@ -2,10 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use pe_sim_core::ownership::{Cert, Change, SignRule};
 use pe_sim_core::session::{fix, JoinRule, JoinRules, QuorumRule, Rel, SceneKind, SimConfig, Target, ADMIN};
 use spike::{ballpit_sweep, Action, Cap, Link, Net, Peer, Sim};
 
-use crate::scenario::{id, ActionSpec, CapCfg, LinkCfg, Scenario, SceneCfg, WorldCfg};
+use crate::scenario::{id, ActionSpec, CapCfg, LinkCfg, OwnerSpec, Scenario, SceneCfg, WorldCfg};
 
 pub fn scene(s: SceneCfg) -> SceneKind {
     match s {
@@ -54,6 +55,7 @@ pub const FIXES: &[(&str, u64)] = &[
     ("VC7R2", fix::VC7R2),
     ("RECUT", fix::RECUT),
     ("VC8R1", fix::VC8R1),
+    ("OWNY2", fix::OWNY2),
 ];
 
 pub fn fixes_off(w: &WorldCfg) -> Result<u64, String> {
@@ -112,6 +114,27 @@ pub fn config(w: &WorldCfg) -> SimConfig {
     }
 }
 
+pub fn sign_rule(s: &str) -> Result<SignRule, String> {
+    match s {
+        "all" => Ok(SignRule::All),
+        "any" => Ok(SignRule::Any),
+        k => k.parse::<u8>().ok().filter(|&k| k > 0).map(SignRule::Threshold).ok_or_else(|| format!("rule `{s}`: all, any or a threshold of 1 or more")),
+    }
+}
+
+pub fn owner_change(o: &OwnerSpec) -> Result<Change, String> {
+    let key = || o.key.ok_or_else(|| format!("owner change `{}` needs `key`", o.change));
+    Ok(match o.change.as_str() {
+        "add" => Change::Add { key: key()? },
+        "leave" => Change::Leave { key: key()? },
+        "remove" => Change::Remove { key: key()? },
+        "set_recovery" => Change::SetRecovery { owner: key()?, recovery: o.recovery },
+        "set_rule" => Change::SetRule { rule: sign_rule(o.rule.as_deref().ok_or("owner change `set_rule` needs `rule`")?)? },
+        "merge" => Change::Merge,
+        c => return Err(format!("owner change `{c}`: add, leave, remove, set_recovery, set_rule or merge")),
+    })
+}
+
 fn link(l: LinkCfg) -> Link {
     Link { delay_us: l.delay_ms * 1000, jitter_us: l.jitter_ms * 1000, loss_pct: l.loss_pct }
 }
@@ -133,10 +156,11 @@ fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, St
         a.set_role.is_some(),
         a.define_role.is_some(),
         a.hand_path.is_some(),
+        a.owner.is_some(),
     ];
     if kinds.iter().filter(|&&k| k).count() != 1 {
         return Err(format!(
-            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, hand_path, kick, set_role, define_role: {a:?}"
+            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, hand_path, kick, set_role, define_role, owner: {a:?}"
         ));
     }
     if let Some(s) = &a.ballpit_sweep {
@@ -169,6 +193,8 @@ fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, St
         Action::SetRole { member: r.member, role: r.role }
     } else if let Some(r) = &a.define_role {
         Action::DefineRole { role: r.role, perms: r.perms }
+    } else if let Some(o) = &a.owner {
+        Action::Owner { change: owner_change(o)?, keys: o.signers.clone() }
     } else {
         let b = a.backdated.as_ref().unwrap();
         Action::Backdated { obj: b.obj, impulse: b.impulse, back: b.back }
@@ -273,6 +299,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
             }
             if let Some(j) = rules {
                 r.sim.join_rules = j;
+            }
+            if let Some(o) = &w.ownership {
+                r.sim.set_ownership(Cert::genesis(&o.keys, sign_rule(&o.rule)?, o.nonce));
             }
             r.sim.fixes_off = off;
         }
