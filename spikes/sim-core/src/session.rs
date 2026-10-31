@@ -21,8 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use box3d_rust::body::{
     body_apply_linear_impulse_to_center, body_get_angular_velocity, body_get_linear_velocity,
-    body_get_transform, body_set_angular_velocity, body_set_linear_velocity,
-    body_set_target_transform, body_set_transform, create_body, destroy_body,
+    body_get_transform, body_reset_history, body_set_angular_velocity, body_set_awake,
+    body_set_linear_velocity, body_set_target_transform, body_set_transform, create_body, destroy_body,
 };
 use box3d_rust::geometry::{Capsule, Sphere};
 use box3d_rust::hull::make_box_hull;
@@ -113,11 +113,16 @@ impl BodyState {
     pub fn ang(&self) -> Vec3 {
         Vec3 { x: self.f(13), y: self.f(14), z: self.f(15) }
     }
-    /// Overwrite the body's state with these exact bits.
+    /// Overwrite the body's state with these exact bits, awake, and forget its history (design
+    /// 7.3, as pe-physics' `set_state` does): the fork's `body_reset_history` destroys its contacts
+    /// (recycled manifolds and warm starts), zeroes its joints' impulses and its sleep timer, so its
+    /// next step depends only on its state and the rest of the world.
     pub fn write(&self, world: &mut World, id: BodyId) {
         body_set_transform(world, id, self.pos(), self.rot());
         body_set_linear_velocity(world, id, self.lin());
         body_set_angular_velocity(world, id, self.ang());
+        body_set_awake(world, id, true);
+        body_reset_history(world, id);
     }
     pub fn hash(&self) -> u64 {
         fnv_u64s(self.0.iter().map(|&b| b as u64))
@@ -5521,16 +5526,17 @@ impl WorldSim {
             self.stats.step_us += now_us() - t0;
             self.stats.steps += 1;
         }
-        // User ruling 09:30Z: the touched object takes the carried resulting state. A no-op when
-        // this peer is on the author's world line; otherwise it pulls the object onto it.
+        // User ruling 09:30Z: the touched object takes the carried resulting state. On the author's
+        // world line the bits are the ones it holds; otherwise it pulls the object onto it. Written
+        // always (review SET-1: writing a pose recomputes derived state), and the write resets the
+        // body's history (7.3), so every peer does the same thing at this frame; `overwrites` counts
+        // the writes that changed bits.
         for (obj, st) in carry {
             if let Some(o) = self.live(obj) {
-                if BodyState::read(&self.world, o.body) != st {
-                    st.write(&mut self.world, o.body);
-                    if record {
-                        self.stats.overwrites += 1;
-                    }
+                if record && BodyState::read(&self.world, o.body) != st {
+                    self.stats.overwrites += 1;
                 }
+                st.write(&mut self.world, o.body);
             }
         }
         // Expire claims; their holders enter a short cooldown on that object.
