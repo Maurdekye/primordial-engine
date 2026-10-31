@@ -21,7 +21,7 @@ Test IDs (a1, b2, …) are the ones design.md cites. All raw outputs are committ
 | round 2 | Do the round-2 Criticals and Highs hold fixed, and do capped links recover? | **Yes [V]** (5g). The reviewer's four repros pass (no fork, no panic); proofless R14 relays do nothing; batching plus the congestion controller keep 32-64 kbit/s caps real-time. Finality lag rose from 4.2 to 8.5 frames |
 | round 3 | Do colluders, crashes, untrusted worlds and links below 20 kbit/s break the protocol? | **No fork in any case; stalls only where no honest majority exists [V]** (5i). Two colluders stall safely instead of crashing everyone; a crashed member is removed after 3 s; a crashed carrier's transfer completes through another member; worlds trade only along route lists; 16 kbit/s stays real time, 12 kbit/s recovers, a slow third member is demoted. Two members need about 12 kbit/s each way |
 | integration | Does everything still hold with every branch merged and vdW physics on? | **Yes [V]** (5j). The full determinism set passes at low priority: goldens, traces, images and rollback in release and debug, the wasm digest, 30 session scenarios, 10 R18 cells, UDP and the snapshot study. Two defects found and fixed: a test-harness bug exposed by the new physics, and module identity (M8) depending on the checkout path |
-| view change | Can a session remove several failed or cheating members at once, and admit joiners, without a fork? | **Yes under D80 (b) [V]** (5k). Two members silent at once, colluders, a lying proposer and joins all recover with every member equal; at 256 members the removal is decided 2.77 s after the silence. Under (a), one cheater bridging a partition splits a session of five in two |
+| view change | Can a session remove several failed or cheating members at once, and admit joiners, without a fork? | **Yes, with D80 settled [V]** (5k). Two members silent at once, colluders, a lying proposer and joins all recover with every member equal; at 256 members the removal is decided 2.77 s after the silence. Under (a), one cheater bridging a partition splits a session of five in two |
 | r15 | What does it cost to run physics hooks or a whole physics engine as a wasm guest? | **Measured [V, noisy]** (5h). A per-contact hook call costs 64 ns in wasmi and 16 ns in Cranelift; batched, 12 and 4.7 ns. On an active 1,024-body pile, guest hooks cost 7-11% of the step one call at a time, 1.2-1.5% batched. A whole engine in wasm costs 21x native under wasmi |
 | iteration | How fast is the logic edit loop, and which runtime is fastest under the rules? | **Measured [V]** by @iter-bench ([iteration-benchmark.md](iteration-benchmark.md)). Edit to first frame 0.45 s at 6.4k LOC; logic speed relative to native: wasmi 7.0x, wasmtime Cranelift (fuel, NaN canonicalization) 1.7x; minimal wasmtime compiles no C on Windows |
 | m8 | Is a module's identity reproducible across checkout paths? | **Yes [V], by canonical hash** (6.5). Raw hashes differ by path; hashes over the code and data sections are identical |
@@ -517,7 +517,7 @@ times are noise.
 
 ```bash
 cargo test --release -p pe-sim-core --lib     # 4 provenance unit tests, epoch certificates included
-bash scripts/run_session_sim.sh               # 44 scenario logs plus the two P2-5 controls
+bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 and P2-4 controls
 ```
 
 * **Suite:** every replica equals its offline replay, every transferred object is conserved, no panic,
@@ -533,8 +533,9 @@ bash scripts/run_session_sim.sh               # 44 scenario logs plus the two P2
   * **A lying proposer** (`badproposer`): its round fails, and round 1 removes it with the silent member
     at 6.58 s.
   * **A cheater bridging a partition** (`bridge`, five members): under (a) the two sides remove each other
-    and end as two sessions, the fork D80 describes; under (b) nothing is decided during the partition
-    (527 paused frames), and after the heal the one session removes the cheater at 13.65 s.
+    and end as two sessions, the fork D80 described; under (b) nothing is decided during the partition
+    (529 paused frames), and after the heal the one session resets at 13.67 s, keeping the cheater, which
+    behaves again and is proven of nothing (round 1 removed it at 13.65 s as a withholder; see round 2).
   * **Joins:** member 4 is admitted at 2.10 s with boundary frame 175, and its touch at frame 420 applies
     at every member (`join`). A member that keeps acking but stops referencing the others' chains is
     removed at 5.23 s (`refwithhold`).
@@ -558,9 +559,36 @@ bash scripts/run_session_sim.sh               # 44 scenario logs plus the two P2
   minority could have shrunk the quorum; a pending joiner's entries acted before admission; a vote froze
   processing of the suspect's chain, so after `bridge`'s heal no reset could be decided; and a member
   acking without referencing others stalled confirmation for good (it is now voted out).
-* **Not done yet:** the port into `pe-session` (P2-3) and real networks; removed members are not told;
-  a faulty member can keep forcing resets; the departure half of a fork proof still records epoch 0
-  (22.7). D80 is open.
+* **Round 2** (@design-reviewer's review of b01ebdf asked for changes: VC-1 to VC-10, HO-1, HO-2). Fixed
+  on `viewchange` together with the D80 admin layer, which the user settled at 22:13Z. The whole suite
+  is again ALL EQUAL, with no panic and 0 false checks; sim-core's 4 unit tests and pe-mcp's 46 tests
+  pass, and the p2p spike builds.
+  * Each review repro runs twice, once with its fix switched off by a fixture flag
+    (`WorldSim::fixes_off`), so the failure and the fix show in one log:
+
+    | Repro | With the fix switched off | With the fix |
+    |---|---|---|
+    | `fork9` (VC-2, Critical) | member 3, holding the other branch of 9's fork, confirms past the touch, then trips the rollback assertion at 2.35 s | all three equal the replay; 9 is cut on its touch's branch |
+    | `jointiming` (VC-3) | no decision; confirmation stuck at frame 176, every sim paused at the speculation limit | the join is decided in round 0 at 3.6 s |
+    | `bogusprecommit` (VC-4) | confirmation stuck for good at frame 112 (boundary 1) and 143 (just ahead) | the first precommit is void; the second's cap is cleared by a reset at 2.13 s |
+    | `futureack` (VC-5) | confirmation stuck for good at frame 112 | 9 is removed at 5.23 s (acks void, so too slow) and at 5.17 s (an epoch nobody decided) |
+
+  * `fork9` found a second half of VC-2: while a replica re-validated the cut's branch, each replayed ack
+    recomputed confirmation before that branch's entries acted, so confirmation could pass a frame they
+    were about to change. Confirmation now waits until the switch is done.
+  * VC-1: the bound is restated over every faulty member, proven or not (10.8, D80). The `onesided`
+    control (3 of 6 collude, proofs only on one side of a partition) forks, as the bound allows.
+  * VC-6, VC-9, VC-10 and HO-1 are fixed; `handowner` now also covers a grab and a carry of another
+    member's hand. VC-7 and VC-8 go to @provenance-eng's follow-up, stated plainly in 22.7 and 10.8.
+  * The D80 admin layer: `kickwar`, `kickpartition`, `lastadmin`, `adminclose` and `joinrules`, all equal
+    (results in 10.8's table).
+  * Changed against round 1: `bridge` under (b) now ends with a reset that keeps member 8, whose stopped
+    references lay behind its own votes, which VC-9 no longer counts as withholding; and `handowner`'s
+    digests, since member 1 now touches its own hand in both runs. Every other line equals round 1's,
+    timings aside.
+* **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
+  are not told; a faulty member can keep forcing resets; the departure half of a fork proof still
+  records epoch 0, and VC-7 and VC-8 are open (22.7).
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 
