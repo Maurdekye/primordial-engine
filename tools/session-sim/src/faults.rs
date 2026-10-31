@@ -174,9 +174,21 @@ mod tests {
     }
 
     #[test]
+    fn author_and_deliver() {
+        // As p2-4-aheadlink: 4's own acks pass, every other entry to 3 is delayed.
+        let mut f = filter(vec![rule("to = 3\nfrom = 4\nauthor = 4\nmsg = \"ack\"\ndeliver = true"), rule("to = 3\nmsg = \"entry\"\ndelay_ms = 5")], vec![]).unwrap();
+        assert_eq!(fate(&mut f, 0, 4, 3, &ack(4)), "deliver");
+        assert_eq!(fate(&mut f, 0, 4, 3, &ack(1)), "delay 5", "relayed: authored by 1");
+        assert_eq!(fate(&mut f, 0, 4, 3, &touch(4, 1, 0)), "delay 5", "not an ack");
+        assert_eq!(fate(&mut f, 0, 4, 2, &touch(4, 1, 0)), "deliver");
+    }
+
+    #[test]
     fn validation() {
         assert!(validate(&rule("from = 1")).is_err(), "needs an action");
         assert!(validate(&rule("drop = true\ndelay_ms = 3")).is_err(), "one action only");
+        assert!(validate(&rule("deliver = true\ndrop = true")).is_err(), "one action only");
+        assert!(validate(&rule("deliver = true")).is_ok());
         assert!(validate(&rule("msg = \"tuch\"\ndrop = true")).is_err());
         assert!(validate(&rule("msg = \"fetch\"\nseq = 1\ndrop = true")).is_err());
         assert!(validate(&rule("msg = \"vote\"\ndrop = true")).is_ok());

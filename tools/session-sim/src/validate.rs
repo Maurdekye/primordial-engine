@@ -372,6 +372,14 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.err("fake_ack_epoch: give epoch or ahead".into());
                 }
             }
+            Byzantine::HandForgery { member, to, grab_ms, carry_ms, plant_ms, .. } => {
+                v.member(1, *member, "hand_forgery");
+                v.member(1, *to, "hand_forgery to");
+                if !(grab_ms < carry_ms && carry_ms < plant_ms) {
+                    v.err("hand_forgery: grab_ms, carry_ms, plant_ms must increase".into());
+                }
+                v.time(*plant_ms, "hand_forgery");
+            }
             Byzantine::GhostVote { member, at_ms, target, to, .. } => {
                 v.member(1, *member, "ghost_vote");
                 v.member(1, *target, "ghost_vote target");
@@ -433,6 +441,10 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
             Report::BeforeFix { honest, .. } => {
                 checks += 1;
                 v.honest(honest, "before_fix");
+            }
+            Report::Handowner { member, .. } => {
+                checks += 1;
+                v.member(1, *member, "handowner");
             }
             Report::ForkInfo => {
                 if !s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkBranch { .. })) {
@@ -496,7 +508,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     }
                 }
             }
-            Report::R14ChainJobs | Report::R14ChainOutcomes | Report::R14ChainConservation { .. } => {
+            Report::R14ChainJobs | Report::R14ChainOutcomes | Report::R14ChainConservation { .. } | Report::R14ChainEpoch => {
                 for (w, m) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 1), (3, 4)] {
                     if v.world(w, "r14 chain report (r14 chain's worlds)") {
                         v.member(w, m, "r14 chain report (r14 chain's members)");
@@ -533,7 +545,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
             Report::Phase1Rule { .. } | Report::Acceptance { .. } => {}
         }
     }
-    if checks == 0 {
+    if checks == 0 && s.keep.is_none() {
         v.err("no checking report: add a check_world or verdict, or the scenario can never fail".into());
     }
     if v.errors.is_empty() {
