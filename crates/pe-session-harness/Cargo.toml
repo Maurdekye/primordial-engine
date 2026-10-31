@@ -16,3 +16,5 @@ path = "src/main.rs"
 
 [dependencies]
 pe-session = { path = "../pe-session" }
+# The check-hash cost breakdown (PE_CHECK_TIMING).
+pe-physics = { path = "../pe-physics" }

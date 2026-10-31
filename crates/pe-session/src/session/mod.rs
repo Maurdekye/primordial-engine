@@ -134,6 +134,11 @@ pub struct Stats {
     pub max_advance_us: u64,
     pub advance_us: u64,
     pub max_ring_bytes: u64,
+    /// Check hashes computed and their cost: the physics state's (pe-physics `check_hash`: canonical
+    /// save plus BLAKE3) and the rest (the store's serialization, the world tables and BLAKE3 over them).
+    pub checks: u64,
+    pub check_physics_us: u64,
+    pub check_rest_us: u64,
     pub overwrites: u64,
     pub paused_frames: u64,
     pub entries_rejected_violation: u64,

@@ -1,8 +1,8 @@
 RESULT state-frame acceptance, uncontended checks: 22/22 equal at that instant and 22/22 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
 RESULT state-frame acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 31/32 equal to the author's copy at that instant, 30/32 equal to the author's final history
   differs at that instant: world 1 receiver m1 author m2 obj 50 frame 128; equal to the author's final history: true
-  m1 world 1: rollbacks 9 max depth 4 resim frames 45 (20.6 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
-  m2 world 1: rollbacks 9 max depth 4 resim frames 41 (17.3 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 764 frame 774
-  m3 world 1: rollbacks 12 max depth 4 resim frames 50 (21.2 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
+  m1 world 1: rollbacks 9 max depth 4 resim frames 45 (19.0 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
+  m2 world 1: rollbacks 9 max depth 4 resim frames 41 (17.6 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 764 frame 774
+  m3 world 1: rollbacks 12 max depth 4 resim frames 50 (20.8 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 52 bad 0 nonfinite 0 conf 762 frame 773
   bytes: entries 32 msgs 6016 B (avg 188 B), acks 2284 msgs 563632 B, dropped 0
-RESULT state-frame world 1: frames 0..700 digests m1=be8f1d273096d823 m2=be8f1d273096d823 m3=be8f1d273096d823 | offline replay be8f1d273096d823 | ALL EQUAL
+RESULT state-frame world 1: frames 0..700 digests m1=62b1906ed66460c8 m2=62b1906ed66460c8 m3=62b1906ed66460c8 | offline replay 62b1906ed66460c8 | ALL EQUAL

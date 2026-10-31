@@ -18,15 +18,50 @@ named here, **[I]** inferred.
 | S6b | `Membership` seam: trait, `ViewChangeMembership`, `StaticMembership` | 0bc32f3 | 69 of 69 identical [V] |
 | S5a | The exchanged check hash is BLAKE3, 32 bytes (P22R-1, 9.1) | 669c293 | 41 identical, 8 bytes-only (+24 B per ack with a check, exactly), 20 equal with ids masked; digests changed only in the 15 R14 logs [V] |
 | merge | `land/viewchange` 8ae7c08 (main's pe-physics, P22S-1 text) | 7455821 | 69 of 69 identical [V] |
+| SET-1 | Every peer, the toucher included, writes a touch's carried state at its frame (SET-1, SET-2) | 8f033c8 | 61 identical, 8 equal with ids masked, 0 different; digests changed in 6 R14 logs [V] |
+| S2 | The session sim's physics goes through `pe-physics` (impulses, hand targets, carried state with `set_state`, arrivals, keyframes as `WorldImage`); check hash over `pe_physics::check_hash` | c97b1d0 (on @vdw-physics's 9927b7b) | 51 identical, 18 equal with ids masked, 0 different; digests changed only in the 15 R14 logs [V] |
+| S5b | The per-object engine tables (objects, grab claims, cooldowns, hand idle counters) are `pe-sim` components in `WorldSim::store`; a keyframe is a `WorldImage`, a store `Snapshot` and the world-level tables | 7fedcff | 69 of 69 identical (the hashes kept their formula) [V] |
+| S5c | Per-frame state hash: XXH64 over `pe-physics`'s `state_hash`, the store's `checked_state_hash` and the world-level tables. Check hash: BLAKE3 over `pe_physics::check_hash`, the store's canonical serialization and the world-level tables | (this commit) | 3 identical, 66 equal with ids masked, 0 different; with only digests and ids masked (no sorting) 63 equal, and the other 6 differ only in the order of id-keyed listings [V] |
 
 Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states` [V];
-17 unit and integration tests in pe-session [V].
+22 unit and integration tests in pe-session [V].
 
-**Still to do:** S2 (physics through `pe-physics`; @vdw-physics is adding `set_pose`, `set_velocity` and
-`set_target`), the rest of S5 (engine tables on `pe-sim`, keyframes as a `pe-sim` snapshot plus a
-`pe-physics` image, the joiner's transfer accepted only against a check hash a quorum signed, P22S-1,
-and the geometry-registry compaction P22-12), P2-4 round 4, P2-9's scenario files on this core, the
-pe-mcp adapter, Linux runs.
+**Still to do:** the rest of S5 (the joiner's state transfer, accepted only against a check hash a
+quorum signed, P22S-1; the geometry-registry compaction P22-12 in the keyframe ring, on @vdw-physics's
+`compact_images`), P2-4 rounds 4 and 5, P2-9's scenario files on this core, Linux runs.
+
+## Engine state on pe-sim (S5)
+
+* Object index `i` (the `obj` of a `Touch` or `Hand`) is the store object and the physics body
+  `object_id(i)` = `ObjectId(0, i + 1)`. Indices are never reused: `obj_slots()` is the store's
+  creator counter. Components 16 to 19 (`session/store.rs`): `ObjRow`, `ClaimRow`, `CooldownRow`,
+  `HandIdle`. Departing destroys the object's rows (measured alone first: 69 of 69 logs identical).
+* Reads: `live(i)`, `objects()`, `obj_slots()`, `claim(i)`, `claims()`; `WorldSim::store` for the rest.
+* The world-level tables (escrow, arrivals, provenance, portal) stay a plain struct, `Tables`.
+
+## Check hash cost (S5)
+
+Per check frame, measured inside the scenarios (`PE_CHECK_TIMING=1`, release build, idle priority on
+a shared machine: not a clean timing run) [V]:
+
+| scenario | objects | check hash | physics part | store and world tables | physics transfer | store snapshot |
+|---|---|---|---|---|---|---|
+| `c1` | 256 | 415-493 µs | 392-466 µs | 22-28 µs | 547 kB | 20.6 kB |
+| `ballpit --hz 90` | 502 | 1.39-1.40 ms | 1.35-1.36 ms | 39-40 µs | 1.73 MB | 40.3 kB |
+| `r14 ok` | 76-107 | 148-224 µs | 135-208 µs | 13-16 µs | 148-206 kB | 6.2-8.7 kB |
+
+The physics part, split at the end of `ballpit --hz 90`: `save_transfer` 534-540 µs, `to_bytes`
+349-356 µs, BLAKE3 351-374 µs (4.6-4.9 GB/s). In `c1`: 162-164 µs, 62-73 µs, 110-111 µs [V].
+
+* BLAKE3 is about a quarter of the check hash. The rest is the canonical save and its serialization, whose
+  size is the cost driver: about 3.4 kB per body in the ball pit [V for the sizes, I for the reason:
+  the transfer carries the full solver state].
+* The store's part is about 3 % of the check hash [V].
+* At one check frame in 30 (`SimConfig::check_every`), that is about 0.05 ms per sim frame at 502
+  objects for a peer that never rolls back. A re-simulated check frame is hashed again: in the
+  90 Hz ball pit, member 2 computed 111 check hashes over the run where member 1 computed 27, so about
+  0.19 ms per frame [V for the counts, I for the per-frame averages].
+
 
 ## The API
 

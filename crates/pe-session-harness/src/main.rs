@@ -144,6 +144,32 @@ fn print_stats(sim: &Sim, w: WorldId) {
                 p.id, s.rollbacks, s.max_depth, s.resim_frames, s.resim_us as f64 / 1000.0, s.overwrites, s.paused_frames,
                 s.entries_rejected_violation, s.equivocations, s.checks_ok, s.checks_bad, s.nonfinite, r.sim.conf, r.sim.frame
             );
+            // P2-3 S5: the check hash's cost per check frame (off by default: the logs stay comparable).
+            if std::env::var_os("PE_CHECK_TIMING").is_some() && s.checks > 0 {
+                let n = s.checks as f64;
+                println!(
+                    "  m{} world {w}: check hash {:.1} us per check frame (physics {:.1} us, store and world tables {:.1} us) over {} checks, {} objects",
+                    p.id, (s.check_physics_us + s.check_rest_us) as f64 / n, s.check_physics_us as f64 / n, s.check_rest_us as f64 / n,
+                    s.checks, r.sim.objects().count()
+                );
+                // The physics part, split: canonical save, serialization, BLAKE3 (mean of 20 each, at the
+                // final state).
+                let mean = |f: &mut dyn FnMut()| {
+                    let t = std::time::Instant::now();
+                    (0..20).for_each(|_| f());
+                    t.elapsed().as_secs_f64() * 1e6 / 20.0
+                };
+                let tr = r.sim.world.save_transfer().expect("a usable physics world");
+                let bytes = tr.to_bytes();
+                let save = mean(&mut || drop(std::hint::black_box(r.sim.world.save_transfer())));
+                let ser = mean(&mut || drop(std::hint::black_box(tr.to_bytes())));
+                let b3 = mean(&mut || { std::hint::black_box(pe_physics::CheckHash::of(std::hint::black_box(&bytes))); });
+                let store = r.sim.store.snapshot().to_bytes().len();
+                println!(
+                    "  m{} world {w}: physics check hash at the end: save_transfer {save:.1} us, to_bytes {ser:.1} us, BLAKE3 {b3:.1} us over {} B ({:.0} MB/s); store snapshot {store} B",
+                    p.id, bytes.len(), bytes.len() as f64 / b3
+                );
+            }
         }
     }
 }
