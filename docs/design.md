@@ -1809,9 +1809,10 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   * void an honest change: a former owner's Leave committed on an old fork voids an honest removal
     of them, and changes signed against the set without them then fail;
   * fill the 1,024 cap through a branch where its minted keys are the only owners.
-  In the harness's 15,000 random histories, A2 removed an honest owner in @@LOST@@, added an owner in
-  @@GAINED@@, and voided an honest change in @@VOIDED@@. It loosened the rule in @@LOOSENED@@, always
-  together with such a takeover. Every case is detected: there is a fork proof, and the world shows as
+  In the harness's 15,000 random histories, A2 removed an honest owner in 307, added an owner in
+  5,641, and voided an honest change in 359. It loosened the rule in 99, always
+  together with such a takeover or with a stolen current backup key, which is its owner's key (A2 held
+  one in 7,493 runs). Every case is detected: there is a fork proof, and the world shows as
   disputed. Bound session lineages (D87) close it later.
 
 **In the session log [V: spike].**
@@ -1905,17 +1906,21 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
       skipped;
     * 5, charges:
       * every unattested certificate is charged, unless an attestation depends on it;
-      * keys are charged only if they signed it and matter at a head, each within 64;
-      * inherited charges go only to certificates it hangs from, each within 16;
+      * keys are charged only if they signed it and matter at a head; certificates charged to one key
+        alone stay within 64, and all within 64 times the keys charged (a certificate counts against
+        every key it is charged to, so a key's total can pass 64 through co-signed ones, seed 10928);
+      * inherited charges go only to certificates it hangs from, within 16 in the same way;
     * 6, removals stick: observed-remove, with the nobody-left exception, for Leave against A2 and for
       rule C's removals against A1;
     * 7, disputes stay visible.
     Invariant 8 is measured.
-  * **Result** at @@SHA@@ (consent only), 15,000 histories: all of that held.
-    * @@FORKED@@ histories forked and merged, and @@LONG@@ had more than 256 attested certificates.
-    * @@RESENT@@ of the 30,000 one-by-one rebuilds needed the anti-entropy batch, and all then
+  * **Result** under consent only, 15,000 histories, at c4bf06b (seeds 0 to 9,499) and a8c41cd (9,500 to
+    14,999; it only brings invariant 5's per-key check in line with round 8's any-key charging): all of
+    that held.
+    * 4,272 histories forked and merged, and 141 had more than 256 attested certificates.
+    * 11,349 of the 30,000 one-by-one rebuilds needed the anti-entropy batch, and all then
       converged.
-    * @@DIVERGED@@ honest histories hit rule C's stated exception.
+    * 12 honest histories hit rule C's stated exception.
   * **What it found in rounds 6 and 7, before review, now fixed:**
     * an unsigned child of an unattested certificate inherited its parent's charge, so a relay could
       keep it;
@@ -1923,9 +1928,10 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
     * a key could drift over its quota as charges were derived again.
   * **Round 8:** two mutations were each caught at once: halving the share gift, and charging every
     key instead of any key.
-  * **Under consent only it found** rule C's stated exception (seed 1895). Converting the tests found
-    OWN-3's fork-point limit.
-* **Tests:** @@TESTS@@ ownership tests pass; the three ignored ones are debug helpers. The tests of
+  * **Under consent only it found** rule C's stated exception (seed 1895), and that a stolen current
+    backup key legitimately changes the rule (seed 5460): it is now counted as a compromised owner, not
+    a failed rule join. Converting the tests found OWN-3's fork-point limit.
+* **Tests:** 63 ownership tests pass; the three ignored ones are debug helpers. The tests of
   the removed machinery went with it (OWNS-1a, OWNS-1c, OWNS-1d, OWNT-1, OWNT-1b, OWNT-3 and the
   window and recovery tests); `backup_key_acts_as_its_owner` replaces them.
 * **Regression tests for the reviews.** Each set fails on the code before its fix:
@@ -5080,11 +5086,11 @@ entry says so.
     * Consequence: a co-owner who vanishes stays an owner, and under rule A additions then need them
       (or their backup). Groups that want removability pick rule C. A stolen backup key equals a stolen
       key.
-    * **The residual, accepted for now** [V: harness, 15,000 histories at @@SHA@@]: anyone who runs a
+    * **The residual, accepted for now** [V: harness, 15,000 histories at c4bf06b and a8c41cd]: anyone who runs a
       session of their own can return a former owner or add a co-owner through a fork at an old state,
       remove an owner under rule C at a fork point, void an honest change, and fill the cap on a minted
-      branch. An honest owner was lost in @@LOST@@ histories, an owner gained in @@GAINED@@, and an
-      honest change voided in @@VOIDED@@, always detected and shown as disputed.
+      branch. An honest owner was lost in 307 histories, an owner gained in 5,641, and an
+      honest change voided in 359, always detected and shown as disputed.
     * **Also recorded** (the hardening stopped after round 8, as @coordinator-opus set; each is
       Medium or lower):
       * a sole owner can fill its own book to 1,024 until compaction (OWNW-7);
