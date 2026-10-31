@@ -17,7 +17,9 @@ One place where the design goes beyond your 08:31Z words, marked [proposal] in d
 
 Following V2, @coordinator-opus settled that a member whose role can give roles counts as an admin when
 the session checks for its last admin (12.4). World saves follow the approved Gnosarium UX 8a.10, and
-the engine side is in design 16.10. The Gnosarium design's remaining questions are with
+the engine side is in design 16.10. There @coordinator-opus also ruled that loading a backup restores
+world content, never governance (ownership, ACL, roles, join rules, route lists, provenance), and never
+rewinds objects that have left for other worlds or arrived from them. The Gnosarium design's remaining questions are with
 @coordinator-opus.
 
 ## B. Your rulings

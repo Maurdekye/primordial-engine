@@ -816,12 +816,22 @@ every player, perfectly synced, and optimized for CPU and memory.
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
   2. step;
-  3. for each carried body, overwrite its state with the carried bits **only if they differ**.
-* **Why the rule is deterministic:** whether the overwrite fires depends only on the state at *f*. That
-  state depends only on the log. So every peer holding the same log does the same thing, and the result is
-  bit-identical.
+  3. for each carried body, write its state with the carried bits, **always**, whether or not they already
+     match (review SET-1). Writing a pose recomputes the body's centre of mass, rotation0 and world
+     inertia, so a peer that skipped a write that changed nothing would still diverge at the next step on
+     an off-centre body. The touch's impulse wakes the body at *f* on every peer first, so it is awake
+     everywhere when the state is written (SET-2).
+* **Why the rule is deterministic:** the write is the same operation on every peer, at the same frame,
+  with bits taken from the log. In the confirmed history every peer holds the same log, so its world at
+  *f* is the same, contact cache included, and the result is bit-identical.
+* **Known gap, speculative only** [V D58 probe, @vdw-physics]: the write sets the body's bits but not its
+  contact cache. A receiver whose copy differed (it lacked an entry, or is behind) gets the author's bits
+  at *f* but keeps its own contacts, so its copy drifts by about 1e-12 after the next step. The confirmed
+  history is unaffected, since every peer's cache is the same there. A pe-physics item is resetting the
+  body's contacts on a write.
 * **What the rule buys:**
-  * a peer already on the author's world line skips the overwrite and is bit-exact by determinism;
+  * a peer already on the author's world line writes the bits it already holds and stays bit-exact by
+    determinism;
   * a peer that had diverged (it lacked an earlier entry, or hit a bug) gets the touched object pulled onto
     the author's world line at once;
   * so every interaction is also an immediate, object-scoped sync check: R6's "this sync also runs
@@ -2712,48 +2722,112 @@ Assets live in the same world repository tree as code and shaders. Large blobs a
 The user ruled (Q29, 08:31Z): worlds autosave, players also save checkpoints by hand, and every world
 keeps a list of backups that can be loaded at any time. The UI is Gnosarium UX 8a.10, approved by
 @shader-reviewer at 08:40Z; this is the storage and the engine rules it asks for (its need 2i).
-Everything here is a proposal unless marked otherwise [proposal; I, nothing built].
+Everything here is a proposal unless marked as a ruling [proposal; I, nothing built]. Revised after
+@design-reviewer's round 1 (SV-1 to SV-11).
 
-* **A backup is** the world's tree at a commit (chunk files, logic modules, shaders and assets, by BLAKE3
-  hash, D16) plus the runtime image at a confirmed frame, so restored objects and the logic that runs
-  them always match. Only confirmed state is kept, so a backup is the same whoever makes it, and loading
-  it reproduces its frame's check hash (9.1). Blobs are stored by hash, so a backup costs only what
-  changed since the previous one.
-* **Autosave writes the session's edits into the world** every 5 minutes while the world changes, and
-  once as a session ends (V3), so the next session starts with them. Until then the engine keeps them
-  as session state (25.5.7).
-  * A write is a commit to the world repository (15), signed by an owner's client while an owner is
-    present. With no owner present, edits wait as session state and are written when an owner next
-    joins, unless the owners let builders write (8a.10).
-  * Each write names its parent commit. When two sessions of one world write from the same parent (two
-    instances of a public world, or a home opened twice), the second write does not overwrite the first.
-    It becomes a second head, the world opens from the head written first, and the owners see 8a.10's
-    compare card (Keep this one, or Keep both as versions). This is the engine rule 8a.10 asks for.
-* **The backup list** holds four kinds (8a.10): **checkpoints**, saved and named by a member whose role
-  has Save checkpoints, kept until an owner deletes them; **autosaves**, every one for the last hour,
-  then hourly for a day, daily for a month and weekly after (8a.10's schedule); **session ends**, one for
-  each closed session; and **before load**, made by every load. Owners, and anyone whose role has Load
-  backups (the Admin role has it), see the list. Anyone who sees it may rename a backup; only owners
-  delete. Backups travel with the world, like its chunk files.
-* **Loading a backup** is a human action: no agent certificate can carry it (12.3). It needs the Load
-  backups permission. In a live session it lands like a divergence repair, as a state transfer (9.5) at
-  an activation frame:
-  * The loading admin signs a load entry, ordered by the view change like a kick. Its activation frame
-    is set only once every peer has confirmed it holds the backup (its chunks and runtime image, fetched
-    if missing), so every peer switches at the same frame.
-  * The before-load backup is a pure function of the log at the load frame, so every peer produces the
-    same one. The load entry names it by that frame, not by its hash, and it needs no signature of its
-    own.
+**What a load may change** (@coordinator-opus's rulings, 09:34Z, on SV-2 and SV-1):
+* **A load restores world content, never governance.** Ownership, the ACL (`acl/`), roles, join rules,
+  route lists and provenance stay at their current state across a load. So a non-owner Admin cannot use a
+  load to undo a revocation or a demotion, or to bring back a former owner.
+* **Cross-world exits, arrivals, escrow and the seen tables never rewind** (22.6, 22.7). An object that
+  left stays gone, and one that arrived stays: the restored world is the backup's content, minus the
+  objects whose current last-exit record says they have left since, plus the objects that have arrived
+  since, in their current state.
+
+**What a backup is:**
+* **Content:** the world's content tree at a commit (chunk files, logic modules, shaders and assets, by
+  BLAKE3 hash, D16; the tree of 15.1 without `acl/` and the governance fields of `world.toml`) and the
+  runtime image at a check frame (9.2), so restored objects and the logic that runs them always match.
+  Blobs are stored by hash, so a backup costs only what changed since the previous one.
+* **Bound to authority** (SV-8): every backup is taken at a check frame and stores that frame's BLAKE3
+  check hash with the quorum's signed acks of it (9.1, 9.5). An autosave is also the writing owner's
+  signed commit. A checkpoint row is signed by its saver and carries proof that the saver's role held
+  Save checkpoints at that frame. So a holder cannot plant a backup, and a load checks it against signed
+  data, not only its own bytes.
+* **The engine build** (SV-4) is recorded in each backup. A load on the same build restores the runtime
+  image exactly. On another build the image's memory layouts no longer apply (9.5, 4.3 rule 7), so the
+  load restores from the version-neutral layer: the chunk files and dormant records (25.5.7), with logic
+  rebuilt from source under the current toolchain pin. Such a load keeps every object's state, but loses
+  the physics caches (contacts, warm starts, sleep timers) and re-derives modules' sync state. Every
+  backup therefore stays loadable at any time, and exactly so on its own build.
+
+**Autosave:**
+* Every 5 minutes while the world changes, and once as a session ends (V3), the session's edits are
+  written into the world, so the next session starts with them. Until then the engine keeps them as
+  session state (25.5.7).
+* A write is a commit to the world repository (15), signed by an owner's client while an owner is
+  present. With no owner present, edits wait as session state, listed for the owners, and are written
+  when an owner next joins, unless the owners let builders write (8a.10). Until they are written, a new
+  session starts without them, from the world's current head.
+* **The world's head** (SV-3) is an owner-signed head reference: "head = commit C, from parent P". Every
+  holder computes the same head from signed data alone; arrival order never counts. Two references from
+  the same parent are a detectable conflict, as in the ownership chain:
+  * if their changes touch disjoint paths, they merge as 15.3 merges two commits from one parent, and no
+    card is shown;
+  * if they overlap, both heads are kept and the owners see 8a.10's compare card (Keep this one, or Keep
+    both as versions). Until they choose, every holder opens from the head whose reference has the lower
+    hash. A writer can grind that tie-break, but it only decides which version opens until the owners
+    choose, and both stay kept;
+  * owner-less edits written later name as parent the head their session started from, so they follow
+    the same rule.
+
+**The backup list** holds four kinds (8a.10): **checkpoints**, kept until an owner deletes them;
+**autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
+(8a.10's schedule); **session ends**, one for each closed session; and **before load**, one for each load.
+* Owners, and anyone whose role has Load backups (the Admin role has it), see the list. Anyone who sees
+  it may rename a backup; only owners delete.
+* Renames and deletions are signed and versioned (SV-8). A deletion is a signed tombstone, so a deleted
+  checkpoint does not come back from another holder.
+* Every holder of the world keeps the list and thins autosaves by the schedule, locally. A thinned
+  autosave that another holder still offers is authentic, only older, so thinning needs no signature.
+* Backups travel with the world, like its chunk files.
+
+**Loading a backup:**
+* It is a human action: no agent certificate can carry it (12.3). It needs the Load backups permission,
+  checked at the load entry's ordered frame like a kick, so a load queued by an admin demoted earlier in
+  that order is refused. The entry names the backup by its manifest hash, not by its row (SV-10).
+* **In a live session** it lands like a divergence repair, as a state transfer (9.5) at an activation
+  frame A. This section owns the rule (9.3 and 9.5 have no such step):
+  * The load entry is ordered by the view change, like a kick, and fixes the peer set: the members of
+    the epoch that ordered it, less any removed meanwhile (SV-6). Joiners during the wait do not count.
+  * Each member confirms in its acks that it holds the backup (its chunks and runtime image, fetched if
+    missing). A is the frame at which the last confirmation is confirmed plus a lead of at least the
+    speculation window W and a margin (SV-5), or the ordered frame plus a deadline of 30 s, whichever
+    comes first. Both are functions of the log, so every peer computes the same A.
+  * At A, a member still without the backup pauses, as for a missing artifact (D17), and the view-change
+    timers remove it if it stays paused. Admins see who has not confirmed.
+  * Once the load entry is ordered, new departures to other worlds are refused until A (SV-9), so the
+    transfers in flight are a fixed set. The load waits for them to settle; an arrival stamped at or
+    after A applies to the restored world.
+  * **The before-load backup** (SV-7) is the world at A − 1, a check frame: a pure function of the log,
+    so every peer produces the same one, and its check hash, signed by the quorum's acks, is stored with
+    it. The load entry names it by that frame, not by its hash, and it needs no signature of its own.
+  * **Entries after the switch** (SV-5): an entry stamped at or after A counts only if its author's
+    chain acknowledged the activation before it. Any other was authored against the pre-load world, so
+    it is rejected deterministically, carried state and all. The lead of at least W lets an honest
+    author acknowledge in time.
+  * **Object ids** (SV-5): restored objects keep their ids, and each creator's counter continues from
+    the larger of its current and restored values, so no new id collides. Every entry counted after A
+    was authored against the restored world, so an id always names the restored object; entries before
+    A named pre-load objects and applied before the switch.
+  * The restored store's frame field becomes A, so check hashes after the load compare from A.
   * People are not world state: avatars, scale and voice stay; anyone inside restored geometry moves to
-    the nearest clear spot; held objects are released and restored. Cross-world transfers in flight
-    (22.6) complete first, and the load waits for them.
-  * Entries from other peers stamped at or after the load frame that touch objects the load removed are
-    rejected deterministically.
+    the nearest clear spot; held objects are released and restored.
+  * Two loads activate in log order, even if the second's confirmations finish first (SV-10).
+* **With nobody in the world** (SV-11): a load is an owner-signed commit outside any session that moves
+  the world's head to the backup's content, with governance and the cross-world tables carried forward
+  as above. The next session starts from it.
 * **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
   owner is whoever opens it. It needs the Copy world permission, held only by owners by default
-  (@coordinator-opus's direction, 08:35Z).
-* **Open technically:** with regions (25.5), a backup gathers each region's latest confirmed
-  checkpoint; making those agree on one frame needs a rule.
+  (@coordinator-opus's direction, 08:35Z). The copy re-mints its objects' births in the new world, so
+  they can later be exported from it (SV-11).
+
+**Regions** (25.5; @design-reviewer's proposal): a save is a world-log entry stamped at a check frame F.
+Each region writes its checkpoint at F once it has confirmed F, a pure function as the before-load
+backup is; frozen regions contribute their `Frozen` records; cross-region perturbations stamped before F
+belong to their source region's state at F (25.5.5). The backup is complete when every region has
+confirmed F. This costs each region either images kept back to F or a re-simulation from its last
+checkpoint before F. A load activates per region at one world-log frame, by the same rule.
 
 ---
 
