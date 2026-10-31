@@ -1,0 +1,30 @@
+description = """
+P2-4 (design 10.8): two of six members go silent at once (t = 3 s). One view change removes both."""
+include = ["../common/review.toml"]
+end_ms = 15000
+
+[world.1]
+members = [1, 2, 3, 4, 5, 6]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+involves = [5, 6]
+after_ms = 3000
+drop = true
+
+[[report]]
+kind = "membership"
+honest = [1, 2, 3, 4]
+label = "twosilent"
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3, 4]
+label = "twosilent"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4]
+label = "twosilent (members 5 and 6 of 6 silent from t=3 s)"

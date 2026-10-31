@@ -1,0 +1,44 @@
+description = """
+P2-4 review round 2, VC-5: from 2 s, 9's acks claim epoch 999 (parts 1 and 2), or epoch 1 with no \
+decision behind it (parts 3 and 4). Each case runs with VC-5's fix switched off, then as shipped."""
+include = ["../common/review.toml"]
+end_ms = 12000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 600, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[part]]
+world.1.fixes_off = ["VC5"]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 999 }]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "futureack part 1 (from t=2 s 9's acks claim epoch 999)", fix = "VC-5's fix" },
+]
+
+[[part]]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 999 }]
+report = [
+    { kind = "membership", honest = [1, 2, 3], label = "futureack-1" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "futureack-1" },
+    { kind = "confs", honest = [1, 2, 3], label = "futureack-1" },
+    { kind = "verdict", honest = [1, 2, 3], label = "futureack part 1 (from t=2 s 9's acks claim epoch 999)" },
+]
+
+[[part]]
+world.1.fixes_off = ["VC5"]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision)", fix = "VC-5's fix" },
+]
+
+[[part]]
+byzantine = [{ kind = "fake_ack_epoch", member = 9, from_ms = 2000, epoch = 1 }]
+report = [
+    { kind = "membership", honest = [1, 2, 3], label = "futureack-2" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "futureack-2" },
+    { kind = "confs", honest = [1, 2, 3], label = "futureack-2" },
+    { kind = "verdict", honest = [1, 2, 3], label = "futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision)" },
+]

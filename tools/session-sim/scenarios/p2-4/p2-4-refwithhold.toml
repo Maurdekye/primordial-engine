@@ -1,0 +1,32 @@
+description = """
+P2-4: a member that withholds references. From t = 2 s member 8's acks reference no more of \
+anyone's chain, while its horizon keeps advancing. Before, that stalled every member's \
+confirmation for good; now 1, 2 and 3 vote it out once it has held back for suspect_after frames."""
+include = ["../common/review.toml"]
+end_ms = 12000
+
+[world.1]
+members = [1, 2, 3, 8]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[byzantine]]
+kind = "hide_refs"
+member = 8
+from_ms = 2000
+
+[[report]]
+kind = "membership"
+honest = [1, 2, 3]
+label = "refwithhold"
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3]
+label = "refwithhold"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "refwithhold (8 stops referencing others' chains at t=2 s)"
