@@ -51,6 +51,7 @@ mod check;
 mod r14;
 mod sim;
 mod store;
+mod transfer;
 mod replay;
 mod seam;
 
@@ -60,6 +61,7 @@ pub use seam::*;
 pub use r14::*;
 pub use sim::*;
 pub use store::*;
+pub use transfer::*;
 pub use replay::*;
 
 // ---- rollback state ------------------------------------------------------------------------------

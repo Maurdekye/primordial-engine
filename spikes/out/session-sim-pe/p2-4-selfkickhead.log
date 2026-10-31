@@ -7,4 +7,4 @@ RESULT selfkickhead: 4 removed at 2.28 s -> KICKED
   m1: conf 587 frame 593 members {1, 2, 3} evicted {4: (59, 118)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 44 bad 0
   m2: conf 587 frame 593 members {1, 2, 3} evicted {4: (59, 118)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
   m3: conf 587 frame 593 members {1, 2, 3} evicted {4: (59, 118)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
-RESULT selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed): frames 0..592 honest m1=6241ce2b15cfba8b m2=6241ce2b15cfba8b m3=6241ce2b15cfba8b | offline replay 6241ce2b15cfba8b | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
+RESULT selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed): frames 0..592 honest m1=6202f0226e96b1b6 m2=6202f0226e96b1b6 m3=6202f0226e96b1b6 | offline replay 6202f0226e96b1b6 | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
