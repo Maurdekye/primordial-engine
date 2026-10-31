@@ -45,15 +45,23 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
+| `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 
 All but `faults/` are the suite of `scripts/run_session_sim.sh` (32 scenarios and P2-5's two controls,
 whose logs are in `spikes/out/session-sim/p2-5-controls/`); their logs are identical to the committed
 ones. The `faults/` logs are new in P2-9. All of them are identical on Windows and on Linux (WSL2,
 glibc): `spikes/out/session-sim/regress-windows.txt`, `regress-linux.txt`.
 
+P2-4 (the view change, the D80 admin layer and P2-4's review repros), `handowner` and
+`r14 chain-epoch` added 34 logs to the suite. Until each has a scenario file, its name is in
+`scenarios/spike-only.txt`: a full `regress` lists it as spike-only instead of failing on it as an
+orphan. The list only shrinks: a listed name that has a scenario file, or no committed log, is an
+error.
+
 A control run (`control = true`) switches a protection off to show what it prevents, so it is
 expected to print failures such as NOT CONSERVED. `regress` still compares its log, but does not
-count those failures. `golden = "p2-5-controls/r14-doublespend"` names a committed log other than
+count those failures. It does require the run to show at least one failure marker, or the text in
+`control_marker`, so that `--bless` cannot quietly turn a control into a pass. `golden = "p2-5-controls/r14-doublespend"` names a committed log other than
 `<file stem>.log`.
 
 ## Validation

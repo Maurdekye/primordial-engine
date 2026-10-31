@@ -1,0 +1,38 @@
+# Committed logs of scripts/run_session_sim.sh that are not mirrored as scenario files yet: P2-4's
+# view change, the D80 admin layer, P2-4's review repros, handowner and r14 chain-epoch (spike
+# session-sim at land/viewchange 62eb871). `regress` reports them instead of failing on them as
+# orphans; each name leaves this list when its scenario file arrives (see README).
+d80-adminclose
+d80-joinrules
+d80-kickpartition
+d80-kickwar
+d80-lastadmin
+handowner
+p2-4-ackgap
+p2-4-aheadlink
+p2-4-badproposer
+p2-4-bogusprecommit
+p2-4-bridge
+p2-4-capchurn
+p2-4-colluders
+p2-4-controls/onesided
+p2-4-cutbackdate
+p2-4-deepfork
+p2-4-fork9
+p2-4-futureack
+p2-4-ghostkick
+p2-4-join
+p2-4-joinattests
+p2-4-jointiming
+p2-4-kickbackdate
+p2-4-lagprecommit
+p2-4-latejoin
+p2-4-refwithhold
+p2-4-selfkickhead
+p2-4-slowadmin
+p2-4-twosilent
+p2-4-twosilent5
+p2-4-vcscale-256
+p2-4-vcscale-64
+p2-4-withheld
+r14-chain-epoch

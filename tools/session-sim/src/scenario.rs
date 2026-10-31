@@ -29,6 +29,8 @@ pub struct Scenario {
     /// CONSERVED with a protection switched off), so regress does not count them.
     #[serde(default)]
     pub control: bool,
+    /// A control run must print this text; without it, at least one of regress's failure markers.
+    pub control_marker: Option<String>,
     /// Last 1 ms step at or before this virtual time (`end_us` wins if both are given).
     pub end_ms: Option<u64>,
     pub end_us: Option<u64>,
