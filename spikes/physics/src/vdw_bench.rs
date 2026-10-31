@@ -22,6 +22,7 @@
 //! scenes are chaotic, so each configuration runs SEEDS slightly different initial conditions and
 //! the table reports means over seeds. Seed 0 is run a second time in the same process and its
 //! final world hash must match (an in-process determinism check).
+#![allow(clippy::unnecessary_cast)] // Pos is f64 under double-precision (D58), f32 without it
 
 use std::io::Write;
 use std::time::Instant;
@@ -30,6 +31,7 @@ use box3d_rust::body::{body_get_linear_velocity, body_get_position, create_body}
 use box3d_rust::hull::make_box_hull;
 use box3d_rust::id::BodyId;
 use box3d_rust::math_functions::{Pos, Vec3};
+use pe_sim_core::pos;
 use box3d_rust::recording::hash_world_state;
 use box3d_rust::recycle_scale::{ContactRecycleScaling, RecycleLengthCombine};
 use box3d_rust::shape::create_hull_shape;
@@ -134,7 +136,7 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
     let frac = |i: usize, salt: f32| frac(i + 37 * seed, salt);
     // Ground: top face at y = 0.
     let ground_half = 200.0 * s + 5.0;
-    static_box(&mut world, Pos { x: 0.0, y: -s, z: 0.0 }, ground_half, s, ground_half);
+    static_box(&mut world, pos(0.0, -s, 0.0), ground_half, s, ground_half);
     let h = 0.5 * s;
     let mut bodies = Vec::new();
     let mut reference = Vec::new();
@@ -145,8 +147,8 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
             for i in 0..10 {
                 let off = (frac(i, 0.3) - 0.5) * 0.05 * s;
                 let y_rest = h + s * i as f32;
-                bodies.push(dyn_box(&mut world, Pos { x: off, y: y_rest + 0.1 * s * (i + 1) as f32, z: -off }, h, h, h));
-                reference.push(Pos { x: off, y: y_rest, z: -off });
+                bodies.push(dyn_box(&mut world, pos(off, y_rest + 0.1 * s * (i + 1) as f32, -off), h, h, h));
+                reference.push(pos(off, y_rest, -off));
             }
         }
         "pyramid" => {
@@ -157,8 +159,8 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
                 for j in 0..n {
                     let x = (j as f32 - (n as f32 - 1.0) * 0.5) * pitch + (frac(row * 16 + j, 0.21) - 0.5) * 0.02 * s;
                     let y_rest = h + s * row as f32;
-                    bodies.push(dyn_box(&mut world, Pos { x, y: y_rest + 0.05 * s * (row + 1) as f32, z: 0.0 }, h, h, h));
-                    reference.push(Pos { x, y: y_rest, z: 0.0 });
+                    bodies.push(dyn_box(&mut world, pos(x, y_rest + 0.05 * s * (row + 1) as f32, 0.0), h, h, h));
+                    reference.push(pos(x, y_rest, 0.0));
                 }
             }
         }
@@ -175,7 +177,7 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
                 (0.0, hbz + 0.5 * s, hbx + s, 0.5 * s),
                 (0.0, -hbz - 0.5 * s, hbx + s, 0.5 * s),
             ] {
-                static_box(&mut world, Pos { x, y: 2.0 * s, z }, hx, 2.0 * s, hz);
+                static_box(&mut world, pos(x, 2.0 * s, z), hx, 2.0 * s, hz);
             }
             let mut n = 0usize;
             for layer in 0..layers {
@@ -185,11 +187,11 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
                         let ry = if frac(n, 0.37) < 0.5 { 1.0 } else { 0.5 };
                         let rz = if frac(n, 0.53) < 0.5 { 1.0 } else { 0.5 };
                         let jitter = (frac(n, 0.7) - 0.5) * 0.3 * s;
-                        let p = Pos {
-                            x: (ix as f32 - (nx as f32 - 1.0) * 0.5) * pitch + jitter,
-                            y: 1.2 * s + layer as f32 * pitch,
-                            z: (iz as f32 - (nz as f32 - 1.0) * 0.5) * pitch - jitter,
-                        };
+                        let p = pos(
+                            (ix as f32 - (nx as f32 - 1.0) * 0.5) * pitch + jitter,
+                            1.2 * s + layer as f32 * pitch,
+                            (iz as f32 - (nz as f32 - 1.0) * 0.5) * pitch - jitter,
+                        );
                         bodies.push(dyn_box(&mut world, p, a, a * ry, a * rz));
                         reference.push(p);
                         n += 1;
@@ -206,9 +208,9 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
                 for k in 0..3 {
                     let o = (k as f32 - 1.0) * 1.02 * s + (frac(level * 3 + k, 0.43) - 0.5) * 0.02 * s;
                     let (b, r) = if level % 2 == 0 {
-                        (dyn_box(&mut world, Pos { x: o, y, z: 0.0 }, hw, ht, hl), Pos { x: o, y: y_rest, z: 0.0 })
+                        (dyn_box(&mut world, pos(o, y, 0.0), hw, ht, hl), pos(o, y_rest, 0.0))
                     } else {
-                        (dyn_box(&mut world, Pos { x: 0.0, y, z: o }, hl, ht, hw), Pos { x: 0.0, y: y_rest, z: o })
+                        (dyn_box(&mut world, pos(0.0, y, o), hl, ht, hw), pos(0.0, y_rest, o))
                     };
                     bodies.push(b);
                     reference.push(r);
@@ -219,10 +221,10 @@ fn build(scene: &str, mode: &str, s: f32, seed: usize) -> Built {
             kind = Kind::Ledge;
             // Platform top at y = 2 s, edge at x = 0.
             ledge_top = 2.0 * s;
-            static_box(&mut world, Pos { x: -10.0 * s, y: s, z: 0.0 }, 10.0 * s, s, 10.0 * s);
+            static_box(&mut world, pos(-10.0 * s, s, 0.0), 10.0 * s, s, 10.0 * s);
             for k in 0..8 {
                 let v = (0.5 + 0.5 * k as f32) * s;
-                let p = Pos { x: -6.0 * s - frac(k, 0.9) * 0.5 * s, y: ledge_top + h, z: (k as f32 - 3.5) * 2.0 * s };
+                let p = pos(-6.0 * s - frac(k, 0.9) * 0.5 * s, ledge_top + h, (k as f32 - 3.5) * 2.0 * s);
                 let he = Vec3 { x: h, y: h, z: h };
                 bodies.push(dyn_box_v(&mut world, p, he, Vec3 { x: v, y: 0.0, z: 0.0 }, 0.0, false));
                 reference.push(p);
@@ -302,7 +304,7 @@ fn run_one(scene: &str, mode: &str, s: f32, frames: u64, seed: usize) -> RunResu
             for (k, &id) in b.bodies.iter().enumerate() {
                 if overhang[k].is_none() {
                     let p = body_get_position(&b.world, id);
-                    if p.y < b.ledge_top + 0.5 * s - 0.05 * s {
+                    if (p.y as f64) < (b.ledge_top + 0.5 * s - 0.05 * s) as f64 {
                         overhang[k] = Some(p.x as f64 / s as f64);
                     }
                 }
@@ -334,7 +336,7 @@ fn run_one(scene: &str, mode: &str, s: f32, frames: u64, seed: usize) -> RunResu
             displaced += 1;
         }
         sag += drop / s as f64;
-        if a.y < -2.0 * s {
+        if (a.y as f64) < (-2.0 * s) as f64 {
             tunneled += 1;
         }
     }

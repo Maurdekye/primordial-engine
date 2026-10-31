@@ -58,6 +58,11 @@ pub struct HashSet {
 // todo try:
 // https://probablydance.com/2018/06/16/fibonacci-hashing-the-optimization-that-the-world-forgot-or-a-better-alternative-to-integer-modulo/
 /// Murmur hash finalizer truncated to u32. (table.h: b3KeyHash)
+///
+/// Primordial Engine fork: never 0. A slot with hash 0 is empty, and C only debug-asserts that
+/// no key hashes to 0, so in release such a key would be stored as an empty slot that still
+/// counts, which the snapshot reader then refuses (review P22S-2). 0 maps to 1; every other key
+/// hashes as in C.
 #[inline]
 pub fn key_hash(key: u64) -> u32 {
     let mut h = key;
@@ -66,7 +71,7 @@ pub fn key_hash(key: u64) -> u32 {
     h ^= h >> 33;
     h = h.wrapping_mul(0xc4ceb9fe1a85ec53);
     h ^= h >> 33;
-    h as u32
+    (h as u32).max(1)
 }
 
 impl HashSet {

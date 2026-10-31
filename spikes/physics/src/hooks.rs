@@ -20,7 +20,7 @@ use box3d_rust::world::{
     world_get_awake_body_count, world_set_custom_filter_callback, world_set_friction_callback, world_set_pre_solve_callback,
     world_set_restitution_callback, World,
 };
-use pe_sim_core::{build_pile_scene, DT, SUBSTEPS};
+use pe_sim_core::{build_pile_scene, pos, DT, SUBSTEPS};
 
 static PRE: AtomicU64 = AtomicU64::new(0);
 static FILTER: AtomicU64 = AtomicU64::new(0);
@@ -48,7 +48,7 @@ fn pile(n: usize, hooks: bool) -> World {
     let mut w = World::new(&pe_sim_core::engine_world_def());
     let mut g = default_body_def();
     g.type_ = BodyType::Static;
-    g.position = Pos { x: 0.0, y: -0.5, z: 0.0 };
+    g.position = pos(0.0, -0.5, 0.0);
     let gb = create_body(&mut w, &g);
     let mut gs = default_shape_def();
     gs.enable_pre_solve_events = hooks;
@@ -59,7 +59,7 @@ fn pile(n: usize, hooks: bool) -> World {
         let (x, z, y) = (i % side, (i / side) % side, i / (side * side));
         let mut d = default_body_def();
         d.type_ = BodyType::Dynamic;
-        d.position = Pos { x: x as f32 * 0.9 - side as f32 * 0.45, y: 0.5 + y as f32 * 0.9, z: z as f32 * 0.9 - side as f32 * 0.45 };
+        d.position = pos(x as f32 * 0.9 - side as f32 * 0.45, 0.5 + y as f32 * 0.9, z as f32 * 0.9 - side as f32 * 0.45);
         let b = create_body(&mut w, &d);
         let mut sd = default_shape_def();
         sd.density = 1.0;

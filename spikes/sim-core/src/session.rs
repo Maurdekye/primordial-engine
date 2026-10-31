@@ -27,7 +27,7 @@ use box3d_rust::body::{
 use box3d_rust::geometry::{Capsule, Sphere};
 use box3d_rust::hull::make_box_hull;
 use box3d_rust::id::BodyId;
-use box3d_rust::math_functions::{Pos, Quat, Transform, Vec3, QUAT_IDENTITY};
+use box3d_rust::math_functions::{Pos, Quat, Vec3, WorldTransform, QUAT_IDENTITY};
 use box3d_rust::recording::{
     deserialize_into_shell, hash_world_state, serialize_world, GeometryRegistry, RecBuffer,
     RegistrySlot,
@@ -36,7 +36,7 @@ use box3d_rust::shape::{create_capsule_shape, create_hull_shape, create_sphere_s
 use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
-use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES, SUBSTEPS};
+use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
 };
@@ -50,35 +50,68 @@ pub const LOGIC: MemberId = 0;
 // ---- object state ------------------------------------------------------------------------------
 
 /// Exact bit pattern of a rigid body's sim state: position, rotation, linear and angular velocity.
+/// 16 words (D58): the position as three f64, each two words, low word first; then the rotation
+/// and both velocities as f32 bits. An f32 build widens its positions exactly, so it keeps its bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BodyState(pub [u32; 13]);
+pub struct BodyState(pub [u32; 16]);
 
+#[allow(clippy::unnecessary_cast)] // Pos is f64 under double-precision, f32 without it
 impl BodyState {
     pub fn read(world: &World, id: BodyId) -> Self {
         let t = body_get_transform(world, id);
         let v = body_get_linear_velocity(world, id);
         let w = body_get_angular_velocity(world, id);
+        let p = |x: f64| [x.to_bits() as u32, (x.to_bits() >> 32) as u32];
+        let [x, y, z] = [p(t.p.x as f64), p(t.p.y as f64), p(t.p.z as f64)];
         BodyState([
-            t.p.x.to_bits(), t.p.y.to_bits(), t.p.z.to_bits(),
+            x[0], x[1], y[0], y[1], z[0], z[1],
             t.q.v.x.to_bits(), t.q.v.y.to_bits(), t.q.v.z.to_bits(), t.q.s.to_bits(),
             v.x.to_bits(), v.y.to_bits(), v.z.to_bits(),
             w.x.to_bits(), w.y.to_bits(), w.z.to_bits(),
         ])
     }
+    /// A state from its parts: position, rotation (x, y, z, s), linear and angular velocity.
+    pub fn new(p: [f64; 3], q: [f32; 4], v: [f32; 3], w: [f32; 3]) -> Self {
+        let mut s = [0u32; 16];
+        for (k, x) in p.into_iter().enumerate() {
+            s[2 * k] = x.to_bits() as u32;
+            s[2 * k + 1] = (x.to_bits() >> 32) as u32;
+        }
+        for (k, x) in q.into_iter().chain(v).chain(w).enumerate() {
+            s[6 + k] = x.to_bits();
+        }
+        BodyState(s)
+    }
+    /// This state at another position.
+    pub fn with_pos(&self, p: [f64; 3]) -> Self {
+        let mut s = Self::new(p, [0.0; 4], [0.0; 3], [0.0; 3]);
+        s.0[6..].copy_from_slice(&self.0[6..]);
+        s
+    }
+    pub fn pos_f64(&self) -> [f64; 3] {
+        [self.d(0), self.d(2), self.d(4)]
+    }
+    /// Every component finite (no NaN or infinity).
+    pub fn is_finite(&self) -> bool {
+        self.pos_f64().iter().all(|x| x.is_finite()) && self.0[6..].iter().all(|&b| f32::from_bits(b).is_finite())
+    }
     fn f(&self, i: usize) -> f32 {
         f32::from_bits(self.0[i])
     }
+    fn d(&self, i: usize) -> f64 {
+        f64::from_bits(self.0[i] as u64 | (self.0[i + 1] as u64) << 32)
+    }
     pub fn pos(&self) -> Pos {
-        Pos { x: self.f(0), y: self.f(1), z: self.f(2) }
+        Pos { x: self.d(0) as _, y: self.d(2) as _, z: self.d(4) as _ }
     }
     pub fn rot(&self) -> Quat {
-        Quat { v: Vec3 { x: self.f(3), y: self.f(4), z: self.f(5) }, s: self.f(6) }
+        Quat { v: Vec3 { x: self.f(6), y: self.f(7), z: self.f(8) }, s: self.f(9) }
     }
     pub fn lin(&self) -> Vec3 {
-        Vec3 { x: self.f(7), y: self.f(8), z: self.f(9) }
+        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
     }
     pub fn ang(&self) -> Vec3 {
-        Vec3 { x: self.f(10), y: self.f(11), z: self.f(12) }
+        Vec3 { x: self.f(13), y: self.f(14), z: self.f(15) }
     }
     /// Overwrite the body's state with these exact bits.
     pub fn write(&self, world: &mut World, id: BodyId) {
@@ -976,7 +1009,7 @@ impl Rd<'_> {
         RoleId::try_from(self.u32()?).ok()
     }
     fn state(&mut self) -> Option<BodyState> {
-        let mut s = [0u32; 13];
+        let mut s = [0u32; 16];
         for b in &mut s { *b = self.u32()? }
         Some(BodyState(s))
     }
@@ -1286,10 +1319,10 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             let mut world = World::new(&crate::engine_world_def());
             static_box(&mut world, Pos { x: 0.0, y: -0.5, z: 0.0 }, 2.0, 0.5, 2.0);
             let (w, h) = (1.2f32, 0.6f32);
-            static_box(&mut world, Pos { x: w + 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: -w - 0.1, y: h, z: 0.0 }, 0.1, h, w + 0.2);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: w + 0.1 }, w + 0.2, h, 0.1);
-            static_box(&mut world, Pos { x: 0.0, y: h, z: -w - 0.1 }, w + 0.2, h, 0.1);
+            static_box(&mut world, pos(w + 0.1, h, 0.0), 0.1, h, w + 0.2);
+            static_box(&mut world, pos(-w - 0.1, h, 0.0), 0.1, h, w + 0.2);
+            static_box(&mut world, pos(0.0, h, w + 0.1), w + 0.2, h, 0.1);
+            static_box(&mut world, pos(0.0, h, -w - 0.1), w + 0.2, h, 0.1);
             let mut objs = Vec::with_capacity(balls + hands);
             let per_row = 16usize;
             let spacing = 2.0 * w / per_row as f32;
@@ -1300,11 +1333,11 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
                 d.type_ = BodyType::Dynamic;
                 d.linear_damping = 0.1;
                 d.angular_damping = 0.3;
-                d.position = Pos {
-                    x: -w + spacing * (ix as f32 + 0.5) + jitter,
-                    y: BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
-                    z: -w + spacing * (iz as f32 + 0.5) - jitter,
-                };
+                d.position = pos(
+                    -w + spacing * (ix as f32 + 0.5) + jitter,
+                    BALL_R + 0.01 + iy as f32 * (2.0 * BALL_R + 0.01),
+                    -w + spacing * (iz as f32 + 0.5) - jitter,
+                );
                 let b = create_body(&mut world, &d);
                 add_shape(&mut world, b, 3);
                 objs.push(Some(Obj { body: b, global: g(i), kind: 3 }));
@@ -1312,7 +1345,7 @@ pub fn build_scene(kind: SceneKind, world_tag: u32) -> (World, Vec<Option<Obj>>)
             for k in 0..hands {
                 let mut d = default_body_def();
                 d.type_ = BodyType::Kinematic;
-                d.position = Pos { x: -0.8 + 1.6 * k as f32, y: 1.5, z: 0.0 };
+                d.position = pos(-0.8 + 1.6 * k as f32, 1.5, 0.0);
                 let b = create_body(&mut world, &d);
                 add_shape(&mut world, b, 4);
                 objs.push(Some(Obj { body: b, global: g(balls + k), kind: 4 }));
@@ -5033,12 +5066,12 @@ impl WorldSim {
                 }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 let p = if *active {
-                    Pos { x: target_mm[0] as f32 * 0.001, y: target_mm[1] as f32 * 0.001, z: target_mm[2] as f32 * 0.001 }
+                    pos(target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001)
                 } else {
                     Pos { x: 0.0, y: 1.5, z: 0.0 }
                 };
                 let dt = self.cfg.dt * (*span).max(1) as f32;
-                body_set_target_transform(&mut self.world, o.body, Transform { p, q: QUAT_IDENTITY }, dt, true);
+                body_set_target_transform(&mut self.world, o.body, WorldTransform { p, q: QUAT_IDENTITY }, dt, true);
                 hands_set.insert(*obj);
                 if *active {
                     self.t.hand_idle.insert(*obj, 0);
@@ -5129,7 +5162,7 @@ impl WorldSim {
                 // Review NEW-21: even a certified record is untrusted input (a bug or a compromised
                 // majority in the source world). Refuse non-finite or absurd states.
                 let st = record.state;
-                let finite = st.0.iter().all(|&b| (b >> 23) & 0xFF != 0xFF);
+                let finite = st.is_finite();
                 let (q, v, w) = (st.rot(), st.lin(), st.ang());
                 let qn = q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z + q.s * q.s;
                 let sane = finite
@@ -5371,7 +5404,7 @@ impl WorldSim {
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
                 let bad = self.t.objs.iter().flatten().find(|o| {
                     let st = BodyState::read(&self.world, o.body);
-                    st.0.iter().any(|&b| (b >> 23) & 0xFF == 0xFF)
+                    !st.is_finite()
                 });
                 if let Some(o) = bad {
                     self.stats.nonfinite += 1;
