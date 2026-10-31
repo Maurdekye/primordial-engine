@@ -1,6 +1,9 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 8 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
 RESULT   per message      |  76.8 /  30.1 |  500 /  500 | 1441 | 1583 / 1586 | 1703 / 1702 | 0 (own entries moved: 0) |  3.8/s,  32 | never | m1 eeb74421f0e89591 / m2 78e73818aeffcf61 replay eeb74421f0e89591 DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 none of 222 confirmed, m2 none of 222 confirmed
 RESULT   batched          |  66.0 /  30.7 |  500 /  500 | 1365 | 1586 / 1590 | 1706 / 1705 | 0 (own entries moved: 0) |  3.8/s,  32 | never | m1 b3d3816de1f3b957 / m2 7da1f675a3034e32 replay b3d3816de1f3b957 DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 none of 222 confirmed, m2 none of 222 confirmed
 RESULT   batched+adaptive |  11.5 /   8.4 |  498 /  494 |   34 | 1586 / 1588 | 1706 / 1705 | 0 (own entries moved: 0) |  1.9/s,  29 | never | m1 61ee4b6114ad7005 / m2 c8a7adf5b55cc3d0 replay 61ee4b6114ad7005 DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 none of 29 confirmed, m2 none of 29 confirmed
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [1502, 100, 100, 100, 1024, 27076] ms
