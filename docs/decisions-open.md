@@ -17,7 +17,9 @@ One place where the design goes beyond your 08:31Z words, marked [proposal] in d
 
 Following V2, @coordinator-opus settled that a member whose role can give roles counts as an admin when
 the session checks for its last admin (12.4). World saves follow the approved Gnosarium UX 8a.10, and
-the engine side is in design 16.10. The Gnosarium design's remaining questions are with
+the engine side is in design 16.10. There @coordinator-opus also ruled that loading a backup restores
+world content, never governance (ownership, ACL, roles, join rules, route lists, provenance), and never
+rewinds objects that have left for other worlds or arrived from them. The Gnosarium design's remaining questions are with
 @coordinator-opus.
 
 ## B. Your rulings
@@ -72,7 +74,7 @@ the engine side is in design 16.10. The Gnosarium design's remaining questions a
 | D26 open panels | Openness first: people nearby hear prompts and replies, see guidance and watch agents work. A private-panel switch, off by default. Six things stay closed: the Locked default, approvals, credentials, inboxes, direct messages and eye tracking | 22:28Z, 22:34Z, 22:54Z |
 | D27a confidants | Friends you mark as confidants may use your panels as you, and the agent is told; they do not confirm your approvals | 22:34Z, 22:54Z |
 | Logic build profile (13.2) | "Fast builds": committed modules use `rel-fast` (no LTO) | 22:47Z |
-| Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus <laptop>; ARM deferred | 19:58Z |
+| Where CI runs (P2-6) | Local machines only: this PC's Windows and WSL, plus an Intel laptop; ARM deferred | 19:58Z |
 | Linux toolchain (P2-7) | rustup and build-essential may be installed in WSL Ubuntu-24.04 | 19:58Z |
 | V1-V4 session admins (D80, refined) | Kicking an admin is a permission of its own, held by default only by admins (V1); a role that can give roles counts as Admin (V2 = b); when the last admin times out the session closes: every other player is removed, everyone is told, and the world allows no further change (V3); a member that keeps forcing view changes is left to admins (V4 = a) | 08:31Z (m716adebd0591) |
 | D81-D85 agent-panel proposals | As recommended: a spike before the speech model is chosen (D81); a guest's or confidant's turn carries only their own gaze and pointing (D82); annotations last until their author clears them, are never saved, and admins may clear them (D83); everyday settings change at once with undo, sensitive ones need you (D84); spoken replies are made on the panel owner's peer and streamed (D85) | 08:31Z |
@@ -115,7 +117,7 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 **Built: working spike code, with tests or scenario suites**
 * Deterministic Box3D in Rust, with our van der Waals fork on by default: reference goldens, a 600-frame
   trace equal across release, debug and other build settings, snapshot and rollback. Byte-identical on
-  this PC, on <laptop> (Intel) and as a Linux build, the wasm modules included.
+  this PC, on an Intel laptop and as a Linux build, the wasm modules included.
 * The session protocol: signed entries, confirmation, cheater proofs, transfers between two worlds,
   congestion control, and (phase 2) the view change: several members removed at once, withheld or
   forked votes, colluders, a cheating proposer, a member that withholds references, and joins. Every
@@ -135,7 +137,7 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 * The engine's MCP server, `pe-mcp`: Claude Code drove a simulated peer through it over a named pipe and
   over HTTP, with identical results (P2-8).
 * Multi-threaded Box3D in our fork, bit-exact across thread counts (D2).
-* The local determinism matrix (this PC's Windows and WSL, and <laptop>) and byte-identical logic builds
+* The local determinism matrix (this PC's Windows and WSL, and an Intel laptop) and byte-identical logic builds
   across Windows and Linux, with the pinned toolchain (P2-6, P2-7).
 * Provenance chains for objects carried between worlds (P2-5), and the session simulator as a tool (P2-9).
 
@@ -151,7 +153,7 @@ The times are yours; @coordinator-opus relayed most of these rulings.
 
 ## Top 5 risks
 
-1. **Determinism on ARM and macOS:** main is byte-identical on this PC, on <laptop> (Intel) and as a Linux
+1. **Determinism on ARM and macOS:** main is byte-identical on this PC, on an Intel laptop and as a Linux
    build, but ARM and macOS have never run. Parallel physics must also stay bit-exact across thread
    counts.
 2. **CPU at 90 Hz and at scale:** the ball pit already needs about 2.8 ms of re-simulation per 60 Hz frame;
