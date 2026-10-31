@@ -646,15 +646,19 @@ impl WorldSim {
             self.stats.step_us += now_us() - t0;
             self.stats.steps += 1;
         }
-        // User ruling 09:30Z: the touched object takes the carried resulting state. A no-op when
-        // this peer is on the author's world line; otherwise it pulls the object onto it.
+        // User ruling 09:30Z: the touched object takes the carried resulting state. Every peer,
+        // the toucher included, writes it at this frame, whether or not its bits already match
+        // (review SET-1): a body whose pose was set has a recomputed centre of mass, rotation0 and
+        // world inertia, unlike an integrated one with the same bits, so a peer that skipped the
+        // write would diverge at the next step on an off-centre body. Sleep (review SET-2): the
+        // touch's impulse woke the body this frame on every peer, so it is awake everywhere when
+        // the state is written. `overwrites` counts the writes that changed the bits.
         for (obj, st) in carry {
             if let Some(o) = self.live(obj) {
-                if BodyState::read(&self.world, o.body) != st {
-                    st.write(&mut self.world, o.body);
-                    if record {
-                        self.stats.overwrites += 1;
-                    }
+                let differs = BodyState::read(&self.world, o.body) != st;
+                st.write(&mut self.world, o.body);
+                if record && differs {
+                    self.stats.overwrites += 1;
                 }
             }
         }
