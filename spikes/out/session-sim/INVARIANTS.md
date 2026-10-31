@@ -38,11 +38,16 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
 
 * **L1 Progress, within a lag bound.** After GST, the members that are honest, not crashed and still
   members confirm within a bounded lag of their present: at the end of the run no such member's present
-  minus its confirmed frame exceeds three speculation windows (about 6 s). A halt freezes confirmation
-  while the clock runs on, so its lag grows past the bound; a healthy or merely slow session keeps it
-  small once the faults stop. [checked: the end lag of the live honest members. An earlier version
-  checked only that confirmation advanced at all, which a one-frame blip passed; @design-reviewer asked
-  for the lag bound.]
+  minus its confirmed frame exceeds two speculation windows (about 4 s). The present is the member's
+  clock frame (`now`, driven by the wall clock each tick), not its speculative sim frame: on a halt the
+  sim stops one window ahead of the frozen confirmed frame, so `frame - conf` is pinned at one window
+  however long the halt lasts, while `now - conf` keeps growing. A halt therefore grows its lag past the
+  bound; a healthy or merely slow session keeps it small once the faults stop. [checked: the end lag
+  `now - conf` of the live honest members. Two earlier versions were too weak: the first checked only
+  that confirmation advanced at all, which a one-frame blip passed; the second measured the sim frame,
+  which a halt pins one window behind the clock so it never reached the bound (review of round 6.1).
+  Both were @design-reviewer's findings; the RG-1 control `randsched --seed 1 --fixes-off 0x800000`
+  now fails L1 (lag 653 > 240 at the end, present 920, conf frozen at 267 since GST).]
 * **L2 Faulty members do not hold the session.** A faulty member that stalls confirmation — by going
   silent, by withholding or faking references, by a stale cap, by a ghost kick vote, or by a join
   request that reaches only part of the session — is removed, or its lever is neutralised, within a

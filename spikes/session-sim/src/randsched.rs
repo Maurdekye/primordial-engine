@@ -384,27 +384,29 @@ fn check(
         }
     }
     // L1 liveness (the reviewer's lag bound, not mere progress): after GST the live honest members
-    // confirm within a bounded lag of their present. A halt freezes confirmation while the clock runs
-    // on, so its lag grows past any bound; a healthy or merely slow session keeps it small once the
-    // faults stop. The bound is three speculation windows (about 6 s), generous enough for a removal's
-    // pause to clear in the tail after GST.
+    // confirm within a bounded lag of their PRESENT. The present is the member's clock frame `now`
+    // (set from the wall clock each tick), not its sim `frame`: on a halt the sim stops one speculation
+    // window ahead of the frozen `conf`, so `frame - conf` is pinned at one window however long the halt
+    // lasts (review of 6.1: the old `frame - conf` measure could never reach the bound, so L1 caught no
+    // halt). `now - conf` is what grows on a halt, because the clock keeps ticking while nothing confirms.
     let end_conf = min_conf(sim, &live);
     let lag = live
         .iter()
         .filter(|&&m| sim.replica(m, 1).sim.members.contains(&m))
         .map(|&m| {
             let r = &sim.replica(m, 1).sim;
-            r.frame.saturating_sub(1).saturating_sub(r.conf)
+            r.now.saturating_sub(r.conf)
         })
         .max()
         .unwrap_or(0);
-    // The bound must be well under the post-GST tail (6 s), so a halt that begins just after GST --
-    // whose end lag is about the whole tail -- fails, while a removal's pause clears within it (review
-    // VC6R-2 note): two windows (about 4 s).
+    // The bound sits between a healthy or recovered session (confirmation trails the present by well
+    // under a speculation window) and a halt that begins near GST (its lag grows by the whole post-GST
+    // tail, about three windows, on top of the window it already trails): two windows (about 4 s).
     let bound = 2 * sim.replica(live.first().copied().unwrap_or(honest[0]), 1).sim.cfg.window;
     if !live.is_empty() && lag > bound {
         let at_gst = conf_at_gst.unwrap_or(0);
-        fails.push(format!("confirmation lag {lag} > {bound} frames at the end (min honest conf {end_conf}, was {at_gst} at GST): not keeping up"));
+        let present = sim.replica(live.first().copied().unwrap_or(honest[0]), 1).sim.now;
+        fails.push(format!("confirmation lag {lag} > {bound} frames at the end (present {present}, min honest conf {end_conf}, was {at_gst} at GST): not keeping up"));
     }
     // L2 a drawn faulty member that disrupts should end up removed or crashed, or the session
     // reaches a stable epoch without it being able to keep forcing changes. We only report this,
