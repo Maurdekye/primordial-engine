@@ -29,4 +29,4 @@ RESULT ownership: m2: 1 kicks 3 @375: refused
   m2: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
 RESULT ownership: m3: 1 kicks 3 @375: refused
   m3: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
-RESULT ownership world 1: frames 0..380 digests m1=2b40fb30ea478c04 m2=2b40fb30ea478c04 m3=2b40fb30ea478c04 | offline replay 2b40fb30ea478c04 | ALL EQUAL
+RESULT ownership world 1: frames 0..380 digests m1=43869fd42d13a8dc m2=43869fd42d13a8dc m3=43869fd42d13a8dc | offline replay 43869fd42d13a8dc | ALL EQUAL
