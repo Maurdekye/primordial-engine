@@ -266,7 +266,7 @@ pub fn jointiming() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !asked && sim.net.now_us >= 2_000_000 {
                 for m in ids {
-                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                    sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
                 }
                 asked = true;
             }
@@ -291,7 +291,8 @@ pub fn bogusprecommit() {
             let ids = [1, 2, 3, 9];
             let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (400, touch(33, 3.0))]) } else { BTreeMap::new() });
             if !fixed {
-                each_sim(&mut ps, |s| s.fixes_off = fix::VC4);
+                // Round 4's cap rule (VC3R-2) would vote 9 out as well.
+                each_sim(&mut ps, |s| s.fixes_off = fix::VC4 | fix::VC3R2);
             }
             let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 9_000_000);
             let mut sent = false;
@@ -528,7 +529,7 @@ pub fn joinrules() {
                     _ => vec![],
                 };
                 for m in ids {
-                    sim.net.send(1, j, m, &Msg::Join { member: j, attests: attests.clone() });
+                    sim.net.send(1, j, m, &Msg::Join { member: j, attests: attests.clone(), sig: join_sig(1, j) });
                 }
             }
             asked = true;

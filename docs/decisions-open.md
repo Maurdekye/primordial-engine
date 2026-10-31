@@ -15,6 +15,13 @@ slow sole admin closes the session for good. Recommended: only admins kick admin
 Admin, and the roles permission grants only lesser roles; keep closing on the last admin's timeout, with a
 longer grace period. The Gnosarium design's open questions are with @coordinator-opus too.
 
+Also from the protocol, raised by P2-4's round-3 review (VC3R-2), as V4: a member that keeps forcing view
+changes, by voting against members everyone hears or by staying silent just under every timer, is not
+removed automatically. It costs latency, not safety: in the measured case the median confirmation lag rises
+from 7 to 16 frames, at 2.5 resets a second. An admin can kick it, and the session can show admins which
+member keeps forcing them. Recommended: leave it to admins. The alternative, an automatic rule, can be
+turned against honest members by a member that times its messages, as round 3's rule was (design 10.8).
+
 ## B. Your rulings
 
 | Topic | Your ruling | When |

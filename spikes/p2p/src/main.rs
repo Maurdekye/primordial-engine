@@ -283,8 +283,8 @@ fn main() {
                         }
                     }
                     Msg::Join { .. } => {}
-                    Msg::FetchEntry { id } => {
-                        for e in sim.on_fetch_entry(id) {
+                    Msg::FetchEntry { id, back } => {
+                        for e in sim.on_fetch_entry(id, back) {
                             p.send(&Ctl::Session(e));
                         }
                     }

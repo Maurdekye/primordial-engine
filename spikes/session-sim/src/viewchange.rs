@@ -342,7 +342,7 @@ pub fn join() {
     let panic_at = run_to_end(&mut sim, |sim| {
         if !asked && sim.net.now_us >= 2_000_000 {
             for m in [1, 2, 3] {
-                sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![] });
+                sim.net.send(1, joiner, m, &Msg::Join { member: joiner, attests: vec![], sig: join_sig(1, joiner) });
             }
             asked = true;
         }
