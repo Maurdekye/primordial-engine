@@ -45,6 +45,8 @@ fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Pro
 fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
     // A report that states a panic itself (a verdict, or a run with its fix switched off).
     let has_verdict = s.report.iter().any(|r| matches!(r, Report::Verdict { .. } | Report::BeforeFix { .. } | Report::Check { .. }));
+    // A run with its fix switched off may stop at an assertion: that is what it shows, not a failure.
+    let fix_off = s.report.iter().any(|r| matches!(r, Report::BeforeFix { .. }));
     let (s, mut sim, mut actors, mut probes) = prepare(s)?;
     for a in &actors {
         a.configure(&mut sim)?;
@@ -80,6 +82,7 @@ fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
     if let Some(h) = hook {
         std::panic::set_hook(h);
     }
+    ctx.fork_info = actors.iter().find_map(|a| a.fork_info());
     if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
         println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
         return Ok(true);
@@ -87,7 +90,7 @@ fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
     for p in &probes {
         p.print(&sim, &ctx);
     }
-    Ok(ctx.panic_at_ms.is_some())
+    Ok(ctx.panic_at_ms.is_some() && !fix_off)
 }
 
 /// Run every part; true if any panicked. Every part is checked before the first one runs.

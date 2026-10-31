@@ -71,13 +71,34 @@ fn var(name: &str, v: &Vars) -> String {
             _ => panic!("template: {{x.target}} needs a vote"),
         },
         "x.confirmed" => r().is_confirmed(e().id()).to_string(),
-        "proposer" => format!("{}", r().proposer_of(0, 0).map_or("none".to_string(), |p| p.to_string())),
+        "proposer" => r().proposer_of(0, 0).map_or("none".to_string(), |p| p.to_string()),
+        "role" => format!("{:?}", r().roles.get(&member(x))),
+        "resets" => r().stats.resets.to_string(),
+        "member_list" => format!("{:?}", r().members.iter().copied().collect::<Vec<_>>()),
+        "removed" => format!("{:?}", removed_at(v.sim, member(m), member(x))),
+        "votes" => format!("{:?}", own_votes(v.sim, member(m))),
         _ => panic!("template: unknown variable `{{{name}}}`"),
     }
 }
 
 /// The `check` report's cases.
-pub const CHECKS: &[&str] = &["bridge", "kickwar", "kickpartition", "lastadmin", "adminclose", "joinrules", "vcscale"];
+pub const CHECKS: &[&str] = &[
+    "bridge",
+    "kickwar",
+    "kickpartition",
+    "lastadmin",
+    "adminclose",
+    "joinrules",
+    "vcscale",
+    "selfkickhead",
+    "capchurn",
+    "joinattests",
+    "slowadmin",
+    "kickbackdate",
+    "lagprecommit",
+    "aheadlink",
+    "onesided",
+];
 
 /// What the run left for the reports besides the simulator.
 #[derive(Default)]
@@ -86,6 +107,8 @@ pub struct Ctx {
     pub panic_at_ms: Option<u64>,
     /// When the run started (the wall time `vcscale` reports).
     pub started: Option<std::time::Instant>,
+    /// `fork_branch`'s summary.
+    pub fork_info: Option<String>,
 }
 
 /// The members a report covers (see [`Honest`]).
@@ -291,7 +314,8 @@ impl Probe {
                 }
             }
             Report::Confs { honest, label } => println!("RESULT {label}: {}", confs(sim, honest)),
-            Report::BeforeFix { honest, label, fix } => before_fix(sim, honest, label, fix, ctx.panic_at_ms),
+            Report::BeforeFix { honest: h, label, fix } => before_fix(sim, &honest(h, sim), label, fix, ctx.panic_at_ms),
+            Report::ForkInfo => println!("  {}", ctx.fork_info.as_deref().unwrap_or("no fork_branch behaviour")),
             Report::Check { case, label, text, honest, sides, at, members, target, until_ms, role, silent } => {
                 check(sim, ctx, case, label, text, honest, sides, *at, members, *target, *until_ms, *role, *silent)
             }
@@ -503,6 +527,26 @@ fn roles_line(sim: &Sim, m: MemberId) -> String {
     format!("m{m}: members {:?} roles {:?} admins {:?} closed at {:?}", r.members, r.roles, r.admins(), r.closed_at)
 }
 
+/// When member `m` decided to remove `x` (scenario seconds), if it did.
+fn removed_at(sim: &Sim, m: MemberId, x: MemberId) -> Option<f64> {
+    let rep = sim.replica(m, 1);
+    rep.sim.vc_log.iter().find(|d| d.3.contains(&x)).map(|d| sim_secs(rep, d.1))
+}
+
+/// The targets of member `m`'s own votes (not kick votes), as it holds them.
+fn own_votes(sim: &Sim, m: MemberId) -> Vec<MemberId> {
+    sim.replica(m, 1)
+        .sim
+        .all_entries()
+        .into_iter()
+        .filter(|e| e.member == m)
+        .filter_map(|e| match e.payload {
+            Payload::Vote { target, kick: 0, .. } => Some(target),
+            _ => None,
+        })
+        .collect()
+}
+
 fn need<T: Copy>(v: Option<T>, case: &str, field: &str) -> T {
     v.unwrap_or_else(|| panic!("check {case}: needs `{field}`"))
 }
@@ -622,6 +666,72 @@ fn check(
                 r1.conf,
                 if ctx.panic_at_ms.is_some() { "PANIC" } else { "no panic" },
                 ctx.started.map_or(0.0, |t| t.elapsed().as_secs_f64())
+            );
+        }
+        "selfkickhead" => {
+            let removed = removed_at(sim, need(at, case, "at"), need(target, case, "target"));
+            println!(
+                "RESULT {label}: {} removed at {} -> {}",
+                need(target, case, "target"),
+                removed.map_or("never".to_string(), |t| format!("{t:.2} s")),
+                if removed.is_some() { "KICKED" } else { "FAIL" }
+            );
+        }
+        "capchurn" => {
+            let (at, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, at, t);
+            println!(
+                "RESULT {label}: {} resets, {t} removed at {} -> {}",
+                sim.replica(at, 1).sim.stats.resets,
+                removed.map_or("never".to_string(), |t| format!("{t:.2} s")),
+                if removed.is_some() { "VOTED OUT" } else { "FAIL" }
+            );
+        }
+        "joinattests" => {
+            let (at, j, guest) = (need(at, case, "at"), need(target, case, "target"), role);
+            let role = sim.replica(at, 1).sim.roles.get(&j).copied();
+            println!(
+                "RESULT {label}: {j}'s role at m{at} {role:?} -> {}; {}",
+                if role == Some(need(guest, case, "role")) { "ADMITTED AS GUEST" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "slowadmin" => {
+            let defs: Vec<String> = honest.iter().map(|&m| format!("m{m} {:?}", sim.replica(m, 1).sim.role_defs)).collect();
+            println!("RESULT {label}: role definitions {}", defs.join(", "));
+        }
+        "kickbackdate" => {
+            let left: Vec<MemberId> = sim.replica(need(at, case, "at"), 1).sim.members.iter().copied().collect();
+            let ok = left == members;
+            println!("RESULT {label}: members left {left:?} -> {}", if ok { "THE BACKDATED KICK IS VOID: 2 removed" } else { "FAIL" });
+        }
+        "lagprecommit" => {
+            let admitted = sim.replica(need(at, case, "at"), 1).sim.members.contains(&need(target, case, "target"));
+            println!("RESULT {label}: joiner admitted {admitted} -> {}; {}", if admitted { "JOINED" } else { "FAIL" }, confs(sim, honest));
+        }
+        "aheadlink" => {
+            // Its votes are cast in an epoch the others have left, so none of the members ahead is removed.
+            let votes = own_votes(sim, need(at, case, "at"));
+            let ms = sim.replica(honest[0], 1).sim.members.clone();
+            let kept = members.iter().all(|m| ms.contains(m));
+            println!(
+                "RESULT {label}: {}'s votes against the members ahead {votes:?}; members {ms:?} -> {}",
+                need(at, case, "at"),
+                if kept { "THE MEMBERS AHEAD ARE KEPT" } else { "FAIL" }
+            );
+        }
+        "onesided" => {
+            let first = |m: MemberId| sim.replica(m, 1).sim.vc_log.first().map(|d| d.3.clone());
+            let (a, b) = (first(members[0]), first(members[1]));
+            println!(
+                "RESULT onesided (control: 3 of 6 collude, above t(6) = 1): epoch 1 removed {a:?} at m{}, {b:?} at m{} -> {}{}",
+                members[0],
+                members[1],
+                if a.is_some() && b.is_some() && a != b { "two different epoch-1 decisions: the session forked" } else { "no fork in this run" },
+                match ctx.panic_at_ms {
+                    Some(t) => format!("; a replica stopped at t={t} ms"),
+                    None => String::new(),
+                }
             );
         }
         _ => panic!("check: unknown case `{case}`"),

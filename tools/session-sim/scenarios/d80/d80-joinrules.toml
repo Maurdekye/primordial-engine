@@ -1,0 +1,67 @@
+description = """
+D80: the join matrix. Admin 1 and guest 2 run the session; four joiners follow it and ask to join \
+at 2 s: 4, a friend of admin 1, joins as a guest (role 1); 5, a stranger, is refused; \
+6, a confidant of owner 7, joins as ADMIN (0); 7, an owner, joins by row 0. The honest members are \
+those admitted at member 1."""
+include = ["../common/review.toml"]
+end_ms = 10000
+
+[world.1]
+members = [1, 2]
+joiners = [4, 5, 6, 7]
+guests = { role = 1, admins = [1] }
+owners = [7]
+
+[world.1.join_rules]
+rules = [
+    { target = "admin", rel = "friend", role = 1 },
+    { target = "owner", rel = "confidant", role = 0 },
+]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[join]]
+at_ms = 2000
+member = 4
+to = [1, 2]
+attests = [{ rel = "friend", with = 1 }]
+
+[[join]]
+at_ms = 2000
+member = 5
+to = [1, 2]
+
+[[join]]
+at_ms = 2000
+member = 6
+to = [1, 2]
+attests = [{ rel = "confidant", with = 7 }]
+
+[[join]]
+at_ms = 2000
+member = 7
+to = [1, 2]
+
+[[report]]
+kind = "view_changes"
+honest = { members_at = 1 }
+label = "joinrules"
+
+[[report]]
+kind = "admin"
+honest = { members_at = 1 }
+label = "joinrules"
+roles = true
+
+[[report]]
+kind = "check"
+case = "joinrules"
+label = "joinrules"
+members = [4, 5, 6, 7]
+role = 1
+
+[[report]]
+kind = "verdict"
+honest = { members_at = 1 }
+label = "joinrules (friends-of-admins as Guest, owners' confidants as Admin, row 0)"

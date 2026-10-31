@@ -5,7 +5,8 @@ use spike::{Fate, Filter, Sim};
 
 use crate::scenario::{Crash, FaultRule};
 
-pub const MSG_CLASSES: &[&str] = &["entry", "fetch", "batch", "touch", "hand", "ack", "vote", "propose", "prevote", "precommit", "kick", "setrole", "definerole", "attest", "depart", "arrive", "verdict", "portal"];
+pub const MSG_CLASSES: &[&str] =
+    &["entry", "fetch", "batch", "touch", "hand", "ack", "vote", "propose", "prevote", "precommit", "kick", "setrole", "definerole", "attest", "depart", "arrive", "verdict", "portal", "provenance"];
 
 /// Does `m` belong to message class `c` (see [`FaultRule::msg`])?
 pub fn is_class(m: &Msg, c: &str) -> bool {
@@ -28,14 +29,15 @@ pub fn is_class(m: &Msg, c: &str) -> bool {
                 | (Payload::Arrive { .. }, "arrive")
                 | (Payload::Verdict { .. }, "verdict")
                 | (Payload::Portal { .. }, "portal")
+                | (Payload::Provenance { .. }, "provenance")
         ),
         _ => false,
     }
 }
 
 pub fn validate(r: &FaultRule) -> Result<(), String> {
-    if r.drop == r.delay_ms.is_some() {
-        return Err(format!("fault rule needs exactly one of `drop = true` or `delay_ms`: {r:?}"));
+    if [r.drop, r.delay_ms.is_some(), r.deliver].iter().filter(|&&x| x).count() != 1 {
+        return Err(format!("fault rule needs exactly one of `drop = true`, `delay_ms` or `deliver = true`: {r:?}"));
     }
     if let Some(c) = &r.msg {
         if !MSG_CLASSES.contains(&c.as_str()) {
@@ -66,6 +68,7 @@ fn matches(r: &FaultRule, t_us: u64, w: u32, from: u32, to: u32, m: &Msg) -> boo
         && r.msg.as_ref().is_none_or(|c| is_class(m, c))
         && r.stamp.is_none_or(|s| entry.is_some_and(|e| e.stamp == s))
         && r.seq.is_none_or(|s| entry.is_some_and(|e| e.seq == s))
+        && r.author.as_ref().is_none_or(|x| entry.is_some_and(|e| x.contains(e.member)))
 }
 
 /// A filter from a Byzantine behaviour: `Some(fate)` decides the message.
@@ -92,7 +95,11 @@ pub fn filter(rules: Vec<FaultRule>, hooks: Vec<Hook>) -> Option<Filter> {
             if let Some(k) = n.as_mut() {
                 *k -= 1;
             }
-            return if r.drop { Fate::Drop } else { Fate::Delay(r.delay_ms.unwrap() * 1000) };
+            return match (r.drop, r.delay_ms) {
+                (true, _) => Fate::Drop,
+                (false, Some(d)) => Fate::Delay(d * 1000),
+                (false, None) => Fate::Deliver,
+            };
         }
         Fate::Deliver
     }))

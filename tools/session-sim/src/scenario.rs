@@ -101,6 +101,9 @@ pub struct WorldCfg {
     pub ack_heads: Option<bool>,
     /// Every replica acks every this many frames (default: the replica's own default).
     pub ack_every_frames: Option<u64>,
+    /// Every member follows the joiners (default true; false: they learn of a joiner only from
+    /// its request).
+    pub follow_joiners: Option<bool>,
     /// Review repros: these fixes switched off on every replica (`fix::VC2` etc., by name).
     #[serde(default)]
     pub fixes_off: Vec<String>,
@@ -412,6 +415,8 @@ pub struct FaultRule {
     pub to: Option<Ids>,
     /// Sent by or to this member.
     pub involves: Option<Ids>,
+    /// Chain entries authored by this member (whoever sends them, fetch replies included).
+    pub author: Option<Ids>,
     /// Sender and receiver in different groups (members in no group are unaffected).
     pub partition: Option<Vec<Vec<u32>>>,
     /// Message class: `entry` (any chain entry), `fetch`, `batch`, or an entry payload: `touch`,
@@ -426,6 +431,9 @@ pub struct FaultRule {
     #[serde(default)]
     pub drop: bool,
     pub delay_ms: Option<u64>,
+    /// Deliver it as is (so a later rule does not match it).
+    #[serde(default)]
+    pub deliver: bool,
 }
 
 /// A peer stops (receives, ticks and sends nothing) at `at_ms`, and resumes at `recover_ms`.
@@ -445,6 +453,8 @@ pub enum When {
     Exists,
     /// Once member `at`'s confirmed frame exceeds `frame`.
     ConfAbove { at: u32, frame: u64 },
+    /// At this virtual time, or as soon after it as the entry exists.
+    AtMs(u64),
 }
 
 /// Byzantine behaviour. `name` lets a later behaviour start only `after` an earlier one fired.
@@ -464,6 +474,11 @@ pub enum Byzantine {
         when: When,
         touch: TouchSpec,
         to: Vec<u32>,
+        /// The second version never reaches these members (relayed or fetched), until
+        /// `hide_until_ms` if given.
+        #[serde(default)]
+        hide_from: Vec<u32>,
+        hide_until_ms: Option<u64>,
         /// Printed when it fires (see the template variables in report.rs).
         say: Option<String>,
     },
@@ -526,6 +541,73 @@ pub enum Byzantine {
         #[serde(default = "one")]
         world: u32,
         member: u32,
+        to: Vec<u32>,
+    },
+    /// Review VC-2's fork (session-sim p24r.rs `fork_run`): once `member`'s frame reaches
+    /// `at_frame` it forks its chain. Branch A, its real chain, goes on to `a_to`; `b_to` gets
+    /// branch B from the fork on (the same entries re-linked, its touches turned into no-ops) and,
+    /// after `live_ms`, ten more acks on B only, so B is longer. From `live_ms` after the fork it is
+    /// silent. With `backdate`, it signs, on A only, a touch backdated 90 frames 100 ms after the
+    /// fork. With `detect_ms`, it does not relay B to `a_to`, and everything `b_to` sends them in
+    /// the `detect_ms` after the fork arrives that late, so they find the fork late.
+    ForkBranch {
+        member: u32,
+        at_frame: u64,
+        a_to: Vec<u32>,
+        b_to: u32,
+        live_ms: u64,
+        #[serde(default)]
+        backdate: bool,
+        #[serde(default)]
+        detect_ms: u64,
+    },
+    /// From `from_ms` (while `member` is a member at `while_member_at`, if given), `member` signs a
+    /// precommit for no proposal and sends it to `to`: once, in epoch 0, round 0, value `value`;
+    /// or, with `every_epoch`, once in every epoch it enters, in that epoch, value `value ^ epoch`.
+    /// Its boundary is `boundary`, or `ahead` frames past its clock.
+    Precommit {
+        member: u32,
+        from_ms: u64,
+        value: u64,
+        boundary: Option<u64>,
+        ahead: Option<u64>,
+        to: Vec<u32>,
+        #[serde(default)]
+        every_epoch: bool,
+        while_member_at: Option<u32>,
+    },
+    /// From `from_ms` (while `member` is a member at `while_member_at`, if given), `member`'s acks
+    /// claim epoch `epoch`, or `ahead` epochs past its own (session.rs `fake_ack_epoch`).
+    FakeAckEpoch {
+        member: u32,
+        from_ms: u64,
+        epoch: Option<u32>,
+        ahead: Option<u32>,
+        while_member_at: Option<u32>,
+    },
+    /// At `at_ms`, `member` votes against `target` for a kick `kick` that does not exist, with
+    /// `target`'s head as it holds it as the frozen head; sent to `to`.
+    GhostVote {
+        member: u32,
+        at_ms: u64,
+        target: u32,
+        kick: u64,
+        to: Vec<u32>,
+    },
+    /// Once `member` holds a kick against itself, it votes on it naming a head it never signed,
+    /// `frozen`; sent to `to`.
+    SelfKickVote {
+        member: u32,
+        frozen: [u64; 2],
+        to: Vec<u32>,
+    },
+    /// Once `member`'s frame reaches `at_frame`, it signs a kick of `target` backdated `back`
+    /// frames; sent to `to`.
+    BackdatedKick {
+        member: u32,
+        at_frame: u64,
+        target: u32,
+        back: u64,
         to: Vec<u32>,
     },
 }
@@ -647,7 +729,9 @@ pub enum Report {
     Confs { honest: Vec<u32>, label: String },
     /// The line a run with its fix switched off ends with: whether it stopped, or every replica
     /// of `honest` equals the replay; their frames; and the first one's members and evictions.
-    BeforeFix { honest: Vec<u32>, label: String, fix: String },
+    BeforeFix { honest: Honest, label: String, fix: String },
+    /// `fork_branch`: where the fork fell and how long branch B is.
+    ForkInfo,
     /// The spike's one-off checks, ported verbatim (report.rs `check`); each reads the fields it
     /// names and nothing else:
     /// * `bridge`: `label`, `text` (the verdict label if the session stayed whole), `honest`,
@@ -658,6 +742,14 @@ pub enum Report {
     /// * `adminclose`: `label`, `text`, `honest` (two members).
     /// * `joinrules`: `label`, `members` (friend, stranger, confidant, owner), `role` (guest).
     /// * `vcscale`: `silent` (the last members, silent from 1 s).
+    /// * `selfkickhead`, `capchurn`: `label`, `at`, `target` (when `at` removed it).
+    /// * `joinattests`: `label`, `at`, `target` (the joiner), `role`, `honest` (for the frames).
+    /// * `slowadmin`: `label`, `honest` (each one's role definitions).
+    /// * `kickbackdate`: `label`, `at`, `members` (the members expected to be left).
+    /// * `lagprecommit`: `label`, `at`, `target` (the joiner), `honest` (for the frames).
+    /// * `aheadlink`: `label`, `at` (whose votes), `members` (the members ahead, kept at the first
+    ///   of `honest`), `honest`.
+    /// * `onesided`: `members` (the two whose first decisions are compared).
     Check {
         case: String,
         #[serde(default)]
