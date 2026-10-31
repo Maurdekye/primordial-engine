@@ -815,13 +815,17 @@ pub fn prevotefork() {
     }
 }
 
-// ---- design-reviewer round-6 repros (reviewer's worktree only) ------------------------------------
+// ---- design-reviewer round-6 repros, fixed in round 7 ---------------------------------------------
 
-/// VC6R-1: capstale, but 9's capped precommit names a polka id that exists nowhere.
+/// VC6R-1: capstale, but 9's capped precommit names a polka id that exists nowhere. Fix off (VC6R1):
+/// the missing id is fetched for good and 9 is never removed.
 pub fn capfake() {
-    for fake in [false, true] {
+    for fixed in RUNS {
         let ids = [1, 2, 3, 9];
-        let ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
+        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
+        if !fixed {
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC6R1);
+        }
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut capped: BTreeSet<u32> = BTreeSet::new();
         let stopped = run_quiet(&mut sim, |sim| {
@@ -832,23 +836,28 @@ pub fn capfake() {
             let epoch = r9.epoch;
             if capped.insert(epoch) {
                 let boundary = r9.now + 30;
-                let polka = if fake { vec![0xDEAD_BEEF_0000_0001] } else { vec![] };
+                let polka = vec![0xDEAD_BEEF_0000_0001];
                 let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka }, None);
                 send_all(sim, 9, &ids, &e);
             }
         });
         let honest = [1, 2, 3];
-        println!("REPRO capfake fake_polka_id={fake}: 9 removed at {}; {}", secs(removed_at(&sim, 1, 9)), confs(&sim, &honest));
-        verdict(&sim, &honest, &format!("capfake fake={fake}"), stopped);
+        println!("REPRO capfake fixed={fixed}: 9 removed at {}; {}", secs(removed_at(&sim, 1, 9)), confs(&sim, &honest));
+        verdict(&sim, &honest, &format!("capfake fixed={fixed}"), stopped);
     }
 }
 
 /// VC6R-4: fakemix's pure fake (8 removed at about 5 s), but 8 also authors a no-op SetRole every
-/// 2 s, so a decision comes every 2 s.
+/// 2 s, so a decision comes every 2 s. Fix off (VC6R4): every decision clears the timers that would
+/// catch 8, and it is never removed.
 pub fn fakeadmin() {
-    for setrole in [false, true] {
+    for fixed in RUNS {
+        let setrole = true;
         let ids = [1, 2, 3, 4, 8];
-        let ps = peers_of(&ids, |m| if m == 1 { plan(&(0..40).map(|k| (60 + 20 * k, touch(10 + (k % 3) as u32, 1.0))).collect::<Vec<_>>()) } else { BTreeMap::new() });
+        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&(0..40).map(|k| (60 + 20 * k, touch(10 + (k % 3) as u32, 1.0))).collect::<Vec<_>>()) } else { BTreeMap::new() });
+        if !fixed {
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC6R4);
+        }
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut last = 0u64;
         let stopped = run_quiet(&mut sim, |sim| {
@@ -867,8 +876,8 @@ pub fn fakeadmin() {
         });
         let honest = [1, 2, 3, 4];
         let vcs = sim.replica(1, 1).sim.vc_log.len();
-        println!("REPRO fakeadmin setrole_every_2s={setrole}: 8 removed at {}; decisions at m1 {vcs}; {}", secs(removed_at(&sim, 1, 8)), confs(&sim, &honest));
-        verdict(&sim, &honest, &format!("fakeadmin setrole={setrole}"), stopped);
+        println!("REPRO fakeadmin fixed={fixed} (no-op SetRole every 2 s): 8 removed at {}; decisions at m1 {vcs}; {}", secs(removed_at(&sim, 1, 8)), confs(&sim, &honest));
+        verdict(&sim, &honest, &format!("fakeadmin fixed={fixed}"), stopped);
     }
 }
 
@@ -902,7 +911,8 @@ pub fn bigjoin() {
 /// VC6R-3: the admin-fork wedge, after the subagent's schedule. {1,2,3,4,9}, all admins. An honest
 /// member P (not the round-0 proposer) is cut off 2.0-3.2 s. At 2.1 s faulty 9 sends a SetRole A to
 /// the three others and drops its own precommits; once they have precommitted it crashes. Its fork
-/// A' (same seq, an Attest) reaches P at 3.1 s and the others at 3.2 s. Fix off (VC3R3S) as control.
+/// A' (same seq, an Attest) reaches P at 3.1 s and the others at 3.2 s. Fix off (VC6R3): the locked
+/// members find their value's admin entry disputed, nothing releases the lock, and the session halts.
 pub fn adminwedge() {
     for fixed in RUNS {
         let ids = [1, 2, 3, 4, 9];
@@ -911,7 +921,7 @@ pub fn adminwedge() {
         let part: MemberId = if p0 != 4 { 4 } else { 3 };
         let others: Vec<MemberId> = [1, 2, 3, 4].into_iter().filter(|&m| m != part).collect();
         if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VC3R3S);
+            each_sim(&mut ps, |s| s.fixes_off = fix::VC6R3);
         }
         let fork_id = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let crashed = std::rc::Rc::new(std::cell::Cell::new(false));
