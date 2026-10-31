@@ -1499,21 +1499,29 @@ is fixed once the author's chain is contiguous up to it.
   * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
     of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
     **decides** it.
-  * **A proven forker's precommit counts by its signature** (review PF-1, found by @ballpit-viz). Chain
-    order governs every other use of an entry. A replica keeps the first version of a seq it receives,
-    and a member that forks a seq may continue its chain from a version some honest members never hold,
-    so they cannot link its later entries. If its precommit was in the quorum the others decided on,
-    those members could never check that quorum and stayed in the old epoch for good. So the
-    precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
-    in any version, and its proposals are kept by value the same way. That includes precommits chain
+  * **A proven forker's precommits and prevotes count by their signatures** (reviews PF-1, found by
+    @ballpit-viz, and VC8R-1). Chain order governs every other use of an entry. A replica keeps the
+    first version of a seq it receives, and a member that forks a seq may continue its chain from a
+    version some honest members never hold, so they cannot link its later entries. If its precommit was
+    in the quorum the others decided on, those members could never check that quorum and stayed in the
+    old epoch for good. If its prevote was in the polka the others locked on, those members never saw
+    the polka; the locked members then prevoted nil on everything else, and the session halted with no
+    admin entry involved (VC8R-1). So the precommits of a member proven to have forked count toward a
+    decision, and its prevotes toward a polka (a lock, and a re-proposal's valid round), wherever they
+    sit in its chain, in any version; its proposals are kept by value the same way. That includes precommits chain
     order would void: one whose boundary is at or below its author's horizon (VC-4), or a second
     precommit in one round (review VC7R-4). Its proposals of a later epoch wait in an index for that
     epoch, and its chain is scanned once per proof (VC7R-6). This is Tendermint's commit rule,
     which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
-    member, and an honest member precommits one value per round. Honest members' entries always link,
-    so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
-    own version. Every member decides the join, 1 is removed at 4.23 s, and confirmation goes on. Before
-    the fix, 3, 9 and the joiner stayed in epoch 0 and confirmation stopped at frame 53].
+    member, and an honest member prevotes and precommits one value per round. Honest members' entries
+    always link, so they count in chain order [V prevotefork: 1 forks its prevote three ways and
+    continues from its own version. Every member decides the join, 1 is removed at 2.27 s, and
+    confirmation goes on. With PF-1's and VC8R-1's fixes off, 3, 9 and the joiner stay in epoch 0 and
+    confirmation stops at frame 53. V pfsilent: the same with 9 silent from 1 s, so the forker's
+    precommit is in the only quorum; with PF-1 off, 3 and the joiner stay in epoch 0. V plainfork: f
+    forks a seq into two Attests and proposes an empty change; with VC8R-1 off the member that kept the
+    other version never sees the polka, and confirmation stops at frame 110; with it, f is removed at
+    2.88 s].
   * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
     together leave in one change [V twosilent].
   * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
@@ -1600,7 +1608,8 @@ is fixed once the author's chain is contiguous up to it.
     (round 8, found while building `slowcapper`). The abandoned branch's history made every early ack
     fail VC-5's epoch rule, so a replica that switched voided the removed member's acks while one that
     had held the cut's branch kept them [V prevotefork: 28 such voids at the two replicas that switched,
-    now none, and the removed member stops counting from the same frame at all three].
+    now none, and the removed member stops counting from the same frame at all three]. VC7R-1's replay
+    reads the same history, so its purity rests on this (review VC8R-2).
   * A replica applies a decision only once it holds every admin entry the change lists; it asks those
     that precommitted it for the ones it lacks, by id (review VCR-8) [V slowadmin: an admin's entries
     reach follower 6 2.5 s late on every path; it decides at 3.60 s once it has the entry. Before the
@@ -1660,10 +1669,11 @@ is fixed once the author's chain is contiguous up to it.
     and they would vote the honest capper out. So before a member votes a capper out for an unexplained
     cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
     either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
-    two versions of one prevote proves the proposer equivocated and removes it. Locks still count one
-    version per member; decisions count a proven forker's precommits in any version (PF-1, under
-    Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
-    3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
+    two versions of one prevote proves the proposer equivocated and removes it. Locks, re-proposals and
+    decisions also count a proven forker's prevotes and precommits in any version (PF-1 and VC8R-1,
+    under Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to
+    observer 3. With VC4R-1's fix off (and VC8R-1's, which lets the join be decided before any cap is
+    judged) 3 votes 2 out; with it 3 fetches 1's value-prevote and keeps 2].
   * The fetch has a budget (reviews VC6R-1, VC7R-2). An honest capper holds its own polka, but its
     replies can be slow. If ids the cap named are still missing once the cap has ripened and a further
     `suspect_after` (3 s, the allowance a slow member gets) has passed, they count as prevotes nobody
@@ -1809,7 +1819,8 @@ is fixed once the author's chain is contiguous up to it.
     is, but only once the head is still missing after `suspect_after` (review VC7R-2). An honest voter's
     head may lie past a forker's fork, on a branch only it holds, so delivering it waits on that voter's
     replies [V slowcapper: the forked prevote reaches 3 1.5 s late, and 3 keeps 2. With the fix off, 3
-    votes 2 out after 1 s, for its vote against the forker, whose head 3 cannot walk yet].
+    votes against 2 after 1 s, for its vote against the forker, whose head 3 cannot walk yet; one false
+    vote removes no one, so 2 stays].
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
   * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
@@ -1856,7 +1867,12 @@ is fixed once the author's chain is contiguous up to it.
     held as a duplicate passed at replicas that had linked the other version, and failed where it was
     linked (VC7R-1) [V voidfork: faulty proposer 1 lists a backdated SetRole that member 4 linked first
     and the others hold as a duplicate. It is refused everywhere, and 1 is removed at 2.25 s. With the
-    fix off, 2 and 3 lock on it, 4 prevotes nil for it forever, and confirmation stops at frame 110].
+    fix off, 2 and 3 lock on it, 4 prevotes nil for it forever, and confirmation stops at frame 110.
+    V voiddeep (@design-reviewer's probe): the fork is two entries deep, [an ack declaring H, the
+    SetRole stamped behind H], so 2 and 3 replay the ack along the SetRole's ancestry: refused
+    everywhere; with the ack breaking VC-5 it counts for nothing, the SetRole is valid on its ancestry,
+    and every member decides it]. The replay reads the ack-epoch history, so its purity rests on RECUT
+    (below; review VC8R-2).
     Listing a canonical, undisputed version is only the proposer's choice. Every replica
     applies the version the change lists, with the outcome the change carries, so a fork cannot be
     committed at one replica and not another. Round 5 also required the listed version to be canonical
@@ -5050,7 +5066,20 @@ Rules for every package:
     VC7R-3 (a lone vote resetting its own author's timer) is left as inferred: the reviewer's probe
     removed the faker sooner.
   * Found while building `slowcapper`: a re-pointed cut re-validates from a clean ack-epoch history
-    (`fix::RECUT`).
+    (`fix::RECUT`); VC7R-1's purity rests on it (review VC8R-2).
+  * **VC8R-1** (`plainfork`), found by @design-reviewer in round 8's review, older than round 8: a
+    faulty proposer that forks a plain seq halted the session for good, with no admin entry. A proven
+    forker's prevotes now count toward a polka wherever they sit in its chain (`fix::VC8R1`) [V: f
+    removed at 2.88 s; off: confirmation stops at frame 110]. With it, prevotefork's honest members lock
+    and decide without the forker (the join at 1.18 s, not 3.12 s), so its VC4R-1 and PF-1 controls
+    switch VC8R-1 off too, and `pfsilent` shows PF-1 still needed: with 9 silent, the forker's
+    precommit is in the only quorum. adminfork now decides round 0's change, 1's proposal listing 9's
+    forked SetRole, at every member: 3 counts 9's prevote toward the polka and locks with 1 and 2, and
+    decides at 2.13 s, and 1 and 2 decide at 4.1 s, when 3's delayed precommit reaches them. So 9's
+    SetRole applies (3 demoted), and 9 is removed by proof in the next epoch at 4.55 s; before, 9 was
+    removed in round 2 at 3.13 s and its SetRole never applied. Both outcomes were agreed everywhere.
+    slowcapper's decisions come before 9's held-back prevotes are released at 5 s, so 9 trails, is
+    voted against, and two resets keep it (4.72 s and 5.38 s).
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**

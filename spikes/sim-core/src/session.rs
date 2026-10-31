@@ -270,6 +270,7 @@ pub mod fix {
     /// VC7R-1: a listed admin entry is judged along its own ancestry (the chain-local rules replayed
     /// from the prefix this replica validated), never by which branch of its author's chain this replica
     /// linked: a horizon-void version held as a duplicate was valid here and void where it was linked.
+    /// Pure only with `RECUT` on (review VC8R-2): the replay reads the ack-epoch history.
     pub const VC7R1: u64 = 1 << 33;
     /// VC7R-2: evidence an honest member must deliver gets the slow-member allowance (`suspect_after`)
     /// before its author is voted out: a cap's polka (VC6R-1) and a vote's frozen head (VC4R-5). The
@@ -279,7 +280,13 @@ pub mod fix {
     /// re-validates the cut branch from a clean chain state, the ack-epoch history included. Without it
     /// the history of the abandoned branch made every re-validated early ack fail VC-5's epoch rule, so
     /// a replica that re-pointed voided the removed member's acks and one that did not kept them.
+    /// Review VC8R-2: VC7R1's purity rests on it, since `valid_on_own_branch` reads that history.
     pub const RECUT: u64 = 1 << 35;
+    /// VC8R-1: a proven forker's prevotes count toward a polka (a lock, a re-proposal's valid round)
+    /// wherever they sit in its chain, in any version, as PF-1 counts its precommits toward a decision.
+    /// A member that kept another version of the forked seq could not count the forker's prevote, never
+    /// saw the polka the others locked on, and the locked members prevoted nil on everything else.
+    pub const VC8R1: u64 = 1 << 36;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
@@ -1709,6 +1716,9 @@ pub struct WorldSim {
     /// chain or not: (epoch, round, value) to the members that signed one. Only proven members are
     /// counted from it (`precommitters`); everyone else counts in chain order.
     pc_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
+    /// Review VC8R-1: every signed prevote held for a value, any version, linked or not, as `pc_held`
+    /// is for precommits. Only proven members are counted from it (`prevoters`).
+    pv_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
     /// Decided changes, one per epoch boundary: (change, round, precommit signatures).
     decided: Vec<(Change, u32, Vec<(MemberId, u64)>)>,
     /// Decisions: (epoch reached, my clock frame when I decided, round, members removed).
@@ -1931,6 +1941,7 @@ impl WorldSim {
             proposal_ids: BTreeMap::new(),
             later_proposals: BTreeMap::new(),
             pc_held: BTreeMap::new(),
+            pv_held: BTreeMap::new(),
             decided: Vec::new(),
             vc_log: Vec::new(),
             withhold_vc: false,
@@ -2295,6 +2306,12 @@ impl WorldSim {
         if let Payload::Precommit { epoch, round, value, .. } = e.payload {
             if value != 0 && epoch >= self.epoch {
                 self.pc_held.entry((epoch, round, value)).or_default().insert(e.member);
+            }
+        }
+        // Review VC8R-1: and every signed prevote for a value, the same way.
+        if let Payload::Prevote { epoch, round, value } = e.payload {
+            if value != 0 && epoch >= self.epoch {
+                self.pv_held.entry((epoch, round, value)).or_default().insert(e.member);
             }
         }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
@@ -3482,6 +3499,28 @@ impl WorldSim {
         ms
     }
 
+    /// The members whose prevote for `v` in `round` counts toward a polka (a lock, a re-proposal's
+    /// valid round): those recorded in chain order, and (review VC8R-1) every member proven to have
+    /// forked its chain that signed one held here, wherever it sits in that chain, in any version, as
+    /// `precommitters` counts precommits. A faulty member's prevote counts once per value; two polkas
+    /// for different values of one round still need an honest member that prevoted both.
+    fn prevoters(&self, round: u32, v: u64) -> BTreeSet<MemberId> {
+        let mut ms: BTreeSet<MemberId> = self.vc.prevotes.get(&round).map(|r| r.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
+        if self.fixes_off & fix::VC8R1 == 0 {
+            if let Some(held) = self.pv_held.get(&(self.epoch, round, v)) {
+                ms.extend(held.iter().filter(|m| self.proofs.contains_key(m)));
+            }
+        }
+        ms
+    }
+
+    /// Whether a quorum (counted as the change `v` defines it) prevoted `v` in `round`.
+    fn polka(&self, round: u32, v: u64) -> bool {
+        let Some(xs) = self.excluded_of(v) else { return false };
+        let (base, _, q) = self.base(&xs);
+        self.prevoters(round, v).iter().filter(|m| base.contains(m)).count() >= q
+    }
+
     fn precommit_quorum(&self, round: u32, v: u64) -> bool {
         let Some(xs) = self.excluded_of(v) else { return false };
         let (base, _, q) = self.base(&xs);
@@ -4122,7 +4161,7 @@ impl WorldSim {
                 let decision = match ok {
                     None => None,
                     Some(ok) if vr == NO_ROUND => Some(ok && fresh_in_time && self.vc.locked.is_none_or(|(lv, _)| lv == v)),
-                    Some(ok) if vr < r && self.quorum_for(&self.vc.prevotes, vr, v) => {
+                    Some(ok) if vr < r && self.polka(vr, v) => {
                         Some(ok && self.vc.locked.is_none_or(|(lv, lr)| lr <= vr || lv == v))
                     }
                     Some(_) => None,
@@ -4139,7 +4178,7 @@ impl WorldSim {
         // Lines 36-43: a quorum prevoted the round's proposal: lock it and precommit it.
         if self.vc.step != Step::Propose && !self.vc.polka_done.contains(&r) {
             if let Some(&(v, _)) = self.vc.proposals.get(&r) {
-                if self.quorum_for(&self.vc.prevotes, r, v) {
+                if self.polka(r, v) {
                     let c = self.vc.changes.get(&v).cloned().unwrap_or_default();
                     let leads = self.change_leads(&c);
                     // My precommit caps my acks below the boundary only while it is still ahead of
@@ -4455,6 +4494,7 @@ impl WorldSim {
         self.votes.clear();
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
+        self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
         let unfreeze: Vec<MemberId> = self.frozen.keys().copied().filter(|m| !self.evicted.contains_key(m)).collect();
         for m in unfreeze {
             self.frozen.remove(&m);
