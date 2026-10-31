@@ -43,12 +43,34 @@ pe-app compare OUT
     `no_scenario_control`.
   * When the session ends, pe-app exits, and the harness with it.
 
+## R18: the link signal (design 10.9)
+
+SessionCore's congestion controller thins hand poses and acks when this member's uplink queue grows; pe-app
+measures that queue and feeds it (`set_link`) every tick.
+* **Estimate:** LEDBAT-style (RFC 6817). Every datagram carries a signed stamp: the sender's clock `ts`, a
+  per-destination `seq`, and `qrep`, the queue delay the sender measured on the recipient's datagrams.
+  * A receiver keeps, per sender, the one-way delay `recv − ts`, with `ts` unwrapped to 64 bits.
+  * **base** is the minimum over 12 buckets of 10 s; **current** is the minimum over the last 100 ms or
+    4 samples, whichever spans more. `current − base` goes back as `qrep`.
+  * A receive thread stamps each datagram at the socket, so tick time never reads as queueing.
+* **Feed:** the largest report from any member. A report is held up to 5 s; with none left, a value
+  inside the controller's dead band (25 ms) holds the level.
+* **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
+* `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
+* **Test tooling:** scripted faults take `rate_kbps` (a token bucket with a 4 kB burst), `queue_ms`
+  (tail drop, default 500) and `codel` (CoDel's control law, simplified). A step at `at_ms: 0` holds
+  from the node's start. `--hand-sweep` authors the member's ball-pit hand every frame. Each member
+  writes `link-<id>.csv`: level, signal, the cap's real queue, kbit/s and confirmation lag every 250 ms.
+
 ## Scripts
 
 * `m1-loopback.sh EXE OUT [PORT]`: the M1 scenario on one machine. Four members, loss and delay on
   members 2 and 3 (worse on 2→1 from 9 s to 14 s), and member 4 dropping out at 6 s. Then `compare`.
 * `linux.sh`: from Windows, copies HEAD into WSL and, there, does a native glibc build and runs the tests
   and `m1-loopback.sh`.
+* `r18-capped.sh EXE OUT CAP_KBPS [on|off] [PORT] [FRAMES]`: three members in a 500-ball pit, member 1
+  sweeping, 25 ± 5 ms one-way, and from 2 s a cap on member 1's uplinks (`CODEL=1` for CoDel).
+  `r18-report.py OUT` summarises it; `r18-linux.sh` runs the set natively in WSL.
 
 ## Evidence (`spikes/out/m1/`)
 
@@ -63,14 +85,25 @@ All measured. The current build (pe-session at p2/session f634185, with pe-physi
 | `agent-windows-session/` | On the first SessionCore build: Claude Code (Sonnet 5.5) drove member 1 of a live 4-peer session through pe-mcp over the pipe. Its touches were accepted and final, it saw member 4's eviction, and `scenario_check` was refused. Identical over 12000 frames |
 | `loopback-windows/`, `agent-windows/`, `linux-wsl.log`, `tailscale-windows-laptop/` | The same runs on pe-app's own core, before the port to pe-session |
 
+R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see design 10.9.
+
+| Run (member 1's uplinks capped from 2 s) | Result |
+|---|---|
+| No cap | Signal 2-3 ms mean, 6-8 ms max (the scripted jitter); level 0; ALL EQUAL |
+| 80 kbit/s, signal on | Member 1 cycles through levels 0-5 (level 5 30-33% of the time); its cap queue peaks at 387-388 ms, the signal at 362-372 ms; no drops; confirmation lag at most 37 frames; all 1800 frames, ALL EQUAL with all three members |
+| 80 kbit/s, signal off | Member 1 stays at level 0; its queue fills to the 500 ms limit (the others' estimate reads 450-475 ms) and about 800 of its datagrams are dropped; member 2 pauses at the speculation limit at 4.7 s; member 1 is removed at about 7 s; members 2 and 3 ALL EQUAL |
+| 80 kbit/s with CoDel, signal on (Windows) | Levels 0-5 (level 5 42%); queue mean 105 ms, max 330 ms; 176 CoDel and 40 tail drops; ALL EQUAL with all three members |
+
 ## Limits
 
 * One world. Membership is pe-session's view change: a member that drops out is removed. Joins are not
   supported (no join flow, and a state transfer does not fit a UDP datagram).
 * Faults are injected on the sender. Real loss between machines comes on top.
 * The node ticks every millisecond; `next_deadline` is there for a sleeping IO.
-* Repair traffic is not deferred on a long queue. Congestion control (R18) has a slot (`set_link`) but
-  stays at level 0.
+* Repair traffic is not deferred on a long queue.
+* R18 (see above): a path-delay increase reads as queue until it ages out of the 2-minute base (the
+  stream is thinned meanwhile, never stalled). A bottleneck that drops early (AQM) can keep the delay
+  under the 40 ms trigger; loss is not fed.
 * An item larger than the MTU goes out as one oversized datagram.
 * Datagrams can be replayed within a session (no nonce or recipient in them) until Noise in phase 3;
   the core drops entries it already holds.
