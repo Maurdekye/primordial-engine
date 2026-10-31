@@ -5,6 +5,6 @@ RESULT   per message      | 158.8 /  71.9 /  70.8 |  500 /  499 /  500 | 1208 | 
 RESULT     removed from the session (cut, from frame): {3: (43, 85)}
 RESULT   batched          | 135.1 /  69.6 /  71.2 |  500 /  500 /  500 | 1136 | 113 / 118 / 1003 | 233 / 236 / 1118 | 0 (own entries moved: 0) | 28.1/s,   3 | 0 ms | m1 12624ed5cee35a55 / m2 12624ed5cee35a55 replay 12624ed5cee35a55 EQUAL
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
-RESULT   batched+adaptive |  30.6 /  24.7 /  21.5 |  498 /  498 /  499 |   55 | 113 / 116 / 999 | 233 / 236 / 1118 | 0 (own entries moved: 0) |  3.8/s,   3 | 0 ms | m1 f5b08a682923f8b5 / m2 f5b08a682923f8b5 replay f5b08a682923f8b5 EQUAL
+RESULT   batched+adaptive |  30.6 /  24.7 /  21.5 |  498 /  498 /  499 |   55 | 113 / 116 / 999 | 233 / 236 / 1118 | 0 (own entries moved: 0) |  3.8/s,   3 | 0 ms | m1 5ddaa001114ebe31 / m2 5ddaa001114ebe31 replay 5ddaa001114ebe31 EQUAL
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [14508, 400, 400, 400, 400, 3794] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [9808, 400, 400, 400, 400, 8494] ms
