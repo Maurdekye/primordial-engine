@@ -406,11 +406,13 @@ fn removals_stick(b: &Book, dormant: bool) -> Option<String> {
     None
 }
 
-/// Invariant 7: two attested, valid certificates with one parent mean "disputed".
+/// Invariant 7: two attested, valid certificates with one parent, each with a wholly committed
+/// past, mean "disputed".
 fn dispute_visible(b: &Book) -> bool {
+    let committed = |id: CertId| b.inner.anc[&id].iter().all(|a| *a == b.genesis || b.inner.commits.contains_key(a));
     let mut by_prev: BTreeMap<CertId, usize> = BTreeMap::new();
     for (id, c) in &b.inner.certs {
-        if c.prev.len() == 1 && b.inner.commits.contains_key(id) && !b.inner.invalid.contains(id) {
+        if c.prev.len() == 1 && committed(*id) && !b.inner.invalid.contains(id) {
             *by_prev.entry(c.prev[0]).or_default() += 1;
         }
     }
