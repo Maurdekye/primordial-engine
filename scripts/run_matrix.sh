@@ -117,8 +117,15 @@ fi
 SH
 }
 
+# The committed logs carry no user name: home folders become <home>/ (Linux) and <local path>/
+# (Windows). matrix_digest.py skips run.log, so masking moves no digest.
+mask() {  # $1 file, rewritten in place
+  sed -i -E 's#/home/[^/[:space:]]+/#<home>/#g; s#[A-Za-z]:[/\]Users[/\][^/\[:space:]]+[/\]#<local path>/#g' "$1"
+}
+
 collect() {  # $1 column, $2 local directory holding run.log, env.txt and o/
   rm -rf $M/$1 && mkdir -p $M/$1 && cp -r "$2"/. $M/$1/
+  mask $M/$1/run.log; mask $M/$1/env.txt
   python -I scripts/matrix_digest.py digest $M/$1/o > /dev/null
   echo "$1: $(grep -h "^SUMMARY" $M/$1/run.log) $(tail -1 $M/$1/run.log)"
 }
@@ -131,6 +138,7 @@ for c in $RUNCOLS; do
       { uname -srm; echo "${PROCESSOR_IDENTIFIER:-}"; rustc -vV; echo "$REV (working tree)"; } > $M/win/env.txt 2>&1
       PE_OUT=$M/win/o PE_HEAVY=${PE_HEAVY:-} bash scripts/run_determinism.sh $PARTS > $M/win/run.log 2>&1
       echo "EXIT $?" >> $M/win/run.log
+      mask $M/win/run.log; mask $M/win/env.txt
       python -I scripts/matrix_digest.py digest $M/win/o > /dev/null
       echo "win: $(grep -h "^SUMMARY" $M/win/run.log) $(tail -1 $M/win/run.log)"
       ;;
