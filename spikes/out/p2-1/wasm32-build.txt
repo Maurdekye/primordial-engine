@@ -1,0 +1,11 @@
+commit a71c2a332b1431d19a261585285f8139f2418458
+working tree changes: 0
+rustc 1.99.0 (b940084d7 2026-09-28)
+host: x86_64-pc-windows-msvc
+LLVM version: 23.1.1
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling pe-core v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-core)
+   Compiling pe-sim v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-1\crates\pe-sim)
+    Finished `release` profile [optimized] target(s) in 2.59s
