@@ -283,12 +283,12 @@ impl SessionCore {
                     self.send_to(from, Class::Control, r);
                 }
             }
-            Msg::FetchEntry { id } => {
-                for r in self.sim.on_fetch_entry(id) {
+            Msg::FetchEntry { id, back } => {
+                for r in self.sim.on_fetch_entry(id, back) {
                     self.send_to(from, Class::Control, r);
                 }
             }
-            Msg::Join { member, attests } => self.sim.on_join(member, attests),
+            Msg::Join { member, attests, sig, expires } => self.sim.on_join(member, attests, sig, expires),
             // Design 9.5: the state is large, so it travels as a repair (the IO may drop it under a
             // long queue; the joiner asks again).
             Msg::FetchState => {
@@ -377,7 +377,8 @@ impl SessionCore {
                 s.send_to_all(&t.audience, class, Msg::Entry(e));
             }
         };
-        if ack_due {
+        // Test fixture (review VC3R-6): a joiner that starts from a state transfer acks only once admitted.
+        if ack_due && !(self.sim.quiet_until_member && !self.sim.membership().members().contains(&self.sim.me)) {
             self.next_ack_us = now_us + self.ack_every_us;
             let a = self.sim.author_ack();
             send(self, vec![a], Class::Live);

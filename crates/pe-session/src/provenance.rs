@@ -428,7 +428,7 @@ mod tests {
         let mut b = EpochBook { keys: PublicKeys::test(), ..EpochBook::default() };
         b.genesis(1, &[1, 2, 4], 100);
         b.genesis(2, &[1, 3], 100);
-        let change = Change { epoch: 0, remove: vec![Removal { member: 2, votes: vec![EntryId([11; 32]), EntryId([12; 32])], cut: (40, EntryId([99; 32])), kick: EntryId::NONE }], add: vec![], boundary: 300, excluded: vec![], admin: vec![], add_roles: vec![], add_attests: vec![] };
+        let change = Change { epoch: 0, remove: vec![Removal { member: 2, votes: vec![EntryId([11; 32]), EntryId([12; 32])], cut: (40, EntryId([99; 32])), kick: EntryId::NONE }], add: vec![], boundary: 300, excluded: vec![], admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };
         let value = change.value();
         let sig = |m| (m, test_fact_sig(m, 1, vc_fact(0, 1, value)));
         let c1 = EpochCert { world: 1, epoch: 1, change: change.clone(), round: 1, members: vec![1, 4], precommits: vec![sig(1), sig(4)], proofs: vec![] };
