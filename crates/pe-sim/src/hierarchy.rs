@@ -156,8 +156,11 @@ impl SimStore {
     /// coordinate, or one past 1,024 m), so such a move needs [`SimStore::set_parent_keep_world`] (review
     /// P21S-2).
     ///
-    /// Cost: O(depth) for the frame lookups plus the objects moved (review P21S-4). Loaders that build a long
-    /// chain should link it top-down or from the bottom up while its parents are still roots.
+    /// Cost: O(depth) for the frame lookups and the cycle check, plus the objects moved (review P21S-4).
+    /// The cycle check walks up from `parent`, so a loader that builds a long chain should link it from
+    /// the bottom up, each parent still a root when its child is attached: linked top-down, every link
+    /// walks the whole chain above it and the build is quadratic. A plain insert of a `Transform` onto
+    /// an object without a frame also visits that object's untransformed subtree.
     pub fn set_parent(&mut self, child: ObjectId, parent: Option<ObjectId>, index: Option<usize>) -> Result<(), Error> {
         self.check_move(child, parent)?;
         let new_frame = parent.and_then(|p| self.frame_or_self(p));
