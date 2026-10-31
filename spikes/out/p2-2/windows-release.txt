@@ -1,10 +1,10 @@
-commit 5245776cbf53da52d7eabbf80a600b2b1f6a753f
+commit 9927b7bf6594189a0732113f118d380d50e436e8
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
-   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-2\crates\pe-physics)
-    Finished `release` profile [optimized] target(s) in 1.67s
+   Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\setters\crates\pe-physics)
+    Finished `release` profile [optimized] target(s) in 2.45s
      Running unittests src\lib.rs (target\release\deps\pe_physics-41daad4c63025ae6.exe)
 
 running 0 tests
@@ -13,7 +13,16 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests\api.rs (target\release\deps\api-8ce4675f1ea04a4c.exe)
 
-running 13 tests
+running 16 tests
+test carried_state_lands_exactly ... RESULT carried state, off-centre, spinning, both sides true: first differing frame of 120 None
+RESULT carried state, asleep on the ground, both sides true: first differing frame of 120 None
+RESULT carried state, settling, sleep timer running, both sides true: first differing frame of 120 None
+RESULT carried state, rolling in contact, both sides true: first differing frame of 120 None
+RESULT carried state, off-centre, spinning, both sides false: first differing frame of 120 Some(0)
+RESULT carried state, asleep on the ground, both sides false: first differing frame of 120 Some(0)
+RESULT carried state, settling, sleep timer running, both sides false: first differing frame of 120 Some(9)
+RESULT carried state, rolling in contact, both sides false: first differing frame of 120 None
+ok
 test check_hash_is_canonical ... ok
 test foreign_and_corrupt_images ... ok
 test forged_confirmations_still_refused ... ok
@@ -28,9 +37,11 @@ test refusals_change_nothing ... ok
 test rolled_back_peer_has_the_straight_check_hash ... RESULT rollback check_hash after 60 frames 9e86908b0f8eee4b371aef141e6a9dbbc83f440f094546e93f03b45028dcde96
 ok
 test rotations_are_normalized ... ok
+test targets_drive_hands ... ok
+test transfer_canonical_after_destroy ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
      Running tests\spike_records.rs (target\release\deps\spike_records-207f697b9dc7d8da.exe)
 
@@ -89,7 +100,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.42s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.20s
 
    Doc-tests pe_physics
 
