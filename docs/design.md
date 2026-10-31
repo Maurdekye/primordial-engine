@@ -2169,6 +2169,11 @@ and the engager's hand replayed after the gesture had ended.
          send but never reads as queueing.
    * **Response:** six levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
      (after 300 ms below 10 ms).
+     * **It remembers the level that congested** (@coordinator-opus, 2026-10-31; D56). After congestion
+       at level L, it lowers back into L only after 5 s of calm instead of 300 ms, and forgets L after
+       30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Without it, a
+       stream at twice the cap cycled every 3.5 s: each 300 ms of calm lowered it back to level 0, and
+       the queue reached 340-390 ms before the raises caught up [V pe-app r18-app].
      * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
@@ -6214,7 +6219,10 @@ entry says so.
 * **D56. R18 defaults (10.9).** The controller thresholds:
   * **Settled (user, 19:11Z): as recommended.**
   * up above 40 ms of uplink queue, at most every 100 ms;
-  * down after 300 ms below 10 ms.
+  * down after 300 ms below 10 ms;
+  * within those, the level that last congested is re-entered only after 5 s of calm, and forgotten
+    after 30 s with no congestion (@coordinator-opus, 2026-10-31, from @shader-lang's 80 kbit/s
+    measurement; 10.9) [proposal: 5 s and 30 s].
 
   Production (pe-app) measures the queue as a LEDBAT-style one-way queueing delay (10.9, item 3) [V pe-app
   r18-app]. These defaults kept a 32-64 kbit/s cap
