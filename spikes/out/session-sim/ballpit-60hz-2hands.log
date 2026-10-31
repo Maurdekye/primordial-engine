@@ -1,12 +1,12 @@
 RESULT ballpit 60 Hz, 2 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 220 frames
 RESULT   perturbation source (hand target per frame + acks): hand entries 520 (6393 B/s payload, 13781 B/s wire est.), acks 255 (8639 B/s wire est.), all messages 23380 B/s wire est. (both directions)
-RESULT   naive state streaming measured on member 1: avg 375 balls changed per frame; exact state 1264619 B/s, quantized ~26 B/ball 587660 B/s (one direction, payload only)
+RESULT   naive state streaming measured on member 1: avg 380 balls changed per frame; exact state 1279751 B/s, quantized ~26 B/ball 594685 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
   sweep-window traffic ack: 255 messages, 18360 B payload (8639 B/s wire est.)
   sweep-window traffic entry/hand: 520 messages, 23400 B payload (13781 B/s wire est.)
   sweep-window traffic fetch: 54 messages, 702 B payload (959 B/s wire est.)
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 276.8 re-simulated frames/s, re-sim 3.23 ms per rendered sim frame (711 ms over the window); step avg 0.413 ms; max depth 12
-RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 607c5ff6dec64cc5 m2 607c5ff6dec64cc5 -> IDENTICAL
-  m1 world 1: rollbacks 222 max depth 14 resim frames 1150 (823.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 222 max depth 12 resim frames 1038 (726.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 522 frame 533
-RESULT ballpit 60Hz world 1: frames 0..510 digests m1=89bba46995b379c6 m2=89bba46995b379c6 | offline replay 89bba46995b379c6 | ALL EQUAL
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 276.8 re-simulated frames/s, re-sim 3.47 ms per rendered sim frame (763 ms over the window); step avg 0.453 ms; max depth 12
+RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 4b97f50d0b781517 m2 4b97f50d0b781517 -> IDENTICAL
+  m1 world 1: rollbacks 222 max depth 14 resim frames 1150 (876.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
+  m2 world 1: rollbacks 222 max depth 12 resim frames 1038 (778.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 522 frame 533
+RESULT ballpit 60Hz world 1: frames 0..510 digests m1=0aeefe23c4dff364 m2=0aeefe23c4dff364 | offline replay 0aeefe23c4dff364 | ALL EQUAL

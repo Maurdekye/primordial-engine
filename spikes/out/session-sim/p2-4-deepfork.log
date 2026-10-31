@@ -9,4 +9,4 @@ RESULT deepfork: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest 
   m1: conf 520 frame 527 members {1, 2, 3} evicted {9: (99, 197)} rollbacks 3 max depth 88 violations 0 equivocations 1 checks ok 36 bad 0
   m2: conf 520 frame 527 members {1, 2, 3} evicted {9: (99, 197)} rollbacks 4 max depth 90 violations 0 equivocations 1 checks ok 36 bad 0
   m3: conf 520 frame 527 members {1, 2, 3} evicted {9: (99, 197)} rollbacks 2 max depth 92 violations 0 equivocations 1 checks ok 36 bad 0
-RESULT deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A): frames 0..526 honest m1=ae6447bcb6732f99 m2=ae6447bcb6732f99 m3=ae6447bcb6732f99 | offline replay ae6447bcb6732f99 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A): frames 0..526 honest m1=b00bfc4e3cdee713 m2=b00bfc4e3cdee713 m3=b00bfc4e3cdee713 | offline replay b00bfc4e3cdee713 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
