@@ -11,13 +11,15 @@ impl WorldSim {
             self.stats.equivocations += 1;
             self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:?} / {b:?})"));
         }
+        let old_k = self.vcm.proofs.get(&m).map(|p| p.0);
         let (k0, a0, b0) = match self.vcm.proofs.get(&m) {
             Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
             _ => (k, a, b),
         };
         self.vcm.proofs.insert(m, (k0, a0, b0));
         // Review PF-1: m's proposals already held past its fork may never link here: keep them by value.
-        if self.fixes_off & fix::PF1 == 0 {
+        // Once per proof, or when it moves earlier (VC7R-6); later ones are kept as they arrive (insert).
+        if self.fixes_off & fix::PF1 == 0 && old_k.is_none_or(|ok| k0 < ok) {
             let held: Vec<EntryId> = self.by_author.range((m, k0)..=(m, u32::MAX)).map(|(_, &id)| id).collect();
             for id in held {
                 self.note_proposal(id);
@@ -199,7 +201,7 @@ impl WorldSim {
                     }
                     continue;
                 }
-                if self.polka_any(r, v) {
+                if self.cap_polka_holds(m, r, v) {
                     continue;
                 }
                 let ids = self.cap_polka.get(&m).cloned().unwrap_or_default();
@@ -209,7 +211,10 @@ impl WorldSim {
                     // round trip, so ids still missing a further half window after the cap ripened name
                     // prevotes nobody holds. The capper is voted out instead of the fetch being retried
                     // for good.
-                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + 2 * after {
+                    // Review VC7R-2: the fetch gets the allowance a slow member gets (`suspect_after`), on
+                    // top of the cap's ripening, not a further half window.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { after };
+                    if self.fixes_off & fix::VC6R1 == 0 && self.now >= at + after + budget {
                         if self.vcm.members.contains(&m) && !self.voted(m) && !self.held(m) {
                             self.ev(format!("member {m}'s precommit caps confirmation from frame {b} with polka prevotes nobody delivered in {after} frames: vote to remove it"));
                             out.extend(self.freeze_and_vote(m, 0, EntryId::NONE));
@@ -281,8 +286,12 @@ impl WorldSim {
                 if r.frozen.0 > 0 && !self.head_held(y, r.frozen) {
                     self.want_entry(v, r.frozen.1, 15);
                     self.want_entry_all(r.frozen.1, 15);
-                    if v != self.me && self.now >= r.at + self.cfg.window / 2 && self.vcm.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.vcm.withhold_vc {
-                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {} frames: vote to remove it", r.frozen.0, self.cfg.window / 2));
+                    // Review VC7R-2: the vote stops blocking resets after half a window (`fresh`, VC4R-5),
+                    // but its voter gets the slow-member allowance to deliver the head before it is voted
+                    // out: an honest voter's head may lie on a branch of a forker's chain only it holds.
+                    let budget = if self.fixes_off & fix::VC7R2 == 0 { self.cfg.suspect_after } else { self.cfg.window / 2 };
+                    if v != self.me && self.now >= r.at + budget && self.vcm.members.contains(&v) && !self.voted(v) && !self.held(v) && !self.vcm.withhold_vc {
+                        self.ev(format!("member {v}'s vote against {y} names a head of its chain, seq {}, that nobody has delivered in {budget} frames: vote to remove it", r.frozen.0));
                         out.extend(self.freeze_and_vote(v, 0, EntryId::NONE));
                     }
                 }
