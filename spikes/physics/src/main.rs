@@ -183,6 +183,12 @@ impl std::fmt::Display for Golden {
 /// Compare one scene with its golden: Box3D's C golden with `--upstream`, the engine golden
 /// otherwise (recorded 2026-10-30 with `engine_world_def`, HarmonicMean). `--no-recycle` has no
 /// golden and only prints the values.
+/// The golden for the precision Box3D was built with (D58: double by default). C's values are
+/// test_determinism.c's for each precision, as in the fork's determinism tests.
+fn precise<T>(single: T, double: T) -> T {
+    if box3d_rust::core::is_double_precision() { double } else { single }
+}
+
 fn check_golden(scene: &str, got: Golden, c: Golden, engine: Golden, t: std::time::Duration) -> bool {
     if NO_RECYCLE.load(Ordering::Relaxed) {
         println!("[INFO] {scene}: N/A (no golden for --no-recycle): {got} in {t:?}");
@@ -210,7 +216,13 @@ fn goldens() -> bool {
             }
         }
         let got = g(d.sleep_step, d.hash);
-        all &= check_golden("falling ragdolls", got, g(291, 0xFF4C_605B), g(358, 0xB1EB_47AE), t.elapsed());
+        all &= check_golden(
+            "falling ragdolls",
+            got,
+            precise(g(291, 0xFF4C_605B), g(263, 0xA542_3F98)),
+            precise(g(358, 0xB1EB_47AE), g(326, 0x5908_8655)),
+            t.elapsed(),
+        );
     }
     {
         let t = Instant::now();
@@ -225,7 +237,13 @@ fn goldens() -> bool {
             done = update_wave_pile(&world, &mut d);
         }
         let got = g(d.sleep_step, d.hash);
-        all &= check_golden("wave pile", got, g(272, 0x266F_83B0), g(307, 0x0809_EA96), t.elapsed());
+        all &= check_golden(
+            "wave pile",
+            got,
+            precise(g(272, 0x266F_83B0), g(272, 0xC8E5_F3D6)),
+            precise(g(307, 0x0809_EA96), g(299, 0xFF78_3571)),
+            t.elapsed(),
+        );
     }
     {
         let t = Instant::now();
@@ -244,8 +262,8 @@ fn goldens() -> bool {
         all &= check_golden(
             "query spawn",
             got,
-            q(242, 0xF3AD_9BA6, 59, 0xE327_1F3D),
-            q(242, 0x9EA3_A8B9, 59, 0xE327_1F3D),
+            precise(q(242, 0xF3AD_9BA6, 59, 0xE327_1F3D), q(242, 0x4895_85E6, 59, 0x5B44_29DC)),
+            precise(q(242, 0x9EA3_A8B9, 59, 0xE327_1F3D), q(242, 0x92E8_FC29, 59, 0x5B44_29DC)),
             t.elapsed(),
         );
     }
@@ -262,7 +280,13 @@ fn goldens() -> bool {
             done = update_mesh_drop(&world, &mut d);
         }
         let got = g(d.sleep_step, d.hash);
-        all &= check_golden("mesh drop", got, g(226, 0xD2FF_069D), g(220, 0xCE3B_7A62), t.elapsed());
+        all &= check_golden(
+            "mesh drop",
+            got,
+            precise(g(226, 0xD2FF_069D), g(218, 0xD378_CF04)),
+            precise(g(220, 0xCE3B_7A62), g(221, 0x9884_84F7)),
+            t.elapsed(),
+        );
     }
     all
 }
