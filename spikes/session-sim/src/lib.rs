@@ -667,8 +667,11 @@ impl Sim {
                             if let Action::Hand { obj, active: true, .. } = a {
                                 let k = if r.adapt { HAND_STRIDE[r.level] } else { 1 };
                                 // On frame ticks that are multiples of k, so the entry shares the
-                                // ack's datagram (review R3-9).
-                                if clock_frame % k != 0 || r.hand_last.get(&obj).is_some_and(|&l| clock_frame < l + k) {
+                                // ack's datagram (review R3-9): the first such tick after the last
+                                // entry. Not held back to last + k at a level change, which left a
+                                // gap longer than both strides (4 -> 5: 258, then 272; the matrix's
+                                // M1, fixed in pe-session at 649a77f).
+                                if clock_frame % k != 0 || r.hand_last.get(&obj).is_some_and(|&l| clock_frame <= l) {
                                     continue;
                                 }
                                 r.hand_last.insert(obj, clock_frame);

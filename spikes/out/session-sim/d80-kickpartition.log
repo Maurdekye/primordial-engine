@@ -8,4 +8,4 @@ RESULT kickpartition: decided during the partition: false; members after: m1 {1,
   m1: conf 707 frame 713 members {1, 2, 4} evicted {3: (56, 112)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 34 bad 0
   m2: conf 705 frame 713 members {1, 2, 4} evicted {3: (56, 112)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 35 bad 0
   m4: conf 705 frame 713 members {1, 2, 4} evicted {3: (56, 112)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 35 bad 0
-RESULT kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s): frames 0..712 honest m1=49ec9d2b22075277 m2=49ec9d2b22075277 m4=49ec9d2b22075277 | offline replay 49ec9d2b22075277 | ALL EQUAL, NO FALSE CHECKS ; checks ok 104 bad 0
+RESULT kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s): frames 0..712 honest m1=6f0a18c589f34ebe m2=6f0a18c589f34ebe m4=6f0a18c589f34ebe | offline replay 6f0a18c589f34ebe | ALL EQUAL, NO FALSE CHECKS ; checks ok 104 bad 0
