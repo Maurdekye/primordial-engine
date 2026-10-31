@@ -380,6 +380,14 @@ mod tests {
     }
 
     #[test]
+    fn state_messages_round_trip() {
+        let st = StateTransfer { world: 3, frame: 90, physics: vec![1, 2, 3], store: vec![4; 40], tables: encode_tables(&sample()) };
+        for m in [Msg::FetchState, Msg::State(Box::new(st))] {
+            assert_eq!(decode_msg(&encode_msg(&m)), Some(m));
+        }
+    }
+
+    #[test]
     fn tables_reader_refuses_non_canonical_bytes() {
         let b = encode_tables(&sample());
         // Trailing byte; truncated.
