@@ -1220,8 +1220,8 @@ dependencies = [
 name = "pe-session-sim"
 version = "0.0.1"
 dependencies = [
- "pe-sim-core",
- "pe-spike-session-sim",
+ "pe-session",
+ "pe-session-harness",
  "serde",
  "toml",
 ]
