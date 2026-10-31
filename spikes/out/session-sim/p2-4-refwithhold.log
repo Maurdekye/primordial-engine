@@ -7,4 +7,4 @@ RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highe
   m1: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 48 bad 0
   m2: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
   m3: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
-RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=db57cebb86cb483c m2=db57cebb86cb483c m3=db57cebb86cb483c | offline replay db57cebb86cb483c | ALL EQUAL, NO FALSE CHECKS ; checks ok 144 bad 0
+RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=a68f2519818221ba m2=a68f2519818221ba m3=a68f2519818221ba | offline replay a68f2519818221ba | ALL EQUAL, NO FALSE CHECKS ; checks ok 144 bad 0
