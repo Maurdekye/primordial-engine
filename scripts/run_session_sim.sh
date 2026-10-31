@@ -38,8 +38,17 @@ for v in badvote liar crashstall; do run review3-$v $v; done
 # equivocating proposer, a join, and the D80 quorum comparisons (twosilent5 and bridge run both rules;
 # bridge under a strict majority forks by design, and each side is checked on its own).
 for v in twosilent twosilent5 withheld colluders badproposer bridge join refwithhold; do run p2-4-$v $v; done
-# A member moves only its own hand (design 8.4; P2-8 review).
+# A member moves only its own hand, and touches or carries no one else's (design 8.4; P2-8 review, HO-1).
 run handowner handowner
+# P2-4 review round 2 (design 10.8): each repro also reports its run with the fix switched off.
+for v in fork9 jointiming bogusprecommit futureack; do run p2-4-$v $v; done
+# D80 admins and roles (design 10.8, 12.1): kicks in commit order, a kick across a partition, the last
+# admin, closing a session with no admin, the join rules.
+for v in kickwar kickpartition lastadmin adminclose joinrules; do run d80-$v $v; done
+# Review VC-1, a control outside the check below (expected to fork): three of six collude, above the
+# bound of t(6) = 1 faulty member.
+mkdir -p $O/p2-4-controls
+"$B" onesided > "$O/p2-4-controls/onesided.log" 2>&1; echo "== control onesided"; grep "^RESULT" "$O/p2-4-controls/onesided.log"
 run p2-4-vcscale-64 vcscale --members 64 --silent 2
 run p2-4-vcscale-256 vcscale --members 256 --silent 2 --no-heads
 # Fail on any fork, replay mismatch, panic, false check or lost/duplicated object (reviews NEW-2, NEW-7).
