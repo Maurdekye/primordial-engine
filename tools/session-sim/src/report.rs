@@ -117,6 +117,10 @@ pub const CHECKS: &[&str] = &[
     "adminfork",
     "prevotefork",
     "prevotefork_off",
+    "prevotefork_pf",
+    "capfake",
+    "fakeadmin",
+    "adminwedge",
 ];
 
 /// What the run left for the reports besides the simulator.
@@ -130,6 +134,28 @@ pub struct Ctx {
     pub fork_info: Option<String>,
     /// The members `go_silent` silenced.
     pub silenced: Vec<MemberId>,
+    /// `admin_wedge`'s (round-0 proposer, partitioned member, step reached, crash time in us).
+    pub wedge: Option<(MemberId, MemberId, u32, Option<u64>)>,
+}
+
+/// Whether every one of `ids` still confirms near its present at the end of the run (session-sim
+/// p24r4.rs `live`): a halted member sits at the speculation limit, a whole window past its
+/// confirmed frame.
+fn live(sim: &Sim, ids: &[MemberId]) -> bool {
+    ids.iter().all(|&m| {
+        let r = &sim.replica(m, 1).sim;
+        r.frame.saturating_sub(r.conf) < r.cfg.window
+    })
+}
+
+/// The epoch each of `ids` ends in: "m1 1, m2 1, ...".
+fn epochs(sim: &Sim, ids: &[MemberId]) -> String {
+    ids.iter().map(|&m| format!("m{m} {}", sim.replica(m, 1).sim.epoch)).collect::<Vec<_>>().join(", ")
+}
+
+/// "2, 3, 9, 5".
+fn id_list(ids: &[MemberId]) -> String {
+    ids.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 /// Finished runs kept by name (a part's `keep`), with when they panicked.
@@ -944,12 +970,38 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
             if case == "prevotefork_off" {
                 println!("  m{obs} votes to remove capper {capper}: {voted}");
             } else {
+                // Round 7: liveness of the members other than the faulty proposer (`honest`).
                 let kept = sim.replica(obs, 1).sim.members.contains(&capper) && sim.replica(capper, 1).sim.members.contains(&capper);
+                let ok = live(sim, honest);
                 println!(
-                    "RESULT {label}: m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept} -> {}",
-                    if !voted && kept { "THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE" } else { "FAIL" }
+                    "RESULT {label}: m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; epochs at the end: {}; confirmation live at the end ({}): {ok} -> {}",
+                    epochs(sim, members),
+                    id_list(honest),
+                    if !voted && kept && ok { "THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE, AND CONFIRMATION GOES ON" } else { "FAIL" }
                 );
             }
+        }
+        "prevotefork_pf" => {
+            println!("  epochs at the end: {}; confirmation live at the end ({}): {}", epochs(sim, members), id_list(honest), live(sim, honest));
+        }
+        "capfake" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            println!("REPRO {label}: {t} removed at {}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
+        }
+        "fakeadmin" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let vcs = sim.replica(a, 1).sim.vc_log.len();
+            println!("REPRO {label}: {t} removed at {}; decisions at m{a} {vcs}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
+        }
+        "adminwedge" => {
+            let t = need(target, case, "target");
+            let (p0, part, step, crash_at) = ctx.wedge.expect("adminwedge: validated to have an admin_wedge behaviour");
+            println!(
+                "REPRO {label}: proposer(0,0)={p0}, partitioned {part}; step reached {step}, {t} crashed at {crash_at:?} us; {t} removed at {}; live at the end: {}; {}",
+                secs(removed_at(sim, 1, t)),
+                live(sim, honest),
+                confs(sim, honest)
+            );
         }
         _ => panic!("check: unknown case `{case}`"),
     }
