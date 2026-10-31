@@ -332,10 +332,7 @@ pub fn prepare_distance_joint(world: &World, base: &mut JointSim, context: &Step
     joint.distance_softness = make_soft(joint.hertz, joint.damping_ratio, context.h);
 
     if !context.enable_warm_starting {
-        joint.impulse = 0.0;
-        joint.lower_impulse = 0.0;
-        joint.upper_impulse = 0.0;
-        joint.motor_impulse = 0.0;
+        joint.reset_impulses();
     }
 }
 
