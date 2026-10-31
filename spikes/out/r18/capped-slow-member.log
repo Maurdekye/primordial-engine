@@ -7,4 +7,4 @@ RESULT   batched          | 135.1 /  69.6 /  71.2 |  500 /  500 /  500 | 1136 | 
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
 RESULT   batched+adaptive |  30.6 /  24.7 /  21.5 |  498 /  498 /  499 |   55 | 113 / 116 / 999 | 233 / 236 / 1118 | 0 (own entries moved: 0) |  3.8/s,   3 | 0 ms | m1 f5b08a682923f8b5 / m2 f5b08a682923f8b5 replay f5b08a682923f8b5 EQUAL
 RESULT     removed from the session (cut, from frame): {3: (43, 84)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [14508, 400, 400, 400, 400, 3794] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [5108, 5100, 5100, 400, 400, 3794] ms
