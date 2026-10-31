@@ -179,46 +179,19 @@ impl WorldSim {
     }
 
     /// The check hash at this frame (design 9.1, P22R-1), used at confirmed check frames (review H4):
-    /// BLAKE3 over pe-physics's full-state check hash (canonical whichever way the state was reached:
-    /// review NEW-7, tests/physics_check_hash.rs), the sim store's canonical serialization (the bytes a
-    /// state transfer carries) and the world-level tables.
+    /// [`check_hash_of`] the state's canonical parts. pe-physics's part is canonical whichever way the
+    /// state was reached (review NEW-7, tests/physics_check_hash.rs).
     pub fn check_hash(&mut self) -> CheckHash {
         let t0 = now_us();
         let physics = self.world.check_hash().expect("a usable physics world");
         let t1 = now_us();
         // A NaN is a deterministic error on every peer, never hashed (review P21-5).
         self.store.check_values().expect("no invalid value in the engine tables");
-        let mut h = blake3::Hasher::new();
-        h.update(b"pe-check");
-        h.update(&physics.0);
-        h.update(&self.store.snapshot().to_bytes());
-        for w in self.tables_words() {
-            h.update(&w.to_le_bytes());
-        }
-        let c = CheckHash(*h.finalize().as_bytes());
+        let c = check_hash_of(&physics, self.frame, &self.store.snapshot().to_bytes(), &encode_tables(&self.t));
         self.stats.checks += 1;
         self.stats.check_physics_us += t1 - t0;
         self.stats.check_rest_us += now_us() - t1;
         c
-    }
-
-    /// The world-level tables, canonically, as 64-bit words (the per-object tables are the store's).
-    pub(super) fn tables_words(&self) -> Vec<u64> {
-        let mut v = vec![self.frame];
-        for (t, e) in &self.t.escrow {
-            v.extend([*t, e.obj as u64, e.status as u64, e.depart_frame, e.record.map_or(0, |r| r.state.hash())]);
-        }
-        for (t, a) in &self.t.arrivals {
-            match a {
-                Arrival::Accepted { obj, frame } => v.extend([*t, 1, *obj as u64, *frame]),
-                Arrival::Rejected { frame, until } => v.extend([*t, 2, *frame, *until]),
-            }
-        }
-        for (g, s) in &self.t.seen {
-            s.hash_into(*g, &mut v);
-        }
-        v.push(self.t.portal_open as u64);
-        v
     }
 
     /// The per-frame state hash (design 9.1): XXH64 over pe-physics's per-frame hash (body transforms,
@@ -227,9 +200,8 @@ impl WorldSim {
         let mut h = pe_core::hash::Hasher::new(STATE_HASH_SEED);
         h.write_u64(self.world.state_hash().expect("a usable physics world"));
         h.write_u64(self.store.checked_state_hash().expect("no invalid value in the engine tables"));
-        for w in self.tables_words() {
-            h.write_u64(w);
-        }
+        h.write_u64(self.frame);
+        h.write(&encode_tables(&self.t));
         h.finish()
     }
 
