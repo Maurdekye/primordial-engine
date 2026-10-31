@@ -50,9 +50,10 @@ measures that queue and feeds it (`set_link`) every tick.
 * **Estimate:** LEDBAT-style (RFC 6817). Every datagram carries a signed stamp: the sender's clock `ts`, a
   per-destination `seq`, and `qrep`, the queue delay the sender measured on the recipient's datagrams.
   * A receiver keeps, per sender, the one-way delay `recv − ts`, with `ts` unwrapped to 64 bits.
-  * **base** is the minimum over 12 buckets of 10 s; **current** is the minimum over the last 100 ms or
-    4 samples, whichever spans more. `current − base` goes back as `qrep`.
-  * A receive thread stamps each datagram at the socket, so tick time never reads as queueing.
+  * **base** is the minimum over 12 buckets of 10 s (2 minutes), expired by time; **current** is the
+    minimum over the last 100 ms or 4 samples, whichever spans more. `current − base` goes back as `qrep`.
+  * A receive thread stamps each datagram at the socket, so tick time never reads as queueing. It holds
+    at most 1024 datagrams for the engine and drops beyond that, as a full socket buffer would.
 * **Feed:** the largest report from any member. A report is held up to 5 s; with none left, a value
   inside the controller's dead band (25 ms) holds the level.
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
@@ -101,9 +102,15 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
 * Faults are injected on the sender. Real loss between machines comes on top.
 * The node ticks every millisecond; `next_deadline` is there for a sleeping IO.
 * Repair traffic is not deferred on a long queue.
-* R18 (see above): a path-delay increase reads as queue until it ages out of the 2-minute base (the
-  stream is thinned meanwhile, never stalled). A bottleneck that drops early (AQM) can keep the delay
-  under the 40 ms trigger; loss is not fed.
+* R18 (see above):
+  * A path-delay increase reads as queue until it ages out of the 2-minute base (the stream is thinned
+    meanwhile, never stalled); a standing queue lasting longer than 2 minutes becomes the base, and the
+    stream then takes its share of tail drops (the loss rule is a follow-up).
+  * Clock drift between two machines moves the estimate by up to 12 ms over the base window at 100 ppm.
+  * A bottleneck that drops early (AQM) can keep the delay under the 40 ms trigger; loss is not fed.
+  * A link below level 5's rate (about 60 kbit/s per link for a sweeping member in the 500-ball pit)
+    still removes the member.
+  * One faulty member can hold the session at level 5 with large reports: coarser hands, no safety cost.
 * An item larger than the MTU goes out as one oversized datagram.
 * Datagrams can be replayed within a session (no nonce or recipient in them) until Noise in phase 3;
   the core drops entries it already holds.
