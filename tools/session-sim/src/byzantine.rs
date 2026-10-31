@@ -353,8 +353,9 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                     // A touch of a free ball that carries a state for the other member's hand, 2 m
                     // above where this member sees it.
                     let r = sim_mut(sim, member, 1);
-                    if let Some(mut st) = r.obj_state(hand) {
-                        st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                    if let Some(st) = r.obj_state(hand) {
+                        let [x, y, z] = st.pos_f64();
+                        let st = st.with_pos([x, y + 2.0, z]);
                         let e = r.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (hand, st));
                         sim.net.send(1, member, to, &Msg::Entry(e));
                     }
