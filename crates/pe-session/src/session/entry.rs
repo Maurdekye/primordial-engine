@@ -83,11 +83,11 @@ impl BodyState {
     pub fn ang(&self) -> [f32; 3] {
         [self.f(10), self.f(11), self.f(12)]
     }
-    /// Overwrite the body's state with these exact bits (pe-physics keeps them: S2). Refused, and
+    /// Overwrite the body's state with these exact bits, awake (pe-physics `set_state`: every peer
+    /// writes a touch's carried state, the toucher included, review SET-1/SET-2). Refused, and
     /// nothing written, for a state outside pe-physics's limits.
     pub fn write(&self, world: &mut PhysicsWorld, id: ObjectId) -> Result<(), pe_physics::PhysicsError> {
-        world.set_pose(id, Pose { position: self.pos().map(f64::from), rotation: self.rot() })?;
-        world.set_velocity(id, self.lin(), self.ang())
+        world.set_state(id, Pose { position: self.pos().map(f64::from), rotation: self.rot() }, self.lin(), self.ang())
     }
     pub fn hash(&self) -> u64 {
         fnv_u64s(self.0.iter().map(|&b| b as u64))
