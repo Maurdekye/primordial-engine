@@ -6,12 +6,13 @@
 //!   on in two lineages, and the copies meet and merge. An honest step is never refused for capacity
 //!   (`Quota`, `Full`), and `Budget` only once its signers really used their shares (checked against
 //!   an independent count).
-//! * A1: holds former owners' keys, removed owners' keys, stolen recovery keys and stranger keys,
+//! * A1: holds former owners' keys, removed owners' keys, stolen recovery keys (a current one acts as
+//!   its owner's key, OT = (a); a replaced one is a former key) and stranger keys,
 //!   and in some runs a current co-owner's key; forks anywhere, mints key chains, floods, pads,
 //!   strips, replays and reorders certificates.
 //! * A2: A1 plus sessions of its own (lineages 8 and 9) attesting anything at any frames, with
-//!   signer subsets the certificates really carry. Forged signer sets (OWNT-1) and the window and
-//!   recovery machinery are deferred with the trust root (D87): removed under OT(a).
+//!   signer subsets the certificates really carry. Forged signer sets (OWNT-1) are deferred to bound
+//!   session lineages (D87); OT = (a) removed the window and recovery machinery.
 //! * Relay: holds no key that matters; sends orphans with made-up parents, unsigned and stranger-
 //!   signed certificates, stripped and partial copies, and attestations before their certificates.
 //!
@@ -74,8 +75,8 @@ struct History {
 /// Invariant 9's reference, computed from the history alone (not from the book's budget state): each
 /// owner's remaining solo changes after the counting chain up to `head`. A genesis owner starts with
 /// SOLO_CERTS over the genesis owners; an owner it signs an addition for receives its remaining over
-/// the new owner count; a solo change it signs (itself or through its recovery key) costs it one;
-/// Leave and clearing a recovery key cost nothing. Who owns what at each step (validity) is read from
+/// the new owner count; a change some owner doesn't sign (itself or through its recovery key, a plain
+/// backup) costs each signing owner one; Leave and clearing a recovery key cost nothing. Who owns what at each step (validity) is read from
 /// the book. None for a history with merges (copies join by min and max; not modelled here).
 fn reference_remaining(b: &Book, head: CertId) -> Option<BTreeMap<Key, u32>> {
     let mut past: Vec<CertId> = b.inner.anc[&head].iter().copied().filter(|x| b.counts(*x)).collect();
@@ -96,22 +97,17 @@ fn reference_remaining(b: &Book, head: CertId) -> Option<BTreeMap<Key, u32>> {
         let st = &b.inner.eff[&c.prev[0]];
         let sg = &b.inner.signers[&x];
         let by: Vec<Key> = st.owners.iter().copied().filter(|o| sg.contains(o) || st.recovery.get(o).is_some_and(|r| r.keys().any(|k| sg.contains(k)))).collect();
-        let solo = !matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. }) && !st.owners.is_subset(sg) && !by.is_empty();
+        let solo = !matches!(c.change, Change::Leave { .. } | Change::SetRecovery { recovery: None, .. }) && by.len() < st.owners.len() && !by.is_empty();
         let before = rem.clone();
         if let Change::Add { key } = c.change {
             let n = st.owners.len() as u32 + 1;
             let mut gift = 0;
-            for g in st.owners.iter().filter(|o| sg.contains(o)) {
+            for g in &by {
                 let give = before.get(g).copied().unwrap_or(0) / n;
                 *rem.entry(*g).or_default() -= give;
                 gift += give;
             }
             rem.insert(key, gift);
-        }
-        if let Change::FinishRecover { owner } = c.change
-            && let Some(r) = st.recovering.get(&owner)
-        {
-            rem.insert(r.new_key, before.get(&owner).copied().unwrap_or(0));
         }
         if solo {
             for o in by {
@@ -127,7 +123,7 @@ fn reference_remaining(b: &Book, head: CertId) -> Option<BTreeMap<Key, u32>> {
 fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Insert, OwnError> {
     let v = h.book.view();
     let o: Vec<Key> = v.owners.owners.iter().copied().collect();
-    h.frame += if rng.chance(15) { OBJECTION_FRAMES + 1 } else if rng.chance(10) { RECOVERY_FRAMES + 1 } else { 1 + rng.below(10) as u64 };
+    h.frame += 1 + rng.below(10) as u64;
     if v.heads.len() > 1 {
         // Copies met: merge them first.
         let m = cert_on(&h.book, v.heads.clone(), Change::Merge, &o);
@@ -135,6 +131,17 @@ fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Inser
     }
     let head = v.heads[0];
     let others = |k: Key| -> Vec<Key> { o.iter().copied().filter(|&x| x != k).collect() };
+    // An owner with a backup key, and the backup (OT = (a): it signs as the owner).
+    let backup = v.owners.recovery.iter().find(|(k, _)| o.contains(k)).map(|(&k, r)| (k, *r.keys().next().unwrap()));
+    // Every owner signs, one through its backup key if it has one (its own key lost).
+    let with_backup = || -> Vec<Key> {
+        let mut ks = o.clone();
+        if let Some((k, r)) = backup {
+            ks.retain(|&x| x != k);
+            ks.push(r);
+        }
+        ks
+    };
     let (change, keys): (Change, Vec<Key>) = match rng.below(10) {
         0 | 1 => {
             h.next_key += 1;
@@ -151,23 +158,24 @@ fn honest_step(rng: &mut Rng, h: &mut History, lineage: Lineage) -> Result<Inser
             (Change::SetRecovery { owner: k, recovery: Some(h.next_key) }, vec![k])
         }
         4 => {
-            let k = rng.pick(&o).unwrap();
-            (Change::Challenge { key: k }, others(k))
-        }
-        5 => match v.owners.challenges.keys().next() {
-            Some(&k) => (Change::RemoveDormant { key: k }, others(k)),
-            None => return Err(OwnError::WindowOpen),
-        },
-        6 => {
-            let Some((&k, r)) = v.owners.recovery.iter().next() else { return Err(OwnError::Signers) };
-            let by = *r.keys().next().unwrap();
+            // A lost key: the backup names a new backup (the old one becomes a former key).
+            let Some((k, r)) = backup else { return Err(OwnError::Signers) };
             h.next_key += 1;
-            (Change::StartRecover { owner: k, new_key: h.next_key }, vec![by])
+            h.recovery_keys.insert(h.next_key);
+            (Change::SetRecovery { owner: k, recovery: Some(h.next_key) }, vec![r])
         }
-        7 => match v.owners.recovering.iter().next() {
-            Some((&k, r)) => (Change::FinishRecover { owner: k }, vec![r.by]),
-            None => return Err(OwnError::WindowOpen),
-        },
+        5 => {
+            h.next_key += 1;
+            (Change::Add { key: h.next_key }, with_backup())
+        }
+        6 => {
+            let Some((k, _)) = backup else { return Err(OwnError::Signers) };
+            (Change::SetRecovery { owner: k, recovery: None }, vec![k])
+        }
+        7 => {
+            let rule = [SignRule::All, SignRule::Threshold(2), SignRule::Any][rng.below(3)];
+            (Change::SetRule { rule }, with_backup())
+        }
         8 => {
             let k = rng.pick(&o).unwrap();
             (Change::Remove { key: k }, others(k))
@@ -279,7 +287,7 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
         let c = match rng.below(15) {
             0 | 1 => cert_on(book, vec![parent], Change::Add { key: sock }, &signers),
             2 => cert_on(book, vec![parent], Change::Leave { key: target }, &signers),
-            3 => cert_on(book, vec![parent], Change::Challenge { key: victim }, &signers),
+            3 => cert_on(book, vec![parent], Change::SetRecovery { owner: victim, recovery: Some(sock) }, &signers),
             4 => cert_on(book, vec![parent], Change::Remove { key: victim }, &signers),
             5 => cert_on(book, vec![parent], Change::SetRule { rule: SignRule::Any }, &signers),
             6 => cert_on(book, vec![parent], Change::SetRecovery { owner: target, recovery: Some(sock) }, &signers),
@@ -341,7 +349,8 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
             if rng.chance(30)
                 && let Some(&p) = book.cert(id).and_then(|c| c.prev.first())
             {
-                book.record(p, lineage, frame.saturating_sub(OBJECTION_FRAMES + 1));
+                // Its parent recorded at an earlier frame in the same session.
+                book.record(p, lineage, frame.saturating_sub(rng.below(1000) as u64 + 1));
             }
         } else {
             let _ = book.insert(c);
@@ -428,12 +437,12 @@ fn check_charges(v: &Book, ctx: &str) {
     assert!(inherited.values().all(|&n| n <= INHERITED_PER_CERT), "{ctx}: a certificate over its inherited quota");
 }
 
-type Essence = (BTreeSet<Key>, SignRule, bool, BTreeMap<Key, BTreeMap<Key, CertId>>, BTreeMap<Key, CertId>, BTreeMap<Key, Recovering>, Vec<CertId>, bool);
+type Essence = (BTreeSet<Key>, SignRule, bool, BTreeMap<Key, BTreeMap<Key, CertId>>, Vec<CertId>, bool);
 
 /// The view minus what may legitimately differ (refused certificates).
 fn essence(v: &View) -> Essence {
     let o = &v.owners;
-    (o.owners.clone(), o.rule, o.no_removal, o.recovery.clone(), o.challenges.clone(), o.recovering.clone(), v.heads.clone(), v.disputed)
+    (o.owners.clone(), o.rule, o.no_removal, o.recovery.clone(), v.heads.clone(), v.disputed)
 }
 
 /// Rebuild a book from its certificates and attestations (invariant 4). `batch`: one batch, in a
@@ -505,11 +514,6 @@ fn added_keys(b: &Book) -> BTreeSet<Key> {
             Change::Add { key } => {
                 keys.insert(*key);
             }
-            Change::FinishRecover { owner } => {
-                if let Some(r) = b.inner.eff.get(&c.prev[0]).and_then(|s| s.recovering.get(owner)) {
-                    keys.insert(r.new_key);
-                }
-            }
             _ => {}
         }
     }
@@ -517,8 +521,8 @@ fn added_keys(b: &Book) -> BTreeSet<Key> {
 }
 
 /// Invariant 6: a key a counting removal took out is out of the view, unless a counting addition that
-/// removal didn't see brought it back. `dormant`: also for window removals and recoveries.
-fn removals_stick(b: &Book, dormant: bool) -> Option<String> {
+/// removal didn't see brought it back. `removals`: also for rule C's removals (not only Leave).
+fn removals_stick(b: &Book, removals: bool) -> Option<String> {
     let refused: BTreeSet<CertId> = b.inner.view.refused.iter().map(|(c, _)| *c).collect();
     let owners = &b.inner.view.owners.owners;
     if b.inner.view.owners.nobody_left {
@@ -531,8 +535,7 @@ fn removals_stick(b: &Book, dormant: bool) -> Option<String> {
         }
         let gone = match c.change {
             Change::Leave { key } => Some(key),
-            Change::RemoveDormant { key } | Change::Remove { key } if dormant => Some(key),
-            Change::FinishRecover { owner } if dormant => Some(owner),
+            Change::Remove { key } if removals => Some(key),
             _ => None,
         };
         let Some(k) = gone else { continue };
@@ -626,7 +629,7 @@ fn check(seed: u64, residual: &mut Residual) {
         // 1: every owner was added by a counting certificate.
         let added = added_keys(&v);
         assert!(vv.owners.owners.is_subset(&added), "{ctx}: an owner nobody added: {:?}", vv.owners.owners.difference(&added).collect::<Vec<_>>());
-        // 6: removals stick (Leave against both; windows and recoveries against A1 only, OT(a)).
+        // 6: removals stick (Leave against both; rule C's removals against A1 only).
         if let Some(e) = removals_stick(&v, !sessions_too) {
             panic!("{ctx}: {e}");
         }
@@ -651,12 +654,10 @@ fn check(seed: u64, residual: &mut Residual) {
                 let hd = vv.heads[0];
                 let mut fresh: Key = 600_000;
                 for &k in &ks {
+                    // An owner key names a backup for itself; a backup key, for its owner.
                     let change = |fresh: Key| {
-                        if vv.owners.owners.contains(&k) {
-                            Some(Change::SetRecovery { owner: k, recovery: Some(fresh) })
-                        } else {
-                            vv.owners.recovery.iter().find(|(_, r)| r.contains_key(&k)).map(|(&q, _)| Change::StartRecover { owner: q, new_key: fresh })
-                        }
+                        let owner = if vv.owners.owners.contains(&k) { Some(k) } else { vv.owners.recovery.iter().find(|(_, r)| r.contains_key(&k)).map(|(&q, _)| q) };
+                        owner.map(|q| Change::SetRecovery { owner: q, recovery: Some(fresh) })
                     };
                     for _ in 0..UNATTESTED_PER_KEY + 2 {
                         fresh += 1;

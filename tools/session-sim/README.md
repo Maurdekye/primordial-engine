@@ -43,7 +43,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `r14/` | 14 | R14 settled handoff: ok, abort, reject, throttle, forge (16 attacks, P2-5's dishonest-majority world W included), late, crash, chain (P2-5: A -> B -> C -> A), and ok/abort/reject/chain in reverse peer order; plus P2-5's two controls, forge-no-provenance and doublespend |
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
-| `ownership/` | 1 | world ownership (design 12.5): forged, rogue, recovery-key and removed-owner certificates refused; a double sale in one frame detected, disputed until a merge, every replica equal to the replay |
+| `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame refused as stale, every replica equal to the replay |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 
@@ -189,11 +189,10 @@ Backdated touches are a plan action (`backdated`).
 
 An `owner` plan action publishes a world-ownership certificate built on the member's present
 ownership head and signed by `signers` (spike signatures: any member can sign as any key). `change` is
-`add`, `leave`, `remove` (rule C only), `challenge`, `remove_dormant` or `finish_recover` (with `key`),
-`set_recovery` (`key` is the owner, `recovery` the key, or none to clear it), `start_recover` (`key`
-the owner, `new_key` its replacement), `set_rule` (`rule`) or `merge` (joins every head). The world
-needs `owners`. A certificate applies at its entry's frame, which is the session time the windows
-count.
+`add`, `leave` or `remove` (rule C only) with `key`, `set_recovery` (`key` is the owner, `recovery` its
+backup key, or none to clear it), `set_rule` (`rule`) or `merge` (joins every head). An owner's
+recovery key signs as the owner (consent-only ownership, OT = (a)). The world needs `owners`. A
+certificate applies at its entry's frame, where the session attests it.
 
 ### Reports: `[[report]]`
 

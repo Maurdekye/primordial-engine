@@ -20,8 +20,6 @@ const EVE: Key = 66;
 /// Two session lineages (two disconnected copies of the world).
 const L1: Lineage = 1;
 const L2: Lineage = 2;
-const W: u64 = OBJECTION_FRAMES;
-const RF: u64 = RECOVERY_FRAMES;
 
 fn next(book: &Book, prev: CertId, change: Change, keys: &[Key]) -> Cert {
     let seq = book.cert(prev).unwrap().seq + 1;
@@ -129,63 +127,14 @@ fn no_instant_removal_under_rule_a() {
     let mut b3 = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
     assert_eq!(commit(&mut b3, Change::Remove { key: S }, &[B, C], 1), Err(OwnError::NotAllowed));
     let mut any = Book::new(Cert::genesis(&[S, B], SignRule::Any, 1)).unwrap();
-    assert_eq!(commit(&mut any, Change::Challenge { key: S }, &[B], 1), Err(OwnError::NotAllowed));
-}
-
-#[test]
-fn objection_window_in_a_session() {
-    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    assert_eq!(commit(&mut b, Change::Challenge { key: S }, &[B], 10), Err(OwnError::Signers));
-    assert_eq!(commit(&mut b, Change::Challenge { key: S }, &[B, C], 10), Ok(Insert::Applied));
-    assert_eq!(commit(&mut b.clone(), Change::RemoveDormant { key: S }, &[B, C], 10 + W - 1), Err(OwnError::WindowOpen));
-    // S signs anything during the window: it is cancelled.
-    let mut b2 = b.clone();
-    assert_eq!(commit(&mut b2, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 20), Ok(Insert::Applied));
-    assert_eq!(commit(&mut b2, Change::RemoveDormant { key: S }, &[B, C], 10 + W), Err(OwnError::WindowOpen));
-    // S stays silent: the others remove it once the window has run.
-    assert_eq!(commit(&mut b, Change::RemoveDormant { key: S }, &[B, C], 10 + W), Ok(Insert::Applied));
-    assert_eq!(owners(&b), [B, C]);
-}
-
-/// The target cancels on a concurrent branch that the window's own session attested within it.
-#[test]
-fn concurrent_cancel_in_the_same_lineage_protects_the_target() {
-    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    let g = b.genesis;
-    let ch = put(&mut b, g, Change::Challenge { key: S }, &[B, C], Some((L1, 5)));
-    put(&mut b, ch, Change::RemoveDormant { key: S }, &[B, C], Some((L1, 5 + W)));
-    assert_eq!(owners(&b), [B, C]);
-    // Frames of another lineage are no clock for this window (OWNS-1c): no effect.
-    let other = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 100)));
-    assert_eq!(owners(&b), [B, C]);
-    b.record(other, L1, 100);
-    assert_eq!(owners(&b), [S, B, C]);
-}
-
-/// OWNR-2: neither an unattested signature nor one attested after the completion undoes it.
-#[test]
-fn completed_removal_is_not_undone_later() {
-    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    let g = b.genesis;
-    let ch = put(&mut b, g, Change::Challenge { key: S }, &[B, C], Some((L1, 5)));
-    let rd = put(&mut b, ch, Change::RemoveDormant { key: S }, &[B, C], Some((L1, 5 + W)));
-    put(&mut b, ch, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], None);
-    put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S], Some((L2, 6 + W)));
-    assert_eq!(owners(&b), [B, C]);
-    // A later co-signature by the removed key on the main chain changes nothing either.
-    let c = next(&b, rd, Change::SetRule { rule: SignRule::All }, &[B, C]).signed(&[S]);
-    let id = c.id();
-    b.insert(c).unwrap();
-    b.record(id, L1, 10 + W);
-    assert_eq!(owners(&b), [B, C]);
+    assert_eq!(commit(&mut any, Change::Remove { key: S }, &[B], 1), Err(OwnError::NotAllowed));
 }
 
 /// OWNR-3: a completed window verifies offline from the certificates and the attestations.
 #[test]
 fn offline_verification_with_attestations() {
-    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    commit(&mut b, Change::Challenge { key: S }, &[B, C], 5).unwrap();
-    commit(&mut b, Change::RemoveDormant { key: S }, &[B, C], 5 + W).unwrap();
+    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::Threshold(2), 1)).unwrap();
+    commit(&mut b, Change::Remove { key: S }, &[B, C], 5).unwrap();
     let certs: Vec<Cert> = b.prefix_of(head(&b)).into_iter().filter(|c| c.seq > 0).collect();
     let g = b.cert(b.genesis).unwrap().clone();
     let attests = b.export(L1, &[1, 2, 3]);
@@ -202,67 +151,6 @@ fn offline_verification_with_attestations() {
         a.sigs.truncate(1);
     }
     assert_eq!(set(&verify_chain(&g, &certs, &forged, &sessions()).unwrap()), [S, B, C]);
-}
-
-/// OWNR-1 (a): after a cancelled removal, the remaining owner can't add alone on that branch.
-#[test]
-fn add_after_a_cancelled_removal_does_not_count() {
-    let mut b = Book::new(Cert::genesis(&[A, B], SignRule::All, 1)).unwrap();
-    let g = b.genesis;
-    let ch = put(&mut b, g, Change::Challenge { key: B }, &[A], Some((L1, 1)));
-    put(&mut b, ch, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], Some((L1, 2)));
-    let rd = put(&mut b, ch, Change::RemoveDormant { key: B }, &[A], Some((L1, 1 + W)));
-    put(&mut b, rd, Change::Add { key: X }, &[A], Some((L1, 2 + W)));
-    assert_eq!(owners(&b), [A, B]);
-}
-
-/// OWNR-1 (b): a cancelled recovery's new key can't act.
-#[test]
-fn add_after_a_cancelled_recovery_does_not_count() {
-    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
-    let g = b.genesis;
-    let r = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L1, 1)));
-    let st = put(&mut b, r, Change::StartRecover { owner: S, new_key: N }, &[R], Some((L1, 2)));
-    put(&mut b, st, Change::SetRule { rule: SignRule::All }, &[S], Some((L1, 3)));
-    let fin = put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some((L1, 2 + RF)));
-    put(&mut b, fin, Change::Add { key: EVE }, &[N], Some((L1, 3 + RF)));
-    assert_eq!(owners(&b), [S]);
-}
-
-/// OWN-6: a recovery key never signs for its owner; it only replaces a lost key, after a delay the
-/// owner cancels.
-#[test]
-fn recovery_replaces_a_lost_key_only() {
-    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
-    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
-    assert_eq!(commit(&mut b, Change::Add { key: R2 }, &[R, B], 2), Err(OwnError::Signers));
-    assert_eq!(commit(&mut b, Change::Leave { key: S }, &[R], 2), Err(OwnError::Signers));
-    assert_eq!(commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(EVE) }, &[B], 2), Err(OwnError::Signers));
-    assert_eq!(commit(&mut b, Change::StartRecover { owner: S, new_key: N }, &[EVE], 2), Err(OwnError::Signers));
-    assert_eq!(commit(&mut b, Change::StartRecover { owner: S, new_key: N }, &[R], 2), Ok(Insert::Applied));
-    let mut cancel = b.clone();
-    assert_eq!(commit(&mut cancel, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S], 3), Ok(Insert::Applied));
-    assert_eq!(commit(&mut cancel, Change::FinishRecover { owner: S }, &[R], 2 + RF), Err(OwnError::WindowOpen));
-    assert_eq!(commit(&mut b.clone(), Change::FinishRecover { owner: S }, &[R], 1 + RF), Err(OwnError::WindowOpen));
-    assert_eq!(commit(&mut b, Change::FinishRecover { owner: S }, &[R], 2 + RF), Ok(Insert::Applied));
-    assert_eq!(owners(&b), [B, N]);
-    assert!(b.view().owners.recovery.is_empty());
-}
-
-/// OWN-6: a recovery key replaced (attested) before it starts a recovery on another copy is dead.
-#[test]
-fn rotated_recovery_key_is_dead_on_every_branch() {
-    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
-    let g = b.genesis;
-    let r1 = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L1, 1)));
-    put(&mut b, r1, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S], Some((L1, 2)));
-    // R forks at r1 and replaces S there, in the same session after the rotation.
-    let st = put(&mut b, r1, Change::StartRecover { owner: S, new_key: EVE }, &[R], Some((L1, 3)));
-    put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some((L1, 3 + RF)));
-    let v = b.view();
-    assert_eq!(set(&v), [S, B]);
-    assert!(v.refused.contains(&(st, OwnError::Revoked)));
-    assert_eq!(v.owners.recovery[&S].keys().copied().collect::<Vec<_>>(), [R2]);
 }
 
 /// The sole owner sells twice on two disconnected copies (two sessions).
@@ -360,8 +248,7 @@ fn unattested_fork_add_blocks_nothing() {
     commit(&mut b, Change::Add { key: A }, &[S], 1).unwrap();
     commit(&mut b, Change::Add { key: K }, &[S, A], 2).unwrap();
     commit(&mut b, Change::Leave { key: S }, &[S], 3).unwrap();
-    commit(&mut b, Change::Challenge { key: K }, &[A], 4).unwrap();
-    commit(&mut b, Change::RemoveDormant { key: K }, &[A], 4 + W).unwrap();
+    commit(&mut b, Change::Leave { key: K }, &[K], 4).unwrap();
     assert_eq!(owners(&b), [A]);
     let g = b.genesis;
     put(&mut b, g, Change::Add { key: Z }, &[S], None);
@@ -414,16 +301,34 @@ fn leave_sticks_across_forks() {
 /// OWN-3: a fork from an older, smaller owner set doesn't keep that set's power.
 #[test]
 fn old_state_fork_needs_the_owners_added_since() {
-    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::Threshold(2), 1)).unwrap();
     let g = b.genesis;
     let c1 = put(&mut b, g, Change::Add { key: I }, &[S], Some((L1, 1)));
     let c2 = put(&mut b, c1, Change::Add { key: J }, &[S, I], Some((L1, 2)));
     put(&mut b, c2, Change::SetRule { rule: SignRule::All }, &[S, I, J], Some((L1, 3)));
-    // S forks at "Add I" in a session of its own, then removes I there: J never agreed.
+    // S forks at "Add I" in a session of its own and, a step later, removes I there (rule C: 2 of
+    // the others, so S alone at that state): J, added since the fork, never agreed.
     b.record(c1, L2, 1);
-    let ch = put(&mut b, c1, Change::Challenge { key: I }, &[S], Some((L2, 2)));
-    put(&mut b, ch, Change::RemoveDormant { key: I }, &[S], Some((L2, 2 + W)));
+    let x = put(&mut b, c1, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L2, 2)));
+    put(&mut b, x, Change::Remove { key: I }, &[S], Some((L2, 3)));
     assert_eq!(owners(&b), [S, I, J]);
+}
+
+/// The stated limit of OWN-3 (D87): a removal is checked against the owners added by certificates
+/// whose parent is a strict ancestor of its own parent, the ones the causal-order pass has already
+/// judged, so the check has no cycles. A removal right at the fork point (or with the addition further
+/// down the other branch) escapes it. Rule C only (rule A has no removal), it needs a session of the
+/// attacker's own (A2), and it shows: attested siblings mean "disputed".
+#[test]
+fn removal_at_the_fork_point_is_the_stated_residual() {
+    let mut b = Book::new(Cert::genesis(&[S], SignRule::Threshold(2), 1)).unwrap();
+    let g = b.genesis;
+    let c1 = put(&mut b, g, Change::Add { key: I }, &[S], Some((L1, 1)));
+    put(&mut b, c1, Change::Add { key: J }, &[S, I], Some((L1, 2)));
+    b.record(c1, L2, 1);
+    put(&mut b, c1, Change::Remove { key: I }, &[S], Some((L2, 2)));
+    assert_eq!(owners(&b), [S, J]);
+    assert!(b.view().disputed);
 }
 
 /// Each copy's owners add independently while disconnected, and the copies join (OWNS-3). A removal
@@ -434,12 +339,8 @@ fn copies_add_independently_but_remove_only_with_the_other_copy() {
     let mut b = sold_twice(&b0, &certs);
     put(&mut b, certs[1].id(), Change::Add { key: EVE }, &[B], Some((L1, 9)));
     assert_eq!(owners(&b), [B, C, EVE]);
-    let mut b2 = sold_twice(&b0, &certs);
-    let e = put(&mut b2, certs[1].id(), Change::Add { key: EVE }, &[B], Some((L1, 9)));
-    let ch = put(&mut b2, e, Change::Challenge { key: EVE }, &[B], Some((L1, 10)));
-    put(&mut b2, ch, Change::RemoveDormant { key: EVE }, &[B], Some((L1, 10 + W)));
-    // B alone can't remove EVE: C, added on the other copy, never agreed.
-    assert_eq!(owners(&b2), [B, C, EVE]);
+    // Removal under rule A doesn't exist (consent only); OWN-3 under rule C is
+    // old_state_fork_needs_the_owners_added_since.
 }
 
 /// OWN-5: the same certificates and attestations give the same book in any arrival order.
@@ -540,7 +441,7 @@ fn concurrent_rules_take_the_strictest() {
 #[test]
 fn signature_copies_converge() {
     let b0 = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    let x = next(&b0, b0.genesis, Change::Challenge { key: S }, &[B, C]);
+    let x = next(&b0, b0.genesis, Change::Add { key: X }, &[B, C]);
     let x2 = x.clone().signed(&[S]);
     assert_eq!(x.id(), x2.id());
     let (mut b1, mut b2) = (b0.clone(), b0.clone());
@@ -617,8 +518,7 @@ fn fork_proof_prefix_order_and_merges() {
     let m = merge(&b, &[B]);
     b.insert(m.clone()).unwrap();
     b.record(m.id(), L1, 19);
-    let ch = put(&mut b, m.id(), Change::Challenge { key: C }, &[B], Some((L1, 20)));
-    let rd = put(&mut b, ch, Change::RemoveDormant { key: C }, &[B], Some((L1, 20 + W)));
+    let rd = put(&mut b, m.id(), Change::Leave { key: C }, &[C], Some((L1, 20)));
     assert_eq!(owners(&b), [B]);
     let x = next(&b, rd, Change::Add { key: I }, &[B]);
     let y = next(&b, rd, Change::Add { key: J }, &[B]);
@@ -652,10 +552,6 @@ fn wire_round_trip_and_one_encoding() {
         Change::SetRecovery { owner: S, recovery: Some(0) },
         Change::SetRecovery { owner: S, recovery: None },
         Change::Remove { key: X },
-        Change::Challenge { key: X },
-        Change::RemoveDormant { key: X },
-        Change::StartRecover { owner: S, new_key: N },
-        Change::FinishRecover { owner: S },
     ] {
         certs.push(Cert { world: 5, seq: 1, prev: vec![1], change, sigs: vec![] }.signed(&[S, B]));
     }
@@ -666,6 +562,11 @@ fn wire_round_trip_and_one_encoding() {
         assert_eq!(Cert::from_words(&w), None);
     }
     assert_eq!(Cert::from_words(&[1, 2, 3]), None);
+    // The window and recovery changes (codes 7, 8, 10, 11) are gone (OT = (a)).
+    for code in [7, 8, 10, 11] {
+        assert_eq!(Cert::from_words(&[5, 1, 1, 1, code, X as u64, N as u64, 0]), None);
+        assert_eq!(Cert::from_words(&[5, 1, 1, 1, code, X as u64, 0]), None);
+    }
 }
 
 // ---- review round 3 (OWNS-*), from @design-reviewer's repros (runs13/own3-reviewer-tests.patch),
@@ -706,63 +607,14 @@ fn owns5c_signature_subsets_are_one_certificate() {
     assert_eq!(b.len(), 2);
 }
 
-/// OWNS-1c: after a recovery completed in L1, the old key's cancel attested by another lineage at a
-/// frame it picks changes nothing: frames are compared within one lineage only.
-#[test]
-fn owns1c_cross_lineage_cancel_does_not_undo_a_recovery() {
-    for at in [(L1, 3 + RF), (L2, 5)] {
-        let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
-        commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
-        commit(&mut b, Change::StartRecover { owner: S, new_key: N }, &[R], 2).unwrap();
-        let st = head(&b);
-        commit(&mut b, Change::FinishRecover { owner: S }, &[R], 2 + RF).unwrap();
-        put(&mut b, st, Change::SetRecovery { owner: S, recovery: Some(EVE) }, &[S], Some(at));
-        assert_eq!(owners(&b), [B, N], "cancel attested at {at:?}");
-    }
-}
-
-/// OWNS-1d: residual without a trust root (D87). An active co-owner removed through a window that the
-/// challenger ran in a session of its own.
-#[test]
-#[ignore = "residual until the trust root is decided (D87)"]
-fn owns1d_private_window_never_removes_an_active_co_owner() {
-    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
-    commit(&mut b, Change::Challenge { key: B }, &[S], 1).unwrap();
-    let ch = head(&b);
-    commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R) }, &[B], 2).unwrap();
-    b.record(ch, L2, 1_000_000);
-    let rd = put(&mut b, ch, Change::RemoveDormant { key: B }, &[S], Some((L2, 1_000_000 + W)));
-    put(&mut b, rd, Change::Add { key: EVE }, &[S], Some((L2, 1_000_001 + W)));
-    assert_eq!(owners(&b), [S, B]);
-}
-
-/// OWNS-1a: residual without a trust root (D87). A stolen recovery key replaces an active owner in a
-/// session of its own.
-#[test]
-#[ignore = "residual until the trust root is decided (D87)"]
-fn owns1a_stolen_recovery_key_never_replaces_an_active_owner() {
-    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
-    let g = b.genesis;
-    let r = put(&mut b, g, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], Some((L1, 1)));
-    put(&mut b, r, Change::SetRule { rule: SignRule::All }, &[S], Some((L1, 1000)));
-    let st = put(&mut b, r, Change::StartRecover { owner: S, new_key: N }, &[R], Some((L9, 1 << 50)));
-    let fin = put(&mut b, st, Change::FinishRecover { owner: S }, &[R], Some((L9, (1 << 50) + RF)));
-    put(&mut b, fin, Change::Add { key: EVE }, &[N], Some((L9, (1 << 50) + RF + 1)));
-    assert_eq!(owners(&b), [S]);
-}
-
 /// OWNS-2: unattested removals void nothing.
 #[test]
 fn owns2_unattested_counter_removal_voids_nothing() {
-    let mut b = Book::new(Cert::genesis(&[A, K], SignRule::All, 1)).unwrap();
+    let mut b = Book::new(Cert::genesis(&[A, K], SignRule::Threshold(1), 1)).unwrap();
     let g = b.genesis;
-    let ch = put(&mut b, g, Change::Challenge { key: K }, &[A], Some((L1, 1)));
-    put(&mut b, ch, Change::RemoveDormant { key: K }, &[A], Some((L1, 1 + W)));
+    put(&mut b, g, Change::Remove { key: K }, &[A], Some((L1, 1)));
     // K, removed, answers unattested on the genesis: nobody who matters at a head pays for it.
-    let c2 = next(&b, g, Change::Challenge { key: A }, &[K]);
-    let c3 = Cert { world: b.world, seq: 2, prev: vec![c2.id()], change: Change::RemoveDormant { key: A }, sigs: vec![] }.signed(&[K]);
-    let _ = b.insert(c2);
-    let _ = b.insert(c3);
+    let _ = b.insert(next(&b, g, Change::Remove { key: A }, &[K]));
     assert_eq!(owners(&b), [A]);
 }
 
@@ -892,34 +744,6 @@ fn s9() -> StaticEpochs {
 }
 
 #[test]
-#[ignore = "deferred: window and recovery machinery, removed under OT(a); see D87"]
-fn rv4_owt1_attest_claims_absent_signer() {
-    let mut b = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    commit(&mut b, Change::Challenge { key: S }, &[B, C], 5).unwrap();
-    commit(&mut b, Change::RemoveDormant { key: S }, &[B, C], 5 + W).unwrap();
-    let rd = head(&b);
-    commit(&mut b, Change::Add { key: X }, &[B, C], 6 + W).unwrap();
-    let before = owners(&b);
-    let ok = b.attest(&Attest::make(b.world, rd, L9, 1, &[S, B, C].into(), &[99]), &s9());
-    println!("REPRO OWNT-1 (no key, one-member session claims S signed the RemoveDormant): attest accepted {ok}; owners {before:?} -> {:?}", owners(&b));
-}
-
-#[test]
-#[ignore = "deferred: window and recovery machinery, removed under OT(a); see D87"]
-fn rv4_owt1b_reattest_undoes_recovery() {
-    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
-    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
-    commit(&mut b, Change::StartRecover { owner: S, new_key: N }, &[R], 2).unwrap();
-    commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B], 3).unwrap();
-    let y = head(&b);
-    commit(&mut b, Change::FinishRecover { owner: S }, &[R], 2 + RF).unwrap();
-    commit(&mut b, Change::Add { key: X }, &[B, N], 3 + RF).unwrap();
-    let before = owners(&b);
-    let ok = b.attest(&Attest::make(b.world, y, L9, 7, &[S, B].into(), &[99]), &s9());
-    println!("REPRO OWNT-1b (re-attest B's cert inside the delay with S added): accepted {ok}; owners {before:?} -> {:?}", owners(&b));
-}
-
-#[test]
 fn rv4_owt2_minted_keys_fill_the_cap() {
     let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
     commit(&mut b, Change::Add { key: B }, &[S], 1).unwrap();
@@ -934,26 +758,6 @@ fn rv4_owt2_minted_keys_fill_the_cap() {
     }
     assert!(b.len() <= 3 + UNATTESTED_PER_KEY, "{} certs stored", b.len());
     assert_eq!(commit(&mut b, Change::Add { key: C }, &[B], 3), Ok(Insert::Applied));
-}
-
-#[test]
-#[ignore = "deferred: window and recovery machinery, removed under OT(a); see D87"]
-fn rv4_owt3_recovery_key_fills_the_session() {
-    let mut b = Book::new(Cert::genesis(&[S], SignRule::All, 1)).unwrap();
-    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
-    let mut n = 0;
-    let mut stop = None;
-    for i in 0..MAX_CERTS as u32 {
-        match commit(&mut b, Change::StartRecover { owner: S, new_key: 5000 + i }, &[R], 2 + i as u64) {
-            Ok(_) => n += 1,
-            Err(e) => {
-                stop = Some(e);
-                break;
-            }
-        }
-    }
-    let r = commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[S], 5000);
-    println!("REPRO OWNT-3 (stolen recovery key commits StartRecovers in the session): {n} committed (stopped {stop:?}); owner's cancel -> {r:?}");
 }
 
 #[test]
@@ -997,7 +801,7 @@ fn rv4_owt5_attests_after_certs() {
 #[test]
 fn rv4_owt6_equal_frame_attests() {
     let mut b0 = Book::new(Cert::genesis(&[S, B, C], SignRule::All, 1)).unwrap();
-    commit(&mut b0, Change::Challenge { key: S }, &[B, C], 5).unwrap();
+    commit(&mut b0, Change::SetRecovery { owner: C, recovery: Some(R2) }, &[C], 5).unwrap();
     let x = next(&b0, head(&b0), Change::SetRecovery { owner: B, recovery: Some(R) }, &[B, S]);
     b0.insert(x.clone()).unwrap();
     let a1 = Attest::make(b0.world, x.id(), L9, 7, &[B].into(), &[99]);
@@ -1124,7 +928,7 @@ fn rv5_ownu4_one_owner_fills_the_pool() {
     }
     for &(at, r) in &named {
         for j in 0..UNATTESTED_PER_KEY as u32 {
-            let _ = b.insert(next(&b, at, Change::StartRecover { owner: S, new_key: 900_000 + r * 100 + j }, &[r]));
+            let _ = b.insert(next(&b, at, Change::SetRecovery { owner: S, recovery: Some(900_000 + r * 100 + j) }, &[r]));
         }
     }
     let honest = next(&b, head(&b), Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B]);
@@ -1194,7 +998,7 @@ fn rv6_ownv1_quota_charged_to_an_honest_key() {
     let xid = x.id();
     assert_eq!(b.insert(x), Ok(Insert::Applied));
     for i in 0..UNATTESTED_PER_KEY as u32 {
-        let _ = b.insert(next(&b, xid, Change::StartRecover { owner: S, new_key: 700_000 + i }, &[R]));
+        let _ = b.insert(next(&b, xid, Change::SetRecovery { owner: S, recovery: Some(700_000 + i) }, &[R]));
     }
     let p1 = next(&b, h, Change::SetRecovery { owner: B, recovery: Some(R2 + 1) }, &[B]);
     assert_eq!(b.clone().insert(p1), Ok(Insert::Applied));
@@ -1217,17 +1021,20 @@ fn rv6_ownv1_invited_key_spends_inviters_quota() {
     assert_eq!(b.insert(ps), Ok(Insert::Applied));
 }
 
-/// OWNV-2: a stolen recovery key that spent its owner's solo share can still be revoked by the owner
-/// alone: clearing one's own recovery key is never capped.
+/// OWNV-2 (consent only: a recovery key is a backup with its owner's power): a stolen backup key that
+/// spent its owner's solo share can still be cleared by the owner alone.
 #[test]
 fn rv6_ownv2_recovery_key_spends_owner_share() {
-    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::Any, 1)).unwrap();
     commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    let mut n = 0;
     for i in 0..MAX_CERTS as u32 {
-        if commit(&mut b, Change::StartRecover { owner: S, new_key: 800_000 + i }, &[R], 2 + i as u64).is_err() {
+        if commit(&mut b, Change::Add { key: 800_000 + i }, &[R], 2 + i as u64).is_err() {
             break;
         }
+        n += 1;
     }
+    assert!(n > 0 && n < SOLO_CERTS, "R added {n}");
     assert_eq!(commit(&mut b, Change::SetRecovery { owner: S, recovery: None }, &[S], 9000), Ok(Insert::Applied));
     assert!(!b.view().owners.recovery.contains_key(&S));
 }
@@ -1321,7 +1128,7 @@ fn rv7_ownw1_cosign_veto() {
         commit(&mut b, Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B], 2).unwrap();
         let h2 = head(&b);
         for i in 0..UNATTESTED_PER_KEY as u32 + 4 {
-            let _ = b.insert(next(&b, h1, Change::StartRecover { owner: S, new_key: 900_000 + i }, &[R]));
+            let _ = b.insert(next(&b, h1, Change::SetRecovery { owner: S, recovery: Some(900_000 + i) }, &[R]));
         }
         let p = next(&b, h2, Change::Add { key: X }, &[S]);
         let pid = p.id();
@@ -1376,4 +1183,24 @@ fn rv7_ownw4_batch_uses_old_head_keys() {
     let refused = fresh.insert_attested(&[c1.clone(), x.clone()], &[attest_of(&b0, &c1, L1, 1)], &sessions());
     assert!(refused.is_empty(), "{refused:?}");
     assert!(fresh.cert(x.id()).is_some());
+}
+
+/// Consent only (OT = (a)): a recovery key is a plain backup of its owner's key. Its signature counts
+/// as the owner's, for any change; nothing waits for a delay, and nobody else can remove the owner.
+#[test]
+fn backup_key_acts_as_its_owner() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    assert_eq!(commit(&mut b, Change::Add { key: X }, &[R, B], 2), Ok(Insert::Applied));
+    assert_eq!(owners(&b), [S, B, X]);
+    // Not a key of B's, so not enough for B.
+    assert_eq!(commit(&mut b, Change::Add { key: Z }, &[S, R, X], 3), Err(OwnError::Signers));
+    // Under rule A nobody is removed, whoever signs.
+    assert_eq!(commit(&mut b, Change::Remove { key: B }, &[S, X], 3), Err(OwnError::NotAllowed));
+    // The backup rotates itself, then the new one makes its owner leave.
+    assert_eq!(commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R2) }, &[R], 3), Ok(Insert::Applied));
+    assert_eq!(commit(&mut b, Change::Add { key: Z }, &[R, B, X], 4), Err(OwnError::Signers), "a replaced backup is no key of S's");
+    assert_eq!(commit(&mut b, Change::Leave { key: S }, &[R2], 4), Ok(Insert::Applied));
+    assert_eq!(owners(&b), [B, X]);
+    assert!(b.view().owners.recovery.is_empty());
 }

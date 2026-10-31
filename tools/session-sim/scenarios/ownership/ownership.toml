@@ -1,5 +1,5 @@
 description = """
-World ownership (design 12.5, rule A): a world's ownership chain carried in its session log. Key 10 creates the world and is its sole owner. Refused: a stranger's forged transfer, a co-owner adding a sock puppet alone, a recovery key signing for its owner, an instant removal (rule A removes only through the objection window), a removal after the target cancelled its window by signing, and the last owner leaving. The sole owner then tries to sell twice in one frame: the session commits the first sale, and refuses the second as stale (built on an older head), so within a session there is no double sale. A merge with nothing to merge is refused. A recovery key starts replacing its owner's key; finishing before the 7-day delay is refused. The session attests every certificate it commits at its frame. Every replica holds the same owners at every frame as an offline replay."""
+World ownership (design 12.5, rule A, consent-only: user ruling OT = (a)): a world's ownership chain carried in its session log. Key 10 creates the world and is its sole owner. Refused: a stranger's forged transfer, a co-owner adding a sock puppet alone, a removal of a co-owner (rule A removes nobody against their will), and the last owner leaving. A recovery key is a plain backup of its owner's key: 10's backup key 50 co-signs an addition for 10, 30's backup key 52 makes 30 leave, and 50 clears itself. The sole owner then tries to sell twice in one frame: the session commits the first sale, and refuses the second as stale (built on an older head), so within a session there is no double sale. A merge with nothing to merge is refused. The session attests every certificate it commits at its frame. Every replica holds the same owners at every frame as an offline replay."""
 
 end_ms = 7000
 
@@ -17,15 +17,13 @@ epoch_ms = 100
 seed = 0x0E
 owners = { keys = [10], rule = "all", nonce = 1 }
 
-# Keys: 10 the creator, 20 and 30 co-owners, 40 and 41 two buyers, 50 10's recovery key, 52 30's,
-# 60 a replacement key, 66 a stranger. Members publish certificates that key holders signed
-# (spike signatures).
+# Keys: 10 the creator, 20 and 30 co-owners, 40 and 41 two buyers, 50 10's backup key, 52 30's,
+# 60 41's, 66 a stranger. Members publish certificates that key holders signed (spike signatures).
 [world.1.plan]
 1 = [
     { at = 60, owner = { change = "add", key = 20, signers = [10] } },
     { at = 150, owner = { change = "set_recovery", key = 10, recovery = 50, signers = [10] } },
-    { at = 220, owner = { change = "remove", key = 30, signers = [10, 20] } },
-    { at = 250, owner = { change = "remove_dormant", key = 30, signers = [10, 20] } },
+    { at = 220, owner = { change = "set_recovery", key = 30, recovery = 52, signers = [30] } },
     { at = 290, owner = { change = "leave", key = 10, signers = [10] } },
     { at = 300, owner = { change = "add", key = 40, signers = [10] } },
     { at = 360, owner = { change = "add", key = 66, signers = [10] } },
@@ -34,19 +32,17 @@ owners = { keys = [10], rule = "all", nonce = 1 }
 2 = [
     { at = 90, owner = { change = "add", key = 66, signers = [66] } },
     { at = 180, owner = { change = "add", key = 30, signers = [50, 20] } },
-    { at = 230, owner = { change = "challenge", key = 30, signers = [10, 20] } },
-    { at = 280, owner = { change = "leave", key = 30, signers = [30] } },
+    { at = 230, owner = { change = "leave", key = 20, signers = [20] } },
     { at = 300, owner = { change = "add", key = 41, signers = [10] } },
-    { at = 340, owner = { change = "start_recover", key = 10, new_key = 60, signers = [50] } },
+    { at = 340, owner = { change = "set_recovery", key = 10, signers = [50] } },
     { at = 200, touch = { obj = 12, impulse = [1.0, 5.0, 0.0] } },
 ]
 3 = [
     { at = 120, owner = { change = "add", key = 66, signers = [20] } },
-    { at = 200, owner = { change = "add", key = 30, signers = [10, 20] } },
-    { at = 240, owner = { change = "set_recovery", key = 30, recovery = 52, signers = [30] } },
-    { at = 260, owner = { change = "leave", key = 20, signers = [20] } },
+    { at = 200, owner = { change = "remove", key = 30, signers = [10, 20] } },
+    { at = 240, owner = { change = "leave", key = 30, signers = [52] } },
     { at = 330, owner = { change = "merge", signers = [40] } },
-    { at = 350, owner = { change = "finish_recover", key = 10, signers = [50] } },
+    { at = 350, owner = { change = "set_recovery", key = 41, recovery = 60, signers = [41] } },
 ]
 
 [net]
@@ -57,7 +53,7 @@ link = { delay_ms = 30, jitter_ms = 10, loss_pct = 1 }
 kind = "ownership"
 frames = 380
 label = "ownership"
-at = [250, 320, 345]
+at = [210, 250, 320, 345]
 [[report]]
 kind = "check_world"
 frames = 380
