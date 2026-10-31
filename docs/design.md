@@ -21,7 +21,7 @@ against this list. Where the order changed an answer, the text says so. Examples
 * confirmation-based finality, which makes commits final in about 0.14 s instead of 2 s (6.4, 15.2);
 * the body budget (D2);
 * the ball pit's perturbation-source design (7.5);
-* `rel-fast` as the iteration build profile (13.7).
+* `rel-fast` as the build profile for committed logic (13.2, 13.7; settled by the user at 22:47Z).
 
 ## How to read this document
 
@@ -34,7 +34,7 @@ against this list. Where the order changed an answer, the text says so. Examples
     running it.
   * **[I]** inferred or proposed design. Not yet tested.
 * Choices that go beyond what the user specified are collected in **section 24, "Decisions needing
-  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D79**, with
+  the user"**, each with a recommendation and alternatives. Sections refer to them as **D1..D80**, with
   letter suffixes where one topic was split (e.g. D14a). Most are now settled by the user (24 says which and
   when); the few still open are marked so.
 * Review findings (C1, H4, M3, R13-C1, …) are cited where they changed the design;
@@ -139,6 +139,16 @@ Rulings that shape the design:
 * **The open decisions** (18:42-19:21Z): the user ruled D2, D4, D11, D18a/D20, D21, D23 and D62, D27a and
   D34, D32, D49, D60 and D72, and took the recommendation for every other (19:11Z). Section 24 records
   each. The rulings raised five new questions, D74-D78, which the user settled as recommended at 19:58Z.
+  P2-5 raised D79 (settled 20:07Z); the phase-2 view change raised D80, settled at 22:13Z as session
+  admins over a two-thirds safety layer (12.4, 10.8).
+* **Agent panels** (21:50-22:54Z): Claude Code, Codex and Antigravity as the launch harnesses, through one
+  harness layer (21.1); voice prompting with a speech model built into the engine on Windows and Linux,
+  and spoken replies heard nearby (21.11); panels know where the player looks and points (21.12), with
+  guidance tools (21.13); game settings changed by talking to the agent (21.14); **openness first**:
+  prompts, replies and agents' work are seen and heard nearby by default (21.4); confidants (21.5); a
+  simplified transcript (21.2). The proposals these rulings left open, D81-D86 and D89, were ruled at
+  08:31Z: as recommended, except D86 and D89, where the user chose (b) (21.4, 21.5).
+* **Logic builds** use the `rel-fast` profile, without LTO (22:47Z, 13.2).
 
 ---
 
@@ -264,8 +274,13 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 2. No wall-clock time, OS randomness or I/O in the sim. Randomness comes from the session seed plus the
    frame plus explicit streams.
 3. No transcendental functions from `std`/libm in sim code; their results may vary by platform. Use
-   Box3D's deterministic math or an engine `pe_core::dmath` with bit-exact polynomial implementations.
-   Basic IEEE ops (`+ - * / sqrt`, conversions) are exact.
+   Box3D's deterministic math or `pe_core::dmath` (P2-1): bit-exact `f32` `sin`, `cos`, `sin_cos`, `tan`,
+   `atan`, `atan2`, `asin`, `acos`, `exp`, `ln`, `log2`, `pow` and `powi`, each an `f64` fdlibm kernel
+   rounded to `f32`, within 1 ulp of `std` (2 for `pow`) over the tested ranges [V P2-1]. Basic IEEE ops
+   (`+ - * / sqrt`, conversions) are exact.
+   * **`powi` and `powf` count as transcendental here.** LLVM folds `f32::powi` at compile time with
+     another algorithm: on constant inputs a release build gave results 2 ulps from the debug build's
+     [V P2-1]. Use `dmath::powi` and `dmath::pow`.
 4. No iteration over hash-ordered containers in the sim. Use `BTreeMap` or sorted vectors. box3d-rust's
    own HashMaps are lookup-only [S grep of the crate].
 5. All inputs that enter the sim are quantized to exact f32 bit patterns at the boundary (VR poses: 18.4).
@@ -281,8 +296,18 @@ Targets for the MVP desktop configuration, and how they compare with what was me
 9. **NaN and the FP environment (review L2).** A debug assertion checks every body's state is finite after
    each step. Release builds check it at every check frame, one pass over body states, and report the
    first non-finite object [V session-sim: the suite fails on any non-finite state, and none occurs].
-   The sim thread checks MXCSR (FTZ/DAZ off) every tick and resets it, because native libraries loaded
-   in-process (OpenXR runtimes, audio drivers) can change it [I].
+   **The FP control register holds on every simulation thread, workers included** (@chunks-reviewer's D2
+   finding). Native libraries loaded in-process (OpenXR runtimes, audio drivers) can change it [I].
+   * `pe_core::fpenv::check_and_reset()` compares the calling thread's whole register with the platform
+     default and restores it: MXCSR 0x1F80 ignoring the sticky flags on x86-64 (so FTZ and DAZ off,
+     round to nearest, exceptions masked); FPCR 0 on aarch64 (FZ, DN, rounding mode, traps, and
+     FEAT_AFP's FIZ, AH and NEP). It costs one register read and a compare, and writes only if something
+     changed [V P2-1 on x86-64, by setting flush-to-zero; aarch64 not run].
+   * pe-sim's tick calls it first, on the sim thread, every tick [S `crates/pe-sim/src/schedule.rs`].
+   * The parallel stepping's helpers (D2) run each job with the calling thread's register, copied in at
+     the job's start, so a worker never steps with a setting of its own [V box3d-fork test
+     `helpers_use_the_callers_fp_control`]. Any other thread that runs sim code calls the check at each
+     job start.
 10. **No process-global sim state (R14).** box3d-rust's length unit is a process global; it stays at
     1.0 for every world. Its `human` sample module (a thread-local RNG) is never used in sim code. Logic
     runtimes compile eagerly (22.2) [S].
@@ -348,7 +373,7 @@ A snapshot at frame *f* (the state before frame *f*'s entries) contains:
 |---|---|---|
 | Box3D world | `recording::serialize_world` image (POD + geometry registry), restored in place with `deserialize_into_shell`. Bodies created or destroyed after the snapshot are undone by the restore, and their ids are reissued identically on re-simulation | [V b1, b4; V session-sim r14: bodies destroyed by a departure and created by an arrival or return across rollbacks] |
 | Engine tables | claims, object table, R14 escrow and arrival tables: plain copies | [V session-sim] |
-| Sim ECS store (16) | column copies (memcpy) | [I] |
+| Sim ECS store (16) | copy-on-write columns: a snapshot shares every column buffer, and the first write afterwards copies that column once; unwritten columns are never copied. Snapshot and restore cost O(columns) | [V P2-1 `store_bench`: snapshot 0.1 us and restore 0.2-0.4 us up to 8,192 objects; a deep copy of every column takes 64-83 us at 2,048 objects, about 3% of the spike's Box3D image save] |
 | Logic module state | the module's sync state (7.4): component columns, the declared state arena, active module id | [V d1 for whole linear memory; I for the arena split] |
 | Session log | append-only; never rolled back. Entries are re-applied on re-simulation | [V b2, b3, d1, session-sim] |
 
@@ -791,12 +816,22 @@ every player, perfectly synced, and optimized for CPU and memory.
   simulated or re-simulated):
   1. apply the entry's input at the start of *f*, in canonical order (8.3);
   2. step;
-  3. for each carried body, overwrite its state with the carried bits **only if they differ**.
-* **Why the rule is deterministic:** whether the overwrite fires depends only on the state at *f*. That
-  state depends only on the log. So every peer holding the same log does the same thing, and the result is
-  bit-identical.
+  3. for each carried body, write its state with the carried bits, **always**, whether or not they already
+     match (review SET-1). Writing a pose recomputes the body's centre of mass, rotation0 and world
+     inertia, so a peer that skipped a write that changed nothing would still diverge at the next step on
+     an off-centre body. The touch's impulse wakes the body at *f* on every peer first, so it is awake
+     everywhere when the state is written (SET-2).
+* **Why the rule is deterministic:** the write is the same operation on every peer, at the same frame,
+  with bits taken from the log. In the confirmed history every peer holds the same log, so its world at
+  *f* is the same, contact cache included, and the result is bit-identical.
+* **Known gap, speculative only** [V D58 probe, @vdw-physics]: the write sets the body's bits but not its
+  contact cache. A receiver whose copy differed (it lacked an entry, or is behind) gets the author's bits
+  at *f* but keeps its own contacts, so its copy drifts by about 1e-12 after the next step. The confirmed
+  history is unaffected, since every peer's cache is the same there. A pe-physics item is resetting the
+  body's contacts on a write.
 * **What the rule buys:**
-  * a peer already on the author's world line skips the overwrite and is bit-exact by determinism;
+  * a peer already on the author's world line writes the bits it already holds and stays bit-exact by
+    determinism;
   * a peer that had diverged (it lacked an earlier entry, or hit a bug) gets the touched object pulled onto
     the author's world line at once;
   * so every interaction is also an immediate, object-scoped sync check: R6's "this sync also runs
@@ -994,6 +1029,25 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   member's grab of the same object in that time is refused with `RejectedClaimed{by, until}`.
 * **Every other physical interaction is never refused.** Touches, pushes and impulses all apply,
   physically, including on a held object, which they move through the grab's constraint.
+* **A member moves only its own hands** (P2-8 review: @shader-reviewer's probe moved another member's
+  hand through `pe-mcp`, and every peer accepted it).
+  * Hands are part of a member's avatar (16.3), and an entry's author is its chain's signed member (10.3).
+    So every replica refuses any entry that names a hand that is not its author's, with
+    `RejectedNotOwner`: a hand move, a touch (so it takes no claim that would block the owner), and a
+    carry through a portal (review HO-1). It is a validity rule like the others, not a claim: it holds at
+    every frame.
+  * A touch carries the resulting state of the object it touches and no other (round 2 of HO-1): a touch
+    whose carried state names another object is refused, `RejectedInvalid`, before it takes any claim
+    [V handowner: member 2's 46 hand entries, its grab and its carry of member 1's hand, and its touch of
+    a ball carrying a state for member 1's hand are all refused at both replicas; member 1's own touch of
+    its hand right after is accepted; the history equals the run without member 2's entries. With the
+    carried-state check switched off, member 1's history changes].
+  * Hands are the first owner-only objects; avatar parts and any other per-member object join the class
+    as each kind is added [I]. In the spike ownership is fixed from the genesis list, so a joiner owns no
+    hand (review HO-2); pe-session keeps it in the hashed state, set by a confirmed entry (P2-3).
+  * An agent at an unlocked panel acts as the panel's owner (D27a). The panel's messages carry their
+    verified sender, but the owner's peer signs the entries, so the agent moves only the owner's hands.
+    `pe-mcp` also refuses such a move before authoring it (`not_owner`, 17.2).
 * **The one stated exception** to "an author never sees its own interaction corrected" (14:31Z): when two
   grabs of one object land within one latency, the loser's grab is undone on re-simulation. It stands
   next to demotion (10.9) and portal carries (22.7).
@@ -1030,6 +1084,35 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
   * The round trip costs one restore plus one save per check frame (every 30 frames) [V session-sim
     r14-throttle: 18 ok / 0 bad in world A, 15 ok / 0 bad in world B].
 * **Objects:** the per-object state hashes that carried state (7.3) is compared against.
+* **The hash (P2-1)** [V P2-1]: XXH64, pinned in-tree and checked against the reference crate, over the
+  sim store's canonical content: the frame, the seed, the objects, the creator counters and every
+  non-empty column with its schema hash. State reached through different operation orders hashes and
+  serializes identically. The spikes used byte-wise FNV-1a, which is several times slower on whole
+  columns. `checked_state_hash()` scans the values first, so a stray NaN is a deterministic error on
+  every peer, not a hash of platform-specific NaN bits; the per-frame hash uses it.
+* **Which hash decides what a peer accepts** (review P22R-1, design-wide) [I]. XXH64 is not a security
+  boundary: its lane steps are invertible, so a peer that sends state bytes can change them and then
+  choose one 32-byte stripe that restores the hash. So:
+  * the **check hash** that acks carry at check frames, and that a member compares before it accepts
+    state from another peer (9.5, 25.5), is **BLAKE3** (pure, as D16 uses for content), 256 bits, over the
+    canonical bytes of the whole check-frame state: the physics image and the sim store's columns and
+    tables alike. The physics part already is (`pe_physics::CheckHash`, P2-2); the sim store's part,
+    today `checked_state_hash()`'s XXH64, moves to BLAKE3 too (review P22S-1). It is one hash, so
+    divergence detection and transfer trust use the same value;
+  * XXH64 stays for the per-frame hash and local diagnostics, where nobody else chooses the bytes;
+  * the reader of a state transfer consumes it completely: no trailing bytes, no unreferenced blobs,
+    and free fields (names, bounding boxes) canonical or refused, so the hash binds exactly the state
+    it restores;
+  * the cost, about a millisecond or two of BLAKE3 per check frame for a 1.5 MB image, is to be measured
+    in P2-3.
+  * the exact composition P2-3 hashes (session `transfer.rs`): `BLAKE3("pe-check" | physics CheckHash |
+    frame u64 | store_len u64 | store bytes | tables_len u64 | tables bytes)`, all integers little-endian.
+    `"pe-check"` is 8 ASCII bytes; the physics `CheckHash` is 32 bytes (a pe-physics BLAKE3 derive-key over
+    the `Transfer` bytes); `frame` is the replica's frame after stepping check frame F, i.e. F + 1 (acks
+    key the hash by F); `store` is `pe_sim`'s `Snapshot::to_bytes`; `tables` are the escrow, arrivals and
+    seen maps, each a u32 count then entries sorted by key (reusing the entry codec's hop, epoch-cert and
+    cert layouts), then a u8 portal flag. `decode_tables` accepts only bytes that re-encode identically,
+    are fully consumed, and whose cached chain hashes match their chains (9.5).
 
 ### 9.2 Cadence
 
@@ -1081,9 +1164,11 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
       is virtual synchrony's flush, decided from chain data alone.
     * **Stability never shrinks:** once every member has referenced an entry, a later conflicting
       reference cannot withdraw it (R3-1).
-  * **What colluders can still do** [V badvote]: stall. Two colluders of four leave no honest majority,
-    so nothing can be decided without one of them. The honest members keep their confirmed history and
-    pause at the speculation limit. With an honest majority, the general view change (10.8) removes them.
+  * **What colluders could still do in round 3** [V badvote at 11185cc]: stall. Two colluders of four left
+    no honest majority, so nothing could be decided without one of them.
+  * **Since P2-4 the view change decides every removal** (10.8): a quorum's votes set the cut (with t = 0,
+    the rule above), members proven faulty count in no quorum, and a forked vote is itself a proof. So
+    `badvote` and `liar` now remove both colluders and the session goes on [V session-sim, 5k].
   * Measured on the reviewer's repros, ported to session-sim [V]:
     * `ackfork`: member 9 showed member 2 a different chain. Both honest members found the conflict,
       evicted 9 with a cut before its touch, and agreed. Before, they forked.
@@ -1124,6 +1209,14 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * The donor sends a snapshot at a **confirmed** frame *F*: world image, tables, sync state of the logic
   modules, module set, claims and asset manifest. It follows with the session log from *F*.
 * The receiver restores and fast-forwards. Restoring a world image into a fresh `World` works [V b4].
+* **It verifies before it restores** (review P22R-1): it restores only bytes whose BLAKE3 equals the check
+  hash for frame *F* (9.1), and only if it consumes them completely. So a hostile donor cannot pass off
+  another state; it can only fail to deliver, and the receiver asks another member [I].
+* **Which check hash it trusts** (review P22S-1): one that a quorum of the epoch's members signed
+  identically in their acks for frame *F*, at least one of them a member other than the donor.
+  `from_transfer` checks the bytes against whatever hash it is given, so the caller must establish the
+  hash this way, never take it from the donor. A world with a single member therefore cannot vouch for
+  its own transfer: the receiver trusts that member or waits for a second one [I].
 * Images are memory layouts tied to the engine build. Admission already requires an identical build
   (4.3 rule 7).
 * Region- or island-scoped transfer is a later optimization.
@@ -1165,7 +1258,15 @@ if our bulk transport proves weak.
   * Ids are never chosen by the peer and never reused.
   * A peer that crashes and rejoins is admitted again under a **new** MemberId, so its sequence numbers
     can never collide with its earlier incarnation's (review C2).
-  * Object ids `(creator MemberId, counter)` stay unique for the life of the session.
+  * Object ids `(creator MemberId, counter)` stay unique for the life of the session. Objects that
+    persist in the world beyond it are stored under the world-scoped form (session id, creator MemberId,
+    counter), so ids from different sessions never collide in a save, a load or a merge (16.10).
+* **The session id** is the BLAKE3 hash of the session's signed genesis entry, which names the world,
+  the genesis members and a fresh random nonce of 256 bits (review SX-1). Two sessions of one world with
+  the same genesis members, such as a home opened twice or an owner reopening a world alone, therefore
+  get different ids. Join requests (10.8) and persisting object ids depend on that. The spike models the
+  session id as a hash of the world and the genesis members only (`session_id`), which is enough for its
+  scenarios, where no two sessions of one world run with the same genesis.
 * **Entries (review C2):**
   * every entry is signed by its author and carries the id of the author's previous entry, so each
     member's entries form a hash chain;
@@ -1213,7 +1314,7 @@ if our bulk transport proves weak.
   membership. A minority side speculates up to the speculation limit and then pauses. On heal it rejoins
   the majority's epoch by state transfer. Its unconfirmed entries can be resubmitted as new entries. No
   confirmed history is ever discarded (review H3). Two-member sessions are **D7**.
-* **Always-on peers** (like Resonite's headless hosts) are ordinary members that keep a world running.
+* **Always-on peers** (like Resonite's headless clients) are ordinary members that keep a world running.
   They have no authority.
 
 ### 10.7 e4mc lessons (user question)
@@ -1243,23 +1344,23 @@ if our bulk transport proves weak.
      * The second pair is the **password**. It is secret and used only inside a PAKE.
      * The last word is a **check word**, used to catch typos.
      * All words come from a 7,776-word list, so each word carries log2(7776) = 12.9 bits.
-   * **The host announces itself under the nameplate.** The member who creates the code (the host) announces
+   * **The code's creator announces itself under the nameplate.** The member who creates the code announces
      its address with BitTorrent `announce_peer` (BEP 5) under
      `infohash = BLAKE3("primordial/code/v1" ‖ nameplate)[..20]`. A relay address (10.5) also works. The
-     host re-announces until the code expires.
-   * **The joiner finds the host, then proves the password.**
+     creator re-announces until the code expires.
+   * **The joiner finds the creator, then proves the password.**
      * The joiner's peer checks the check word locally, so a typo never costs an attempt.
      * It calls `get_peers(infohash)` and contacts at most 8 of the returned addresses.
      * With each, it runs a PAKE (SPAKE2, or CPace; neither pure-Rust crate is audited yet), with the
        password as input and the nameplate bound into the transcript.
-   * **On success, the host sends a normal invite ticket** (11) over the PAKE-keyed channel: session ID,
+   * **On success, the creator sends a normal invite ticket** (11) over the PAKE-keyed channel: session ID,
      member addresses, the inviter's key and a join secret. The join then proceeds as for any invite
      (10.6).
    * **Nothing derived from the password is ever published.** The DHT holds only the nameplate's infohash
-     and the host's address. No signed session record exists to forge.
+     and the creator's address. No signed session record exists to forge.
    * **Limits:**
      * a code expires after 10 minutes, or after one use unless the owner allows more;
-     * the host accepts at most 10 failed PAKE runs per code in total, and at most one per source address
+     * the creator accepts at most 10 failed PAKE runs per code in total, and at most one per source address
        per 5 s, then burns the code and tells its owner;
      * joining still passes the session's own admission rule, if it has one.
    * **Shorter form, through a friend.** If the joiner already knows a member (a friend record, 11), the code
@@ -1281,21 +1382,21 @@ if our bulk transport proves weak.
 | Attack | Bound |
 |---|---|
 | Offline guessing of the password | Not possible: nothing derived from it is published or sent outside a PAKE run |
-| Online guessing against the host | At most 10 guesses per code: 10 / 7,776² = 10 / 6.0 × 10⁷ ≈ 1.7 × 10⁻⁷ |
-| Fake hosts announced under the nameplate | Each joiner attempt contacts at most 8 candidates: ≤ 8 / 6.0 × 10⁷ ≈ 1.3 × 10⁻⁷ per attempt, and failed runs are shown to the joiner |
+| Online guessing against the creator | At most 10 guesses per code: 10 / 7,776² = 10 / 6.0 × 10⁷ ≈ 1.7 × 10⁻⁷ |
+| Fake creators announced under the nameplate | Each joiner attempt contacts at most 8 candidates: ≤ 8 / 6.0 × 10⁷ ≈ 1.3 × 10⁻⁷ per attempt, and failed runs are shown to the joiner |
 | Nameplate collisions (honest) | With 10⁴ live codes, a given code shares its nameplate with probability ≈ 1.7 × 10⁻⁴. The only cost is failed PAKE runs, which can burn a code; the owner makes a new one |
 | Burning someone's code (denial of service) | Ten wrong guesses burn it. Low impact: the owner makes a new code |
 | Someone who overhears the whole code | Can join. A code is a bearer invitation, like a ticket. Use single-use codes, or admission approval |
 
    * **Costs:**
      * the code grows from three words plus a check word to four plus a check word (ease of use, D35a);
-     * the host must stay online and reachable, directly or through a relay, while the code is live;
-     * DHT observers learn that the announced address hosts a Primordial join code, much as BitTorrent
-       peers are visible. Announcing a relay address hides the host's address (D35b).
+     * the creator must stay online and reachable, directly or through a relay, while the code is live;
+     * DHT observers learn that the announced address serves a Primordial join code, much as BitTorrent
+       peers are visible. Announcing a relay address hides the creator's address (D35b).
    * **Rejected alternative:** binding a key fingerprint into the code. Resisting offline search and
      second-preimage attacks needs about 6 words (77.5 bits) plus a check word, which is not memorable.
-2. **Outbound-only reachability.** A host behind NAT stays reachable by holding an outbound connection to
-   a relay. Our equivalent: members with open ports, plus **volunteer relays** that anyone can run (the
+2. **Outbound-only reachability.** An e4mc server behind NAT stays reachable by holding an outbound
+   connection to a relay. Our equivalent: members with open ports, plus **volunteer relays** that anyone can run (the
    normal peer binary in relay mode).
    * They forward only end-to-end-encrypted packets, addressed by peer public key.
    * Each peer picks the relays it trusts.
@@ -1329,8 +1430,9 @@ session codes and volunteer relays (D35), and reconsider iroh only if the user a
   covers it. Here the rows are signed chain entries, so a member that shows two rows has equivocated.
 * Eviction follows virtual synchrony's view change (Birman): survivors agree on a cut of the evicted
   member's messages.
-* A general view change (a silent member, a join) needs agreement under partial synchrony. That is a
-  PBFT-style view change or Raft's joint consensus [I].
+* A general view change (several members at once, a join) needs agreement under partial synchrony: one
+  Byzantine-tolerant decision per epoch, here Tendermint's (Buchman, Kwon and Milosevic 2018) over chain
+  entries (P2-4, below).
 
 **Chains.**
 * Every member's entries form a hash chain: each entry names its predecessor's id, and an entry's id is the
@@ -1363,40 +1465,471 @@ is fixed once the author's chain is contiguous up to it.
 
 **Gap detection and fetch:** from acks' heads, and from holes in chains (9.3).
 
-**Membership epochs.**
-* The member list changes only through a view change, which needs a strict majority of the current epoch.
-  So at most one side of a partition can change membership or confirm (review H3).
-* **Eviction of an equivocator** is decided from chain data alone (9.3): votes, frozen heads, the cut, and
-  the frame from which the member no longer counts [V session-sim c2, ackfork, lateequiv, evict].
-* **Removing a silent member** (review R3-2) [V session-sim crashstall, r14 crash]:
-  * **Suspicion.** A member none of whose entries has reached a replica for 180 frames (3 s, 1.5 times
-    the speculation limit), directly or fetched, is presumed crashed. The exception is when another
-    member's acks show more of its chain: then the replica is only behind, and fetches.
-  * **Vote.** The replica freezes that chain and votes to remove the member. Removal then follows the
-    eviction rules (9.3): every remaining member votes, the votes become stable among them, and the cut
-    keeps everything that could have been stable. So no confirmed frame changes.
-  * **Withdrawal.** A silence vote can be withdrawn if the member is heard from again, but only while the
-    voter does not yet see a standing vote from every other remaining member. No member can have decided
-    by then: a decision needs the voter's acks to reference every vote, and those acks come after the
-    withdrawal in its chain.
-  * **Two-member worlds** never remove anyone. Removal needs a strict majority without the removed
-    member, so both members pause instead (D7).
-  * **Measured** (crashstall): member 3 of 3 went silent at t = 3 s. Members 1 and 2 removed it once it
-    had been silent for 180 frames, with the cut at seq 86, from frame 173. They paused 72 frames at the
-    speculation limit first. At t = 15 s confirmation was 4-6 frames behind the present, and both members equalled the
-    offline replay. Before the fix, confirmation stayed at frame 169 and the members paused 604 frames.
-  * **What a crash costs:** a pause of about 1.2 s for everyone, set by the 3 s threshold. A shorter
-    threshold would turn congestion into removals: in c1, a congested member is silent for 1.95 s.
-* **Still [I]:** joins; demotion to spectator (10.9); several members failing at once; colluders.
-  * Each removal needs the votes of all other remaining members. So two silent members at once, or a
-    colluder that withholds or forks its vote, stall removal. The honest members keep their confirmed
-    history and pause.
-  * A proposer-based view change (PBFT's, or Raft's joint consensus) would let an honest majority remove
-    several members at once. It would also give the other world's certificates a new epoch to follow
-    (22.7).
-  * Against colluders no protocol does better than n >= 3f + 1: Byzantine agreement under partial
-    synchrony needs it, so two colluders of four can always stall a session [S Dwork, Lynch and
-    Stockmeyer 1988].
+**Membership epochs and the view change (P2-4).**
+* The member list changes only through a **view change**: one decision per epoch, taken by the epoch's
+  members and recorded in an **epoch certificate**. Removals (a crash, a member too slow to keep up, a
+  proven cheater), joins and resets all go through it. At most one side of a partition can decide one
+  (review H3), within the fault bound below.
+* **Votes start it** [V session-sim crashstall, twosilent]. A member votes to remove another when:
+  * it holds a proof against it (below);
+  * none of its entries has reached this member for 180 frames (3 s, 1.5 times the speculation limit),
+    directly or fetched, while no other member's acks show more of its chain (R3-2). A shorter threshold
+    would turn congestion into removals: in `c1` a congested member is silent for 1.95 s;
+  * or its horizon has trailed the present by more than half the speculation limit for as long (R3-9:
+    demotion; it can follow as a spectator).
+
+  A vote names the voter's **frozen head** of that chain: the most of it the voter references for the rest
+  of the epoch, so its later references to that chain never count toward stability (R3-1). The voter keeps
+  processing the chain, though: a member wrongly suspected must still be heard in the reset that keeps it
+  (found by `bridge`: freezing the processing too stalled the session after a partition healed). A vote
+  stands until its epoch ends.
+* **Proofs.** Two signed entries of one member that contradict each other prove it faulty. Honest members
+  never produce one, and anyone holding the two entries can check it:
+  * two versions of one seq;
+  * an entry whose `prev` names a version of its predecessor other than the one the holder has. The
+    other version need not ever be seen. This is how a member that forks its own vote is caught
+    [V badvote, colluders];
+  * a vote whose frozen head drops an entry that its author's own earlier ack referenced (a lying vote)
+    [V liar].
+* **Agreement** is Tendermint's algorithm for a single decision (Buchman, Kwon and Milosevic 2018,
+  algorithm 1). Its messages are chain entries, so each is signed, ordered in its author's chain and
+  repaired by fetch like any entry, and a member that sends two members different ones has equivocated.
+  * The epoch's view change runs in **rounds**. Each round has a **proposer**, from a seeded rotation over
+    the epoch's members, so no member chooses to propose.
+  * The proposer proposes a **change**. Members **prevote** it if it is valid, and nil otherwise. A quorum
+    of prevotes for it **locks** a member on it, and the member **precommits** it. A quorum of precommits
+    **decides** it.
+  * **A proven forker's precommit counts by its signature** (review PF-1, found by @ballpit-viz). Chain
+    order governs every other use of an entry. A replica keeps the first version of a seq it receives,
+    and a member that forks a seq may continue its chain from a version some honest members never hold,
+    so they cannot link its later entries. If its precommit was in the quorum the others decided on,
+    those members could never check that quorum and stayed in the old epoch for good. So the
+    precommits of a member proven to have forked count toward a decision wherever they sit in its chain,
+    in any version, and its proposals are kept by value the same way. This is Tendermint's commit rule,
+    which counts signatures, and it keeps the locks' guarantee: two quorums still share an honest
+    member, and an honest member precommits one value per round. Honest members' entries always link,
+    so they count in chain order [V prevotefork: 1 forks its prevote three ways and continues from its
+    own version. Every member decides the join, 1 is removed at 4.23 s, and confirmation goes on. Before
+    the fix, 3, 9 and the joiner stayed in epoch 0 and confirmation stopped at frame 53].
+  * A proposer waits up to 6 frames for votes on every member it suspects itself, so members that fail
+    together leave in one change [V twosilent].
+  * A round that decides nothing times out: 20 frames, plus 10 per round. A quorum of nil precommits ends
+    it at once, and a member that sees more than t members in a later round moves there.
+  * The locks make two decisions in one epoch impossible, whatever the network does, within the bound
+    below, which counts every faulty member, proven or not. The timeouts bring a decision once messages
+    arrive in time (partial synchrony).
+* **Quorums (D80, settled 22:13Z: admins decide kicks, this layer commits and orders every change).** Let m
+  be the epoch's members minus those the change excludes by proof; the change lists them, with their
+  proofs. A quorum is q = ceil((m + t + 1) / 2) of them with t = floor((m - 1) / 3): just over two thirds,
+  the Byzantine quorum. A strict majority (t = 0) stays in the spike for comparison only.
+  * **The bound counts every faulty member, proven or not** (review VC-1). Two changes of one epoch
+    cannot both be decided while at most 2q(n) - n - 1 of the epoch's n members are faulty (the table's
+    "(b) faulty members that cannot split it" column below, never fewer than t(n)). A proof does not stretch it: a change that excludes proven
+    members needs a smaller quorum, so if only one side of a partition holds the proofs, each side can
+    decide alone once the bound is exceeded [V onesided, a control: 3 of 6 collude; one side excludes
+    them by proof and removes the third member, the other removes the first two with the colluders].
+  * Within the bound, proofs buy liveness: a session whose cheaters are proven still decides
+    [V badvote, colluders].
+* **The change** names, for each member it removes:
+  * the votes it relies on: at least q, none from an excluded member, none a lie;
+  * the **cut**: the deepest point of that member's chain that at least (votes - t) of those votes' frozen
+    heads extend.
+
+  Why the cut keeps every confirmed frame: an entry stable at any honest member was referenced by every
+  member before it voted (R3-1), so every honest voter's frozen head extends it, and at most t of the
+  votes are faulty. The votes number more than 2t, so two branches of a forked chain cannot both reach
+  (votes - t), and the cut is unique. With t = 0 it is the longest common prefix of the frozen heads,
+  round 3's rule (9.3).
+* **Every change names a boundary frame** B, signed with it: the first frame of the new epoch. Added members
+  count from B; facts about frames from B on are the new epoch's to certify (P2-5's epoch-at-frame
+  rule). Boundaries never go backwards. For a removal B is the proposer's present; for a join, or a
+  change that closes the session (D80, below), it lies ahead.
+* **Validity never changes with time** (review VC-3). A Tendermint lock relies on it: a member locked on a
+  change must be able to decide it later. So a boundary's lead (more than one frame ahead of the
+  present, at most two join leads) is checked only when a change is first proposed, not when it is
+  proposed again in a later round [V jointiming: prevotes reach two of four members 1.5 s late, past
+  the join's boundary. Before the fix the epoch wedged: no decision, confirmation stuck at frame 176 and
+  every sim paused at the speculation limit. Now the join is decided in round 0 at 3.6 s].
+* **Exclusions are checked before anything is decided.** A change's exclusions set its quorum, so a faulty
+  minority that listed honest members as "proven" could otherwise decide alone. Members prevote, lock on
+  and decide a change only once every exclusion it lists checks out, and a change may list only proofs
+  that their two entries show alone (two versions of one seq, a successor naming another version, or an
+  ack referencing a seq beyond a later vote's frozen head), so another world can check them too.
+* **A change may remove no one: a reset.** A proposer proposes one when a vote of the epoch stands against
+  a member it hears from (wrongly suspected, or back). It replaces round 3's withdrawal of a silence vote,
+  which is unsafe once a quorum rather than every member decides: after a withdrawal, the voter's later
+  references can make entries stable that the withdrawn vote's frozen head drops, and a change naming
+  that vote would cut them.
+  * A vote that names a kick (D80, below) freezes the target only for that kick. Members fetch a kick they
+    do not hold from the voter and from everyone. A voter whose kick nobody has delivered within 60 frames
+    (half the speculation window) froze a chain for nothing, and is voted out (review VCR-1; round 3
+    answered such a vote with a reset after 180 frames, which kept the voter, review VC3R-2) [V ghostkick:
+    9 votes against 2 for a kick that does not exist; 9 is voted out at 3.17 s. Before the VCR-1 fix
+    confirmation stopped for good at frame 108].
+  * A reset waits until the newest standing vote has stood 12 frames, and at most 36 from the oldest, and
+    never overtakes a removal that a quorum has voted for and that waits only for entries this replica is
+    still fetching (review VC3R-1, VC3R-2). Members that suspect the same member vote within a few frames
+    of each other, and a reset in between would clear the first votes before the quorum arrives.
+* **Cuts use only heads that resolve** (review VCR-2). A member's vote on its own kick must freeze exactly
+  its previous entry: no reference of its own can check any other head. A proposer computes a cut only
+  from votes whose frozen heads it can walk down to the prefix it holds, and asks every member, not
+  only the voter, for an entry it lacks [V selfkickhead: admin 1 kicks 4, and 4's own vote names a
+  head it never signed; 4 is removed at 2.28 s. Before the fix the kick never went through and
+  confirmation stopped at frame 116].
+* **Applying a decision.**
+  * Epoch e + 1 starts. Removed members leave the list. Entries after each cut are void, and a removed
+    member stops counting from the frame after the last horizon inside its cut.
+  * A member may not yet hold a removed member's prefix up to the cut, or may hold another branch of a
+    fork in it (review VC-2). Until it holds the cut's version, it confirms only the frames that the acks
+    of the prefix verified against every member's references cover: an entry stamped at or before a
+    declared horizon must come before that ack in its chain (8.2), and past that prefix its copy may be
+    the other branch. It asks for the cut's branch by entry id, each request returning that entry and up
+    to 15 before it down its prev links, so a member that holds the other branch answers nothing (review
+    VC3R-7; round 3 asked by seq from the highest missing stretch down, VCR-5). It takes the branch even as
+    duplicates of the entries it holds, and confirms nothing while it switches. The branch's entries are validated again before any of them acts, so one stamped at or
+    before a horizon its author declared is void, never applied below the confirmed frame (review VCR-6)
+    [V fork9: 9 forks; 1 and 2 hold the branch with its touch, 3 a longer one without. Before the fix 3
+    confirmed past the touch and then had to roll back below its confirmed frame; now all three equal
+    the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch; before the
+    fix 3 never got it all and stopped at frame 116. V cutbackdate: the cut's branch holds a touch
+    backdated 90 frames; before the fix 3 applied it below its confirmed frame and hit the rollback
+    assertion at 2.29 s].
+  * A replica applies a decision only once it holds every admin entry the change lists; it asks those
+    that precommitted it for the ones it lacks, by id (review VCR-8) [V slowadmin: an admin's entries
+    reach follower 6 2.5 s late on every path; it decides at 3.60 s once it has the entry. Before the
+    fix it panicked at 2.23 s].
+  * Every vote and freeze of epoch e ends. No timer restarts (review VC3R-2): a member forcing a reset
+    every few hundred ms would otherwise keep a slow member from its demotion for good [V lagchurn: 9's
+    messages arrive 1.3 s late and it votes against 2 in every epoch; 9 is demoted at 6.48 s after two
+    resets. With round 3's restart: never, after 8 resets]. The timers on acks from an epoch the reader
+    has not reached end when it reaches that epoch (review VCR-4).
+  * Instead, a member holds off a vote the decision answered, if it voted alone (review VC-6): the
+    decision kept the member it voted against, no other member's vote against that member stood with its
+    own, and the decided proposal reached it after its vote. It waits 24 frames before voting against
+    that member again, twice as long each time in a row, up to 180. A vote that others share, or that the
+    decided proposal never weighed (it reached the voter first), is cast again at once, so a quorum of
+    honest votes still meets when their timers run apart, or while another member forces resets.
+  * The member acks at once in epoch e + 1, so its acks never skip an epoch, however many decisions fall
+    between its regular acks (review VCR-3).
+* **Joins** use the same decision: a change that adds members, with a boundary B ahead of the present
+  (the proposer's present plus 60 frames) [V join].
+  * The joiner asks to join, and members accept a change that adds it only if they hold its request and
+    the world's join rules admit it, with the starting role they give (12.4). The role travels in the
+    change, because a member can decide a join from others' precommits without holding the request.
+  * **So do the joiner's attestations** (review VCR-7). Every member judges the join rules from the
+    relationships the change carries, signature-checked, never from its own copy of the request. A joiner
+    that shows each member something different cannot split them [V joinattests: 5 shows its friendship
+    with admin 1 to 1 and 2 only, and 9 prevotes but never precommits; 5 joins as Guest. Before the fix 1
+    and 2 locked on the join while 3 refused it: no decision, confirmation stuck at frame 176].
+  * **A join request is signed by its joiner, and its requests merge** (review VC3R-4): every valid
+    attestation in any of them counts. Round 3 kept a joiner's first request, so any peer could pre-empt
+    it with an empty one in the joiner's name [V joinsquat: 9 asks in 5's name at 1.9 s, and 5 asks at
+    2.0 s with no attestation and at 2.5 s as admin 1's friend; 5 joins as Guest at 2.63 s. Before the
+    fix: never admitted]. The signature names the session id and an expiry, so a request cannot be
+    replayed into another session of the same world, and a change is not proposed with a request whose
+    expiry is before its boundary (review VC4R-6). That needs a session id unique per session, even
+    between two sessions of one world with the same genesis members: 10.3's id includes the genesis
+    entry's random nonce (review SX-1).
+  * **The change carries the joiner's signed request** (review VC4R-2), and every member judges the join
+    from it, never from a request it happens to hold. A joiner's request may reach only some members
+    (an outside joiner choosing recipients, or loss); carrying it in the change means a member that
+    never received it still validates the join, instead of being locked on a value it can never judge
+    [V joinwedge: 5's request reaches 1, 2 and 9 only, and 9 crashes after its first prevote; 5 is
+    admitted at 2.6 s and 9 removed at 5.6 s. Before the fix 1 and 2 locked on the join that 3 could
+    never validate: no decision in 8 rounds, confirmation stuck at frame 114].
+  * A member precommits a join with a **cap** while B is still ahead of it: its precommit names B, and
+    from it on every reader counts that member's acks only below B (the smallest B it named, review
+    VC-10) until it reaches the next epoch. A precommit whose B is not ahead of its author's declared
+    horizon is void, a chain-local rule, so a cap never takes back what its author's acks confirmed
+    (review VC-4). There is no upper bound: a far cap restrains only its own author (review VC3R-5), and
+    round 2's, two join leads past that horizon, voided the precommit of a member that acks rarely
+    (VCR-12) [V lagprecommit: 3 acks once every 1.5 s and the join needs its precommit; 5 joins at 2.95 s.
+    Before the fix 3's precommit was void and nothing was decided].
+  * Once some member's acks are capped at or below B, others may precommit late, without a cap: every
+    reader then confirms nothing from B on before the decision, whoever holds the cap (review VC-3).
+  * A cap is justified by the quorum of prevotes it followed, and a **capped precommit carries the ids
+    of those prevotes** (review VC4R-1). A faulty proposer that sends its prevote for the value to the
+    capper and a nil version to the others would otherwise make the capper's polka invisible to them,
+    and they would vote the honest capper out. So before a member votes a capper out for an unexplained
+    cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
+    either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
+    two versions of one prevote proves the proposer equivocated and removes it. Locks still count one
+    version per member; decisions count a proven forker's precommits in any version (PF-1, under
+    Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to observer
+    3; with the fix off 3 votes 2 out, with it 3 fetches 1's value-prevote and keeps 2].
+  * The fetch has a budget (review VC6R-1). An honest capper holds its own polka and answers within a
+    round trip, so if ids the cap named are still missing a further half window after the cap ripened,
+    they name prevotes nobody holds, and the capper is voted out [V capfake: 9's capped precommit names a
+    polka id that exists nowhere; 9 is removed at 4.15 s. With the fix off the id is fetched for good, 9 is
+    never removed and confirmation stops at frame 143].
+  * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
+    member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
+    prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
+    author). An honest cap follows a quorum of prevotes, which acks and fetches bring every member within
+    a few round trips [V bogusprecommit: a precommit with boundary 1 is void; one just ahead of its
+    author's horizon gets 9 voted out at 3.17 s, with no reset and no pause. Before the VC-4 fix
+    confirmation stopped for good, at frames 112 and 143. V capstale: 9 signs such a precommit in every
+    epoch; no reset, voted out at 3.17 s].
+  * **Nothing counts against a member whose vote a reset overruled** (review VC3R-2). Round 3 counted it:
+    overruled in 3 of the last 8 epochs, a member was voted out. But suspicion by timing cannot tell the
+    voter's fault from the suspect's: a member that controls when each other member hears from it can
+    make one honest member's silence timer alone fire, then reappear, again and again [V strikeframe: 9
+    runs honest code with hostile timing only; with round 3's rule 1 is voted out in two of five timings,
+    now in none]. A member that keeps forcing resets costs latency, not safety, and an admin can kick it
+    (Limits, below). The levers round 3's rule was meant to bound have their own rules: stale caps and
+    ghost kick votes get their authors voted out (above), and no timer restarts at a decision [V capchurn:
+    from 2 s, 9 signs a capped precommit for no proposal in every epoch and its acks claim the next one;
+    no reset, 9 voted out at 3.17 s (round 3: three resets, then 2.50 s). Before the VCR-4 fix: 88 resets,
+    and 9 never removed].
+  * Acks carry their author's epoch. An ack from an epoch newer than the reader's never counts toward the
+    reader's confirmation, so a member that decides late cannot confirm a frame from B on without the
+    joiner either. Together: no member confirms a frame from B on before it knows of the join.
+  * An ack's epoch never falls and rises by at most one per ack (chain-local; otherwise void), and a
+    member whose acks claim an epoch the reader has not reached within 180 frames is voted out, like a
+    silent one (review VC-5) [V futureack: acks claiming epoch 999 are void and 9 is removed at 5.23 s
+    as too slow; acks claiming epoch 1 with no decision get it voted out at 5.17 s. Before the fix
+    confirmation stopped for good at frame 112].
+  * An honest member's acks never skip an epoch, because it acks on entering each (above), and a joiner
+    that catches up on several decisions at once acks each (review VCR-3) [V ackgap: 3 acks once a
+    second and two decisions fall between two of its acks; V latejoin: 5 catches up on two decisions at
+    once, then joins at epoch 3. Before the fix their later acks were all void, and each was voted out as
+    too slow].
+  * A joiner's first acks may also declare the epoch it was admitted into at once, and its silence counts
+    from its admission, so a joiner restored from a state transfer (9.5) need not have acked every epoch
+    since genesis (review VC3R-6). Its chain is validated only once it is admitted, so every member
+    judges those acks alike [V joinskip: 5 authors no ack before it is admitted at epoch 2, and stays.
+    Before the fix its acks were void and it was voted out].
+  * The 180-frame timer runs whatever other members' acks show. Round 3 paused it while the reader looked
+    behind (VCR-12), but a climbing member that keeps one chain a step ahead somewhere kept that true for
+    good (review VC3R-1) [V aheadshield: 9's acks claim epoch 1 while it sends each of its entries to one
+    honest member only, in turn; voted out at 5.30 s. Before the fix: never, and confirmation stopped at
+    frame 112]. A reader that really is behind may vote against a member that is ahead legitimately, and
+    that vote is harmless: the member can be ahead only if the epoch has decided, an epoch decides once,
+    and the vote ends with the epoch when the reader applies the decision [V aheadlink: 3 hears only 4's
+    acks for 5 s while the others decide; its votes against the members ahead, in epochs 0 and 1, remove
+    none of them, and 3 is removed for not keeping up].
+  * Nothing the joiner signs acts before it is admitted. Once admitted, its entries stamped before B are
+    void (a chain-local rule), and it counts toward confirmation from B on. It gets the state at a
+    confirmed frame and the log after it (9.5); in the spike it follows the log from the start.
+  * A removal needs no cap like a join's: no member can confirm a frame past a removed member's last
+    horizon inside the cut before the decision, because every entry stable anywhere lies inside the cut.
+* **Withheld references are suspected too** [V refwithhold]. Stability needs every member's references, so
+  a member that keeps acking but stops referencing some chain stalls everyone's confirmation as surely
+  as a silent one. A member whose acks have referenced no more of some chain for 180 frames, while every
+  other member (the checking replica included) holds and references more of it, is voted out the same
+  way. A member that only acks slowly still advances, and is not. A member that has voted against a
+  chain's author no longer references it, so that pair is skipped, and a new member's references count
+  from its admission (review VC-9).
+  * **A reference counts only once the entry it names is held** (reviews VC4R-3, VC5R-2, and the
+    randomized generator's RG-1): both toward a chain's stability and against a member as a withholder, a
+    reference to seq *s* of chain *y* counts only if this replica holds *y* up to *s* in the version the
+    reference names. For stability, the member's contribution is the newest of its references that
+    resolves this way, not zero when its newest names a version I lack: so a faulty member alternating a
+    fake head with a stale real one cannot cap the chain either, and the unresolved references are still
+    fetched for the proof. A faulty member that references entries nobody has — a fake head, even one
+    only a little above the real chain so it hides in normal lag — advances its raw reference but never
+    its counted one, so it stalls no chain and is caught as a withholder like one that stops referencing
+    [V slowref: a member that grows slower while another fakes references to its chain is removed at
+    7.4 s; fakemix: a member alternating a fake head with a refreshed stale one raises the confirmation
+    lag but halts nothing; the generator's seed 1: a member faking a reference to a healthy member's
+    chain is voted out. Before the fix each stalled confirmation for good].
+  * While another member references more of a silent or slow member's chain than this replica holds, it
+    fetches the difference before suspecting, but only for a silence limit from when that member first
+    fell behind (review VC4R-3): references that never deliver no longer spare it without end. The silent
+    member is removed regardless, because its own references stop [V fakeref: 9 falls silent at 2 s while
+    8 fakes references to 9's chain; 9 is removed at 5.2 s].
+  * **A decision resets only the timers its cleared votes made stale** (review VC6R-4). A decision
+    clears every vote of the epoch. A voter froze its target's chain, so its reference to that chain stood
+    still, and the targets of this replica's own votes looked silent or slow to it: only those timers,
+    and new members', restart. Round 6 cleared every reference and suspicion timer at every decision, so a
+    member that forces decisions, with a no-op admin entry every 2 s, kept its own timers from ever
+    ripening [V fakeadmin: 8 fakes references and authors a no-op SetRole every 2 s; 8 is removed at 5.23 s.
+    With the fix off, six decisions reset its timers, 8 is never removed and confirmation stops at frame
+    110].
+* **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
+  signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
+  signatures, and the two entries of every exclusion proof. Anyone holding the previous epoch's member
+  list can check it, so another world can follow a world's membership from its genesis, one certificate
+  at a time. P2-5's hops carry the source's certificates up to the epoch that signed them, so a world
+  checks a hop from a world not on its route list too (P25-5).
+* **What each rule tolerates**, counting all of the epoch's members, proven faulty or not:
+
+| Members | (b) quorum | (b) removable at once | (b) faulty members that cannot split it | (a) quorum | (a) removable at once | (a) faulty members that cannot split it |
+|---|---|---|---|---|---|---|
+| 3 | 2 | 1 | 0 | 2 | 1 | 0 |
+| 4 | 3 | 1 | 1 | 3 | 1 | 1 |
+| 5 | 4 | 1 | 2 | 3 | 2 | 0 |
+| 6 | 4 | 2 | 1 | 4 | 2 | 1 |
+| 7 | 5 | 2 | 2 | 4 | 3 | 0 |
+| 8 | 6 | 2 | 3 | 5 | 3 | 1 |
+| 256 | 171 | 85 | 85 | 129 | 127 | 1 |
+
+  "Removable at once" is m - q. "Cannot split it" is 2q - m - 1: the most faulty members two quorums can
+  share while still sharing an honest one. It is the safety bound, counted over every member: proofs
+  lower a change's quorum for liveness, never the bound (review VC-1). A two-member session removes no
+  silent member (D7), but a member proven faulty is removed by the other alone (m = 1, q = 1), and a kick
+  goes through because the kicked member freezes its own chain too (below).
+* **Limits.**
+  * Beyond the bound, a partition between honest members that a faulty member reaches on both sides lets
+    each side decide its own epoch: the session forks [V bridge, under D80 (a)].
+  * A faulty member can force a reset in every epoch by voting against a member everyone hears, or by
+    staying silent just under every timer. Nothing removes it automatically, since timing alone cannot
+    show whose fault an overruled vote is (above); confirmation lags by about one view change while it
+    does, and an admin's kick ends it [V votechurn: from 2 s to 10 s, 9 votes against 2 in every epoch; 20
+    resets, 2.5 a second; m1's confirmation lag, median and maximum, 7 and 8 frames before, 16 and 40
+    during, 7 and 8 after admin 1 kicks 9 at 10 s, when the resets stop. V strikeframe: 9 silent about
+    3 s in each of four windows causes one to four resets in 26 s, and is removed in three of five
+    timings]. The user ruled that such a member is left to admins, with no automatic rule (V4 = (a),
+    08:31Z).
+  * A faulty proposer can decide a reset in a round it proposes, ending the epoch's votes; they are cast
+    again at once, and the next honest proposer carries them [I].
+  * A faulty proposer chooses which of a joiner's attestations its change carries, so it can give the
+    joiner any role a subset of them allows; an honest proposer carries all it holds (review VC3R-4) [I].
+  * A faulty proposer can still leave pending admin entries out of the changes it proposes in its own
+    rounds; the next honest proposer lists them in commit order [I].
+  * Every fetch by id — a cut's branch, a listed admin entry, a vote's kick or frozen head — is retried
+    with the same backoff as a range fetch, so one lost reply no longer stops a cut walk or a decision
+    for good (review VC4R-4). A removal that a quorum has voted for waits only for entries this replica is
+    still fetching; a vote whose frozen head nobody delivers within half the speculation window counts
+    toward no cut and holds back no reset, and its voter is removed as a ghost kick's voter is (review
+    VC4R-5).
+  * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
+    certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
+  * **Not enforced yet, so relied on by nothing** (reviews VC-7, VC-8; @provenance-eng's follow-up):
+    * epoch-at-frame for R14 hops: a hop's frame and epoch are not in the signed fact, so a third
+      party's check of the epoch active at the hop's frame trusts the carrier's labels (22.7);
+    * `cert_at` counts a world's majority over the members not excluded by proof, while a third party
+      counts over the whole epoch, so a correctly built hop can be refused elsewhere.
+  * A removal's boundary is the proposer's present, a little before the decision, so facts a member
+    attests under epoch e about frames between the boundary and its decision no longer match once it is
+    in e + 1. That costs griefing, not safety [I].
+* **Admins and roles (D80; user rulings 22:11Z-22:51Z).** The view change commits membership; who may
+  change it is session state as well, kept per epoch and changed only by decided changes.
+  * **Roles.** Admin, role 0, is built in: it always exists, holds every permission, and by default is the
+    only role and every player's. Admins define other roles as subsets of the permission catalogue and
+    give them to members, live. Admins are equal: none ranks above another, and the session's creator has
+    no special status. The spike's catalogue has the two permissions the protocol checks, kick and roles
+    (define and give); the rest of the catalogue is 12.4's.
+  * **Admin entries** are chain entries: a kick, a role given, a role defined. An admin's kick authorises
+    the removal alone; no member votes on it. Every member, the kicked one included, only freezes the
+    target's chain for the cut, so a kick goes through even in a session of two, where the others alone
+    would be no quorum.
+  * **Commit order.** A change lists the admin entries it commits in order of (stamp, author, seq), each
+    judged against the state the ones before it leave, and marks each applied or refused, so a refusal is
+    agreed. An entry no change has judged yet stays pending into later epochs. A kick by an admin removed
+    earlier in that order is refused: of two admins kicking each other in the same frame, the first in
+    commit order stays [V kickwar].
+  * An admin entry's stamp decides its place, so it obeys its author's horizon like any entry: it is void
+    if stamped at or before a horizon its author has declared (review VCR-9). A proposer lists pending
+    entries in commit order and stops at the first it cannot carry out yet (a kick still waiting for
+    frozen heads), instead of letting later ones overtake it [V kickbackdate: admins 1 and 2 kick each
+    other at frame 120, 2's kick backdated 30 frames; 2's kick is void and 2 is removed. Before the fix
+    the backdated kick came first and removed 1].
+  * A validator accepts a listed admin entry only once it has validated its author's chain up to it, and
+    refuses one that validation voided, so a faulty proposer cannot commit a backdated entry either
+    (review VC3R-3) [V adminvoid: 9 signs a horizon-void SetRole demoting 3 and proposes a change that
+    lists it; refused, and 3 stays Admin. Before the fix it applied].
+  * **An admin entry's validity is a pure function of the entry and its ancestry** (review VC6R-3):
+    held, its author's chain validated up to it, and not voided, the same at every replica once it holds
+    the entry. Listing a canonical, undisputed version is only the proposer's choice. Every replica
+    applies the version the change lists, with the outcome the change carries, so a fork cannot be
+    committed at one replica and not another. Round 5 also required the listed version to be canonical
+    and undisputed at the validator (VC3R-3's low), arguing that a member proposes only stable entries,
+    so no lock could turn invalid (VC5R-1). That premise was false: a proposer lists what it has
+    validated, not what is stable. A fork that arrived after members had locked made their value invalid
+    at them, and nothing releases a lock [V adminwedge: faulty admin 9 sends a SetRole to three members
+    while a fourth is cut off, drops its precommits once they lock, crashes, and its fork of the same seq
+    arrives later; 9 is removed at 4.03 s. With the fix off, the locked members find their value's entry
+    disputed, 9 is never removed and confirmation stops at frame 112]. A fork of a listed entry still
+    proves its author equivocated and excludes it, which only shrinks the quorum.
+  * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
+    admin is a permission of its own, held by default only by admins (V1); the roles permission counts
+    as Admin, since it can grant Admin (V2 = (b)); and when the last admin times out the session closes,
+    with no longer grace period and no automatic handover (V3). The spike still lets a role with the
+    kick permission kick an admin; V1's separate permission and V3's closing behaviour are not built yet
+    (tracked on P2-4) [I].
+  * **Kicks wait out a partition** instead of forking: under the two-thirds quorum neither side of
+    {1,2} | {3,4} commits anything, and after the heal the kick holds [V kickpartition].
+  * **The last admin** cannot give the role up without handing it on: such an entry is refused [V lastadmin].
+  * **Owners** (12.4): an owner may give up Admin, but only a co-owner demotes or kicks an owner (Q27,
+    user 22:49Z and 22:51Z). An owner removed that way can rejoin as Admin through join row 0, as the user
+    accepted.
+    * Agreed with @provenance-eng for the ownership chain (12.5): ownership certificates entering a
+      session are admin-layer entries, committed in order like role entries, so every replica judges each
+      against the same owners without reading frame state. Owner checks compare members' identity keys
+      (from their join certificates) with the chain's owners, and every time window in the chain's rules
+      is measured against the deciding change's boundary, never a replica's clock [I]. The spike keeps a
+      fixed owner set until @design-reviewer approves the ownership spike (its review found OWN-1 to
+      OWN-3).
+  * **No admin left: the session closes.** A change that leaves no admin (a kick, a removal on silence or
+    proof, a release) closes the session at its boundary. The boundary lies ahead, as a join's does, with
+    the same precommit caps, so nothing confirmed is undone, and nothing stamped at or after it acts. A
+    last admin that crashes or times out therefore closes the session (user 22:13Z) [V adminclose].
+* **Measured** [V session-sim, branch `viewchange`, D80 (b) unless named; logs in `spikes/out/session-sim/`]:
+
+| Scenario | What happens | Result |
+|---|---|---|
+| `crashstall` | member 3 of 3 silent from 3 s | removed with round 3's cut (seq 86, from frame 173) and history; paused 72 and 74 frames (round 3: 72); all equal |
+| `twosilent` | members 5 and 6 of 6 silent from 3 s | both removed in one change at 6.15 s (round 0); paused 74 frames; all equal |
+| `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.15 s. (b): no decision, the three left pause safely (confirmed frame 169) |
+| `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed at 3.73 s, about 160 ms after its second signature, without 8; the confirmed touch stands; no pause |
+| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed in one change at 3.73 s; no pause |
+| `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
+| `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
+| `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.58 s |
+| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (529 paused frames); after the heal one session, and a reset at 13.67 s keeps all five, since 8 behaves again and is proven of nothing (round 1 removed it as a withholder; its references stopped only behind its own votes, which review VC-9 no longer counts). (a): {1,2} removes 3 and 4 at 6.18 s, {3,4} removes 1 and 2 at 7.80 s, and each side then removes 8: **two sessions** |
+| `join` | member 4 asks to join at 2 s, touches an object at frame 420 | admitted at 2.10 s with boundary frame 175; its touch applies at every member; all four equal |
+| `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s | 8 removed at 5.23 s; paused 78 frames; all equal |
+| `fork9` | 9 forks its chain: 1 and 2 get a branch with its touch at frame 120, 3 a longer one without it; 3's votes 300 ms late | 9 removed at 2.32 s with the touch's branch as the cut; 3 adopts it; all equal (before the VC-2 fix 3 confirmed past the touch, then hit the rollback assertion) |
+| `jointiming` | 5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary | decided in round 0 at 3.6 s, all five equal (before the VC-3 fix: wedged, confirmation stuck at frame 176) |
+| `bogusprecommit` | 9 signs a precommit with boundary 1, or just ahead of its horizon | the first is void; for the second, 9 is voted out at 3.17 s with no reset and no pause; confirmation goes on (before the VC-4 fix: stuck at frames 112 and 143) |
+| `futureack` | 9's acks claim epoch 999, or epoch 1 with no decision | 9 removed at 5.23 s, and at 5.17 s; confirmation resumes (before the VC-5 fix: stuck at frame 112) |
+| `kickwar` | admins 1 and 2 kick each other at frame 120 | 1's kick applies first in commit order: 2 removed at 2.30 s, 2's kick refused; all equal |
+| `kickpartition` | partition {1,2} / {3,4} from 2 to 6 s; admin 1 kicks 3 at 3 s | nothing decided during it; 3 removed at 6.97 s after the heal; one session |
+| `lastadmin` | the only admin releases the role; later hands it to 2, then releases | release refused (2.17 s); hand-over and release applied (4.17 s, 4.23 s); admins {2} |
+| `adminclose` | the only admin silent from 3 s | removed at 6.5 s; the session closes at frame 438 on both remaining members; all equal |
+| `joinrules` | rules: friends of an admin join as Guest, confidants of an owner as Admin; four ask | the friend joins as Guest, the confidant and the owner (row 0) as Admin, the stranger is refused |
+| `onesided` (control) | 3 of 6 collude, above the bound; partition {1,2} / {3}; proofs only for 1 and 2 | two different epoch-1 decisions: the session forks, as the restated bound allows |
+| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | nobody delivers the kick, and 9 is voted out at 3.17 s (round 3: a reset at 5.13 s kept it; before the VCR-1 fix: stuck at frame 108) |
+| `selfkickhead` | admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed | 4 removed at 2.28 s (before the VCR-2 fix: never; confirmation stuck at frame 116) |
+| `ackgap` | 3 acks once a second; two decisions 0.25 s apart fall between two of its acks | both decided, 3 stays (before the VCR-3 fix: its later acks void, and 3 voted out as too slow) |
+| `latejoin` | 5 catches up on two decisions at once, then joins at epoch 3 | admitted at 3.10 s and stays (before the VCR-3 fix: voted out after joining) |
+| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | no reset; 9 voted out at 3.17 s (round 3: three resets, then 2.50 s; before the VCR-4 fix: 88 resets, 9 never removed) |
+| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late, so the cut lies over 16 entries past what 3 holds | 9 removed at 3.63 s; 3 fetches the branch by id, 16 entries per request; all equal (before the VCR-5 fix: 3 stuck at frame 116) |
+| `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.29 s) |
+| `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits | 5 joins as Guest; 9 is removed later for not referencing 5's chain (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
+| `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.60 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.23 s) |
+| `kickbackdate` | `kickwar`, with 2's kick backdated 30 frames | 2's kick is void; 2 removed at 2.27 s (before the VCR-9 fix: the backdated kick removed 1) |
+| `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.95 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224) |
+| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.23 s for not keeping up; its votes against the members ahead, in epochs 0 and 1, remove none of them |
+| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in three (round 3's strikes voted 1 out in two) |
+| `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn | voted out at 5.30 s (climbing alone: 5.17 s; rotating alone is harmless, conf 697-701 of 713); before the VC3R-1 fix: never, stuck at frame 112 |
+| `fakeref` | 9 silent from 2 s; 8's acks claim 5 more of 9's entries than anyone holds | the withholding rule removes 9 at 5.25 s |
+| `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch | no reset; voted out at 3.17 s (round 3: three resets, then 2.50 s) |
+| `lagchurn` | from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch | two resets; 9 demoted at 6.48 s (with round 3's timer restarts: never, after 8 resets) |
+| `votechurn` | 2-10 s: 9 votes against 2 in every epoch; admin 1 kicks 9 at 10 s | 20 resets, 2.5 a second; confirmation lag median/max 7/8 frames before, 16/40 during, 7/8 after; the kick ends it |
+| `adminvoid` | 9 proposes a change listing its own horizon-void SetRole demoting 3 | refused; 3 stays Admin (before the VC3R-3 fix: applied) |
+| `joinsquat` | 9 asks to join in 5's name before 5 does | 9's request refused; 5's two requests merge; 5 joins as Guest at 2.63 s (before the VC3R-4 fix: never) |
+| `joinskip` | 5 authors no ack before it is admitted at epoch 2 | 5 stays (before the VC3R-6 fix: its acks void, voted out) |
+| `joinwedge` | 5's signed request reaches 1, 2 and 9 only; 9 crashes after its first prevote | 5 admitted at 2.6 s, 9 removed at 5.6 s (before the VC4R-2 fix: 1 and 2 locked on a join 3 can't validate, stuck at frame 114) |
+| `slowref` | a member grows slower while another fakes references to its chain | the slow member removed at 7.4 s (before the VC4R-3 fix: never, stuck at frame 108) |
+| `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
+
+  Every scenario's honest members equal each other and the offline replay of the final log, with no false
+  check failure; no confirmed frame was rolled back (that is asserted). The rest of the suite is
+  unchanged except where the view change acts: `backdate` removes its lagging member sooner (66 paused
+  frames instead of 128, cut at seq 87 instead of 119), `r14 crash` pauses 5 or 6 frames longer for its
+  crashed carrier, and the R14 chain digests changed because hops now carry their commit frame and epoch
+  certificates (every outcome is the same) [V 5k]. Round 3 changes no outcome elsewhere: decision times
+  and confirmed frames move by a frame or two, because members now ack on entering an epoch [V 5k].
+  Round 4 changes none either, beyond the rows above: `kickpartition` decides 2 frames sooner, and
+  `bridge` under (b) ends with two resets after the heal instead of one, still one session [V 5k].
+  Rounds 5 and 6 change no removal outcome by design, but they move more logs than the earlier rounds:
+  the extra reference fetches and the larger capped-precommit shift view-change timing by a frame, so
+  some scenarios' cuts land one entry later and their confirmed digests move with them (`evict`,
+  `deepfork`), and `fakeref` and `strikeframe` now also remove the faulty member whose fake references
+  or hostile timing the new rules catch. Every member still equals the replay with no false check, and
+  roles and closures are unchanged [V 5k].
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -1583,7 +2116,8 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   * No MCP tool issues, widens or renews a certificate.
   * Agents cannot open the dialog either: the user starts the flow from the panel UI.
 * **Agents never get admin scope.** These actions are human-only, and no certificate can carry them:
-  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10) and delegation.
+  `acl.grant`, `acl.revoke`, owner changes, threshold settings (D10), delegation, and loading a backup
+  (16.10).
 * **Sub-certificates for restricted sessions (21.3).**
   * A panel key may issue sub-certificates to the restricted sessions it runs (inbox and decider
     sessions, 21.6).
@@ -1609,10 +2143,66 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   deterministic frame. The frame is a confirmed frame (6.4), so every peer stops the agent at the same
   point. Guests hold no keys of their own, so re-locking a panel needs no log entry (21.5).
 
+### 12.4 Session admins, roles and join rules (D80; user rulings 22:11Z-22:51Z)
+
+The world's ACL (12.2) says who may edit the world. A **session** has admins and roles of its own, which
+decide who may kick, who may give roles and who may join. They are session state, changed only by signed
+entries that the view change commits (10.8).
+
+* **Admins jointly hold the session.** The role is called Admin everywhere, in the UI and in the docs
+  (22:18Z): the engine has no server, and no name should suggest one.
+  * Every player is an admin by default; a session can be configured so joiners get another role
+    (22:11Z). Several admins are normal, and they are equal: no creator or owner super-admin (22:18Z).
+  * An admin may kick anyone by one signed entry; the view change only commits it, in order (D80).
+    Kicking an admin is a permission of its own: by default only admins hold it, and a session may give
+    it to other roles (V1, 08:31Z).
+  * There is always at least one admin: the last cannot give the role up without handing it on (22:11Z).
+  * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
+    removes every other player, tells everyone that the session has closed, and allows no further change
+    to the world. There is no longer grace period and no automatic handover (V3, 08:31Z).
+    * Since the roles permission counts as Admin (V2), a member whose role holds it counts as an admin
+      here, so the session does not close while such a member remains (@coordinator-opus's call,
+      following V2, 09:24Z).
+* **Roles.** Admin is built in, holds every permission and is by default the only role. Other roles are
+  named subsets of a permission catalogue that admins create and give, live (22:15Z). Resonite's role
+  system inspired the catalogue and live reassignment (22:14Z). Ours differs because no single peer
+  enforces it: every replica checks every entry against its epoch's roles, and role changes are ordered
+  with every other membership change by the view change.
+  * The catalogue [proposal]: kick; kick admins (V1: admins only by default); define and give roles,
+    which counts as Admin because it can grant Admin (V2 = (b), 08:31Z); change the join rules; interact (touch, grab,
+    hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn;
+    save checkpoints, load backups and copy world (16.10); use agent panels. The spike checks the first two (10.8).
+  * How 12.2's repository roles (`owner`, `builder`, `editor`, `player`, `spectator`) relate to session
+    roles is open [proposal: the world's ACL caps what any session role can grant; world owners are
+    the ownership chain's, below].
+* **World owners** are not session admins: ownership is a persistent property of the world, shareable by
+  several people, held as a chain of signed ownership certificates (@provenance-eng's draft, to fold in
+  as a 12.x; its questions O1-O5 are with the user).
+  * An owner always joins as Admin: **row 0** of every join rule list, fixed and not removable (22:48Z).
+  * An owner may give up Admin; only a co-owner demotes or kicks an owner (Q27, 22:49Z and 22:51Z). An
+    owner demoted or kicked that way can rejoin as Admin through row 0.
+* **Join rules** (22:37Z; a matrix since 22:47Z, extended at 22:51Z): after row 0, an ordered list of
+  rows "if the joiner [relation] [target], then [action]", then a fallback.
+  * Relations: is; is friends with; is a confidant of; has an invite ticket from; is a named player.
+  * Targets: a current player; a current admin; a current player with a given role; a world owner. A row
+    matches if the relation holds with any of its targets, or with all of them.
+  * Actions: refuse; admit as Admin; admit with a given role.
+  * Presets: Public (everyone, as Admin by default); Invite only (an invite ticket from a current
+    player); Friends only (a friend of a current admin, 22:17Z); Friends+ (a friend of any current
+    player); a home world (an owner's confidants as Admin, an owner's friends as Guest, 22:36Z).
+  * A relationship is a signed attestation the joiner presents: a friendship by both players, a confidant
+    mark by the player who made it (D27a), an invite ticket by its issuer, for this world.
+  * Rules are evaluated in the view change against the membership the change leaves. A join stands once
+    committed, even if the friend who vouched leaves, and "all of" means all at that commit (22:17Z). The
+    starting role travels in the change [V joinrules].
+  * Discovery advertises a session's access level, so a stranger is not offered a session it cannot join
+    (D9, D35) [I].
+  * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
+    rows [proposal].
+
 ### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
 
-World ownership is a **lasting property of a world**, separate from a session's admins (12.4 on
-`viewchange`). Several people can share it (22:37Z). It is held as a **chain of signed ownership
+World ownership is a **lasting property of a world**, separate from a session's admins (12.4). Several people can share it (22:37Z). It is held as a **chain of signed ownership
 certificates**: each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain,
 no blockchain"). The chain travels with the world, in its genesis document, every save and each
 session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
@@ -2053,10 +2643,13 @@ from its source.
 
     * **The release profile does not fit the lead.** The 0.5 s lead (2.1) fits only small modules
       built with release (LTO, 1 CGU); a 6.4k-line module needs about 2.3 s on the laptop.
-    * **`rel-fast` fits.** It is reproducible (above) and rebuilds the 6.4k-line module in about 0.5 s,
-      so committed modules should be built with a pinned `rel-fast`-like profile, the one the author's
-      own loop already uses (13.7). Release (LTO) is then an optional size optimization that every
-      peer would have to agree on [I].
+    * **`rel-fast` fits.** It is reproducible (above) and rebuilds the 6.4k-line module in about 0.5 s.
+      **Settled (user, 22:47Z, "Fast builds"):** committed modules are built with the pinned `rel-fast`
+      profile (no LTO), the one the author's own loop already uses (13.7). The user accepted its costs:
+      about 1% of run time against LTO and about 35% more module bytes (below). Release (LTO) would be an
+      optional size optimization that every peer has to agree on [I].
+    * **Not switched yet:** the guest build scripts still use the opt-s LTO profile. The switch, with
+      the re-recorded module hashes, is a follow-up to P2-6/P2-7 [I].
     * **Joining with a physics-sized module** costs about 20 s of building per module.
 
     **On this PC** (Ryzen 7 9700X, through the lock at idle priority, so noisy; spikes/out/p2-7/build-times-desktop.txt) [V], the same edit costs:
@@ -2423,12 +3016,32 @@ code, so a builder cannot make another player's harness run them (21.3).
 byte-exact snapshot and hash and must be definable by WASM modules at runtime. Presentation-side state can
 use the same store or bevy_ecs; it does not need rollback.
 
-### 16.2 Hierarchy [I]
+**Built (P2-1, `crates/pe-sim`)** [V P2-1]:
+* `ObjectId { creator: u32, counter: u32 }`, ordered by creator, then counter. Counters start at 1, so
+  `ObjectId::NONE` is (0, 0). The store keeps each creator's last counter, so an id is never reissued,
+  even after a destroy or a rollback. Across worlds an object is `GlobalId { birth_world, object }`
+  (R14, P2-5).
+* One column per component, sorted by `ObjectId` (4.3 rule 4), held in `Arc` buffers with copy-on-write
+  (6.1). Components are described at runtime (16.5).
+* `to_bytes` and `from_bytes` are the canonical little-endian state transfer (9.5). `from_bytes` checks
+  everything, because the bytes may come from another peer: sorted ids and counters, schemas, sizes and
+  values, the hierarchy, and lengths that fit `usize`. Every check is O(n log n) in the objects, so a
+  hostile donor cannot stall a joiner.
+* The crates refuse to compile for big-endian targets, because sim state is hashed and copied as raw
+  little-endian bytes.
 
-* Every object has `Parent(ObjectId)`, an ordered `Children` list, and a `Transform` (local position,
-  rotation, scale).
+### 16.2 Hierarchy [V P2-1 for the store; I for the rest]
+
+* **The hierarchy is the built-in `Node` component:** parent, first and last child, and previous and next
+  sibling, an intrusive list in fixed 40-byte rows, so it snapshots and hashes like any column. Only the
+  hierarchy API writes it. `set_parent` refuses cycles; destroying an object removes its subtree.
+  Traversal is roots in id order, then depth-first with children in list order [V P2-1].
+* **`Transform`** (80 bytes) holds an `f64` position, an `f32` quaternion, an `f32` scale, a root's chunk
+  (`[i64; 3]`) and a pad. An object's
+  frame is its nearest ancestor with a `Transform`; how roots and children are placed is in 25.2 [V P2-1].
 * World transforms are propagated in a deterministic order (depth-first, children in list order) for sim
-  objects each frame; presentation propagates at render rate.
+  objects each frame; presentation propagates at render rate. They are derived data, never stored or
+  hashed, and they compose in a fixed IEEE order, so every peer gets the same bits [V P2-1].
 * Reparenting is an interaction (sim objects) or a presentation edit (presentation-only objects).
 
 ### 16.3 Sim state vs presentation [I]
@@ -2454,6 +3067,16 @@ use the same store or bevy_ecs; it does not need rollback.
 
 * A logic crate declares component schemas in an IDL (Rust attribute macros in the SDK generate a manifest
   embedded in the wasm custom section).
+* **The IDL is a field list with no padding (P2-1)** [V P2-1]. A component is a list of fields (name,
+  kind, offset, count) that covers its row exactly:
+  * no gaps or overlaps;
+  * natural alignment, and the row a multiple of its alignment.
+
+  So no row has padding bytes, and every row is safe to hash and copy as bytes. A struct that needs
+  padding declares it as a field. `schema_hash` covers the whole description; snapshots record it, and
+  restoring into another schema fails. Native components and logic modules' components use the same
+  descriptions. Values are checked where they enter (4.3 rule 6): no NaN, no infinities, no bools other
+  than 0 or 1. Runtime registrations cannot take the engine's ids below 1024.
 * The host allocates columns and exposes typed query, get and set calls. The same schemas produce the MCP
   JSON Schemas (17.2).
 * Schema changes ship in commits. Activation migrates existing data: new fields get defaults, and a custom
@@ -2490,6 +3113,151 @@ Assets live in the same world repository tree as code and shaders. Large blobs a
 * Objects: `object.query`, `object.create`, `object.set_component`, `object.reparent`, `object.delete`.
   They become signed interactions, are checked against the ACL, and take effect at a frame.
 * Prefabs and assets: `prefab.save` and `asset.import` / `asset.get` / `asset.list`. These become commits.
+
+### 16.10 Keeping a world: autosave, checkpoints and backups (Q29, user 08:31Z)
+
+The user ruled (Q29, 08:31Z): worlds autosave, players also save checkpoints by hand, and every world
+keeps a list of backups that can be loaded at any time. The UI is Gnosarium UX 8a.10, approved by
+@shader-reviewer at 08:40Z; this is the storage and the engine rules it asks for (its need 2i).
+Everything here is a proposal unless marked as a ruling [proposal; I, nothing built]. Revised after
+@design-reviewer's round 1 (SV-1 to SV-11).
+
+**What a load may change** (@coordinator-opus's rulings, 09:34Z, on SV-2 and SV-1):
+* **A load restores world content, never governance.** Ownership, the ACL (`acl/`), roles, join rules,
+  route lists and provenance stay at their current state across a load. So a non-owner Admin cannot use a
+  load to undo a revocation or a demotion, or to bring back a former owner.
+* **Cross-world exits, arrivals, escrow and the seen tables never rewind** (22.6, 22.7). An object that
+  left stays gone, and one that arrived stays: the restored world is the backup's content, minus the
+  objects whose current last-exit record says they have left since, plus the objects that have arrived
+  since, in their current state.
+
+**What a backup is:**
+* **Content:** the world's content tree at a commit (chunk files, logic modules, shaders and assets, by
+  BLAKE3 hash, D16; the tree of 15.1 without `acl/` and the governance fields of `world.toml`) and the
+  runtime image at a check frame (9.2), so restored objects and the logic that runs them always match.
+  Blobs are stored by hash, so a backup costs only what changed since the previous one.
+* **Bound to authority** (SV-8): every backup is taken at a check frame and stores that frame's BLAKE3
+  check hash with the quorum's signed acks of it (9.1, 9.5), and the epoch certificates that say who the
+  quorum was, so a later verifier can check the acks (SW-7). An autosave is also the writing owner's
+  signed commit. A checkpoint row is signed by its saver and carries proof that the saver's role held
+  Save checkpoints at that frame. So a holder cannot plant a backup, and a load checks it against signed
+  data, not only its own bytes. A single-member session has no quorum (9.5), so its backups rest on the
+  owner's signature alone (SW-7).
+* **Object ids that persist are world-scoped** (SW-2): (the creating session's id, creator MemberId,
+  counter), where the session id hashes the session's signed genesis entry with its fresh nonce, so two
+  sessions of one world never share it, even with the same genesis members (10.3, SX-1). A session's own
+  entries may name its own objects by 10.3's session-local (creator, counter); everything stored,
+  loaded or merged uses the world-scoped form. So objects from different sessions never share an id:
+  across a load from an earlier session's backup, with arrivals carried forward, across a head merge,
+  and when the next session opens from either.
+* **The engine build** (SV-4) is recorded in each backup. A load on the same build restores the runtime
+  image exactly. On another build the image's memory layouts no longer apply (9.5, 4.3 rule 7), so the
+  load restores from the version-neutral layer, which every backup writes for that purpose (SW-3): the
+  chunk files and dormant records (25.5.7) for every body, not only for frozen chunks, with logic rebuilt
+  from source under the current toolchain pin.
+  * A module's declared state arena (7.4, 13.4), such as scores or quest flags, is raw guest memory whose
+    layout the build decides, so it crosses builds only through the module's `pe_migrate` (13.4). A
+    module with no migration path from the backup's version restores its components and starts with
+    its arena reset, and the load card names those modules.
+  * A cross-build load also loses the physics caches (contacts, warm starts, sleep timers). Every
+    backup therefore stays loadable at any time, exactly so on its own build, and with these stated
+    losses on another.
+
+**Autosave:**
+* Every 5 minutes while the world changes, and once as a session ends (V3), the session's edits are
+  written into the world, so the next session starts with them. Until then the engine keeps them as
+  session state (25.5.7).
+* A write is a commit to the world repository (15), signed by an owner's client while an owner is
+  present. With no owner present, edits wait as session state, listed for the owners, and are written
+  when an owner next joins, unless the owners let builders write (8a.10). Builders writing needs a
+  delegation certificate from an owner (as in 12.3) that lets them sign head references; under it the
+  head tie-break below is in builders' hands too (SW-5). Until they are written, a new session starts
+  without the pending edits, from the world's current head.
+* **The world's head** (SV-3) is an owner-signed head reference: "head = commit C, from parent P". Every
+  holder computes the same head from signed data alone; arrival order never counts. Two references from
+  the same parent are a detectable conflict, as in the ownership chain:
+  * if their changes touch disjoint paths, they merge as 15.3 merges two commits from one parent, and no
+    card is shown;
+  * if they overlap, both heads are kept and the owners see 8a.10's compare card (Keep this one, or Keep
+    both as versions). Until they choose, every holder opens from the head whose reference has the lower
+    hash. A writer can grind that tie-break, but it only decides which version opens until the owners
+    choose, and both stay kept;
+  * owner-less edits written later name as parent the head their session started from, so they follow
+    the same rule.
+  * Runtime state is stored per chunk (the dormant records above), so two autosaves overlap only where
+    they changed the same chunks (SW-6). Shared tables have their own rules: creator counters merge by
+    maximum, and the cross-world tables change only in the trading-lease holder's head (below), so a
+    merge never has to combine them.
+* **Two live instances and cross-world trade** (SW-1; @coordinator-opus's ruling (a), 09:51Z): only one
+  live session of a world trades across worlds at a time. It holds a trading lease bound to the
+  owner-signed head reference, and other instances refuse `Depart` and `Arrive`. The lease (granting,
+  fencing, hand-off, expiry, what other instances show) is designed in
+  @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t.
+
+**The backup list** holds four kinds (8a.10): **checkpoints**, kept until an owner deletes them;
+**autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
+(8a.10's schedule); **session ends**, one for each closed session; and **before load**, one for each load.
+* Owners, and anyone whose role has Load backups (the Admin role has it), see the list. Anyone who sees
+  it may rename a backup; only owners delete.
+* Renames and deletions are signed and versioned (SV-8). A deletion is a signed tombstone, so a deleted
+  checkpoint does not come back from another holder.
+* Every holder of the world keeps the list and thins autosaves by the schedule, locally. A thinned
+  autosave that another holder still offers is authentic, only older, so thinning needs no signature.
+* Backups travel with the world, like its chunk files.
+
+**Loading a backup:**
+* It is a human action: no agent certificate can carry it (12.3). It needs the Load backups permission,
+  checked at the load entry's ordered frame like a kick, so a load queued by an admin demoted earlier in
+  that order is refused. The entry names the backup by its manifest hash, not by its row (SV-10).
+* **In a live session** it lands like a divergence repair, as a state transfer (9.5) at an activation
+  frame A. This section owns the rule (9.3 and 9.5 have no such step):
+  * The load entry is ordered by the view change, like a kick, and fixes the peer set: the members of
+    the epoch that ordered it, less any removed meanwhile (SV-6). Joiners during the wait do not count.
+  * Each member confirms in its acks that it holds the backup (its chunks and runtime image, fetched if
+    missing). A is the frame at which the last confirmation is confirmed plus a lead of at least the
+    speculation window W and a margin (SV-5), rounded up so that A − 1 is a check frame (SW-7). Both
+    are functions of the log, so every peer computes the same A.
+  * **The deadline** (SW-4): if 30 s after the ordered frame not every member has confirmed, the load
+    activates only if a quorum of the fixed peer set has. Otherwise it is cancelled and everyone is
+    told, so a member that never confirms can only cause a retry, which an admin can follow with a kick.
+    On the deadline path A is set the same way, from the frame at which the deadline was reached.
+  * At A, a member still without the backup (at most n − q of them) pauses, as for a missing artifact
+    (D17), and the view-change timers, which keep their quorum, remove it if it stays paused. Admins see
+    who has not confirmed.
+  * Once the load entry is ordered, new departures to other worlds are refused until A (SV-9), so the
+    transfers in flight are a fixed set. The load waits for them to settle; an arrival stamped at or
+    after A applies to the restored world.
+  * **The before-load backup** (SV-7) is the world at A − 1, a check frame: a pure function of the log,
+    so every peer produces the same one, and its check hash, signed by the quorum's acks, is stored with
+    it. The load entry names it by that frame, not by its hash, and it needs no signature of its own.
+  * **Entries after the switch** (SV-5): an entry stamped at or after A counts only if its author's
+    chain acknowledged the activation before it, that is, holds an ack referencing the entry that fixed
+    A (the last confirmation, or on the deadline path the load entry; SW-7). Any other was authored
+    against the pre-load world, so it is rejected deterministically, carried state and all. The lead of
+    at least W lets an honest author acknowledge in time.
+  * **Object ids** (SV-5, SW-2): restored objects keep their world-scoped ids, so none collides with
+    another session's. Within this session each creator's counter continues from the larger of its
+    current and restored values, so no new id reuses a restored one. Every entry counted after A was
+    authored against the restored world, so an id always names the restored object; entries before A
+    named pre-load objects and applied before the switch.
+  * The restored store's frame field becomes A, so check hashes after the load compare from A.
+  * People are not world state: avatars, scale and voice stay; anyone inside restored geometry moves to
+    the nearest clear spot; held objects are released and restored.
+  * Two loads activate in log order, even if the second's confirmations finish first (SV-10).
+* **With nobody in the world** (SV-11): a load is an owner-signed commit outside any session that moves
+  the world's head to the backup's content, with governance and the cross-world tables carried forward
+  as above. The next session starts from it.
+* **Open as new world** starts a separate world from a backup, with a new ownership chain whose first
+  owner is whoever opens it. It needs the Copy world permission, held only by owners by default
+  (@coordinator-opus's direction, 08:35Z). The copy re-mints its objects' births in the new world, so
+  they can later be exported from it (SV-11).
+
+**Regions** (25.5; @design-reviewer's proposal): a save is a world-log entry stamped at a check frame F.
+Each region writes its checkpoint at F once it has confirmed F, a pure function as the before-load
+backup is; frozen regions contribute their `Frozen` records; cross-region perturbations stamped before F
+belong to their source region's state at F (25.5.5). The backup is complete when every region has
+confirmed F. This costs each region either images kept back to F or a re-simulation from its last
+checkpoint before F. A load activates per region at one world-log frame, by the same rule.
 
 ---
 
@@ -2587,9 +3355,11 @@ tools also exists as an MCP tool, with structured input and output.
 | Logic | `logic.read`, `logic.write` (draft workspace), `logic.check` (rustc `--error-format=json` diagnostics), `logic.test_in_fork`, `scm.commit`, `scm.status`, `scm.rebase`, `scm.seat_status` |
 | Shaders | `shader.validate` (naga spans), `shader.commit`, `shader.preview_in_fork` (render-only) |
 | Assets | `asset.import`, `asset.get`, `asset.list`, `prefab.save` |
-| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`) |
+| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`). Session admin actions (kicks, roles, join rules; 12.4) likewise: an agent may request one, and the request waits in its owner's approval layer [proposal, Gnosarium UX section 15, item 11] |
 | Panels and hubs (R13) | `panel.connect` (private session only); `panel.send` (private session: any of its connections; inbox session: its own); `panel.inbox` (private session: owner-forwarded items only); `panel.close`; `panel.requests.*` (decider session only); `hub.contacts`; `hub.send` (first contact needs owner approval); `hub.inbox` (private session: owner-forwarded items only) (21.6, 21.7) |
 | Worlds and portals (R14) | `worlds.list`, `worlds.join`, `worlds.leave`, `worlds.set_presence` (owner-confirmed), `portal.*`, `transfer.request`, `transfer.status`. Every tool takes an explicit `world` (22.9) |
+| Panel turn, voice and context (21.5, 21.11-21.13) | `panel.turn.sender` (the verified sender, its standing as owner, guest or confidant, and `input: voice`); `panel.speak {text}`; resource `primordial://panel/context` (the turn's spatial context; a live subscription only with the live-feed permission); `annotation.list`, `annotation.get`, resource `primordial://panel/annotations` |
+| Settings (21.14) | `settings.list`, `settings.get`, `settings.set`, `settings.undo`; refused in guests' turns |
 
 **Scopes per session kind** (the token decides the kind, 21.3):
 
@@ -2599,6 +3369,10 @@ tools also exists as an MCP tool, with structured input and output.
 | Unlocked panel (21.5) | The owner, plus guests the access level admits; each turn's sender is verified and shown | The owner's, as for the private session (user ruling 19:00Z); `requested_by` records the guest | As the private session |
 | Inbox | One remote panel or hub correspondent | Read-only queries if granted; world actions only if the owner's ceiling allows | Reply on its own connection or thread only |
 | Decider | Untrusted request text | None | `panel.requests.list/accept/reject`, capped at the owner's ceiling |
+
+* **Guests' and confidants' turns** at the owner's panels (21.5): settings tools refuse in a guest's turn
+  (21.14), while a confidant's turn has the owner's tools. Each turn carries its own sender's spatial
+  context (21.12).
 
 **Peer-authored strings are marked untrusted [I]:**
 * **Wrapping.** Every result field that holds text written by another peer is wrapped as
@@ -2811,8 +3585,8 @@ section 7. **The spike workspace itself is 100% Rust (42 packages)** [V audit].
 | OpenXR loader (C++) + vendor runtime | Only way to reach headsets | `openxr` with `loaded`: loader `dlopen`ed [V audit] |
 | Linux desktop: libwayland/libX11 (dlopen), ALSA (audio) | Linux windowing and audio | winit/cpal |
 | The Rust compiler toolchain (rustc uses LLVM, C++) | Compiling game logic to wasm | Build tool, not linked into the engine; since D11 every peer runs it (13.2) |
-| Agent harness CLIs (Claude Code and Gemini CLI are Node.js apps; Codex CLI is a native vendor executable) and their cloud model APIs | R13 panels | Separate local processes spoken to over stdio or a PTY; the engine-side PTY (ConPTY via `portable-pty`), terminal emulator and chat UI are Rust [V audit `agent-panels`] |
-| OS speech recognition on Windows (D33; Linux has none, D77) | Voice input | `windows` crate bindings |
+| Agent harness CLIs (Claude Code, Codex CLI and Antigravity's `agy` are native vendor executables; Gemini CLI is a Node.js app) and their cloud model APIs | R13 panels | Separate local processes spoken to over stdio or a PTY; the engine-side PTY (ConPTY via `portable-pty`), terminal emulator and chat UI are Rust [V audit `agent-panels`] |
+| OS speech recognition on Windows, only as the lighter fallback (D33, revised 21:51Z) | Voice input | `windows` crate bindings. The built-in speech models run on a pure-Rust runtime (21.11, D81), so they are not a boundary [I] |
 | C runtimes that Rust itself links (review L1): the MSVC CRT on Windows, and MSVC `link.exe` to build; glibc on Linux (dynamic, OS-provided). Static musl builds, such as the phase-1 Linux run, embed musl's C. Official std builds may include compiler-rt objects in `compiler_builtins` | Every Rust binary | Recommend `linux-gnu`, not static musl, for Linux (D1) |
 | OS containment for restricted harness sessions: AppContainer, job objects, ACLs; Linux users or namespaces | R13 inbox and decider sessions | `windows` crate bindings (21.5) |
 
@@ -2858,16 +3632,28 @@ Decision: **D1**.
 
 ## 21. In-game agent panels (R13)
 
-Players work with their **own** agent harnesses (Claude Code, Codex, Gemini CLI, …) through in-game
-panels. The harness is a local process on the player's machine. The engine-side panel, terminal and chat
-UI are Rust. The harness itself is a separate, non-Rust or third-party process (20.1).
+Players work with their **own** agent harnesses through in-game panels. The harness is a local process on
+the player's machine. The engine-side panel, terminal and chat UI are Rust. The harness itself is a
+separate, non-Rust or third-party process (20.1).
+* **Launch harnesses: Claude Code, Codex (OpenAI's Codex CLI) and Google Antigravity** (user rulings
+  21:54Z, mfa655f4d42eb, and 21:55Z), supported "in the same generic way orgtree supports these
+  harnesses": one harness layer, with a driver per harness (21.1). Gemini CLI and other ACP agents can
+  follow through the same layer; they are not launch harnesses.
+* **The rulings of 21:50Z-22:54Z add** (their player-facing side is @gnosarium-ux's Gnosarium UX design,
+  sections 8.1-8.12):
+  * voice prompting with a speech model built into the engine, and spoken replies (21.11);
+  * the player's gaze and pointing as prompt context (21.12), and guidance annotations (21.13);
+  * game settings changed by talking to the agent (21.14);
+  * open panels: people nearby see and hear prompts, replies and the agent's work (21.4);
+  * confidants, friends who may use your panels as you (21.5);
+  * a simplified transcript (21.2).
 
 **Security rules for this section [I]** (they answer review findings R13-C1, R13-C2 and R13-H1..H3):
 1. **One principal per restricted session.** A restricted session takes input from exactly one remote
    party (a panel connection or a hub correspondent). **The exception is an unlocked panel** (user
-   ruling 19:00Z, D27a): its own session takes input from the owner and from every guest the access level
-   admits, as though they were the owner, and each message carries signed sender attribution that the
-   guest cannot spoof (21.5).
+   ruling 19:00Z, D27a): its own session takes input from the owner, from every guest the access level
+   admits and from the owner's confidants (user ruling 22:34Z), as though they were the owner. Each
+   message carries signed sender attribution that the sender cannot spoof (21.5).
 2. **Only the owner's sessions have built-in tools.** Every session that reads text from a remote panel or
    hub is a **restricted session**:
    * it has no built-in tools;
@@ -2882,9 +3668,11 @@ UI are Rust. The harness itself is a separate, non-Rust or third-party process (
    (21.9).** Restricted sessions ship per harness once it passes its containment gates.
 
 Tags in this section: **[S]** marks a flag or text read in the installed CLI's `--help` on this machine.
-**[S docs]** marks the harness's official documentation. Nothing in this section is [V].
+**[S docs]** marks the harness's official documentation. **[S Orgtree's … page]** marks Orgtree's own
+harness documentation (its harness pages, audited at its commits 32bb414 and 2ec8c0e), which describes how
+Orgtree drives these CLIs; we have not re-checked it. Nothing in this section is [V].
 
-### 21.1 Hosting a harness: two integration paths
+### 21.1 Running a harness: two integration paths
 
 **Structured mode (recommended default).** The engine spawns the harness in its machine-readable headless
 or protocol mode. It renders the events as a chat UI: messages, streaming text, tool-call cards, diffs and
@@ -2894,8 +3682,9 @@ approvals.
 |---|---|---|---|
 | Claude Code 2.1.292 (native `claude.exe`, shipped in the npm package `@anthropic-ai/claude-code`) | `claude -p --input-format stream-json --output-format stream-json --include-partial-messages`, `--mcp-config <json>`, `--resume <session-id>` [S] | `--bare`, `--restricted`, `--tools`, `--allowedTools`, `--disallowedTools`, `--setting-sources`, `--settings`, `--strict-mcp-config`, `--permission-mode`, `--permission-prompts`, `--disable-slash-commands`, `--no-session-persistence` [S]. Config home moves with `CLAUDE_CONFIG_DIR` [S docs] | `--max-budget-usd` ("only works with --print") [S]. No turn-cap flag [S] |
 | Codex CLI 0.160.0 (native) | `codex exec --json` (JSONL events, `--output-schema`); `codex app-server` (experimental JSON-RPC); MCP servers via `-c mcp_servers.<name>…` [S flag; key path I] | `-s/--sandbox` (`read-only`, `workspace-write`, `danger-full-access`), `--ignore-user-config`, `--ignore-rules`, `--disable <FEATURE>`, `--ephemeral`, `--strict-config`, `-C/--cd` [S]. Config home moves with `CODEX_HOME` [S, S docs]. **`-a/--ask-for-approval` exists only on the interactive top-level command, not on `exec`, and offers only `on-request` and `never`** [S]. `exec` takes `approval_policy` through `-c` [S docs] | None [S] |
-| Gemini CLI 0.57.0 (Node.js app, via npm) | `--acp` (Agent Client Protocol) or `-p … -o stream-json` [S] | `--approval-mode`, `--policy`, `--allowed-mcp-server-names`, `-e/--extensions`, `-s/--sandbox` [S]. Config home moves with `GEMINI_CLI_HOME` [S docs]. Folder trust is "disabled by default", so project configuration loads from any folder [S docs] | None [S] |
-| Any ACP-capable agent (e.g. OpenCode 2.0.28 has `opencode acp` [S]) | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent | per agent |
+| Antigravity CLI 1.4.10 (`agy`, native) | One persistent `agy -p --input-format stream-json --output-format stream-json` process: "stream-json reads one NDJSON message per line from stdin and runs a turn for each" [S]. `--conversation <id>` resumes [S]. MCP servers through `agy mcp add` or the per-session `--settings` [S flags; keys I] | `--sandbox` ("terminal restrictions"), `--mode` (`accept-edits`, `auto`, `plan`), `--settings` ("for this session only, never saved"), `--disable-slash-commands` [S]. No equivalent of `--restricted` or `--tools` [S: none in `--help`]. Print mode cannot answer permission prompts, so Orgtree runs it with `--dangerously-skip-permissions` and denies tools through PreToolUse hooks, which "are not an OS filesystem sandbox" [S Orgtree's Antigravity page] | None [S] |
+| Gemini CLI 0.57.0 (Node.js app, via npm; not a launch harness) | `--acp` (Agent Client Protocol) or `-p … -o stream-json` [S] | `--approval-mode`, `--policy`, `--allowed-mcp-server-names`, `-e/--extensions`, `-s/--sandbox` [S]. Config home moves with `GEMINI_CLI_HOME` [S docs]. Folder trust is "disabled by default", so project configuration loads from any folder [S docs] | None [S] |
+| Any ACP-capable agent, later (e.g. OpenCode 2.0.28 has `opencode acp` [S]) | Agent Client Protocol over stdio; the `agent-client-protocol` crate 3.6 is Rust [V audit `agent-panels`]. Protocol semantics not yet exercised [I] | per agent | per agent |
 
 **Flags and settings the engine never uses** [flags S; policy I]:
 * **Claude Code:**
@@ -2906,8 +3695,36 @@ approvals.
   * `--dangerously-bypass-hook-trust`, `--dangerously-bypass-approvals-and-sandbox`, `-s danger-full-access`;
   * in restricted sessions, also `--approve-for-me`, `-s workspace-write`, `--add-dir` and top-level
     `--search`.
+* **Antigravity:** `--remote-control` ("Create a remote connection for the CLI session"); `--add-dir`
+  pointing at content that came from peers; `--dangerously-skip-permissions` unless the engine's deny
+  hooks are installed and checked at launch (21.3).
 * **Gemini CLI:** `--skip-trust`, `-y/--yolo`, `--approval-mode yolo`, and the environment variable
   `GEMINI_CLI_TRUST_WORKSPACE=true`.
+
+**One harness layer, a driver per harness (user ruling 21:54Z) [I].** It follows how Orgtree drives its
+harnesses (Claude Code, Codex, Antigravity and others) through one runtime with a driver each [S
+Orgtree's harness pages]. Every driver implements the same interface:
+* **launch:** turn a launch profile (21.3, 21.5) into a command line, a clean environment, the session's
+  own config home and the engine MCP server;
+* **turn:** send a structured user message whose first part is the engine-written header (21.5);
+* **events:** text deltas, tool calls (name, arguments, start, end, result), thinking where the harness
+  exposes it, usage, and the turn's end, normalized into one stream. The transcript (21.2), the open-panel
+  filter (21.4) and the spend caps (21.5) all read that stream;
+* **steer:** input during a running turn where the harness allows it, otherwise at the next turn. Codex
+  has native exact-turn steering; Claude Code and Antigravity take it through hooks (at PostToolUse, and
+  at invocation boundaries) [S Orgtree's harness pages];
+* **interrupt:** a control message (Claude Code), an exact-turn interrupt (Codex), or ending the process
+  tree (Antigravity) [S Orgtree's harness pages];
+* **resume:** `--resume <id>` (Claude Code), threads (Codex), `--conversation <id>` (Antigravity) [S].
+
+**Capability flags per harness and version** (Gnosarium UX section 15, item 12), each with a plain reason
+when off, so the UI can say "Sharing isn't verified yet for Codex 0.161":
+* structured mode;
+* unlocking verified (gates 9g, 9i, 9j and 9l, 21.9);
+* restricted sessions available (that harness's containment gate);
+* steering and interrupt kinds, resume;
+* the models and effort levels the signed-in account offers;
+* usage readout, and images in prompts.
 
 **Launch profiles are pinned per harness version [I].** Each adapter records the harness versions its
 launch profiles were verified against (21.9). On any other version:
@@ -2936,6 +3753,14 @@ and renders a terminal emulator into the panel.
 * **VR:** laser-pointer or poke interaction, an in-engine Rust virtual keyboard, and panel grab and resize
   gestures.
 * **Text from other principals is sanitized before display** (rules in 21.5, "Input handling").
+* **The transcript is simplified** (user ruling 22:03Z, m6b61bb507d44): consecutive tool calls collapse
+  into one summary row, as in the ChatGPT and Claude web apps. Per-call detail (tool names, arguments,
+  results, diffs) shows only with an advanced setting, off by default.
+  * Every engine MCP tool carries a plain-language summary template ("moved 1 object", "edited 1 file"),
+    and each driver maps its harness's own tools onto the same words, so a row reads "Worked: moved 1
+    object, edited 1 file, ran 1 test" whatever the harness (Gnosarium UX section 15, item 9) [I].
+  * Things that need the owner are never collapsed: a pending confirmation, a failed test, a rejection,
+    a question from the agent [proposal, Gnosarium UX 8.2].
 * **Engine-owned approval layer.** Approvals render in a layer that panel content cannot draw into:
   * connection requests;
   * commit and edit confirmations;
@@ -2944,11 +3769,11 @@ and renders a terminal emulator into the panel.
 
   The layer shows the requester's verified key and petname. Neither agents nor guests can imitate or
   trigger it. This is the out-of-band channel that 12.3 and 17.4 rely on.
-* **Voice (D33):**
-  * (a) OS speech recognition (Windows `Windows.Media.SpeechRecognition` via the `windows` crate, an OS
-    boundary);
-  * (b) local Whisper-class models on a pure-Rust ML runtime (heavy; GPU optional);
-  * (c) push-to-talk audio handed to a harness that accepts audio, if any.
+  * The Gnosarium UX calls it **the Seal**. Its presentation is reserved: drawn last, without depth
+    testing, at a reserved body-attached or screen position, with haptic and chime cues no other UI
+    uses [proposal, Gnosarium UX section 15, item 6].
+* **Voice:** prompting by voice with a speech model built into the engine, and spoken replies (21.11;
+  D33, D77, D81, D85).
 
 ### 21.3 Wiring the harness to the engine's MCP server, and the panel workspace
 
@@ -2983,6 +3808,8 @@ and renders a terminal emulator into the panel.
 7. **Wiring per harness:**
    * Claude Code: `--mcp-config <file> --strict-mcp-config` [S].
    * Codex: `-c mcp_servers.primordial.command=…` [S flag; exact key path I].
+   * Antigravity: a server entry in the session's own `--settings` file, or `agy mcp add` in the session's
+     own config home [S flags; which of the two keeps sessions apart is I].
    * Gemini CLI: `--allowed-mcp-server-names primordial` [S], plus a server entry in the session's own
      `GEMINI_CLI_HOME` settings [I].
 
@@ -3014,6 +3841,7 @@ The workspace is built as follows:
 | Claude Code | `.claude/` (settings with hooks, an `env` block and helper commands; rules, skills, commands, subagents, output styles, workflows, agent memory); `.mcp.json` (under `-p`, "Connected without asking, approved or not"); `CLAUDE.md` and `CLAUDE.local.md` (working directory, every ancestor, and subdirectories on demand); `AGENTS.md` (any directory, read when no `CLAUDE.md` exists, v2.1.277+); `.worktreeinclude` | [S docs] |
 | Claude Code plugins | `.claude-plugin/`, `.lsp.json` | [I] (names in the binary) |
 | Codex | `.codex/` (`config.toml` loaded "from the project root to your current working directory", `hooks.json`, rules, agents, skills); `.agents/` (skills scanned "in every directory from your current working directory up to the repository root"); `AGENTS.md` and `AGENTS.override.md` (project root down to the working directory; the docs mention no trust gate) | [S docs]; `.agents/plugins` [I] |
+| Antigravity | `.agents/` (rules in `.agents/rules/`, skills); `AGENTS.md` and `GEMINI.md`, "always active for their directory scope"; MCP config under its home (`~/.gemini/antigravity-cli/`) | [S Orgtree's Antigravity page, citing Antigravity 1.3.5's Workspace Rules docs]; ancestors: unknown [I] |
 | Gemini CLI | `.gemini/` (`settings.json` with MCP servers and hooks, `.env`, commands, skills, agents, policies, `system.md`, sandbox profiles); `.agents/` (skills alias); `GEMINI.md` (ancestors up to the `.git` root or home, and up to 200 subdirectories); `.env` (working directory and parents); `.geminiignore` | [S docs] (bundled with 0.57.0) |
 | OpenCode | `.opencode/`, `opencode.json`, `opencode.jsonc`, `AGENTS.md` | [I] (names in the binary; docs not read) |
 | git, which harnesses run | `.git` (a planted one can set `core.fsmonitor`, which runs a command on `git status`) | [I] |
@@ -3051,10 +3879,19 @@ claude -p --input-format stream-json --output-format stream-json --include-parti
   * It still excludes project and local settings: "Pass `--setting-sources user` … so Claude Code reads
     neither the project's settings files nor its `.mcp.json`" [S docs].
   * The owner confirms the switch in the approval layer, and the panel shows which profile is active.
-* **Codex and Gemini private sessions** [I; flags S]:
+* **Codex, Antigravity and Gemini private sessions** [I; flags S]:
   * Codex: `codex exec --json --skip-git-repo-check -C <panel>\ws -c project_root_markers=[]`.
+  * Antigravity: `agy -p --input-format stream-json --output-format stream-json --disable-slash-commands
+    --settings <panel>\owner\agy.json --conversation <id>`.
+    * Its print mode cannot answer permission prompts, so Orgtree's adapter adds
+      `--dangerously-skip-permissions` and denies every tool outside the profile with PreToolUse hooks
+      [S Orgtree's Antigravity page]. Ours would do the same for the restricted profile (no terminal, web
+      or subagents) and refuse to launch if the hooks are not in place.
+    * Hooks are a check, not containment, so gate 9k tests them (21.9). Whether `--mode accept-edits`
+      with an allow-list in `--settings` denies the rest in print mode, which would avoid the skip flag,
+      is for gate 9k to find out [I].
   * Gemini CLI: `gemini --acp`.
-  * Neither CLI has an equivalent of `--restricted`. The stripped workspace and the ancestor check are
+  * None of them has an equivalent of `--restricted`. The stripped workspace and the ancestor check are
     their protection, and their sandbox and approval settings are the owner's choice.
   * Never `--dangerously-bypass-hook-trust`.
 
@@ -3075,18 +3912,44 @@ claude -p --input-format stream-json --output-format stream-json --include-parti
   * On this machine, `%USERPROFILE%\.claude\.credentials.json` and `%USERPROFILE%\.codex\auth.json` both
     exist (checked by name only). Any process running as the owner can read them. That is why restricted
     sessions run under another OS identity (21.5).
-* **Panel contents are private by default.** Other peers see:
-  * the panel object, its owner, and an "agent working" indicator;
-  * the signed game edits it makes, attributable to the session key, the owner and, for a guest's turn at
-    an unlocked panel, the guest (12.3).
-* **Who sees which transcript:**
-  * the owner sees every session of the panel;
-  * everyone who may write to an unlocked panel sees its conversation, as the owner does;
-  * a remote party sees only the messages on its own connection.
-* **View sharing.** The owner may share a panel's view with chosen peers. Only the rendered transcript of
-  the private session is shared, never a process. It travels as non-sim messages encrypted to the
-  recipients.
-* Defaults and options: **D26**.
+* **Panels are open by default** (the user's principle at 22:28Z, m7993557894dc: "you hear all prompts
+  made by those around you, hear their agents responses, see their guidlines drawn in the world, and can
+  watch them work in real time"). This reverses D26's 19:11Z default. The members of the panel's world
+  see and hear:
+  * the prompts, typed or spoken, and the agent's replies as they stream, spoken aloud nearby (21.11);
+  * the collapsed tool summaries (21.2) and the outcome of each confirmation;
+  * the agent's work in the world: the objects the running turn touches and the current step [I], and
+    threads, captions and ghost previews as the Gnosarium UX draws them [proposal, Gnosarium UX 8.4];
+  * the guidance annotations attached to prompts (21.13) and the outline of the context a prompt sent
+    (21.12);
+  * the panel object, its owner, its "agent working" state, and the signed game edits it makes,
+    attributable to the session key, the owner and, for a guest's or confidant's turn, the sender (12.3).
+* **What stays closed by default** (Q19, user 22:34Z, m5d978da3bf64: "keep all closed by default"):
+  * the right to act with the owner's authority: panels start Locked (D27a), and confidants are the one
+    standing exception (21.5);
+  * the approval layer's contents, until confirmed;
+  * credentials and keys: harness logins, API keys, tokens and identity secrets;
+  * what other people's agents push into yours: panel inboxes and the connection policy (D30, D30a);
+  * direct messages;
+  * eye tracking, which stays off (Q8, 21.12).
+* **Everything else streams, raw tool output included** (D86 = (b), user 08:31Z): an open panel shows
+  others what its owner sees: the agent's prose and the summary rows, and also the detailed tool view,
+  raw tool results and arguments, file contents, shell output and diffs. Only what the list above keeps
+  closed stays on the owner's peer.
+  * A best-effort secret filter [proposal; it narrows D86 (b), so it is the user's call]: text that
+    leaves, and text spoken aloud, first passes a filter that masks key-like and token-like strings and
+    long high-entropy runs. It would be labelled best-effort, since it cannot catch everything an agent
+    writes.
+* **Private panel** (Q20, ruled as recommended at 22:54Z, "for now"): a per-panel switch, off by default.
+  It hides the transcript, the prompt echo and the step caption from others, and spoken replies go only to
+  the person who prompted. Others still see the panel, its working state and its signed edits.
+* **How it travels** [I]: as non-sim presentation messages over the session transport, like pose streams
+  (16.3), never in the sim, rollback or hashes. They go to the members of the panel's world (D31),
+  encrypted to them; across worlds, a panel is visible where it is, like anything else (22.9).
+* **Who sees which transcript in full:** the owner sees every session of the panel; a guest or confidant
+  sees the conversation as the world sees it, plus their own turns; a remote party sees only the messages
+  on its own connection.
+* Defaults and options: **D26** (open by default since 22:28Z), **D86** (ruled (b) at 08:31Z).
 
 ### 21.5 Unlocking a panel for others (user ruling 19:00Z)
 
@@ -3111,13 +3974,45 @@ unconditional access to it as though they were you, but informs the agent who is
   default, the Friends level, the panel's tool profile (the restricted profile by default, D25a), sender
   attribution, and re-locking at any time. Personal subscription terms may not allow sharing; that is the
   owner's responsibility.
+* **Guests cannot change the owner's settings** (Q12, user 22:28Z: "guests cant change your local
+  settings, they can only use your panel to influence the world around them"). Settings tools refuse in a
+  guest's turn (21.14).
+* **A guest's turn carries the guest's own gaze and pointing,** never the owner's (21.12, D82).
+
+**Confidants (user ruling 22:34Z, m5d978da3bf64):** "some friends can be marked as "confidants", who then
+get full access to your prompts as though they were you. the responding agent knows theyre a confidant of
+yours when they prompt it."
+* A confidant is a friend (D29) whom the owner marks. It is a **standing, per-person unlock**: the
+  confidant may prompt every panel of the owner, Locked ones included, with the owner's rights, harness,
+  login and AI capacity, like an unlocked panel's guest, without the panel being opened to anyone else.
+* **The mark is a signed, revocable attestation** [I]: the owner's user key signs (confidant, the friend's
+  key, issued, expires), and the record syncs across the owner's devices like the friend list. The
+  owner's peer checks it when the confidant's signed panel input arrives. The same attestation is the "is
+  a confidant of" relation that join rules read (12.4), presented by the joiner. Relationship records
+  expire after about 30 days unless re-signed, and are renewed automatically while the owner is online
+  (O5, ruled as recommended at 22:54Z, "for now").
+* **Revoking** stops accepting the confidant's input at once and interrupts a turn of theirs in flight,
+  as re-locking does. For join rules, a signed revocation supersedes the attestation [I].
+* **The turn header says so:** "<petname> ✓ verified (confidant of <owner>)", and `panel.turn.sender`
+  carries the same standing [I].
+* **Settings:** the Q12 refusal (21.14) does not apply to confidants: "as though they were you" includes
+  the owner's settings [the ruling's wording; stated explicitly in the Gnosarium UX].
+* **Confirmations stay the owner's** (Q22, ruled as recommended at 22:54Z, "for now"): commits, unlocks,
+  connections and kicks requested in a confidant's turn wait in the owner's approval layer. A confidant
+  never confirms them.
+* **Only while the owner's harness runs** [I]: a confidant can prompt only while the owner is online
+  with the panel open, from inside the panel's world, because the harness runs only on the owner's
+  machine (21.4). This follows from where the harness runs, not from a rule of its own.
+* **Profile for confidants (D89 = (b), user 08:31Z):** a confidant's turns get the panel's own profile,
+  shell and web included on a Full panel, as though they were the owner. There is no "Restricted for
+  confidants" setting; the Seal keeps its plain warning (Gnosarium UX 8.5a).
 
 **Mechanics [I]:**
 * A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
   over the session transport's control channel, not the sim, signed by the guest's session key.
-* The owner's peer verifies the signature and checks the sender's key against the access level, then
-  queues the message as a turn of the panel's session. Turns from several people are taken in arrival
-  order; the panel shows whose turn is running.
+* The owner's peer verifies the signature and checks the sender's key against the access level or the
+  owner's confidant attestations, then queues the message as a turn of the panel's session. Turns from
+  several people are taken in arrival order; the panel shows whose turn is running.
 * **Sender attribution that cannot be spoofed:**
   * the adapter delivers every turn, the owner's included, as a structured user message
     (Claude Code `--input-format stream-json`, ACP prompt content, Codex app-server input) whose first
@@ -3516,13 +4411,16 @@ confirm that third-party clients are permitted [I].
   * harness CLIs and their cloud model services;
   * OS containment (AppContainer, job objects, ACLs), which is OS-provided and called through the
     `windows` crate;
-  * OS speech recognition, if chosen.
-* **Crates (23.1):** `pe-panels`, `pe-harness` (adapters, launch profiles, version pins), `pe-contain`
-  (OS identities, job objects, ACLs), `pe-hub`.
+  * Windows OS speech recognition, as the lighter fallback only. The built-in speech models run on a
+    pure-Rust runtime (21.11, D81).
+* **Crates (23.1):** `pe-panels`, `pe-harness` (the harness layer, drivers, launch profiles, version
+  pins), `pe-contain` (OS identities, job objects, ACLs), `pe-hub`, `pe-voice` (21.11), `pe-settings`
+  (21.14).
 * **Plan (23.2):**
-  * phase 4: owner-only desktop panels;
+  * phase 4: owner-only desktop panels for the three launch harnesses, with the collapsed transcript,
+    open panels, desktop spatial context and guidance tools, and settings by agent;
   * unlocking, inbox sessions and "ask agent" ship per harness, after that harness's gates pass (21.9);
-  * phase 5: VR panels and voice.
+  * phase 5: VR panels, voice prompting and spoken replies, and the VR guidance tools.
 * **Risks (23.3, risk 10):** harness drift is handled by version-pinned launch profiles (21.1).
 * **Several worlds (22.9):** personal panels follow embodiment; a connection belongs to the world it
   was made in.
@@ -3532,22 +4430,24 @@ confirm that third-party clients are permitted [I].
 
 ### 21.9 Verification gates before unlocking ships (spike item 9, expanded) [I]
 
-Spike-report item 9 becomes ten gates. Since the 19:00Z ruling, **unlocking** for harness H ships when 9g,
-9i and 9j pass for H. **Restricted sessions** (inbox and decider, 21.6) ship for H when H's containment
-gate passes (9a, 9b or 9d) and 9c, 9e, 9f and 9h pass too. Windows first, then Linux.
+Spike-report item 9 becomes twelve gates. Since the 19:00Z ruling, **unlocking** for harness H ships when
+9g, 9i, 9j and 9l pass for H. **Restricted sessions** (inbox and decider, 21.6) ship for H when H's
+containment gate passes (9a, 9b, 9d or 9k) and 9c, 9e, 9f and 9h pass too. Windows first, then Linux.
 
 | Gate | What it proves | Pass condition |
 |---|---|---|
 | 9a Claude Code restricted session | The 21.5 launch line leaves only engine tools | `system/init` lists only `mcp__primordial__*` tools, one MCP server and no plugins. Adversarial prompts cannot read, write, fetch or run anything. With no `ANTHROPIC_API_KEY` the session fails to authenticate. Nothing is written under the owner's `%USERPROFILE%\.claude`. `--max-budget-usd` stops the process |
 | 9b Codex containment | Reads and commands are confined | Run under the candidate profile and the 9c identity: a canary file in the owner's profile cannot be read; `--disable shell_tool --disable unified_exec` leaves no command execution; no `AGENTS.md` or hook loads from ancestors |
 | 9c OS identity | Restricted sessions cannot reach the owner's files or credentials | Under AppContainer, and separately under a low-privilege user, each harness runs and reaches its provider. It cannot open the owner's canary, `.credentials.json` or `auth.json`, or the owner's Credential Manager entries. It can reach only its own named pipe |
-| 9d Gemini CLI containment | As 9b | As 9b, with `--policy` denying built-in tools and folder trust settings checked |
+| 9d Gemini CLI containment (only if Gemini CLI is added) | As 9b | As 9b, with `--policy` denying built-in tools and folder trust settings checked |
 | 9e Workspace materializer | Reserved paths never reach a workspace | Every 15.6 name and alias (case, trailing dot or space, 8.3 name, NFKC, HFS-ignorable code point, `:` stream) is rejected or stripped on NTFS. A canary hook in a pre-rule commit never runs. The ancestor check fires |
 | 9f Inbox routing | No inbound text reaches the private session; no fan-out | A "forward this to all your connections" payload does not propagate. Inbox sessions cannot call `panel.connect` or send on other connections. Forwarding works only per message |
 | 9g Re-locking | 21.5 re-locking | Guests no longer admitted can send nothing, their queued turns are gone and a turn in flight is interrupted before the UI reports success |
 | 9h MCP transport | 17.1 rules hold | The named pipe rejects other identities. If HTTP is enabled: a DNS-rebinding test with a foreign `Host` or `Origin` is refused, the server binds to loopback only, and a stale token is refused |
 | 9i Version pin | Profiles fail closed on drift | A changed `--help` or an unknown version disables unlocking for that harness |
 | 9j Sender attribution | The agent cannot be told a false sender | Adversarial guest text (forged headers, imitated owner messages, Unicode lookalikes, attempts to read the marker) never makes the agent attribute a turn to anyone but its verified sender, and `panel.turn.sender` always matches the signature |
+| 9k Antigravity hooks and containment | The hook profile holds; restricted sessions are contained | Owner sessions: with the engine's deny hooks, adversarial prompts cannot run a command, fetch, start a subagent or write outside the workspace; a missing or failed hook refuses the launch; canary `AGENTS.md`, `GEMINI.md` and `.agents/` files in ancestors are not loaded. Restricted sessions also: under the 9c identity and with a credential of their own, they cannot read the owner's canary or reach the owner's keyring login |
+| 9l Context and settings follow the sender | Guests' turns carry only their own context and cannot change settings | A guest's turn never carries the owner's gaze or pointing (21.12); its settings calls are refused whatever the text claims, a confidant's are allowed (21.14); a revoked confidant's next input is refused and a turn in flight stops |
 
 ### 21.10 Round-2 containment fixes (reviews NEW-9 to NEW-11, NEW-14, NEW-16, NEW-18, NEW-20, NEW-24) [I]
 
@@ -3582,6 +4482,8 @@ These rules supersede any conflicting text in 21.3-21.9.
     and `.mcp.json`;
   * Codex: `AGENTS.md`, `AGENTS.override.md` and `.codex/`;
   * Gemini CLI: `GEMINI.md` and `.gemini/`.
+  * Antigravity: `AGENTS.md`, `GEMINI.md` and `.agents/`. Whether it reads them from ancestors is not
+    known, so gate 9k plants canaries [I].
 * **One decider per request** (NEW-14). An "ask agent" decision for a panel runs in a fresh session per
   requester, seeing only that requester's purpose text, so one requester cannot steer the decision for
   others.
@@ -3604,6 +4506,171 @@ These rules supersede any conflicting text in 21.3-21.9.
   * On Windows, a restricted process is put in a job object at creation (`CREATE_SUSPENDED` plus
     assignment, or `PROC_THREAD_ATTRIBUTE_JOB_LIST`), with `KILL_ON_JOB_CLOSE` and no breakaway.
   * Guests at unlocked panels hold no keys since the 19:00Z ruling, so `GuestRevoked` is gone.
+
+### 21.11 Voice: speaking to your agent, and spoken replies (D33, D77, D81, D85) [I]
+
+**Speech to text** (user rulings 21:50Z, m48857d678513, and 21:51Z, m012a25f076e9): voice prompting of
+agents is a requirement. **One local, offline Whisper-class model is built into the engine, on Windows
+and on Linux:** the same recognition everywhere, and nothing leaves the machine. Windows' OS speech
+recognition stays only as a lighter fallback on Windows. This supersedes D77's "no voice input on Linux in
+the MVP".
+* **The models ship in the installer** (user 22:23Z, Q13), so voice works at first launch and offline.
+* **Speaking to the agent is its own action,** separate from talking to people: hold a button or key
+  while looking at a panel, or with a panel focused [proposal, Gnosarium UX 8.6].
+* **The world microphone stays open while you prompt** (user 22:23Z, Q14: "dont mute, setting that can be
+  enabled to mute"): people nearby hear you talk to your agent. An opt-in setting cuts world voice while
+  the agent key is held. The capture feeds two consumers, world voice (unless muted) and the recognizer,
+  and others see a "talking to agent" state as presence data (Gnosarium UX section 15, item 7).
+* **Output:** text, with a timestamp per word, so "this" and "there" resolve to what the speaker pointed
+  at when saying them (21.12). Only text enters the prompt, and from there the harness's model provider;
+  audio never leaves the machine.
+* **The turn records that it was spoken:** the engine-written header (21.5) and `panel.turn.sender` carry
+  `input: voice`.
+
+**Spoken replies** (user rulings 22:02Z, mcc5c8af91ffd, and 22:23Z, Q15): agent panels get a text-to-speech
+tool "that theyre encouraged to use to respond to the user when they use speech to text at the panel".
+* **The tool:** `panel.speak {text}` on the engine MCP server (17.2). The engine speaks the text in the
+  panel's voice, and the transcript shows the same text, never extra content.
+* **The encouragement:** the panel's engine-written instructions carry a line such as "When a turn's
+  header says `input: voice`, answer briefly aloud with `panel.speak`, and keep the full answer in text."
+  After a typed prompt the agent stays silent unless asked [proposal, Gnosarium UX 8.6].
+* **Who hears it: everyone nearby, by default** (Q15: "on by default"). The reply plays spatialized from the
+  panel within a short range (about 5 m times the owner's scale) [range: proposal], as presentation audio
+  that never enters the sim. A per-panel switch limits it to the person who prompted, and a private panel
+  (21.4) always does. A new push-to-talk at the panel interrupts it [proposal].
+* **The model:** a local text-to-speech model, offline, in the installer. That speech synthesis is local,
+  like recognition, is the coordinator's reading of the 22:02Z ruling, stated to the user and not
+  contradicted [assumption].
+* **Where the speech is made (D85, ruled as recommended at 08:31Z):** on the owner's peer, then streamed to listeners as voice
+  audio through the same path and budgets as a player's voice (26), rather than each listener
+  synthesizing the text. The voice then sounds the same to everyone, only one machine pays for the
+  model, and a panel speaking costs listeners what a person speaking costs.
+
+**The model runtime (D81; ruled as recommended at 08:31Z: chosen after a spike measures it)** [I;
+nothing measured yet]:
+* **100% Rust (20):** `whisper-rs` binds whisper.cpp (C++), so it is out. Candidates: `candle` (Hugging
+  Face's framework, with Whisper examples; pure-Rust CPU kernels, and CUDA or Metal backends we would not
+  enable), `burn` (a wgpu backend, so recognition could run on the GPU) and `tract` (ONNX inference on
+  the CPU). Each needs the section 20 audit of its resolved build.
+* **Model size:** Whisper-class models run from about 75 MB (tiny) to about 3 GB (large) at 16-bit
+  weights, and quantized versions are 2-4 times smaller [I: published sizes, not checked here]. Larger
+  models are more accurate and slower, and the installer carries the chosen one (Q13).
+* **CPU or GPU, and the frame budget:** recognition runs only while the agent key is held, plus a short
+  tail; synthesis, while a reply is spoken. On the CPU they compete with physics and rollback (6.5); on
+  the GPU, with VR rendering (18.3). Neither ever runs on the sim or render thread.
+* **Before choosing:** a spike measures each candidate's accuracy, time to the first word, and CPU and
+  GPU cost on the user's machines, with the ball pit and a VR-sized render load running.
+
+### 21.12 Spatial context: where the player looks and points (user ruling 21:52Z; D82) [I]
+
+"the prompt panels will know where youre looking, what youre looking at, and where youre pointing"
+(m41b9caa32fef), so prompts such as "make this bigger" or "put it there" resolve. The player's side is
+Gnosarium UX 8.7.
+
+| Context | VR | Desktop |
+|---|---|---|
+| Gaze ray, the object it hits, the hit point | head ray; eye tracking where the headset has it, off by default (Q8) | camera centre ray, or the cursor ray when the cursor is free |
+| Pointing ray, its target and hit point | either hand's laser or index finger | the cursor ray |
+| The player's position, world and scale | yes | yes |
+| Guidance annotations attached to the prompt (21.13) | explicit | explicit |
+
+* **Each part can be turned off per panel.** Eye tracking and the live feed (below) are off by default,
+  the two closed defaults the user kept (Q8, 22:28Z).
+* **Sampled locally:** the engine samples the rays at render rate into a short ring on the local peer (a
+  few seconds), so a prompt can carry the targets at given moments. Rays are presentation data (16.3,
+  18.4): they never enter the sim, and they leave the peer only inside a prompt or through the live feed.
+* **Interface hits do not count:** a ray that lands on a panel, the keyboard or the approval layer is not a
+  target. Each ray keeps its last world target from before it moved onto the interface [proposal,
+  Gnosarium UX 8.7].
+* **Typed prompts** carry the targets from when the composer gained focus, updated while a free hand or
+  the cursor keeps pointing, as the player sees them in the composer before sending.
+* **Spoken prompts** carry gaze and pointing through the whole utterance, joined to the recognizer's word
+  timestamps (21.11), so each "this", "that", "here" or "there" can resolve to what was pointed at, or
+  else looked at, when the word was said.
+* **What the agent receives:** an engine-written context block in the turn, beside the sender header. For
+  each target: the object id, its name (written by peers, so marked untrusted, 17.2), the hit point in
+  world coordinates (chunk plus local offset, 25.2) and the surface normal; the rays; and for spoken
+  turns, the table from words to targets. The same data is the resource `primordial://panel/context`
+  (17.2).
+* **Live feed:** an agent may subscribe to a live stream of the rays and targets, at a capped rate (for
+  example 10 Hz). It is a separate per-panel permission, off by default (Q8); while it is on, the panel
+  shows it.
+* **A guest's or confidant's turn carries that sender's own context** (D82, ruled as recommended at
+  08:31Z). The sender's peer
+  sends it with the signed panel input, limited by the sender's own settings. The owner's gaze and
+  pointing never go with someone else's turn, and the header says whose context the turn carries.
+* **Where it goes:** the context reaches the harness as text, and from there its model provider: object
+  ids and names, coordinates, and the player's position and scale, like the rest of the prompt.
+* **What others see:** when a prompt is sent, its targets and attached annotations flash an outline for
+  everyone nearby; a private panel shows it to its owner only [proposal, Gnosarium UX 8.7].
+
+### 21.13 Guidance tools and annotations (user ruling 21:52Z; D83) [I]
+
+"give tools to players to help them guide the ai: allow them to point to specific objects, select areas,
+draw basic shapes, and so on" (mdba97be1a3fe). The tools (Gnosarium UX 8.8): pick objects; select a box,
+a sphere, a lasso outline or a painted area; draw lines, arrows, circles, boxes and freehand 3D sketches;
+place labels.
+* **An annotation is a shared session object, outside the sim:**
+  * an id, numbered per author (①, ②, …), so a prompt can say "copy ① into ②";
+  * its author's key, and the panel it was made for;
+  * its geometry in world coordinates (chunk plus local offset, 25.2): an object id or point (pick), a box
+    or sphere, a surface region (lasso or paint), a polyline or stroke (lines, arrows, sketches), or text
+    (labels);
+  * a private flag and a "keep" flag.
+* **Shown to others by default, can be made private** (user 22:28Z, Q9: "default show to others, can be
+  made private").
+  * A shared annotation travels to the members of its world as non-sim presentation messages, like pose
+    streams, and late joiners get the live set when they join.
+  * A private one stays on its author's peer and goes only into prompts, so only the agent prompted sees
+    it. A guest's private annotation goes to the panel owner's peer with the guest's prompt, since the
+    agent runs there.
+* **Structured prompt context:** an annotation attached to a prompt sends its id, kind and geometry, plus
+  the objects inside a selected volume or region (ids, and names marked untrusted), in the context block
+  (21.12). `annotation.list`, `annotation.get` and the resource `primordial://panel/annotations` serve the
+  full geometry (17.2).
+* **Lifetime and clearing (D83, ruled as recommended at 08:31Z):** an annotation lives until its author clears it or leaves the
+  world; "keep" pins it across prompts; it is never saved with the world. Admins may clear others'
+  annotations (a session permission, 12.4); anyone may hide others' annotations from their own view.
+* **Not sim state:** annotations never enter rollback or hashes and cannot affect physics. Ghost previews
+  of what an agent proposes (Gnosarium UX section 15, item 4) are a private fork's result (17.3) drawn as
+  a presentation-only overlay, and travel the same way.
+* **Budgets:** each author has a cap on live annotations and on points per stroke, so a busy place cannot
+  flood its members.
+
+### 21.14 Game settings, changed by talking to your agent (user ruling 22:03Z; D84) [I]
+
+"manipulating game settings should be able to be done by talking to your agent" (md306f929ce4b).
+* **A typed settings registry:** every client setting is registered once, with a stable name
+  (`audio.music_volume`), a type and range (a number with bounds and a step, a choice, a flag), a
+  plain-language description and a default. The Settings screens and the agent's tools read the same
+  registry, so nothing is reachable through one and not the other. Areas: graphics, audio, voice, comfort
+  and locomotion, input, avatar culling (26), panels, privacy and sharing, and performance (the
+  memory/CPU knob, D50).
+* **Tools** (17.2): `settings.list {area?}`, `settings.get {names}`, `settings.set {changes, reason}` and
+  `settings.undo {token}`. `settings.set` applies at once and returns each change with its old value and
+  an undo token. Fuzzy requests ("a bit quieter") are the agent's job: it picks values within the ranges.
+* **Each change records its source** (the owner, or the panel and the turn's verified sender), so the
+  Settings screen can show "changed by <panel>" with a history per setting (Gnosarium UX section 15,
+  item 8).
+* **Guests cannot change the owner's settings** (Q12, user 22:28Z). In a guest's turn every settings call
+  is refused at call time, keyed to the turn's verified sender (`panel.turn.sender`, 21.5): "Settings can
+  only be changed in the owner's turn". Confidants are not guests; their turns may change settings
+  (21.5).
+  * The refusal is strict for direct calls in a guest's turn on a Restricted-profile panel.
+  * It is not strict for a deferred request: a guest's message stays in the conversation, so the agent
+    could act on it in the owner's next turn. Such a change shows the owner "may have been requested by
+    <guest>", with undo [proposal, Gnosarium UX 8.12].
+  * A Full-profile panel has a shell, so a guest's turn could edit the settings file itself. The engine
+    keeps that file outside the workspace (21.3) and watches it during guests' turns [proposal].
+* **What needs the owner's confirmation (D84, ruled as recommended at 08:31Z):**
+  * settings that turn on sensitive sensing: eye tracking, and the live context feed (Q8);
+  * anything that is already an approval item: unlocking and the access level, the connection policy and
+    ceiling (21.6), the tool profile (D25a), adding a hub, spend caps. These go through the approval layer
+    whoever asks.
+  * Sharing settings need no confirmation, because openness is the default (22:28Z): annotations shown,
+    the private-panel switch, speaking aloud, gaze and pointing context.
+  * Comfort, graphics, audio, input and culling apply at once, with undo.
+* Settings are local to the player's machine, never sim state.
 
 ---
 
@@ -3917,8 +4984,14 @@ persists until a verdict arrives.
     * **Chains.** Each `Arrive` carries the hops from the object's birth into its source world, and the
       source's departure certificate covers the chain's hash, so a relayer can neither strip nor swap it.
       The destination checks every hop against the epoch certificates of the world that signed it,
-      whether or not that world is on its own route list (P2-4 supplies them; the spike uses a static
-      stub). A to B to C to A works [V r14 chain: three hops, conserved, all equal in both orders].
+      whether or not that world is on its own route list. Each hop carries its source's certificates up
+      to the epoch that signed it, and that epoch must be the one active at the hop's commit frame
+      (P25-5, 10.8) [V r14 chain-epoch: a hop signed after its source removed a member checks at a world
+      that does not route to the source; provenance unit tests]. **Not enforced yet** (review VC-7): the
+      hop's frame and epoch are not in the signed fact, so this check trusts the carrier's labels, and
+      the source's `cert_at` counts its majority differently from a third party (VC-8). Rely on neither
+      until @provenance-eng's follow-up signs both. A to B to C to A works [V r14 chain:
+      three hops, conserved, all equal in both orders].
     * **Settling.** The relayer copies A's commit certificate into B's log as a `Provenance` entry. The
       entry is never simulated, so it changes no state. The object's next `Depart` from B carries that
       hop, and is `RejectedUnsettled` without it. Measured: the hop was relayed into B 61 ms after the
@@ -3990,13 +5063,16 @@ persists until a verdict arrives.
       hops [I]. Possible reductions: aggregate signatures, or a destination checking only the hops after
       its own last exit (it checked the earlier ones on the way in) [I].
     * **Long-range forgery.** Members of an old epoch who have since left can still sign facts for that
-      epoch. Binding a fact's frame to the epoch active at that frame (P2-4's `from_frame`) stops a later
-      epoch backdating, but not an old majority that colludes. This is the long-range attack of
-      proof-of-stake systems [I].
-  * **Member lists change** (review R3-8b). In the spike they are fixed at startup, so an evicted member
-    would still count toward the other world's majority. Production keys certificates to a membership
-    epoch, and each membership change is certified by the previous epoch's majority, so another world can
-    follow it [I].
+      epoch. Binding a fact's frame to the epoch active at that frame (the signed boundary of 10.8, an
+      epoch certificate's `from_frame`) stops a later epoch backdating, but not an old majority that
+      colludes, nor a carrier that omits the later epoch's certificate. This is the long-range attack of
+      proof-of-stake systems [I; the unit test shows both].
+  * **Member lists change** (review R3-8b). Since P2-4 a world's members change only by decided epochs,
+    each with a certificate that the previous epoch's quorum signed, and another world follows them from
+    the world's genesis [V P25-5]. One check still uses the member list fixed at startup: a
+    destination checks the departure certificate in an `Arrive` against its route list's members of
+    the source, so a member the source has since removed still counts there [S session.rs]. The
+    `Arrive` should carry the source's epoch certificates, as hops do [I].
 
 ### 22.8 What crosses: avatars, components, code
 
@@ -4099,9 +5175,14 @@ crates/
   pe-render      wgpu renderer, WGSL hot reload (naga), extrapolation + error smoothing, portal passes
   pe-xr          OpenXR session, Vulkan interop, poses, swept hand engagement, per-eye portal straddling
   pe-mcp         rmcp server, tool catalog, per-session tokens and scopes, forks
-  pe-panels      in-world panels: chat UI, terminal emulator (PTY mode), VR keyboard, approval layer,
-                 signed sender attribution (D27a), cross-session connections over P2P (D32)
-  pe-harness     harness adapters, version-pinned launch profiles, restricted sessions
+  pe-panels      in-world panels: chat UI with the collapsed transcript, terminal emulator (PTY mode),
+                 VR keyboard, approval layer, signed sender attribution (D27a) and confidants, open-panel
+                 streams, spatial context, guidance annotations, cross-session connections over P2P (D32)
+  pe-harness     one harness layer: drivers for Claude Code, Codex and Antigravity, capability flags,
+                 version-pinned launch profiles, restricted sessions
+  pe-voice       built-in speech to text and text to speech on a pure-Rust ML runtime (D81), push-to-talk
+                 capture, word timestamps; Windows OS recognition as the fallback
+  pe-settings    typed client settings registry: ranges, descriptions, change history and undo (21.14)
   pe-contain     OS identities (AppContainer / users), job objects, ACLs for restricted sessions and
                  sandboxed builds
   pe-hub         optional Orgtree bridge: automatic player and panel hub identities, hubchat-style panel
@@ -4131,8 +5212,8 @@ What moved, and why:
 |---|---|---|
 | 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on the user's machines: Windows and Linux, x86-64 on two CPUs (ARM deferred). Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
 | 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal with volunteer relays (D35) and **relay mailboxes** for offline mail (D32); state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6) and **regions** with provisional arrival and following (D60); **multi-threaded stepping** in the fork if the D2 study succeeds; **pe-worlds**: two worlds per client, the settled handoff with provenance checks, portal rendering | M2: friends and strangers play over the internet with no server of ours; late join works; a ball pit of 500 balls stays within budget at 90 Hz, or at its 60 Hz fallback (D4); an object carried through a portal between two sessions |
-| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels: owner panels (structured adapters + PTY), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a), **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32) | M3: a player's own Claude Code or Codex, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
-| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; voice input on Windows (D33; Linux per D77); per-eye portal straddling | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal |
+| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels for Claude Code, Codex and Antigravity through one harness layer: owner panels (structured adapters + PTY) with the collapsed transcript, **open by default** (21.4), desktop spatial context and guidance tools (21.12, 21.13), settings by agent (21.14), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a) and confidants, **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32); **gameplay cloth and soft bodies**: an XPBD module in pe-physics, two-way coupled, about 2,000 particles per world by default, after phase 3's regions and D58 settle (coordinator, 08:32Z; `spike/cloth` is the reference) | M3: a player's own Claude Code, Codex or Antigravity, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
+| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; **voice**: the built-in speech model for prompting, and spoken replies, on Windows and Linux (21.11, D81); VR gaze (head, and eye tracking where present) and hand pointing as context, and the VR guidance tools (21.12, 21.13); per-eye portal straddling; **cosmetic cloth** (capes, hair, banners): local, never rolled back, outside the hash (coordinator, 08:32Z) | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal; one prompts an agent by voice and both hear its reply |
 | 6. Scale + discovery | Mainline DHT discovery records; snapshot deltas; **larger sessions** (compact acks, relaying), a planned target (D23); background-world parking | M5: discovery without invites; sessions above 8 players; thousands of bodies across regions; several attended worlds per client |
 
 ### 23.3 Top risks
@@ -4143,15 +5224,15 @@ What moved, and why:
    remote-hand dead reckoning (6.10, D52), a windowed snapshot policy (D50), the 60 Hz fallback (D76) and
    opt-in input delay (D41).
 2. **Determinism beyond the machines tested.** With the engine's physics (vdW on), main (d79f160) is
-   byte-identical on this PC in five build settings, on <laptop> (Intel, also with `target-cpu=native`) and
+   byte-identical on this PC in five build settings, on a second Windows machine (an Intel laptop, also with `target-cpu=native`) and
    as a Linux musl build, the four wasm modules included [V @design-reviewer's re-check; report
    `determinism-main-d79f160.md` in its working folder]. ARM and macOS never ran. Parallel stepping (D2) must
    stay bit-exact across thread counts. Mitigation: the phase-2 CI matrix on the user's machines (P2-6).
 3. **The session protocol is new code, and strangers may join from day one** (D21). Confirmation,
    eviction and fetch repair were proved in an in-process simulator and over loopback UDP, not on the
-   internet. Removing one silent, slow or equivocating member is built [V crashstall, capped slow member,
-   ackfork, liar]; the proposer-based view change is not, and until it is, two members failing at once or
-   two colluders stall a session safely. It is now the first phase-2 package.
+   internet. The view change (10.8) is built in the spike: several members failing at once, withheld or
+   forked votes, colluders, an equivocating proposer and joins all recover in the simulator [V 5k]. What
+   is left is its quorum (D80), its port into `pe-session` (P2-3), and runs over real networks.
 4. **No central authority means cheating is bounded, not prevented** (8.2, 8.5). With strangers in MVP
    sessions, the remaining backdating window (about 4 frames, about 9 with packed hand targets under
    congestion, D73) and the room to pick favourable tie ranks are exposed from day one.
@@ -4170,17 +5251,22 @@ What moved, and why:
 11. **Agent panels (R13).** An unlocked panel gives guests the owner's rights (D27a, the user's accepted
     trade-off): prompt injection with the owner's authority, and spend on the owner's account. Harness
     CLI flags and protocols change often. Mitigations: Locked by default, signed sender attribution (gate
-    9j), version-pinned launch profiles, contained inbox and decider sessions (21.9).
+    9j), version-pinned launch profiles, contained inbox and decider sessions (21.9). Confidants (21.5)
+    carry the same rights at every access level. Open panels (21.4) show prompts and replies to everyone
+    nearby, so an agent that reads a secret can repeat it aloud; the secret filter is best-effort.
+    Antigravity's restriction rests on hooks, not containment (gate 9k).
 12. **The Orgtree bridge** (21.7): the hub's wire format is unverified, third-party clients may not be
     permitted, and the fourth client type needs a change on Orgtree's side.
 13. **Multi-world memory and CPU** (22.3): there are no engine limits (D49), so a player can open worlds
     until the machine struggles. Mitigations: throttling, parking and the memory/CPU slider (D50).
+14. **Built-in speech models** (21.11, D81): installer size, accuracy, and CPU and GPU cost next to
+    physics and VR rendering are not measured yet.
 
 ### 23.4 Phase 2 work packages
 
 Phase 2 split into packages that can be staffed in parallel, one agent each. @engine-architect keeps the
 protocol core (P2-3, P2-4) and design ownership, and integrates. Already running and not listed: the
-parallel Box3D feasibility study (D2, @vdw-physics) and the <laptop> and Linux determinism re-check on main
+parallel Box3D feasibility study (D2, @vdw-physics) and the Intel-laptop and Linux determinism re-check on main
 (@design-reviewer).
 
 Rules for every package:
@@ -4214,16 +5300,17 @@ Rules for every package:
 * What: the session protocol ported from `spikes/sim-core` and `spikes/session-sim` into a crate with a
   stable API: entries and chains, acks, votes, stable-data confirmation, equivocation proofs and
   eviction, crash removal, demotion, the tie rank, carried state, keyframes and rollback, sync checks, gap
-  repair, the congestion controller, R14 transfers. **Grabs-only claims** (D72) change here.
+  repair, the congestion controller, R14 transfers. **Grabs-only claims** (D72) change here. Validation
+  includes "a member moves only its own hands" (8.4), from the verified author of each entry.
 * Skills: distributed protocols, Rust.
 * Depends on: P2-1, P2-2; P2-4's view change and P2-5's provenance chains are merged into it.
 * Done: all 30 phase-1 scenarios pass against `pe-session` (every replica equal to its offline replay,
   conserved, 0 false checks), plus grab-race scenarios: two grabs within one latency (the loser's grab
-  undone), and pushes on a held object (never refused).
+  undone), and pushes on a held object (never refused), and `handowner`.
 
 **P2-4. The proposer-based view change, @engine-architect**
 (@item:primordial-engine/phase-2-proposer-based-view-change-multiple-fail).
-* What: membership changes decided by a proposer and a strict majority for session and world logs:
+* What: membership changes decided by a proposer and a quorum (D80) for session and world logs:
   several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator,
   and per-epoch certificates that other worlds follow (R3-8b). Built in the spike first, then merged
   into P2-3.
@@ -4235,6 +5322,50 @@ Rules for every package:
   the quorum. No confirmed frame is ever undone; world-log eviction finishes within about 8.9 s with 256
   members (measured with a log-only world, 25.5.2); the suite stays all-equal and conserved; reviewed by
   @design-reviewer.
+* **Status:** built in the spike on `viewchange`; review round 1 by @design-reviewer at b01ebdf (changes
+  requested: VC-1 to VC-10, HO-1, HO-2), fixed in round 2 together with the D80 admin layer, each repro
+  showing the failure with its fix switched off [V session-sim, spike report 5k]. VC-7 and VC-8 go to
+  @provenance-eng's follow-up, stated in 10.8's limits and 22.7. Review round 2 at 758ff5e (changes
+  requested: VCR-1 to VCR-12, and HO-1's carried state) is fixed in round 3, again with a repro per
+  finding that fails with its fix switched off; VCR-10 waits for the user (V1-V3). Review round 3 at
+  a9286fc (changes requested: VC3R-1 to VC3R-8) is fixed in round 4, with @design-reviewer's two repros
+  and seven more; V4 is a question for the user. Review round 4 at 452e1f7 (changes requested: VC4R-1 to
+  VC4R-6, two halting the session) is fixed in round 5, with the reviewer's `joinwedge` and `slowref`
+  repros and a randomized Byzantine schedule generator (`randsched`) that checks the written invariants
+  (`spikes/out/session-sim/INVARIANTS.md`) on every run; it found one further hole (RG-1), now fixed.
+  Review round 5 (changes requested: VC4R-1's stronger fix, VC5R-2, an L1 lag bound) is answered in
+  round 6, with the reviewer's `prevotefork` and `fakemix` repros; VC5R-1 is reopened as VC6R-3 below.
+  Round 6's review bounded the polka ids a precommit carries (VC6R-2, honest code panicked above 64 in a
+  large session; at most a quorum, `MAX_POLKA` = 512) and tightened the generator's lag bound. The
+  delta re-check caught that the bound measured the speculative sim frame, which a halt pins one window
+  behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
+  windows), and the RG-1 control fails L1. **Landed on main at 5ba3eab (31 October)**, with the P2-9
+  tool brought onto the landed API at f05324f.
+  **Round 7 on main fixed the three one-faulty-member liveness halts that round 6's review found, and a
+  fourth that @ballpit-viz found while mirroring `prevotefork`** (none touched safety: every replica
+  still agreed). Each repro fails with its fix switched off and passes with it, and each now checks that
+  confirmation is still live at the end of the run. Round 6's `prevotefork` checked only the vote it
+  targeted, and passed while the session had halted:
+  * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, honest members lock on a change listing one
+    version, and the fork arriving later disputed it, so the lock never cleared. Admin validity is now a
+    pure function of the entry and its ancestry (`fix::VC6R3`) [V: 9 removed at 4.03 s; off: never,
+    confirmation stops at frame 112].
+  * **VC6R-1** (`capfake`): a capped precommit whose polka names an id that exists nowhere was fetched
+    forever. The fetch now has a budget of a further half window, after which the capper is voted out
+    (`fix::VC6R1`) [V: 9 removed at 4.15 s; off: never, frame 143].
+  * **VC6R-4** (`fakeadmin`): a member forcing a decision every 2 s with a no-op admin entry kept its own
+    reference timers from ripening, because every decision cleared them all. A decision now resets only
+    the timers its cleared votes made stale (`fix::VC6R4`) [V: 8 removed at 5.23 s; off: never, frame
+    110].
+  * **PF-1** (`prevotefork`): a member that forks one seq continued its chain from a version that some
+    honest members never held. They could not link its later entries, so they could not count its
+    precommit in the quorum the others decided on, and they stayed in the old epoch. A proven forker's
+    precommits now count toward a decision wherever they sit in its chain (`fix::PF1`) [V: every member
+    decides, the forker is removed at 4.23 s; off: 3, 9 and the joiner stay in epoch 0, and confirmation
+    stops at frame 53]. The fixture had also lost 9's prevote for good, repairs included. That made 9 a
+    second faulty member of four, beyond t = 1, so the loss now ends at 2.5 s. `fixes_off` is now 64 bits
+    wide.
+  The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
 * What: every global id bound to its birth world; each `Arrive` certificate references the certified
@@ -4253,7 +5384,7 @@ Rules for every package:
   x86-64 CPUs. ARM64 is deferred: no ARM machine is available.
 * Skills: build and CI engineering, cross-compilation, scripting.
 * Depends on: nothing. **Settled (user, 19:58Z): CI runs on local machines only:** this PC's Windows and
-  WSL, plus <laptop>; nothing leaves the user's machines. Owner: @design-reviewer.
+  WSL, plus an Intel laptop; nothing leaves the user's machines. Owner: @design-reviewer.
 * Done: a digest table, equal across every machine available; a mismatch names its first differing
   output.
 * **Status (2026-10-31)** [V]: `scripts/run_matrix.sh`, with columns win, glibc, musl and laptop (docs/p2-6-p2-7-matrix.md). **PASS: 72 outputs equal on 4 machines** (spikes/out/matrix/matrix.txt). A difference names its first differing output and line.
@@ -4269,7 +5400,7 @@ Rules for every package:
 * **Status (2026-10-31)** [V]: done.
   * **Byte-identical:** the 4 spike guests plus logic_mono and logic_wasm are raw-hash identical on Windows (two CPUs) and on Linux, and at two paths each.
   * **Found and fixed** (13.2): the host separator in workspace-relative panic paths, host-dependent crate hashes in the name section (now stripped), and toolchain drift (now pinned).
-  * **Build times:** the table is in 13.2. It recommends a reproducible `rel-fast`-like profile for committed modules.
+  * **Build times:** the table is in 13.2. It led to the user's 22:47Z ruling: committed modules use the reproducible `rel-fast` profile.
 
 **P2-8. MCP server from day one (`pe-mcp`).**
 * What: the test and driver interface: an rmcp server with the 17.x tool catalogue for phase 2 (step,
@@ -4401,6 +5532,7 @@ entry says so.
   * Alternatives: a mandatory multi-owner threshold; a fully democratic majority of present members.
 * **D11. Who compiles game logic (13.2).**
   * **Settled (user, 18:53Z): every peer compiles.** The consequences are in 13.2: byte-identical builds across machines and OSes, the activation lead and the cost of joining, toolchain distribution (D75) and what a mismatch means (D74).
+  * **Build profile settled (user, 22:47Z): "Fast builds".** Committed modules use the pinned `rel-fast` profile (no LTO): one-line edits rebuild in about 0.5 s and stay byte-identical across OSes, for about 1% of run time and about 35% more bytes against LTO (13.2).
   * Recommend: the committer compiles and peers run the shared wasm (sandboxed), identified by its
     canonical hash, with background reproducibility checks. Vendored dependencies; no build scripts or
     proc macros in logic crates except the SDK's.
@@ -4517,6 +5649,9 @@ entry says so.
 
 * **D25. Harness integration path (21.1).**
   * **Settled (user, 19:11Z): as recommended.**
+  * **Launch harnesses (user, 21:54Z and 21:55Z): Claude Code, Codex and Antigravity,** "in the same generic
+    way orgtree supports these harnesses": one harness layer with a driver per harness (21.1). Gemini CLI
+    and other ACP agents are not launch harnesses.
   * Recommend:
     * structured adapters by default: Claude Code `stream-json`, Codex `exec --json` or `app-server`, and
       ACP for Gemini CLI and others, rendered as a chat UI;
@@ -4534,13 +5669,19 @@ entry says so.
   * Alternative: the full profile by default. More capable, but injected repository text could then run
     commands as the owner.
 * **D26. Panel visibility to other peers (21.4).**
-  * **Settled (user, 19:11Z): as recommended.**
+  * **Reversed (user principle, 22:28Z): open by default.** People nearby hear and see prompts, replies,
+    guidance drawings and the agent's work (21.4). A per-panel "Private panel" switch, off by default (Q20,
+    22:54Z, "for now"). Six things stay closed by default (Q19, 22:34Z): the Locked default, the approval
+    layer, credentials and keys, panel inboxes, direct messages and eye tracking. What an open panel sends
+    others: D86, ruled (b) at 08:31Z: everything, raw tool output included.
+  * Settled at 19:11Z as recommended (below); that default no longer holds.
   * Recommend: private by default. Others see the panel, its owner, an "agent working" indicator and the
     signed edits it produces. The owner may share the rendered transcript with chosen peers.
   * Alternatives: visible to the whole session by default (more social; leaks prompts and code); never
     shareable.
 * **D27a. Default access level (21.5).**
   * **Settled (user, 19:00Z): Locked stays the default, and unlocking gives guests unconditional access to the panel as though they were the owner,** with the agent told who sends each message (21.5).
+  * **Extended (user, 22:34Z): confidants.** Friends the owner marks as confidants may prompt every panel of the owner, Locked ones included, as though they were the owner, and the agent is told they are a confidant (21.5). They do not confirm the owner's approval cards (Q22, 22:54Z, "for now").
   * Recommend: panels start **Locked**. Friends or Anyone is an explicit opt-in per panel.
   * Alternative: Friends by default (easier sharing, more exposure).
 * **D27b. Sessions per guest (21.5; review R13-H3).**
@@ -4575,6 +5716,8 @@ entry says so.
   * **Superseded in part by the 19:00Z ruling:** unlocking needs the attribution and re-locking gates (21.9); the containment gates now gate restricted sessions.
   * Recommend: each harness only after its own verification gates pass (Claude Code first). Codex and
     Gemini CLI stay owner-only until their containment is proven. PTY panels are never unlockable.
+  * **Since the 21:54Z harness ruling:** Claude Code, Codex and Antigravity each get restricted sessions
+    once their own containment gate passes (9a, 9b, 9k).
   * Alternative: unlock any structured harness with best-effort flags. Rejected, because Codex's read-only
     sandbox does not stop reads of the owner's credential file.
 * **D27h. Guest transcript retention (21.5).**
@@ -4643,7 +5786,8 @@ entry says so.
   * Recommend: agents never see the hub secret and reach hubs only through engine MCP tools. First contact
     with each recipient needs the owner's approval.
 * **D33. Voice input (21.2).**
-  * **Settled (user, 19:11Z): as recommended,** OS speech recognition on Windows. Linux, now a day-one platform, has no such service: D77.
+  * **Revised (user, 21:51Z, m012a25f076e9): a local Whisper-class model built into the engine, on Windows and Linux;** Windows OS speech recognition stays only as a lighter fallback. The models ship in the installer (22:23Z, Q13). Runtime, size and where it runs: D81. Spoken replies: 21.11, D85.
+  * Settled at 19:11Z as recommended (OS speech recognition on Windows); that answer no longer holds.
   * Recommend: OS speech recognition on Windows for the MVP (an OS boundary).
   * Alternatives: local Whisper-class models on a pure-Rust ML runtime (100% Rust, heavy); no voice in the
     MVP.
@@ -4670,15 +5814,15 @@ entry says so.
 * **D35a. Session codes (10.7, 11; review R13-M3).**
   * **Settled (user, 19:11Z): as recommended.**
   * Recommend: four words plus a check word. The public two-word nameplate is a DHT rendezvous; the secret
-    two-word password is used only inside a PAKE with the host, and nothing derived from it is ever
+    two-word password is used only inside a PAKE with the code's creator, and nothing derived from it is ever
     published. With a friend in the session, it shrinks to three words and nothing is published.
   * Alternative: three words plus a check word, hashed into a DHT key. Shorter, but anyone watching the
     DHT can break the code offline in minutes.
-* **D35b. What a code's host announces (10.7).**
+* **D35b. What a code's creator announces (10.7).**
   * **Settled (user, 19:11Z): as recommended.**
-  * Recommend: a relay address, so DHT observers do not learn the host's IP address.
-  * Alternative: the host's own address. It works without any relay, and exposes the host's IP while the
-    code is live.
+  * Recommend: a relay address, so DHT observers do not learn the creator's IP address.
+  * Alternative: the creator's own address. It works without any relay, and exposes the creator's IP
+    while the code is live.
 
 * **D36. Finality and membership (6.4, 10.8; reviews C1, C2, H3).**
   * **Settled (user, 19:11Z): as recommended.**
@@ -4899,6 +6043,9 @@ entry says so.
   * A silent or colluding voter can block the cut. That costs liveness, not safety, and the general view
     change takes over (10.8). Two colluders of four can stall a session, because no honest majority is
     left.
+  * **Phase 2 (P2-4):** the view change now decides every removal. A quorum's votes set the cut: the
+    deepest point that all but t of them extend, which is this rule when t = 0. A silent or colluding
+    voter no longer blocks it, and members proven faulty count in no quorum. The quorum itself is D80.
   * Alternative: evict on a bare strict majority, with the cut chosen by a leader: faster, but it needs
     the general view-change protocol now.
 * **D56. R18 defaults (10.9).** The controller thresholds:
@@ -5067,7 +6214,7 @@ entry says so.
     * **(c) Fixed when the world is created.**
   * Recommendation: (a).
 * **D77. Voice input on Linux (21.2; raised by D20 and D33).**
-  * **Settled (user, 19:58Z): as recommended:** no voice input on Linux in the MVP (the VR keyboard instead); a local speech model later.
+  * **Superseded (user, 21:51Z):** Linux gets the same built-in local speech model as Windows (D33). The 19:58Z answer, no voice input on Linux in the MVP, no longer holds.
   * Linux has no OS speech-recognition service like Windows'.
   * Options:
     * **(a) No voice input on Linux in the MVP;** text through the VR keyboard. Recommended for the MVP.
@@ -5096,6 +6243,69 @@ entry says so.
     The hop stays the source's commit certificate, and 22.7 states the remaining risk: a dishonest or
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
+* **D81. Speech models: runtime, size and where they run (21.11; raised by the 21:51Z voice ruling).**
+  **Ruled 08:31Z: as recommended.** A spike measures accuracy, time to the first word, and CPU and GPU
+  cost before the runtime, model size and processor are chosen.
+  * Ruled so far: one local Whisper-class speech-to-text model on Windows and Linux, shipped in the
+    installer (21:51Z; 22:23Z, Q13). Local text to speech is assumed (22:02Z).
+  * Options [I; nothing measured]:
+    * **Runtime:** `candle` (pure-Rust CPU kernels), `burn` (wgpu, so the GPU), or `tract` (ONNX on the
+      CPU). Each needs the section 20 audit. `whisper-rs` is out: it compiles whisper.cpp.
+    * **Model size:** a small or "turbo"-class model, quantized, at a few hundred MB in the installer.
+      Against it: tiny or base (under about 150 MB, less accurate), or large (about 3 GB at 16 bits).
+    * **CPU or GPU:** the CPU by default, off the sim and render threads; the GPU once measured against
+      VR frame times (18.3).
+  * Recommendation: decide after a spike that measures accuracy, time to the first word, and CPU and GPU
+    cost on the user's machines with the ball pit and a VR-sized render load running.
+* **D82. Spatial context at shared panels, and what reaches the model provider (21.12).**
+  **Ruled 08:31Z: as proposed.**
+  * Ruled: panels know where the player looks, what they look at and where they point (21:52Z); eye
+    tracking and the live feed are off by default (Q8, 22:28Z).
+  * Proposal: a guest's or confidant's turn carries only that sender's own gaze and pointing, sent by the
+    sender's peer and limited by the sender's settings; the owner's never goes with another person's turn.
+    The context reaches the harness, and so its model provider, as text: object ids and names,
+    coordinates, and the player's position and scale.
+  * Alternative: a panel always carries its owner's context, whoever prompts. Simpler, but it shows the
+    agent, during a guest's turn, what the owner is looking at.
+* **D83. Guidance annotations: lifetime, and who may clear them (21.13).**
+  **Ruled 08:31Z: as proposed.**
+  * Ruled: shown to others by default, can be made private (Q9, 22:28Z).
+  * Proposal: an annotation lives until its author clears it or leaves; "keep" pins it across prompts; it
+    is never saved with the world; admins may clear others' annotations; anyone may hide others' from
+    their own view.
+  * Alternatives: annotations expire after some minutes unless kept; or they can be saved with the world
+    as notes.
+* **D84. Which settings an agent may change without the owner's confirmation (21.14).**
+  **Ruled 08:31Z: as proposed.**
+  * Ruled: the agent changes game settings when asked (22:03Z); guests cannot change the owner's settings
+    (Q12, 22:28Z); confidants can (22:34Z).
+  * Proposal: everyday settings (graphics, audio, comfort, input, culling) apply at once, with undo.
+    Confirmation for sensitive sensing (eye tracking, the live context feed) and for what is already an
+    approval item (unlocking, the access level, the connection policy and ceiling, the tool profile,
+    adding a hub, spend caps). Sharing settings need none, because openness is the default.
+  * Alternative: every change an agent makes to a setting needs a confirmation. Safer, slower, and against
+    the intent of changing settings by talking.
+* **D85. Where an agent's spoken reply is synthesized (21.11).**
+  **Ruled 08:31Z: (a), on the panel owner's peer.**
+  * Ruled: replies are spoken to people nearby by default (Q15, 22:23Z).
+  * Options:
+    * **(a) On the panel owner's peer,** streamed to listeners through the voice path (26): one voice for
+      everyone, one machine pays for the model, and the bandwidth of a person speaking. Recommended.
+    * **(b) On each listener's peer,** from the reply text the open panel already sends: no audio
+      bandwidth, but every listener runs the model for every panel nearby, and the voice may differ with
+      each listener's model version.
+* **D86. What an open panel shows other people (21.4; the 22:28Z principle).**
+  **Ruled 08:31Z: the alternative, (b).** An open panel streams everything, the detailed tool view, raw
+  output and file contents included. The best-effort secret filter remains only a proposal, since it
+  narrows (b).
+  * Ruled: open by default, so people nearby see and hear prompts, replies, guidance and the agent's work
+    (22:28Z); a private-panel switch, off by default (Q20, 22:54Z); six things stay closed (Q19, 22:34Z).
+  * Proposal: others get the conversation, not the raw work: the agent's prose, the collapsed tool
+    summaries (21.2), the objects the turn touches and the current step. Raw tool results and arguments,
+    file contents, shell output and diffs never leave the owner's peer, and outgoing text passes a
+    best-effort secret filter.
+  * Alternative: stream the detailed tool view as well, to "watch them work" in full. More open, but it
+    sends file contents and command output, with whatever secrets they hold, to everyone nearby.
 * **D87. World ownership: what the user decides (12.5). RULED.** Question 1 on 2026-10-31 08:31Z (OT =
   (a)): consent only now, bound session lineages later; questions 3 and 4 follow from it. Questions 2
   and 5 on 2026-10-31 12:52Z (msg m7fc6b059372d), both as recommended.**
@@ -5162,6 +6372,39 @@ entry says so.
   * **5. Locking session rules (was D88). RULED 12:52Z, as recommended:** a lock is an ownership-chain
     entry that every current owner signs, so a lone co-owner can't impose or lift one. Not built in the
     spike yet (a `SetLock` change under `SetRule`'s signing rule) [I].
+* **D89. Which tools a confidant's turns get (21.5; raised by the 22:34Z confidant ruling).**
+  **Ruled 08:31Z: (b), full as ruled.** A confidant's turns get exactly the panel's own profile, shell
+  and web included on a Full panel, with no Restricted-by-default setting; the Seal keeps its plain
+  warning.
+  * Ruled: confidants get "full access to your prompts as though they were you" (22:34Z), and do not
+    confirm the owner's approval cards (Q22, 22:54Z).
+  * Options:
+    * **(a) "Confidants use my panels in Restricted mode", ticked by default:** on a Full-profile panel a
+      confidant's turns get file and engine tools only, with no shell or web; the owner can untick it.
+      Recommended, because a Full panel's shell runs commands on the owner's computer as the owner.
+    * **(b) Full, as ruled:** a confidant's turns get exactly the panel's own profile.
+  * Whatever the answer, a confidant can prompt only while the owner's harness runs, on the owner's
+    machine with the panel open [I: this follows from where the harness runs].
+
+* **D80. Who may change a session's member list, and how many must agree (10.8, 12.4; raised by P2-4).**
+  **Settled 22:13Z: admins over a two-thirds safety layer.**
+  **Refined 08:31Z (V1-V4):** kicking an admin is its own permission, held by default only by admins
+  (V1); the roles permission counts as Admin (V2 = (b)); when the last admin times out the session
+  closes, removing every other player, telling everyone and allowing no further change to the world,
+  with no longer grace period or handover (V3); a member that keeps forcing resets is left to admins
+  (V4 = (a)). 12.4 and 10.8 carry them.
+  * The user answered with session admins (22:11Z): admins may kick anyone; there is always at least one
+    admin, and the last cannot give the role up without handing it on; every player is an admin by
+    default; the session closes when the last admin leaves.
+  * Confirmed reading (22:13Z): an admin's signed kick authorises a removal, with no vote. The
+    two-thirds quorum, option (b), stays underneath only as the commit and ordering rule. Conflicting
+    kicks resolve by commit order, a kick by an admin already removed is void, kicks wait out a
+    partition instead of forking, and silence or crash removal stays automatic. A last admin that crashes
+    or times out closes the session.
+  * Roles (22:14Z, 22:15Z), owners (Q27) and join rules (22:37Z-22:51Z) are in 12.4.
+  * Measured [V kickwar, kickpartition, lastadmin, adminclose, joinrules; bridge and twosilent5 for the
+    quorum]. The safety bound counts every faulty member, proven or not (review VC-1, 10.8) [V onesided,
+    a control above the bound]. Options (a), a strict majority, and (c), per world, are not taken.
 
 ---
 
@@ -5258,6 +6501,21 @@ length units, per world or per region.
 * **Below 1e-10 m or beyond 2^73 m** a parent object acts as a nested frame: child transforms are `f64`
   relative to it, so precision never runs out; regions for such players take their origin from that
   frame.
+* **Transforms as built (P2-1)** [V P2-1]:
+  * A root is placed by its `i64` chunk plus an `f64` offset from that chunk's corner. A child is placed
+    relative to its frame (its nearest ancestor with a `Transform`) and carries no chunk.
+  * A child's precision is its offset's ulp: about 1e-13 m at 1 km, 1e-10 m at 1,000 km, and 1 um out to
+    about 4e9 m. Keep children within about 10^6 km of their frame; far content belongs in its own root.
+  * Limits on the stored form, checked on insert, at check frames and on loading bytes: `|pos| <= 2^50` m,
+    a root's `|chunk| <= 2^61`, scale magnitudes in [2^-40, 2^40], and a rotation's squared norm within
+    2% of 1.
+  * **Plain edits are data edits:** inserting or removing a `Transform`, and `set_parent`, store exactly
+    what they are given, so a loader gets the same state whatever order it inserts in. **Keep-world edits
+    are explicit** (`set_parent_keep_world` and its siblings): they rewrite the affected local transforms
+    for the new frame, with the root's chunk recomputed exactly. 150 keep-world moves between rotated,
+    scaled frames 5 km apart stay within 1e-8 m.
+  * `maintain_transforms`, which a schedule adds as its last system, rebases roots into their chunk and repairs
+    out-of-limit values written through mutable access, so the state stays loadable by joiners.
 
 ### 25.3 Hierarchy and the spatial index
 
@@ -5513,11 +6771,9 @@ faster than `v_max`.
     ack round. In the spike's crash runs the session paused 72 frames (1.2 s) and eviction landed at about
     3.1-3.3 s [V, the architect's runs]. The threshold should stay at 3 s or more: a congested member was
     silent for 1.95 s without having crashed.
-  * **Not covered yet** [I]: two members silent at once (each removal needs the other's vote), and a
-    member that withholds or forks its vote. Both stall without breaking safety. In the world log of a
-    256-player session, two drops at once (one household, one ISP) are plausible, and then every region
-    stalls after about 8.9 s. The proposer-based view change that covers them is now built in phase 2,
-    an MVP prerequisite since strangers may join from day one (D21; 10.8, 23.2).
+  * **Covered since P2-4** [V 5k]: two members silent at once, and a member that withholds or forks its
+    vote. The view change (10.8) removes them together; the world-log timing at 256 members is in 10.8's
+    measured table. Under D80 (b) a world log of 256 removes up to 85 members at once.
 * **`D_merge`** (default 3 km at human scale) is the smallest allowed gap between two regions' footprints.
   It is not "two footprint radii": a footprint radius is at least 3 chunks.
 
@@ -5631,8 +6887,8 @@ it. The gaps in this table are between *footprints*; the anchors are about 6 km 
   * A late joiner, a warp or a respawn joins `R` directly; nothing waits on the world log.
 * **To sync, a joiner needs `R`'s state at a confirmed frame.** It gets it in one of two ways:
   * a **region state transfer** from any synced member: box3d image + tables + logic sync state,
-    compressed, about 0.9 MB per 1,000 bodies with lz4 [V], verified against the check hash the group
-    published in `R`'s log;
+    compressed, about 0.9 MB per 1,000 bodies with lz4 [V], verified against the BLAKE3 check hash the
+    group published in `R`'s log, and consumed completely (9.1, 9.5);
   * if nobody has simulated `R`'s chunks since they froze, it builds `R` itself from dormant records:
     procedural content, SCM content, and frozen-chunk records fetched by their hash.
 * **Confirmation of region frame `f`.** Every synced member of `Group(R, f)` has published a horizon of at

@@ -15,7 +15,12 @@ use std::collections::BTreeMap;
 mod history;
 mod r18;
 mod review2;
+mod p24r;
+mod p24r3;
+mod p24r4;
+mod randsched;
 mod review3;
+mod viewchange;
 
 use pe_session_sim::*;
 use pe_sim_core::session::*;
@@ -406,6 +411,9 @@ fn r14(variant: &str, reverse: bool, control: bool) {
     if variant == "chain" {
         return r14_chain(reverse);
     }
+    if variant == "chain-epoch" {
+        return r14_chain_epoch();
+    }
     // World 1 (A): 60 Hz pile; world 2 (B): 50 Hz pile. Member 1 is in both and carries object 40
     // from A to B. Member 2 is only in A, member 3 only in B.
     let a_cfg = SimConfig { seed: 0xA, ..cfg60() };
@@ -672,7 +680,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 let in_b = sim.replica(3, 2).sim.t.objs.iter().flatten().any(|o| o.global == g(52));
                 if let (4_600_000, true, Some(Seen::Left { transfer: t1, dest: 6, .. })) = (t, in_b, a.t.seen.get(&g(52)).cloned()) {
                     let cert = a.cert(fact_committed(1, t1, g(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, cert };
+                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
                     let e = forge_from_w(&mut sim, 1, 2, rec(g(52), t1), vec![hop]);
                     forged.push((1, 2, e.id(), "RESIDUAL: W's majority double-spends A:52 (now in B) into A, citing its genuine hop in"));
                 }
@@ -687,7 +695,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // A hop A -> W that A never certified: the attackers hold only member 2's key of A.
                 let fake = 0xF0F0;
                 let fact = fact_committed(1, fake, g(54), 6, 0);
-                let hop = Hop { src: 1, dest: 6, transfer: fake, via: 0, epoch: 0, cert: vec![(2, member_sig(1, 2, fact))] };
+                let hop = Hop { src: 1, dest: 6, transfer: fake, via: 0, epoch: 0, frame: 0, certs: vec![], cert: vec![(2, member_sig(1, 2, fact))] };
                 let e = forge_from_w(&mut sim, 2, 3, rec(g(54), fake), vec![hop]);
                 forged.push((2, 3, e.id(), "W's majority forges an earlier hop (A -> W of A:54, signed by m2 of A only)"));
             }
@@ -696,7 +704,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 let a = &sim.replica(1, 1).sim;
                 if let Some(Seen::Left { transfer, dest: 6, via: 0, .. }) = a.t.seen.get(&g(52)).cloned() {
                     if let Some(cert) = a.cert(fact_committed(1, transfer, g(52), 6, 0)) {
-                        let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, cert };
+                        let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
                         let e = forge_from_w(&mut sim, 2, 3, rec(g(54), transfer), vec![hop]);
                         forged.push((2, 3, e.id(), "W's majority splices A's genuine hop of A:52 onto A:54"));
                     }
@@ -725,7 +733,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 // signed of this hop) in place of a commit certificate.
                 let r = x.record.unwrap();
                 let cert = sim.replica(2, 1).sim.cert(fact_departed(1, x.depart, &r, 6, x.deadline, chain_hash(&[]))).unwrap();
-                let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, cert };
+                let hop = Hop { src: 1, dest: 6, transfer, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
                 let e = forge_from_w(&mut sim, 2, 3, rec(g(55), transfer), vec![hop]);
                 forged.push((2, 3, e.id(), "refund and keep: W exports A:55 (refunded to A) into B with A's departure certificate"));
             }
@@ -751,7 +759,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
                 let first = sim.peers.iter().flat_map(|p| p.jobs.iter()).find(|j| j.src == 1 && j.dst == 6 && j.record.is_some_and(|r| r.global == g(52))).map(|j| j.transfer);
                 if let (true, Some(t1)) = (back, first) {
                     let cert = a.cert(fact_committed(1, t1, g(52), 6, 0)).unwrap();
-                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, cert };
+                    let hop = Hop { src: 1, dest: 6, transfer: t1, via: 0, epoch: 0, frame: 0, certs: vec![], cert };
                     let e = forge_from_w(&mut sim, 2, 3, rec(g(52), t1), vec![hop.clone()]);
                     forged.push((2, 3, e.id(), "W's majority resurrects A:52 into B, which it has left for A since"));
                     let e = forge_from_w(&mut sim, 1, 2, rec(g(52), t1), vec![hop]);
@@ -1023,6 +1031,85 @@ fn r14_chain(reverse: bool) {
     check_world(&sim, 3, 480, "r14 chain C");
 }
 
+/// P25-5: provenance across a membership change. A has three members (1, 2, 5); member 5 goes silent
+/// at t = 1 s and A removes it (epoch 1), so the A -> B commit is signed by A's epoch 1. C routes only
+/// to B, so A is not on C's route list: C checks the A -> B hop of the object's chain against the
+/// epoch certificate the hop carries, from A's genesis.
+fn r14_chain_epoch() {
+    let a_cfg = SimConfig { seed: 0xA, ..cfg60() };
+    let b_cfg = SimConfig { seed: 0xB, dt: 1.0 / 50.0, ..cfg60() };
+    let c_cfg = SimConfig { seed: 0xC, ..cfg60() };
+    let (a_scene, b_scene, c_scene) = (SceneKind::Pile { side: 6, layers: 3 }, SceneKind::Pile { side: 5, layers: 3 }, SceneKind::Pile { side: 4, layers: 3 });
+    // A:40 arrives in B as local 75 and in C as local 48. A's commit comes after the removal (t about 4.2 s).
+    let mut p1_a: Vec<(u64, Action)> = (0..12).map(|k| (240 + 5 * k, Action::Touch { obj: 40, impulse: [0.0, 0.3, 0.0], grab: true })).collect();
+    p1_a.push((300, Action::Carry { transfer: 1, obj: 40, dest: 2 }));
+    let p1_b = vec![(400, Action::Carry { transfer: 2, obj: 75, dest: 3 })];
+    let p2_a = vec![(140, touch(33, 2.0, 4.0, 0.0)), (330, touch(12, 0.0, 5.0, 0.0))];
+    let p3_b = vec![(120, touch(30, 0.0, 6.0, 0.0)), (260, touch(8, 3.0, 3.0, 0.0))];
+    let p4_c = vec![(150, touch(20, 0.0, 6.0, 0.0)), (600, touch(5, 2.0, 5.0, 0.0))];
+    let mut peers = vec![Peer::new(1, 1200), Peer::new(2, -900), Peer::new(3, 400), Peer::new(4, -300), Peer::new(5, 200)];
+    peers[0].join(1, &[1, 2, 5], a_scene, a_cfg, 100_000, plan(&p1_a));
+    peers[1].join(1, &[1, 2, 5], a_scene, a_cfg, 100_000, plan(&p2_a));
+    peers[4].join(1, &[1, 2, 5], a_scene, a_cfg, 100_000, BTreeMap::new());
+    peers[0].join(2, &[1, 3], b_scene, b_cfg, 150_000, plan(&p1_b));
+    peers[2].join(2, &[1, 3], b_scene, b_cfg, 150_000, plan(&p3_b));
+    peers[0].join(3, &[1, 4], c_scene, c_cfg, 130_000, BTreeMap::new());
+    peers[3].join(3, &[1, 4], c_scene, c_cfg, 130_000, plan(&p4_c));
+    for p in &mut peers {
+        p.route(1, &[2]);
+        p.route(2, &[1, 3]);
+        p.route(3, &[2]);
+    }
+    let mut net = Net::new(link(50, 15, 1), 23);
+    net.filter = Some(Box::new(|t, _w, from, to, _m| if (from == 5 || to == 5) && t >= 1_000_000 { Fate::Drop } else { Fate::Deliver }));
+    let mut sim = Sim::new(net, peers, 12_000_000);
+    sim.run();
+    for p in &sim.peers {
+        for j in &p.jobs {
+            for l in &j.log {
+                println!("  m{}: {l}", p.id);
+            }
+        }
+    }
+    let a = &sim.replica(2, 1).sim;
+    println!("RESULT r14 chain-epoch: A at m2: epoch {} members {:?} decisions {:?}", a.epoch, a.members, a.vc_log);
+    let gid = (1u64 << 32) | 40;
+    for (w, label, m) in [(2, "B", 3), (3, "C", 4)] {
+        let r = &sim.replica(m, w).sim;
+        for e in r.all_entries() {
+            if let Payload::Provenance { hop } = &e.payload {
+                println!("RESULT r14 chain-epoch: hop {}->{} relayed into {label}: signed by epoch {} at frame {}, carrying {} epoch certificate(s)", hop.src, hop.dest, hop.epoch, hop.frame, hop.certs.len());
+            }
+            if let Payload::Arrive { chain, .. } = &e.payload {
+                let route: Vec<String> = chain.iter().map(|h| format!("{}->{} (epoch {}, {} certs)", h.src, h.dest, h.epoch, h.certs.len())).collect();
+                println!("RESULT r14 chain-epoch: arrival into {label} with chain [{}] -> {:?}", route.join(", "), r.outcomes.get(&e.id()).map(|x| x.1));
+            }
+        }
+    }
+    let mut total = 0;
+    let mut pending = 0;
+    let mut parts = Vec::new();
+    for (w, label, m) in [(1, "A", 2), (2, "B", 3), (3, "C", 4)] {
+        let r = &sim.replica(m, w).sim;
+        let live = r.t.objs.iter().flatten().filter(|o| o.global == gid).count();
+        pending += r.t.escrow.values().filter(|e| e.status == EscrowStatus::Pending).count();
+        total += live;
+        parts.push(format!("{label} {live}"));
+    }
+    let in_c = sim.replica(4, 3).sim.t.objs.iter().flatten().any(|o| o.global == gid);
+    println!(
+        "RESULT r14 chain-epoch: A:40 live copies {} ; pending escrows {pending} -> {}",
+        parts.join(", "),
+        if total == 1 && pending == 0 && in_c { "CONSERVED (in C, nothing in limbo)" } else { "NOT CONSERVED" }
+    );
+    for w in [1, 2, 3] {
+        print_stats(&sim, w);
+    }
+    check_world_except(&sim, 1, 600, "r14 chain-epoch A", &[5]);
+    check_world(&sim, 2, 500, "r14 chain-epoch B");
+    check_world(&sim, 3, 600, "r14 chain-epoch C");
+}
+
 // ---- ball pit ------------------------------------------------------------------------------------
 
 fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
@@ -1132,6 +1219,139 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
     check_world(&sim, 1, f(8.5), &format!("ballpit {hz}Hz"));
 }
 
+/// A member moves only its own hand (design 8.4; P2-8 review, from @shader-reviewer's probe through
+/// pe-mcp). In a 100-ball pit member 1 sweeps its hand (object 100) while member 2 sweeps its own
+/// (101) and, every fourth frame, also sends a hand entry for member 1's hand. Review HO-1: member 2
+/// also grabs member 1's hand at 2.0 s and carries it towards a portal at 2.2 s, and member 1 touches
+/// its own hand at 2.1 s. Every replica refuses member 2's entries (`RejectedNotOwner`), member 2's
+/// grab takes no claim, so member 1's touch is accepted, and the history equals the run without
+/// member 2's entries.
+fn handowner() {
+    let hz = 60u64;
+    let scene = SceneKind::BallPit { balls: 100, hands: 2 };
+    let f = |s: f64| (s * hz as f64).round() as u64;
+    let (h1, h2) = (100u32, 101u32);
+    let (a0, a1) = (f(1.0), f(4.0));
+    let path = |fr: u64, from: f64, to: f64, z: f64| {
+        let u = (fr - a0) as f64 / (a1 - a0) as f64;
+        [((from + (to - from) * u) * 1000.0).round() as i32, 400, (z * 1000.0).round() as i32]
+    };
+    let run = |forge: bool, fixes_off: u64| {
+        let ids = [1, 2];
+        let peers: Vec<Peer> = ids
+            .iter()
+            .map(|&id| {
+                let own = if id == 1 { h1 } else { h2 };
+                let mut v = Vec::new();
+                for fr in a0..=a1 {
+                    let target_mm = if id == 1 { path(fr, -0.6, 0.6, 0.0) } else { path(fr, 0.6, -0.6, 0.5) };
+                    v.push((fr, Action::Hand { obj: own, target_mm, active: true, ahead: 0 }));
+                    if id == 1 && fr == f(2.1) {
+                        v.push((fr, Action::Touch { obj: h1, impulse: [0.0, 0.5, 0.0], grab: false }));
+                    }
+                    if id == 2 && forge && fr % 4 == 0 {
+                        v.push((fr, Action::Hand { obj: h1, target_mm: [0, 3000, 0], active: true, ahead: 0 }));
+                    }
+                }
+                v.push((a1 + 1, Action::Hand { obj: own, target_mm: [0, 1500, 0], active: false, ahead: 0 }));
+                let mut p = Peer::new(id, 0);
+                p.join(1, &ids, scene, cfg60(), 100_000, plan(&v));
+                p.worlds.get_mut(&1).unwrap().sim.fixes_off = fixes_off;
+                p
+            })
+            .collect();
+        let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), peers, 6_000_000);
+        let i2 = sim.peers.iter().position(|p| p.id == 2).unwrap();
+        let (mut grabbed, mut carried, mut planted) = (false, false, false);
+        let panic_at = review2::run_to_end(&mut sim, |sim| {
+            let now = sim.net.now_us;
+            let send = |sim: &mut Sim, p: Payload| {
+                let e = sim.peers[i2].worlds.get_mut(&1).unwrap().sim.author(p, None);
+                sim.net.send(1, 2, 1, &Msg::Entry(e));
+            };
+            if forge && !grabbed && now >= 2_000_000 {
+                send(sim, Payload::Touch { obj: h1, impulse: [0.0, 5.0, 0.0], grab: true });
+                grabbed = true;
+            }
+            if forge && !carried && now >= 2_200_000 {
+                send(sim, Payload::Depart { obj: h1, dest: 99, deadline: u64::MAX, hop: None });
+                carried = true;
+            }
+            // Review HO-1, round 2: a touch of a free ball that carries a state for member 1's hand,
+            // 2 m above where member 2 sees it.
+            if forge && !planted && now >= 2_400_000 {
+                let r2 = &mut sim.peers[i2].worlds.get_mut(&1).unwrap().sim;
+                if let Some(mut st) = r2.obj_state(h1) {
+                    st.0[1] = (f32::from_bits(st.0[1]) + 2.0).to_bits();
+                    let e = r2.author_carrying(Payload::Touch { obj: 5, impulse: [0.0, 0.5, 0.0], grab: false }, (h1, st));
+                    sim.net.send(1, 2, 1, &Msg::Entry(e));
+                }
+                planted = true;
+            }
+        });
+        (sim, panic_at)
+    };
+    let (a, pa) = run(true, 0);
+    let (b, pb) = run(false, 0);
+    // The behaviour before HO-1's round-2 fix: the carried state for member 1's hand is applied.
+    let (c, pc) = run(true, fix::HO1);
+    // Only frames every compared replica has confirmed: past its confirmed frame a replica may still
+    // roll back (ballpit-viz, mirroring this in tools/session-sim).
+    let lowest = |ss: [&Sim; 2]| ss.iter().flat_map(|s| [1, 2].map(|m| s.replica(m, 1).sim.frame.saturating_sub(1).min(s.replica(m, 1).sim.conf))).min().unwrap_or(0);
+    let frames = lowest([&a, &b]);
+    let mut all_refused = true;
+    for m in [1, 2] {
+        let r = &a.replica(m, 1).sim;
+        let forged: Vec<EntryId> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && matches!(e.payload, Payload::Hand { obj, .. } if obj == h1))
+            .map(|e| e.id())
+            .collect();
+        let refused = forged.iter().filter(|&&id| r.outcomes.get(&id).is_some_and(|(_, o)| *o == Outcome::RejectedNotOwner)).count();
+        all_refused &= refused == forged.len() && !forged.is_empty();
+        println!("  m{m}: member 2's hand entries for member 1's hand: {}, refused {refused}", forged.len());
+        // Review HO-1: the grab and the carry are refused too, and the grab took no claim.
+        let others: Vec<(String, Option<Outcome>)> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && matches!(e.payload, Payload::Touch { obj, .. } | Payload::Depart { obj, .. } if obj == h1))
+            .map(|e| (if matches!(e.payload, Payload::Touch { .. }) { "grab".to_string() } else { "carry".to_string() }, r.outcomes.get(&e.id()).map(|(_, o)| *o)))
+            .collect();
+        let own = r
+            .all_entries()
+            .iter()
+            .find(|e| e.member == 1 && matches!(e.payload, Payload::Touch { obj, .. } if obj == h1))
+            .and_then(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o));
+        all_refused &= others.len() == 2 && others.iter().all(|(_, o)| *o == Some(Outcome::RejectedNotOwner)) && own == Some(Outcome::Accepted);
+        println!("  m{m}: member 2's grab and carry of member 1's hand: {others:?}; member 1's own touch of it: {own:?}");
+        let planted: Vec<Option<Outcome>> = r
+            .all_entries()
+            .iter()
+            .filter(|e| e.member == 2 && e.carried.is_some_and(|(o, _)| o == h1))
+            .map(|e| r.outcomes.get(&e.id()).map(|(_, o)| *o))
+            .collect();
+        all_refused &= planted.len() == 1 && planted[0] == Some(Outcome::RejectedInvalid);
+        println!("  m{m}: member 2's touch of a ball carrying a state for member 1's hand: {planted:?}");
+    }
+    let frames_c = lowest([&c, &b]);
+    let (dc, dbc) = (digest(&c.replica(1, 1).sim.hashes, frames_c), digest(&b.replica(1, 1).sim.hashes, frames_c));
+    println!(
+        "  handowner with HO-1's round-2 fix switched off (the behaviour before the fix): {}{}",
+        if dc == dbc { "same history as without member 2's entries" } else { "member 1's history differs from the run without member 2's entries" },
+        if pc.is_some() { "; a replica stopped" } else { "" }
+    );
+    let (da, db) = (digest(&a.replica(1, 1).sim.hashes, frames), digest(&b.replica(1, 1).sim.hashes, frames));
+    println!(
+        "RESULT handowner: member 2's entries for member 1's hand refused at every replica: {all_refused}; frames 0..{frames} with them {da:016x}, without them {db:016x} -> {}",
+        if all_refused && da == db { "SAME HISTORY" } else { "FAIL" }
+    );
+    if pa.is_some() || pb.is_some() {
+        println!("RESULT handowner: PANIC");
+    }
+    check_world(&a, 1, frames, "handowner (member 2 also sends hand entries for member 1's hand)");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let get = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
@@ -1170,6 +1390,61 @@ fn main() {
         Some("badvote") => review3::badvote(),
         Some("liar") => review3::liar(),
         Some("crashstall") => review3::crashstall(),
+        Some("twosilent") => viewchange::twosilent(),
+        Some("twosilent5") => viewchange::twosilent5(),
+        Some("withheld") => viewchange::withheld(),
+        Some("colluders") => viewchange::colluders(),
+        Some("badproposer") => viewchange::badproposer(),
+        Some("bridge") => viewchange::bridge(),
+        Some("join") => viewchange::join(),
+        Some("refwithhold") => viewchange::refwithhold(),
+        Some("handowner") => handowner(),
+        Some("fork9") => p24r::fork9(),
+        Some("jointiming") => p24r::jointiming(),
+        Some("bogusprecommit") => p24r::bogusprecommit(),
+        Some("futureack") => p24r::futureack(),
+        Some("kickwar") => p24r::kickwar(),
+        Some("kickpartition") => p24r::kickpartition(),
+        Some("lastadmin") => p24r::lastadmin(),
+        Some("adminclose") => p24r::adminclose(),
+        Some("ghostkick") => p24r3::ghostkick(),
+        Some("selfkickhead") => p24r3::selfkickhead(),
+        Some("ackgap") => p24r3::ackgap(),
+        Some("latejoin") => p24r3::latejoin(),
+        Some("capchurn") => p24r3::capchurn(),
+        Some("deepfork") => p24r3::deepfork(),
+        Some("cutbackdate") => p24r3::cutbackdate(),
+        Some("joinattests") => p24r3::joinattests(),
+        Some("slowadmin") => p24r3::slowadmin(),
+        Some("kickbackdate") => p24r3::kickbackdate(),
+        Some("lagprecommit") => p24r3::lagprecommit(),
+        Some("aheadlink") => p24r3::aheadlink(),
+        Some("strikeframe") => p24r4::strikeframe(),
+        Some("aheadshield") => p24r4::aheadshield(),
+        Some("fakeref") => p24r4::fakeref(),
+        Some("joinwedge") => p24r4::joinwedge(),
+        Some("slowref") => p24r4::slowref(),
+        Some("prevotefork") => p24r4::prevotefork(),
+        Some("fakemix") => p24r4::fakemix(),
+        Some("adminfork") => p24r4::adminfork(),
+        Some("randsched") => randsched::main(&args),
+        Some("capfake") => p24r4::capfake(),
+        Some("fakeadmin") => p24r4::fakeadmin(),
+        Some("bigjoin") => p24r4::bigjoin(),
+        Some("adminwedge") => p24r4::adminwedge(),
+        Some("capstale") => p24r4::capstale(),
+        Some("lagchurn") => p24r4::lagchurn(),
+        Some("votechurn") => p24r4::votechurn(),
+        Some("adminvoid") => p24r4::adminvoid(),
+        Some("joinsquat") => p24r4::joinsquat(),
+        Some("joinskip") => p24r4::joinskip(),
+        Some("joinrules") => p24r::joinrules(),
+        Some("onesided") => p24r::onesided(),
+        Some("vcscale") => viewchange::vc_scale(
+            get("--members").map_or(64, |v| v.parse().unwrap()),
+            get("--silent").map_or(1, |v| v.parse().unwrap()),
+            !args.iter().any(|a| a == "--no-heads"),
+        ),
         Some("snap") => history::snap(get("--balls").map_or(500, |v| v.parse().unwrap()), args.iter().any(|a| a == "--stall"), get("--reps").map_or(3, |v| v.parse().unwrap())),
         Some("observer") => history::observer(get("--delay").map_or(60, |v| v.parse().unwrap()), get("--hz").map_or(60, |v| v.parse().unwrap())),
         _ => eprintln!("usage: pe-spike-session-sim c1|c2|state-frame|diverged|loss|ties|claims|backdate|r14 [ok|abort|reject|throttle|forge|late|crash|chain] [--reverse] [--no-provenance]|ballpit [--hz H] [--ahead N] [--hands H] [--loss P]"),

@@ -42,19 +42,38 @@ fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Pro
 }
 
 /// Run one part of a scenario and print its log; true if the simulator panicked.
-fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
-    let has_verdict = s.report.iter().any(|r| matches!(r, Report::Verdict { .. }));
+fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, String> {
+    // A report that states a panic itself (a verdict, a run with its fix switched off, or a
+    // comparison of kept runs), or a kept run, which a later report judges.
+    let has_verdict = s.keep.is_some()
+        || s.report.iter().any(|r| matches!(r, Report::Verdict { .. } | Report::BeforeFix { .. } | Report::Check { .. } | Report::Handowner { .. }));
+    // A run with its fix switched off may stop at an assertion: that is what it shows, not a failure.
+    let fix_off = s.report.iter().any(|r| matches!(r, Report::BeforeFix { .. }));
     let (s, mut sim, mut actors, mut probes) = prepare(s)?;
     for a in &actors {
         a.configure(&mut sim)?;
     }
     sim.net.filter = faults::filter(s.fault.clone(), actors.iter().filter_map(|a| a.hook()).collect());
     let mut ctx = Ctx::default();
-    // The spike's scenario loops: crashes and Byzantine sends before a millisecond's step,
+    for t in &s.intro {
+        println!("{}", report::template(t, &report::Vars { sim: &sim, world: 1, entry: None }));
+    }
+    let mut joined = vec![false; s.join.len()];
+    ctx.started = Some(std::time::Instant::now());
+    let hook = s.quiet_panics.then(|| {
+        let h = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        h
+    });
+    // The spike's scenario loops: crashes, joins and Byzantine sends before a millisecond's step,
     // R14 forgeries and probes after it.
     while sim.net.now_us <= sim.end_us {
         faults::apply_crashes(&mut sim, &s.crash);
+        byzantine::send_joins(&mut sim, &s.join, &mut joined)?;
         byzantine::before_step(&mut sim, &mut actors);
+        for p in probes.iter_mut() {
+            p.pre_sample(&sim);
+        }
         if catch_unwind(AssertUnwindSafe(|| sim.step_ms())).is_err() {
             ctx.panic_at_ms = Some(sim.net.now_us / 1000);
             break;
@@ -65,14 +84,28 @@ fn run_part(s: Scenario, name: &str) -> Result<bool, String> {
         }
         sim.net.now_us += 1000;
     }
+    if let Some(h) = hook {
+        std::panic::set_hook(h);
+    }
+    ctx.fork_info = actors.iter().find_map(|a| a.fork_info());
+    ctx.silenced = actors.iter().filter_map(|a| a.silenced()).collect();
+    ctx.wedge = actors.iter().find_map(|a| a.wedge_info());
     if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
         println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
         return Ok(true);
     }
+    let panicked = ctx.panic_at_ms.is_some() && !fix_off && s.keep.is_none();
+    let sim = match &s.keep {
+        Some(k) => {
+            kept.insert(k.clone(), (sim, ctx.panic_at_ms));
+            &kept[k].0
+        }
+        None => &sim,
+    };
     for p in &probes {
-        p.print(&sim, &ctx);
+        p.print(sim, &ctx, kept);
     }
-    Ok(ctx.panic_at_ms.is_some())
+    Ok(panicked)
 }
 
 /// Run every part; true if any panicked. Every part is checked before the first one runs.
@@ -81,8 +114,9 @@ fn run_file(path: &Path) -> Result<bool, String> {
     let loaded = scenario::load(path)?;
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut panicked = false;
+    let mut kept = report::Kept::new();
     for part in loaded.parts {
-        panicked |= run_part(part, &name)?;
+        panicked |= run_part(part, &name, &mut kept)?;
     }
     Ok(panicked)
 }
@@ -90,7 +124,19 @@ fn run_file(path: &Path) -> Result<bool, String> {
 fn check_file(path: &Path) -> Result<usize, String> {
     let loaded = scenario::load(path)?;
     let n = loaded.parts.len();
+    let mut kept: Vec<String> = Vec::new();
     for (i, s) in loaded.parts.into_iter().enumerate() {
+        // A report may compare runs kept by earlier parts and by its own.
+        kept.extend(s.keep.clone());
+        for r in &s.report {
+            if let Report::Handowner { forged, clean, fixoff, .. } = r {
+                for k in [forged, clean, fixoff] {
+                    if !kept.contains(k) {
+                        return Err(format!("{} (part {}): handowner: no part up to this one keeps a run named `{k}`", path.display(), i + 1));
+                    }
+                }
+            }
+        }
         let (_, mut sim, actors, _) = prepare(s).map_err(|e| format!("{} (part {}):
   {e}", path.display(), i + 1))?;
         for a in &actors {

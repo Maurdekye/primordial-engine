@@ -1,0 +1,50 @@
+description = """
+P2-4 review round 4, a check: 9 falls silent at 2 s, while from then on 8 (which takes no part in \
+view changes) claims in its acks 5 more of 9's entries than anyone holds. That spares 9 from the \
+silence vote while the others fetch, but the withholding rule removes it all the same: its own \
+references stop."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4, 5, 8, 9]
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 900, past the end of the run (frame 833): it never
+# fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[world.1.member.8]
+withhold_vc = true
+
+[[fault]]
+from = 9
+after_ms = 2000
+drop = true
+
+[[byzantine]]
+kind = "fake_refs"
+member = 8
+from_ms = 2000
+of = 9
+n = 5
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3, 4, 5]
+label = "fakeref"
+
+[[report]]
+kind = "check"
+case = "fakeref"
+label = "fakeref"
+at = 1
+target = 9
+event = "member 9 has referenced no more"
+honest = [1, 2, 3, 4, 5]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4, 5]
+label = "fakeref (9 falls silent at 2 s; from then on 8's acks claim 5 more of 9's entries than anyone holds)"

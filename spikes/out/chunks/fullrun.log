@@ -2,7 +2,7 @@
    Compiling pe-spike-chunks v0.0.1 (E:\Libraries\Desktop\Primordial Engine\.worktrees\chunks\spikes\chunks)
     Finished `release` profile [optimized] target(s) in 1.76s
      Locking 1 package to highest Rust 1.99.0 compatible version
-      Adding box3d-rust v0.5.0 (C:\Users\<user>\AppData\Roaming\Orgtree v2\data\scratch\primordial-engine\world-chunks\box3d-novalidate)
+      Adding box3d-rust v0.5.0 (<local path>\box3d-novalidate)
    Compiling pe-spike-chunks v0.0.1 (E:\Libraries\Desktop\Primordial Engine\.worktrees\chunks\spikes\chunks)
     Finished `release` profile [optimized] target(s) in 1.71s
    Compiling pe-spike-chunks v0.0.1 (E:\Libraries\Desktop\Primordial Engine\.worktrees\chunks\spikes\chunks)

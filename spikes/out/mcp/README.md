@@ -12,9 +12,14 @@ pe-mcp serve --http --principal claude-code -- claude ... --mcp-config cfg-http.
 ```
 
 `--strict-mcp-config --setting-sources project`, run from an empty directory, load no user settings, hooks
-or MCP servers: the init record lists only the `pe` server and Claude Code's two built-in plugins. The
+or MCP servers: the original init record listed only the `pe` server and Claude Code's two built-in plugins. The
 token reached Claude Code only through `PE_MCP_TOKEN` in its environment, and the configs refer to it as
 `${PE_MCP_TOKEN}`. Neither transcript contains it.
+
+The two `.jsonl` files are trimmed from Claude Code's stream-json output, for publication: they keep the
+`pe` tool list, every assistant text and tool call, every tool result, and the final outcome (turns, wall
+time, cost, the agent's report). Session ids, message ids, local paths, token usage, rate-limit events,
+thinking blocks and Claude Code's own environment listing were removed.
 
 | | pipe (`run-pipe.jsonl`) | HTTP (`run-http.jsonl`) |
 |---|---|---|

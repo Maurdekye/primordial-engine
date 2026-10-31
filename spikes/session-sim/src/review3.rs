@@ -20,7 +20,7 @@ use pe_sim_core::session::*;
 use crate::review2::{link, peers, plan, run_to_end, touch, touch_state, verdict};
 
 /// 9 signs a second version of its touch once member 1 has confirmed it; returns true once done.
-fn equivocate_after_conf(sim: &mut Sim, to: &[MemberId]) -> bool {
+pub(crate) fn equivocate_after_conf(sim: &mut Sim, to: &[MemberId]) -> bool {
     if sim.replica(1, 1).sim.conf <= 200 {
         return false;
     }
@@ -43,7 +43,7 @@ fn equivocate_after_conf(sim: &mut Sim, to: &[MemberId]) -> bool {
     true
 }
 
-fn report(sim: &Sim, honest: &[MemberId], label: &str) {
+pub(crate) fn report(sim: &Sim, honest: &[MemberId], label: &str) {
     for &m in honest {
         let r = &sim.replica(m, 1).sim;
         println!(
@@ -78,9 +78,9 @@ pub fn badvote() {
         if equivocated && !forged {
             let v = sim.replica(8, 1).sim.all_entries().into_iter().find(|e| e.member == 8 && matches!(e.payload, Payload::Vote { .. }));
             if let Some(v) = v {
-                if let Payload::Vote { target, seq, .. } = v.payload {
+                if let Payload::Vote { epoch, target, seq, kick, .. } = v.payload {
                     let mut f = v.clone();
-                    f.payload = Payload::Vote { target, seq, frozen: (0, 0) };
+                    f.payload = Payload::Vote { epoch, target, seq, frozen: (0, 0), kick };
                     forged_vote.set(f.id());
                     for to in [1, 2] {
                         sim.net.send(1, 8, to, &Msg::Entry(f.clone()));
