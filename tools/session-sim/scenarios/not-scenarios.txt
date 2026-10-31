@@ -1,0 +1,4 @@
+# Committed logs of scripts/run_session_sim.sh that are not scenarios and never will be: the
+# spike's property tests, which the spike suite runs and checks itself. regress neither mirrors nor
+# reports them as orphans (see README). Each must have a committed log and no scenario file.
+randsched           # P2-4 round 5: a randomized schedule generator (RESULT ... ALL PASS)
