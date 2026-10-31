@@ -787,13 +787,14 @@ impl Sim {
                             // Relay only with A's certificate (review NEW-4), which covers the
                             // object's provenance chain (P2-5).
                             let chain = src.chain_of(rec.global);
-                            let Some(cert) = src.cert(fact_departed(j.src, j.depart, &rec, j.dst, deadline, chain_hash(&chain))) else { continue };
+                            let chash = chain_hash(&chain);
+                            let Some((proof, cert)) = src.vouch(rec.src_frame, |e| fact_departed(j.src, j.depart, &rec, j.dst, deadline, chash, e)) else { continue };
                             let dst = self.peers[pi].worlds.get_mut(&j.dst).unwrap();
                             if !dst.sim.caught_up() || dst.sim.frame < dst.sim.now {
                                 continue;
                             }
                             j.record = Some(rec);
-                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, deadline, cert, chain }, None);
+                            let e = dst.sim.author(Payload::Arrive { transfer: j.transfer, record: rec, depart: j.depart, deadline, cert, chain, proof }, None);
                             j.log.push(format!(
                                 "t={}ms depart confirmed in world {} (frame {f}); arrive authored in world {} at frame {}",
                                 now / 1000, j.src, j.dst, e.stamp
@@ -816,13 +817,18 @@ impl Sim {
                     if !(dst.is_confirmed(id) && dst.frame > f && dst.caught_up()) {
                         continue;
                     }
-                    let accepted = matches!(dst.t.arrivals.get(&j.transfer), Some(Arrival::Accepted { .. }));
-                    // Relay only with B's certificate over the verdict (review NEW-3).
-                    let Some(cert) = dst.cert(fact_verdict(j.dst, j.transfer, accepted)) else { continue };
+                    let (accepted, frame) = match dst.t.arrivals.get(&j.transfer) {
+                        Some(Arrival::Accepted { frame, .. }) => (true, *frame),
+                        Some(Arrival::Rejected { frame, .. }) => (false, *frame),
+                        None => continue,
+                    };
+                    // Relay only with B's certificate over the verdict (review NEW-3), with B's
+                    // epoch proof at its arrival frame (R3-8b).
+                    let Some((proof, cert)) = dst.vouch(frame, |e| fact_verdict(j.dst, j.transfer, accepted, frame, e)) else { continue };
                     let src = self.peers[pi].worlds.get_mut(&j.src).unwrap();
                     // State-free: stamped at the present even if this replica lags (design 22.3).
                     let sim_at = src.sim.frame;
-                    let e = src.sim.author(Payload::Verdict { transfer: j.transfer, accepted, cert }, None);
+                    let e = src.sim.author(Payload::Verdict { transfer: j.transfer, accepted, cert, frame, proof }, None);
                     j.log.push(format!(
                         "t={}ms arrival confirmed in world {} (frame {f}, accepted={accepted}); verdict authored in world {} at frame {} (its sim there at frame {sim_at})",
                         now / 1000, j.dst, j.src, e.stamp
