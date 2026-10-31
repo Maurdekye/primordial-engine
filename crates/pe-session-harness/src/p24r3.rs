@@ -57,7 +57,7 @@ pub fn ghostkick() {
             if !sent && sim.net.now_us >= 2_000_000 {
                 let frozen = head_of(sim, 9, 2);
                 let r9 = sim_mut(sim, 9);
-                let epoch = r9.epoch;
+                let epoch = r9.vcm.epoch;
                 let e = r9.author(Payload::Vote { epoch, target: 2, seq: 0, frozen, kick: fake_id(0xDEAD_BEEF) }, None);
                 send_all(sim, 9, &ids, &e);
                 sent = true;
@@ -85,7 +85,7 @@ pub fn selfkickhead() {
         });
         // 4 casts no vote of its own: the fixture signs its forged one.
         for p in ps.iter_mut().filter(|p| p.id == 4) {
-            p.worlds.get_mut(&1).unwrap().sim.withhold_vc = true;
+            p.worlds.get_mut(&1).unwrap().sim.vcm.withhold_vc = true;
         }
         if !fixed {
             each_sim(&mut ps, |s| s.fixes_off = fix::VCR2);
@@ -99,14 +99,14 @@ pub fn selfkickhead() {
             let r4 = &sim.replica(4, 1).sim;
             let Some(kick) = r4.all_entries().into_iter().find(|e| matches!(e.payload, Payload::Kick { target: 4, .. })).map(|e| e.id()) else { return };
             let r4 = sim_mut(sim, 4);
-            let epoch = r4.epoch;
+            let epoch = r4.vcm.epoch;
             let e = r4.author(Payload::Vote { epoch, target: 4, seq: 0, frozen: (10_000, fake_id(0xBAD)), kick }, None);
             send_all(sim, 4, &ids, &e);
             sent = true;
         });
         let honest = [1, 2, 3];
         let label = "selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed)";
-        let removed = sim.replica(1, 1).sim.vc_log.iter().find(|d| d.3.contains(&4)).map(|d| sim_secs(sim.replica(1, 1), d.1));
+        let removed = sim.replica(1, 1).sim.vcm.vc_log.iter().find(|d| d.3.contains(&4)).map(|d| sim_secs(sim.replica(1, 1), d.1));
         if !fixed {
             println!("  4 removed at m1: {removed:?} s");
             before_fix(label, "VCR-2's fix", &sim, &honest, stopped);
@@ -187,7 +187,7 @@ pub fn latejoin() {
         let all = [1, 2, 3, 5];
         let label = "latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2)";
         if !fixed {
-            let admitted = sim.replica(1, 1).sim.members.contains(&joiner);
+            let admitted = sim.replica(1, 1).sim.vcm.members.contains(&joiner);
             println!("  joiner admitted at m1: {admitted}");
             before_fix(label, "VCR-3's fix", &sim, &all, stopped);
             continue;
@@ -208,13 +208,13 @@ pub fn capchurn() {
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut capped: BTreeSet<u32> = BTreeSet::new();
         let stopped = run_quiet(&mut sim, |sim| {
-            if sim.net.now_us < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&9) {
+            if sim.net.now_us < 2_000_000 || !sim.replica(1, 1).sim.vcm.members.contains(&9) {
                 return;
             }
             let r9 = sim_mut(sim, 9);
-            let epoch = r9.epoch;
+            let epoch = r9.vcm.epoch;
             // Its acks claim the epoch after its own, so they rise by one per decision.
-            r9.fake_ack_epoch = Some(epoch + 1);
+            r9.vcm.fake_ack_epoch = Some(epoch + 1);
             if capped.insert(epoch) {
                 let boundary = r9.now + 30;
                 let value = 0xBAD0 ^ epoch as u64;
@@ -226,7 +226,7 @@ pub fn capchurn() {
         let honest = [1, 2, 3];
         let label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one)";
         let r1 = sim.replica(1, 1);
-        let removed = r1.sim.vc_log.iter().find(|d| d.3.contains(&9)).map(|d| sim_secs(r1, d.1));
+        let removed = r1.sim.vcm.vc_log.iter().find(|d| d.3.contains(&9)).map(|d| sim_secs(r1, d.1));
         let resets = r1.sim.stats.resets;
         if !fixed {
             println!("  9 removed: {removed:?} s; resets {resets}");
@@ -290,12 +290,12 @@ pub fn joinattests() {
         for p in ps.iter_mut().filter(|p| p.id != joiner) {
             p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
         }
-        each_sim(&mut ps, |s| s.join_rules = JoinRules::friends_only(GUEST));
+        each_sim(&mut ps, |s| s.vcm.join_rules = JoinRules::friends_only(GUEST));
         guests(&mut ps, &[1, 2, 3, 9]);
         for p in ps.iter_mut().filter(|p| p.id == 9) {
             let s = &mut p.worlds.get_mut(&1).unwrap().sim;
-            s.byz_ally = true;
-            s.byz_no_precommit = true;
+            s.vcm.byz_ally = true;
+            s.vcm.byz_no_precommit = true;
         }
         if !fixed {
             each_sim(&mut ps, |s| s.fixes_off = fix::VCR7);
@@ -314,7 +314,7 @@ pub fn joinattests() {
         });
         let honest = [1, 2, 3];
         let label = "joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits)";
-        let role = sim.replica(3, 1).sim.roles.get(&joiner).copied();
+        let role = sim.replica(3, 1).sim.vcm.roles.get(&joiner).copied();
         if !fixed {
             println!("  5's role at m3: {role:?}");
             before_fix(label, "VCR-7's fix", &sim, &honest, stopped);
@@ -371,7 +371,7 @@ pub fn slowadmin() {
             continue;
         }
         vc_report(&sim, &all, "slowadmin");
-        let defs: Vec<String> = all.iter().map(|&m| format!("m{m} {:?}", sim.replica(m, 1).sim.role_defs)).collect();
+        let defs: Vec<String> = all.iter().map(|&m| format!("m{m} {:?}", sim.replica(m, 1).sim.vcm.role_defs)).collect();
         println!("RESULT slowadmin: role definitions {}", defs.join(", "));
         verdict(&sim, &all, label, stopped);
     }
@@ -393,13 +393,13 @@ pub fn kickbackdate() {
         let stopped = run_quiet(&mut sim, |sim| {
             if !sent && sim.replica(2, 1).sim.frame >= 120 {
                 let r2 = sim_mut(sim, 2);
-                let epoch = r2.epoch;
+                let epoch = r2.vcm.epoch;
                 let e = r2.author_backdated(Payload::Kick { epoch, target: 1 }, 30);
                 send_all(sim, 2, &ids, &e);
                 sent = true;
             }
         });
-        let left: Vec<MemberId> = sim.replica(3, 1).sim.members.iter().copied().collect();
+        let left: Vec<MemberId> = sim.replica(3, 1).sim.vcm.members.iter().copied().collect();
         let label = "kickbackdate (admins 1 and 2 kick each other at frame 120; 2 backdates its kick 30 frames to come first)";
         if !fixed {
             println!("  members left at m3: {left:?}");
@@ -433,7 +433,7 @@ pub fn lagprecommit() {
                 r.ack_every_us = 1_500_000;
             }
             if p.id == 9 {
-                r.sim.withhold_vc = true;
+                r.sim.vcm.withhold_vc = true;
             }
         }
         if !fixed {
@@ -451,7 +451,7 @@ pub fn lagprecommit() {
         });
         let all = [1, 2, 3, 5];
         let label = "lagprecommit (3 acks once every 1.5 s; 9 casts no view-change vote, so the join needs 3's precommit)";
-        let admitted = sim.replica(1, 1).sim.members.contains(&joiner);
+        let admitted = sim.replica(1, 1).sim.vcm.members.contains(&joiner);
         if !fixed {
             println!("  joiner admitted at m1: {admitted}");
             before_fix(label, "VCR-12's fix", &sim, &[1, 2, 3], stopped);
@@ -504,7 +504,7 @@ pub fn aheadlink() {
         }
         vc_report(&sim, &honest, "aheadlink");
         // 3's votes are cast in an epoch the others have left, so none of the members ahead is removed.
-        let members = sim.replica(1, 1).sim.members.clone();
+        let members = sim.replica(1, 1).sim.vcm.members.clone();
         let kept = [1, 2, 4].iter().all(|m| members.contains(m));
         println!(
             "RESULT aheadlink: 3's votes against the members ahead {votes:?}; members {members:?} -> {}",

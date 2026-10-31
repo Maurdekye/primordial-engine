@@ -67,7 +67,7 @@ pub(crate) fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Opt
     let frames = honest.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(honest[0], 1).sim;
     crate::dump_outcomes(first, 1, label);
-    let members: Vec<MemberId> = first.members.iter().copied().collect();
+    let members: Vec<MemberId> = first.vcm.members.iter().copied().collect();
     let reference = replay(1, SceneKind::Pile { side: 8, layers: 4 }, first.cfg, first.public_keys(), &members, &final_log(first), frames);
     let rd = digest(&reference, frames);
     let ds: Vec<(MemberId, u64)> = honest.iter().map(|&m| (m, digest(&sim.replica(m, 1).sim.hashes, frames))).collect();
@@ -78,7 +78,7 @@ pub(crate) fn verdict(sim: &Sim, honest: &[MemberId], label: &str, panic_at: Opt
         let r = &sim.replica(m, 1).sim;
         println!(
             "  m{m}: conf {} frame {} members {:?} evicted {:?} rollbacks {} max depth {} violations {} equivocations {} checks ok {} bad {}",
-            r.conf, r.frame, r.members, r.members_evicted(), r.stats.rollbacks, r.stats.max_depth,
+            r.conf, r.frame, r.vcm.members, r.members_evicted(), r.stats.rollbacks, r.stats.max_depth,
             r.stats.entries_rejected_violation, r.stats.equivocations, r.stats.checks_ok, r.stats.checks_bad
         );
     }

@@ -7,17 +7,17 @@ impl WorldSim {
     /// or a successor that names another version): record the proof, withdraw what it disputes,
     /// and vote to remove `m` in this epoch (design 9.3, 10.8).
     pub(super) fn on_proof(&mut self, m: MemberId, k: u32, a: EntryId, b: EntryId) -> Vec<Entry> {
-        if !self.proofs.contains_key(&m) {
+        if !self.vcm.proofs.contains_key(&m) {
             self.stats.equivocations += 1;
             self.ev(format!("EQUIVOCATION proof: member {m} signed two versions of seq {k} ({a:?} / {b:?})"));
         }
-        let (k0, a0, b0) = match self.proofs.get(&m) {
+        let (k0, a0, b0) = match self.vcm.proofs.get(&m) {
             Some(&(k1, a1, b1)) if k1 <= k => (k1, a1, b1),
             _ => (k, a, b),
         };
-        self.proofs.insert(m, (k0, a0, b0));
+        self.vcm.proofs.insert(m, (k0, a0, b0));
         let mut out = Vec::new();
-        if m != self.me && self.members.contains(&m) && !self.voted(m) {
+        if m != self.me && self.vcm.members.contains(&m) && !self.voted(m) {
             out.extend(self.freeze_and_vote(m, k0, EntryId::NONE));
         }
         self.reconcile(m);
@@ -26,19 +26,19 @@ impl WorldSim {
 
     /// Whether this replica has voted against `m` in the current epoch.
     pub(super) fn voted(&self, m: MemberId) -> bool {
-        self.votes.get(&m).is_some_and(|v| v.contains_key(&self.me))
+        self.vcm.votes.get(&m).is_some_and(|v| v.contains_key(&self.me))
     }
 
     /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
     /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
     pub(super) fn freeze_and_vote(&mut self, m: MemberId, k0: u32, kick: EntryId) -> Option<Entry> {
-        if self.withhold_vc {
+        if self.vcm.withhold_vc {
             return None;
         }
         let f = self.contiguous.get(&m).copied().unwrap_or(0);
         // A faulty member (fixture) votes without freezing: it keeps processing that chain.
-        if !self.byz_ally {
-            self.frozen.insert(m, f);
+        if !self.vcm.byz_ally {
+            self.vcm.frozen.insert(m, f);
         }
         let (f, fid) = match self.hidden.as_ref().and_then(|h| h.get(&m)) {
             Some(&(hs, hid)) if hs < f => (hs, hid),
@@ -50,7 +50,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp: self.frame.max(self.now),
-            payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid), kick },
+            payload: Payload::Vote { epoch: self.vcm.epoch, target: m, seq: k0, frozen: (f, fid), kick },
             carried: None,
         };
         Some(self.publish(v))
@@ -64,18 +64,21 @@ impl WorldSim {
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<SignedEntry> {
+        if self.is_static() {
+            return Vec::new();
+        }
         let out = self.suspects_due_entries();
         self.signed_all(out)
     }
 
     fn suspects_due_entries(&mut self) -> Vec<Entry> {
-        if !self.members.contains(&self.me) || self.closed_at.is_some() {
+        if !self.vcm.members.contains(&self.me) || self.vcm.closed_at.is_some() {
             return vec![];
         }
         let mut out = Vec::new();
         // D80: a pending kick outlives an epoch that did not carry it out: freeze its target again.
         let kicks: Vec<(EntryId, MemberId, MemberId)> = self
-            .admin_pending
+            .vcm.admin_pending
             .iter()
             .filter_map(|id| {
                 let e = self.entries.get(id)?;
@@ -86,7 +89,7 @@ impl WorldSim {
             })
             .collect();
         for (id, author, t) in kicks {
-            if self.members.contains(&t) && self.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.withhold_vc {
+            if self.vcm.members.contains(&t) && self.vcm.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.vcm.withhold_vc {
                 if t == self.me {
                     out.extend(self.self_kick_vote(id));
                 } else {
@@ -96,18 +99,18 @@ impl WorldSim {
         }
         // A proof outlives an epoch that did not remove its member: vote again.
         let proven: Vec<(MemberId, u32)> = self
-            .proofs
+            .vcm.proofs
             .iter()
             .map(|(m, p)| (*m, p.0))
-            .chain(self.liars.iter().map(|(m, p)| (*m, self.entries.get(&p.b).map_or(1, |e| e.seq))))
+            .chain(self.vcm.liars.iter().map(|(m, p)| (*m, self.entries.get(&p.b).map_or(1, |e| e.seq))))
             .collect();
         for (m, k) in proven {
-            if m != self.me && self.members.contains(&m) && !self.voted(m) {
+            if m != self.me && self.vcm.members.contains(&m) && !self.voted(m) {
                 out.extend(self.freeze_and_vote(m, k.max(1), EntryId::NONE));
             }
         }
-        if self.byz_ally {
-            let targets: Vec<MemberId> = self.votes.keys().copied().filter(|t| *t != self.me && self.members.contains(t)).collect();
+        if self.vcm.byz_ally {
+            let targets: Vec<MemberId> = self.vcm.votes.keys().copied().filter(|t| *t != self.me && self.vcm.members.contains(t)).collect();
             for t in targets {
                 if !self.voted(t) {
                     out.extend(self.freeze_and_vote(t, 0, EntryId::NONE));
@@ -118,11 +121,11 @@ impl WorldSim {
         // Review VC-5: a member whose acks declare an epoch newer than mine, without my reaching it,
         // caps what I count of its chain; for as long as a silent member is given, I vote it out.
         if self.fixes_off & fix::VC5 == 0 {
-            let members: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != self.me).collect();
+            let members: Vec<MemberId> = self.vcm.members.iter().copied().filter(|&j| j != self.me).collect();
             for j in members {
-                let newer = self.ack_epoch_from.get(&j).is_some_and(|a| a.range(self.epoch + 1..).next().is_some());
+                let newer = self.vcm.ack_epoch_from.get(&j).is_some_and(|a| a.range(self.vcm.epoch + 1..).next().is_some());
                 if !newer {
-                    self.newer_since.remove(&j);
+                    self.vcm.newer_since.remove(&j);
                     continue;
                 }
                 // Review VCR-12: while another member's acks show more of some chain than I hold, I am
@@ -141,13 +144,13 @@ impl WorldSim {
                         for (k, y, a, b) in behind {
                             self.want_from(k, y, a, b);
                         }
-                        self.newer_since.insert(j, self.now);
+                        self.vcm.newer_since.insert(j, self.now);
                         continue;
                     }
                 }
-                let since = *self.newer_since.entry(j).or_insert(self.now);
-                if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.withhold_vc {
-                    self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.epoch));
+                let since = *self.vcm.newer_since.entry(j).or_insert(self.now);
+                if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.vcm.withhold_vc {
+                    self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.vcm.epoch));
                     out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
                 }
             }
@@ -155,9 +158,9 @@ impl WorldSim {
         // Review VCR-4: a member whose votes or caps resets keep overruling forces a view change each
         // epoch. Its record survives the decisions it forces, so it is voted out.
         if self.fixes_off & fix::VCR4 == 0 {
-            let struck: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != self.me && !self.voted(j) && self.struck_out(j)).collect();
+            let struck: Vec<MemberId> = self.vcm.members.iter().copied().filter(|&j| j != self.me && !self.voted(j) && self.struck_out(j)).collect();
             for j in struck {
-                if !self.withhold_vc {
+                if !self.vcm.withhold_vc {
                     self.ev(format!("member {j}'s votes or caps were overruled in {STRIKES_OUT} of the last {STRIKE_EPOCHS} epochs: vote to remove it"));
                     out.extend(self.freeze_and_vote(j, 0, EntryId::NONE));
                 }
@@ -165,10 +168,10 @@ impl WorldSim {
         }
         // Removal on silence needs a quorum without the removed member, so a two-member world
         // never suspects: both members pause instead (D7).
-        if self.members.len() < 3 {
+        if self.vcm.members.len() < 3 {
             return out;
         }
-        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let members: Vec<MemberId> = self.vcm.members.iter().copied().collect();
         for j in members {
             if j == self.me || self.voted(j) {
                 continue;
@@ -180,9 +183,9 @@ impl WorldSim {
             // it can follow as a spectator. A short congestion (c1: about 2 s) does not qualify.
             let h = self.chain_state.get(&j).and_then(|c| c.0).unwrap_or(0);
             let since = if self.now > h + self.cfg.window / 2 {
-                *self.lagging.entry(j).or_insert(self.now)
+                *self.vcm.lagging.entry(j).or_insert(self.now)
             } else {
-                self.lagging.remove(&j);
+                self.vcm.lagging.remove(&j);
                 self.now
             };
             let silent = self.now >= heard + self.cfg.suspect_after;
@@ -203,7 +206,7 @@ impl WorldSim {
                 }
                 continue;
             }
-            if self.withhold_vc {
+            if self.vcm.withhold_vc {
                 continue;
             }
             if silent {
@@ -225,11 +228,11 @@ impl WorldSim {
     /// out the same way. A member that acks slowly still advances, and is not.
     pub(super) fn withholders_due(&mut self) -> Vec<Entry> {
         let mut out = Vec::new();
-        if self.now < self.withhold_checked + 30 || self.withhold_vc || !self.cfg.ack_heads {
+        if self.now < self.vcm.withhold_checked + 30 || self.vcm.withhold_vc || !self.cfg.ack_heads {
             return out;
         }
-        self.withhold_checked = self.now;
-        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        self.vcm.withhold_checked = self.now;
+        let members: Vec<MemberId> = self.vcm.members.iter().copied().collect();
         let newest = |s: &Self, k: MemberId, y: MemberId| s.refs.get(&(k, y)).and_then(|r| r.keys().next_back()).copied().unwrap_or(0);
         // Per chain y: the two lowest references to it among the other members, so "every member but
         // j" is one comparison (O(n^2) per check, not O(n^3)).
@@ -261,13 +264,13 @@ impl WorldSim {
             let mut blocks = None;
             for (&y, &((min1, who), min2)) in &low {
                 // Review VC-9: once j has voted against y, its acks no longer reference y's chain.
-                if y == j || self.votes.get(&y).is_some_and(|v| v.contains_key(&j)) {
+                if y == j || self.vcm.votes.get(&y).is_some_and(|v| v.contains_key(&j)) {
                     continue;
                 }
                 let mine = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
                 let others = mine.min(if who == j { min2 } else { min1 });
                 let theirs = newest(self, j, y);
-                let still = self.ref_advanced.get(&(j, y)).map_or(self.now >= self.cfg.suspect_after, |&t| self.now >= t + self.cfg.suspect_after);
+                let still = self.vcm.ref_advanced.get(&(j, y)).map_or(self.now >= self.cfg.suspect_after, |&t| self.now >= t + self.cfg.suspect_after);
                 if theirs < others && still {
                     blocks = Some(y);
                     break;
@@ -286,8 +289,8 @@ impl WorldSim {
     /// removes it, every entry from the disputed seq on is withdrawn unless it is stable (held
     /// identically by every member, so possibly confirmed somewhere); after it, exactly the cut.
     pub(super) fn reconcile(&mut self, m: MemberId) {
-        let k = self.proofs.get(&m).map(|p| p.0);
-        let decided = self.evicted.get(&m).map(|p| p.0);
+        let k = self.vcm.proofs.get(&m).map(|p| p.0);
+        let decided = self.vcm.evicted.get(&m).map(|p| p.0);
         let stable = self.stable_seq(m);
         let ids: Vec<(u32, EntryId)> = self.entries.iter().filter(|(_, e)| e.member == m).map(|(id, e)| (e.seq, *id)).collect();
         for (seq, id) in ids {
@@ -332,10 +335,10 @@ impl WorldSim {
 
     /// `voter`'s vote `vote` contradicts its own earlier ack `ack`: it is proven faulty.
     pub(super) fn on_lie(&mut self, voter: MemberId, ack: EntryId, vote: EntryId) {
-        if self.liars.contains_key(&voter) || voter == self.me {
+        if self.vcm.liars.contains_key(&voter) || voter == self.me {
             return;
         }
-        self.liars.insert(voter, Proof { a: ack, b: vote });
+        self.vcm.liars.insert(voter, Proof { a: ack, b: vote });
         self.stats.lying_votes += 1;
         self.ev(format!("LYING VOTE: member {voter}'s vote drops entries its own ack referenced: proven faulty"));
     }

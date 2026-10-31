@@ -112,7 +112,7 @@ fn check_world_except(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[M
         }
     }
     let r = first.unwrap();
-    let members: Vec<MemberId> = r.sim.members.iter().copied().collect();
+    let members: Vec<MemberId> = r.sim.vcm.members.iter().copied().collect();
     let reference = replay_sim_like(&r.sim, r.scene, &members, &final_log(&r.sim), frames).hashes;
     let rd = digest(&reference, frames);
     let all_equal = digests.iter().all(|(_, d)| *d == rd);
@@ -483,7 +483,7 @@ fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chai
     let cert: Vec<(MemberId, Sig)> = [2u32, 3].iter().map(|&m| (m, test_fact_sig(m, 6, fact))).collect();
     let i = sim.peers.iter().position(|p| p.id == by).unwrap();
     let e = sim.peers[i].worlds.get_mut(&w).unwrap().sim.author(Payload::Arrive { transfer: transfer_id(6, fake), record, depart: fake, deadline, cert, chain }, None);
-    let members: Vec<MemberId> = sim.replica(by, w).sim.members.iter().copied().collect();
+    let members: Vec<MemberId> = sim.replica(by, w).sim.vcm.members.iter().copied().collect();
     for to in members {
         if to != by {
             sim.net.send(w, by, to, &Msg::Entry(e.clone()));
@@ -623,7 +623,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
     let mut refunded: Option<(u64, Escrow)> = None;
     let g = |i: u64| (1u64 << 32) | i;
     let send_all = |sim: &mut Sim, w: WorldId, from: MemberId, e: &SignedEntry| {
-        let members: Vec<MemberId> = sim.replica(from, w).sim.members.iter().copied().collect();
+        let members: Vec<MemberId> = sim.replica(from, w).sim.vcm.members.iter().copied().collect();
         for to in members {
             if to != from {
                 sim.net.send(w, from, to, &Msg::Entry(e.clone()));
@@ -892,7 +892,7 @@ fn r14(variant: &str, reverse: bool, control: bool) {
             let r = &sim.replica(at, w).sim;
             println!(
                 "RESULT r14 crash: world {w} at m{at}: members {:?} evicted {:?} conf {} frame {} paused frames {}",
-                r.members,
+                r.vcm.members,
                 r.members_evicted(),
                 r.conf,
                 r.frame,
@@ -1157,7 +1157,7 @@ fn r14_chain_epoch() {
         }
     }
     let a = &sim.replica(2, 1).sim;
-    println!("RESULT r14 chain-epoch: A at m2: epoch {} members {:?} decisions {:?}", a.epoch, a.members, a.vc_log);
+    println!("RESULT r14 chain-epoch: A at m2: epoch {} members {:?} decisions {:?}", a.vcm.epoch, a.vcm.members, a.vcm.vc_log);
     let gid = (1u64 << 32) | 40;
     for (w, label, m) in [(2, "B", 3), (3, "C", 4)] {
         let r = &sim.replica(m, w).sim;

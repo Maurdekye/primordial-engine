@@ -84,7 +84,7 @@ pub fn capped(o: &Opts) {
             let mut all_lag_ok = true;
             let mut q_now = 0u64;
             // Real time is judged over the members still in the session (a demoted one follows).
-            let live: Vec<MemberId> = sim.replica(1, 1).sim.members.iter().copied().collect();
+            let live: Vec<MemberId> = sim.replica(1, 1).sim.vcm.members.iter().copied().collect();
             for (i, &m) in ids.iter().enumerate() {
                 for &p in &ids {
                     if p != m {
@@ -115,11 +115,11 @@ pub fn capped(o: &Opts) {
         let secs = (w1 - w0) as f64 / 1e6;
         let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / secs;
         // A member demoted (removed) from the session no longer counts: compare the others.
-        let live: Vec<MemberId> = ids.iter().copied().filter(|m| sim.replica(1, 1).sim.members.contains(m)).collect();
+        let live: Vec<MemberId> = ids.iter().copied().filter(|m| sim.replica(1, 1).sim.vcm.members.contains(m)).collect();
         let last = live.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap().saturating_sub(1);
         let hs: Vec<u64> = live.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
         let r1 = &sim.replica(1, 1).sim;
-        let members: Vec<MemberId> = r1.members.iter().copied().collect();
+        let members: Vec<MemberId> = r1.vcm.members.iter().copied().collect();
         let rd = digest(&replay_sim_with(1, scene, r1.cfg, r1.public_keys(), &members, &r1.peers_of, &final_log(r1), last).hashes, last);
         let restamped = r1.all_entries().iter().filter(|e| e.member == 1 && r1.effective_frame(e.id()).is_some_and(|f| f != e.stamp)).count();
         let join = |v: Vec<String>| v.join(" / ");

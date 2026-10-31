@@ -32,9 +32,9 @@ impl WorldSim {
         let e = &self.entries[&id];
         // A member that asked to join acts only once admitted (10.8): until then nothing it signs
         // touches the simulation.
-        let counted = e.member == LOGIC || self.members.contains(&e.member) || self.evicted.contains_key(&e.member);
+        let counted = e.member == LOGIC || self.membership().members().contains(&e.member) || self.membership().removed().contains_key(&e.member);
         let acts = counted && !is_protocol(&e.payload);
-        let open = self.closed_at.is_none_or(|c| e.stamp < c);
+        let open = self.membership().closed_at().is_none_or(|c| e.stamp < c);
         let new = if acts && open && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
@@ -154,8 +154,8 @@ impl WorldSim {
         let mut heads = Vec::new();
         for (&q, &held) in &self.contiguous {
             // A vote's frozen head is this replica's last word on that chain in the epoch (R3-1).
-            let s = match self.frozen.get(&q) {
-                Some(&f) if !self.evicted.contains_key(&q) => held.min(f),
+            let s = match self.membership().frozen(q) {
+                Some(f) if !self.membership().removed().contains_key(&q) => held.min(f),
                 _ => held,
             };
             if s > 0 && q != self.me && self.cfg.ack_heads {
@@ -177,7 +177,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp,
-            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
+            payload: Payload::Ack { horizon, heads, check, epoch: self.membership().ack_epoch() },
             carried: None,
         };
         let e = self.publish(e);
@@ -219,7 +219,7 @@ impl WorldSim {
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
             // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
-            if self.evicted.contains_key(&e.member) && self.fixes_off & fix::VC2 == 0 {
+            if self.membership().removed().contains_key(&e.member) && self.fixes_off & fix::VC2 == 0 {
                 self.adopt_cut(e.member);
             }
             return out;
@@ -238,8 +238,8 @@ impl WorldSim {
         if e.stamp < self.conf && !is_protocol(&e.payload) {
             self.violations.insert(id);
         }
-        let disputed = self.proofs.get(&e.member).is_some_and(|&(k, _, _)| e.seq >= k)
-            || self.evicted.get(&e.member).is_some_and(|&(cut, _)| e.seq > cut);
+        let disputed = self.membership().proof_seq(e.member).is_some_and(|k| e.seq >= k)
+            || self.membership().removed().get(&e.member).is_some_and(|&(cut, _)| e.seq > cut);
         if disputed {
             self.disputed.insert(id);
         }
@@ -254,7 +254,7 @@ impl WorldSim {
             self.want_all(member, c + 1, seq - 1);
         }
         // A removed member's chain may still be missing entries up to its cut.
-        if self.evicted.contains_key(&member) {
+        if self.membership().removed().contains_key(&member) {
             self.adopt_cut(member);
         }
         out
@@ -263,7 +263,7 @@ impl WorldSim {
     /// Extend `m`'s verified contiguous prefix: each next entry must link to the previous by hash.
     pub(super) fn extend_chain(&mut self, m: MemberId, out: &mut Vec<Entry>) {
         // A member that asked to join is validated once admitted, when its boundary is known.
-        if m != LOGIC && !self.members.contains(&m) && !self.evicted.contains_key(&m) {
+        if m != LOGIC && !self.membership().members().contains(&m) && !self.membership().removed().contains_key(&m) {
             return;
         }
         loop {
@@ -271,7 +271,7 @@ impl WorldSim {
             // A removed member's chain ends at its cut. A vote only caps what the voter references
             // (stable_seq, author_ack): it keeps processing the chain, so a member wrongly
             // suspected can still take part in the reset that keeps it (P2-4).
-            if self.evicted.contains_key(&m) && self.frozen.get(&m).is_some_and(|&f| c >= f) {
+            if self.membership().removed().contains_key(&m) && self.membership().frozen(m).is_some_and(|f| c >= f) {
                 break;
             }
             let Some(&id) = self.by_author.get(&(m, c + 1)) else { break };
@@ -281,7 +281,7 @@ impl WorldSim {
                 // two signed entries already prove that m signed two versions of seq c (P2-4: a
                 // member that forks its vote is proven faulty even if it never sends the other).
                 self.want_all(m, c, c);
-                if c > 0 && !self.evicted.contains_key(&m) && !self.proofs.contains_key(&m) {
+                if c > 0 && !self.membership().removed().contains_key(&m) && self.membership().proof_seq(m).is_none() {
                     let held = self.by_author[&(m, c)];
                     out.push(self.entries[&held].clone());
                     out.push(self.entries[&id].clone());
@@ -306,7 +306,7 @@ impl WorldSim {
         let valid = match &e.payload {
             Payload::Ack { horizon, epoch, .. } => {
                 // Review VC-5: an author's epoch never falls and rises by at most one per ack.
-                let prev = self.ack_epoch_from.get(&m).and_then(|a| a.keys().next_back()).copied().unwrap_or(0);
+                let prev = self.membership().last_ack_epoch(m);
                 let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && *epoch <= prev + 1);
                 e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp && epoch_ok
             }
@@ -332,7 +332,7 @@ impl WorldSim {
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
-            _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
+            _ => max_h.is_none_or(|h| e.stamp > h) && self.membership().admitted(m).is_none_or(|b| e.stamp >= b),
         };
         if !valid {
             self.stats.entries_rejected_violation += 1;
@@ -344,7 +344,7 @@ impl WorldSim {
         match e.payload {
             Payload::Ack { horizon, heads, check, epoch } => {
                 if epoch > 0 {
-                    self.ack_epoch_from.entry(m).or_default().entry(epoch).or_insert(e.seq);
+                    self.vcm.note_ack_epoch(m, epoch, e.seq);
                 }
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
@@ -360,12 +360,12 @@ impl WorldSim {
                     }
                     // Review R3-1: once m has voted against q, its vote's frozen head is its last
                     // word on q's chain in this epoch; later references never count toward stability.
-                    if self.votes.get(&q).is_some_and(|v| v.contains_key(&m)) {
+                    if self.membership().voted_against(m, q) {
                         continue;
                     }
                     let newer = self.refs.get(&(m, q)).and_then(|r| r.keys().next_back()).is_none_or(|&old| s > old);
                     if newer {
-                        self.ref_advanced.insert((m, q), self.now);
+                        self.vcm.ref_advanced.insert((m, q), self.now);
                     }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
                 }
@@ -384,9 +384,9 @@ impl WorldSim {
             | Payload::Kick { epoch, .. }
             | Payload::SetRole { epoch, .. }
             | Payload::DefineRole { epoch, .. } => {
-                if epoch > self.epoch {
-                    self.vc_later.entry(epoch).or_default().push(id);
-                } else if epoch == self.epoch || admin_entry {
+                if epoch > self.vcm.epoch {
+                    self.vcm.vc_later.entry(epoch).or_default().push(id);
+                } else if epoch == self.vcm.epoch || admin_entry {
                     self.record_vc(m, id, out);
                 }
             }
@@ -400,12 +400,12 @@ impl WorldSim {
     pub(super) fn stable_seq(&mut self, m: MemberId) -> u32 {
         // After voting against m, this replica references no more of m's chain than its frozen head.
         let held = self.contiguous.get(&m).copied().unwrap_or(0);
-        let mine = match self.frozen.get(&m) {
-            Some(&f) if !self.evicted.contains_key(&m) => held.min(f),
+        let mine = match self.membership().frozen(m) {
+            Some(f) if !self.membership().removed().contains_key(&m) => held.min(f),
             _ => held,
         };
         let mut s = mine;
-        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let members: Vec<MemberId> = self.membership().members().iter().copied().collect();
         for j in members {
             if j == self.me || j == m {
                 continue;
@@ -431,28 +431,28 @@ impl WorldSim {
     /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
     /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     pub(super) fn recompute_conf(&mut self) {
-        if self.adopting {
+        if self.membership().adopting() {
             return;
         }
         let mut c = u64::MAX;
-        let members: Vec<MemberId> = self.members.iter().copied().collect();
+        let members: Vec<MemberId> = self.membership().members().iter().copied().collect();
         for j in members {
             let mut s = self.stable_seq(j);
             // An ack from an epoch newer than mine never counts toward my confirmation (10.8): its
             // author may know of members I do not.
-            if let Some(&first) = self.ack_epoch_from.get(&j).and_then(|a| a.range(self.epoch + 1..).map(|(_, s)| s).min()) {
+            if let Some(first) = self.membership().first_newer_ack(j) {
                 s = s.min(first.saturating_sub(1));
             }
             let mut h = self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h);
             // After precommitting a join, its author's acks count only below the join's boundary.
-            if let (Some(hh), Some(&(at, b))) = (h, self.join_caps.get(&j)) {
+            if let (Some(hh), Some((at, b))) = (h, self.membership().join_cap(j)) {
                 if s > at {
                     h = Some(hh.min(b.saturating_sub(1)));
                 }
             }
-            match (h, self.admitted.get(&j)) {
-                (Some(h), Some(&b)) => c = c.min((h + 1).max(b)),
-                (None, Some(&b)) => c = c.min(b),
+            match (h, self.membership().admitted(j)) {
+                (Some(h), Some(b)) => c = c.min((h + 1).max(b)),
+                (None, Some(b)) => c = c.min(b),
                 (Some(h), None) => c = c.min(h + 1),
                 (None, None) => return,
             }
@@ -461,9 +461,9 @@ impl WorldSim {
         // may not hold them all yet. Until it does, it confirms only the frames that the acks it
         // holds of that prefix cover: an entry stamped at or before a declared horizon must come
         // before that ack in the chain (8.2).
-        for (&x, &(cut, _)) in &self.evicted {
+        for (&x, &(cut, _)) in self.membership().removed() {
             let held = self.contiguous.get(&x).copied().unwrap_or(0);
-            let right = self.cut_ids.get(&x).is_none_or(|&cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
+            let right = self.membership().cut_id(x).is_none_or(|cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
             if held < cut || !right {
                 // Review VC-2: past the prefix verified against every member's references, my copy may
                 // be another branch of a fork, so only that prefix's acks bound confirmation; the
