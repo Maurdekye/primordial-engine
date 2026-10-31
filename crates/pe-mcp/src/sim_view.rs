@@ -27,20 +27,20 @@ pub fn check_hex(h: &CheckHash) -> String {
 }
 
 fn summary(s: &WorldSim, i: u32) -> Option<ObjectSummary> {
-    let o = s.t.objs.get(i as usize).copied().flatten()?;
+    let o = s.live(i)?;
     let st = s.obj_state(i)?;
     Some(ObjectSummary { object: i, kind: kind_name(o.kind).into(), position: st.pos(), linear_velocity: st.lin() })
 }
 
 fn claim(s: &WorldSim, obj: u32) -> Option<ClaimInfo> {
-    s.t.claims.get(&obj).filter(|c| c.until > s.frame).map(|c| ClaimInfo { object: obj, member: c.member, until_frame: c.until })
+    s.claim(obj).filter(|c| c.until > s.frame).map(|c| ClaimInfo { object: obj, member: c.member, until_frame: c.until })
 }
 
 pub fn state(s: &WorldSim, offset: u32, limit: u32) -> WorldState {
-    let count = s.t.objs.len() as u32;
+    let count = s.obj_slots();
     let end = offset.saturating_add(limit).min(count);
     let objects = (offset.min(count)..end).filter_map(|i| summary(s, i)).collect();
-    let claims = s.t.claims.keys().filter_map(|&o| claim(s, o)).collect();
+    let claims = s.claims().filter_map(|(o, _)| claim(s, o)).collect();
     WorldState {
         frame: s.frame,
         conf: s.conf,
@@ -55,9 +55,9 @@ pub fn state(s: &WorldSim, offset: u32, limit: u32) -> WorldState {
 pub fn object(s: &WorldSim, object: u32) -> ToolResult<ObjectState> {
     let unknown = || {
         ToolError::new(ErrorCode::UnknownObject, format!("no live object {object}"))
-            .with_details(serde_json::json!({ "object_count": s.t.objs.len() }))
+            .with_details(serde_json::json!({ "object_count": s.obj_slots() }))
     };
-    let o = s.t.objs.get(object as usize).copied().flatten().ok_or_else(unknown)?;
+    let o = s.live(object).ok_or_else(unknown)?;
     let st = s.obj_state(object).ok_or_else(unknown)?;
     Ok(ObjectState {
         object,
@@ -78,8 +78,8 @@ pub fn check_interaction(s: &WorldSim, i: &Interaction, me: MemberId) -> ToolRes
         Interaction::Touch { object, .. } => (object, false),
         Interaction::Hand { object, .. } => (object, true),
     };
-    let o = s.t.objs.get(object as usize).copied().flatten().ok_or_else(|| {
-        ToolError::new(ErrorCode::UnknownObject, format!("no live object {object}")).with_details(serde_json::json!({ "object_count": s.t.objs.len() }))
+    let o = s.live(object).ok_or_else(|| {
+        ToolError::new(ErrorCode::UnknownObject, format!("no live object {object}")).with_details(serde_json::json!({ "object_count": s.obj_slots() }))
     })?;
     match (is_hand, o.kind == 4) {
         (false, true) => return Err(ToolError::arg("action", format!("object {object} is a kinematic hand: use action \"hand\""))),
