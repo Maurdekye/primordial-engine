@@ -10,4 +10,4 @@ RESULT kickbackdate: members left [1, 3, 4] -> THE BACKDATED KICK IS VOID: 2 rem
   m1: conf 467 frame 473 members {1, 3, 4} evicted {2: (59, 118)} rollbacks 1 max depth 1 violations 1 equivocations 0 checks ok 36 bad 0
   m3: conf 467 frame 473 members {1, 3, 4} evicted {2: (59, 118)} rollbacks 1 max depth 2 violations 1 equivocations 0 checks ok 36 bad 0
   m4: conf 467 frame 473 members {1, 3, 4} evicted {2: (59, 118)} rollbacks 2 max depth 2 violations 1 equivocations 0 checks ok 36 bad 0
-RESULT kickbackdate (admins 1 and 2 kick each other at frame 120; 2 backdates its kick 30 frames to come first): frames 0..472 honest m1=88bf9f4b7b8e4fba m3=88bf9f4b7b8e4fba m4=88bf9f4b7b8e4fba | offline replay 88bf9f4b7b8e4fba | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT kickbackdate (admins 1 and 2 kick each other at frame 120; 2 backdates its kick 30 frames to come first): frames 0..472 honest m1=576b548263373e29 m3=576b548263373e29 m4=576b548263373e29 | offline replay 576b548263373e29 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
