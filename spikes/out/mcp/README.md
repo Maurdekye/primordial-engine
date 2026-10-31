@@ -12,7 +12,7 @@ pe-mcp serve --http --principal claude-code -- claude ... --mcp-config cfg-http.
 ```
 
 `--strict-mcp-config --setting-sources project`, run from an empty directory, load no user settings, hooks
-or MCP servers: the init record lists only the `pe` server and Claude Code's two built-in plugins. The
+or MCP servers: the original init record listed only the `pe` server and Claude Code's two built-in plugins. The
 token reached Claude Code only through `PE_MCP_TOKEN` in its environment, and the configs refer to it as
 `${PE_MCP_TOKEN}`. Neither transcript contains it.
 

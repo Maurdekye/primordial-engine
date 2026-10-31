@@ -61,7 +61,8 @@ mkdir -p $M
 RUNCOLS=$COLS; [ -n "${PE_COMPARE_ONLY:-}" ] && RUNCOLS=""
 case " $RUNCOLS " in *" laptop "*)
   if [ -z "$NSSH" ] || [ -z "$NDIR" ]; then
-    echo "run_matrix: the laptop column needs PE_LAPTOP_SSH and PE_LAPTOP_DIR (see scripts/matrix.local.example.sh)"
+    echo "run_matrix: the laptop column needs PE_LAPTOP_SSH and PE_LAPTOP_DIR (see scripts/matrix.local.example.sh),"
+    echo "or name the other columns, e.g. scripts/run_matrix.sh win glibc musl"
     exit 2
   fi ;;
 esac
