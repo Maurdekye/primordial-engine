@@ -111,6 +111,12 @@ pub const CHECKS: &[&str] = &[
     "votechurn_off",
     "adminvoid",
     "joinskip",
+    "joinwedge",
+    "slowref",
+    "fakemix",
+    "adminfork",
+    "prevotefork",
+    "prevotefork_off",
 ];
 
 /// What the run left for the reports besides the simulator.
@@ -122,6 +128,8 @@ pub struct Ctx {
     pub started: Option<std::time::Instant>,
     /// `fork_branch`'s summary.
     pub fork_info: Option<String>,
+    /// The members `go_silent` silenced.
+    pub silenced: Vec<MemberId>,
 }
 
 /// Finished runs kept by name (a part's `keep`), with when they panicked.
@@ -899,6 +907,49 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
             let (a, j) = (need(at, case, "at"), need(target, case, "target"));
             let ms = sim.replica(a, 1).sim.vcm.members.clone();
             println!("RESULT {label}: members at m{a} {ms:?} -> {}; {}", if ms.contains(&j) { format!("{j} STAYS") } else { "FAIL".to_string() }, confs(sim, honest));
+        }
+        "joinwedge" => {
+            let (a, t, j) = (need(at, case, "at"), need(target, case, "target"), members[0]);
+            let admitted = sim.replica(a, 1).sim.vcm.members.contains(&j);
+            println!(
+                "RESULT {label}: {j} admitted {admitted}, {t} removed at {} -> {}; {}",
+                secs(removed_at(sim, a, t)),
+                if admitted { "ADMITTED" } else { "FAIL" },
+                confs(sim, honest)
+            );
+        }
+        "slowref" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let removed = removed_at(sim, a, t);
+            println!("RESULT {label}: {t} removed at {} -> {}; {}", secs(removed), if removed.is_some() { "DEMOTED" } else { "FAIL" }, confs(sim, honest));
+        }
+        "fakemix" => {
+            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
+            let n = events(a, event.as_deref().unwrap_or(""));
+            println!("REPRO {label}: {t} removed at {}; withholding votes at m{a} {n}; {}", secs(removed_at(sim, a, t)), confs(sim, honest));
+        }
+        "adminfork" => {
+            let (a, t, x) = (need(at, case, "at"), need(target, case, "target"), members[0]);
+            println!(
+                "REPRO {label}: {t} crashed {}; {t} removed at {}; {x}'s role at m{a} {:?}; {}",
+                ctx.silenced.contains(&t),
+                secs(removed_at(sim, a, t)),
+                sim.replica(a, 1).sim.vcm.roles.get(&x).copied(),
+                confs(sim, honest)
+            );
+        }
+        "prevotefork" | "prevotefork_off" => {
+            let (obs, capper) = (need(at, case, "at"), need(target, case, "target"));
+            let voted = events(obs, event.as_deref().unwrap_or("")) > 0;
+            if case == "prevotefork_off" {
+                println!("  m{obs} votes to remove capper {capper}: {voted}");
+            } else {
+                let kept = sim.replica(obs, 1).sim.vcm.members.contains(&capper) && sim.replica(capper, 1).sim.vcm.members.contains(&capper);
+                println!(
+                    "RESULT {label}: m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept} -> {}",
+                    if !voted && kept { "THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE" } else { "FAIL" }
+                );
+            }
         }
         _ => panic!("check: unknown case `{case}`"),
     }
