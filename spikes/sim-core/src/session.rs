@@ -147,7 +147,10 @@ pub enum Payload {
     /// `seq` (or another proof), or (`seq` = 0) it has gone silent or cannot keep up (reviews
     /// R3-2, R3-9). `frozen` is the head of target's chain this voter holds and will ever
     /// reference in this epoch (review NEW-2). A vote stands until the epoch ends (P2-4).
-    Vote { epoch: u32, target: MemberId, seq: u32, frozen: (u32, EntryId) },
+    /// `kick` names the kick this vote answers (0: the voter's own suspicion or proof). A kick vote
+    /// only freezes the chain for the cut, may come from the target itself, and counts toward no
+    /// removal but that kick's (D80).
+    Vote { epoch: u32, target: MemberId, seq: u32, frozen: (u32, EntryId), kick: EntryId },
     /// View change (P2-4, design 10.8): the round's proposer proposes `change` for epoch `epoch`;
     /// `valid_round` is the round in which it saw a quorum prevote this value (`NO_ROUND` if none).
     Propose { epoch: u32, round: u32, valid_round: u32, change: Change },
@@ -157,10 +160,39 @@ pub enum Payload {
     /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
     /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
     Precommit { epoch: u32, round: u32, value: u64, boundary: u64 },
+    /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
+    /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
+    /// target's chain for the cut, never to approve it. The view change commits it in order with
+    /// every other membership change. Like every admin entry it stays pending across epochs until a
+    /// decision applies or refuses it; `epoch` is the first epoch whose change may include it.
+    Kick { epoch: u32, target: MemberId },
+    /// Give `member` the role `role`, for the view change that ends `epoch` (ROLES permission).
+    /// Refused if it would leave the session without an admin.
+    SetRole { epoch: u32, member: MemberId, role: RoleId },
+    /// Define custom role `role` as the permission set `perms` (ROLES permission). Admin (role 0) is
+    /// built in and cannot be redefined.
+    DefineRole { epoch: u32, role: RoleId, perms: u64 },
 }
 
 /// `valid_round` of a proposal that no quorum has prevoted before.
 pub const NO_ROUND: u32 = u32::MAX;
+
+/// Top bit of an encoded change's epoch: the change carries D80 admin entries and kicks.
+const CHANGE_EXT: u32 = 1 << 31;
+
+/// Test fixture: P2-4 review fixes a repro can switch off (`WorldSim::fixes_off`), to show the
+/// behaviour before the fix in the same binary (review-p2-4.md).
+pub mod fix {
+    /// VC-2: confirmation past a removed member's fork bounded by the verified prefix; the cut's
+    /// branch adopted on the duplicate path.
+    pub const VC2: u32 = 1 << 0;
+    /// VC-3: a join's (or close's) boundary checked only for fresh proposals; late precommits.
+    pub const VC3: u32 = 1 << 1;
+    /// VC-4: a precommit's boundary must lie just ahead of its author's horizon; stale caps reset.
+    pub const VC4: u32 = 1 << 2;
+    /// VC-5: an ack's epoch rises by at most one; an epoch newer than mine left unbacked is voted out.
+    pub const VC5: u32 = 1 << 3;
+}
 
 /// Frames a proposer waits, from the start of a round, for votes on every member it suspects.
 pub const VC_GATHER: u64 = 6;
@@ -182,6 +214,8 @@ pub struct Removal {
     pub member: MemberId,
     pub votes: Vec<EntryId>,
     pub cut: (u32, EntryId),
+    /// The kick that authorises this removal (0: the voters' own suspicion or proof, D80).
+    pub kick: EntryId,
 }
 
 /// A membership change from epoch `epoch` to `epoch + 1` (design 10.8). `excluded` are the members
@@ -196,6 +230,218 @@ pub struct Change {
     /// frames from it on are the next epoch's to certify. Set on every change.
     pub boundary: u64,
     pub excluded: Vec<(MemberId, Proof)>,
+    /// D80: the admin entries (kicks, role entries) this change commits, in commit order (stamp,
+    /// author, seq), each with whether it applies. A refused one (its author lacks the permission
+    /// or has left, or it would leave no admin) is listed too, so its refusal is agreed.
+    pub admin: Vec<(EntryId, bool)>,
+    /// D80: each added member's starting role, in `add`'s order. It travels in the change because a
+    /// replica may decide from others' precommits without the join request and its attestations.
+    pub add_roles: Vec<RoleId>,
+}
+
+/// Commit order of admin entries (D80): stamp, then author, then seq.
+fn admin_key(e: &Entry) -> (u64, MemberId, u32) {
+    (e.stamp, e.member, e.seq)
+}
+
+/// The membership state an admin sequence runs against (D80).
+#[derive(Clone)]
+struct AdminRun {
+    members: BTreeSet<MemberId>,
+    roles: BTreeMap<MemberId, RoleId>,
+    defs: BTreeMap<RoleId, u64>,
+    excluded: BTreeSet<MemberId>,
+    owners: BTreeSet<MemberId>,
+}
+
+impl AdminRun {
+    fn perms(&self, m: MemberId) -> u64 {
+        match self.roles.get(&m) {
+            Some(&ADMIN) => perm::ALL,
+            Some(r) => self.defs.get(r).copied().unwrap_or(0),
+            None => 0,
+        }
+    }
+    fn has_admin(&self) -> bool {
+        self.members.iter().any(|m| self.roles.get(m) == Some(&ADMIN))
+    }
+    /// Whether admin entry `e` applies at this point of the sequence; if it does, apply it. A
+    /// refused entry changes nothing.
+    fn apply(&mut self, e: &Entry) -> bool {
+        let a = e.member;
+        if !self.members.contains(&a) || self.excluded.contains(&a) {
+            return false;
+        }
+        let p = self.perms(a);
+        match e.payload {
+            Payload::Kick { target, .. } => {
+                // Q27 (user 22:49Z, kicks assumed alike): only a co-owner kicks an owner.
+                let owner_safe = self.owners.contains(&target) && !self.owners.contains(&a);
+                if p & perm::KICK == 0 || target == a || !self.members.contains(&target) || owner_safe {
+                    return false;
+                }
+                self.members.remove(&target);
+                self.roles.remove(&target);
+                true
+            }
+            Payload::SetRole { member, role, .. } => {
+                // Q27 (user 22:49Z): an owner may give up Admin, but only a co-owner demotes an owner.
+                let owner_safe = self.owners.contains(&member) && member != a && !self.owners.contains(&a) && role != ADMIN;
+                if p & perm::ROLES == 0 || !self.members.contains(&member) || (role != ADMIN && !self.defs.contains_key(&role)) || owner_safe {
+                    return false;
+                }
+                let old = self.roles.insert(member, role);
+                // The last admin cannot give the role up without handing it on (user 22:11Z).
+                if !self.has_admin() {
+                    match old {
+                        Some(o) => self.roles.insert(member, o),
+                        None => self.roles.remove(&member),
+                    };
+                    return false;
+                }
+                true
+            }
+            Payload::DefineRole { role, perms, .. } => {
+                if p & perm::ROLES == 0 || role == ADMIN {
+                    return false;
+                }
+                self.defs.insert(role, perms);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A role in a session (D80; user rulings 22:13Z-22:18Z). Admin, role 0, is built in: it always
+/// exists, holds every permission and is by default the only role. Admins define other roles as
+/// subsets of the permission set. Admins are equal: none is above another.
+pub type RoleId = u16;
+pub const ADMIN: RoleId = 0;
+
+/// The permissions a role grants. The catalogue grows with the engine; these are the ones the
+/// membership protocol checks. Admin holds them all.
+pub mod perm {
+    /// Kick any member (D80: authorises the removal on its own).
+    pub const KICK: u64 = 1 << 0;
+    /// Define roles and give them to members.
+    pub const ROLES: u64 = 1 << 1;
+    pub const ALL: u64 = u64::MAX;
+}
+
+/// A relationship a joiner can show (D80 join rules, user 22:47Z and 22:51Z): it is the target,
+/// is friends with it (mutual, both sign), is its confidant (the target named the joiner, D27a),
+/// holds an invite ticket from it (for this world), or is one named player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rel {
+    Is,
+    Friend,
+    Confidant,
+    Invited,
+    Named(MemberId),
+}
+
+impl Rel {
+    fn tag(self) -> u8 {
+        match self {
+            Rel::Is => 0,
+            Rel::Friend => 1,
+            Rel::Confidant => 2,
+            Rel::Invited => 3,
+            Rel::Named(_) => 4,
+        }
+    }
+}
+
+/// Whom a join rule looks at: a current player, a current admin, a current player with a given
+/// role, or a world owner (present or not).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Player,
+    Admin,
+    Role(RoleId),
+    Owner,
+}
+
+/// One join rule: if the joiner has `rel` with any (or all) of `target`, it is admitted with `role`,
+/// or refused when `role` is None.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinRule {
+    pub target: Target,
+    pub all: bool,
+    pub rel: Rel,
+    pub role: Option<RoleId>,
+}
+
+/// Who may join and with which starting role (user rulings 22:37Z, 22:47Z, 22:48Z): first the fixed
+/// row 0, "a world owner joins as Admin", which no world removes; then the first rule that matches;
+/// then `fallback` (None refuses). Evaluated against the membership the change leaves at its commit,
+/// so a join stands once committed (22:17Z) and "all of" means all at that commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinRules {
+    pub rules: Vec<JoinRule>,
+    pub fallback: Option<RoleId>,
+}
+
+impl JoinRules {
+    /// Public (D21): everyone joins with `role`; every player is an admin by default (22:11Z).
+    pub fn public(role: RoleId) -> Self {
+        JoinRules { rules: vec![], fallback: Some(role) }
+    }
+    /// Friends only: friends of a current admin (22:17Z).
+    pub fn friends_only(role: RoleId) -> Self {
+        JoinRules { rules: vec![JoinRule { target: Target::Admin, all: false, rel: Rel::Friend, role: Some(role) }], fallback: None }
+    }
+    /// Friends+: friends of any current player (22:17Z).
+    pub fn friends_plus(role: RoleId) -> Self {
+        JoinRules { rules: vec![JoinRule { target: Target::Player, all: false, rel: Rel::Friend, role: Some(role) }], fallback: None }
+    }
+    /// Invite only (22:51Z): holders of an invite ticket from a current player.
+    pub fn invite_only(role: RoleId) -> Self {
+        JoinRules { rules: vec![JoinRule { target: Target::Player, all: false, rel: Rel::Invited, role: Some(role) }], fallback: None }
+    }
+    /// A home world (22:36Z): the owners' confidants join as Admin, their friends as `guest`.
+    pub fn home(guest: RoleId) -> Self {
+        let r = |rel, role| JoinRule { target: Target::Owner, all: false, rel, role: Some(role) };
+        JoinRules { rules: vec![r(Rel::Confidant, ADMIN), r(Rel::Friend, guest)], fallback: None }
+    }
+}
+
+impl Default for JoinRules {
+    fn default() -> Self {
+        Self::public(ADMIN)
+    }
+}
+
+/// An attestation a joiner presents: `rel` with `with`, signed by `with` and by the joiner (spike
+/// signature model). Relationships are between players, signed without a world; an invite ticket
+/// names its world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Attest {
+    pub rel: Rel,
+    pub with: MemberId,
+    pub sig_with: u64,
+    pub sig_joiner: u64,
+}
+
+pub fn fact_rel(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> u64 {
+    let (a, b) = if rel == Rel::Friend { (joiner.min(with), joiner.max(with)) } else { (with, joiner) };
+    let w = if rel == Rel::Invited { world } else { 0 };
+    fnv_u64s([31, rel.tag() as u64, a as u64, b as u64, w as u64])
+}
+
+/// The attestation `with` and the joiner sign for `rel` (spike signature model).
+pub fn attest(rel: Rel, joiner: MemberId, with: MemberId, world: u32) -> Attest {
+    let f = fact_rel(rel, joiner, with, world);
+    Attest { rel, with, sig_with: member_sig(0, with, f), sig_joiner: member_sig(0, joiner, f) }
+}
+
+pub fn attest_ok(a: &Attest, joiner: MemberId, world: u32) -> bool {
+    let f = fact_rel(a.rel, joiner, a.with, world);
+    matches!(a.rel, Rel::Friend | Rel::Confidant | Rel::Invited)
+        && a.with != joiner
+        && a.sig_with == member_sig(0, a.with, f)
+        && a.sig_joiner == member_sig(0, joiner, f)
 }
 
 impl Change {
@@ -358,8 +604,9 @@ pub enum Msg {
     /// precommits for a value it holds no proposal for; the proposer may have equivocated).
     FetchValue { value: u64 },
     /// A non-member asks to join the world (P2-4). Production: signed by the joiner's key, after an
-    /// invite or the world's ACL admits it (12); the spike admits any request.
-    Join { member: MemberId },
+    /// invite or the world's ACL admits it (12). `attests`: the relationships it shows for the
+    /// world's join rules (D80).
+    Join { member: MemberId, attests: Vec<Attest> },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -427,9 +674,14 @@ impl Wr {
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
             }
-            Payload::Vote { epoch, target, seq, frozen } => {
-                self.u8(8); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1)
+            Payload::Vote { epoch, target, seq, frozen, kick } => {
+                // A vote that answers no kick keeps tag 8 (and so its id); a kick vote is tag 15.
+                self.u8(if *kick == 0 { 8 } else { 15 }); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.u64(frozen.1);
+                if *kick != 0 { self.u64(*kick) }
             }
+            Payload::Kick { epoch, target } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
+            Payload::SetRole { epoch, member, role } => { self.u8(18); self.u32(*epoch); self.u32(*member); self.u32(*role as u32) }
+            Payload::DefineRole { epoch, role, perms } => { self.u8(19); self.u32(*epoch); self.u32(*role as u32); self.u64(*perms) }
             Payload::Propose { epoch, round, valid_round, change } => {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
@@ -444,7 +696,10 @@ impl Wr {
         }
     }
     fn change(&mut self, c: &Change) {
-        self.u32(c.epoch);
+        // A change with admin entries or kicks sets the epoch's top bit and carries them; any other
+        // keeps the P2-4 layout, so its value is unchanged (D80).
+        let ext = !c.admin.is_empty() || c.remove.iter().any(|r| r.kick != 0) || c.add_roles.iter().any(|&r| r != ADMIN);
+        self.u32(if ext { c.epoch | CHANGE_EXT } else { c.epoch });
         self.u32(c.remove.len() as u32);
         for r in &c.remove {
             self.u32(r.member);
@@ -452,12 +707,19 @@ impl Wr {
             for v in &r.votes { self.u64(*v) }
             self.u32(r.cut.0);
             self.u64(r.cut.1);
+            if ext { self.u64(r.kick) }
         }
         self.u32(c.add.len() as u32);
         for m in &c.add { self.u32(*m) }
         self.u64(c.boundary);
         self.u32(c.excluded.len() as u32);
         for (m, p) in &c.excluded { self.u32(*m); self.u64(p.a); self.u64(p.b) }
+        if ext {
+            self.u32(c.admin.len() as u32);
+            for (id, ok) in &c.admin { self.u64(*id); self.u8(*ok as u8) }
+            self.u32(c.add_roles.len() as u32);
+            for r in &c.add_roles { self.u32(*r as u32) }
+        }
     }
     pub fn msg(&mut self, m: &Msg) {
         match m {
@@ -465,7 +727,13 @@ impl Wr {
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
-            Msg::Join { member } => { self.u8(6); self.u32(*member) }
+            Msg::Join { member, attests } => {
+                self.u8(if attests.is_empty() { 6 } else { 7 }); self.u32(*member);
+                if !attests.is_empty() {
+                    self.u32(attests.len() as u32);
+                    for a in attests { self.u8(a.rel.tag()); self.u32(a.with); self.u64(a.sig_with); self.u64(a.sig_joiner) }
+                }
+            }
         }
     }
 }
@@ -551,7 +819,14 @@ impl Rd<'_> {
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
             }
-            8 => Payload::Vote { epoch: self.u32()?, target: self.u32()?, seq: self.u32()?, frozen: (self.u32()?, self.u64()?) },
+            tag @ (8 | 15) => {
+                let (epoch, target, seq, frozen) = (self.u32()?, self.u32()?, self.u32()?, (self.u32()?, self.u64()?));
+                let kick = if tag == 15 { self.u64()? } else { 0 };
+                Payload::Vote { epoch, target, seq, frozen, kick }
+            }
+            17 => Payload::Kick { epoch: self.u32()?, target: self.u32()? },
+            18 => Payload::SetRole { epoch: self.u32()?, member: self.u32()?, role: self.u32()? as RoleId },
+            19 => Payload::DefineRole { epoch: self.u32()?, role: self.u32()? as RoleId, perms: self.u64()? },
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
             13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()? },
@@ -564,7 +839,8 @@ impl Rd<'_> {
         Some(Entry { member, seq, prev, stamp, payload, carried })
     }
     fn change(&mut self) -> Option<Change> {
-        let epoch = self.u32()?;
+        let raw = self.u32()?;
+        let (ext, epoch) = (raw & CHANGE_EXT != 0, raw & !CHANGE_EXT);
         let n = self.u32()? as usize;
         let mut remove = Vec::with_capacity(n.min(256));
         for _ in 0..n {
@@ -572,7 +848,9 @@ impl Rd<'_> {
             let k = self.u32()? as usize;
             let mut votes = Vec::with_capacity(k.min(256));
             for _ in 0..k { votes.push(self.u64()?) }
-            remove.push(Removal { member, votes, cut: (self.u32()?, self.u64()?) });
+            let cut = (self.u32()?, self.u64()?);
+            let kick = if ext { self.u64()? } else { 0 };
+            remove.push(Removal { member, votes, cut, kick });
         }
         let n = self.u32()? as usize;
         let mut add = Vec::with_capacity(n.min(256));
@@ -581,7 +859,16 @@ impl Rd<'_> {
         let n = self.u32()? as usize;
         let mut excluded = Vec::with_capacity(n.min(256));
         for _ in 0..n { excluded.push((self.u32()?, Proof { a: self.u64()?, b: self.u64()? })) }
-        Some(Change { epoch, remove, add, boundary, excluded })
+        let mut admin = Vec::new();
+        let mut add_roles = vec![ADMIN; add.len()];
+        if ext {
+            let n = self.u32()? as usize;
+            for _ in 0..n { admin.push((self.u64()?, self.u8()? != 0)) }
+            let n = self.u32()? as usize;
+            add_roles = Vec::with_capacity(n.min(256));
+            for _ in 0..n { add_roles.push(self.u32()? as RoleId) }
+        }
+        Some(Change { epoch, remove, add, boundary, excluded, admin, add_roles })
     }
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
@@ -594,7 +881,18 @@ impl Rd<'_> {
                 Msg::Batch(v)
             }
             5 => Msg::FetchValue { value: self.u64()? },
-            6 => Msg::Join { member: self.u32()? },
+            tag @ (6 | 7) => {
+                let member = self.u32()?;
+                let mut attests = Vec::new();
+                if tag == 7 {
+                    let n = self.u32()? as usize;
+                    for _ in 0..n.min(64) {
+                        let rel = match self.u8()? { 1 => Rel::Friend, 2 => Rel::Confidant, 3 => Rel::Invited, _ => return None };
+                        attests.push(Attest { rel, with: self.u32()?, sig_with: self.u64()?, sig_joiner: self.u64()? });
+                    }
+                }
+                Msg::Join { member, attests }
+            }
             _ => return None,
         })
     }
@@ -620,6 +918,9 @@ pub fn is_protocol(p: &Payload) -> bool {
             | Payload::Propose { .. }
             | Payload::Prevote { .. }
             | Payload::Precommit { .. }
+            | Payload::Kick { .. }
+            | Payload::SetRole { .. }
+            | Payload::DefineRole { .. }
     )
 }
 
@@ -905,6 +1206,9 @@ pub struct Stats {
     pub max_round: u32,
     /// Members this replica voted out for withholding references (P2-4).
     pub withholders: u64,
+    /// D80: kicks and role entries the decided changes applied, and those they refused.
+    pub admin_applied: u64,
+    pub admin_refused: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -1038,6 +1342,8 @@ struct VoteRec {
     stamp: u64,
     /// The vote entry's id: a view change names the votes it relies on.
     id: EntryId,
+    /// The kick it answers (0: none, D80).
+    kick: EntryId,
 }
 
 /// Result of checking a vote against its voter's own earlier acks (review R3-1).
@@ -1215,6 +1521,32 @@ pub struct WorldSim {
     pub byz_ally: bool,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
+    /// D80: each member's role. Every genesis member is an admin unless the session says otherwise.
+    pub roles: BTreeMap<MemberId, RoleId>,
+    /// D80: custom roles, id -> permission set. Admin (role 0) is built in and holds every permission.
+    pub role_defs: BTreeMap<RoleId, u64>,
+    /// D80: who may join, and with which role.
+    pub join_rules: JoinRules,
+    /// The relationships each pending joiner showed.
+    join_attests: BTreeMap<MemberId, Vec<Attest>>,
+    /// D80 (user 22:37Z): the world's owners, signed world metadata, shareable by several people;
+    /// separate from the session's admins.
+    pub owners: BTreeSet<MemberId>,
+    /// This epoch's admin entries from members allowed to make them, as held.
+    admin_pending: BTreeSet<EntryId>,
+    /// Admin entries as the decided changes judged them: applied, or refused.
+    pub admin_outcomes: BTreeMap<EntryId, bool>,
+    /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
+    /// it acts.
+    pub closed_at: Option<u64>,
+    /// Test fixture: review fixes switched off (see [`fix`]).
+    pub fixes_off: u32,
+    /// Test fixture (review VC-5): the epoch this member's acks declare, whatever epoch it is in.
+    pub fake_ack_epoch: Option<u32>,
+    /// VC-5: per member, my present when its acks first declared an epoch newer than mine.
+    newer_since: BTreeMap<MemberId, u64>,
+    /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
+    adopting: bool,
     /// Values decided by a quorum of precommits that this replica holds no proposal for:
     /// (member to ask, value), and every pair asked so far.
     value_wants: Vec<(MemberId, u64)>,
@@ -1347,6 +1679,18 @@ impl WorldSim {
             join_caps: BTreeMap::new(),
             ack_epoch_from: BTreeMap::new(),
             genesis: members.to_vec(),
+            roles: members.iter().map(|&m| (m, ADMIN)).collect(),
+            role_defs: BTreeMap::new(),
+            join_rules: JoinRules::default(),
+            join_attests: BTreeMap::new(),
+            owners: BTreeSet::new(),
+            admin_pending: BTreeSet::new(),
+            admin_outcomes: BTreeMap::new(),
+            closed_at: None,
+            fixes_off: 0,
+            fake_ack_epoch: None,
+            newer_since: BTreeMap::new(),
+            adopting: false,
             value_wants: Vec::new(),
             value_asked: BTreeSet::new(),
             wants: Vec::new(),
@@ -1529,7 +1873,8 @@ impl WorldSim {
         // touches the simulation.
         let counted = e.member == LOGIC || self.members.contains(&e.member) || self.evicted.contains_key(&e.member);
         let acts = counted && !is_protocol(&e.payload);
-        let new = if acts && !self.is_void(id) { Some(e.stamp) } else { None };
+        let open = self.closed_at.is_none_or(|c| e.stamp < c);
+        let new = if acts && open && !self.is_void(id) { Some(e.stamp) } else { None };
         let old = self.eff.get(&id).copied();
         if old == new {
             return;
@@ -1642,7 +1987,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp,
-            payload: Payload::Ack { horizon, heads, check, epoch: self.epoch },
+            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
             carried: None,
         };
         self.publish(e)
@@ -1663,6 +2008,10 @@ impl WorldSim {
             self.note_proposal(id);
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
+            // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
+            if self.evicted.contains_key(&e.member) && self.fixes_off & fix::VC2 == 0 {
+                self.adopt_cut(e.member);
+            }
             return out;
         }
         self.by_author.insert((e.member, e.seq), id);
@@ -1741,10 +2090,29 @@ impl WorldSim {
     /// * any other entry is void if stamped at or before a horizon its author declared earlier.
     fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
+        // D80: an admin entry stays pending across epochs until a decision judges it.
+        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
-            Payload::Ack { horizon, .. } => e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp,
-            Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => true,
+            Payload::Ack { horizon, epoch, .. } => {
+                // Review VC-5: an author's epoch never falls and rises by at most one per ack.
+                let prev = self.ack_epoch_from.get(&m).and_then(|a| a.keys().next_back()).copied().unwrap_or(0);
+                let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && *epoch <= prev + 1);
+                e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp && epoch_ok
+            }
+            // Review VC-4: a precommit's boundary caps its author's acks, so it must lie ahead of the
+            // horizon the author has declared, by at most two join leads.
+            Payload::Precommit { boundary, .. } if *boundary > 0 && self.fixes_off & fix::VC4 == 0 => {
+                let h = max_h.unwrap_or(0);
+                *boundary > h && *boundary <= h + 2 * self.cfg.join_lead
+            }
+            Payload::Vote { .. }
+            | Payload::Propose { .. }
+            | Payload::Prevote { .. }
+            | Payload::Precommit { .. }
+            | Payload::Kick { .. }
+            | Payload::SetRole { .. }
+            | Payload::DefineRole { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
             _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
         };
@@ -1791,10 +2159,16 @@ impl WorldSim {
                 self.recompute_conf();
                 self.evaluate_checks();
             }
-            Payload::Vote { epoch, .. } | Payload::Propose { epoch, .. } | Payload::Prevote { epoch, .. } | Payload::Precommit { epoch, .. } => {
+            Payload::Vote { epoch, .. }
+            | Payload::Propose { epoch, .. }
+            | Payload::Prevote { epoch, .. }
+            | Payload::Precommit { epoch, .. }
+            | Payload::Kick { epoch, .. }
+            | Payload::SetRole { epoch, .. }
+            | Payload::DefineRole { epoch, .. } => {
                 if epoch > self.epoch {
                     self.vc_later.entry(epoch).or_default().push(id);
-                } else if epoch == self.epoch {
+                } else if epoch == self.epoch || admin_entry {
                     self.record_vc(m, id, out);
                 }
             }
@@ -1839,6 +2213,9 @@ impl WorldSim {
     /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
     /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     fn recompute_conf(&mut self) {
+        if self.adopting {
+            return;
+        }
         let mut c = u64::MAX;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
@@ -1870,7 +2247,11 @@ impl WorldSim {
             let held = self.contiguous.get(&x).copied().unwrap_or(0);
             let right = self.cut_ids.get(&x).is_none_or(|&cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
             if held < cut || !right {
-                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=held.min(cut)).next_back()).map_or(0, |(_, h)| h + 1);
+                // Review VC-2: past the prefix verified against every member's references, my copy may
+                // be another branch of a fork, so only that prefix's acks bound confirmation; the
+                // robust cut contains it.
+                let upto = if self.fixes_off & fix::VC2 == 0 { self.stable_hi.get(&x).copied().unwrap_or(0).min(cut) } else { held.min(cut) };
+                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=upto).next_back()).map_or(0, |(_, h)| h + 1);
                 c = c.min(h);
             }
         }
@@ -1894,7 +2275,7 @@ impl WorldSim {
         self.proofs.insert(m, (k0, a0, b0));
         let mut out = Vec::new();
         if m != self.me && self.members.contains(&m) && !self.voted(m) {
-            out.extend(self.freeze_and_vote(m, k0));
+            out.extend(self.freeze_and_vote(m, k0, 0));
         }
         self.reconcile(m);
         out
@@ -1907,7 +2288,7 @@ impl WorldSim {
 
     /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
     /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
-    fn freeze_and_vote(&mut self, m: MemberId, k0: u32) -> Option<Entry> {
+    fn freeze_and_vote(&mut self, m: MemberId, k0: u32, kick: EntryId) -> Option<Entry> {
         if self.withhold_vc {
             return None;
         }
@@ -1926,7 +2307,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp: self.frame.max(self.now),
-            payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid) },
+            payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid), kick },
             carried: None,
         };
         Some(self.publish(v))
@@ -1940,10 +2321,31 @@ impl WorldSim {
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<Entry> {
-        if !self.members.contains(&self.me) {
+        if !self.members.contains(&self.me) || self.closed_at.is_some() {
             return vec![];
         }
         let mut out = Vec::new();
+        // D80: a pending kick outlives an epoch that did not carry it out: freeze its target again.
+        let kicks: Vec<(EntryId, MemberId, MemberId)> = self
+            .admin_pending
+            .iter()
+            .filter_map(|id| {
+                let e = self.entries.get(id)?;
+                match e.payload {
+                    Payload::Kick { target, .. } => Some((*id, e.member, target)),
+                    _ => None,
+                }
+            })
+            .collect();
+        for (id, author, t) in kicks {
+            if self.members.contains(&t) && self.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.withhold_vc {
+                if t == self.me {
+                    out.extend(self.self_kick_vote(id));
+                } else {
+                    out.extend(self.freeze_and_vote(t, 0, id));
+                }
+            }
+        }
         // A proof outlives an epoch that did not remove its member: vote again.
         let proven: Vec<(MemberId, u32)> = self
             .proofs
@@ -1953,17 +2355,34 @@ impl WorldSim {
             .collect();
         for (m, k) in proven {
             if m != self.me && self.members.contains(&m) && !self.voted(m) {
-                out.extend(self.freeze_and_vote(m, k.max(1)));
+                out.extend(self.freeze_and_vote(m, k.max(1), 0));
             }
         }
         if self.byz_ally {
             let targets: Vec<MemberId> = self.votes.keys().copied().filter(|t| *t != self.me && self.members.contains(t)).collect();
             for t in targets {
                 if !self.voted(t) {
-                    out.extend(self.freeze_and_vote(t, 0));
+                    out.extend(self.freeze_and_vote(t, 0, 0));
                 }
             }
             return out;
+        }
+        // Review VC-5: a member whose acks declare an epoch newer than mine, without my reaching it,
+        // caps what I count of its chain; for as long as a silent member is given, I vote it out.
+        if self.fixes_off & fix::VC5 == 0 {
+            let members: Vec<MemberId> = self.members.iter().copied().filter(|&j| j != self.me).collect();
+            for j in members {
+                let newer = self.ack_epoch_from.get(&j).is_some_and(|a| a.range(self.epoch + 1..).next().is_some());
+                if !newer {
+                    self.newer_since.remove(&j);
+                    continue;
+                }
+                let since = *self.newer_since.entry(j).or_insert(self.now);
+                if self.now >= since + self.cfg.suspect_after && !self.voted(j) && !self.withhold_vc {
+                    self.ev(format!("member {j}'s acks declare an epoch newer than {} that no decision here backs: vote to remove it", self.epoch));
+                    out.extend(self.freeze_and_vote(j, 0, 0));
+                }
+            }
         }
         // Removal on silence needs a quorum without the removed member, so a two-member world
         // never suspects: both members pause instead (D7).
@@ -2015,7 +2434,7 @@ impl WorldSim {
                 self.stats.demotions += 1;
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
             }
-            out.extend(self.freeze_and_vote(j, 0));
+            out.extend(self.freeze_and_vote(j, 0, 0));
         }
         out.extend(self.withholders_due());
         out
@@ -2062,7 +2481,8 @@ impl WorldSim {
             }
             let mut blocks = None;
             for (&y, &((min1, who), min2)) in &low {
-                if y == j {
+                // Review VC-9: once j has voted against y, its acks no longer reference y's chain.
+                if y == j || self.votes.get(&y).is_some_and(|v| v.contains_key(&j)) {
                     continue;
                 }
                 let mine = if y == self.me { self.my_seq } else { self.contiguous.get(&y).copied().unwrap_or(0) };
@@ -2077,7 +2497,7 @@ impl WorldSim {
             if let Some(y) = blocks {
                 self.stats.withholders += 1;
                 self.ev(format!("member {j} has referenced no more of member {y}'s chain for {} frames while every other member has: vote to remove it", self.cfg.suspect_after));
-                out.extend(self.freeze_and_vote(j, 0));
+                out.extend(self.freeze_and_vote(j, 0, 0));
             }
         }
         out
@@ -2150,16 +2570,16 @@ impl WorldSim {
         }
         let e = self.entries[&id].clone();
         match e.payload {
-            Payload::Vote { target, frozen, .. } => {
-                if target == m || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
+            Payload::Vote { target, frozen, kick, .. } => {
+                if (target == m && kick == 0) || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
                     return;
                 }
-                let rec = VoteRec { frozen, stamp: e.stamp, id };
+                let rec = VoteRec { frozen, stamp: e.stamp, id, kick };
                 self.votes.entry(target).or_default().insert(m, rec);
                 if let VoteCheck::Lie(ack) = self.vote_check(target, m, frozen) {
                     self.on_lie(m, ack, id);
                     if self.members.contains(&self.me) && !self.voted(m) && m != self.me {
-                        out.extend(self.freeze_and_vote(m, e.seq));
+                        out.extend(self.freeze_and_vote(m, e.seq, 0));
                     }
                 }
             }
@@ -2175,11 +2595,152 @@ impl WorldSim {
             Payload::Precommit { round, value, boundary, .. } => {
                 self.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
                 if boundary > 0 {
-                    self.join_caps.entry(m).or_insert((e.seq, boundary));
+                    // Keep the first precommit's seq and the smallest boundary (review VC-10).
+                    let c = self.join_caps.entry(m).or_insert((e.seq, boundary));
+                    c.1 = c.1.min(boundary);
+                }
+            }
+            Payload::Kick { target, .. } => {
+                if self.admin_outcomes.contains_key(&id) || self.perms_of(m) & perm::KICK == 0 || target == m || !self.members.contains(&target) {
+                    return;
+                }
+                self.admin_pending.insert(id);
+                // The kick decides; every member, the target too, only freezes the target's chain
+                // so the view change can cut it (D80).
+                if self.members.contains(&self.me) && !self.voted(target) && self.closed_at.is_none() {
+                    if target == self.me {
+                        out.extend(self.self_kick_vote(id));
+                    } else {
+                        out.extend(self.freeze_and_vote(target, 0, id));
+                    }
+                }
+            }
+            Payload::SetRole { .. } | Payload::DefineRole { .. } => {
+                if !self.admin_outcomes.contains_key(&id) && self.perms_of(m) & perm::ROLES != 0 {
+                    self.admin_pending.insert(id);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Review HO-1: `obj` belongs to a member other than `author` (LOGIC acts for the world). Hands
+    /// today; avatar parts and any per-member object later.
+    fn not_owner(&self, obj: u32, author: MemberId) -> bool {
+        author != LOGIC && self.hand_owners.get(&obj).is_some_and(|&o| o != author)
+    }
+
+    /// D80: the permissions member `m` holds in this epoch.
+    pub fn perms_of(&self, m: MemberId) -> u64 {
+        self.admin_run().perms(m)
+    }
+
+    /// D80: this epoch's admins.
+    pub fn admins(&self) -> Vec<MemberId> {
+        self.members.iter().copied().filter(|m| self.roles.get(m) == Some(&ADMIN)).collect()
+    }
+
+    fn admin_run(&self) -> AdminRun {
+        AdminRun { members: self.members.clone(), roles: self.roles.clone(), defs: self.role_defs.clone(), excluded: BTreeSet::new(), owners: self.owners.clone() }
+    }
+
+    /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
+    /// every replica judges it.
+    pub fn kick(&mut self, target: MemberId) -> Entry {
+        let epoch = self.epoch;
+        self.author_vc(Payload::Kick { epoch, target })
+    }
+
+    /// D80: give `member` the role `role`.
+    pub fn set_role(&mut self, member: MemberId, role: RoleId) -> Entry {
+        let epoch = self.epoch;
+        self.author_vc(Payload::SetRole { epoch, member, role })
+    }
+
+    /// D80: define custom role `role`.
+    pub fn define_role(&mut self, role: RoleId, perms: u64) -> Entry {
+        let epoch = self.epoch;
+        self.author_vc(Payload::DefineRole { epoch, role, perms })
+    }
+
+    /// A member's freeze of its own chain when a valid kick targets it (D80): it lets a kick go
+    /// through where the other members alone are no quorum, as in a session of two. Its head is the
+    /// longest, so it never moves the cut past what the other voters froze.
+    fn self_kick_vote(&mut self, kick: EntryId) -> Option<Entry> {
+        if self.withhold_vc {
+            return None;
+        }
+        let v = Entry {
+            member: self.me,
+            seq: self.my_seq + 1,
+            prev: self.my_last,
+            stamp: self.frame.max(self.now),
+            payload: Payload::Vote { epoch: self.epoch, target: self.me, seq: 0, frozen: (self.my_seq, self.my_last), kick },
+            carried: None,
+        };
+        Some(self.publish(v))
+    }
+
+    /// Whether member `j` may join now under the join rules, against `run` (the membership the
+    /// change leaves before its joins), and with which starting role (D80).
+    fn join_role(&self, j: MemberId, run: &AdminRun) -> Option<RoleId> {
+        // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin.
+        if self.owners.contains(&j) {
+            return Some(ADMIN);
+        }
+        let attests = self.join_attests.get(&j).map(Vec::as_slice).unwrap_or(&[]);
+        let has = |rel: Rel, g: MemberId| match rel {
+            Rel::Is => g == j,
+            Rel::Named(n) => n == j,
+            _ => attests.iter().any(|a| a.rel == rel && a.with == g && attest_ok(a, j, self.world_id)),
+        };
+        for rule in &self.join_rules.rules {
+            let group: Vec<MemberId> = match rule.target {
+                Target::Owner => self.owners.iter().copied().collect(),
+                Target::Player => run.members.iter().copied().collect(),
+                Target::Admin => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&ADMIN)).collect(),
+                Target::Role(r) => run.members.iter().copied().filter(|m| run.roles.get(m) == Some(&r)).collect(),
+            };
+            let hit = if rule.all { !group.is_empty() && group.iter().all(|&g| has(rule.rel, g)) } else { group.iter().any(|&g| has(rule.rel, g)) };
+            if hit {
+                return rule.role;
+            }
+        }
+        self.join_rules.fallback
+    }
+
+    /// The usable votes against `x` among `base`, for a removal: any vote for a kick's removal, only
+    /// votes that answer no kick for a removal on suspicion or proof (D80).
+    fn removal_votes(&mut self, x: MemberId, base: &BTreeSet<MemberId>, kick: bool) -> Vec<(MemberId, VoteRec)> {
+        let recs: Vec<(MemberId, VoteRec)> = self
+            .votes
+            .get(&x)
+            .map(|v| v.iter().filter(|(v, r)| base.contains(v) && (kick || r.kick == 0)).map(|(v, r)| (*v, *r)).collect())
+            .unwrap_or_default();
+        recs.into_iter().filter(|(v, r)| self.vote_check(x, *v, r.frozen) == VoteCheck::Valid).collect()
+    }
+
+    /// D80: whether a change needs its boundary ahead of the present, with precommit caps: it adds
+    /// members, or it leaves the session without an admin (it closes it at the boundary).
+    fn change_leads(&self, c: &Change) -> bool {
+        !c.add.is_empty() || self.change_closes(c)
+    }
+
+    /// D80: whether applying `c` leaves no admin among the members.
+    fn change_closes(&self, c: &Change) -> bool {
+        let mut run = self.admin_run();
+        for &(id, ok) in &c.admin {
+            if ok {
+                if let Some(e) = self.entries.get(&id) {
+                    run.apply(e);
+                }
+            }
+        }
+        for r in &c.remove {
+            run.members.remove(&r.member);
+            run.roles.remove(&r.member);
+        }
+        !run.has_admin() && !c.add_roles.contains(&ADMIN)
     }
 
     /// Keep the change a proposal entry carries, by value, if its author proposes its round in the
@@ -2325,47 +2886,84 @@ impl WorldSim {
         }
         let (base, t, q) = self.base(&proven);
         let mut remove = Vec::new();
-        let targets: Vec<MemberId> = self.votes.keys().copied().collect();
-        for x in targets {
-            let recs: Vec<(MemberId, VoteRec)> = self.votes[&x].iter().filter(|(v, _)| base.contains(v)).map(|(v, r)| (*v, *r)).collect();
-            let mut usable = Vec::new();
-            for (v, r) in recs {
-                if self.vote_check(x, v, r.frozen) == VoteCheck::Valid {
-                    usable.push((v, r));
+        // D80: admin entries in commit order, each judged against the state the ones before it leave.
+        // A kick waits, unlisted, until a quorum has frozen its target's chain for the cut.
+        let mut run = self.admin_run();
+        run.excluded = proven.clone();
+        let mut order: Vec<((u64, MemberId, u32), EntryId)> =
+            self.admin_pending.iter().filter_map(|id| self.entries.get(id).map(|e| (admin_key(e), *id))).collect();
+        order.sort_unstable();
+        let mut admin = Vec::new();
+        for (_, id) in order {
+            let e = self.entries[&id].clone();
+            let mut trial = run.clone();
+            let ok = trial.apply(&e);
+            if let (true, Payload::Kick { target, .. }) = (ok, &e.payload) {
+                let usable = self.removal_votes(*target, &base, true);
+                if usable.len() < q {
+                    continue;
                 }
+                let heads: Vec<(MemberId, (u32, EntryId))> = usable.iter().map(|(v, r)| (*v, r.frozen)).collect();
+                let Some(cut) = self.robust_cut(*target, &heads, usable.len() - t) else { continue };
+                remove.push(Removal { member: *target, votes: usable.iter().map(|(_, r)| r.id).collect(), cut, kick: id });
             }
+            if ok {
+                run = trial;
+            }
+            admin.push((id, ok));
+        }
+        let targets: Vec<MemberId> = self.votes.keys().copied().filter(|x| run.members.contains(x)).collect();
+        for x in targets {
+            let usable = self.removal_votes(x, &base, false);
             if usable.len() < q {
                 continue;
             }
             let heads: Vec<(MemberId, (u32, EntryId))> = usable.iter().map(|(v, r)| (*v, r.frozen)).collect();
             let Some(cut) = self.robust_cut(x, &heads, usable.len() - t) else { continue };
-            remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut });
+            remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut, kick: 0 });
+            run.members.remove(&x);
+            run.roles.remove(&x);
         }
-        let add: Vec<MemberId> = self.join_requests.iter().copied().filter(|j| !self.members.contains(j) && !self.evicted.contains_key(j)).collect();
+        let joins: Vec<(MemberId, RoleId)> = self
+            .join_requests
+            .iter()
+            .copied()
+            .filter(|j| !self.members.contains(j) && !self.evicted.contains_key(j))
+            .filter_map(|j| self.join_role(j, &run).map(|r| (j, r)))
+            .collect();
+        let (add, add_roles): (Vec<MemberId>, Vec<RoleId>) = joins.into_iter().unzip();
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
-        let boundary = if add.is_empty() { self.now.max(last) } else { (self.now + self.cfg.join_lead).max(last) };
-        if remove.is_empty() && add.is_empty() {
+        let mut c = Change { epoch: self.epoch, remove, add, boundary: 0, excluded, admin, add_roles };
+        c.boundary = if self.change_leads(&c) { (self.now + self.cfg.join_lead).max(last) } else { self.now.max(last) };
+        if c.remove.is_empty() && c.add.is_empty() && c.admin.is_empty() {
+            // A reset answers a suspicion vote against a member heard from again, never a kick vote;
+            // and caps from precommits whose change this replica cannot propose (review VC-4).
             let now = self.now;
-            let reset = self.votes.iter().any(|(y, vs)| {
+            let stale_caps = self.fixes_off & fix::VC4 == 0 && !self.join_caps.is_empty();
+            let reset = stale_caps || self.votes.iter().any(|(y, vs)| {
                 let heard = self.heard.get(y).copied().unwrap_or(0);
-                !proven.contains(y) && now < heard + self.cfg.suspect_after && vs.get(&self.me).is_none_or(|r| heard > r.stamp)
+                !proven.contains(y)
+                    && now < heard + self.cfg.suspect_after
+                    && vs.values().any(|r| r.kick == 0)
+                    && vs.get(&self.me).is_none_or(|r| heard > r.stamp)
             });
             if !reset {
                 return None;
             }
         }
-        Some(Change { epoch: self.epoch, remove, add, boundary, excluded })
+        Some(c)
     }
 
     /// Whether `c` is a valid change for this epoch. Deterministic once this replica holds every
     /// entry it names (and has validated the voters' chains up to their votes); None until then.
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
-        if c.epoch != self.epoch || c.boundary < last || c.boundary > self.now + 2 * self.cfg.join_lead {
+        let timed = self.fixes_off & fix::VC3 != 0;
+        if c.epoch != self.epoch || c.boundary < last || (timed && c.boundary > self.now + 2 * self.cfg.join_lead) {
             return Some(false);
         }
         // Joins: requests this replica holds, from non-members, with a boundary still ahead of it
-        // and not too far ahead (10.8).
+        // and not too far ahead (10.8). A change that closes the session needs the same lead (D80).
         let mut joiners = BTreeSet::new();
         for &j in &c.add {
             if self.members.contains(&j) || self.evicted.contains_key(&j) || !joiners.insert(j) {
@@ -2375,7 +2973,10 @@ impl WorldSim {
                 return None;
             }
         }
-        if !c.add.is_empty() && c.boundary <= self.now + 1 {
+        for &(id, _) in &c.admin {
+            self.entries.get(&id)?;
+        }
+        if timed && self.change_leads(c) && c.boundary <= self.now + 1 {
             return Some(false);
         }
         for &(m, p) in &c.excluded {
@@ -2391,18 +2992,43 @@ impl WorldSim {
             }
         }
         let (base, t, q) = self.base(&xs);
+        // D80: the admin entries, in commit order, each applied or refused as the sequence decides.
+        let mut run = self.admin_run();
+        run.excluded = xs.clone();
+        let mut prev = None;
+        let mut kicked: BTreeMap<EntryId, MemberId> = BTreeMap::new();
+        for &(id, ok) in &c.admin {
+            let e = self.entries.get(&id)?.clone();
+            let epoch = match e.payload {
+                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } => epoch,
+                _ => return Some(false),
+            };
+            let key = admin_key(&e);
+            if epoch > self.epoch || self.admin_outcomes.contains_key(&id) || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
+                return Some(false);
+            }
+            prev = Some(key);
+            if let (true, Payload::Kick { target, .. }) = (ok, &e.payload) {
+                kicked.insert(id, *target);
+            }
+        }
         let mut seen = BTreeSet::new();
         for r in &c.remove {
             let x = r.member;
             if !self.members.contains(&x) || !seen.insert(x) || r.votes.len() < q {
                 return Some(false);
             }
+            // A kick's removal needs its kick applied; a removal on suspicion or proof needs a member
+            // no kick removed (D80).
+            if r.kick != 0 && kicked.get(&r.kick) != Some(&x) || r.kick == 0 && !run.members.contains(&x) {
+                return Some(false);
+            }
             let mut voters = BTreeSet::new();
             let mut heads = Vec::new();
             for &vid in &r.votes {
                 let e = self.entries.get(&vid)?.clone();
-                let Payload::Vote { epoch, target, frozen, .. } = e.payload else { return Some(false) };
-                if epoch != self.epoch || target != x || !base.contains(&e.member) || !voters.insert(e.member) {
+                let Payload::Vote { epoch, target, frozen, kick, .. } = e.payload else { return Some(false) };
+                if epoch != self.epoch || target != x || !base.contains(&e.member) || !voters.insert(e.member) || (r.kick == 0 && kick != 0) {
                     return Some(false);
                 }
                 // The voter's first vote against x in this epoch, in the copy of its chain I hold.
@@ -2422,6 +3048,21 @@ impl WorldSim {
                 heads.push((e.member, frozen));
             }
             if self.robust_cut(x, &heads, heads.len() - t)? != r.cut {
+                return Some(false);
+            }
+            if r.kick == 0 {
+                run.members.remove(&x);
+                run.roles.remove(&x);
+            }
+        }
+        if kicked.keys().any(|k| !c.remove.iter().any(|r| r.kick == *k)) {
+            return Some(false);
+        }
+        if c.add_roles.len() != c.add.len() {
+            return Some(false);
+        }
+        for (&j, &role) in c.add.iter().zip(&c.add_roles) {
+            if self.join_role(j, &run) != Some(role) {
                 return Some(false);
             }
         }
@@ -2465,6 +3106,9 @@ impl WorldSim {
     /// Tendermint's rules (algorithm 1, lines 11-65) over chain entries, timeouts in clock frames.
     pub fn view_change_due(&mut self) -> Vec<Entry> {
         let mut out = Vec::new();
+        if self.closed_at.is_some() {
+            return out;
+        }
         // Everyone that holds the log follows its decisions, members or not (a joiner learns so).
         if !self.byz_ally && self.try_decide(&mut out) {
             return out;
@@ -2480,7 +3124,7 @@ impl WorldSim {
                 if !self.vc.prevotes.get(&r).is_some_and(|x| x.contains_key(&me)) {
                     let epoch = self.epoch;
                     out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
-                    let boundary = self.vc.changes.get(&v).filter(|c| !c.add.is_empty()).map_or(0, |c| c.boundary);
+                    let boundary = self.vc.changes.get(&v).filter(|c| self.change_leads(c)).map_or(0, |c| c.boundary);
                     out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary }));
                 }
             }
@@ -2505,7 +3149,13 @@ impl WorldSim {
         }
         if self.vc.since.is_none() {
             let joins = self.join_requests.iter().any(|j| !self.members.contains(j) && !self.evicted.contains_key(j));
-            let busy = joins || !self.votes.is_empty() || !self.vc.proposals.is_empty() || !self.vc.prevotes.is_empty() || !self.vc.precommits.is_empty();
+            let busy = joins
+                || (self.fixes_off & fix::VC4 == 0 && !self.join_caps.is_empty())
+                || !self.votes.is_empty()
+                || !self.admin_pending.is_empty()
+                || !self.vc.proposals.is_empty()
+                || !self.vc.prevotes.is_empty()
+                || !self.vc.precommits.is_empty();
             if !busy {
                 return out;
             }
@@ -2572,9 +3222,19 @@ impl WorldSim {
                     Some(c) => self.change_valid(&c),
                     None => Some(false),
                 };
+                // Review VC-3: validity never changes with time (a Tendermint lock relies on it); a
+                // fresh proposal must also bring its boundary in time, a re-proposal need not.
+                let fresh_in_time = match self.vc.changes.get(&v) {
+                    Some(c) => {
+                        let last = self.decided.last().map_or(0, |d| d.0.boundary);
+                        let leads = self.change_leads(c);
+                        c.boundary >= last && c.boundary <= self.now + 2 * self.cfg.join_lead && (!leads || c.boundary > self.now + 1)
+                    }
+                    None => false,
+                };
                 let decision = match ok {
                     None => None,
-                    Some(ok) if vr == NO_ROUND => Some(ok && self.vc.locked.is_none_or(|(lv, _)| lv == v)),
+                    Some(ok) if vr == NO_ROUND => Some(ok && fresh_in_time && self.vc.locked.is_none_or(|(lv, _)| lv == v)),
                     Some(ok) if vr < r && self.quorum_for(&self.vc.prevotes, vr, v) => {
                         Some(ok && self.vc.locked.is_none_or(|(lv, lr)| lr <= vr || lv == v))
                     }
@@ -2594,12 +3254,19 @@ impl WorldSim {
             if let Some(&(v, _)) = self.vc.proposals.get(&r) {
                 if self.quorum_for(&self.vc.prevotes, r, v) {
                     let c = self.vc.changes.get(&v).cloned().unwrap_or_default();
-                    let in_time = c.add.is_empty() || c.boundary > self.now;
+                    let leads = self.change_leads(&c);
+                    // My precommit caps my acks below the boundary only while it is still ahead of
+                    // me. Past it, I may still precommit (without a cap) once some member's acks are
+                    // capped at or below it: readers then confirm nothing from the boundary on until
+                    // they reach the next epoch, whoever that member is (review VC-3).
+                    let ahead = c.boundary > self.now;
+                    let capped = self.join_caps.values().any(|&(_, b)| b <= c.boundary);
+                    let in_time = !leads || ahead || (self.fixes_off & fix::VC3 == 0 && capped);
                     if self.vc.changes.contains_key(&v) && in_time && self.change_valid(&c) == Some(true) {
                         self.vc.polka_done.insert(r);
                         if self.vc.step == Step::Prevote {
                             self.vc.locked = Some((v, r));
-                            self.precommit_join(v, if c.add.is_empty() { 0 } else { c.boundary }, out);
+                            self.precommit_join(v, if leads && ahead { c.boundary } else { 0 }, out);
                         }
                         self.vc.valid = Some((v, r));
                     }
@@ -2691,11 +3358,35 @@ impl WorldSim {
             .map(|ms| ms.iter().filter(|&(m, &x)| x == v && !xs.contains(m)).map(|(&m, _)| (m, vc_sig(self.world_id, m, self.epoch, round, v))).collect())
             .unwrap_or_default();
         let removed: Vec<MemberId> = c.remove.iter().map(|r| r.member).collect();
+        // D80: role entries in commit order (kicks are among the removals), then the removals, then
+        // each joiner's starting role against the membership they leave.
+        let closes = self.change_closes(&c);
+        for &(id, ok) in &c.admin {
+            self.admin_outcomes.insert(id, ok);
+            if ok {
+                self.stats.admin_applied += 1;
+                match self.entries[&id].payload {
+                    Payload::SetRole { member, role, .. } => {
+                        self.roles.insert(member, role);
+                    }
+                    Payload::DefineRole { role, perms, .. } => {
+                        self.role_defs.insert(role, perms);
+                    }
+                    _ => {}
+                }
+            } else {
+                self.stats.admin_refused += 1;
+            }
+        }
         for r in &c.remove {
             self.members.remove(&r.member);
+            self.roles.remove(&r.member);
             self.frozen.insert(r.member, r.cut.0);
             self.cut_ids.insert(r.member, r.cut.1);
             self.evicted.insert(r.member, (r.cut.0, 0));
+        }
+        for (&j, &role) in c.add.iter().zip(&c.add_roles) {
+            self.roles.insert(j, role);
         }
         for &j in &c.add {
             self.members.insert(j);
@@ -2703,6 +3394,38 @@ impl WorldSim {
             self.admitted.insert(j, c.boundary);
             self.followers.remove(&j);
             self.join_requests.remove(&j);
+            self.join_attests.remove(&j);
+        }
+        for (id, _) in &c.admin {
+            self.admin_pending.remove(id);
+        }
+        // A pending entry about a member no longer here can never apply: drop it unjudged.
+        let gone: Vec<EntryId> = self
+            .admin_pending
+            .iter()
+            .copied()
+            .filter(|id| match self.entries.get(id).map(|e| &e.payload) {
+                Some(Payload::Kick { target: x, .. }) | Some(Payload::SetRole { member: x, .. }) => !self.members.contains(x),
+                _ => false,
+            })
+            .collect();
+        for id in gone {
+            self.admin_pending.remove(&id);
+        }
+        // Review VC-6: a decided epoch restarts the slowness and unbacked-epoch timers, so one
+        // borderline view cannot vote again the instant a reset ends.
+        self.lagging.clear();
+        self.newer_since.clear();
+        // Review VC-9: references to and from a new member count from its admission.
+        let now = self.now;
+        let all: Vec<MemberId> = self.members.iter().copied().chain(c.add.iter().copied()).collect();
+        for &j in &c.add {
+            for &k in &all {
+                if k != j {
+                    self.ref_advanced.insert((k, j), now);
+                    self.ref_advanced.insert((j, k), now);
+                }
+            }
         }
         self.join_caps.clear();
         let from = self.epoch;
@@ -2710,7 +3433,7 @@ impl WorldSim {
         self.epoch += 1;
         self.vc_log.push((self.epoch, self.now, round, removed.clone()));
         self.stats.view_changes += 1;
-        if removed.is_empty() && c.add.is_empty() {
+        if removed.is_empty() && c.add.is_empty() && c.admin.is_empty() {
             self.stats.resets += 1;
         }
         self.ev(format!(
@@ -2742,6 +3465,16 @@ impl WorldSim {
         for id in joined {
             self.set_eff(id);
         }
+        // D80: no admin is left, so the session closes at the boundary. The precommit caps kept every
+        // frame from it on unconfirmed, so nothing confirmed is undone.
+        if closes && self.closed_at.is_none() {
+            self.closed_at = Some(c.boundary);
+            self.ev(format!("SESSION CLOSED (epoch {}): no admin is left; nothing stamped at or after frame {} acts", self.epoch, c.boundary));
+            let late: Vec<EntryId> = self.entries.iter().filter(|(_, e)| e.stamp >= c.boundary && !is_protocol(&e.payload)).map(|(id, _)| *id).collect();
+            for id in late {
+                self.set_eff(id);
+            }
+        }
         if let Some(ids) = self.vc_later.remove(&self.epoch) {
             for id in ids {
                 let m = self.entries[&id].member;
@@ -2765,7 +3498,9 @@ impl WorldSim {
             let (mut s, mut id) = (cut, cid);
             loop {
                 let Some(e) = self.entries.get(&id) else {
-                    self.want_all(x, s, s);
+                    // One request for the whole missing stretch of the cut's branch (review VC-2).
+                    let from = if self.fixes_off & fix::VC2 == 0 { self.stable_hi.get(&x).copied().unwrap_or(0) + 1 } else { s };
+                    self.want_all(x, from.min(s), s);
                     return;
                 };
                 ids.push((s, id));
@@ -2787,8 +3522,17 @@ impl WorldSim {
                 self.chain_state.remove(&x);
                 self.ack_hist.remove(&x);
             }
+            // Re-validating the cut's branch replays its acks, and each ack recomputes confirmation.
+            // Confirming then, before that branch's entries act, would confirm frames whose
+            // entries are about to change (found by fork9, review VC-2): settle first, confirm after.
+            let fixed = self.fixes_off & fix::VC2 == 0;
+            self.adopting = fixed;
+            if fixed {
+                self.reconcile(x);
+            }
             let mut out = Vec::new();
             self.extend_chain(x, &mut out);
+            self.adopting = false;
         }
         self.reconcile(x);
         if self.contiguous.get(&x).copied().unwrap_or(0) >= cut {
@@ -2796,6 +3540,9 @@ impl WorldSim {
             self.evicted.insert(x, (cut, v));
             self.cut_done.insert(x);
             self.ev(format!("member {x} evicted (epoch {}): its chain is cut at seq {cut}; it no longer counts from frame {v}", self.epoch));
+        }
+        if self.fixes_off & fix::VC2 == 0 {
+            self.recompute_conf();
         }
     }
 
@@ -2861,9 +3608,10 @@ impl WorldSim {
     }
 
     /// A non-member asks to join (P2-4): keep its request, store its entries, send it the log.
-    pub fn on_join(&mut self, j: MemberId) {
+    pub fn on_join(&mut self, j: MemberId, attests: Vec<Attest>) {
         if !self.members.contains(&j) && !self.evicted.contains_key(&j) && j != self.me {
             self.join_requests.insert(j);
+            self.join_attests.insert(j, attests);
             self.follow(j);
         }
     }
@@ -3176,6 +3924,11 @@ impl WorldSim {
     ) -> Outcome {
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
+                // Review HO-1: an object a member owns (a hand) is touched by no one else: refused,
+                // so no claim is taken that would block the owner.
+                if self.not_owner(*obj, e.member) {
+                    return Outcome::RejectedNotOwner;
+                }
                 let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
                 if e.member != LOGIC {
                     if let Some(c) = self.t.claims.get(obj) {
@@ -3232,6 +3985,10 @@ impl WorldSim {
                 Outcome::Accepted
             }
             Payload::Depart { obj, dest, deadline, hop } => {
+                // Review HO-1: nobody carries another member's hand through a portal.
+                if self.not_owner(*obj, e.member) {
+                    return Outcome::RejectedNotOwner;
+                }
                 let transfer = &transfer_id(self.world_id, id);
                 if self.t.escrow.contains_key(transfer) {
                     return Outcome::RejectedDuplicate;
@@ -3423,7 +4180,10 @@ impl WorldSim {
             | Payload::Provenance { .. }
             | Payload::Propose { .. }
             | Payload::Prevote { .. }
-            | Payload::Precommit { .. } => Outcome::Accepted,
+            | Payload::Precommit { .. }
+            | Payload::Kick { .. }
+            | Payload::SetRole { .. }
+            | Payload::DefineRole { .. } => Outcome::Accepted,
         }
     }
 
