@@ -223,6 +223,12 @@ impl WorldSim {
                 self.pc_held.entry((epoch, round, value)).or_default().insert(e.member, *sig);
             }
         }
+        // Review VC8R-1: and every signed prevote for a value, the same way.
+        if let Payload::Prevote { epoch, round, value } = e.payload {
+            if value != 0 && epoch >= self.vcm.epoch {
+                self.pv_held.entry((epoch, round, value)).or_default().insert(e.member);
+            }
+        }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
             self.entries.insert(id, e.clone());
@@ -375,6 +381,7 @@ impl WorldSim {
                 let h = max_h.map_or(horizon, |x| x.max(horizon));
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
+                self.ack_stamps.entry(m).or_default().insert(e.seq, e.stamp);
                 for &(q, s, hid) in &heads {
                     if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);

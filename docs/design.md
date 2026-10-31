@@ -169,7 +169,7 @@ Rulings that shape the design:
  |  | confirmed frame from acks -> admission, finality, keyframe trimming    |  |
  |  | order: (effective frame, per-frame tie rank, member, seq) + claims     |  |
  |  | logic modules (WASM, deterministic, fuel) -> ECS store + hierarchy     |  |
- |  | Box3D step -> carried-state write (always*) -> hashes                  |  |
+ |  | Box3D step -> carried-state write (always, SET-1) -> hashes            |  |
  |  | keyframes from the confirmed frame; rollback to the earliest change    |  |
  |  +----------------------------------+--------------------------------------+  |
  |        | publishes presentation state  ^ entries, acks, commits             |
@@ -180,9 +180,6 @@ Rulings that shape the design:
  |  Content-addressed store (BLAKE3): source, wasm, WGSL, assets, commits        |
  +------------------------------------------------------------------------------+
 ```
-
-\* Always (review SET-1) in pe-session. The spike writes carried state only when its bits differ, until
-p2/spike-reset lands (review PT-1).
 
 * **Every peer runs the same deterministic simulation** from the same initial state, code and assets.
 * **Only perturbations cross the network** (7): signed entries carrying their canonical frame and the
@@ -517,10 +514,10 @@ along with body state. Whole-memory guest snapshots added about 1.1 MB per logic
 
 These timings come from a run at 442286f on a quieter machine, with upstream physics
 (`physics-history-upstream-442286f.log`). The integration rerun with the engine default, at low priority
-(`physics-history.log`), took 1.0-1.2x as long (noisy). One difference is not noise [V]: with the engine
-default, the 256-body pile started at frame 900 falls asleep during the replay (246 bodies awake, 26 after
-120 frames), so its deep re-simulations cost little (6.2 ms at 120 frames). The 1,024-body pile stays
-awake.
+(`physics-history.log`), took 1.0-1.2x as long (noisy). Both late piles stay awake through the replay:
+the 256-body pile started at frame 900 has 244 bodies awake before and after 120 frames, at 31-39 ms for
+depth 120 over two runs, and the 1,024-body pile keeps 992 of its 994 [V physics-history.log; review SR-2: an
+earlier note had the 256-body pile falling asleep, which no current run shows].
 
 A tick at 60 Hz has 16.7 ms. **Base-only** fits only while confirmation keeps up, because every
 rollback then re-simulates the whole confirmation lag, not just the rollback depth.
@@ -642,16 +639,19 @@ sleeping or isolated islands to re-derive themselves.
 
 * **Test 1: every body written back through the API.**
   * Setup: in a 256-body pile, every body's pose and velocity was saved at one frame. They were written back
-    50 frames later into the same world, with `body_set_transform`, `body_set_linear_velocity` and
-    `body_set_angular_velocity`.
+    50 frames later into the same world through the spike core's `BodyState::write`: the pose and both
+    velocities, the awake flag, and since p2/spike-reset the fork's `body_reset_history` (7.3).
   * Result: stepping diverged from the reference at the first frame. After 30 frames, 2 of 256 bodies were
-    bit-equal and the largest position error was 340 mm (244 mm with upstream physics).
+    bit-equal and the largest position error was 337 mm (340 mm before the reset; 244 mm with upstream
+    physics, without it) [V physics-history.log; review SR-1].
   * Control: a full image restore of the same frame matched 256 of 256.
 * **Test 2: one isolated island, everything else asleep.**
   * Setup: 64 separate 4-box stacks, all asleep. One stack got a different speculative push; the other 63
-    were checked to be unchanged and still asleep. That stack's 4 bodies were then restored through the
-    API, given the correct push, and run for 60 frames.
-  * Result: the restored stack matched 0 of 4 bodies (8.7 mm error); the other 252 bodies matched.
+    were checked to be unchanged and still asleep. That stack's 4 bodies were then restored through
+    `BodyState::write`, given the correct push, and run for 60 frames.
+  * Result: the restored stack matched 0 of 4 bodies (1.5 mm error; 8.7 mm before the reset forgot the
+    stack's stale contacts); the other 252 bodies matched. The reset narrows the gap but does not close
+    it: the state listed below is still missing [V physics-history.log; review SR-1].
 * **Why it fails.** A world image also holds what the API cannot set:
   * contact manifolds with their warm-start impulses;
   * sleep timers and island membership;
@@ -686,9 +686,19 @@ inexact.
    Before this change (3d0f98a), a hand without an entry stopped dead.
    * A thinned entry (10.9) is followed over its declared span first, and the coast covers only a gap
      past it: a hand moves while n ≤ (span − 1) + 6 frames after its last entry, then holds (D52, D53).
-     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163]. The
-     spike's rule is still flat (n ≤ `hand_predict`) and off by default (0); it follows with its next
-     change [V].
+     pe-session does this, with `hand_predict` defaulting to 6 [V @world-chunks, P2-3 at 7aa4163], and so
+     does the spike since p2/spike-hand: it follows the span uncapped, then coasts at most 3 m/s, and
+     `hand_predict` defaults to 6 there too.
+   * **The coast continues only a stream** (@coordinator-opus, 2026-10-31; a clarification of D52). An
+     entry that arrives more than the previous entry's span + `hand_predict` frames after it, such as a
+     one-shot target or a gesture's start, is followed over its span and then held, never coasted past
+     it. A one-shot target used to overshoot by up to 0.3 m (an MCP agent's hand, pe-mcp's
+     `hands_in_the_ball_pit`) [V spike]. pe-session mirrors it with D73 (@world-chunks).
+     * **A requirement on the sender's IO** (review SH-1), like the joiner's hold in 9.5: a held hand keeps
+       sending its entries while still. A transport that dropped unchanged poses would leave the last
+       moving entry flagged as a stream, and the confirmed hand would coast up to 0.3 m past the author's.
+       So neither D73's packs nor any later bandwidth saving may stop a held hand's entries, for example to
+       let idle thinning (7.6) start: a still, held hand keeps its member busy.
 2. **Immediate local re-simulation on arrival [V, existing].** An arriving entry is applied at the next
    tick, within one frame (16.7 ms at 60 Hz, 11.1 ms at 90 Hz), by one coalesced rollback (6.5). It does
    not wait for confirmation.
@@ -846,8 +856,9 @@ every player, perfectly synced, and optimized for CPU and memory.
   in f32 and f64, and differ at frame 0 without it or with the bits-changed variant]. Contact ids can
   still differ between such peers: all 78 contacts match by pair and colour, under other ids. Only
   speculative worlds can differ that way, and check hashes cover confirmed frames, where histories are
-  identical. The spike core's write (`BodyState::write`) does not reset yet. It will mirror the reset in
-  a commit of its own, which re-blesses the spike's logs.
+  identical. The spike core's write (`BodyState::write`) does the same since p2/spike-reset: always,
+  awake, then `body_reset_history`. Its re-bless changed digests, transfer ids and print order only; no
+  outcome moved [V session-sim suite, tool regress].
 * **A held object takes no other member's carried state** (P23-6, following 8.4). When the touched body is
   held at *f* by another member's grab, step 3 skips it: the touch acts on it only physically, through the
   grab's constraint. Whether a body is held at *f* is part of the state at *f*, so every peer skips
@@ -1232,8 +1243,7 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 ### 9.2 Cadence
 
 * **On every interaction:** the carried state is applied over the receiver's own result, always,
-  whether or not it already matches (7.3, review SET-1). That is pe-session's rule; the spike writes only
-  when the bits differ until p2/spike-reset lands (review CV-1).
+  whether or not it already matches (7.3, review SET-1), in pe-session and in the spike.
 * **Periodic:** every 30 frames, but only at **confirmed** frames that this member has finished simulating
   with the complete log. A member with a re-simulation pending never compares (viz-1).
   * There, every member holds the same entries by construction, so any mismatch is true nondeterminism,
@@ -2187,11 +2197,11 @@ and the engager's hand replayed after the gesture had ended.
          limit, and the receivers' estimate reads 450-475 ms. About 800 of member 1's datagrams are
          dropped, member 2 pauses at the speculation limit at 4.7 s, and member 1 is removed at about
          7 s.
-       * The cycle has a period of about 3.5 s. The controller lowers one level per 300 ms of calm,
-         back to level 0, where the stream again exceeds the cap by twice: the 40 ms trigger plus five
-         100 ms raises let the queue reach about 340 ms. A controller that remembers the last level that
-         congested, or raises by more than one level at a time, would cut those peaks (a D56 tuning
-         question).
+       * The cycle has a period of about 3 s (2.9 s from rise to rise, @shader-lang's count). The
+         controller lowers one level per 300 ms of calm, back to level 0, where the stream again exceeds
+         the cap by twice: the 40 ms trigger plus five 100 ms raises let the queue reach about 340 ms. A
+         controller that remembers the level that congested, or raises by more than one level at a
+         time, would cut those peaks. D56 chose the memory (item 3 below).
      * **Known limits [I]:**
        * *Route changes.* A route change that adds more than 40 ms of path delay reads as a queue until
          the old minimum ages out of the base window. The stream is then thinned for up to 2 minutes:
@@ -2224,11 +2234,19 @@ and the engager's hand replayed after the gesture had ended.
          send but never reads as queueing.
    * **Response:** six levels, raised quickly (above 40 ms, at most once per 100 ms) and lowered slowly
      (after 300 ms below 10 ms).
-     * **It remembers the level that congested** (@coordinator-opus, 2026-10-31; D56). After congestion
-       at level L, it lowers back into L only after 5 s of calm instead of 300 ms, and forgets L after
-       30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s run]. Without it, a
-       stream at twice the cap cycled every 3.5 s: each 300 ms of calm lowered it back to level 0, and
-       the queue reached 340-390 ms before the raises caught up [V pe-app r18-app].
+     * **It remembers the level where congestion began** (@coordinator-opus, 2026-10-31; D56). That level
+       L is where the queue crossed 40 ms upward, not a level the controller climbed through while the
+       queue drained. A later onset at a coarser level raises L.
+       * Lowering into L, or into any finer level, takes 5 s of calm instead of 300 ms, since each finer
+         level sends more. Lowering into a coarser level still takes 300 ms.
+       * L is forgotten after 30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s
+         run]. Any queue above 40 ms restarts that timer, whether or not it raises the level: at the
+         coarsest level none can, and on-and-off cross-traffic there must not age L out (review D56-1).
+       * Without the memory, a stream at twice the cap cycled about every 3 s: each 300 ms of calm
+         lowered it back to level 0, and the queue reached 340-390 ms before the raises caught up [V
+         pe-app r18-app].
+       * pe-session builds it as @shader-lang's p2/r18-memory, and the spike mirrors it (p2/spike-d56).
+         The measured effect is under the table below.
      * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
@@ -2236,13 +2254,14 @@ and the engager's hand replayed after the gesture had ended.
        reckoning (6.10) covers the gaps. Every peer, the author included, follows a thinned entry over
        its declared span, up to 8 frames at the coarsest level (D53). D52's coast (up to 6 frames at
        most 3 m/s, then hold) applies only to a gap past the span: a lost or late entry
-       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled).
+       (@coordinator-opus, 15:16Z, reading D52 and D53 as settled), and only within a stream: an entry
+       more than its predecessor's span + 6 frames after it is followed over its span and held (6.10).
      * A hand pose falls on a frame aligned to its level's stride, the first such frame after the last
        pose; at a level change it is not held back to last + k. So the gap after a change is at most the
        new stride, and a hand never stops while its author keeps sending. Before, a pose also had to be k
        frames after the last, and at 4→5 pose 258 was followed by 272, freezing the hand 2 frames even
        with span then coast (@shader-reviewer's matrix finding M1; fixed in pe-session at 649a77f, with a
-       test through every level change [V @world-chunks]). The spike follows with its next change.
+       test through every level change [V @world-chunks]). The spike does the same since p2/spike-hand.
      * The author applies the same thinned entries, so under congestion its own physics hand trails its
        controller by up to k frames (review R3-10). Packing k per-frame targets into one entry would keep
        the author exact: **D73**.
@@ -2295,7 +2314,9 @@ datagram per message with the controller off unless a run opts in, so the protoc
 transport; the R18 runs opt in [V @world-chunks].
 
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
-500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3]:
+500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3;
+adaptive cells re-run with span then coast and the level-change rule, p2/spike-hand, then with D56's
+congested-level memory, p2/spike-d56]:
 
 | Cap | Transport | Uplink m1 | Max queue, drops | Stalled frames | Max confirmation lag | Back to real time after the gesture | End state |
 |---|---|---|---|---|---|---|---|
@@ -2304,19 +2325,37 @@ transport; the R18 runs opt in [V @world-chunks].
 | 64 kbit/s | batched, or batched + adaptive | 65 kbit/s | 0 ms, 0 | 0 / 0 | 9 frames | at once | equal |
 | 48 kbit/s | per message | 76 kbit/s | 499 ms, 52 | 238 / 262 | 328 frames | never in the run | not converged |
 | 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 22 | 139 frames | 2.4 s | equal |
-| 48 kbit/s | **batched + adaptive** | 57 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
-| 32 kbit/s | **batched + adaptive** | 41 kbit/s | **105 ms**, 0 | **0 / 0** | 15 frames | **at once** | equal |
-| 16 kbit/s | **batched + adaptive** (30 s run) | 17 kbit/s | **364 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
-| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 484 ms, 11 | 1,201 / 1,214 | 1,332 frames | 19.3 s | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 35 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
-| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 36 kbit/s | **343 ms**, 0 | **0 / 0** | 33 frames | **60 ms** | equal |
-| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 68 kbit/s | **215 ms**, 0 | **0** (all four) | 33 frames | **at once** | all four equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 30 kbit/s | 498 ms on member 3's links | 135 / 135 before the demotion | 255 frames | at once | member 3 demoted after 3 s of lag; members 1 and 2 equal |
+| 48 kbit/s | **batched + adaptive** | 54 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
+| 32 kbit/s | **batched + adaptive** | 29 kbit/s | **82 ms**, 0 | **0 / 0** | 15 frames | **at once** | equal |
+| 16 kbit/s | **batched + adaptive** (30 s run) | 14 kbit/s | **414 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
+| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 492 ms, 2 | 191 / 204 | 322 frames | 1.7 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 34 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
+| 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 35 kbit/s | **393 ms**, 0 | **0 / 0** | 35 frames | **at once** | equal |
+| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 38 kbit/s | **177 ms**, 0 | **0** (all four) | 27 frames | **at once** | all four equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 31 kbit/s | 498 ms on member 3's links | 113 / 116 before the demotion | 236 frames | at once | member 3 demoted after 3 s of lag; members 1 and 2 equal |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
-  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 20 s of the gesture's end, and a
+  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 2 s of the gesture's end, and a
   member too slow for the session is demoted.
+* **Span then coast and the level-change rule (p2/spike-hand)** moved the adaptive cells a little, and no
+  cell changed state [V spikes/out/r18]: peaks rose at 16 kbit/s (364 → 414 ms) and in the step (343 →
+  393 ms), 12 kbit/s recovers 2.4 s later (19.3 → 21.7 s), and the shared uplink's peak fell (215 → 198
+  ms). The likely cause [I]: after a level change, a pose may now come up to one stride sooner, which adds
+  an entry while the queue builds. That is the cost of a hand that never stops while its author sends.
+  The other transports changed only in digests.
+* **D56's congested-level memory (p2/spike-d56)** then changed the adaptive cells more [V spikes/out/r18]:
+  * 12 kbit/s recovers in 1.7 s instead of 21.7 s (2 drops instead of 12, 191 stalled frames instead of
+    1,323), and the step from 64 to 16 is back in real time at once.
+  * 32 kbit/s peaks at 82 ms instead of 105, and the shared uplink at 177 ms instead of 198, with
+    confirmation lag 27 frames instead of 34. Other peaks are unchanged: the first congestion sets them,
+    and the memory stops the repeats.
+  * The cost is a coarser hand for longer: each step down into the remembered level or a finer one waits
+    5 s. On the shared uplink the controller spends 10 s at each of levels 3 and 4 and 5 s at level 5,
+    and sends 38 kbit/s instead of 66. Remembering the last level raised from instead, as the spike first
+    built it, kept it 21 s of 30 at level 5.
+* **Earlier stale cells:** the slow-member row is updated to the logs as D58's double precision left them
+  (31 kbit/s, 113 / 116 stalled frames, 236 frames of lag; it read 30, 135 / 135 and 255).
 * **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
   even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
   wire format]. Below the floor a two-member session stalls, because it cannot demote either member
@@ -2494,10 +2533,11 @@ entries that the view change commits (10.8).
 ### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
 
 World ownership is a **lasting property of a world**, separate from a session's admins (12.4). Several people can share it (22:37Z). It is held as a **chain of signed ownership
-certificates**: each one signed under the rule of the owner set before it, with no blockchain, registry or service of ours (22:39Z, "Signed chain,
-no blockchain"). The chain travels with the world, in its genesis document, every save and each
-session's log, with the sessions' attestations, and anyone can verify it offline. It replaces 12.2's
-single `owner` role and D10's optional threshold: the ACL's owner is whoever the chain names.
+certificates**: each one is signed under the rule of the owner set before it, with no blockchain,
+registry or service of ours (22:39Z, "Signed chain, no blockchain"). The chain travels with the
+world, in its genesis document, every save and each session's log, with the sessions' attestations,
+and anyone can verify it offline. It replaces 12.2's single `owner` role and D10's optional
+threshold: the ACL's owner is whoever the chain names.
 
 The rules below follow eight rounds of review by @design-reviewer (OWN-1 to OWN-12, OWNR-1 to
 OWNR-9, OWNS-1 to OWNS-12, OWNT-1 to OWNT-10, OWNU-1 to OWNU-8, OWNV-1 to OWNV-7, OWNW-1 to OWNW-7,
@@ -3566,7 +3606,8 @@ on storage space, in a similar manner to how resonite works"):
 * **Collection is mark-and-sweep, never reference counts** [proposal]. A count drifts after a crash; a
   sweep starts over each time.
   * The roots are every kept backup's manifest (by the schedule above), every head, every checkpoint and
-    before-merge backup, and every other world's roots on the machine.
+    before-merge backup, every other world's roots on the machine, and every Inventory item's manifest
+    (16.7), so an asset that only a saved Inventory item names is never swept (review EA-3).
   * **What a sweep must never take** (review DS-1):
     * writes in flight (review DS-1b): a write pins every blob its manifest will name, whether it
       writes the blob or finds it already stored (a dedup hit). It pins a blob before writing it, or in
@@ -6636,6 +6677,9 @@ entry says so.
   * Recommend:
     * Dead reckoning as the world rule for hand sources: keep the last commanded velocity, capped at
       3 m/s, for up to 6 frames, then hold. It cuts the observer's error by about 4-18x [V observer].
+    * Clarified (@coordinator-opus, 2026-10-31): the coast covers a gap in a stream. An entry that
+      arrives more than its predecessor's span + 6 frames after it (a one-shot target, a gesture's
+      start) is followed over its span and then held (6.10).
     * Plus render-only smoothing: τ = 50 ms below 5 cm, a glide of up to 100 ms above that, and a snap
       above 0.5 m [I].
   * Alternatives:
@@ -6684,9 +6728,10 @@ entry says so.
   * **Settled (user, 19:11Z): as recommended.**
   * up above 40 ms of uplink queue, at most every 100 ms;
   * down after 300 ms below 10 ms;
-  * within those, the level that last congested is re-entered only after 5 s of calm, and forgotten
-    after 30 s with no congestion (@coordinator-opus, 2026-10-31, from @shader-lang's 80 kbit/s
-    measurement; 10.9) [proposal: 5 s and 30 s].
+  * within those, the level where congestion began is remembered, the highest such level while the
+    memory lasts. Lowering into it or any finer level takes 5 s of calm, and it is forgotten after 30 s
+    with no congestion (@coordinator-opus, 2026-10-31, from @shader-lang's 80 kbit/s measurement; the
+    onset rule as @shader-lang built it; 10.9) [proposal: 5 s and 30 s].
 
   Production (pe-app) measures the queue as a LEDBAT-style one-way queueing delay (10.9, item 3) [V pe-app
   r18-app]. These defaults kept a 32-64 kbit/s cap
