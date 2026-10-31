@@ -1258,7 +1258,9 @@ if our bulk transport proves weak.
   * Ids are never chosen by the peer and never reused.
   * A peer that crashes and rejoins is admitted again under a **new** MemberId, so its sequence numbers
     can never collide with its earlier incarnation's (review C2).
-  * Object ids `(creator MemberId, counter)` stay unique for the life of the session.
+  * Object ids `(creator MemberId, counter)` stay unique for the life of the session. Objects that
+    persist in the world beyond it are stored under the world-scoped form (session id, creator MemberId,
+    counter), so ids from different sessions never collide in a save, a load or a merge (16.10).
 * **Entries (review C2):**
   * every entry is signed by its author and carries the id of the author's previous entry, so each
     member's entries form a hash chain;
@@ -2740,16 +2742,30 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
   runtime image at a check frame (9.2), so restored objects and the logic that runs them always match.
   Blobs are stored by hash, so a backup costs only what changed since the previous one.
 * **Bound to authority** (SV-8): every backup is taken at a check frame and stores that frame's BLAKE3
-  check hash with the quorum's signed acks of it (9.1, 9.5). An autosave is also the writing owner's
+  check hash with the quorum's signed acks of it (9.1, 9.5), and the epoch certificates that say who the
+  quorum was, so a later verifier can check the acks (SW-7). An autosave is also the writing owner's
   signed commit. A checkpoint row is signed by its saver and carries proof that the saver's role held
   Save checkpoints at that frame. So a holder cannot plant a backup, and a load checks it against signed
-  data, not only its own bytes.
+  data, not only its own bytes. A single-member session has no quorum (9.5), so its backups rest on the
+  owner's signature alone (SW-7).
+* **Object ids that persist are world-scoped** (SW-2): (the creating session's id, creator MemberId,
+  counter), where the session id is the session's world and genesis members (10.3). A session's own
+  entries may name its own objects by 10.3's session-local (creator, counter); everything stored,
+  loaded or merged uses the world-scoped form. So objects from different sessions never share an id:
+  across a load from an earlier session's backup, with arrivals carried forward, across a head merge,
+  and when the next session opens from either.
 * **The engine build** (SV-4) is recorded in each backup. A load on the same build restores the runtime
   image exactly. On another build the image's memory layouts no longer apply (9.5, 4.3 rule 7), so the
-  load restores from the version-neutral layer: the chunk files and dormant records (25.5.7), with logic
-  rebuilt from source under the current toolchain pin. Such a load keeps every object's state, but loses
-  the physics caches (contacts, warm starts, sleep timers) and re-derives modules' sync state. Every
-  backup therefore stays loadable at any time, and exactly so on its own build.
+  load restores from the version-neutral layer, which every backup writes for that purpose (SW-3): the
+  chunk files and dormant records (25.5.7) for every body, not only for frozen chunks, with logic rebuilt
+  from source under the current toolchain pin.
+  * A module's declared state arena (7.4, 13.4), such as scores or quest flags, is raw guest memory whose
+    layout the build decides, so it crosses builds only through the module's `pe_migrate` (13.4). A
+    module with no migration path from the backup's version restores its components and starts with
+    its arena reset, and the load card names those modules.
+  * A cross-build load also loses the physics caches (contacts, warm starts, sleep timers). Every
+    backup therefore stays loadable at any time, exactly so on its own build, and with these stated
+    losses on another.
 
 **Autosave:**
 * Every 5 minutes while the world changes, and once as a session ends (V3), the session's edits are
@@ -2757,8 +2773,10 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
   session state (25.5.7).
 * A write is a commit to the world repository (15), signed by an owner's client while an owner is
   present. With no owner present, edits wait as session state, listed for the owners, and are written
-  when an owner next joins, unless the owners let builders write (8a.10). Until they are written, a new
-  session starts without them, from the world's current head.
+  when an owner next joins, unless the owners let builders write (8a.10). Builders writing needs a
+  delegation certificate from an owner (as in 12.3) that lets them sign head references; under it the
+  head tie-break below is in builders' hands too (SW-5). Until they are written, a new session starts
+  without the pending edits, from the world's current head.
 * **The world's head** (SV-3) is an owner-signed head reference: "head = commit C, from parent P". Every
   holder computes the same head from signed data alone; arrival order never counts. Two references from
   the same parent are a detectable conflict, as in the ownership chain:
@@ -2770,6 +2788,15 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
     choose, and both stay kept;
   * owner-less edits written later name as parent the head their session started from, so they follow
     the same rule.
+  * Runtime state is stored per chunk (the dormant records above), so two autosaves overlap only where
+    they changed the same chunks (SW-6). Shared tables have their own rules: creator counters merge by
+    maximum, and the cross-world tables change only in the trading-lease holder's head (below), so a
+    merge never has to combine them.
+* **Two live instances and cross-world trade** (SW-1; @coordinator-opus's ruling (a), 09:51Z): only one
+  live session of a world trades across worlds at a time. It holds a trading lease bound to the
+  owner-signed head reference, and other instances refuse `Depart` and `Arrive`. The lease (granting,
+  fencing, hand-off, expiry, what other instances show) is designed in
+  @item:primordial-engine/trading-lease-only-one-live-instance-of-a-world-t.
 
 **The backup list** holds four kinds (8a.10): **checkpoints**, kept until an owner deletes them;
 **autosaves**, every one for the last hour, then hourly for a day, daily for a month and weekly after
@@ -2792,10 +2819,15 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
     the epoch that ordered it, less any removed meanwhile (SV-6). Joiners during the wait do not count.
   * Each member confirms in its acks that it holds the backup (its chunks and runtime image, fetched if
     missing). A is the frame at which the last confirmation is confirmed plus a lead of at least the
-    speculation window W and a margin (SV-5), or the ordered frame plus a deadline of 30 s, whichever
-    comes first. Both are functions of the log, so every peer computes the same A.
-  * At A, a member still without the backup pauses, as for a missing artifact (D17), and the view-change
-    timers remove it if it stays paused. Admins see who has not confirmed.
+    speculation window W and a margin (SV-5), rounded up so that A − 1 is a check frame (SW-7). Both
+    are functions of the log, so every peer computes the same A.
+  * **The deadline** (SW-4): if 30 s after the ordered frame not every member has confirmed, the load
+    activates only if a quorum of the fixed peer set has. Otherwise it is cancelled and everyone is
+    told, so a member that never confirms can only cause a retry, which an admin can follow with a kick.
+    On the deadline path A is set the same way, from the frame at which the deadline was reached.
+  * At A, a member still without the backup (at most n − q of them) pauses, as for a missing artifact
+    (D17), and the view-change timers, which keep their quorum, remove it if it stays paused. Admins see
+    who has not confirmed.
   * Once the load entry is ordered, new departures to other worlds are refused until A (SV-9), so the
     transfers in flight are a fixed set. The load waits for them to settle; an arrival stamped at or
     after A applies to the restored world.
@@ -2803,13 +2835,15 @@ Everything here is a proposal unless marked as a ruling [proposal; I, nothing bu
     so every peer produces the same one, and its check hash, signed by the quorum's acks, is stored with
     it. The load entry names it by that frame, not by its hash, and it needs no signature of its own.
   * **Entries after the switch** (SV-5): an entry stamped at or after A counts only if its author's
-    chain acknowledged the activation before it. Any other was authored against the pre-load world, so
-    it is rejected deterministically, carried state and all. The lead of at least W lets an honest
-    author acknowledge in time.
-  * **Object ids** (SV-5): restored objects keep their ids, and each creator's counter continues from
-    the larger of its current and restored values, so no new id collides. Every entry counted after A
-    was authored against the restored world, so an id always names the restored object; entries before
-    A named pre-load objects and applied before the switch.
+    chain acknowledged the activation before it, that is, holds an ack referencing the entry that fixed
+    A (the last confirmation, or on the deadline path the load entry; SW-7). Any other was authored
+    against the pre-load world, so it is rejected deterministically, carried state and all. The lead of
+    at least W lets an honest author acknowledge in time.
+  * **Object ids** (SV-5, SW-2): restored objects keep their world-scoped ids, so none collides with
+    another session's. Within this session each creator's counter continues from the larger of its
+    current and restored values, so no new id reuses a restored one. Every entry counted after A was
+    authored against the restored world, so an id always names the restored object; entries before A
+    named pre-load objects and applied before the switch.
   * The restored store's frame field becomes A, so check hashes after the load compare from A.
   * People are not world state: avatars, scale and voice stay; anyone inside restored geometry moves to
     the nearest clear spot; held objects are released and restored.
