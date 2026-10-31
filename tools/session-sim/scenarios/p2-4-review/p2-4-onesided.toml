@@ -1,0 +1,102 @@
+description = """
+P2-4 review VC-1, a control (expected to fork): the safety bound counts every faulty member, \
+proven or not. Six members, three of them (7, 8, 9) colluding (byz_ally), so t(6) = 1 is exceeded. \
+A partition {1,2} | {3} from 2.5 s to 12 s; the colluders reach both sides, hide what they hear of \
+everyone, and pass 3 nothing of 1's and 2's. At 2.6 s they sign second versions of their touches \
+for 1 and 2 only: 1 and 2 exclude them by proof and decide alone (a quorum of 2 over {1,2,3}); 3, \
+holding no proof, removes 1 and 2 with the colluders (4 of 6). Two different epoch-1 decisions: \
+the fork the restated bound allows once it is exceeded. Only the log is compared, and it must say \
+the session forked."""
+include = ["../common/review.toml"]
+golden = "p2-4-controls/onesided"
+control = true
+control_marker = "the session forked"
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 7, 8, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+7 = [{ at = 50, touch = { obj = 17, impulse = [0.0, 6.0, 0.0] } }]
+8 = [{ at = 50, touch = { obj = 18, impulse = [0.0, 6.0, 0.0] } }]
+9 = [{ at = 50, touch = { obj = 19, impulse = [0.0, 6.0, 0.0] } }]
+
+[world.1.member.7]
+byz_ally = true
+
+[world.1.member.8]
+byz_ally = true
+
+[world.1.member.9]
+byz_ally = true
+
+[[fault]]
+partition = [[1, 2], [3]]
+after_ms = 2500
+before_ms = 12000
+drop = true
+
+[[fault]]
+author = [1, 2]
+to = 3
+msg = "entry"
+after_ms = 2500
+before_ms = 12000
+drop = true
+
+[[byzantine]]
+kind = "hide_refs"
+member = 7
+from_ms = 2500
+
+[[byzantine]]
+kind = "hide_refs"
+member = 8
+from_ms = 2500
+
+[[byzantine]]
+kind = "hide_refs"
+member = 9
+from_ms = 2500
+
+[[byzantine]]
+kind = "equivocate"
+member = 7
+entry = "first_touch"
+when = { at_ms = 2600 }
+touch = { obj = 17, impulse = [6.0, 0.0, 0.0] }
+to = [1, 2]
+hide_from = [3]
+hide_until_ms = 12000
+
+[[byzantine]]
+kind = "equivocate"
+member = 8
+entry = "first_touch"
+when = { at_ms = 2600 }
+touch = { obj = 18, impulse = [6.0, 0.0, 0.0] }
+to = [1, 2]
+hide_from = [3]
+hide_until_ms = 12000
+
+[[byzantine]]
+kind = "equivocate"
+member = 9
+entry = "first_touch"
+when = { at_ms = 2600 }
+touch = { obj = 19, impulse = [6.0, 0.0, 0.0] }
+to = [1, 2]
+hide_from = [3]
+hide_until_ms = 12000
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3]
+label = "onesided"
+
+[[report]]
+kind = "check"
+case = "onesided"
+members = [1, 3]

@@ -2,27 +2,5 @@
 # view change, the D80 admin layer, P2-4's review repros, handowner and r14 chain-epoch (spike
 # session-sim at land/viewchange 62eb871). `regress` reports them instead of failing on them as
 # orphans; each name leaves this list when its scenario file arrives (see README).
-d80-adminclose
-d80-joinrules
-d80-kickpartition
-d80-kickwar
-d80-lastadmin
 handowner
-p2-4-ackgap
-p2-4-aheadlink
-p2-4-bogusprecommit
-p2-4-capchurn
-p2-4-controls/onesided
-p2-4-cutbackdate
-p2-4-deepfork
-p2-4-fork9
-p2-4-futureack
-p2-4-ghostkick
-p2-4-joinattests
-p2-4-jointiming
-p2-4-kickbackdate
-p2-4-lagprecommit
-p2-4-latejoin
-p2-4-selfkickhead
-p2-4-slowadmin
 r14-chain-epoch

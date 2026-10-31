@@ -217,7 +217,7 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 r.sim.byz_ally = rc.byz_ally;
                 r.sim.byz_no_precommit = rc.byz_no_precommit;
             }
-            if !joiner {
+            if !joiner && w.follow_joiners != Some(false) {
                 for &j in &w.joiners {
                     r.sim.follow(j);
                 }

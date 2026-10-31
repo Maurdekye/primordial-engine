@@ -1,0 +1,42 @@
+description = """
+P2-4 review round 3, VCR-12: 3 acks once every 1.5 s, and 9 casts no view-change entry, so the \
+join 5 asks for at 2.8 s needs 3's precommit. Part 1 runs with VCR-12's fix switched off, part 2 \
+as shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+peers = [1, 2, 3, 9, 5]
+
+[world.1]
+members = [1, 2, 3, 9]
+joiners = [5]
+
+[world.1.plan]
+# The spike also plans a touch by 1 at frame 600, past the end of the run (frame 593): it never
+# fires, and the tool refuses an action its member never reaches, so it is left out.
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+[world.1.member.3]
+ack_every_ms = 1500
+
+[world.1.member.9]
+withhold_vc = true
+
+[[join]]
+at_ms = 2800
+member = 5
+to = [1, 2, 3, 9]
+
+[[part]]
+world.1.fixes_off = ["VCR12"]
+report = [
+    { kind = "line", text = "  joiner admitted at m1: {member@1:5}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "lagprecommit (3 acks once every 1.5 s; 9 casts no view-change vote, so the join needs 3's precommit)", fix = "VCR-12's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3, 5], label = "lagprecommit" },
+    { kind = "check", case = "lagprecommit", label = "lagprecommit", at = 1, target = 5, honest = [1, 2, 3, 5] },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "lagprecommit (3 acks once every 1.5 s; 9 casts no view-change vote, so the join needs 3's precommit)" },
+]

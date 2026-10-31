@@ -3,7 +3,7 @@
 //! simulator's step of a millisecond, exactly where the spike's hand-written scenario loops did.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use pe_sim_core::session::*;
@@ -43,6 +43,9 @@ pub struct Actor {
     pub fired: bool,
     /// HideRefs: it has stopped hiding (`until_ms`).
     done: bool,
+    /// ForkBranch's state, and Precommit's epochs already capped.
+    fork: Fork,
+    capped: BTreeSet<u32>,
     /// ForkChain: (seq, id) of the forged chain's head.
     head: (u32, EntryId),
     forged_ids: Rc<RefCell<BTreeSet<EntryId>>>,
@@ -65,7 +68,24 @@ impl Actor {
                 }
             }
         }
-        Ok(Actor { spec, fired: false, done: false, head: (0, 0), forged_ids: Rc::default(), forged_vote: Rc::default(), refunded: None })
+        Ok(Actor {
+            spec,
+            fired: false,
+            done: false,
+            fork: Fork::default(),
+            capped: BTreeSet::new(),
+            head: (0, 0),
+            forged_ids: Rc::default(),
+            forged_vote: Rc::default(),
+            refunded: None,
+        })
+    }
+
+    /// ForkBranch: where the fork fell and how long branch B is (the `fork_info` report).
+    pub fn fork_info(&self) -> Option<String> {
+        let Byzantine::ForkBranch { member, .. } = &self.spec else { return None };
+        let f = &self.fork;
+        Some(format!("fork at {member}'s seq {}, t={} ms; branch B {} entries plus {} extra acks", f.seq.get(), f.t.get() / 1000, f.b_id.len(), f.extra))
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -108,6 +128,38 @@ impl Actor {
     /// The send-filter hook of a behaviour that hides a member's real messages.
     pub fn hook(&self) -> Option<Hook> {
         match &self.spec {
+            Byzantine::Equivocate { hide_from, hide_until_ms, .. } if !hide_from.is_empty() => {
+                let (hide, ids, until) = (hide_from.clone(), self.forged_ids.clone(), hide_until_ms.map_or(u64::MAX, |t| t * 1000));
+                Some(Box::new(move |t, _w, _from, to, m| match m {
+                    Msg::Entry(e) if t < until && hide.contains(&to) && ids.borrow().contains(&e.id()) => Some(Fate::Drop),
+                    _ => None,
+                }))
+            }
+            Byzantine::ForkBranch { member, b_to, live_ms, detect_ms, a_to, .. } => {
+                // session-sim p24r.rs `fork_run`'s filter, but for 3's delayed votes (a fault rule).
+                let (member, b_to, live_us, detect_us, a_to) = (*member, *b_to, live_ms * 1000, detect_ms * 1000, a_to.clone());
+                let (ft, fs, cr) = (self.fork.t.clone(), self.fork.seq.clone(), self.forged_ids.clone());
+                Some(Box::new(move |t, _w, from, to, m| {
+                    let silent = t >= ft.get().saturating_add(live_us);
+                    match m {
+                        Msg::Entry(e) if from == member && t >= ft.get() => Some(if cr.borrow().contains(&e.id()) {
+                            // With `detect_ms`, it does not relay B (b_to's fetch replies do).
+                            if detect_us > 0 && to != b_to {
+                                Fate::Drop
+                            } else {
+                                Fate::Deliver
+                            }
+                        } else if silent || (to == b_to && e.member == member && e.seq >= fs.get()) {
+                            Fate::Drop
+                        } else {
+                            Fate::Deliver
+                        }),
+                        _ if detect_us > 0 && from == b_to && a_to.contains(&to) && t >= ft.get() && t < ft.get().saturating_add(detect_us) => Some(Fate::Delay(detect_us)),
+                        _ if from == member && silent => Some(Fate::Drop),
+                        _ => None,
+                    }
+                }))
+            }
             Byzantine::ForkChain { member, to, hide_real: true, .. } => {
                 let (member, to, ids) = (*member, to.clone(), self.forged_ids.clone());
                 Some(Box::new(move |_t, _w, from, dest, m| match m {
@@ -148,6 +200,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let ready = match when {
                     When::Exists => true,
                     When::ConfAbove { at, frame } => sim.replica(*at, *world).sim.conf > *frame,
+                    When::AtMs(t) => sim.net.now_us >= t * 1000,
                 };
                 if !ready {
                     continue;
@@ -168,6 +221,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 let mut x2 = x.clone();
                 x2.payload = Payload::Touch { obj: touch.obj, impulse: touch.impulse, grab: touch.grab };
                 x2.carried = None;
+                act.forged_ids.borrow_mut().insert(x2.id());
                 for &m in to {
                     sim.net.send(*world, *member, m, &Msg::Entry(x2.clone()));
                 }
@@ -245,8 +299,154 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 );
                 act.fired = true;
             }
+            Byzantine::ForkBranch { member, at_frame, a_to, b_to, live_ms, backdate, .. } => fork_branch(sim, (&mut act.fork, &act.forged_ids), *member, *at_frame, a_to, *b_to, live_ms * 1000, *backdate),
+            Byzantine::Precommit { member, from_ms, value, boundary, ahead, to, every_epoch, while_member_at } => {
+                if !due(sim, *member, *from_ms, *while_member_at) || (!every_epoch && act.fired) {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = if *every_epoch { r.epoch } else { 0 };
+                if !act.capped.insert(epoch) {
+                    continue;
+                }
+                let b = boundary.unwrap_or_else(|| r.now + ahead.unwrap_or(0));
+                let v = if *every_epoch { value ^ epoch as u64 } else { *value };
+                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b }, None);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::FakeAckEpoch { member, from_ms, epoch, ahead, while_member_at } => {
+                if !due(sim, *member, *from_ms, *while_member_at) || (epoch.is_some() && act.fired) {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                r.fake_ack_epoch = Some(epoch.unwrap_or_else(|| r.epoch + ahead.unwrap_or(0)));
+                act.fired = true;
+            }
+            Byzantine::GhostVote { member, at_ms, target, kick, to } if !act.fired => {
+                if sim.net.now_us < at_ms * 1000 {
+                    continue;
+                }
+                let frozen = sim.replica(*member, 1).sim.all_entries().into_iter().filter(|e| e.member == *target).map(|e| (e.seq, e.id())).max().unwrap_or((0, 0));
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author(Payload::Vote { epoch, target: *target, seq: 0, frozen, kick: *kick }, None);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::SelfKickVote { member, frozen, to } if !act.fired => {
+                let kick = sim.replica(*member, 1).sim.all_entries().into_iter().find(|e| matches!(e.payload, Payload::Kick { target, .. } if target == *member)).map(|e| e.id());
+                let Some(kick) = kick else { continue };
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author(Payload::Vote { epoch, target: *member, seq: 0, frozen: (frozen[0] as u32, frozen[1]), kick }, None);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
+            Byzantine::BackdatedKick { member, at_frame, target, back, to } if !act.fired => {
+                if sim.replica(*member, 1).sim.frame < *at_frame {
+                    continue;
+                }
+                let r = sim_mut(sim, *member, 1);
+                let epoch = r.epoch;
+                let e = r.author_backdated(Payload::Kick { epoch, target: *target }, *back);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
+            }
             _ => {}
         }
+    }
+}
+
+/// ForkBranch's state (session-sim p24r.rs `fork_run`'s locals).
+#[derive(Default)]
+pub struct Fork {
+    /// When it forked, and the first sequence number of branch B (MAX until then).
+    t: Rc<Cell<u64>>,
+    seq: Rc<Cell<u32>>,
+    started: bool,
+    b_id: BTreeMap<u32, EntryId>,
+    backdated: bool,
+    b_last: Option<Entry>,
+    b_ack: Option<Payload>,
+    extra: u32,
+    next_t: u64,
+}
+
+/// Whether a precommit or fake-ack behaviour acts at this millisecond.
+fn due(sim: &Sim, member: MemberId, from_ms: u64, while_member_at: Option<MemberId>) -> bool {
+    sim.net.now_us >= from_ms * 1000 && while_member_at.is_none_or(|m| sim.replica(m, 1).sim.members.contains(&member))
+}
+
+/// Send `e` from `from` to each of `to` but itself, in order.
+fn send_to(sim: &mut Sim, from: MemberId, to: &[MemberId], e: &Entry) {
+    for &m in to {
+        if m != from {
+            sim.net.send(1, from, m, &Msg::Entry(e.clone()));
+        }
+    }
+}
+
+/// session-sim p24r.rs `fork_run`'s per-millisecond loop, unchanged but for its parameters.
+#[allow(clippy::too_many_arguments)]
+fn fork_branch(sim: &mut Sim, (f, crafted): (&mut Fork, &Rc<RefCell<BTreeSet<EntryId>>>), member: MemberId, at_frame: u64, a_to: &[MemberId], b_to: MemberId, live_us: u64, backdate: bool) {
+    if !f.started {
+        f.t.set(u64::MAX);
+        f.seq.set(u32::MAX);
+        f.backdated = !backdate;
+        f.started = true;
+    }
+    let now = sim.net.now_us;
+    if f.seq.get() == u32::MAX {
+        let r9 = &sim.replica(member, 1).sim;
+        if r9.frame >= at_frame {
+            let top = r9.all_entries().iter().filter(|e| e.member == member).map(|e| e.seq).max().unwrap_or(0);
+            f.seq.set(top + 1);
+            f.t.set(now);
+        }
+        return;
+    }
+    let s0 = f.seq.get();
+    if !f.backdated && now >= f.t.get() + 100_000 {
+        // On A only (the filter keeps its chain past the fork from b_to): a touch backdated 90
+        // frames, a horizon violation on that branch.
+        let e = sim_mut(sim, member, 1).author_backdated(Payload::Touch { obj: 20, impulse: [0.0, 4.0, 0.0], grab: false }, 90);
+        for &m in a_to {
+            sim.net.send(1, member, m, &Msg::Entry(e.clone()));
+        }
+        f.backdated = true;
+    }
+    if now < f.t.get() + live_us {
+        // Branch B: its entries from the fork on, re-linked, with its touch a no-op.
+        let mut mine: Vec<Entry> = sim.replica(member, 1).sim.all_entries().into_iter().filter(|e| e.member == member && e.seq >= s0 && !f.b_id.contains_key(&e.seq)).collect();
+        mine.sort_by_key(|e| e.seq);
+        for e in mine {
+            let mut b = e.clone();
+            if b.seq > s0 {
+                b.prev = f.b_id[&(b.seq - 1)];
+            }
+            if matches!(b.payload, Payload::Touch { .. }) {
+                b.payload = Payload::Attest { fact: 0, sig: 0 };
+                b.carried = None;
+            }
+            if matches!(b.payload, Payload::Ack { .. }) {
+                f.b_ack = Some(b.payload.clone());
+            }
+            f.b_id.insert(b.seq, b.id());
+            crafted.borrow_mut().insert(b.id());
+            sim.net.send(1, member, b_to, &Msg::Entry(b.clone()));
+            f.b_last = Some(b);
+        }
+    } else if f.extra < 10 && now >= f.next_t {
+        // Ten more acks on B only, so b_to's copy of its chain is longer than A.
+        let (Some(last), Some(Payload::Ack { horizon, heads, check, epoch })) = (f.b_last.clone(), f.b_ack.clone()) else { return };
+        let b = Entry { member, seq: last.seq + 1, prev: last.id(), stamp: last.stamp + 3, payload: Payload::Ack { horizon: horizon + 3, heads, check, epoch }, carried: None };
+        f.b_ack = Some(b.payload.clone());
+        crafted.borrow_mut().insert(b.id());
+        sim.net.send(1, member, b_to, &Msg::Entry(b.clone()));
+        f.b_last = Some(b);
+        f.extra += 1;
+        f.next_t = now + 50_000;
     }
 }
 

@@ -296,12 +296,15 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
         .collect();
     for b in &s.byzantine {
         match b {
-            Byzantine::Equivocate { after, world, member, when, touch, to, .. } => {
+            Byzantine::Equivocate { after, world, member, when, touch, to, hide_from, .. } => {
                 if v.world(*world, "equivocate") {
                     v.member(*world, *member, "equivocate");
-                    to.iter().for_each(|&m| v.member(*world, m, "equivocate to"));
+                    to.iter().chain(hide_from).for_each(|&m| v.member(*world, m, "equivocate to"));
                     if let When::ConfAbove { at, .. } = when {
                         v.member(*world, *at, "equivocate when");
+                    }
+                    if let When::AtMs(t) = when {
+                        v.time(*t, "equivocate when");
                     }
                     v.object(*world, touch.obj, "equivocate touch");
                 }
@@ -347,6 +350,37 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     }
                     v.time(*u, "hide_refs until");
                 }
+            }
+            Byzantine::ForkBranch { member, a_to, b_to, .. } => {
+                v.member(1, *member, "fork_branch");
+                v.member(1, *b_to, "fork_branch b_to");
+                a_to.iter().for_each(|&m| v.member(1, m, "fork_branch a_to"));
+            }
+            Byzantine::Precommit { member, from_ms, to, while_member_at, boundary, ahead, .. } => {
+                v.member(1, *member, "precommit");
+                to.iter().chain(while_member_at).for_each(|&m| v.member(1, m, "precommit"));
+                v.time(*from_ms, "precommit");
+                if boundary.is_some() == ahead.is_some() {
+                    v.err("precommit: give boundary or ahead".into());
+                }
+            }
+            Byzantine::FakeAckEpoch { member, from_ms, epoch, ahead, while_member_at } => {
+                v.member(1, *member, "fake_ack_epoch");
+                while_member_at.iter().for_each(|&m| v.member(1, m, "fake_ack_epoch"));
+                v.time(*from_ms, "fake_ack_epoch");
+                if epoch.is_some() == ahead.is_some() {
+                    v.err("fake_ack_epoch: give epoch or ahead".into());
+                }
+            }
+            Byzantine::GhostVote { member, at_ms, target, to, .. } => {
+                v.member(1, *member, "ghost_vote");
+                v.member(1, *target, "ghost_vote target");
+                to.iter().for_each(|&m| v.member(1, m, "ghost_vote to"));
+                v.time(*at_ms, "ghost_vote");
+            }
+            Byzantine::SelfKickVote { member, to, .. } | Byzantine::BackdatedKick { member, to, .. } => {
+                v.member(1, *member, "byzantine");
+                to.iter().for_each(|&m| v.member(1, m, "byzantine to"));
             }
             Byzantine::ForgeProposal { world, member, to } => {
                 if v.world(*world, "forge_proposal") {
@@ -398,7 +432,12 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
             Report::Confs { honest, .. } => v.members(honest, "confs"),
             Report::BeforeFix { honest, .. } => {
                 checks += 1;
-                v.members(honest, "before_fix");
+                v.honest(honest, "before_fix");
+            }
+            Report::ForkInfo => {
+                if !s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkBranch { .. })) {
+                    v.err("fork_info: no fork_branch behaviour".into());
+                }
             }
             Report::Check { case, honest, sides, at, members, target, .. } => {
                 checks += 1;
@@ -413,6 +452,12 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "lastadmin" => !honest.is_empty(),
                     "adminclose" => honest.len() == 2,
                     "joinrules" => members.len() == 4,
+                    "selfkickhead" | "capchurn" => at.is_some() && target.is_some(),
+                    "joinattests" | "lagprecommit" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "slowadmin" => !honest.is_empty(),
+                    "kickbackdate" => at.is_some() && !members.is_empty(),
+                    "aheadlink" => at.is_some() && !members.is_empty() && !honest.is_empty(),
+                    "onesided" => members.len() == 2,
                     _ => true,
                 };
                 if !want {
