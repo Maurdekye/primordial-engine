@@ -11,4 +11,4 @@ RESULT joinattests: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 587 of 
   m2: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 50 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 50 bad 0
   m5: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 50 bad 0
-RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=6e2492024c988d4a m2=6e2492024c988d4a m3=6e2492024c988d4a m5=6e2492024c988d4a | offline replay 6e2492024c988d4a | ALL EQUAL, NO FALSE CHECKS ; checks ok 200 bad 0
+RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=6b7446002b0545cb m2=6b7446002b0545cb m3=6b7446002b0545cb m5=6b7446002b0545cb | offline replay 6b7446002b0545cb | ALL EQUAL, NO FALSE CHECKS ; checks ok 200 bad 0

@@ -10,4 +10,4 @@ RESULT slowadmin: role definitions m1 {1: 0}, m2 {1: 0}, m3 {1: 0}, m4 {1: 0}, m
   m3: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 54 bad 0
   m4: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m6: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 72 bad 0
-RESULT slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first): frames 0..532 honest m1=67c21de08eb4e639 m2=67c21de08eb4e639 m3=67c21de08eb4e639 m4=67c21de08eb4e639 m6=67c21de08eb4e639 | offline replay 67c21de08eb4e639 | ALL EQUAL, NO FALSE CHECKS ; checks ok 288 bad 0
+RESULT slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first): frames 0..532 honest m1=49397125b89fd2cb m2=49397125b89fd2cb m3=49397125b89fd2cb m4=49397125b89fd2cb m6=49397125b89fd2cb | offline replay 49397125b89fd2cb | ALL EQUAL, NO FALSE CHECKS ; checks ok 288 bad 0

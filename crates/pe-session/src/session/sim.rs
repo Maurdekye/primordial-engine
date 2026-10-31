@@ -24,6 +24,8 @@ pub struct Obj {
 
 pub(super) const BALL_R: f32 = 0.06;
 pub const CLAIM_COOLDOWN: u64 = 10;
+/// Seed of the per-frame state hash's XXH64 ("PESESSN1").
+const STATE_HASH_SEED: u64 = 0x5045_5345_5353_4E31;
 pub(super) const HAND_R: f32 = 0.09;
 /// Dead-reckoning speed cap for a hand without an entry (m/s).
 pub(super) const HAND_COAST_VMAX: f32 = 3.0;
@@ -176,37 +178,33 @@ impl WorldSim {
         }
     }
 
-    /// Hash of the full world image plus tables: used at confirmed check frames (review H4).
-    /// The check hash at this frame (design 9.1, P22R-1): BLAKE3 over pe-physics's full-state check
-    /// hash (canonical whichever way the state was reached: review NEW-7, tests/physics_check_hash.rs)
-    /// and every engine table.
+    /// The check hash at this frame (design 9.1, P22R-1), used at confirmed check frames (review H4):
+    /// BLAKE3 over pe-physics's full-state check hash (canonical whichever way the state was reached:
+    /// review NEW-7, tests/physics_check_hash.rs), the sim store's canonical serialization (the bytes a
+    /// state transfer carries) and the world-level tables.
     pub fn check_hash(&mut self) -> CheckHash {
+        let t0 = now_us();
         let physics = self.world.check_hash().expect("a usable physics world");
+        let t1 = now_us();
+        // A NaN is a deterministic error on every peer, never hashed (review P21-5).
+        self.store.check_values().expect("no invalid value in the engine tables");
         let mut h = blake3::Hasher::new();
         h.update(b"pe-check");
         h.update(&physics.0);
+        h.update(&self.store.snapshot().to_bytes());
         for w in self.tables_words() {
             h.update(&w.to_le_bytes());
         }
-        CheckHash(*h.finalize().as_bytes())
+        let c = CheckHash(*h.finalize().as_bytes());
+        self.stats.checks += 1;
+        self.stats.check_physics_us += t1 - t0;
+        self.stats.check_rest_us += now_us() - t1;
+        c
     }
 
-    pub(super) fn tables_hash(&self) -> u64 {
-        fnv_u64s(self.tables_words())
-    }
-
-    /// Every engine table, canonically, as 64-bit words.
+    /// The world-level tables, canonically, as 64-bit words (the per-object tables are the store's).
     pub(super) fn tables_words(&self) -> Vec<u64> {
         let mut v = vec![self.frame];
-        for (i, o) in self.objects() {
-            v.extend([i as u64, o.global, o.kind as u64]);
-        }
-        for (id, c) in self.store.iter::<ClaimRow>() {
-            v.extend([obj_index(id) as u64, c.member as u64, c.until]);
-        }
-        for (id, c) in self.store.iter::<CooldownRow>() {
-            v.extend([obj_index(id) as u64, c.member as u64, c.until, 7]);
-        }
         for (t, e) in &self.t.escrow {
             v.extend([*t, e.obj as u64, e.status as u64, e.depart_frame, e.record.map_or(0, |r| r.state.hash())]);
         }
@@ -220,17 +218,19 @@ impl WorldSim {
             s.hash_into(*g, &mut v);
         }
         v.push(self.t.portal_open as u64);
-        if self.cfg.hand_predict > 0 {
-            for (id, n) in self.store.iter::<HandIdle>() {
-                v.extend([obj_index(id) as u64, n.frames, 11]);
-            }
-        }
         v
     }
 
-    /// Per-frame hash: Box3D body transforms + velocities, plus every engine table.
+    /// The per-frame state hash (design 9.1): XXH64 over pe-physics's per-frame hash (body transforms,
+    /// velocities, bindings and joints), the sim store's hash and the world-level tables.
     pub fn state_hash(&self) -> u64 {
-        self.world.box3d_hash().expect("a usable physics world") ^ self.tables_hash().rotate_left(29)
+        let mut h = pe_core::hash::Hasher::new(STATE_HASH_SEED);
+        h.write_u64(self.world.state_hash().expect("a usable physics world"));
+        h.write_u64(self.store.checked_state_hash().expect("no invalid value in the engine tables"));
+        for w in self.tables_words() {
+            h.write_u64(w);
+        }
+        h.finish()
     }
 
     pub fn obj_state(&self, obj: u32) -> Option<BodyState> {
