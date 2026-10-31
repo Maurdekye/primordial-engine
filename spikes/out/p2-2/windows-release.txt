@@ -1,10 +1,10 @@
-commit 3e6b86ccd9b120d1b872c2a14717ba75654fa30d
+commit 5fb9c4170af8a19dad514c149e3a1a8c71aae99d
 working tree changes: 0
 rustc 1.99.0 (b940084d7 2026-09-28)
 host: x86_64-pc-windows-msvc
 LLVM version: 23.1.1
    Compiling pe-physics v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\compact\crates\pe-physics)
-    Finished `release` profile [optimized] target(s) in 1.62s
+    Finished `release` profile [optimized] target(s) in 2.67s
      Running unittests src\lib.rs (target\release\deps\pe_physics-41daad4c63025ae6.exe)
 
 running 0 tests
@@ -13,7 +13,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
      Running tests\api.rs (target\release\deps\api-8ce4675f1ea04a4c.exe)
 
-running 19 tests
+running 20 tests
 test carried_state_lands_exactly ... RESULT carried state, off-centre, spinning, both sides true: first differing frame of 120 None
 RESULT carried state, asleep on the ground, both sides true: first differing frame of 120 None
 RESULT carried state, settling, sleep timer running, both sides true: first differing frame of 120 None
@@ -43,11 +43,13 @@ test refusals_change_nothing ... ok
 test rolled_back_peer_has_the_straight_check_hash ... RESULT rollback check_hash after 60 frames 9e86908b0f8eee4b371aef141e6a9dbbc83f440f094546e93f03b45028dcde96
 ok
 test rotations_are_normalized ... ok
+test stale_and_foreign_images_refused ... RESULT stale images after compaction: 100 of 100 refused
+ok
 test targets_drive_hands ... ok
 test transfer_canonical_after_destroy ... ok
 test worker_count_does_not_change_the_hash ... ok
 
-test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
 
      Running tests\spike_records.rs (target\release\deps\spike_records-207f697b9dc7d8da.exe)
 
@@ -106,7 +108,7 @@ RESULT trace off workers=3 digest 7903109aab28ed9b
 RESULT trace off workers=8 digest 7903109aab28ed9b
 ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.09s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.34s
 
    Doc-tests pe_physics
 
