@@ -254,7 +254,13 @@ impl SessionCore {
     /// A joiner asks member `from` for its newest confirmed check-frame state (design 9.5). The answer
     /// is restored only against a check hash a quorum signed in the acks this replica holds (P22S-1), so
     /// it needs the log first; [`Event::Transfer`] reports the outcome.
-    /// Only the first answer from that member, to this request, is considered (review P23-3).
+    /// Only the first answer from that member, to this request, is considered (review P23-3), so an
+    /// answer refused for any reason (a tampered state: `Hash`) uses up that request; ask again.
+    ///
+    /// Precondition (review P23R-1): the replica must not simulate past the donor's check frame before
+    /// the answer arrives. A state never rewinds a replica (`Behind`), so a joiner that has replayed
+    /// the log beyond that frame refuses every state. Hold its simulation until [`Event::Transfer`]
+    /// (the harness's statejoin sets `throttle_us`); holding it in the core is a follow-up.
     pub fn request_state(&mut self, from: MemberId) {
         self.state_asked.insert(from);
         self.send_to(from, Class::Control, Msg::FetchState);

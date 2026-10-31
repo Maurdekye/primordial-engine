@@ -39,7 +39,7 @@ at 7891209 (the review round), 41 of 41 tests pass, every harness log equals the
 masked (88 identical, SUMMARY ALL EQUAL), and the tool's `regress` is 92 of 92 identical [V]; earlier at
 3c7ec50/44a1b2f (31 tests, 88, 92), 8ded87a (85 identical) and 1404a0c (70) [V].
 
-**Still to do:** the session id derived from a signed genesis entry with a random nonce (design 10.3, SX-1; today the caller supplies it); signed EpochCert proofs; the view-change value and the chain hash at 256 bits (64-bit BLAKE3 today: a proposer's birthday search, about 2^32, remains; with P2-5 on pe-session); the known limits P23-8, P23-9, P23-13 and P23-14 recorded in design 10.8.
+**Still to do:** the session id derived from a signed genesis entry with a random nonce (design 10.3, SX-1; today the caller supplies it); signed EpochCert proofs; the view-change value and the chain hash at 256 bits (64-bit BLAKE3 today: a proposer's birthday search, about 2^32, remains; in the P2-5 port's scope, coordinator 2026-10-31); the R14 facts gaining frame and epoch (VC-7, review P23R-4; also with the P2-5 port, in the `FactWriter` layout); each partner world's session id in the route list, so a partner's R14 facts verify with real keys (today only the own world's session is registered; review P23R-3, design 22.7); the core holding a joiner's simulation while a state request is outstanding (P23R-1); the known limits P23-8, P23-9, P23-13 and P23-14 recorded in design 10.8.
 
 ## Engine state on pe-sim (S5)
 
@@ -66,6 +66,14 @@ masked (88 identical, SUMMARY ALL EQUAL), and the tool's `regress` is 92 of 92 i
   canonical and completely consumed (`Transfer::from_bytes`, `Snapshot::from_bytes` plus re-encoding,
   `decode_tables`) and the parts hash to the trusted check hash. The replica then continues from the
   next frame, with a floor no rollback goes below; a refusal changes nothing.
+* Only the answer to this replica's own request to that donor is considered (`Unrequested`
+  otherwise), once: a refused answer (a tampered state is refused with `Hash`) uses up the request,
+  and the joiner asks again (review P23R-2; statejoin shows it: member 2's honest answer after the
+  tampered one is `Unrequested`).
+* A state never rewinds a replica (`Behind`). So the joiner must not simulate past the donor's check
+  frame before the answer arrives: one that has replayed the log further refuses every state. Today
+  the caller holds the joiner's simulation (statejoin: `throttle_us` until the import); holding it in
+  the core while a request is outstanding is a follow-up (review P23R-1).
 * On the wire: `Msg::FetchState`, and `Msg::State` as a repair (large; the IO may drop it, the joiner
   asks again). Transport chunking of a 0.5-1.7 MB message is phase 3's (10.x) [I].
 
