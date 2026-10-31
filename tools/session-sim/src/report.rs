@@ -150,7 +150,7 @@ fn live(sim: &Sim, ids: &[MemberId]) -> bool {
 
 /// The epoch each of `ids` ends in: "m1 1, m2 1, ...".
 fn epochs(sim: &Sim, ids: &[MemberId]) -> String {
-    ids.iter().map(|&m| format!("m{m} {}", sim.replica(m, 1).sim.epoch)).collect::<Vec<_>>().join(", ")
+    ids.iter().map(|&m| format!("m{m} {}", sim.replica(m, 1).sim.vcm.epoch)).collect::<Vec<_>>().join(", ")
 }
 
 /// "2, 3, 9, 5".
@@ -990,7 +990,7 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
         }
         "fakeadmin" => {
             let (a, t) = (need(at, case, "at"), need(target, case, "target"));
-            let vcs = sim.replica(a, 1).sim.vc_log.len();
+            let vcs = sim.replica(a, 1).sim.vcm.vc_log.len();
             println!("REPRO {label}: {t} removed at {}; decisions at m{a} {vcs}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
         }
         "adminwedge" => {
