@@ -142,18 +142,18 @@ pub fn apply_crashes(sim: &mut Sim, crashes: &[Crash]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pe_sim_core::session::Entry;
+    use pe_sim_core::session::{Entry, EntryId};
 
     fn rule(t: &str) -> FaultRule {
         toml::from_str(t).unwrap()
     }
 
     fn touch(member: u32, seq: u32, stamp: u64) -> Msg {
-        Msg::Entry(Entry { member, seq, prev: 0, stamp, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None })
+        Msg::Entry(pe_sim_core::sign::test_sign(1, Entry { member, seq, prev: EntryId::NONE, stamp, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None }))
     }
 
     fn ack(member: u32) -> Msg {
-        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None, epoch: 0 }, carried: None })
+        Msg::Entry(pe_sim_core::sign::test_sign(1, Entry { member, seq: 1, prev: EntryId::NONE, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None, epoch: 0 }, carried: None }))
     }
 
     fn fate(f: &mut Filter, t_ms: u64, from: u32, to: u32, m: &Msg) -> String {
@@ -199,7 +199,7 @@ mod tests {
     }
 
     fn vote(member: u32, payload: Payload) -> Msg {
-        Msg::Entry(Entry { member, seq: 1, prev: 0, stamp: 0, payload, carried: None })
+        Msg::Entry(pe_sim_core::sign::test_sign(1, Entry { member, seq: 1, prev: EntryId::NONE, stamp: 0, payload, carried: None }))
     }
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let join = Msg::Join { member: 5, attests: vec![], sig: 0, expires: u64::MAX };
+        let join = Msg::Join { member: 5, attests: vec![], sig: [0; 64], expires: u64::MAX };
         assert_eq!(fate(&mut f, 0, 5, 3, &join), "drop");
         assert_eq!(fate(&mut f, 0, 5, 2, &join), "deliver");
         assert_eq!(fate(&mut f, 0, 9, 1, &vote(9, Payload::Prevote { epoch: 0, round: 0, value: 7 })), "drop");

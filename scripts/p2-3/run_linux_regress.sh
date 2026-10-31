@@ -6,8 +6,9 @@
 # usage: scripts/p2-3/run_linux_regress.sh   (from Git Bash on Windows, with WSL)
 set -u
 cd "$(dirname "$0")/../.."
-heavy="/c/Users/<user>/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh"
-low() { bash "$heavy" "$@"; }
+# The org-wide build lock (heavy.sh): PE_HEAVY, else the team folder under $HOME; without it, run directly.
+heavy=${PE_HEAVY:-"$HOME/AppData/Roaming/Orgtree v2/data/scratch/primordial-engine/_teams/1827/heavy.sh"}
+low() { if [ -f "$heavy" ]; then bash "$heavy" "$@"; else "$@"; fi; }
 target=x86_64-unknown-linux-musl
 root=$(pwd -W 2>/dev/null || pwd)
 cfg="target.$target.linker=\"rust-lld\""
