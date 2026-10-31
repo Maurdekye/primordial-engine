@@ -53,7 +53,8 @@ measures that queue and feeds it (`set_link`) every tick.
   * **base** is the minimum over 12 buckets of 10 s (2 minutes), expired by time; **current** is the
     minimum over the last 100 ms or 4 samples, whichever spans more. `current − base` goes back as `qrep`.
   * A receive thread stamps each datagram at the socket, so tick time never reads as queueing. It holds
-    at most 1024 datagrams for the engine and drops beyond that, as a full socket buffer would.
+    at most 1024 datagrams or 1024 × MTU bytes for the engine and drops beyond that, as a full socket
+    buffer would.
 * **Feed:** the largest report from any member. A report is held up to 5 s; with none left, a value
   inside the controller's dead band (25 ms) holds the level.
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
