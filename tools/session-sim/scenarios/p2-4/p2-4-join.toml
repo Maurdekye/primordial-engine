@@ -1,0 +1,38 @@
+description = """
+P2-4 (design 10.8): member 4 follows the log from the start and asks to join at t = 2 s; once \
+admitted it touches an object at frame 420."""
+include = ["../common/review.toml"]
+end_ms = 10000
+
+[world.1]
+members = [1, 2, 3]
+joiners = [4]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+4 = [{ at = 420, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[join]]
+at_ms = 2000
+member = 4
+to = [1, 2, 3]
+
+[[report]]
+kind = "membership"
+honest = [1, 2, 3, 4]
+label = "join"
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3, 4]
+label = "join"
+
+[[report]]
+kind = "admitted"
+honest = [1, 2, 3, 4]
+joiner = 4
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4]
+label = "join (member 4 asks to join at t=2 s and touches an object at frame 420)"

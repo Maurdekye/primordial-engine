@@ -1,0 +1,42 @@
+description = """
+D80: a partition {1, 2} | {3, 4} from 2 to 6 s; admin 1 kicks 3 at frame 180 (3 s). The kick waits \
+the partition out, then holds: one session, 3 removed after the heal."""
+include = ["../common/review.toml"]
+end_ms = 12000
+
+[world.1]
+members = [1, 2, 3, 4]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 180, kick = { target = 3 } }]
+4 = [{ at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[fault]]
+partition = [[1, 2], [3, 4]]
+after_ms = 2000
+before_ms = 6000
+drop = true
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 4]
+label = "kickpartition"
+
+[[report]]
+kind = "admin"
+honest = [1, 2, 4]
+label = "kickpartition"
+outcomes = true
+
+[[report]]
+kind = "check"
+case = "kickpartition"
+label = "kickpartition"
+members = [1, 4]
+target = 3
+until_ms = 6000
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 4]
+label = "kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s)"
