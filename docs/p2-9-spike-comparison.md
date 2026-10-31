@@ -175,12 +175,22 @@ tool's `regress` is 92 of 92 identical to the new goldens.
 
 - **D58 (main ca33fcd, merged at 88aa129; 65dc019, goldens 90e0c22).** Box3D's positions are f64,
   and `BodyState` is 16 words (64 B; a touch entry 200 B, 188 before). Against the review round's
-  goldens: ALL EQUAL, 0 false checks; 4 identical, 77 equal with ids and hashes masked, 7 different:
+  goldens: ALL EQUAL, 0 false checks; 4 identical, 77 equal with ids and hashes masked, 7 different.
+  Among the 77, besides digests and ids [verified, @chunks-reviewer]: diverged's, loss's and
+  state-frame's entries grow from 188 to 200 B, statejoin's physics state from 571064 to 581042 B,
+  and handowner's grab/carry list and aheadlink's vote list print in another entry-id order. The 7:
   the 5 ball-pit logs' naive-streaming estimate (64 B a state, D58-3), and r14-forge and
   p2-5-controls/r14-forge-no-provenance, whose world A counts one more carried-state overwrite at m1
   and m2 (1 to 2). The spike's r14-forge moved the same way in its D58 re-bless (974c441 to ca33fcd)
   [verified by reading the spike's logs]. The capped runs keep their points (fault-capped: 125
   dropped, 0 paused, conf 558 at every member).
+
+- **P2-4 round 8 (main af23ae5) is not in pe-session yet.** Its five new scenarios (p2-4-voidfork,
+  slowcapper, voiddeep, plainfork, pfsilent) drive fixes pe-session does not have (VC7R-1/2, RECUT,
+  VC8R-1/2). They are listed in `tools/session-sim/scenarios/pe-pending.txt`, which `regress` skips
+  and reports, and `scripts/run_session_sim.sh --pe` does not run them; their logs are the spike's.
+  adminfork's and prevotefork's scenario files keep their round-7 versions (main's add VC6R3 and
+  VC8R1 switches). The round-8 port to pe-session is a follow-up.
 
 ## Fixture changes made by the port
 
