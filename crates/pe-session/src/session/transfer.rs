@@ -284,7 +284,10 @@ impl WorldSim {
     /// The check hash a joiner trusts for check frame `frame` (review P22S-1): one that a quorum of the
     /// members of the epoch active at `frame` signed identically in their acks, at least one of them a
     /// member other than `donor`. Never the donor's word alone: a world with a single member cannot
-    /// vouch for its own transfer.
+    /// vouch for its own transfer. Members a later epoch excluded by proof still count (unlike
+    /// `cert_at`, which authorizes a live act of the current membership): their acks attested frame
+    /// `frame` in its own epoch, and the verdict must not depend on how far the reader's epoch has
+    /// advanced (@engine-architect, 2026-10-31).
     pub fn trusted_check(&self, frame: u64, donor: MemberId) -> Option<CheckHash> {
         let members = self.members_at(self.epoch_at(frame))?;
         let (_, q) = quorum(self.cfg.quorum, members.len());
