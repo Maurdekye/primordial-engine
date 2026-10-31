@@ -79,7 +79,9 @@ struct History {
 /// owner's remaining solo changes after the counting chain up to `head`. A genesis owner starts with
 /// SOLO_CERTS over the genesis owners; an owner it signs an addition for receives its remaining over
 /// the new owner count; a change some owner doesn't sign (itself or through its recovery key, a plain
-/// backup) costs each signing owner one; Leave and clearing a recovery key cost nothing. Who owns what at each step (validity) is read from
+/// backup) costs each signing owner one; Leave and clearing a recovery key cost nothing. A leaver's
+/// remaining passes to the remaining owners, a removed owner's to its removers, in equal parts with
+/// the remainder to the lowest keys (OWNX-4). Who owns what at each step (validity) is read from
 /// the book. None for a history with merges (copies join by min and max; not modelled here).
 fn reference_remaining(b: &Book, head: CertId) -> Option<BTreeMap<Key, u32>> {
     let mut past: Vec<CertId> = b.inner.anc[&head].iter().copied().filter(|x| b.counts(*x)).collect();
@@ -111,6 +113,22 @@ fn reference_remaining(b: &Book, head: CertId) -> Option<BTreeMap<Key, u32>> {
                 gift += give;
             }
             rem.insert(key, gift);
+        }
+        let pass = |rem: &mut BTreeMap<Key, u32>, from: Key, to: Vec<Key>| {
+            let r = rem.get(&from).copied().unwrap_or(0);
+            if r == 0 || to.is_empty() {
+                return;
+            }
+            let n = to.len() as u32;
+            for (i, k) in to.iter().enumerate() {
+                *rem.entry(*k).or_default() += r / n + u32::from((i as u32) < r % n);
+            }
+            rem.insert(from, 0);
+        };
+        match c.change {
+            Change::Leave { key } => pass(&mut rem, key, st.owners.iter().copied().filter(|o| *o != key).collect()),
+            Change::Remove { key } => pass(&mut rem, key, by.iter().copied().filter(|o| *o != key).collect()),
+            _ => {}
         }
         if solo {
             for o in by {
@@ -248,7 +266,7 @@ fn probe_capacity(rng: &mut Rng, h: &mut History) {
     let r = h.book.clone().commit_local(solo, L1, h.frame + 1);
     if all.len() > 1 {
         let left = rem.get(&o).copied().unwrap_or(0);
-        assert_eq!(r.is_ok(), left > 0, "owner {o} with {left} left by the reference: a solo change gave {r:?}");
+        assert_eq!(r.is_ok(), left > 0, "owner {o} with {left} left by the reference: a solo change gave {r:?}; reference {rem:?}; book share {:?} solo {:?}", h.book.inner.eff[&head].share, h.book.inner.eff[&head].solo);
     }
 }
 
@@ -356,11 +374,16 @@ fn attack(rng: &mut Rng, book: &mut Book, keys: &[Key], sessions_too: bool) {
         if sessions_too && rng.chance(60) {
             // Committed in one of A2's own sessions, delivered with its attestation.
             let frame = if rng.chance(50) { rng.next() >> 20 } else { rng.below(1000) as u64 };
-            let s: BTreeSet<Key> = c.signers();
+            let mut s: Vec<(Key, u64)> = c.sigs.clone();
+            if rng.chance(30) {
+                // OWNX-1: the session names a signer that never signed (an owner, with a made-up
+                // signature); the book must count only verified signatures.
+                s.push((victim, rng.next()));
+            }
             let mut atts = vec![Attest::make(book.world, id, lineage, frame, &s, &[1])];
             if rng.chance(30) {
                 // Two attestations of one certificate in one lineage, equal frames, signer subsets.
-                let sub: BTreeSet<Key> = s.iter().copied().filter(|_| rng.chance(50)).collect();
+                let sub: Vec<(Key, u64)> = s.iter().copied().filter(|_| rng.chance(50)).collect();
                 atts.push(Attest::make(book.world, id, lineage, frame, &sub, &[1]));
             }
             book.insert_attested(&[c], &atts, &ss);
@@ -395,7 +418,7 @@ fn relay_flood(rng: &mut Rng, book: &mut Book) {
             1 => cert_on(book, vec![parent], Change::Add { key: 7777 }, &[]),
             2 => cert_on(book, vec![parent], Change::Add { key: 7778 }, &[7777]),
             _ => {
-                let a = Attest::make(book.world, rng.next(), L8, rng.below(100) as u64, &[1].into(), &[1]);
+                let a = Attest::make(book.world, rng.next(), L8, rng.below(100) as u64, &[(1, 0)], &[1]);
                 assert!(!book.attest(&a, &sessions()), "an attestation of an unheld certificate is dropped");
                 continue;
             }

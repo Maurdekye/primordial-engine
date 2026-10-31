@@ -5,8 +5,10 @@
 //! * **Genesis.** Signed by every creator. The world id is the hash of the genesis certificate (in
 //!   production, of the genesis document that contains it).
 //! * **Certificates.** Each names its parent and is *valid* if its signatures satisfy the rule of the
-//!   owner set at the parent: a function of its causal past alone. Its id covers its signer set, so
-//!   two copies with different signatures are two certificates (review OWNR-4).
+//!   owner set at the parent: a function of its causal past alone. Its id is its body hash, without
+//!   the signatures: copies with different signatures are one certificate, whose signatures that
+//!   matter a book merges until a session attests it; the attestation carries the committed
+//!   signatures, and a book counts only those it verifies (OWNR-4, OWNS-5, OWNX-1).
 //! * **Session attestations.** A session that commits a certificate records the world frame it did so
 //!   at; exported, that is an [`Attest`], signed by a strict majority of the session's members (P2-4's
 //!   epoch certificates), so anyone can check it offline. A certificate **counts** only once some
@@ -47,17 +49,23 @@ pub type CertId = u64;
 /// A session lineage: the session that committed a certificate (spike: its world id).
 pub type Lineage = u32;
 
-/// Certificates one book holds at most (OWNR-6: no signer can grow it without bound). Ownership
+/// Attested certificates one book holds at most (OWNR-6). Unattested ones are bounded per key and per
+/// certificate instead (`UNATTESTED_PER_KEY`, `INHERITED_PER_CERT`). A co-owner with a session of its
+/// own can fill it with attested solo siblings, each judged on its own history (OWNX-2, D87). Ownership
 /// changes are rare; each insert re-runs the effective pass, O(N log N). Production compacts a long
 /// linear history into a checkpoint signed by the owners [I].
 pub const MAX_CERTS: usize = 1024;
 /// The solo changes (not signed by every owner at their parent) a world's history may hold, split into
 /// per-owner shares (OWNU-6, OWNV-3, OWNV-4, OWNW-3). The genesis owners split it evenly. A newcomer's
-/// share comes out of the remaining shares of the owners who signed its addition, so the shares never
-/// add up to more than this, and an owner's remaining share only ever shrinks through certificates it
-/// signed itself (invariant 9). Leave and clearing one's own recovery key are exempt, but each is
-/// bounded by the additions and namings before it, so solo changes and their exemptions take at most
-/// half the book along one history; joint changes keep the rest.
+/// share comes out of the remaining shares of the owners who signed its addition, and a leaver's
+/// remaining share passes to the remaining owners (OWNX-4), so along one history the shares never add
+/// up to more than this. An owner's remaining share only ever shrinks through certificates it signed
+/// itself (invariant 9), except that a removal under rule C passes the target's to its removers
+/// (OWNX-5). Across copies that each add an owner and then merge, shares (joined by minimum) can add
+/// up to more, by at most one gift per copy (OWNX-3). Leave and clearing one's own recovery key are
+/// exempt, but each is bounded by the additions and namings before it, so solo changes and their
+/// exemptions take at most half the book along one history; joint changes keep the rest. Merges are
+/// exempt too (any owner of the join signs one; honest sessions merge all heads, OWNW-2).
 pub const SOLO_CERTS: usize = MAX_CERTS / 4;
 
 /// Spike model of `key` signing `msg`. Production: Ed25519.
@@ -263,25 +271,34 @@ pub struct Attest {
     pub lineage: Lineage,
     pub epoch: u32,
     pub frame: u64,
-    /// The certificate's signer set the session committed (its signatures are frozen from then on).
-    pub signers: Vec<Key>,
+    /// The certificate's key signatures the session committed (frozen from then on). A book counts
+    /// only the signers whose signature it verifies (OWNX-1): a session can't name a signer.
+    pub keysigs: Vec<(Key, u64)>,
     pub sigs: Vec<(MemberId, u64)>,
 }
 
 impl Attest {
-    pub fn fact(world: u64, cert: CertId, lineage: Lineage, epoch: u32, frame: u64, signers: &[Key]) -> u64 {
-        let head = [0x00A7_7E57, world, cert, lineage as u64, epoch as u64, frame, signers.len() as u64];
-        fnv_u64s(head.into_iter().chain(signers.iter().map(|&k| k as u64)))
+    pub fn fact(world: u64, cert: CertId, lineage: Lineage, epoch: u32, frame: u64, keysigs: &[(Key, u64)]) -> u64 {
+        let head = [0x00A7_7E57, world, cert, lineage as u64, epoch as u64, frame, keysigs.len() as u64];
+        fnv_u64s(head.into_iter().chain(keysigs.iter().flat_map(|&(k, s)| [k as u64, s])))
     }
-    /// Signed by every member given (spike signatures).
-    pub fn make(world: u64, cert: CertId, lineage: Lineage, frame: u64, signers: &BTreeSet<Key>, members: &[MemberId]) -> Attest {
-        let signers: Vec<Key> = signers.iter().copied().collect();
-        let f = Attest::fact(world, cert, lineage, 0, frame, &signers);
-        Attest { cert, lineage, epoch: 0, frame, signers, sigs: members.iter().map(|&m| (m, member_sig(lineage, m, f))).collect() }
+    /// Signed by every member given (spike signatures). `keysigs` are the certificate's signatures
+    /// as committed, sorted by key.
+    pub fn make(world: u64, cert: CertId, lineage: Lineage, frame: u64, keysigs: &[(Key, u64)], members: &[MemberId]) -> Attest {
+        let mut keysigs = keysigs.to_vec();
+        keysigs.sort_unstable();
+        keysigs.dedup_by_key(|x| x.0);
+        let f = Attest::fact(world, cert, lineage, 0, frame, &keysigs);
+        Attest { cert, lineage, epoch: 0, frame, keysigs, sigs: members.iter().map(|&m| (m, member_sig(lineage, m, f))).collect() }
     }
     pub fn verify(&self, world: u64, sessions: &dyn EpochCerts) -> bool {
-        let f = Attest::fact(world, self.cert, self.lineage, self.epoch, self.frame, &self.signers);
+        let f = Attest::fact(world, self.cert, self.lineage, self.epoch, self.frame, &self.keysigs);
         sessions.cert_ok(self.lineage, self.epoch, f, &self.sigs)
+    }
+    /// The signers whose signatures on the certificate (its id is its body hash) check: the committed
+    /// signer set (OWNX-1).
+    pub fn signers(&self) -> BTreeSet<Key> {
+        self.keysigs.iter().filter(|&&(k, s)| s == key_sig(k, self.cert)).map(|&(k, _)| k).collect()
     }
 }
 
@@ -378,6 +395,20 @@ impl Owners {
         self.owners.remove(&key);
         self.tags.remove(&key);
         self.recovery.remove(&key);
+    }
+
+    /// `from`'s remaining share (its share minus its solo count) passes to `to` in equal parts, the
+    /// remainder to the lowest keys, so the shares stay conserved (OWNX-4).
+    fn pass_share(&mut self, from: Key, to: &[Key]) {
+        let rem = self.share.get(&from).copied().unwrap_or(0).saturating_sub(self.solo.get(&from).copied().unwrap_or(0));
+        if rem == 0 || to.is_empty() {
+            return;
+        }
+        let n = to.len() as u32;
+        for (i, k) in to.iter().enumerate() {
+            *self.share.entry(*k).or_default() += rem / n + u32::from((i as u32) < rem % n);
+        }
+        *self.share.entry(from).or_default() -= rem;
     }
 
     /// The keys acting in a signer set: the signers, plus every owner whose recovery key signed (a
@@ -640,7 +671,7 @@ impl Book {
             match self.insert_raw(c.clone(), Admit::Free) {
                 Ok(_) => {
                     for a in &by[&id] {
-                        self.record_raw(id, a.lineage, a.frame, a.signers.iter().copied().collect(), Some(a));
+                        self.record_raw(id, a.lineage, a.frame, a.signers(), Some(a));
                     }
                 }
                 Err(OwnError::MissingParent) if rest.iter().any(|r| c.prev.contains(&r.id())) => {}
@@ -668,7 +699,7 @@ impl Book {
         // Attestations of certificates held (or kept) before the batch.
         for (id, v) in &by {
             for a in v {
-                self.attest_raw(*id, a.lineage, a.frame, a.signers.iter().copied().collect(), Some(a));
+                self.attest_raw(*id, a.lineage, a.frame, a.signers(), Some(a));
             }
         }
         self.recompute();
@@ -732,7 +763,7 @@ impl Book {
     /// Import another session's attestation, if its signatures check out and the certificate is held
     /// or kept; otherwise nothing changes (send the certificate first).
     pub fn attest(&mut self, a: &Attest, sessions: &dyn EpochCerts) -> bool {
-        if !a.verify(self.world, sessions) || !self.attest_raw(a.cert, a.lineage, a.frame, a.signers.iter().copied().collect(), Some(a)) {
+        if !a.verify(self.world, sessions) || !self.attest_raw(a.cert, a.lineage, a.frame, a.signers(), Some(a)) {
             return false;
         }
         self.recompute();
@@ -768,8 +799,15 @@ impl Book {
         self.inner
             .commits
             .iter()
-            .filter_map(|(c, m)| m.get(&lineage).map(|(f, s)| Attest::make(self.world, *c, lineage, *f, s, members)))
+            .filter_map(|(c, m)| m.get(&lineage).map(|(f, s)| Attest::make(self.world, *c, lineage, *f, &self.committed_sigs(*c, lineage, s), members)))
             .collect()
+    }
+
+    /// The signatures of the committed signer set `s` of `id` in `lineage`: from the imported
+    /// attestation, or (a local commit) from the certificate as held.
+    fn committed_sigs(&self, id: CertId, lineage: Lineage, s: &BTreeSet<Key>) -> Vec<(Key, u64)> {
+        let from = self.inner.proofs.get(&(id, lineage)).map(|a| a.keysigs.clone()).unwrap_or_else(|| self.inner.certs[&id].sigs.clone());
+        from.into_iter().filter(|&(k, sig)| s.contains(&k) && sig == key_sig(k, id)).collect()
     }
 
     /// A session commits `c` at its `frame` on a head of the counting chain (any session may adopt
@@ -980,6 +1018,10 @@ impl Book {
                     return Err(OwnError::Signers);
                 }
                 s.drop_owner(key);
+                // OWNX-4: the leaver's remaining share passes to the remaining owners (it signed the
+                // Leave), so a resale keeps the world's share.
+                let to: Vec<Key> = s.owners.iter().copied().collect();
+                s.pass_share(key, &to);
             }
             Change::Remove { key } => {
                 if !matches!(p.rule, SignRule::Threshold(_)) {
@@ -987,6 +1029,10 @@ impl Book {
                 }
                 removal(key)?;
                 s.drop_owner(key);
+                // The target's remaining share goes to the owners who removed it (OWNX-4, OWNX-5: a
+                // share that changes without its holder signing).
+                let to: Vec<Key> = p.owners.iter().copied().filter(|o| *o != key && signers.contains(o)).collect();
+                s.pass_share(key, &to);
             }
             Change::SetRule { rule } => {
                 if rule == SignRule::Threshold(0) {
@@ -1009,6 +1055,10 @@ impl Book {
                 if recovery.is_none() && !p.recovery.contains_key(&owner) {
                     return Err(OwnError::NotAllowed);
                 }
+                // One backup key backs one owner (OWNX-6).
+                if recovery.is_some_and(|r| p.recovery.iter().any(|(o, m)| *o != owner && m.contains_key(&r))) {
+                    return Err(OwnError::NotAllowed);
+                }
                 s.recovery.remove(&owner);
                 if let Some(r) = recovery {
                     s.recovery.insert(owner, [(r, id)].into());
@@ -1025,8 +1075,15 @@ impl Book {
             if !by.iter().any(room) {
                 return Err(OwnError::Budget);
             }
+            // Each signing owner pays one, but never beyond its share: an owner with nothing left
+            // co-signs for free rather than running into debt that a share passed to it later
+            // would pay off first (OWNX-4).
             for o in by {
-                *s.solo.entry(o).or_default() += 1;
+                let share = s.share.get(&o).copied().unwrap_or(0);
+                let e = s.solo.entry(o).or_default();
+                if *e < share {
+                    *e += 1;
+                }
             }
         }
         // A recovery key never stays one once it is an owner itself.
