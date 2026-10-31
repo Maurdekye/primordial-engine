@@ -16,7 +16,10 @@
 #     Its physics part then checks the new baselines (trace release == debug, goldens, rollback).
 #  3. scripts/run_p2_2_tests.sh --linux: spikes/out/p2-2/ (Windows and Linux, debug and release,
 #     plus the fork suite), which also checks that pe-physics reproduces the new baselines.
-#  4. scripts/regress_session_sim.sh: the new session logs reproduce (CPU timings masked).
+#  4. scripts/regress_session_sim.sh --bless: spikes/out/session-sim/ for the scenario files the
+#     step-2 suite does not run (tools/session-sim/scenarios/faults/). It reports every log it
+#     rewrites as a difference, so its exit status is ignored; step 5 is the check.
+#  5. scripts/regress_session_sim.sh: every session log reproduces (CPU timings masked).
 # Records not written here are historical evidence of a named commit (f32 builds), listed in
 # the doc; they stay as they are.
 set -euo pipefail
@@ -55,7 +58,10 @@ bash scripts/run_determinism.sh
 step "3. run_p2_2_tests.sh $linux"
 bash scripts/run_p2_2_tests.sh $linux
 
-step "4. regress_session_sim.sh"
+step "4. regress_session_sim.sh --bless (the scenario logs step 2's suite does not write, e.g. faults/)"
+low bash scripts/regress_session_sim.sh --jobs 2 --bless || true
+
+step "5. regress_session_sim.sh: every session log reproduces"
 low bash scripts/regress_session_sim.sh --jobs 2
 
 step "done: review the diff (git status -- spikes/out), then commit it"
