@@ -9,4 +9,4 @@ RESULT latejoin: m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587
   m2: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 56 bad 0
   m3: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 56 bad 0
   m5: conf 587 frame 593 members {1, 2, 3, 5} evicted {} rollbacks 2 max depth 80 violations 0 equivocations 0 checks ok 60 bad 0
-RESULT latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2): frames 0..592 honest m1=6eea6412e72bb199 m2=6eea6412e72bb199 m3=6eea6412e72bb199 m5=6eea6412e72bb199 | offline replay 6eea6412e72bb199 | ALL EQUAL, NO FALSE CHECKS ; checks ok 228 bad 0
+RESULT latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2): frames 0..592 honest m1=dcbbb704c58c191c m2=dcbbb704c58c191c m3=dcbbb704c58c191c m5=dcbbb704c58c191c | offline replay dcbbb704c58c191c | ALL EQUAL, NO FALSE CHECKS ; checks ok 228 bad 0

@@ -7,4 +7,4 @@ REPRO capfake fixed=true: 9 removed at 4.15 s; live at the end: true; m1 conf 82
   m1: conf 826 frame 833 members {1, 2, 3} evicted {9: (122, 232)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 57 bad 0
   m2: conf 826 frame 833 members {1, 2, 3} evicted {9: (122, 232)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 57 bad 0
   m3: conf 826 frame 833 members {1, 2, 3} evicted {9: (122, 232)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 57 bad 0
-RESULT capfake fixed=true: frames 0..832 honest m1=441e7ef15fb51803 m2=441e7ef15fb51803 m3=441e7ef15fb51803 | offline replay 441e7ef15fb51803 | ALL EQUAL, NO FALSE CHECKS ; checks ok 171 bad 0
+RESULT capfake fixed=true: frames 0..832 honest m1=1f360dea85ccc6a0 m2=1f360dea85ccc6a0 m3=1f360dea85ccc6a0 | offline replay 1f360dea85ccc6a0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 171 bad 0

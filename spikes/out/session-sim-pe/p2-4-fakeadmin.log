@@ -3,10 +3,10 @@ REPRO fakeadmin fixed=false (no-op SetRole every 2 s): 8 removed at never; decis
   m2: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
   m3: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
   m4: conf 110 frame 230 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
-RESULT fakeadmin fixed=false: frames 0..229 honest m1=3db5099600ad7a43 m2=3db5099600ad7a43 m3=3db5099600ad7a43 m4=3db5099600ad7a43 | offline replay 3db5099600ad7a43 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
+RESULT fakeadmin fixed=false: frames 0..229 honest m1=8c2b069574148dfe m2=8c2b069574148dfe m3=8c2b069574148dfe m4=8c2b069574148dfe | offline replay 8c2b069574148dfe | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
 REPRO fakeadmin fixed=true (no-op SetRole every 2 s): 8 removed at 5.23 s; decisions at m1 3; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
   m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 79 bad 0
   m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
   m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
   m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (156, 297)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
-RESULT fakeadmin fixed=true: frames 0..832 honest m1=d82f493a285bdfab m2=d82f493a285bdfab m3=d82f493a285bdfab m4=d82f493a285bdfab | offline replay d82f493a285bdfab | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
+RESULT fakeadmin fixed=true: frames 0..832 honest m1=cd76e22a703b8a85 m2=cd76e22a703b8a85 m3=cd76e22a703b8a85 m4=cd76e22a703b8a85 | offline replay cd76e22a703b8a85 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
