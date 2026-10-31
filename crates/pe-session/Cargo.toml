@@ -11,3 +11,5 @@ box3d-rust.workspace = true
 ed25519-dalek = "3"
 # Entry ids (S3b). No `asm` feature: the engine is 100% Rust.
 sha2 = "0.11"
+# Check hashes (P22R-1): pure Rust, as D16 settles for content hashes.
+blake3 = { version = "1.8", default-features = false, features = ["std", "pure"] }
