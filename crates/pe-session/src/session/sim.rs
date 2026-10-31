@@ -182,16 +182,7 @@ impl WorldSim {
     /// [`check_hash_of`] the state's canonical parts. pe-physics's part is canonical whichever way the
     /// state was reached (review NEW-7, tests/physics_check_hash.rs).
     pub fn check_hash(&mut self) -> CheckHash {
-        let t0 = now_us();
-        let physics = self.world.check_hash().expect("a usable physics world");
-        let t1 = now_us();
-        // A NaN is a deterministic error on every peer, never hashed (review P21-5).
-        self.store.check_values().expect("no invalid value in the engine tables");
-        let c = check_hash_of(&physics, self.frame, &self.store.snapshot().to_bytes(), &encode_tables(&self.t));
-        self.stats.checks += 1;
-        self.stats.check_physics_us += t1 - t0;
-        self.stats.check_rest_us += now_us() - t1;
-        c
+        self.check_state(self.frame.saturating_sub(1)).0
     }
 
     /// The per-frame state hash (design 9.1): XXH64 over pe-physics's per-frame hash (body transforms,
@@ -626,8 +617,9 @@ impl WorldSim {
                 }
             }
             if f % self.cfg.check_every == 0 {
-                let h = self.check_hash();
+                let (h, st) = self.check_state(f);
                 self.check_hashes.insert(f, h);
+                self.served.insert(f, st);
                 // Review L2: a release-build finite check at every check frame. NaN payload bits differ
                 // across ISAs, so a non-finite state is a divergence waiting to happen: report it.
                 let bad = self.objects().map(|(_, o)| o).find(|o| {
@@ -725,6 +717,10 @@ impl WorldSim {
             .collect();
         for f in drop {
             self.ring.remove(&f);
+        }
+        // Keep the newest confirmed check-frame state (what a joiner gets) and the later ones.
+        if let Some(&keep) = self.served.range(..fin).next_back().map(|(f, _)| f) {
+            self.served = self.served.split_off(&keep);
         }
         self.compact_registry();
     }
