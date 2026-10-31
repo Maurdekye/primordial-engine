@@ -430,7 +430,9 @@ impl Peer {
                 last_burst_us: 0,
                 plan,
                 next_ack_us: 0,
-                ack_every_us: 2 * dt_us,
+                // Saturating: a scenario with hz = 0 (dt = inf, so dt_us = u64::MAX) must reach the
+                // tool's validator, which refuses it, instead of overflowing here in a debug build.
+                ack_every_us: dt_us.saturating_mul(2),
                 last_frame_seen: u64::MAX,
                 adapt: false,
                 level: 0,

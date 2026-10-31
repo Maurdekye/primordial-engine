@@ -1,0 +1,46 @@
+description = """
+P2-4 review round 3, VCR-4: from 2 s, while it is a member, 9 signs a capped precommit for no \
+proposal in every epoch it enters, and its acks claim the next epoch. Part 1 runs with VCR-4's fix \
+switched off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 14000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[byzantine]]
+kind = "fake_ack_epoch"
+member = 9
+from_ms = 2000
+ahead = 1
+while_member_at = 1
+
+[[byzantine]]
+kind = "precommit"
+member = 9
+from_ms = 2000
+value = 0xBAD0
+ahead = 30
+every_epoch = true
+while_member_at = 1
+to = [1, 2, 3]
+
+[[part]]
+# Round 4's cap rule (VC3R-2) would vote 9 out as well.
+world.1.fixes_off = ["VCR4", "VC3R2"]
+report = [
+    { kind = "line", text = "  9 removed: {removed@1:9} s; resets {resets@1}" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one)", fix = "VCR-4's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3], label = "capchurn" },
+    { kind = "check", case = "capchurn", label = "capchurn", at = 1, target = 9 },
+    { kind = "confs", honest = [1, 2, 3], label = "capchurn" },
+    { kind = "verdict", honest = [1, 2, 3], label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one)" },
+]
