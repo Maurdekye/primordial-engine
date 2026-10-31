@@ -48,6 +48,7 @@ const TIMINGS: &[(&str, &str)] = &[
     ("re-sim ", " ms per rendered sim frame"), // ball pit
     ("rendered sim frame (", " ms over the window)"),
     ("step avg ", " ms;"),
+    ("| wall ", " s"), // vcscale: "| no panic | wall 40.7 s"
 ];
 
 /// Mask the measured CPU timings in a log line (see [`TIMINGS`]).
@@ -125,6 +126,27 @@ fn compare(got: &str, want: Option<&str>) -> Outcome {
     ))
 }
 
+/// The committed logs that are spike-only for now: `spike-only.txt` in the scenarios folder, one log
+/// name per line (as `golden`), `#` starts a comment. They are not mirrored as scenario files yet,
+/// so a full run reports them instead of failing on them as orphans. The list only shrinks: a name
+/// with a scenario file, or with no committed log, is an error.
+pub fn spike_only(dir: &Path) -> Result<Vec<String>, String> {
+    let p = dir.join("spike-only.txt");
+    let Ok(text) = fs::read_to_string(&p) else { return Ok(vec![]) };
+    let mut v: Vec<String> = Vec::new();
+    for l in text.lines() {
+        let l = l.split('#').next().unwrap().trim();
+        if l.is_empty() {
+            continue;
+        }
+        if v.iter().any(|x| x == l) {
+            return Err(format!("{}: {l} is listed twice", p.display()));
+        }
+        v.push(l.to_string());
+    }
+    Ok(v)
+}
+
 /// Every `.log` under `dir`, as a path relative to it without the extension (`/`-separated).
 fn logs_under(dir: &Path, prefix: &str, out: &mut Vec<String>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
@@ -183,31 +205,62 @@ pub fn regress(args: &[String]) -> i32 {
         }
     });
     let results = results.into_inner().unwrap();
-    // Each scenario's committed log (relative, without .log) and whether it is a control run.
-    let meta: BTreeMap<String, (String, bool)> = todo
+    // Each scenario's committed log (relative, without .log), whether it is a control run, and the
+    // text its control must print.
+    let meta: BTreeMap<String, (String, bool, Option<String>)> = todo
         .iter()
         .map(|(n, p)| {
             let first = crate::scenario::load(p).ok().and_then(|l| l.parts.into_iter().next());
             let golden = first.as_ref().and_then(|s| s.golden.clone()).unwrap_or_else(|| n.clone());
-            (n.clone(), (golden, first.is_some_and(|s| s.control)))
+            let marker = first.as_ref().and_then(|s| s.control_marker.clone());
+            (n.clone(), (golden, first.is_some_and(|s| s.control), marker))
         })
         .collect();
-    // A committed log no scenario produces any more (only checked for a full run).
+    // A committed log no scenario produces any more (only checked for a full run), apart from the
+    // spike-only ones.
+    let spike_only = match spike_only(&scenarios) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let mut stale: Vec<String> = Vec::new();
     let orphans: Vec<String> = if only.is_none() {
-        let goldens: std::collections::BTreeSet<&str> = meta.values().map(|(g, _)| g.as_str()).collect();
+        let goldens: std::collections::BTreeSet<&str> = meta.values().map(|(g, _, _)| g.as_str()).collect();
         let mut logs = Vec::new();
         logs_under(&expected, "", &mut logs);
-        logs.into_iter().filter(|g| !goldens.contains(g.as_str())).collect()
+        for g in &spike_only {
+            if goldens.contains(g.as_str()) {
+                stale.push(format!("{g} is listed in spike-only.txt but has a scenario file: remove it from the list"));
+            } else if !logs.contains(g) {
+                stale.push(format!("{g} is listed in spike-only.txt but has no committed log"));
+            }
+        }
+        logs.into_iter().filter(|g| !goldens.contains(g.as_str()) && !spike_only.contains(g)).collect()
     } else {
         vec![]
     };
     let (mut same, mut new, mut bad) = (0, 0, 0);
     for (name, (ok, text)) in &results {
-        let (golden, control) = &meta[name];
+        let (golden, control, marker) = &meta[name];
         let path = expected.join(format!("{golden}.log"));
         let want = fs::read_to_string(&path).ok();
-        // A control run is expected to show failures; only its log is compared.
-        let fails = if *control { vec![] } else { failures(text) };
+        // A control run is expected to show failures: its log is compared, and it must show at
+        // least one failure (or its `control_marker`), so blessing cannot turn it into a pass.
+        let fails = if *control {
+            let shows = match marker {
+                Some(m) => text.contains(m.as_str()),
+                None => !failures(text).is_empty(),
+            };
+            if shows {
+                vec![]
+            } else {
+                vec![format!("the control run shows no failure ({})", marker.as_ref().map_or("no failure marker".to_string(), |m| format!("no {m:?}")))]
+            }
+        } else {
+            failures(text)
+        };
         let cmp = compare(text, want.as_deref());
         let differs = matches!(cmp, Outcome::Differs(_));
         let verdict = match cmp {
@@ -242,12 +295,21 @@ pub fn regress(args: &[String]) -> i32 {
     for o in &orphans {
         println!("== {o}: ORPHAN: committed log {} has no scenario", expected.join(format!("{o}.log")).display());
     }
-    bad += orphans.len();
+    for g in spike_only.iter().filter(|g| !stale.iter().any(|s| s.starts_with(&format!("{g} ")))) {
+        if only.is_none() {
+            println!("== {g}: spike-only (not mirrored as a scenario file yet; see spike-only.txt)");
+        }
+    }
+    for e in &stale {
+        println!("== ERROR: {e}");
+    }
+    bad += orphans.len() + stale.len();
     if bad == 0 && (new == 0 || bless) {
         println!(
-            "SUMMARY: {} scenarios, {same} identical to the committed logs{}; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states ({secs:.0} s)",
+            "SUMMARY: {} scenarios, {same} identical to the committed logs{}{}; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states ({secs:.0} s)",
             results.len(),
-            if new > 0 { format!(", {new} new (blessed)") } else { String::new() }
+            if new > 0 { format!(", {new} new (blessed)") } else { String::new() },
+            if only.is_none() && !spike_only.is_empty() { format!("; {} committed logs spike-only, not mirrored yet", spike_only.len()) } else { String::new() }
         );
         0
     } else {
@@ -266,6 +328,8 @@ mod tests {
         assert_eq!(mask("re-sim 3.51 ms per rendered sim frame (772 ms over the window); step avg 0.400 ms;"), "re-sim X ms per rendered sim frame (X ms over the window); step avg X ms;");
         assert_eq!(mask("  t=2850 ms: 9's touch"), "  t=2850 ms: 9's touch");
         assert_eq!(mask("one burst per 250 ms)"), "one burst per 250 ms)");
+        assert_eq!(mask("conf 360 | no panic | wall 40.7 s"), "conf 360 | no panic | wall X s");
+        assert_eq!(mask("removed at 3.75 s"), "removed at 3.75 s");
         assert_eq!(mask("mean lag 33.3 ms, resim frames 2 (1.5 ms) overwrites"), "mean lag 33.3 ms, resim frames 2 (X ms) overwrites");
         assert_eq!(mask("  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0"), "  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (X ms) overwrites 0");
     }

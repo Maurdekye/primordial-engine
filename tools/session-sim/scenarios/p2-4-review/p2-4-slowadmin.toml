@@ -1,0 +1,48 @@
+description = """
+P2-4 review round 3, VCR-8: admin 2 defines a role at frame 120; from 1.9 s to 3.5 s its entries \
+reach follower 6 2.5 s late on every path (fetch replies from the others included), so 6 sees the \
+precommits before the admin entry they list. The spike picks as the admin the first member that is \
+not the first proposer (1), so 6 gets the proposal on time. Part 1 runs with VCR-8's fix switched \
+off, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 9000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4]
+joiners = [6]
+
+[world.1.plan]
+2 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, define_role = { role = 1, perms = 0 } },
+    { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[fault]]
+after_ms = 1900
+before_ms = 3500
+to = 6
+author = 2
+msg = "entry"
+delay_ms = 2500
+
+[[fault]]
+after_ms = 1900
+before_ms = 3500
+from = 2
+to = 6
+delay_ms = 2500
+
+[[part]]
+world.1.fixes_off = ["VCR8"]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3, 4, 6], label = "slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first)", fix = "VCR-8's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3, 4, 6], label = "slowadmin" },
+    { kind = "check", case = "slowadmin", label = "slowadmin", honest = [1, 2, 3, 4, 6] },
+    { kind = "verdict", honest = [1, 2, 3, 4, 6], label = "slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first)" },
+]

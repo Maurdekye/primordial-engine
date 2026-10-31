@@ -1,0 +1,42 @@
+description = """
+P2-4 review round 3, VCR-3: admin 1 defines two roles (two decisions); at 3 s joiner 5, which \
+nobody follows, asks to join, and member 1 hands it the whole log at once, so it catches up on \
+both decisions within a tick and joins at epoch 2. Part 1 runs with VCR-3's fix switched off, \
+part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 10000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3]
+joiners = [5]
+follow_joiners = false
+
+[world.1.plan]
+1 = [
+    { at = 40, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 60, define_role = { role = 1, perms = 0 } },
+    { at = 100, define_role = { role = 2, perms = 0 } },
+    { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[join]]
+at_ms = 3000
+member = 5
+to = [1, 2, 3]
+log_from = 1
+
+[[part]]
+# Round 4's admission-epoch floor (VC3R-6) would let the joiner through as well.
+world.1.fixes_off = ["VCR3", "VC3R6"]
+report = [
+    { kind = "line", text = "  joiner admitted at m1: {member@1:5}" },
+    { kind = "before_fix", honest = [1, 2, 3, 5], label = "latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2)", fix = "VCR-3's fix" },
+]
+
+[[part]]
+report = [
+    { kind = "view_changes", honest = [1, 2, 3, 5], label = "latejoin" },
+    { kind = "confs", honest = [1, 2, 3, 5], label = "latejoin" },
+    { kind = "verdict", honest = [1, 2, 3, 5], label = "latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2)" },
+]

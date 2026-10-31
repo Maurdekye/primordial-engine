@@ -146,7 +146,8 @@ Rulings that shape the design:
   and spoken replies heard nearby (21.11); panels know where the player looks and points (21.12), with
   guidance tools (21.13); game settings changed by talking to the agent (21.14); **openness first**:
   prompts, replies and agents' work are seen and heard nearby by default (21.4); confidants (21.5); a
-  simplified transcript (21.2). The proposals these rulings left open are D81-D86.
+  simplified transcript (21.2). The proposals these rulings left open, D81-D86 and D89, were ruled at
+  08:31Z: as recommended, except D86 and D89, where the user chose (b) (21.4, 21.5).
 * **Logic builds** use the `rel-fast` profile, without LTO (22:47Z, 13.2).
 
 ---
@@ -1733,7 +1734,8 @@ is fixed once the author's chain is contiguous up to it.
     resets, 2.5 a second; m1's confirmation lag, median and maximum, 7 and 8 frames before, 16 and 40
     during, 7 and 8 after admin 1 kicks 9 at 10 s, when the resets stop. V strikeframe: 9 silent about
     3 s in each of four windows causes one to four resets in 26 s, and is removed in three of five
-    timings]. Whether to vote such a member out automatically is the user's question V4.
+    timings]. The user ruled that such a member is left to admins, with no automatic rule (V4 = (a),
+    08:31Z).
   * A faulty proposer can decide a reset in a round it proposes, ending the epoch's votes; they are cast
     again at once, and the next honest proposer carries them [I].
   * A faulty proposer chooses which of a joiner's attestations its change carries, so it can give the
@@ -1791,12 +1793,12 @@ is fixed once the author's chain is contiguous up to it.
     author equivocated and excludes it, which only shrinks the quorum; it does not unmake a decision a
     quorum already reached. @design-reviewer could not reproduce a wedge (`adminfork` removes the faulty
     admin either way); this is the argument, not a run [I].
-  * **Open with the user** (review VCR-10, the user's questions V1-V3 through @coordinator-opus): a role
-    holding only the kick permission can kick the last admin, which closes the session; the roles
-    permission can grant Admin, so it equals Admin; and removing an honest but slow sole admin closes the
-    session for good. The coordinator recommends: only admins kick admins; only admins grant Admin, and
-    the roles permission grants only lesser roles; the session still closes when the last admin times
-    out, after a longer grace period. Not built until the user rules.
+  * **Admin permissions, ruled** (review VCR-10; the user's V1-V3, 08:31Z; details in 12.4): kicking an
+    admin is a permission of its own, held by default only by admins (V1); the roles permission counts
+    as Admin, since it can grant Admin (V2 = (b)); and when the last admin times out the session closes,
+    with no longer grace period and no automatic handover (V3). The spike still lets a role with the
+    kick permission kick an admin; V1's separate permission and V3's closing behaviour are not built yet
+    (tracked on P2-4) [I].
   * **Kicks wait out a partition** instead of forking: under the two-thirds quorum neither side of
     {1,2} | {3,4} commits anything, and after the heal the kick holds [V kickpartition].
   * **The last admin** cannot give the role up without handing it on: such an entry is refused [V lastadmin].
@@ -2102,14 +2104,21 @@ entries that the view change commits (10.8).
   * Every player is an admin by default; a session can be configured so joiners get another role
     (22:11Z). Several admins are normal, and they are equal: no creator or owner super-admin (22:18Z).
   * An admin may kick anyone by one signed entry; the view change only commits it, in order (D80).
+    Kicking an admin is a permission of its own: by default only admins hold it, and a session may give
+    it to other roles (V1, 08:31Z).
   * There is always at least one admin: the last cannot give the role up without handing it on (22:11Z).
-  * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z).
+  * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
+    removes every other player, tells everyone that the session has closed, and allows no further change
+    to the world. There is no longer grace period and no automatic handover (V3, 08:31Z).
+    * [proposal] Since the roles permission counts as Admin (V2), a member whose role holds it counts as
+      an admin here, so the session does not close while such a member remains.
 * **Roles.** Admin is built in, holds every permission and is by default the only role. Other roles are
   named subsets of a permission catalogue that admins create and give, live (22:15Z). Resonite's role
   system inspired the catalogue and live reassignment (22:14Z). Ours differs because no single peer
   enforces it: every replica checks every entry against its epoch's roles, and role changes are ordered
   with every other membership change by the view change.
-  * The catalogue [proposal]: kick; define and give roles; change the join rules; interact (touch, grab,
+  * The catalogue [proposal]: kick; kick admins (V1: admins only by default); define and give roles,
+    which counts as Admin because it can grant Admin (V2 = (b), 08:31Z); change the join rules; interact (touch, grab,
     hands); edit objects (16.9); commit logic, shaders and assets (12.2's builder rights); speak; spawn
     and save; use agent panels. The spike checks the first two (10.8).
   * How 12.2's repository roles (`owner`, `builder`, `editor`, `player`, `spectator`) relate to session
@@ -2695,6 +2704,34 @@ Assets live in the same world repository tree as code and shaders. Large blobs a
 * Objects: `object.query`, `object.create`, `object.set_component`, `object.reparent`, `object.delete`.
   They become signed interactions, are checked against the ACL, and take effect at a frame.
 * Prefabs and assets: `prefab.save` and `asset.import` / `asset.get` / `asset.list`. These become commits.
+
+### 16.10 World saves: autosave, saved checkpoints and backups (Q29, user 08:31Z)
+
+The user ruled (Q29, 08:31Z): worlds autosave, players also make saved checkpoints by hand, and every
+world keeps a list of backups that can be loaded at any time. @gnosarium-ux designs the UI; this is the
+storage. Everything below beyond the ruling is a proposal [proposal; I, nothing built].
+
+* **A save is a content-addressed snapshot of confirmed state.** Its manifest names, by BLAKE3 hash
+  (D16): the world repository commit (logic, shaders and assets; 15, 16.8), the world's state at a
+  confirmed frame, the session configuration that lives with the world (roles and join rules, 12.4) and
+  the head of the world's ownership chain (12.4). Only confirmed state is saved, never speculative state,
+  so a save is the same whoever makes it, and loading it reproduces the check hash of its frame (9.1).
+  With regions (25.5), a save gathers each region's latest confirmed checkpoint; making those agree on
+  one frame is open.
+* **Saves share storage:** records and blobs are stored by hash, so a save costs only what changed since
+  the previous one. The region checkpoints of 25.5 are already such records.
+* **Autosave:** at a confirmed frame every few minutes while the world changes, and once as a session
+  closes, since nothing may change after that (V3, 12.4). Older autosaves thin out, as keyframes do (6.7).
+* **Saved checkpoints:** a member whose role holds "spawn and save" (12.4) names one; checkpoints are
+  never thinned or deleted automatically.
+* **The backup list:** every autosave and checkpoint, with its time, author, label and size, kept with
+  the world by the peers that hold it, its owners first; the blobs travel like assets (16.7).
+* **Loading a backup** during a session is a world-log entry: an admin's signed restore, ordered by the
+  view change like a kick. At its frame every replica replaces the world's state with the save's,
+  verified by hash, so all stay equal. With no session running, a player starts one from any backup.
+* **For the user, through @coordinator-opus:** how often to autosave and how long autosaves are kept;
+  who may load a backup (admins only, or a permission of its own); and whether a checkpoint can be
+  deleted, and by whom.
 
 ---
 
@@ -3369,11 +3406,14 @@ claude -p --input-format stream-json --output-format stream-json --include-parti
   * what other people's agents push into yours: panel inboxes and the connection policy (D30, D30a);
   * direct messages;
   * eye tracking, which stays off (Q8, 21.12).
-* **What never leaves the owner's peer** (D86) [proposal, Gnosarium UX 8.4]: raw tool results and
-  arguments, file contents, shell output and diffs, whatever the owner's detail setting. Others get the
-  agent's prose and the summary rows. Text that leaves, and text spoken aloud, first passes a best-effort
-  filter that masks key-like and token-like strings and long high-entropy runs. It is labelled
-  best-effort: it cannot catch everything an agent writes in prose.
+* **Everything else streams, raw tool output included** (D86 = (b), user 08:31Z): an open panel shows
+  others what its owner sees: the agent's prose and the summary rows, and also the detailed tool view,
+  raw tool results and arguments, file contents, shell output and diffs. Only what the list above keeps
+  closed stays on the owner's peer.
+  * A best-effort secret filter [proposal; it narrows D86 (b), so it is the user's call]: text that
+    leaves, and text spoken aloud, first passes a filter that masks key-like and token-like strings and
+    long high-entropy runs. It would be labelled best-effort, since it cannot catch everything an agent
+    writes.
 * **Private panel** (Q20, ruled as recommended at 22:54Z, "for now"): a per-panel switch, off by default.
   It hides the transcript, the prompt echo and the step caption from others, and spoken replies go only to
   the person who prompted. Others still see the panel, its working state and its signed edits.
@@ -3383,7 +3423,7 @@ claude -p --input-format stream-json --output-format stream-json --include-parti
 * **Who sees which transcript in full:** the owner sees every session of the panel; a guest or confidant
   sees the conversation as the world sees it, plus their own turns; a remote party sees only the messages
   on its own connection.
-* Defaults and options: **D26** (open by default since 22:28Z), **D86**.
+* Defaults and options: **D26** (open by default since 22:28Z), **D86** (ruled (b) at 08:31Z).
 
 ### 21.5 Unlocking a panel for others (user ruling 19:00Z)
 
@@ -3437,10 +3477,9 @@ yours when they prompt it."
 * **Only while the owner's harness runs** [I]: a confidant can prompt only while the owner is online
   with the panel open, from inside the panel's world, because the harness runs only on the owner's
   machine (21.4). This follows from where the harness runs, not from a rule of its own.
-* **Profile for confidants (D89)** [proposal, Gnosarium UX 8.5a]: an owner setting, "Confidants use my
-  panels in Restricted mode", ticked by default, so a confidant's turns on a Full-profile panel get no
-  shell or web. This narrows the ruling's "full access … as though they were you", so it is a decision for
-  the user.
+* **Profile for confidants (D89 = (b), user 08:31Z):** a confidant's turns get the panel's own profile,
+  shell and web included on a Full panel, as though they were the owner. There is no "Restricted for
+  confidants" setting; the Seal keeps its plain warning (Gnosarium UX 8.5a).
 
 **Mechanics [I]:**
 * A guest types into the owner's panel in-world. The guest's peer sends **signed panel-input messages**
@@ -3976,12 +4015,13 @@ tool "that theyre encouraged to use to respond to the user when they use speech 
 * **The model:** a local text-to-speech model, offline, in the installer. That speech synthesis is local,
   like recognition, is the coordinator's reading of the 22:02Z ruling, stated to the user and not
   contradicted [assumption].
-* **Where the speech is made (D85)** [proposal]: on the owner's peer, then streamed to listeners as voice
+* **Where the speech is made (D85, ruled as recommended at 08:31Z):** on the owner's peer, then streamed to listeners as voice
   audio through the same path and budgets as a player's voice (26), rather than each listener
   synthesizing the text. The voice then sounds the same to everyone, only one machine pays for the
   model, and a panel speaking costs listeners what a person speaking costs.
 
-**The model runtime (D81)** [I; nothing measured yet]:
+**The model runtime (D81; ruled as recommended at 08:31Z: chosen after a spike measures it)** [I;
+nothing measured yet]:
 * **100% Rust (20):** `whisper-rs` binds whisper.cpp (C++), so it is out. Candidates: `candle` (Hugging
   Face's framework, with Whisper examples; pure-Rust CPU kernels, and CUDA or Metal backends we would not
   enable), `burn` (a wgpu backend, so recognition could run on the GPU) and `tract` (ONNX inference on
@@ -4029,7 +4069,8 @@ Gnosarium UX 8.7.
 * **Live feed:** an agent may subscribe to a live stream of the rays and targets, at a capped rate (for
   example 10 Hz). It is a separate per-panel permission, off by default (Q8); while it is on, the panel
   shows it.
-* **A guest's or confidant's turn carries that sender's own context** (D82) [proposal]. The sender's peer
+* **A guest's or confidant's turn carries that sender's own context** (D82, ruled as recommended at
+  08:31Z). The sender's peer
   sends it with the signed panel input, limited by the sender's own settings. The owner's gaze and
   pointing never go with someone else's turn, and the header says whose context the turn carries.
 * **Where it goes:** the context reaches the harness as text, and from there its model provider: object
@@ -4061,7 +4102,7 @@ place labels.
   the objects inside a selected volume or region (ids, and names marked untrusted), in the context block
   (21.12). `annotation.list`, `annotation.get` and the resource `primordial://panel/annotations` serve the
   full geometry (17.2).
-* **Lifetime and clearing (D83)** [proposal]: an annotation lives until its author clears it or leaves the
+* **Lifetime and clearing (D83, ruled as recommended at 08:31Z):** an annotation lives until its author clears it or leaves the
   world; "keep" pins it across prompts; it is never saved with the world. Admins may clear others'
   annotations (a session permission, 12.4); anyone may hide others' annotations from their own view.
 * **Not sim state:** annotations never enter rollback or hashes and cannot affect physics. Ghost previews
@@ -4095,7 +4136,7 @@ place labels.
     <guest>", with undo [proposal, Gnosarium UX 8.12].
   * A Full-profile panel has a shell, so a guest's turn could edit the settings file itself. The engine
     keeps that file outside the workspace (21.3) and watches it during guests' turns [proposal].
-* **What needs the owner's confirmation (D84)** [proposal]:
+* **What needs the owner's confirmation (D84, ruled as recommended at 08:31Z):**
   * settings that turn on sensitive sensing: eye tracking, and the live context feed (Q8);
   * anything that is already an approval item: unlocking and the access level, the connection policy and
     ceiling (21.6), the tool profile (D25a), adding a hub, spend caps. These go through the approval layer
@@ -4645,8 +4686,8 @@ What moved, and why:
 |---|---|---|
 | 2. Deterministic core, and a protocol fit for strangers | pe-core, pe-sim, pe-physics, pe-session (from the spikes). **The proposer-based view change** (10.8): several members removed at once, withheld or forked votes, colluders, joins, demotion to spectator, and per-epoch certificates other worlds follow (R3-8b); about the size of round 3's R3-1 and R3-2 together [I]. **Per-object provenance chains** (D46's option for untrusted partners). Grabs-only claims (D72). A CI determinism matrix on the user's machines: Windows and Linux, x86-64 on two CPUs (ARM deferred). Byte-identical guest builds across Windows and Linux (D11). The in-process session simulator with network faults; **pe-mcp from day one** as the test and driver interface | M1: 2-4 desktop peers on a LAN, Windows and Linux mixed: a physics sandbox with state+frame interactions, confirmation, gap repair, equivocation handling and the view change. Two silent members, a withheld vote and colluders recover in the simulator, which stays all-equal and conserved. The same logic commit builds byte-identically on both OSes. An AI agent drives a peer over MCP |
 | 3. Real networking, look, scale, two worlds | UDP+Noise, bulk channel, invites and session codes, NAT traversal with volunteer relays (D35) and **relay mailboxes** for offline mail (D32); state-transfer join; wgpu renderer, extrapolation and smoothing; glTF assets + P2P asset transfer; **region-scoped rollback** (6.6) and **regions** with provisional arrival and following (D60); **multi-threaded stepping** in the fork if the D2 study succeeds; **pe-worlds**: two worlds per client, the settled handoff with provenance checks, portal rendering | M2: friends and strangers play over the internet with no server of ours; late join works; a ball pit of 500 balls stays within budget at 90 Hz, or at its 60 Hz fallback (D4); an object carried through a portal between two sessions |
-| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels for Claude Code, Codex and Antigravity through one harness layer: owner panels (structured adapters + PTY) with the collapsed transcript, **open by default** (21.4), desktop spatial context and guidance tools (21.12, 21.13), settings by agent (21.14), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a) and confidants, **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32) | M3: a player's own Claude Code, Codex or Antigravity, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
-| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; **voice**: the built-in speech model for prompting, and spoken replies, on Windows and Linux (21.11, D81); VR gaze (head, and eye tracking where present) and hand pointing as context, and the VR guidance tools (21.12, 21.13); per-eye portal straddling | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal; one prompts an agent by voice and both hear its reply |
+| 4. Live editing + agent panels | pe-logic + SDK (runtime per D12, hot-swap, migration, component IDL, state arena); **pe-build** (D11): sandboxed reproducible builds on every peer, toolchain distribution (D75), build cache, an activation lead from members' build times, mismatch handling (D74); pe-scm (confirmation finality, module merges, scoped seats, reserved paths, ACL); WGSL hot reload; MCP logic and shader tools + forks; agent panels for Claude Code, Codex and Antigravity through one harness layer: owner panels (structured adapters + PTY) with the collapsed transcript, **open by default** (21.4), desktop spatial context and guidance tools (21.12, 21.13), settings by agent (21.14), the approval layer, inbox and decider sessions, **unlocking with signed sender attribution** (D27a) and confidants, **cross-session panel messaging over P2P** (D32); the **Orgtree hub bridge** as an optional add-on, with automatic player and panel identities (D32); **gameplay cloth and soft bodies**: an XPBD module in pe-physics, two-way coupled, about 2,000 particles per world by default, after phase 3's regions and D58 settle (coordinator, 08:32Z; `spike/cloth` is the reference) | M3: a player's own Claude Code, Codex or Antigravity, in an in-game panel, edits logic and shaders in a live session within the 2.1 iteration budget, and every peer runs modules it built itself; conflicts reject and rebase per R7; a guest at an unlocked panel is always attributed correctly (gate 9j); two players in different sessions message each other's panels with no hub |
+| 5. VR + avatars | pe-xr (OpenXR + Vulkan interop) on Windows and Linux (SteamVR, Meta, Monado); swept hand engagement; 3-point IK; Resonite avatar import v1; VR panels + virtual keyboard; **voice**: the built-in speech model for prompting, and spoken replies, on Windows and Linux (21.11, D81); VR gaze (head, and eye tracking where present) and hand pointing as context, and the VR guidance tools (21.12, 21.13); per-eye portal straddling; **cosmetic cloth** (capes, hair, banners): local, never rolled back, outside the hash (coordinator, 08:32Z) | M4: two PC VR users, on Windows and Linux, with imported Resonite avatars interact with physics objects and walk through a portal; one prompts an agent by voice and both hear its reply |
 | 6. Scale + discovery | Mainline DHT discovery records; snapshot deltas; **larger sessions** (compact acks, relaying), a planned target (D23); background-world parking | M5: discovery without invites; sessions above 8 players; thousands of bodies across regions; several attended worlds per client |
 
 ### 23.3 Top risks
@@ -4772,7 +4813,8 @@ Rules for every package:
   large session; at most a quorum, `MAX_POLKA` = 512) and tightened the generator's lag bound. The
   delta re-check caught that the bound measured the speculative sim frame, which a halt pins one window
   behind the clock, so L1 never fired; it now measures the clock-frame present (`now - conf`, two
-  windows), and the RG-1 control fails L1. With those in, the branch lands.
+  windows), and the RG-1 control fails L1. **Landed on main at 5ba3eab (31 October)**, with the P2-9
+  tool brought onto the landed API at f05324f.
   **Three one-faulty-member liveness halts are known open, to be fixed as round 7 on main** (they do not
   touch safety — every replica still agrees — only liveness):
   * **VC6R-3** (`adminwedge`): a faulty admin forks one seq, proposes a change listing the honest
@@ -5092,7 +5134,7 @@ entry says so.
     guidance drawings and the agent's work (21.4). A per-panel "Private panel" switch, off by default (Q20,
     22:54Z, "for now"). Six things stay closed by default (Q19, 22:34Z): the Locked default, the approval
     layer, credentials and keys, panel inboxes, direct messages and eye tracking. What an open panel sends
-    others: D86.
+    others: D86, ruled (b) at 08:31Z: everything, raw tool output included.
   * Settled at 19:11Z as recommended (below); that default no longer holds.
   * Recommend: private by default. Others see the panel, its owner, an "agent working" indicator and the
     signed edits it produces. The owner may share the rendered transcript with chosen peers.
@@ -5663,6 +5705,8 @@ entry says so.
     vanished source world can stop an object it handed over from leaving its new world again. That is
     griefing, not duplication.
 * **D81. Speech models: runtime, size and where they run (21.11; raised by the 21:51Z voice ruling).**
+  **Ruled 08:31Z: as recommended.** A spike measures accuracy, time to the first word, and CPU and GPU
+  cost before the runtime, model size and processor are chosen.
   * Ruled so far: one local Whisper-class speech-to-text model on Windows and Linux, shipped in the
     installer (21:51Z; 22:23Z, Q13). Local text to speech is assumed (22:02Z).
   * Options [I; nothing measured]:
@@ -5675,6 +5719,7 @@ entry says so.
   * Recommendation: decide after a spike that measures accuracy, time to the first word, and CPU and GPU
     cost on the user's machines with the ball pit and a VR-sized render load running.
 * **D82. Spatial context at shared panels, and what reaches the model provider (21.12).**
+  **Ruled 08:31Z: as proposed.**
   * Ruled: panels know where the player looks, what they look at and where they point (21:52Z); eye
     tracking and the live feed are off by default (Q8, 22:28Z).
   * Proposal: a guest's or confidant's turn carries only that sender's own gaze and pointing, sent by the
@@ -5684,6 +5729,7 @@ entry says so.
   * Alternative: a panel always carries its owner's context, whoever prompts. Simpler, but it shows the
     agent, during a guest's turn, what the owner is looking at.
 * **D83. Guidance annotations: lifetime, and who may clear them (21.13).**
+  **Ruled 08:31Z: as proposed.**
   * Ruled: shown to others by default, can be made private (Q9, 22:28Z).
   * Proposal: an annotation lives until its author clears it or leaves; "keep" pins it across prompts; it
     is never saved with the world; admins may clear others' annotations; anyone may hide others' from
@@ -5691,6 +5737,7 @@ entry says so.
   * Alternatives: annotations expire after some minutes unless kept; or they can be saved with the world
     as notes.
 * **D84. Which settings an agent may change without the owner's confirmation (21.14).**
+  **Ruled 08:31Z: as proposed.**
   * Ruled: the agent changes game settings when asked (22:03Z); guests cannot change the owner's settings
     (Q12, 22:28Z); confidants can (22:34Z).
   * Proposal: everyday settings (graphics, audio, comfort, input, culling) apply at once, with undo.
@@ -5700,6 +5747,7 @@ entry says so.
   * Alternative: every change an agent makes to a setting needs a confirmation. Safer, slower, and against
     the intent of changing settings by talking.
 * **D85. Where an agent's spoken reply is synthesized (21.11).**
+  **Ruled 08:31Z: (a), on the panel owner's peer.**
   * Ruled: replies are spoken to people nearby by default (Q15, 22:23Z).
   * Options:
     * **(a) On the panel owner's peer,** streamed to listeners through the voice path (26): one voice for
@@ -5708,6 +5756,9 @@ entry says so.
       bandwidth, but every listener runs the model for every panel nearby, and the voice may differ with
       each listener's model version.
 * **D86. What an open panel shows other people (21.4; the 22:28Z principle).**
+  **Ruled 08:31Z: the alternative, (b).** An open panel streams everything, the detailed tool view, raw
+  output and file contents included. The best-effort secret filter remains only a proposal, since it
+  narrows (b).
   * Ruled: open by default, so people nearby see and hear prompts, replies, guidance and the agent's work
     (22:28Z); a private-panel switch, off by default (Q20, 22:54Z); six things stay closed (Q19, 22:34Z).
   * Proposal: others get the conversation, not the raw work: the agent's prose, the collapsed tool
@@ -5717,6 +5768,9 @@ entry says so.
   * Alternative: stream the detailed tool view as well, to "watch them work" in full. More open, but it
     sends file contents and command output, with whatever secrets they hold, to everyone nearby.
 * **D89. Which tools a confidant's turns get (21.5; raised by the 22:34Z confidant ruling).**
+  **Ruled 08:31Z: (b), full as ruled.** A confidant's turns get exactly the panel's own profile, shell
+  and web included on a Full panel, with no Restricted-by-default setting; the Seal keeps its plain
+  warning.
   * Ruled: confidants get "full access to your prompts as though they were you" (22:34Z), and do not
     confirm the owner's approval cards (Q22, 22:54Z).
   * Options:
@@ -5729,6 +5783,11 @@ entry says so.
 
 * **D80. Who may change a session's member list, and how many must agree (10.8, 12.4; raised by P2-4).**
   **Settled 22:13Z: admins over a two-thirds safety layer.**
+  **Refined 08:31Z (V1-V4):** kicking an admin is its own permission, held by default only by admins
+  (V1); the roles permission counts as Admin (V2 = (b)); when the last admin times out the session
+  closes, removing every other player, telling everyone and allowing no further change to the world,
+  with no longer grace period or handover (V3); a member that keeps forcing resets is left to admins
+  (V4 = (a)). 12.4 and 10.8 carry them.
   * The user answered with session admins (22:11Z): admins may kick anyone; there is always at least one
     admin, and the last cannot give the role up without handing it on; every player is an admin by
     default; the session closes when the last admin leaves.
