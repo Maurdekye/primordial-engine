@@ -1,0 +1,67 @@
+description = """
+P2-4 review round 6, VC5R-1's argument: every member an admin. At 2 s faulty admin 9 forks one \
+seq, a SetRole making 3 a guest to 1 and 2 and an Attest in its place to 3, proposes a change \
+listing the SetRole, and prevotes nil. Its precommits are lost, its value prevotes and the \
+SetRole never reach 3, and once 9 holds its own value prevote every message it sends is lost. \
+3's messages to 1 and 2 sent between 2 and 4 s arrive 2 s late, so the proof reaches them after \
+they lock. Part 1 runs with VC3R3S's fix switched off as the control, part 2 as shipped."""
+include = ["../common/review.toml"]
+end_ms = 12000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 9]
+guests = { role = 1, admins = [1, 2, 3, 9] }
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 600, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[byzantine]]
+kind = "admin_fork"
+member = 9
+at_ms = 2000
+target = 3
+role = 1
+a_to = [1, 2]
+b_to = [3]
+prevote_to = [1, 2, 3]
+
+[[byzantine]]
+kind = "go_silent"
+member = 9
+from_ms = 2000
+holds_own = "nonnil_prevote"
+
+[[fault]]
+from = 9
+msg = "precommit"
+drop = true
+
+[[fault]]
+from = 9
+to = 3
+msg = "prevote"
+nil = false
+drop = true
+
+[[fault]]
+from = 3
+to = [1, 2]
+after_ms = 2000
+before_ms = 4000
+delay_ms = 2000
+
+[[part]]
+world.1.fixes_off = ["VC3R3S"]
+report = [
+    { kind = "check", case = "adminfork", label = "adminfork fixed=false", at = 1, target = 9, members = [3], honest = [1, 2, 3] },
+    { kind = "view_changes", honest = [1, 2, 3], label = "adminfork" },
+    { kind = "verdict", honest = [1, 2, 3], label = "adminfork fixed=false" },
+]
+
+[[part]]
+report = [
+    { kind = "check", case = "adminfork", label = "adminfork fixed=true", at = 1, target = 9, members = [3], honest = [1, 2, 3] },
+    { kind = "view_changes", honest = [1, 2, 3], label = "adminfork" },
+    { kind = "verdict", honest = [1, 2, 3], label = "adminfork fixed=true" },
+]
