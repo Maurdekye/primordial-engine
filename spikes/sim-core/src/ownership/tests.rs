@@ -1022,3 +1022,148 @@ fn rv4_owt8_mutual_removal_dispute() {
     assert_eq!(set(&v), [A, B]);
     assert!(v.disputed);
 }
+
+// ---- design-reviewer round 5 (OWNU-*), as asserting tests; they fail at dfda0ad ----
+
+/// OWNU-1: an honest chain longer than any buffer verifies offline: the batch matches its own
+/// attestations to its own certificates.
+#[test]
+fn rv5_ownu1_verify_chain_over_256_attested() {
+    let mut l = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    for i in 0..300u32 {
+        let k = if i % 2 == 0 { S } else { B };
+        commit(&mut l, Change::SetRecovery { owner: k, recovery: Some(1000 + i) }, &[k], i as u64 + 1).unwrap();
+    }
+    let g = l.cert(l.genesis).unwrap().clone();
+    let rest: Vec<Cert> = l.prefix_of(head(&l)).into_iter().filter(|c| c.seq > 0).collect();
+    let att = l.export(L1, &[1, 2, 3]);
+    let v = verify_chain(&g, &rest, &att, &sessions()).unwrap();
+    assert_eq!(v.heads, l.heads());
+    assert_eq!(v.owners, l.view().owners);
+}
+
+/// OWNU-2: a keyless relay's orphans with made-up parents (ids ground low) are refused, and flush
+/// nothing.
+#[test]
+fn rv5_ownu2_keyless_relay_flushes_parked() {
+    let mut l = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut l, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    commit(&mut l, Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B], 2).unwrap();
+    let g = l.cert(l.genesis).unwrap().clone();
+    let rest: Vec<Cert> = l.prefix_of(head(&l)).into_iter().filter(|c| c.seq > 0).collect();
+    let att = l.export(L1, &[1, 2, 3]);
+    let mut b = Book::new(g).unwrap();
+    let (mut n, mut junk) = (0u64, 0);
+    while junk < 256 {
+        n += 1;
+        let c = Cert { world: b.world, seq: 1, prev: vec![n], change: Change::Add { key: EVE }, sigs: vec![] };
+        if c.id() < u64::MAX >> 12 {
+            assert!(b.insert(c).is_err(), "an orphan is refused");
+            junk += 1;
+        }
+    }
+    // In order now: each certificate after its parent, each attestation after its certificate.
+    for c in &rest {
+        let _ = b.insert(c.clone());
+    }
+    for a in &att {
+        b.attest(a, &sessions());
+    }
+    assert_eq!(b.view().owners.recovery, l.view().owners.recovery);
+    assert_eq!(b.len(), l.len());
+}
+
+/// OWNU-3: a stripped copy (same id) of a held or parked certificate never replaces it: the
+/// signatures of copies merge.
+#[test]
+fn rv5_ownu3_relay_strips_a_parked_copy() {
+    let mut l = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut l, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    commit(&mut l, Change::Add { key: X }, &[S, B], 2).unwrap();
+    let g = l.cert(l.genesis).unwrap().clone();
+    let rest: Vec<Cert> = l.prefix_of(head(&l)).into_iter().filter(|c| c.seq > 0).collect();
+    let att = l.export(L1, &[1, 2, 3]);
+    let mut b = Book::new(g).unwrap();
+    // The parent, then two partial copies of the joint Add (as a relay strips them, or as each
+    // co-signer gossips its own): each alone is under-signed and kept; together they are valid.
+    let (mut only_s, mut only_b) = (rest[1].clone(), rest[1].clone());
+    only_s.sigs.retain(|s| s.0 == S);
+    only_b.sigs.retain(|s| s.0 == B);
+    assert_eq!(only_s.id(), rest[1].id());
+    let _ = b.insert(rest[0].clone());
+    let _ = b.insert(only_s);
+    let _ = b.insert(only_b);
+    for a in &att {
+        b.attest(a, &sessions());
+    }
+    assert_eq!(owners(&b), owners(&l));
+}
+
+/// OWNU-4: one owner and its 16 recovery keys can't fill the unattested certificates for anyone
+/// else: an honest co-owner's certificate on the head still gets in.
+#[test]
+fn rv5_ownu4_one_owner_fills_the_pool() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let mut named = vec![];
+    for i in 0..16u32 {
+        commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(6000 + i) }, &[S], 1 + i as u64).unwrap();
+        named.push((head(&b), 6000 + i));
+    }
+    for &(at, r) in &named {
+        for j in 0..UNATTESTED_PER_KEY as u32 {
+            let _ = b.insert(next(&b, at, Change::StartRecover { owner: S, new_key: 900_000 + r * 100 + j }, &[r]));
+        }
+    }
+    let honest = next(&b, head(&b), Change::SetRecovery { owner: B, recovery: Some(R2) }, &[B]);
+    assert_eq!(b.insert(honest), Ok(Insert::Applied));
+}
+
+/// OWNU-5: the digest is a function of what counts, not of the arrival order of junk.
+#[test]
+fn rv5_ownu5_digest_depends_on_arrival_order() {
+    let b0 = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let cs: Vec<Cert> = (0..300).map(|i| next(&b0, b0.genesis, Change::SetRecovery { owner: S, recovery: Some(7000 + i) }, &[S])).collect();
+    let (mut p, mut q) = (b0.clone(), b0.clone());
+    for c in &cs {
+        let _ = p.insert(c.clone());
+    }
+    for c in cs.iter().rev() {
+        let _ = q.insert(c.clone());
+    }
+    // The held junk may differ (the per-key quota); what counts may not.
+    let (vp, vq) = (p.view(), q.view());
+    assert_eq!((vp.owners, vp.heads, vp.disputed), (vq.owners, vq.heads, vq.disputed));
+    assert_eq!(p.digest(), q.digest());
+}
+
+/// OWNU-6: one owner alone, through an honest session, can't fill the book: its solo changes are
+/// capped at its share, and a joint change still gets in.
+#[test]
+fn rv5_ownu6_one_owner_fills_the_attested_cap() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    let mut n = 0;
+    for i in 0..MAX_CERTS as u32 + 1 {
+        if commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(5000 + i) }, &[S], 1 + i as u64).is_err() {
+            break;
+        }
+        n += 1;
+    }
+    assert!(n < MAX_CERTS / 2, "S alone committed {n}");
+    assert_eq!(commit(&mut b, Change::Add { key: X }, &[S, B], 5000), Ok(Insert::Applied));
+    // Leaving is never capped.
+    assert_eq!(commit(&mut b, Change::Leave { key: S }, &[S], 5001), Ok(Insert::Applied));
+}
+
+/// OWNU-7: a record or attestation of a certificate the book doesn't hold changes nothing (send the
+/// certificate first); nothing unbounded is buffered.
+#[test]
+fn rv5_ownu7_record_of_unheld_changes_nothing() {
+    let mut b = Book::new(Cert::genesis(&[S, B], SignRule::All, 1)).unwrap();
+    commit(&mut b, Change::SetRecovery { owner: S, recovery: Some(R) }, &[S], 1).unwrap();
+    let before = b.clone();
+    for id in 0..1000 {
+        b.record(id, L1, 5);
+        b.attest(&Attest::make(b.world, id, L1, 5, &[S].into(), &[1, 2, 3]), &sessions());
+    }
+    assert_eq!(b, before);
+}
