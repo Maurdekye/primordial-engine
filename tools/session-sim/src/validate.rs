@@ -425,8 +425,10 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 if !(at_ms < part_ms && part_ms <= others_ms) {
                     v.err("admin_wedge: needs at_ms < part_ms <= others_ms".into());
                 }
-                if others.contains(part) || others.contains(member) {
-                    v.err("admin_wedge: others must not hold part or the member".into());
+                // The spike derives them: the others are everyone the SetRole goes to but `part`.
+                let want: Vec<u32> = a_to.iter().copied().filter(|m| m != part).collect();
+                if *others != want || !a_to.contains(part) || a_to.contains(member) {
+                    v.err(format!("admin_wedge: a_to must hold part and not the member, and others must be a_to without part ({want:?})"));
                 }
             }
             Byzantine::GoSilent { member, from_ms, .. } => {
@@ -572,7 +574,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "prevotefork" => at.is_some() && target.is_some() && event.is_some() && !members.is_empty() && !honest.is_empty(),
                     "prevotefork_pf" => !members.is_empty() && !honest.is_empty(),
                     "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
-                    "adminwedge" => target.is_some() && !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { .. })),
+                    "adminwedge" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { member, .. } if Some(*member) == *target)),
                     // The silence start must be a fault rule's, so the two cannot drift apart.
                     "vcscale" => matches!(r, Report::Check { silent: Some(_), from_ms: Some(t), .. } if s.fault.iter().any(|f| f.drop && f.after_ms == Some(*t))),
                     _ => true,
