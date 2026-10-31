@@ -1203,7 +1203,7 @@ impl WorldSim {
         for p in seg.iter().rev() {
             if let Payload::Ack { horizon, epoch, .. } = p.payload {
                 let epoch_ok = self.fixes_off & fix::VC5 != 0 || (epoch >= prev_epoch && (epoch <= prev_epoch + 1 || epoch <= adm));
-                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack >= p.stamp && epoch_ok {
+                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack + PACK_MAX - 1 >= p.stamp && epoch_ok {
                     max_h = Some(max_h.map_or(horizon, |x| x.max(horizon)));
                     last_ack = p.stamp;
                     prev_epoch = prev_epoch.max(epoch);
