@@ -1,0 +1,25 @@
+# The phase-1 scripted schedule (session-sim main.rs `scripted`): touches by members 1, 2 and 3
+# in world 1, with same-object conflicts at frames 120-126 (object 50) and 300-305 (object 77).
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, touch = { obj = 50, impulse = [0.0, 8.0, 2.0] } },
+    { at = 126, touch = { obj = 50, impulse = [0.0, 3.0, 0.0] } },
+    { at = 260, touch = { obj = 120, impulse = [-6.0, 4.0, 1.0] } },
+    { at = 400, touch = { obj = 140, impulse = [2.0, 7.0, -3.0] } },
+    { at = 305, touch = { obj = 77, impulse = [0.0, 4.0, 0.0] } },
+]
+2 = [
+    { at = 90, touch = { obj = 33, impulse = [3.0, 2.0, 0.0] } },
+    { at = 120, touch = { obj = 50, impulse = [-4.0, 8.0, 0.0] } },
+    { at = 125, touch = { obj = 50, impulse = [0.0, 9.0, 0.0] } },
+    { at = 200, touch = { obj = 77, impulse = [5.0, 5.0, 5.0] } },
+    { at = 330, touch = { obj = 5, impulse = [0.0, 12.0, 0.0] } },
+    { at = 470, touch = { obj = 99, impulse = [-2.0, 6.0, 4.0] } },
+]
+3 = [
+    { at = 150, touch = { obj = 20, impulse = [1.0, 7.0, 0.0] } },
+    { at = 300, touch = { obj = 77, impulse = [-3.0, 6.0, 2.0] } },
+    { at = 450, touch = { obj = 140, impulse = [0.0, 5.0, -2.0] } },
+]

@@ -1,0 +1,20 @@
+description = "State + frame acceptance with 10% loss on 40 +- 30 ms links."
+include = ["state-frame.toml"]
+
+[net]
+link = { delay_ms = 40, jitter_ms = 30, loss_pct = 10 }
+
+[[report]]
+kind = "acceptance"
+label = "loss"
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "traffic"
+
+[[report]]
+kind = "check_world"
+frames = 700
+label = "loss"

@@ -2,11 +2,13 @@
 # Builds and runs every session-protocol scenario (in-process, virtual clock; deterministic).
 # Logs go to spikes/out/session-sim/; the RESULT lines are the evidence cited in docs/design.md.
 # usage: scripts/run_session_sim.sh            (from any directory; needs only a Rust toolchain)
+# PE_BIN=<dir> runs a prebuilt binary from <dir> without building; PE_OUT=<dir> writes the logs under
+# <dir>/session-sim instead of spikes/out (both used by scripts/run_matrix.sh).
 set -u
 cd "$(dirname "$0")/.."
-cargo build --release -q -p pe-spike-session-sim || exit 1
-B=target/release/pe-spike-session-sim
-O=spikes/out/session-sim
+[ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim || exit 1
+B=${PE_BIN:-target/release}/pe-spike-session-sim
+O=${PE_OUT:-spikes/out}/session-sim
 mkdir -p $O
 run() { local name=$1; shift; "$B" "$@" > "$O/$name.log" 2>&1; echo "== $name"; grep "^RESULT" "$O/$name.log"; }
 run c1 c1

@@ -23,13 +23,17 @@ use crate::world::World;
 
 /// Integrate velocities, apply damping, and gyroscopic torque.
 /// (b3IntegrateVelocitiesTask)
-pub(super) fn integrate_velocities(world: &mut World, context: &StepContext) {
-    let gravity = world.gravity;
+///
+/// Primordial Engine fork (D2): one block of awake bodies, `sims[i]` driving `states[i]`.
+/// Each body is independent, so blocks can run on any worker.
+pub(super) fn integrate_velocities_block(
+    gravity: Vec3,
+    sims: &[crate::body::BodySim],
+    states: &mut [crate::body::BodyState],
+    context: &StepContext,
+) {
+    debug_assert!(sims.len() == states.len());
     let h = context.h;
-
-    let set = &mut world.solver_sets[AWAKE_SET as usize];
-    let sims = &set.body_sims;
-    let states = &mut set.body_states;
 
     for i in 0..states.len() {
         let sim = &sims[i];
@@ -116,14 +120,17 @@ pub(super) fn integrate_velocities(world: &mut World, context: &StepContext) {
 }
 
 /// (b3IntegratePositionsTask)
-pub(super) fn integrate_positions(world: &mut World, context: &StepContext) {
+///
+/// Primordial Engine fork (D2): one block of awake body states.
+pub(super) fn integrate_positions_block(
+    states: &mut [crate::body::BodyState],
+    context: &StepContext,
+) {
     let h = context.h;
     let max_linear_speed = context.max_linear_velocity;
     let max_angular_speed = MAX_ROTATION * context.inv_dt;
     let max_linear_speed_squared = max_linear_speed * max_linear_speed;
     let max_angular_speed_squared = max_angular_speed * max_angular_speed;
-
-    let states = &mut world.solver_sets[AWAKE_SET as usize].body_states;
 
     for state in states.iter_mut() {
         let mut v = state.linear_velocity;

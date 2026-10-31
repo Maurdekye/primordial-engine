@@ -1,0 +1,32 @@
+description = """
+Round-2 review: member 9 shows member 2 a different chain (acks without its touch). Before, the \
+honest members forked. Now the conflicting references expose the equivocation, both honest \
+members vote, 9 is evicted with a cut before the disputed entry, and they agree."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 9]
+
+[world.1.plan]
+9 = [{ at = 50, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+
+# 9 signs a second chain for member 2, an ack with an honest horizon every 33 ms and no touch;
+# member 2 never receives 9's real chain from 9.
+[[byzantine]]
+kind = "fork_chain"
+member = 9
+to = [2]
+every_ms = 33
+hide_real = true
+
+[[report]]
+kind = "touches"
+author = 9
+at = [1, 2]
+text = "9's touch at m{m}"
+
+[[report]]
+kind = "verdict"
+honest = [1, 2]
+label = "ackfork (9 shows member 2 a different chain)"

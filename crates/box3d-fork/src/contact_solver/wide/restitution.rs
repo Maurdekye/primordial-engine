@@ -5,7 +5,7 @@
 //! SPDX-License-Identifier: MIT
 
 use super::{
-    gather_bodies, inv_rotate_vector_w, mul_add_mvw, mul_sub_mvw, scatter_bodies,
+    gather_bodies, inv_rotate_vector_w, mul_add_mvw, mul_sub_mvw, scatter_bodies, StatesView, WideView,
     WideContactConstraints,
 };
 use crate::body::BodyState;
@@ -24,29 +24,51 @@ pub fn apply_restitution_w(
     restitution_threshold: f32,
     propagate: bool,
 ) {
+    let count = set.len();
+    // SAFETY: exclusive borrows of the set and the states.
+    unsafe {
+        apply_restitution_w_range(
+            WideView::new(set),
+            0..count,
+            StatesView::new(states),
+            context,
+            restitution_threshold,
+            propagate,
+        )
+    }
+}
+
+/// [`apply_restitution_w`] for constraints `constraint_range` of a color. (D2 block)
+///
+/// # Safety
+/// The views are live, and no other thread touches these constraints or their dynamic bodies
+/// during the call (see [`super::view`]).
+pub(crate) unsafe fn apply_restitution_w_range(
+    set: WideView,
+    constraint_range: core::ops::Range<usize>,
+    states: StatesView,
+    context: &StepContext,
+    restitution_threshold: f32,
+    propagate: bool,
+) {
     let inv_h = splat_w(context.inv_h);
     let neg_restitution_threshold = splat_w(-restitution_threshold);
     let zero = zero_w();
 
-    let WideContactConstraints {
-        constraints,
-        manifolds,
-        manifold_starts,
-    } = set;
-
-    for (i, c) in constraints.iter().enumerate() {
+    for i in constraint_range {
+        // SAFETY: the function contract.
+        let c = unsafe { set.constraint(i) };
         if !propagate && all_zero_w(c.restitution) {
             continue;
         }
 
-        let mut b_a = gather_bodies(states, &c.index_a);
-        let mut b_b = gather_bodies(states, &c.index_b);
+        let mut b_a = gather_bodies(&states, &c.index_a);
+        let mut b_b = gather_bodies(&states, &c.index_b);
 
         let restitution_mask = greater_than_w(c.restitution, zero);
         let dp = sub_vw(b_b.dp, b_a.dp);
 
-        let range = manifold_starts[i] as usize..manifold_starts[i + 1] as usize;
-        for cm in &mut manifolds[range] {
+        for cm in unsafe { set.manifolds_mut(i) } {
             let normal_separation = dot_w(cm.normal, dp);
             let normal_a = inv_rotate_vector_w(b_a.dq, cm.normal);
             let normal_b = inv_rotate_vector_w(b_b.dq, cm.normal);

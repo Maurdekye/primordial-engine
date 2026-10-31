@@ -1,0 +1,11 @@
+# python -I scripts/guest_build_times.py --reps 3 on <laptop> (i7-13620H, Windows, unthrottled), commit 81299e0's script on a6878c3's tree
+RESULT guest build times on <laptop> (i7-13620H, Windows, unthrottled) (rustc 1.99.0 (b940084d7 2026-09-28); 16 logical CPUs, jobs all cores); seconds, wall clock
+RESULT | module | cold (fresh target) | no-op | one-line edit, min / max of 6 |
+RESULT |---|---|---|---|
+RESULT | logic_v2 (spike guest, 1.1 KB) | 0.36 | 0.05 | 0.18 / 0.26 |
+RESULT | physics_in_wasm (Box3D, 0.5 MB) | 19.42 | 0.08 | n/a |
+RESULT | logic_mono (6.4k lines, one crate) | 2.37 | 0.06 | 2.24 / 2.27 |
+RESULT | logic_wasm (6.4k lines, 9 crates), leaf edit | 2.00 | 0.06 | 1.51 / 1.55 |
+RESULT | logic_mono, profile rel-fast (opt 3, no LTO, 16 CGUs, incremental) | 1.30 | 0.06 | 0.44 / 0.53 |
+RESULT | logic_mono, profile rel-s (opt s, LTO, 1 CGU) | 2.11 | 0.05 | 2.02 / 2.08 |
+RESULT | logic_wasm, core edit (every crate rebuilds) | 1.96 | 0.06 | 1.87 / 1.94 |
