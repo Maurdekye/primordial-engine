@@ -125,6 +125,16 @@ struct Keyframe {
     t: Tables,
 }
 
+/// A lean entry waiting in [`WorldSim::insert_lean`]: its sender, the entry, since when (frame), and
+/// whether its explicit form has been asked for.
+#[derive(Clone, Debug)]
+pub struct LeanWait {
+    pub from: MemberId,
+    pub se: SignedEntry,
+    pub since: u64,
+    pub asked: bool,
+}
+
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Stats {
     pub rollbacks: u64,
@@ -181,6 +191,17 @@ pub struct Stats {
     pub admin_refused: u64,
     /// Received entries dropped because their signature did not verify (S3).
     pub bad_sigs: u64,
+    /// Lean entries ([`Msg::Lean`]) received, and those this member could not rebuild and verify,
+    /// whose explicit form it fetched from their author instead.
+    pub lean_in: u64,
+    pub lean_fallbacks: u64,
+    /// Lean entries that waited for an entry they name, and their total wait in frames.
+    pub lean_waited: u64,
+    pub lean_wait_frames: u64,
+    /// The longest a lean entry waited, frames.
+    pub lean_wait_max: u64,
+    /// Fetch requests sent (gap repair, conflicts, lean entries).
+    pub fetches_sent: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -466,6 +487,8 @@ pub struct WorldSim {
     busy_stamp: Option<u64>,
     /// The version of each (member, seq) this member holds and references: the first one seen.
     by_author: BTreeMap<(MemberId, u32), EntryId>,
+    /// Lean entries waiting for entries they name ([`WorldSim::insert_lean`]), by (member, seq).
+    lean_wait: BTreeMap<(MemberId, u32), LeanWait>,
     /// Per author: the verified contiguous prefix (hash-linked) held.
     contiguous: BTreeMap<MemberId, u32>,
     /// Void by a chain-local rule (horizon violations): identical for every holder.
@@ -826,6 +849,7 @@ impl WorldSim {
             entries: BTreeMap::new(),
             busy_stamp: None,
             by_author: BTreeMap::new(),
+            lean_wait: BTreeMap::new(),
             contiguous: BTreeMap::new(),
             violations: BTreeSet::new(),
             disputed: BTreeSet::new(),

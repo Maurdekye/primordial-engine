@@ -15,7 +15,7 @@ RESULT bans-rejoinrole: m2: 1 kicks 3, rejoin role 2 @120: applied; 1 gives 13 r
   m2: members {1, 2, 13} roles {1: 0, 2: 0, 13: 0} admins [1, 2, 13] closed at None
   m2: session bans {}, rejoin roles [], perma-bans {}
 RESULT bans-rejoinrole: 1's grant made 13 Admin and lifted key 3's rejoin role: m1 world 1 conf 396 members {1, 2, 13} evicted {3: (18, 116)} roles [(13, Some(0))] rejoin roles [] -> OK
-RESULT bans-rejoinrole: member 2 agrees: m2 world 1 conf 394 members {1, 2, 13} evicted {3: (18, 116)} roles [(13, Some(0))] rejoin roles [] -> OK
+RESULT bans-rejoinrole: member 2 agrees: m2 world 1 conf 396 members {1, 2, 13} evicted {3: (18, 116)} roles [(13, Some(0))] rejoin roles [] -> OK
 RESULT bans-rejoinrole world 1: frames 0..360 digests m1=e0b3b3ec9f36858b m2=e0b3b3ec9f36858b m13=e0b3b3ec9f36858b | offline replay e0b3b3ec9f36858b | ALL EQUAL
 RESULT bans-rejoinrole control (plain kick): m1: 1 kicks 3 @120: applied
   m1: members {1, 2, 13} roles {1: 0, 2: 0, 13: 0} admins [1, 2, 13] closed at None

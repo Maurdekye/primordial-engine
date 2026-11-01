@@ -1,0 +1,42 @@
+  m1: t=5099ms depart authored in world 1 at frame 300
+  m1: t=5311ms depart confirmed in world 1 (frame 300); arrive authored in world 2 at frame 258
+  m1: t=5548ms arrival confirmed in world 2 (frame 258, accepted=true); verdict authored in world 1 at frame 326 (its sim there at frame 326)
+  m1: t=5770ms verdict confirmed in world 1; transfer 16777138813033884316 resolved
+  m1: t=5771ms commit certified in world 1; hop relayed into world 2 at frame 281
+  m1: t=8149ms depart authored in world 2 at frame 400
+  m1: t=8384ms depart confirmed in world 2 (frame 400); arrive authored in world 3 at frame 495
+  m1: t=8682ms arrival confirmed in world 3 (frame 495, accepted=true); verdict authored in world 2 at frame 426 (its sim there at frame 426)
+  m1: t=8853ms verdict confirmed in world 2; transfer 1928411844667239896 resolved
+  m1: t=8913ms commit certified in world 2; hop relayed into world 3 at frame 527
+RESULT r14 chain-epoch: A at m2: epoch 1 members {1, 2} decisions [(1, 250, 0, [5])]
+RESULT r14 chain-epoch: arrival into B with chain [] -> Some(Accepted)
+RESULT r14 chain-epoch: hop 1->2 relayed into B: signed by epoch 1 at frame 326, carrying 1 epoch certificate(s)
+RESULT r14 chain-epoch: hop 2->3 relayed into C: signed by epoch 0 at frame 426, carrying 0 epoch certificate(s)
+RESULT r14 chain-epoch: arrival into C with chain [1->2 (epoch 1, 1 certs)] -> Some(Accepted)
+RESULT r14 chain-epoch: A:40 live copies A 0, B 0, C 1 ; pending escrows 0 -> CONSERVED (in C, nothing in limbo)
+  m1 world 1: rollbacks 2 max depth 3 resim frames 8 (1.2 ms) overwrites 0 paused frames 79 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 705 frame 714
+  m2 world 1: rollbacks 12 max depth 4 resim frames 54 (6.3 ms) overwrites 0 paused frames 82 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 705 frame 713
+  m5 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 545 violations 0 equivocations 0 checks ok 4 bad 0 nonfinite 0 conf 48 frame 168
+  m1 world 2: rollbacks 2 max depth 2 resim frames 4 (0.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 584 frame 592
+  m3 world 2: rollbacks 3 max depth 3 resim frames 12 (1.0 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 20 bad 0 nonfinite 0 conf 584 frame 592
+  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 703 frame 712
+  m4 world 3: rollbacks 1 max depth 3 resim frames 6 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 703 frame 712
+OUTCOME r14 chain-epoch A w1 m1 s128 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s131 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s135 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s138 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s142 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s145 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s149 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s152 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s156 grab Accepted
+OUTCOME r14 chain-epoch A w1 m1 s159 grab Accepted
+OUTCOME r14 chain-epoch A w1 m2 s70 push Accepted
+OUTCOME r14 chain-epoch A w1 m2 s168 push Accepted
+RESULT r14 chain-epoch A world 1: frames 0..600 digests m1=bfa75d96bae9a38d m2=bfa75d96bae9a38d | offline replay bfa75d96bae9a38d | ALL EQUAL
+OUTCOME r14 chain-epoch B w2 m3 s61 push Accepted
+OUTCOME r14 chain-epoch B w2 m3 s132 push Accepted
+RESULT r14 chain-epoch B world 2: frames 0..500 digests m1=8a58db7a4d437332 m3=8a58db7a4d437332 | offline replay 8a58db7a4d437332 | ALL EQUAL
+OUTCOME r14 chain-epoch C w3 m4 s75 push Accepted
+OUTCOME r14 chain-epoch C w3 m4 s298 push Accepted
+RESULT r14 chain-epoch C world 3: frames 0..600 digests m1=5f1edecacddf4bd4 m4=5f1edecacddf4bd4 | offline replay 5f1edecacddf4bd4 | ALL EQUAL

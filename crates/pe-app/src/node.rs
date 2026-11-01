@@ -29,7 +29,7 @@ use pe_mcp::backend::{Authored, Counters, DrivenPeer, EntryId, EntryStatus, Inte
 use pe_mcp::model::*;
 use pe_mcp::sim_view;
 use pe_session::peer::{AuthorError, Event, SessionCore};
-use pe_session::session::{digest, final_log, replay_sim_like, Payload, SceneKind, WorldSim};
+use pe_session::session::{digest, final_log, replay_sim_like, Msg, Payload, SceneKind, WorldSim};
 use pe_session::splitmix64;
 use serde::{Deserialize, Serialize};
 
@@ -301,6 +301,21 @@ pub struct NodeOpts {
     pub faults: Vec<FaultStep>,
     /// The member stops dead at this session time (a scripted drop-out): no goodbye, no flush.
     pub crash_at_ms: Option<u64>,
+    /// A scripted equivocation (M1's fault, design 10.8): at this session time the member signs a
+    /// second version of its latest touch (same seq, another impulse) and sends it to this member
+    /// only. Honest members holding both versions have a transferable proof and vote it out.
+    pub equivocate: Option<(u64, u32)>,
+    /// A split equivocation: at this session time the member authors a fresh touch (version A, sent as
+    /// usual) and sends these members version B instead (same seq, the opposite impulse). Version A is
+    /// kept from them; they learn of it only from the proof (the member's next entry names A).
+    pub equivocate_split: Option<(u64, BTreeSet<u32>)>,
+    /// Log this member's touches at first sight (id, stamp, this replica's conf then) and, at the end,
+    /// which of two versions of one seq counts: the evidence of an equivocation run.
+    pub watch: Option<u32>,
+    /// Log every change to the state hashes of frames A..=B (first computation, each re-simulation),
+    /// with the rollbacks while they change and object 0's velocity, and the final hashes at the end:
+    /// what a replica simulated while it held a disputed entry, and what it settled on.
+    pub trace: Option<(u64, u64)>,
     pub touches_per_s: u32,
     /// Author this member's hand along a sweep every frame (ball pit only); R18 thins it.
     pub hand_sweep: bool,
@@ -352,6 +367,9 @@ pub struct Summary {
     pub rollbacks: u64,
     pub max_rollback_depth: u64,
     pub checks_ok: u64,
+    /// Members this replica holds a proof of equivocation against (pe-session's count).
+    #[serde(default)]
+    pub equivocation_proofs: u64,
     pub checks_bad: u64,
     pub entries_authored: u64,
     pub clock_offset_us: i64,
@@ -425,6 +443,18 @@ pub struct Node {
     row_bytes: u64,
     rng: u64,
     crash_at_ms: Option<u64>,
+    equivocate: Option<(u64, u32)>,
+    equivocate_split: Option<(u64, BTreeSet<u32>)>,
+    /// Version A's id and the members it is kept from.
+    split_hide: Option<(pe_session::session::EntryId, BTreeSet<u32>)>,
+    watch: Option<u32>,
+    trace: Option<(u64, u64)>,
+    /// The traced frames' hashes as last logged, and (rollbacks, resimulated frames) then.
+    traced: BTreeMap<u64, u64>,
+    trace_rb: (u64, u64),
+    /// The watched member's touches seen, by seq: (id, stamp, this replica's conf when first seen).
+    watched: BTreeMap<u32, Vec<(pe_session::session::EntryId, u64, u64)>>,
+    sim_events_seen: usize,
     plan: BTreeMap<u64, Vec<Payload>>,
     authored: u64,
     out_dir: PathBuf,
@@ -445,7 +475,11 @@ impl Node {
         let scene = s.scene_kind().expect("validated session");
         // View-change membership (the default), not the static one: M1 must survive a member
         // dropping out, which takes suspicion, votes and a new epoch.
-        let core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
+        let mut core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
+        // Implicit ids (Msg::Lean) stay off in pe-app until its wire allowlist, the watch log and the
+        // scripted split equivocation handle lean entries (which carry no prev / head ids, so their
+        // id is not the entry's): every entry goes explicit, as before.
+        core.lean_wire = false;
         let keys = ids.iter().map(|&m| (m, s.key_of(m).expect("validated key"))).collect();
         // Background touches: deterministic in (seed, member), on non-hand objects.
         let mut plan: BTreeMap<u64, Vec<Payload>> = BTreeMap::new();
@@ -564,6 +598,15 @@ impl Node {
             row_bytes: 0,
             rng: splitmix64(o.me as u64 ^ 0x5EED),
             crash_at_ms: o.crash_at_ms,
+            equivocate: o.equivocate,
+            equivocate_split: o.equivocate_split,
+            split_hide: None,
+            watch: o.watch,
+            watched: BTreeMap::new(),
+            sim_events_seen: 0,
+            trace: o.trace,
+            traced: BTreeMap::new(),
+            trace_rb: (0, 0),
             plan,
             authored: 0,
             out_dir: o.out_dir,
@@ -663,7 +706,12 @@ impl Node {
         let local = self.local_us();
         match i {
             // The core verifies entry signatures; the datagram already authenticated `sender`.
-            Item::Msg(m) => self.core.receive(sender, m, local),
+            Item::Msg(m) => {
+                if let Msg::Entry(se) = &m {
+                    self.watch_entry(se);
+                }
+                self.core.receive(sender, m, local)
+            }
             // A pong carries this member's session time (a test lie added for some members).
             Item::Ping(t) => {
                 let (lie, ppm) = self.clock_lie_us.get(&sender).copied().unwrap_or((0, 0));
@@ -828,6 +876,14 @@ impl Node {
                 per.entry(to).or_default().push(item.clone());
             }
         }
+        // A split equivocation keeps version A from its group (see `NodeOpts::equivocate_split`).
+        if let Some((a, group)) = &self.split_hide {
+            for m in group {
+                if let Some(items) = per.get_mut(m) {
+                    items.retain(|it| !matches!(it, Item::Msg(Msg::Entry(e)) if e.id() == *a));
+                }
+            }
+        }
         // R18's clamp probes (see `PROBE_EVERY_US`).
         let now = self.local_us();
         for (&m, o) in &mut self.over {
@@ -975,6 +1031,102 @@ impl Node {
         }
     }
 
+    /// The scripted equivocation (see `NodeOpts::equivocate`), once.
+    fn equivocate(&mut self) {
+        let Some((at, to)) = self.equivocate else { return };
+        if self.session_ms().is_none_or(|ms| ms < at) {
+            return;
+        }
+        let me = self.me;
+        let mine = self.core.sim.all_entries().into_iter().filter(|e| e.member == me && matches!(e.payload, Payload::Touch { .. })).max_by_key(|e| e.seq);
+        let Some(x) = mine else { return };
+        self.equivocate = None;
+        let mut x2 = x.clone();
+        if let Payload::Touch { obj, impulse, grab } = x.payload {
+            x2.payload = Payload::Touch { obj, impulse: [impulse[0] + 1.0, impulse[1], impulse[2]], grab };
+        }
+        x2.carried = None;
+        let se = self.session.key_ring(self.key.clone()).sign(WORLD, x2);
+        self.note(format!("EQUIVOCATE (scripted): signed a second version of my seq {} (frame {}) and sent it to member {to} only", x.seq, x.stamp));
+        self.push_control(to, Item::Msg(Msg::Entry(se)));
+    }
+
+    /// The scripted split equivocation (see `NodeOpts::equivocate_split`), once.
+    fn equivocate_split(&mut self) {
+        let Some((at, group)) = self.equivocate_split.clone() else { return };
+        if self.session_ms().is_none_or(|ms| ms < at) {
+            return;
+        }
+        let Ok(a) = self.core.author(Payload::Touch { obj: 0, impulse: [2.0, 3.0, 0.0], grab: false }, 0) else { return };
+        self.equivocate_split = None;
+        self.authored += 1;
+        let mut b = a.entry.clone();
+        b.payload = Payload::Touch { obj: 0, impulse: [-2.0, 3.0, 0.0], grab: false };
+        b.carried = None;
+        let b = self.session.key_ring(self.key.clone()).sign(WORLD, b);
+        let short = |id: pe_session::session::EntryId| id.0[..8].iter().map(|x| format!("{x:02x}")).collect::<String>();
+        self.note(format!(
+            "EQUIVOCATE (scripted split): my seq {} at frame {} (my conf {}): version A {} to the others, version B {} to members {:?}",
+            a.entry.seq,
+            a.entry.stamp,
+            self.core.sim.conf,
+            short(a.id()),
+            short(b.id()),
+            group
+        ));
+        for &m in &group {
+            self.push_control(m, Item::Msg(Msg::Entry(b.clone())));
+        }
+        self.split_hide = Some((a.id(), group));
+    }
+
+    /// The frame trace (see `NodeOpts::trace`), after a tick.
+    fn trace_step(&mut self) {
+        let Some((a, b)) = self.trace else { return };
+        let s = &self.core.sim;
+        let (rb, resim) = (s.stats.rollbacks, s.stats.resim_frames);
+        let changed: Vec<(u64, u64)> = s.hashes.range(a..=b).filter(|(f, h)| self.traced.get(f) != Some(h)).map(|(f, h)| (*f, *h)).collect();
+        let rolled = rb > self.trace_rb.0 && s.frame >= a && s.frame <= b + 60;
+        if changed.is_empty() && !rolled {
+            self.trace_rb = (rb, resim);
+            return;
+        }
+        let mut line = format!("TRACE at frame {} conf {}:", s.frame, s.conf);
+        if rolled {
+            line += &format!(" rollback (resimulated {} frames; rollbacks {rb}, max depth {})", resim - self.trace_rb.1, s.stats.max_depth);
+        }
+        if !changed.is_empty() {
+            let fh: Vec<String> = changed.iter().map(|(f, h)| format!("{f}={:08x}", h >> 32)).collect();
+            line += &format!(" hashes {}", fh.join(" "));
+        }
+        if let Some(o) = s.obj_state(0) {
+            let v = o.lin();
+            line += &format!(" | obj 0 velocity [{:.3}, {:.3}, {:.3}]", v[0], v[1], v[2]);
+        }
+        self.trace_rb = (rb, resim);
+        self.traced.extend(changed);
+        self.note(line);
+    }
+
+    /// The watched member's touch `se` arrived (see `NodeOpts::watch`).
+    fn watch_entry(&mut self, se: &pe_session::session::SignedEntry) {
+        if self.watch != Some(se.member) || !matches!(se.payload, Payload::Touch { .. }) {
+            return;
+        }
+        let id = se.id();
+        let v = self.watched.entry(se.seq).or_default();
+        if v.iter().any(|x| x.0 == id) {
+            return;
+        }
+        v.push((id, se.stamp, self.core.sim.conf));
+        if v.len() > 1 || self.split_hide.is_none() && self.equivocate_split.is_none() {
+            let n = v.len();
+            let (seq, stamp, conf, frame) = (se.seq, se.stamp, self.core.sim.conf, self.core.sim.frame);
+            let short: String = id.0[..8].iter().map(|x| format!("{x:02x}")).collect();
+            self.note(format!("SEEN member {} touch seq {seq} version {n} ({short}), stamped {stamp}, at my conf {conf}, frame {frame}", se.member));
+        }
+    }
+
     // ---- R18 ----------------------------------------------------------------------------------------
 
     /// The controller's input: the largest queue delay members report on my datagrams to them.
@@ -1110,6 +1262,12 @@ impl Node {
     }
 
     fn drain_events(&mut self) {
+        // pe-session's own log of an equivocation proof, into this node's log.
+        let new: Vec<String> = self.core.sim.events.get(self.sim_events_seen..).unwrap_or_default().iter().filter(|e| e.contains("EQUIVOCATION")).cloned().collect();
+        self.sim_events_seen = self.core.sim.events.len();
+        for e in new {
+            self.note(e);
+        }
         for e in self.core.events() {
             match e {
                 Event::Epoch { epoch, removed } => self.note(format!("membership decision: epoch {epoch}, removed {removed:?}")),
@@ -1135,6 +1293,26 @@ impl Node {
             self.done_at = Some(now);
         }
         if self.written.is_none() && self.done_at.is_some_and(|d| now >= d + LINGER_US) {
+            // Which version of a watched member's forked seq counts in the final log.
+            let in_log: BTreeSet<pe_session::session::EntryId> = final_log(&self.core.sim).iter().map(|(e, _)| e.id()).collect();
+            let forks: Vec<String> = self
+                .watched
+                .iter()
+                .filter(|(_, v)| v.len() > 1)
+                .map(|(seq, v)| {
+                    let each: Vec<String> = v.iter().enumerate().map(|(i, (id, _, _))| format!("version {} {}", i + 1, if in_log.contains(id) { "counts" } else { "withdrawn" })).collect();
+                    let cut = self.watch.and_then(|w| self.core.sim.members_evicted().get(&w).copied());
+                    let cut = cut.map_or(String::new(), |(c, f)| format!(" (removed with its chain cut at seq {c}, from frame {f})"));
+                    format!("FINAL: member {:?} touch seq {seq}: {}{cut}", self.watch, each.join(", "))
+                })
+                .collect();
+            for f in forks {
+                self.note(f);
+            }
+            if let Some((a, b)) = self.trace {
+                let fh: Vec<String> = self.core.sim.hashes.range(a..=b).map(|(f, h)| format!("{f}={:08x}", h >> 32)).collect();
+                self.note(format!("TRACE FINAL (conf {}): hashes {}", self.core.sim.conf, fh.join(" ")));
+            }
             match self.write_results() {
                 Ok(s) => self.note(format!(
                     "DONE frames 0..{frames}: digest {} replay {} ({}), conf {}, members {:?}",
@@ -1172,6 +1350,7 @@ impl Node {
             rollbacks: s.stats.rollbacks,
             max_rollback_depth: s.stats.max_depth,
             checks_ok: s.stats.checks_ok,
+            equivocation_proofs: s.stats.equivocations,
             checks_bad: s.stats.checks_bad,
             entries_authored: self.authored,
             clock_offset_us: self.offset_us,
@@ -1223,6 +1402,8 @@ impl Node {
                 std::process::exit(3);
             }
         }
+        self.equivocate();
+        self.equivocate_split();
         let t0 = self.local_us();
         self.receive_all();
         let t1 = self.local_us();
@@ -1241,6 +1422,7 @@ impl Node {
             }
             self.core.end_tick(now);
             self.record_row(now);
+            self.trace_step();
         }
         let t2 = self.local_us();
         self.drain_events();
