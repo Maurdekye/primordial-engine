@@ -170,6 +170,7 @@ throttle_ms = 250                   # background world from throttle_from_ms (de
 throttle_from_ms = 3000
 adapt = true                        # R18 congestion control (opt-in here; see the note below)
 ack_every_ms = 1000                 # this member acks this often
+ack_grid_only = true                # only on its own interval, never at once on leaving idle (7.6; fixture)
 withhold_vc = true                  # Byzantine: casts no view-change entry
 byz_ally = true                     # Byzantine: backs every vote and proposal, applies no decision
 byz_no_precommit = true             # Byzantine: prevotes but never precommits

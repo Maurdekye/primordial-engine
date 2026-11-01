@@ -33,6 +33,8 @@ use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, Tran
 /// tick's hand pose shares the ack's datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
+pub const IDLE_ACK_FRAMES: u64 = 8;
 /// R18's thresholds (design 10.9): raise above 40 ms at most every 100 ms; lower after 300 ms below
 /// 10 ms.
 const RAISE_US: u64 = 40_000;
@@ -130,6 +132,11 @@ pub struct SessionCore {
     /// Acks on frame ticks (a multiple of the ack interval) rather than by timer: for an IO that
     /// batches a tick's messages into one datagram (R18, viz-4). On by default.
     pub ack_on_frames: bool,
+    /// 7.6 reduction 2: whether the member was idle at its last ack decision.
+    was_idle: bool,
+    /// Test fixture (review VCR-12 under 7.6 reduction 2): ack only on the member's own interval, never
+    /// at once on leaving idle, so a member set to ack rarely keeps a stale horizon.
+    pub ack_grid_only: bool,
     last_frame_seen: u64,
     /// R18: adapt the hand-pose stride and ack interval to the uplink queue delay. On by default.
     pub adapt: bool,
@@ -187,6 +194,8 @@ impl SessionCore {
             // Saturating: hz = 0 (dt = inf) must reach a validator rather than overflow in a debug build.
             ack_every_us: dt_us.saturating_mul(2),
             ack_on_frames: true,
+            was_idle: false,
+            ack_grid_only: false,
             last_frame_seen: u64::MAX,
             adapt: true,
             level: 0,
@@ -476,12 +485,19 @@ impl SessionCore {
     /// fetch requests.
     pub fn end_tick(&mut self, now_us: u64) {
         let Some(t) = self.tick.take() else { return };
-        let ack_due = if self.ack_on_frames {
-            let every = (self.ack_every_us / self.dt_us).max(1);
-            t.new_frame && t.clock_frame % every == 0
-        } else {
-            now_us >= self.next_ack_us
-        };
+        // 7.6 reduction 2 (spike 562b2fb): an idle member acks every IDLE_ACK_FRAMES frames at any R18
+        // level, the longer of the two intervals; the ack that leaves idle goes at once, off the grid.
+        let idle = self.sim.idle();
+        let leaving = self.was_idle && !idle && !self.ack_grid_only;
+        self.was_idle = idle;
+        let base = (self.ack_every_us / self.dt_us).max(1);
+        let every = if idle { base.max(IDLE_ACK_FRAMES) } else { base };
+        let ack_due = leaving
+            || if self.ack_on_frames {
+                t.new_frame && t.clock_frame % every == 0
+            } else {
+                now_us >= self.next_ack_us
+            };
         let send = |s: &mut Self, v: Vec<SignedEntry>, class| {
             for e in v {
                 s.send_to_all(&t.audience, class, Msg::Entry(e));
@@ -489,7 +505,7 @@ impl SessionCore {
         };
         // Test fixture (review VC3R-6): a joiner that starts from a state transfer acks only once admitted.
         if ack_due && !(self.sim.quiet_until_member && !self.sim.membership().members().contains(&self.sim.me)) {
-            self.next_ack_us = now_us + self.ack_every_us;
+            self.next_ack_us = now_us + every * self.dt_us;
             let a = self.sim.author_ack();
             send(self, vec![a], Class::Live);
         }

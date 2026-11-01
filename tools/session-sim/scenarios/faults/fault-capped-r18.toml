@@ -1,5 +1,5 @@
 description = """
-Fault kinds (P2-9): as fault-capped-collapse (46 kbit/s on every link), with R18's per-tick \
+Fault kinds (P2-9): as fault-capped-collapse (24 kbit/s on every link), with R18's per-tick \
 batching and congestion controller on every member: hand entries and acks thin out as the uplink \
 queue grows (956 acks against collapse's 1752; D56 keeps a congested level longer). Nothing is dropped, confirmation keeps within \
 about 10 frames of the present, and \
