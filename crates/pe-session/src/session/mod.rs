@@ -459,6 +459,9 @@ pub struct WorldSim {
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
+    /// The newest stamp of any entry held other than an ack (design 7.6's idle predicate): void
+    /// ones, fork versions, own and protocol entries included; raised at insert, as the spike's.
+    busy_stamp: Option<u64>,
     /// The version of each (member, seq) this member holds and references: the first one seen.
     by_author: BTreeMap<(MemberId, u32), EntryId>,
     /// Per author: the verified contiguous prefix (hash-linked) held.
@@ -809,6 +812,7 @@ impl WorldSim {
             attested: BTreeSet::new(),
             known: members.iter().copied().chain([me]).collect(),
             entries: BTreeMap::new(),
+            busy_stamp: None,
             by_author: BTreeMap::new(),
             contiguous: BTreeMap::new(),
             violations: BTreeSet::new(),

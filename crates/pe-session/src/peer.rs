@@ -238,6 +238,12 @@ impl SessionCore {
         self.offset_us = offset_us;
     }
 
+    /// Idle (design 7.6, reduction 2): nothing but acks is unconfirmed in this member's own copy.
+    /// R18's congested-level memory (D56) and idle thinning gate on it.
+    pub fn idle(&self) -> bool {
+        self.sim.idle()
+    }
+
     /// R18: the uplink queue delay the IO measured (the longest towards any member), µs, or `None`
     /// when it has no fresh measurement. `None` holds the level: it is neither congestion nor calm,
     /// and D56's forget timer stops (review of the pe-app link signal, question 1).
