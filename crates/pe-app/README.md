@@ -184,7 +184,11 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
   * R18 with a path-delay step on the way back while clocks drift: the drift drains the step out of
     this node's estimate of the way back, so the round trip shows it as queue on the way out, and a
     drifting report passes up to it. In the 2-minute Windows + WSL runs, where the scripted 25-30 ms
-    delays start at 2-3 s, this is what remains, before the frequencies are fitted (see the evidence).
+    delays start at 2-3 s, this is what remains, before the frequencies are fitted: the WSL member whose
+    uplink gets a step is above level 0 for the first ~40 s (see the evidence). Accepted for M1, a LAN
+    demo without such steps (@coordinator-opus, 2026-11-01). The lever, post-M1: frequencies that
+    converge before frame 0, with item 5's rounds rate-limited to fresh corrections (run as they are
+    before frame 0, the common frequency wandered to -7.6 %).
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
   only protection.
 * Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe

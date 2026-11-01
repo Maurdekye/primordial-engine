@@ -55,7 +55,9 @@ from 3 s (session time). Level shares are of the controller's ticks; "clamped" c
   and the round trip then shows it as forward queue. A drifting report passes up to that, and member 3
   crossed 40 ms a few times between 3.7 and 10.2 s; D56's memory then held the level until 32-41 s.
   Member 2 crossed once, at the fit, in run 1 (level 0 again at 40 s). Without the steps every member
-  stays at level 0 throughout.
+  stays at level 0 throughout. M1 accepts this as a documented limit (@coordinator-opus, 2026-11-01);
+  the lever is frequencies that converge before frame 0, with item 5's rounds rate-limited to fresh
+  corrections.
 * **Session frequency:** the Windows members end 1.7-4.3 % slow of their own clocks and the WSL members
   1.5-3.2 % fast of theirs: with two native and two VM clocks the anchor's median is halfway.
 * **Three members (2 native + WSL), the M1 demo's likely shape:** the session stays near native time.
