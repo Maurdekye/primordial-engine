@@ -2602,6 +2602,10 @@ impl WorldSim {
         let mut e = run[0].entry.clone();
         while below.len() < back.min(15) as usize && e.seq > 1 {
             let Some(p) = self.entries.get(&e.prev) else { break };
+            // O2-1: a view-change or admin entry is never covered by another entry's signature.
+            if p.payload.signs_itself() {
+                break;
+            }
             e = p.clone();
             below.push(SignedEntry { entry: e.clone(), sig: [0; 64] });
         }

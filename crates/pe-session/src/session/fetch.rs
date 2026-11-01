@@ -38,6 +38,11 @@ impl WorldSim {
                 break;
             }
             run.push(SignedEntry { entry: e.clone(), sig: self.sigs.get(&e.id()).copied().unwrap_or([0; 64]) });
+            // O2-1: a view-change or admin entry ends the answer, signed on itself; the requester asks
+            // again for the rest, as it does past 16 entries.
+            if e.payload.signs_itself() && self.run_wire {
+                break;
+            }
         }
         let Some(top) = run.last() else { return vec![] };
         // Without runs on the wire (A/B, option 1's form): every entry on its own, signed on itself.
@@ -49,7 +54,7 @@ impl WorldSim {
                 .map(|(i, e)| if i == 0 && lean { Msg::Run { lean: true, heads: false, signed: true, entries: vec![e] } } else { Msg::Entry(e) })
                 .collect();
         }
-        let signed = held & HELD_ABOVE == 0;
+        let signed = held & HELD_ABOVE == 0 || top.entry.payload.signs_itself();
         if signed && !self.sigs.contains_key(&top.id()) {
             let Some(cover) = self.run_of(top.id()) else { return vec![] };
             if run.len() + cover.len() - 1 > Self::RUN_MAX {

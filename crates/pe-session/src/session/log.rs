@@ -332,6 +332,16 @@ impl WorldSim {
         let Some(top) = entries.last() else { return vec![] };
         let sig = signed.then_some(top.sig);
         let (m, s0) = (entries[0].member, entries[0].seq);
+        // O2-1: a view-change or admin entry covered by another entry's signature is refused; the range
+        // is asked for again from the sender, whose answer ends at each such entry, signed on itself.
+        let n = entries.len();
+        if entries.iter().enumerate().any(|(i, e)| e.entry.payload.signs_itself() && !(signed && i + 1 == n)) {
+            self.stats.covered_refused += 1;
+            if m != self.me {
+                self.want_from(from, m, s0, s0 + n as u32 - 1);
+            }
+            return vec![];
+        }
         if lean || heads {
             self.stats.lean_in += entries.len() as u64;
         }

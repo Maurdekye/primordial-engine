@@ -210,6 +210,9 @@ pub struct Stats {
     /// Lean entries ([`Msg::Run`] with its lean flag) received, and those this member could not rebuild and verify,
     /// whose explicit form it fetched from their author instead.
     pub lean_in: u64,
+    /// Runs refused because a view-change or admin entry in them was covered by another entry's
+    /// signature (review O2-1); their range is asked for again.
+    pub covered_refused: u64,
     pub lean_fallbacks: u64,
     /// Lean entries that waited for an entry they name, and their total wait in frames.
     pub lean_waited: u64,
