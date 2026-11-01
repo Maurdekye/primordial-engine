@@ -2055,8 +2055,9 @@ is fixed once the author's chain is contiguous up to it.
     change, which needs no confirmation progress, and its decision ends every cap, freeze and vote of the
     epoch [V the eight repros above with a kick at 6 s: the worst honest lag at the kick is 177-251
     frames (window 120), the cheater is removed 0.17-0.55 s later, and the lag at the end is 7-17
-    frames; every replica equals the replay]. The "holding the session" indicator is on hold with the
-    user, so for now only the admin's own judgment tells who to kick.
+    frames; every replica equals the replay]. The user authorized a "holding the session" indicator
+    for admins (Admin indicators, below); until it's built, only the admin's own judgment tells who to
+    kick.
   * **Accepted cost: a live honest member with a one-way inbound cut holds the session too** (user
     ruling 2026-11-01, "A. Accept it"). Its own entries reach everyone, so silence never fires, and its
     acks declare its present horizon, so demotion never fires; but it references no more of the chains it
@@ -2276,6 +2277,152 @@ is fixed once the author's chain is contiguous up to it.
   `colluders`' two removals into two changes. The rows above are refreshed to it, with some that had
   gone stale before it (`bridge`, `deepfork`, `strikeframe`, `joinwedge`, `aheadlink`, and by a frame
   `kickpartition` and `cutbackdate`).
+
+**Admin indicators** (user ruling 2026-11-01 16:27Z, msg mf32513b5c469: "Holding the session · Implausible
+reports"; trust survey #4, #6 and #7; @coordinator-opus's rulings 16:32Z and 16:35Z, msgs m31b4deb20f58
+and m4f022c20a7c8, after @design-reviewer's review IND-1 to IND-6 and LA-1 to LA-4) [proposal; I, nothing
+built]. Automatic removals no longer end a live cheater's stall, so an admin's kick does (Limits, above).
+Two indicators show admins whom to look at. **An indicator never acts:** it doesn't remove, demote, vote,
+fetch, or change any timer, cap or deadline. Equivocator exclusion and its fork proof stay as they are,
+and there is no fork-proof indicator (same ruling).
+* **Where they are computed.** On the admin's own replica, when its client asks, from what that replica
+  already holds: the chains and their references, the acks and their horizons, the membership state, and
+  (for the timing hint) the transport's send times and round trips toward each member. Nothing goes on the
+  wire, into the log or into the check hash. So an indicator can't fork the session, can't be fed by
+  another member except through that member's own behaviour, and costs nothing in steady state.
+  * **Read-only** (review IND-6). `stable_seq` is `&mut`: it queues fetch requests (`want_from`) and raises
+    `stable_hi`. The indicator uses a read-only twin that computes the same value and changes nothing, so
+    "never acts, nothing on the wire" holds.
+  * A query costs one pass over the members' references, O(n²) map reads, the work `recompute_conf` does on
+    every ack. Two replicas can show slightly different answers, since each sees its own arrivals; that is
+    acceptable for a hint.
+* **Admin-only.** `SessionCore::indicators(asker)` returns nothing unless `asker` holds the Kick
+  permission in the decided roles (12.4): the indicators exist to inform a kick. pe-mcp exposes them as a
+  `session_indicators` tool, returning nothing for a token whose driven member lacks Kick; pe-app prints
+  an admin status line while the local member holds Kick and an indicator names someone. **The gate is
+  presentation only:** the inputs are data every replica holds, so a modified client can compute the same
+  thing. Nothing is secret, and nothing depends on non-admins not seeing it.
+* **Thresholds are starting values** (@coordinator-opus): W/4 for 1 s for holding, and the timing hint's
+  margin and share below. The scenarios check them: in each, no honest member is shown as late or as
+  withholding, and ordinary jitter names nobody.
+
+* **"Holding the session"**: whom confirmation is waiting on, and for how long. **It says who, never why**
+  (review): a slow honest member holds confirmation as surely as a cheater, and is named too. Honest thin
+  members' confirmation lag is 120-190 frames in r18-thin's down cells [V runs20], well past the threshold.
+  * **Shown only when confirmation lags:** the present frame P minus the confirmed frame C is at least a
+    quarter of the speculation window (30 frames at the 120-frame window, 0.5 s) and has been for at least
+    1 s. Ordinary lag is 7-17 frames on the scenarios' links [V votechurn, the eight 10.8 repros after
+    the kick], so ordinary jitter names nobody.
+  * **Attribution.** It takes confirmation's own bound apart (Stability and confirmation, above;
+    `recompute_conf` and `stable_seq`). C is the minimum over members j of j's term. For each member j whose
+    term equals C, the first of these that applies is its cause (review IND-2's order):
+    1. **Membership change** (names no member; it ends with the view change): the replica is adopting a
+       decision (`adopting()` freezes C); the term is capped by a join (`join_cap`), by an ack from a newer
+       epoch, or by a removed member's prefix not yet held; or a vote holds it (review IND-1): this replica
+       voted against j, so its copy counts only up to j's frozen head, or a member k voted against j, so k's
+       later references to j never count (R3-1). Shown as "k voted against j; waits for the view change".
+    2. **Behind (j): no ack yet** (review IND-5): j has no ack this replica has applied and isn't admitted.
+    3. **This replica (gap in j's chain)** (review IND-4): this replica holds an entry of j beyond a gap
+       (applied means contiguous: `ack_hist` fills in chain order), so its own copy is what waits.
+    4. **Behind (j):** j's newest applied ack declares no horizon at or past C. j hasn't declared progress
+       that this replica has heard: a slow or stalled peer, a cheater withholding acks, or j's packets not
+       reaching this replica. Shown with P minus j's newest declared horizon.
+    5. **Not referencing (k, j):** let r be the **lowest** seq of j whose applied ack declares a horizon at or
+       past C (review IND-3). r isn't stable because some member k's newest reference to j's chain, in the
+       version this replica holds, is below r. **Guard** (review IND-2): k is named only if k's newest ack
+       this replica has applied is stamped at least 1 s (the show threshold) after j's entry r, so k has had
+       time to hold r. If k's newest ack is recent but stamped less than 1 s after r, nothing is shown for k
+       yet (review IND-7), unless that ack was already at least W/8 old (15 frames, 0.25 s) when this
+       replica holds it: then k is slow, its view reaching here late, and is shown as **behind (k)** with
+       that age. Without this, a member on a 0.4-0.7 s link, whose newest ack always arrives that old, is
+       never shown, though it holds confirmation 1.5 s back [V ind-slow, found in the build]. If k's acks are old, k is shown as **behind (k)**, which is also what this
+       replica sees when it isn't hearing k, unless this replica holds an entry of k beyond a gap, which is
+       this replica's own gap (IND-7). Shown with P minus the stamp of r. This is a cheater
+       withholding references, and equally an honest member with a one-way inbound cut, which can't
+       reference what it can't hear (Limits, accepted cost); the indicator can't tell them apart, and says
+       so. The timing hint below, for this replica's own chain, is the nearest thing to a tie-breaker.
+    6. **Not heard (j):** when more than t of the other members are each named "not referencing (·, j)"
+       under the guard, the common cause is j's outbound link, not that many members withholding at once,
+       so it is shown as j not heard instead of naming them. At n = 3 (t = 0, one other member) the two
+       readings can't be told apart, and both are shown. The guard keeps this sound: without it, slow
+       inbound to this replica from the others would make every j look not heard.
+  * **Output:** per named member, its causes, and the lag in frames and in seconds (frames / hz). The same
+    member can be behind and not referencing at once.
+  * **With Part B** (for sessions of 4 or more; 10.9 thin link), "verdicts waiting on" is the same
+    attribution over the open verdicts that hold back a frame's close: for an entry still undecided, the
+    members whose echo-stable acks are missing for its void-or-count status. Built with Part B's
+    pe-session port.
+
+* **"Implausible reports"**: soft warnings, labelled as hints and never as proof. Two parts:
+  * **Backlog reports** (Part B, rule 5, P2's plain smallest): in production each receiver reports its
+    downlink backlog in its acks, and a sender's controller reads the smallest over its non-fed
+    receivers, so one receiver reporting zero switches off back-off for every sender (trust survey #7,
+    accepted). A receiver's report is implausible when it disagrees with what the echo-stable acks show
+    about delivery to it: it reports near zero while its δ for a sender's entries (its first echo-stable
+    reference minus the entry's stamp) runs well past that sender's L + Q, or reports high while δ stays
+    near L. It's flagged when that disagreement holds over 3 consecutive windows, from window k − 2's
+    settled data, the same data Part B uses. Fed members are left out: their acks reference nothing. Built
+    with Part B's pe-session port, which brings the reports (@engine-architect: the spike reads backlogs
+    directly, so no report exists until then).
+  * **Late acks: a timing hint, not proof** (@coordinator-opus's ruling, 16:35Z: the clock-free test;
+    review LA-5).
+    Nothing that feeds L, Q, E or G is a report; a member moves them only by behaving, stamping or sending
+    its acks late (@engine-architect). So this hint is about behaviour, measured on one path with no clock:
+    * **Only this replica's own entries.** For each of its entries e and each member X: S is the local
+      time the transport last handed e to the link toward X, after this replica's own send queue (a
+      repair restarts it); and for each ack of X, R is its local arrival time. X's ack is **late** if
+      R − S exceeds this replica's measured round trip to X plus a margin, and its reference to this
+      replica's chain is still below e (in the version this replica sent).
+    * **The round trip is the largest the transport's pings measured over the last 2 s** (review IB-1:
+      2 s, not 10), not the median: a path that just got slower (a cut, a filling queue) exempts acks at once, rather than after
+      the median catches up. Like the stamp rule, it can only exempt. [V ind-aheadlink: with the median,
+      the honest member behind the 5 s cut was flagged; found in the build.]
+    * **A fetch restarts the clock** (found in the build): when X asks for this replica's chain from seq
+      a, it lacks a and can reference nothing past the hole until it's repaired (references cover only a
+      contiguous prefix), so S for every entry from a on becomes the fetch's arrival. On a thin downlink
+      that tail-drops, an honest member's references wait on repairs [V ind-thindown on main
+      699f8fb's R18: flagged without this; since the thin-link landing (a0af773) that watcher no longer
+      lags past the threshold at all]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
+      still shows as not referencing.
+    * **Only current members' acks** are judged; a removed member's are ignored.
+    * **In pe-app, S is the socket hand-off:** the core's outbox and the clock-sync pings go through one
+      pack and one shaper per peer, in one flush, and pe-app has no other send queue [V node.rs
+      `flush_out`, @design-reviewer].
+    * **What it can't do** (review IB-1): it catches a withholder that doesn't game it. A withholder that
+      slows one pong in every 2 s (raising the round trip it is judged by) or keeps re-fetching this
+      replica's chain (restarting the clock) is never flagged, at no visible cost. So no flag proves
+      nothing; and "holding the session" still names such a member as not referencing.
+    * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
+      least e's stamp plus half the round trip. Otherwise the time it waited in X's own send queue (R18,
+      upstream of the transport, so the pings skip it) would make an honest member with a thin uplink look
+      late: its acks arrive seconds after they were built, before e could have reached it. The stamp can
+      only exempt an ack, never flag one. A liar that backdates its acks' stamps to be exempted drags their
+      horizons down with them, since an ack's horizon stays within slack of its stamp (8.2); it then holds
+      confirmation and shows as behind.
+    * **Why it doesn't misfire** (review LA-1 to LA-3): R − S and the round trip are both round trips on
+      the same path, so asymmetric links and clock-sync error don't enter; S is taken after this
+      replica's own queue, so another author's queue or a thin sweeper's uplink doesn't either; and each
+      ack is judged on its own, so ack cadence (2-8 frames) doesn't count. The margin covers X's own
+      packing: an ack can be built up to PACK_MAX (8) frames before it is sent, so the margin is PACK_MAX
+      frames plus 50 ms (183 ms at 60 Hz).
+    * **Flagged** when, over the last 10 s, more than half of X's acks that arrived after S + round trip +
+      margin for some e were late. The share absorbs loss: at 10% loss a hole delays some references by a
+      repair round trip, up to 21 frames [V runs19], but not most. "Eligible" means counted under the stamp
+      rule above.
+    * **Excluded** (review LA-4): a joiner still catching up (before its first applied ack declares a
+      horizon at or past its admission), a member that voted against this replica (its references are
+      frozen by construction), and fed members under Part B.
+    * **Limit:** it sees only withholding of this replica's own chain. For other chains, the hint pairs
+      "not referencing (k, j)" with whether k references this replica's chain promptly: if it does, the
+      withholding is targeted at j, or j's link toward k is cut. Still a hint, not proof.
+  * **The harness's pings** (session-sim): a ping's round trip is what a small datagram offered now would
+    take through the two links' queues and delays (mean jitter), plus any scripted fault on the whole
+    link (a stateless copy of the fault rules that name no message kind); a dropped one is lost.
+  * **Scenarios** (@coordinator-opus; review LA-5): a withholding cheater, an honest slow member, the
+    one-way cut (`aheadlink`), a thin watcher (down-k8-m3), a thin sweeper as author, a thin sweeper as the
+    judged member (up-k8-m4), 10% loss, and an asymmetric link.
+    The cheater is named in each place it should be; no honest member is ever flagged late; and the honest
+    slow member is shown as behind, never as withholding.
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
