@@ -318,6 +318,7 @@ pub struct Node {
     acked: BTreeSet<u32>,
     epoch: Option<u64>,
     last_ping: u64,
+    last_burst: u64,
     /// Pings still unanswered, (member, send time): a pong counts only if it echoes one of them.
     pings_out: BTreeSet<(u32, u64)>,
     /// Per member, the send time of the latest ping it answered.
@@ -461,6 +462,7 @@ impl Node {
             acked: BTreeSet::new(),
             epoch: None,
             last_ping: 0,
+            last_burst: 0,
             pings_out: BTreeSet::new(),
             answered: BTreeMap::new(),
             synced: false,
@@ -635,21 +637,20 @@ impl Node {
         if !self.synced && self.epoch.is_some_and(|e| self.now_us() >= e) {
             // Frame 0: every member has its epoch (sent 1 s ahead), so nobody jumps from here on.
             self.synced = true;
-            self.clock.restart_fits();
+            self.clock.restart_fits(local);
         }
-        let to: Vec<u32> = if self.synced {
-            if local >= self.last_ping + SYNC_EVERY_US {
-                self.core.sim.membership().members().iter().copied().filter(|&m| m != self.me).collect()
-            } else {
-                vec![]
-            }
-        } else if self.me != self.leader && self.pongs < PINGS && local >= self.last_ping + 25_000 {
+        // Every member every 500 ms from the start (raw-clock samples gathered before frame 0 count
+        // toward the frequencies), and the bootstrap burst to the leader until enough pongs.
+        let to: Vec<u32> = if local >= self.last_ping + SYNC_EVERY_US {
+            self.last_ping = local;
+            self.core.sim.membership().members().iter().copied().filter(|&m| m != self.me).collect()
+        } else if !self.synced && self.me != self.leader && self.pongs < PINGS && local >= self.last_burst + 25_000 {
+            self.last_burst = local;
             vec![self.leader]
         } else {
             vec![]
         };
         if !to.is_empty() {
-            self.last_ping = local;
             // A ping lost on the way is forgotten after 5 s.
             self.pings_out.retain(|&(_, t)| t + 5_000_000 > local);
             for m in to {
@@ -902,7 +903,8 @@ impl Node {
     /// up to a ping interval later). A ping older than the latest answered one was lost, not late.
     fn rtt_excess(&self, m: u32, now: u64) -> Option<u64> {
         let fresh = self.clock.rtt_excess(m, now);
-        let best = self.clock.best_rtt_us();
+        // The round trip to m itself, not to the nearest peer (review M1).
+        let best = self.clock.best_rtt_to(m).unwrap_or(u64::MAX);
         let after = self.answered.get(&m).copied().unwrap_or(0);
         let waiting = self.pings_out.iter().filter(|p| p.0 == m && p.1 > after).map(|p| now.saturating_sub(p.1)).max().filter(|_| best < u64::MAX).map(|a| a - best.min(a));
         match (fresh, waiting) {
