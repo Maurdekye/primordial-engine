@@ -9,8 +9,9 @@ Rules: scripts/publish_replacements.local, or the file named by PE_PUBLISH_REPLA
 scripts/publish_replacements.example). Each rule is `regex:<python regex>==><replacement>`, applied in
 file order to every text blob (--replace-text) and every commit message (--replace-message). In a
 binary blob (a NUL in its first 8 KiB, which filter-repo's text replacement skips), each match is
-overwritten with as many 'x' bytes, so lengths and length-prefixed formats stay intact. Every commit
-is kept, empty or not, and author and committer fields are not touched.
+overwritten with as many 'x' bytes, so lengths and length-prefixed formats stay intact. File paths
+get the same rules (a result that is no valid Windows file name stops the run). Every commit is
+kept, empty or not, and author and committer fields are not touched.
 
 Then it verifies the copy, and exits 1 if any check fails (2 on an error):
   * the same number of commits, with every author and committer field (names, emails, dates) equal;
@@ -153,13 +154,31 @@ def main():
             for rx, _, _ in rules:
                 blob.data = rx.sub(lambda m: b"x" * len(m.group(0)), blob.data)
 
+    # Paths get the same rules (filter-repo's text replacement never renames files). A renamed path
+    # must still be a valid file name on Windows, so a rule meant for text can't break a checkout.
+    renamed = {}
+
+    def rename_path(name):
+        new = name
+        for rx, replacement, _ in rules:
+            new = rx.sub(replacement, new)
+        if new != name:
+            if re.search(rb'[<>:"|?*\\]', new):
+                die(f"a rule turns the path {name.decode('utf-8', 'replace')} into an invalid one, "
+                    f"{new.decode('utf-8', 'replace')}: add a rule for it")
+            renamed[name] = new
+        return new
+
     os.chdir(out_dir)
     options = fr.FilteringOptions.parse_args([
         "--replace-text", stripped, "--replace-message", stripped,
         "--prune-empty", "never", "--prune-degenerate", "never", "--quiet"])
-    fr.RepoFilter(options, blob_callback=mask_binary).run()
+    fr.RepoFilter(options, blob_callback=mask_binary, filename_callback=rename_path).run()
     os.remove(stripped)
     os.chdir(REPO)
+    print(f"  paths renamed: {len(renamed)}")
+    for old, new in sorted(renamed.items()):
+        print(f"    {old.decode('utf-8', 'replace')} -> {new.decode('utf-8', 'replace')}")
 
     # Verification.
     failures = []
