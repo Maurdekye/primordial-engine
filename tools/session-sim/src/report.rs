@@ -10,10 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use pe_sim_core::ownership::{test_key_name, Book, Insert, Key, View};
-use pe_sim_core::session::*;
-use pe_sim_core::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
-use spike::{Acceptance, Replica, Sim, WorldId};
+use pe_session::ownership::{test_key_name, Book, Insert, Key, View};
+use pe_session::session::*;
+use pe_session::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
+use pe_session_harness::{Acceptance, Replica, Sim, WorldId};
 
 use crate::byzantine::Forged;
 use crate::scenario::{Honest, Report, Scenario};
