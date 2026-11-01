@@ -2086,6 +2086,10 @@ is fixed once the author's chain is contiguous up to it.
       state. So a kick that would be refused (an admin by a kick-only role, or an owner by a non-owner)
       is not pending and freezes no one; it can be sent again once the state allows it. Before, such a
       kick froze its target for a change, until the commit refused it.
+    * Such a kick is dropped, not held and judged again later, as OWNY-2 holds certificates (review
+      V13-1). If it becomes legitimate later, its author must send it again. The UI and MCP report it as
+      refused now and name what it lacks ("refused now: needs kick-admins"), and the client does not retry
+      it on its own.
     * The last-admin rules count roles-holders. The session stays open while one remains, and taking the
       roles permission from the last such role is refused, as the last admin's release is
       [V kickadmin: a kick-only role kicks Admin 1, roles-holder 3 and guest 4. Only 4 is removed, and
