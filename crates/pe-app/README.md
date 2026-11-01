@@ -64,7 +64,10 @@ pe-app relay --listen ADDR --to ADDR [--for-s N]                             # t
   second version of its latest touch (same seq, another impulse) and sends it to member M only. The
   honest members log pe-session's proof (`EQUIVOCATION proof`), count it (summary
   `equivocation_proofs`) and vote the member out. Removed, the equivocator stops confirming; it runs
-  until it is killed, so give it its own `--out`.
+  until it is killed, so give it its own `--out`. It needs a touch of its own to fork (use
+  `--touches-per-s`); with none it never fires and logs nothing. The second version comes after the
+  first was sent and may already be confirmed, as in session-sim's `badvote`; a split before either
+  version is seen (each half of the members holding a different one) is shown only in the simulator.
 * **Relay** (test tooling): `relay` forwards every datagram that arrives at `--listen` to `--to`. A
   member in WSL2's default NAT mode can't be reached from another machine; with `--bind 0.0.0.0:PORT`
   in WSL and a relay on its host at the session address, it can (pe-app checks signatures, not source
