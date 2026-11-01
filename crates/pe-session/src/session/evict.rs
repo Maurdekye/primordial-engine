@@ -100,7 +100,7 @@ impl WorldSim {
             })
             .collect();
         for (id, author, t) in kicks {
-            if self.vcm.members.contains(&t) && self.vcm.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.vcm.withhold_vc {
+            if self.vcm.members.contains(&t) && self.vcm.members.contains(&author) && self.admin_run().kick_allowed(author, t) && !self.voted(t) && !self.vcm.withhold_vc {
                 if t == self.me {
                     out.extend(self.self_kick_vote(id));
                 } else {

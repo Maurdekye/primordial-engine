@@ -23,10 +23,10 @@ RESULT ownership world 1: offline reference owners {3, 10, 40} rule All heads 1 
   after the decisions up to frame 250: owners {10} rule All heads 1 recovery [{10}: {50}]
   after the decisions up to frame 320: owners {10, 40} rule All heads 1 recovery [{10}: {50}]
   after the decisions up to frame 345: owners {10, 40} rule All heads 1
-RESULT ownership: m1: 1 kicks 3 @375: refused
+RESULT ownership: m1: 
   m1: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
-RESULT ownership: m2: 1 kicks 3 @375: refused
+RESULT ownership: m2: 
   m2: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
-RESULT ownership: m3: 1 kicks 3 @375: refused
+RESULT ownership: m3: 
   m3: members {1, 2, 3} roles {1: 0, 2: 0, 3: 0} admins [1, 2, 3] closed at None
 RESULT ownership world 1: frames 0..380 digests m1=7a9b7251083c64ea m2=7a9b7251083c64ea m3=7a9b7251083c64ea | offline replay 7a9b7251083c64ea | ALL EQUAL
