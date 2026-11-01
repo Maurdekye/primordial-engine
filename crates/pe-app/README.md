@@ -195,10 +195,16 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
     this node's estimate of the way back, so the round trip shows it as queue on the way out, and a
     drifting report passes up to it. In the 2-minute Windows + WSL runs, where the scripted 25-30 ms
     delays start at 2-3 s, this is what remains, before the frequencies are fitted: the WSL member whose
-    uplink gets a step is above level 0 for the first ~40 s (see the evidence). Accepted for M1, a LAN
+    uplink gets a step is raised before the fit. Before the merge with main 3df5347 it was back at level
+    0 by 32-41 s; with D56's idle gate it stays raised for the rest of a touch-only run (see the
+    evidence). Accepted for M1, a LAN
     demo without such steps (@coordinator-opus, 2026-11-01). The lever, post-M1: frequencies that
     converge before frame 0, with item 5's rounds rate-limited to fresh corrections (run as they are
     before frame 0, the common frequency wandered to -7.6 %).
+* D56's idle gate (pe-session): a transient in a still session (touches only, no hands) holds a coarser
+  level until someone moves or the 5-minute ceiling, since idle calm never lowers into the remembered
+  level (measured: one 50 ms WSL hiccup left a member at level 1 for the last 30 s of a run). That a
+  moving hand lowers it again is inferred from the rule, not measured on pe-app.
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
   only protection.
 * Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe
