@@ -312,6 +312,10 @@ pub struct NodeOpts {
     /// Log this member's touches at first sight (id, stamp, this replica's conf then) and, at the end,
     /// which of two versions of one seq counts: the evidence of an equivocation run.
     pub watch: Option<u32>,
+    /// Log every change to the state hashes of frames A..=B (first computation, each re-simulation),
+    /// with the rollbacks while they change and object 0's velocity, and the final hashes at the end:
+    /// what a replica simulated while it held a disputed entry, and what it settled on.
+    pub trace: Option<(u64, u64)>,
     pub touches_per_s: u32,
     /// Author this member's hand along a sweep every frame (ball pit only); R18 thins it.
     pub hand_sweep: bool,
@@ -444,6 +448,10 @@ pub struct Node {
     /// Version A's id and the members it is kept from.
     split_hide: Option<(pe_session::session::EntryId, BTreeSet<u32>)>,
     watch: Option<u32>,
+    trace: Option<(u64, u64)>,
+    /// The traced frames' hashes as last logged, and (rollbacks, resimulated frames) then.
+    traced: BTreeMap<u64, u64>,
+    trace_rb: (u64, u64),
     /// The watched member's touches seen, by seq: (id, stamp, this replica's conf when first seen).
     watched: BTreeMap<u32, Vec<(pe_session::session::EntryId, u64, u64)>>,
     sim_events_seen: usize,
@@ -592,6 +600,9 @@ impl Node {
             watch: o.watch,
             watched: BTreeMap::new(),
             sim_events_seen: 0,
+            trace: o.trace,
+            traced: BTreeMap::new(),
+            trace_rb: (0, 0),
             plan,
             authored: 0,
             out_dir: o.out_dir,
@@ -1065,6 +1076,34 @@ impl Node {
         self.split_hide = Some((a.id(), group));
     }
 
+    /// The frame trace (see `NodeOpts::trace`), after a tick.
+    fn trace_step(&mut self) {
+        let Some((a, b)) = self.trace else { return };
+        let s = &self.core.sim;
+        let (rb, resim) = (s.stats.rollbacks, s.stats.resim_frames);
+        let changed: Vec<(u64, u64)> = s.hashes.range(a..=b).filter(|(f, h)| self.traced.get(f) != Some(h)).map(|(f, h)| (*f, *h)).collect();
+        let rolled = rb > self.trace_rb.0 && s.frame >= a && s.frame <= b + 60;
+        if changed.is_empty() && !rolled {
+            self.trace_rb = (rb, resim);
+            return;
+        }
+        let mut line = format!("TRACE at frame {} conf {}:", s.frame, s.conf);
+        if rolled {
+            line += &format!(" rollback (resimulated {} frames; rollbacks {rb}, max depth {})", resim - self.trace_rb.1, s.stats.max_depth);
+        }
+        if !changed.is_empty() {
+            let fh: Vec<String> = changed.iter().map(|(f, h)| format!("{f}={:08x}", h >> 32)).collect();
+            line += &format!(" hashes {}", fh.join(" "));
+        }
+        if let Some(o) = s.obj_state(0) {
+            let v = o.lin();
+            line += &format!(" | obj 0 velocity [{:.3}, {:.3}, {:.3}]", v[0], v[1], v[2]);
+        }
+        self.trace_rb = (rb, resim);
+        self.traced.extend(changed);
+        self.note(line);
+    }
+
     /// The watched member's touch `se` arrived (see `NodeOpts::watch`).
     fn watch_entry(&mut self, se: &pe_session::session::SignedEntry) {
         if self.watch != Some(se.member) || !matches!(se.payload, Payload::Touch { .. }) {
@@ -1258,11 +1297,17 @@ impl Node {
                 .filter(|(_, v)| v.len() > 1)
                 .map(|(seq, v)| {
                     let each: Vec<String> = v.iter().enumerate().map(|(i, (id, _, _))| format!("version {} {}", i + 1, if in_log.contains(id) { "counts" } else { "withdrawn" })).collect();
-                    format!("FINAL: member {:?} touch seq {seq}: {}", self.watch, each.join(", "))
+                    let cut = self.watch.and_then(|w| self.core.sim.members_evicted().get(&w).copied());
+                    let cut = cut.map_or(String::new(), |(c, f)| format!(" (removed with its chain cut at seq {c}, from frame {f})"));
+                    format!("FINAL: member {:?} touch seq {seq}: {}{cut}", self.watch, each.join(", "))
                 })
                 .collect();
             for f in forks {
                 self.note(f);
+            }
+            if let Some((a, b)) = self.trace {
+                let fh: Vec<String> = self.core.sim.hashes.range(a..=b).map(|(f, h)| format!("{f}={:08x}", h >> 32)).collect();
+                self.note(format!("TRACE FINAL (conf {}): hashes {}", self.core.sim.conf, fh.join(" ")));
             }
             match self.write_results() {
                 Ok(s) => self.note(format!(
@@ -1373,6 +1418,7 @@ impl Node {
             }
             self.core.end_tick(now);
             self.record_row(now);
+            self.trace_step();
         }
         let t2 = self.local_us();
         self.drain_events();
