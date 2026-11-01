@@ -419,7 +419,12 @@ impl WorldSim {
         if self.lean_wire && below_verified {
             bits |= HELD_BELOW;
         }
-        if self.run_wire {
+        // Review O2-4: an unsigned answer is covered by the entry above it, so it is asked for only if
+        // the chain from the hole up to that entry's own cover fits one run (`run_of` stays whole for
+        // relays and proofs). A waiting run above is joined within RUN_MAX (`resolve_lean`).
+        let fits = held != Some(end)
+            || self.by_author.get(&(m, end)).and_then(|id| self.run_of(*id)).is_some_and(|r| r.len() + (end - s) as usize <= Self::RUN_MAX);
+        if self.run_wire && fits {
             bits |= HELD_ABOVE;
         }
         let known: Vec<MemberId> = self.known.iter().copied().collect();
