@@ -2582,7 +2582,9 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
 | 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.3 s | equal |
 | 64, then 16 from t = 3 s | batched + adaptive (30 s run) | 37 kbit/s | 496 ms, 4 | **0 / 0** | 87 frames | 0.1 s | equal |
 | 64 per uplink, shared by 3 peers (4 members) | batched + adaptive (30 s run) | 61 kbit/s | 479 ms, 3 | **0 / 0 / 0 / 0** | 57 frames | **at once** | all equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 494 ms on member 3's links | 618 / 618 / 621 | 716 frames | 10.5 s | all equal; member 3 is no longer removed since trust survey #4 (below). Before: 95 / 98, removed from frame 352, back after 0.6 s |
+| 256, but member 3 of 3 on 8 kbit/s | per message (20 s run) | 174 kbit/s | 500 ms, 1,227 | 171 / 177 | 294 frames | 1.7 s | member 3 removed from frame 188; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched (20 s run) | 148 kbit/s | 500 ms, 1,106 | 167 / 172 | 290 frames | 1.75 s | member 3 removed from frame 192; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 490 ms, 42 | 618 / 618 / 621 | 716 frames | 10.5 s | all equal; member 3 is no longer removed since trust survey #4 (below). Before: 95 / 98, removed from frame 352, back after 0.6 s |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
@@ -2648,7 +2650,7 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
       commit, its source and binary hashes, and the linked encoder's size for a fixed stride-8 pack: 68 bytes
       on the wire with deltas, 130 without.
 
-    | Thin member | Players | Others' stalled frames, main → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s [Part A at its landing, where trust survey #4 changed it] |
+    | Thin member | Players | Others' stalled frames, main (before Part A and before trust survey #4) → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s [Part A at its landing, where trust survey #4 changed it] |
     |---|---|---|
     | sweeper | 2 | 1,521 → 209 / 873 → 0 / 452 → 0 / 0 → 0 / 0 → 0 |
     | sweeper | 4 | 136 → 161 [135] / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
@@ -2658,19 +2660,26 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     | watcher | 8 | 92 → 146 [91] / 112 → 541 [111] / 132 → 115 / 1 → 0 / 0 → 0 |
 
     * **Since trust survey #4 (f)** (main 1233ef4, the user's rulings of 2026-11-01), the withholding rule is gone,
-      and with it what removed a thin watcher whose downlink clogs [I: its horizon travels on its fine uplink, so
-      R3-9 doesn't fire]. The bracketed figures above are from before it.
+      and with it what removed a thin watcher whose downlink clogs [I: its uplink is thin too, but once Part A
+      thins its sending it carries little more than acks, so its horizon stays timely and R3-9 doesn't fire]. The
+      bracketed figures above are from before it.
       * **The thin watcher stays a member** at 8 kbit/s with 3-4 players and at 12 kbit/s with 8. Its references
         hold D54's confirmation until its downlink drains. Everyone stalls 458-621 frames per gesture, against the
-        others' 90-111 before, and the others' confirmation lag is 119-173 frames.
+        others' 95-111 before, and the others' confirmation lag is 119-173 frames.
       * At 8 kbit/s with 8 players it is still removed, from the same frame, but the others stall 146 frames
         instead of 91.
       * **PA-2's step-down (D56 above) is what brings these cells back:** they are back in real time 7.5-10.5 s
         after the gesture. On main 993daf7 without it, the fast members sat at level 8 for 19.6-25 s and never
         returned within the run [V @design-reviewer's builds of 993daf7 and of the merged tree].
       * **The thin sweeper's cells cost the others more too:** 138-161 stalled frames instead of 114-135.
+      * **At 3 players Part A now costs the others more than no adaptation does** (review PL-1) [V spikes/out/r18,
+        capped-slow-member, below]. With Part A the others stall 618 frames, are back in real time after 10.5 s,
+        and member 3 is never removed. With plain batching they stall 167-172 frames and are back after 1.75 s,
+        and with per-message sends 171-177 and 1.7 s; both remove member 3, from frame 192 and 188.
+        * The likely reason [I]: Part A's thinning keeps the watcher's acks flowing, so nothing removes it.
+          Without adaptation its uplink clogs as well, and R3-9, which survey #4 kept, removes it.
       * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
-        plan). At 3 players, which keep today's rules, the stall stays.
+        plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
 
     * **Four members sharing one 64 kbit/s uplink:** 1,408 stalled frames (the member making the gesture,
       then demoted) and 156 for the others → 0.
