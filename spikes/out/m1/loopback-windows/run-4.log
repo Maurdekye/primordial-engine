@@ -1,0 +1,6 @@
+pe-app: member 4 of session a4b7320aa6ef7a8d on 0.0.0.0:7274; 4 members, 1200 frames
+[m4 t=0ms f=0] session start received: epoch 1203921 (leader clock), my offset -650 us, best rtt 1520 us
+[m4 t=795ms f=47] status: frame 47 now 47 conf 45 members {1, 2, 3, 4} rollbacks 0 | sent 86 faulted 0 recv 85 rejected {} unsigned 0 | sigs 96
+[m4 t=2798ms f=167] status: frame 167 now 167 conf 154 members {1, 2, 3, 4} rollbacks 8 | sent 317 faulted 0 recv 301 rejected {} unsigned 0 | sigs 347
+[m4 t=4799ms f=287] status: frame 287 now 287 conf 280 members {1, 2, 3, 4} rollbacks 20 | sent 583 faulted 0 recv 537 rejected {} unsigned 0 | sigs 604
+[m4] scripted drop-out at 6001 ms: exiting without a word

@@ -1,0 +1,25 @@
+pe-app: member 3 of session 98894d5d94d93400 on 127.0.0.1:7413; 3 members, 1800 frames
+[m3 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m3 t=0ms f=0] session start received: epoch 1279215 (leader clock), my offset 18224 us, best rtt 61997 us
+[m3 t=739ms f=44] status: frame 44 now 44 conf 38 members {1, 2, 3} rollbacks 0 | sent 60 faulted 0 capped 0 recv 59 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms
+[m3 t=2745ms f=164] status: frame 164 now 164 conf 146 members {1, 2, 3} rollbacks 31 | sent 180 faulted 0 capped 0 recv 188 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m3 t=4746ms f=284] status: frame 284 now 284 conf 276 members {1, 2, 3} rollbacks 62 | sent 300 faulted 0 capped 0 recv 278 rejected {} bad entry sigs 0 | R18 level 0 signal Some(7) ms
+[m3 t=6747ms f=404] status: frame 404 now 404 conf 380 members {1, 2, 3} rollbacks 109 | sent 388 faulted 0 capped 0 recv 368 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m3 t=8749ms f=524] status: frame 524 now 524 conf 518 members {1, 2, 3} rollbacks 148 | sent 508 faulted 0 capped 0 recv 467 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms
+[m3 t=10749ms f=644] status: frame 644 now 644 conf 634 members {1, 2, 3} rollbacks 186 | sent 628 faulted 0 capped 0 recv 566 rejected {} bad entry sigs 0 | R18 level 0 signal Some(5) ms
+[m3 t=12751ms f=763] status: frame 763 now 763 conf 735 members {1, 2, 3} rollbacks 241 | sent 748 faulted 0 capped 0 recv 680 rejected {} bad entry sigs 0 | R18 level 0 signal Some(8) ms
+[m3 t=14752ms f=884] status: frame 884 now 884 conf 878 members {1, 2, 3} rollbacks 274 | sent 866 faulted 0 capped 0 recv 773 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms
+[m3 t=16754ms f=1005] status: frame 1005 now 1005 conf 992 members {1, 2, 3} rollbacks 314 | sent 986 faulted 0 capped 0 recv 873 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms
+[m3 t=18765ms f=1125] status: frame 1125 now 1125 conf 1100 members {1, 2, 3} rollbacks 369 | sent 1107 faulted 0 capped 0 recv 988 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m3 t=20769ms f=1246] status: frame 1246 now 1246 conf 1240 members {1, 2, 3} rollbacks 410 | sent 1227 faulted 0 capped 0 recv 1090 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms
+[m3 t=22773ms f=1366] status: frame 1366 now 1366 conf 1360 members {1, 2, 3} rollbacks 446 | sent 1346 faulted 0 capped 0 recv 1186 rejected {} bad entry sigs 0 | R18 level 0 signal Some(8) ms
+[m3 t=24773ms f=1486] status: frame 1486 now 1486 conf 1458 members {1, 2, 3} rollbacks 502 | sent 1462 faulted 0 capped 0 recv 1302 rejected {} bad entry sigs 0 | R18 level 0 signal Some(7) ms
+[m3 t=26775ms f=1606] status: frame 1606 now 1606 conf 1598 members {1, 2, 3} rollbacks 543 | sent 1582 faulted 0 capped 0 recv 1403 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms
+[m3 t=28776ms f=1726] status: frame 1726 now 1726 conf 1720 members {1, 2, 3} rollbacks 576 | sent 1703 faulted 0 capped 0 recv 1496 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms
+[m3 t=30778ms f=1846] status: frame 1846 now 1846 conf 1798 members {1, 2, 3} rollbacks 625 | sent 1823 faulted 0 capped 0 recv 1604 rejected {} bad entry sigs 0 | R18 level 0 signal Some(5) ms
+[m3 t=33000ms f=1902] DONE frames 0..1800: digest b2000e7a05b76329 replay b2000e7a05b76329 (EQUAL), conf 1800, members [1, 2, 3]
+[m3 t=33000ms f=1902] slow step: 1284 ms (receive 0 ms, tick 52 ms, send 1231 ms)
+[m3 t=33000ms f=1902] status: frame 1902 now 1902 conf 1800 members {1, 2, 3} rollbacks 626 | sent 1881 faulted 0 capped 0 recv 1638 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms
+[m3 t=33075ms f=1922] paused at frame 1922 (speculation limit)
+[m3 t=33156ms f=1986] resumed at frame 1986
+member 3: frames 0..1800 digest b2000e7a05b76329 replay b2000e7a05b76329 (EQUAL), conf 1800, members at end [1, 2, 3], rollbacks 626, checks ok 120 bad 0

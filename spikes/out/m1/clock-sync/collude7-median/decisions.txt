@@ -1,0 +1,7 @@
+member 1: 1 membership decisions, 0 pauses; last decision: epoch 1, removed [6, 7]
+member 2: 1 membership decisions, 0 pauses; last decision: epoch 1, removed [6, 7]
+member 3: 1 membership decisions, 0 pauses; last decision: epoch 1, removed [6, 7]
+member 4: 1 membership decisions, 0 pauses; last decision: epoch 1, removed [6, 7]
+member 5: 1 membership decisions, 0 pauses; last decision: epoch 1, removed [6, 7]
+member 6: 1 membership decisions, 1 pauses; last decision: epoch 1, removed [6, 7]
+member 7: 1 membership decisions, 1 pauses; last decision: epoch 1, removed [6, 7]

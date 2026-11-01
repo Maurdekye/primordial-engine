@@ -366,6 +366,9 @@ pub struct Replica {
     pub adapt: bool,
     pub level: usize,
     level_t: u64,
+    /// Thin links (Part A): the uplink queue delay (us) when the level last changed, to tell a queue still
+    /// growing at the coarsest packed level from one draining there.
+    level_b: u64,
     calm_since: u64,
     /// The controller's last tick (us) at which the member was idle (7.6 reduction 2): calm before it does
     /// not count toward lowering into D56's remembered level.
@@ -380,11 +383,15 @@ pub struct Replica {
     quiet_us: u64,
     /// Whether the uplink queue was above 40 ms at the last tick, to find where congestion begins.
     over: bool,
+    /// Thin links (Part A): the drain level's quick return to packed level 5 was used in this D56 episode.
+    /// Until then D56 remembers at most packed level 5. After that, leaving the drain level follows D56 like
+    /// any other level, so a link the packed levels cannot carry does not cycle.
+    drained: bool,
     hand_last: BTreeMap<u32, u64>,
     /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
     packs: BTreeMap<u32, Pack>,
     /// Time spent at each congestion level (ms), and the highest level reached.
-    pub level_ms: [u64; 6],
+    pub level_ms: [u64; 9],
     /// Remote state-carrying entries awaiting the acceptance check: (entry, author, obj).
     pub pending_accept: Vec<(EntryId, MemberId, u32)>,
 }
@@ -468,9 +475,11 @@ impl Peer {
                 congested: None,
                 quiet_us: 0,
                 over: false,
+                drained: false,
+                level_b: 0,
                 hand_last: BTreeMap::new(),
                 packs: BTreeMap::new(),
-                level_ms: [0; 6],
+                level_ms: [0; 9],
                 pending_accept: Vec::new(),
             },
         );
@@ -496,7 +505,19 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
 /// Congestion levels (R18): frames between hand entries, and between acks. Review R3-9 added
 /// levels 4 and 5 for links of about 8-16 kbit/s, and aligns both to the same frame ticks, so a
 /// hand entry and an ack share one datagram.
-pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
+/// Thin links (Part A): level 6 drains a backlog at stride 8 without packs (D73 option B), and levels 7
+/// and 8 send a single pose and an ack every 16 and 32 frames, for links the packed levels cannot carry.
+/// Above `PACKED_LEVELS` the author's hand is not exact: it reaches each pose over the stride, as
+/// before D73.
+pub const HAND_STRIDE: [u64; 9] = [1, 2, 3, 4, 6, 8, 8, 16, 32];
+/// The coarsest level that sends packs (D73(a)); above it, single poses.
+pub const PACKED_LEVELS: usize = 5;
+/// The level that drains a backlog without packs and returns to packed level 5 after 300 ms of calm, once
+/// per D56 episode.
+pub const DRAIN_LEVEL: usize = 6;
+/// From the coarsest packed level up, the controller climbs only while its queue is at least this deep (us), or
+/// still growing (by 10 ms since the last level change).
+pub const DEEP_QUEUE_US: u64 = 300_000;
 
 /// D73(a): a hand's poses not yet sent, for consecutive frames from `p0`, at stride `k`.
 struct Pack {
@@ -518,7 +539,7 @@ fn flush_pack(r: &mut Replica, obj: u32) -> Option<Entry> {
     let target_mm = ts.next().expect("a pack holds a pose");
     Some(r.sim.author_stamped(Payload::Hand { obj, target_mm, active: true, span: 1, more: ts.collect() }, p.p0))
 }
-pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+pub const ACK_FRAMES: [u64; 9] = [2, 2, 3, 4, 6, 8, 8, 16, 32];
 /// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
 pub const IDLE_ACK_FRAMES: u64 = 8;
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
@@ -694,11 +715,28 @@ impl Sim {
                         Some((l, _)) => l,
                         None => r.level,
                     };
+                    // Thin links (Part A): until the drain level's quick return has been used in this episode, D56
+                    // remembers at most the coarsest packed level. The first climb through the drain and floor levels
+                    // clears a passing backlog; remembered, an onset reached on the way held a 32 kbit/s sweeper at
+                    // stride 16 for the rest of its run (26.5 s at level 7, its hand 213 mm behind) and started its
+                    // next gesture there. Congestion again after the return means the link needs the floor levels,
+                    // and from then on they are remembered: capping them always kept a two-member 8 kbit/s sweeper at
+                    // the drain level, which that link cannot carry (363 stalled frames for the other, against 209).
+                    let l = if r.drained { l } else { l.min(PACKED_LEVELS) };
                     r.congested = Some((l, now));
                     r.quiet_us = 0;
-                    if now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
+                    // Thin links (Part A): from the coarsest packed level up, climb only while the queue is deep
+                    // (`DEEP_QUEUE_US`) or still growing (by 10 ms) since the last level change. A backlog that level 5
+                    // drains with the author's hand exact stays there: on main, every cell that stalled had reached
+                    // the 500 ms router queue, and climbing on any 40 ms queue cost the sweeper's hand 86-437 mm at
+                    // 24-64 kbit/s for nothing. Climbing only past 300 ms waited too long where level 5 cannot carry
+                    // the stream: at 12 kbit/s with four members the others stalled 154 frames, against 116 with the
+                    // growth test (main: 155). Below level 5, climbs stay at 100 ms per level.
+                    let deep_enough = r.level < PACKED_LEVELS || b > DEEP_QUEUE_US || b > r.level_b + 10_000;
+                    if deep_enough && now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
                         r.level += 1;
                         r.level_t = now;
+                        r.level_b = b;
                     }
                 } else {
                     r.over = false;
@@ -708,6 +746,7 @@ impl Sim {
                 }
                 if r.congested.is_some_and(|(_, t)| r.quiet_us >= CONGESTED_MEMORY_US || now >= t + CONGESTED_CEILING_US) {
                     r.congested = None;
+                    r.drained = false;
                 }
                 if b < 10_000 {
                     if r.calm_since == 0 {
@@ -723,14 +762,24 @@ impl Sim {
                 // active throughout: calm while idle never lowers into L (idle calm stops at L + 1), and
                 // does not count once the member is active again, not even at the next gesture's first
                 // frame. Lowering above that is unchanged.
-                let (calm_needed, calm_from) = if r.level > 0 && r.congested.is_some_and(|(l, _)| r.level - 1 <= l) {
+                // Thin links (Part A): the drain level returns to packed level 5 after 300 ms of calm, whatever
+                // D56 remembers and whether or not the member is idle, the first time in a D56 episode. That
+                // drains a first congestion's backlog of packs and gives the author its exact hand back soon.
+                let quick_drain = r.level == DRAIN_LEVEL && !r.drained;
+                let (calm_needed, calm_from) = if quick_drain {
+                    (300_000, r.calm_since)
+                } else if r.level > 0 && r.congested.is_some_and(|(l, _)| r.level - 1 <= l) {
                     (CONGESTED_REENTRY_US, r.calm_since.max(r.idle_at))
                 } else {
                     (300_000, r.calm_since)
                 };
                 if r.level > 0 && r.calm_since > 0 && now >= calm_from + calm_needed && now >= r.level_t + 300_000 {
+                    if quick_drain {
+                        r.drained = true;
+                    }
                     r.level -= 1;
                     r.level_t = now;
+                    r.level_b = b;
                     r.calm_since = now;
                 }
                 r.ack_every_us = ACK_FRAMES[r.level] * r.dt_us;
@@ -771,6 +820,20 @@ impl Sim {
                                     out.push(r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead));
                                 } else {
                                     if r.hand_last.get(&obj).is_some_and(|&l| s <= l) {
+                                        continue;
+                                    }
+                                    // Thin links (Part A): above the packed levels, the pre-D73 thinning: one
+                                    // pose on frame ticks that are multiples of k, reached over k frames.
+                                    if k > 1 && r.level > PACKED_LEVELS {
+                                        if clock_frame % k != 0 {
+                                            continue;
+                                        }
+                                        r.hand_last.insert(obj, s);
+                                        out.extend(flush_pack(r, obj));
+                                        out.push(r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: k as u8, more: Vec::new() }, ahead));
+                                        for e in out {
+                                            broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+                                        }
                                         continue;
                                     }
                                     r.hand_last.insert(obj, s);

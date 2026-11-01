@@ -12,8 +12,10 @@
 pub mod auth;
 pub mod backend;
 pub mod engine;
+pub mod host;
 pub mod http;
 pub mod model;
 pub mod pipe;
 pub mod server;
 pub mod sim_backend;
+pub mod sim_view;

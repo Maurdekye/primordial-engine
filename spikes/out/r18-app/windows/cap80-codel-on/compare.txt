@@ -1,0 +1,6 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | 2d7999a4851dd69e | equal | 1800 | [1, 2, 3] | 0 | 112/0 | 1248/0 |
+| 2 | 1800 | 2d7999a4851dd69e | equal | 1800 | [1, 2, 3] | 527 | 111/0 | 2026/0 |
+| 3 | 1800 | 2d7999a4851dd69e | equal | 1800 | [1, 2, 3] | 528 | 109/0 | 2025/0 |
+ALL EQUAL
