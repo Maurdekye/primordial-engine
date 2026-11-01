@@ -101,7 +101,7 @@ measures that queue and feeds it (`set_link`) every tick.
       clamped to the round trip's reading. So a congestion onset or drain is not clamped (dipping the
       signal there made D56 remember a coarse level, measured), and a drift passes for about one probe
       round trip. An episode outlives a second below its bound, keeping its verdict.
-    * Clamped ticks are counted (`link.clamped_ticks`).
+    * Clamped node steps are counted (`link.clamped_steps`; `clamped_ticks` in older summaries).
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
 * `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
 * **Test tooling:** scripted faults take `rate_kbps` (a token bucket with a 4 kB burst), `queue_ms`
@@ -161,8 +161,18 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
   * A path-delay increase reads as queue until it ages out of the 2-minute base (the stream is thinned
     meanwhile, never stalled); a standing queue lasting longer than 2 minutes becomes the base, and the
     stream then takes its share of tail drops (the loss rule is a follow-up).
-  * Clock drift between machines is removed by the rate-corrected clock and the receiver's drift
-    correction (design 10.4); the round-trip clamp bounds what the fitted frequencies get wrong.
+  * Clock drift between machines is removed by the rate-corrected clock (design 10.4); the round-trip
+    clamp bounds what the fitted frequencies get wrong.
+  * R18 stays calm only through the clamp, all the time. Residual frequency differences of about 10⁻⁴
+    between the rate-corrected clocks build standing estimates of 12-16 ms within the 2-minute base,
+    even with no VM: in the all-Windows control, members 1 and 4 clamp in about 59 000 node steps each.
+    Each open episode probes 10 times a second (on outgoing datagrams) (review L2, measured).
+  * Untested: a sudden real queue above about 450 ms at an episode's start gets no queue verdict (a
+    probe is forgotten after 500 ms, and an episode with no verdict is clamped after 500 ms), so it is
+    clamped. The 80 kbit/s run peaks around 350 ms (review L1, inferred from the code).
+  * Untested: a rate step mid-run that drifts the way back upward inflates the way-back estimate and
+    lowers that reporter's bound, so a real forward queue in that window could get a drift verdict
+    (review L4, inferred).
   * A bottleneck that drops early (AQM) can keep the delay under the 40 ms trigger; loss is not fed.
   * A link below level 5's rate (about 60 kbit/s per link for a sweeping member in the 500-ball pit)
     still removes the member.
