@@ -244,6 +244,14 @@
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "background_grabs": {
+          "default": null,
+          "description": "Background touches are grabs (default false). Only a grab claims its object, for 0.5 s, and\nonly a grab can be refused for a claim (design D72).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "background_touches_per_s": {
           "default": null,
           "description": "Touches per second each other member makes on random objects, 0..=30 (default 0).",
@@ -1269,7 +1277,7 @@
   },
   {
     "name": "world_propose_interaction",
-    "description": "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes). Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.",
+    "description": "Author an interaction as the driven member, through the same path as a player's input: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. touch/grab apply an impulse (grab renews its claim); hand moves a kinematic hand (ball-pit scenes) and holds it at the target until a new target or active: false; its first pose goes out at the next pose slot, so the call may advance time by up to one stride (simulated time in the simulator, real time on a live peer). Returns a ticket; the outcome appears in world_step's `changed` and in world_interaction_status.",
     "inputSchema": {
       "$defs": {
         "InteractionAction": {
@@ -1286,7 +1294,7 @@
             },
             {
               "const": "hand",
-              "description": "Move one of the kinematic hands (ball-pit scenes) to `target_mm`.",
+              "description": "Move one of the kinematic hands (ball-pit scenes) to `target_mm`. The target is held (sent\nagain at every pose slot, as a held controller would) until a new target or `active: false`.\nThe call waits for the next pose slot, so it may advance time by up to one stride.",
               "type": "string"
             }
           ]
@@ -1299,7 +1307,7 @@
         },
         "active": {
           "default": null,
-          "description": "hand: false parks the hand (default true).",
+          "description": "hand: false releases the held target and parks the hand (default true).",
           "type": [
             "boolean",
             "null"

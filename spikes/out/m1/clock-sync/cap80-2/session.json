@@ -1,0 +1,27 @@
+{
+  "session": 8608404136619742472,
+  "nonce": "202c79334097bc183036d97f45ef78ddb7d8fd3ffc9167d594a8f87d82aec9c6",
+  "name": "m1",
+  "scene": "ballpit",
+  "size": 500,
+  "frames": 1800,
+  "window": 120,
+  "seed": 5787769067516609609,
+  "members": [
+    {
+      "id": 1,
+      "addr": "127.0.0.1:7441",
+      "key": "d861405df4fb4b53b6c9f0ed3fcb51b8f5671dcc02bd3c17dcebc0e462bd8868"
+    },
+    {
+      "id": 2,
+      "addr": "127.0.0.1:7442",
+      "key": "215f8685b6806e32c09e5d835807ba5701c4524d559ea1061208c315fdd82812"
+    },
+    {
+      "id": 3,
+      "addr": "127.0.0.1:7443",
+      "key": "d5b5f89c9145ede16d25e337a737fdb90928c5a03da9084bcd148dcdcfd36057"
+    }
+  ]
+}
