@@ -81,6 +81,17 @@ Frame 486: a2439cc9 / 4c17fa13, then 2bf4f3d7, and a2439cc9 at the end.
   - The later rollbacks (8.3-8.75 s, resimulating 7-10 frames) are late entries from
     after the removal, still crossing the 120 ms links until 8.7 s. They don't involve the split (inferred
     from their timing and depth).
+* **No member confirmed a disputed frame before its decision**, which is the safety property. Up to
+  each member's decision, its conf in the `TRACE` lines stays below frame 479, where the split seq is
+  stamped:
+
+  | Run | Member 1 | Member 2 | Member 4 |
+  |---|---|---|---|
+  | 1 | at most 477 (decision 8.137 s) | at most 477 (8.140 s) | at most 476 (8.258 s) |
+  | 2 | at most 476 (8.134 s) | at most 476 (8.136 s) | at most 476 (8.254 s) |
+
+  Frame 479 is confirmed only once the decision has fixed which version counts. So no replica
+  confirmed a frame holding A, B or neither and then had to change it.
 * **Which version won: A, in both runs, by pe-session's cut rule.**
   - The view change keeps exactly the cut: the deepest point of member 3's chain that at least k of the
     voters' frozen heads extend. Here k = 3 voters - t (1) = 2 (`robust_cut`, design 10.8).
