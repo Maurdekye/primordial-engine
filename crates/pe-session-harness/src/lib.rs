@@ -542,6 +542,8 @@ impl Peer {
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, keys));
         // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
         core.sim.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
+        // A/B for the option 2 triage: PE_RUNS=0 sends no runs (every entry signed on itself).
+        core.sim.run_wire = std::env::var("PE_RUNS").map_or(true, |v| v != "0");
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;

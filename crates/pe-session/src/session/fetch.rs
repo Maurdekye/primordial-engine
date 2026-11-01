@@ -6,7 +6,7 @@ impl WorldSim {
     /// Ask `holder` for `author`'s entries `from..=to`. The reply may be lean when this member holds
     /// the entry below the range (a wrong rebuild fails verification and falls back).
     pub(super) fn want_from(&mut self, holder: MemberId, author: MemberId, from: u32, to: u32) {
-        let below = self.lean_wire && (from <= 1 || self.by_author.contains_key(&(author, from - 1)));
+        let below = self.lean_wire && std::env::var("PE_LEANREP").map_or(true, |v| v != "0") && (from <= 1 || self.by_author.contains_key(&(author, from - 1)));
         self.want_from_held(holder, author, from, to, if below { HELD_BELOW } else { 0 });
     }
 
@@ -40,6 +40,15 @@ impl WorldSim {
             run.push(SignedEntry { entry: e.clone(), sig: self.sigs.get(&e.id()).copied().unwrap_or([0; 64]) });
         }
         let Some(top) = run.last() else { return vec![] };
+        // Without runs on the wire (A/B, option 1's form): every entry on its own, signed on itself.
+        if !self.run_wire {
+            let lean = held & HELD_BELOW != 0;
+            return run
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| if i == 0 && lean { Msg::Run { lean: true, heads: false, signed: true, entries: vec![e] } } else { Msg::Entry(e) })
+                .collect();
+        }
         let signed = held & HELD_ABOVE == 0;
         if signed && !self.sigs.contains_key(&top.id()) {
             let Some(cover) = self.run_of(top.id()) else { return vec![] };
