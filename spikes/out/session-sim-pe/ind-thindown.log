@@ -1,0 +1,4 @@
+  t=0.00s m1: lag 0 frames (0.00 s); holding [] late acks flagged []
+  t=4.00s m1: lag 77 frames (1.28 s); holding [not heard (2), not referencing (3, 2)] late acks flagged []
+  t=6.25s m1: lag 4 frames (0.07 s); holding [] late acks flagged []
+RESULT ind-thindown: m1 asked 33 times; named {2, 3}; not referencing {3}; late {} -> OK
