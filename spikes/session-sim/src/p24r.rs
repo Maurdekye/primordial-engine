@@ -116,7 +116,7 @@ pub(crate) fn before_fix(label: &str, fix: &str, sim: &Sim, honest: &[MemberId],
 
 pub fn fork9() {
     for fixed in [false, true] {
-        let (sim, stopped, info) = fork_run(if fixed { 0 } else { fix::VC2 }, 700_000, false, 0);
+        let (sim, stopped, info) = fork_run(if fixed { 0 } else { fix::VC2 }, 700_000, false, 0, 0);
         let honest = [1, 2, 3];
         let label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)";
         if !fixed {
@@ -133,8 +133,9 @@ pub fn fork9() {
 /// `fork9`'s run: 9 forks at frame 110 and stays alive `live_us` (A to 1 and 2, B to 3), with `fixes_off`
 /// switched off. With `backdate`, 9 also signs, on A only, a touch backdated 90 frames 100 ms after the
 /// fork. With `detect_us`, everything 3 sends 1 and 2 in the `detect_us` after the fork arrives that late,
-/// so they find the fork late and cut A deeper (round 3: `deepfork`, `cutbackdate`).
-pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: u64) -> (Sim, Option<u64>, String) {
+/// so they find the fork late and cut A deeper (round 3: `deepfork`, `cutbackdate`). With `sparse_us`,
+/// 1 and 2 ack only once every `sparse_us`, so their acks name few of A's entries (`deepfork`).
+pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: u64, sparse_us: u64) -> (Sim, Option<u64>, String) {
     {
         let ids = [1, 2, 3, 9];
         let mut ps = peers_of(&ids, |m| match m {
@@ -143,6 +144,14 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
             _ => BTreeMap::new(),
         });
         each_sim(&mut ps, |s| s.fixes_off = fixes_off);
+        if sparse_us > 0 {
+            for p in ps.iter_mut().filter(|p| p.id == 1 || p.id == 2) {
+                let r = p.worlds.get_mut(&1).unwrap();
+                r.ack_every_us = sparse_us;
+                // Strictly on the grid: idle thinning's ack on leaving idle would name entries between.
+                r.ack_grid_only = true;
+            }
+        }
         let fork_t: Rc<Cell<u64>> = Rc::new(Cell::new(u64::MAX));
         let fork_seq: Rc<Cell<u32>> = Rc::new(Cell::new(u32::MAX));
         let crafted: Rc<RefCell<BTreeSet<EntryId>>> = Rc::default();
