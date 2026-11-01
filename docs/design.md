@@ -3700,7 +3700,7 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
 
 ---
 
-### 12.6 Profile statistics: witnessed join date and hours played (user 2026-11-01; proposal, nothing built)
+### 12.6 Profile statistics: witnessed join date and hours played (confirmed by the user 2026-11-01, msg m1c2bbbc512d6; design only, build not authorized)
 
 The user asked how to stop players spoofing account details such as join date and hours played
 (msg mac142474e81b). There is no authority to ask (decision 1) and a player is only an identity key
@@ -3739,7 +3739,7 @@ numbers, and both are right about what they can check.
 * **Who counts as a witness:** a player, counted by **user key**: a player's several devices are one
   witness, and a receipt signed by a device of the subject's own user key doesn't count. An AI agent's
   delegated key (12.3) doesn't count either, or one player with ten agents would be ten witnesses
-  [proposal].
+  (user: "Exclude", msg m1c2bbbc512d6).
 * **Why one receipt per witness and not one roster co-signed by everyone:** players join and leave at
   different times, so each pair's overlap differs; and a roster would show every member to anyone the
   subject shows it to (see privacy, below).
@@ -3795,9 +3795,9 @@ reaches for this viewer:
 * nothing verifiable: "Joined Mar 2026 · 312 h (self-reported)".
 
 A ring of 50 throwaway keys that witness one another reads as "by 50 keys you don't know". Counting
-only witnesses with their own witnessed history (the "weight witnesses by history" idea) is left out of
-v1: a closed ring can give itself any history too, and it would mean fetching every witness's profile
-[proposal; open point 3].
+only witnesses with their own witnessed history (the "weight witnesses by history" idea) is left out:
+a closed ring can give itself any history too, and it would mean fetching every witness's profile
+(user: "Leave out", msg m1c2bbbc512d6).
 
 **How the claims travel with the player.**
 * The receipts live in the player's profile store on its own devices, synced across them as signed
@@ -3807,7 +3807,7 @@ v1: a closed ring can give itself any history too, and it would mean fetching ev
   the witnesses' device certificates. The viewer caches them by hash and later asks only for new ones.
   Offline, a viewer shows its cached view with its date.
 * Lost devices with no copy lose the receipts. Witnesses keep the receipts they issued, so friends could
-  give back theirs; there is no other backup (no service) [proposal].
+  give back theirs; there is no other backup (no service).
 * A new identity key is a new profile. Device keys can rotate under the same user key without losing
   anything.
 
@@ -3832,31 +3832,24 @@ v1: a closed ring can give itself any history too, and it would mean fetching ev
 * **Nothing is mined, no log is kept, and the session's simulation, log and confirmation are
   untouched.**
 
-**Privacy (open point 1, for the user).** A receipt shows that its witness and its subject played
+**Privacy (user: (a) and (c), msg m1c2bbbc512d6).** A receipt shows that its witness and its subject played
 together, and when, to anyone the subject shows it to, including people who weren't there. The witness
 is exposed as much as the subject. The session tag is per subject, so two players' receipts can't be
 matched to each other by tag by someone who doesn't know the session id (its 256-bit nonce, 10.3, makes
-it unguessable; members know it); the witness keys and times still link them. Options, which combine:
+it unguessable; members know it); the witness keys and times still link them. The two chosen controls:
 * **(a) The subject picks what to show.** Each receipt stands alone, so a player can show some
   witnesses and hide others, per viewer or for everyone. Cost: hidden receipts don't count, so the stat
   is lower; nothing else.
-* **(b) Show receipts to friends only.** Strangers get the summary only, which they see as
-  self-reported. Cost: strangers can check nothing.
 * **(c) The witness chooses whom it signs for:** everyone in the session, friends only, or no one.
   Cost: fewer receipts for players who meet strangers.
-* **(d) Counts without keys** ("41 keys witnessed this" with no keys shown): with plain signatures a
-  viewer can't check a signature without the signer's key, so a keyless count is self-reported.
-  Making it checkable needs ring or group signatures or private set intersection, which is more than
-  simple signing; not proposed.
+* **Defaults:** both start at everyone. Witnesses sign for everyone in the session, and subjects show
+  their receipts to everyone. Each player can narrow either.
+* **Not chosen:** (b) showing receipts to friends only (strangers could check nothing), and (d) counts
+  without keys (with plain signatures a keyless count can't be checked; making it checkable needs ring
+  or group signatures or private set intersection, more than simple signing).
 
-Proposed default: (a) and (c), with witnesses signing for everyone in the session and subjects showing
-receipts to everyone; a player can narrow either. The user decides.
-
-**Open points.**
-1. Privacy, above.
-2. Agents as witnesses: excluded here; the user may want them counted as a separate tier.
-3. Weighting witnesses by their own history: left out of v1, for the reason above.
-4. The 15-minute receipt period and the 16 kept witnesses per session are starting values.
+**Open points.** The 15-minute receipt period and the 16 kept witnesses per session are starting
+values.
 
 ## 13. Live game logic in Rust (R7, 100%-Rust clarification)
 
