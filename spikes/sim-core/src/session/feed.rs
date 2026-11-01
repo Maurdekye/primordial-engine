@@ -228,7 +228,8 @@ impl WorldSim {
         for r in &c.remove {
             let mine = self.votes.get(&r.member).is_some_and(|v| v.contains_key(&self.me));
             let proof = self.proofs.contains_key(&r.member) || self.liars.contains_key(&r.member);
-            if !mine && !proof {
+            let leave = self.leaves.get(&r.member).is_some_and(|id| r.votes == [*id]);
+            if !mine && !proof && !leave {
                 return Some(false);
             }
         }

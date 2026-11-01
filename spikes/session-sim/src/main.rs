@@ -1429,6 +1429,7 @@ fn main() {
         Some("stale") => partb::stale(),
         Some("late") => partb::late(),
         Some("rejoin") => partb::rejoin(),
+        Some("leave-s4") => partb::leave_s4(),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),

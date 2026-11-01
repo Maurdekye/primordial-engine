@@ -381,6 +381,8 @@ pub enum Action {
     Backdated { obj: u32, impulse: [f32; 3], back: u64 },
     /// D80: kick a member, give a member a role, define a role (admin entries).
     Kick { target: MemberId },
+    /// Revision 22: ask to leave (a vote on oneself without a kick).
+    Leave,
     SetRole { member: MemberId, role: RoleId },
     DefineRole { role: RoleId, perms: u64 },
     /// World ownership: publish a certificate for `change` on this replica's ownership head,
@@ -1170,6 +1172,12 @@ impl Sim {
                                 }
                                 continue;
                             }
+                            // Revision 22: a member that has asked to leave acts no more (its entries past the head its
+                            // request froze are cut at the decision; counted meanwhile, their withdrawal would roll back
+                            // confirmed frames).
+                            if r.sim.leaving() && !matches!(a, Action::Leave) {
+                                continue;
+                            }
                             let e = match a {
                                 Action::Touch { obj, impulse, grab } => {
                                     r.sim.author(Payload::Touch { obj, impulse, grab }, Some(obj))
@@ -1184,6 +1192,10 @@ impl Sim {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
                                 Action::Kick { target } => r.sim.kick(target),
+                                Action::Leave => match r.sim.request_leave() {
+                                    Some(e) => e,
+                                    None => continue,
+                                },
                                 Action::SetRole { member, role } => r.sim.set_role(member, role),
                                 Action::DefineRole { role, perms } => r.sim.define_role(role, perms),
                                 Action::Carry { obj, dest, .. } => {

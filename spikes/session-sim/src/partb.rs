@@ -78,6 +78,64 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
     equal && bad == 0
 }
 
+/// Revision 22, S-4: at 3 players with member 3 fed (8 kbit/s each way), member 2 drops under the floor (0.5 kbit/s each
+/// way from 5 s). It isn't fed (at most one is, n − q = 1), so no floor test judges it, and its removal would need the
+/// fed member's vote, which a fed member never casts on a floor; its client measures its link and it leaves by request
+/// at 8 s. The leave decides and members 1 and 3 go on.
+pub fn leave_s4() {
+    let ids: Vec<MemberId> = vec![1, 2, 3];
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| {
+        let mut v: Vec<(u64, Action)> = (120..1700).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        if m == 2 {
+            v.push((480, Action::Leave));
+            v.sort_by_key(|x| x.0);
+        }
+        plan(&v)
+    };
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 33);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &x in &[1, 2] {
+        for pair in [(3, x), (x, 3)] {
+            net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+        }
+    }
+    let mut sim = Sim::new(net, ps, 20_000_000);
+    sim.feed = true;
+    let mut removed: Option<u64> = None;
+    let panic_at = run_to_end(&mut sim, |s| {
+        if s.net.now_us == 5_000_000 {
+            for &x in &[1, 3] {
+                for pair in [(2, x), (x, 2)] {
+                    s.net.caps.insert(pair, Cap { rate_bps: 500, burst_bytes: 4000, max_queue_us: 500_000 });
+                }
+            }
+        }
+        if removed.is_none() && !s.replica(1, 1).sim.members.contains(&2) {
+            removed = Some(s.net.now_us);
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    println!(
+        "RESULT leave-s4: member 2 removed at {}; members at m1 {:?}; 3 fed {}",
+        removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
+        r1.members,
+        sim.is_fed(1, 3)
+    );
+    let finals: Vec<MemberId> = r1.members.iter().copied().collect();
+    verdict(&sim, &finals, "leave-s4", panic_at);
+}
+
 pub fn stale() {
     let ids = [1, 2, 3, 4];
     // (frame, member, object, impulse): who writes which object when.
