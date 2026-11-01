@@ -2794,9 +2794,11 @@ entries that the view change commits (10.8).
     admits it with a role that doesn't count as an admin, applies unchanged. Row 0 is above it: an owner
     kicked this way still rejoins as Admin, as the user accepted for kicked owners (22:51Z).
   * The rejoin role must be a defined role that doesn't count as an admin when the kick is decided;
-    otherwise the whole kick is refused. A world whose only role is Admin (the default, 22:15Z) has none,
-    so the dialog first defines one, a Guest role with the interact, speak and edit permissions, in an
-    entry before the kick [proposal].
+    otherwise the whole kick is refused. The engine never creates a role for it: roles are only defined
+    by hand or come with a preset world template (user, 2026-11-01, msg mabfa0670b915). So "Kick and remove
+    Admin" offers the world's existing roles that don't count as an admin to rejoin with. A world with
+    none (the default, where Admin is the only role, 22:15Z) offers no such option, and the dialog says a
+    role without Admin must first be defined, or come from a template [proposal].
   * The rejoin role lasts until it is lifted: by an unban entry, or by an admin later giving the rejoined
     player a role that counts as an admin (an explicit promotion overrides it). It persists and merges like
     a ban (a merge keeps it unless the other copy bans the key).
