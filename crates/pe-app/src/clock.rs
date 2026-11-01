@@ -276,6 +276,13 @@ impl ClockSync {
         self.rate
     }
 
+    /// How fast a one-way delay measured on `peer`'s datagrams grows from the two rate-corrected
+    /// clocks alone: this member's session frequency less the peer's, both in this member's raw units
+    /// (r - s_j), once the peer's frequency is fitted.
+    pub fn drift_rate(&self, peer: u32) -> Option<f64> {
+        Some(self.rate - self.peers.get(&peer)?.session_rate()?)
+    }
+
     /// The shortest round trip to `peer` in the window.
     pub fn best_rtt_to(&self, peer: u32) -> Option<u64> {
         self.peers.get(&peer)?.queue_best()
