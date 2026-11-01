@@ -492,7 +492,8 @@ impl WorldSim {
             | Payload::Precommit { .. }
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
-            | Payload::DefineRole { .. } => Outcome::Accepted,
+            | Payload::DefineRole { .. }
+            | Payload::Ownership { .. } => Outcome::Accepted,
         }
     }
 

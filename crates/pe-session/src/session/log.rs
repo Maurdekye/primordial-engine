@@ -352,7 +352,7 @@ impl WorldSim {
     pub(super) fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
         // D80: an admin entry stays pending across epochs until a decision judges it.
-        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. });
+        let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
         let valid = match &e.payload {
             Payload::Ack { horizon, epoch, .. } => {
@@ -374,7 +374,7 @@ impl WorldSim {
             }
             // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
             // horizon like any entry: no backdating past what its author has declared.
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } if self.fixes_off & fix::VCR9 == 0 => {
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
                 max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack
             }
             Payload::Vote { .. }
@@ -383,7 +383,8 @@ impl WorldSim {
             | Payload::Precommit { .. }
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
-            | Payload::DefineRole { .. } => true,
+            | Payload::DefineRole { .. }
+            | Payload::Ownership { .. } => true,
             // A member admitted by a view change acts from its boundary frame on (10.8).
             _ => {
                 let extra = e.payload.extra_frames();
@@ -443,7 +444,8 @@ impl WorldSim {
             | Payload::Precommit { epoch, .. }
             | Payload::Kick { epoch, .. }
             | Payload::SetRole { epoch, .. }
-            | Payload::DefineRole { epoch, .. } => {
+            | Payload::DefineRole { epoch, .. }
+            | Payload::Ownership { epoch, .. } => {
                 if epoch > self.vcm.epoch {
                     self.vcm.vc_later.entry(epoch).or_default().push(id);
                 } else if epoch == self.vcm.epoch || admin_entry {
