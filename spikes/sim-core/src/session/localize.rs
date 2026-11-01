@@ -84,6 +84,38 @@ impl WorldSim {
         self.cfg.localize && self.members.len() >= 4
     }
 
+    /// Part B at 3 players (plan section 7): the state feed and fed mode, with Part B switched on.
+    pub fn fed_mode_capable(&self) -> bool {
+        self.cfg.localize && self.members.len() == 3
+    }
+
+    /// Part B at 3 players (S-1, S-3): window k's mode. Some(true) in fed mode: some member's latest ack stamped
+    /// before the window's start carries an anchor (fed mode starts at the first window starting after a member's
+    /// first anchored ack and ends at the first window starting after its first ack without one). None until it is
+    /// known: every member's first ack stamped at or after the window's start lies in its prefix both others
+    /// reference (D54 stability, or echo-stability with both others, F by its echo), so only one version of each
+    /// switch can count. Some(false) outside 3-player sessions with Part B.
+    pub fn window_mode(&self, k: u64) -> Option<bool> {
+        if !self.fed_mode_capable() {
+            return Some(false);
+        }
+        let start = k * WINDOW;
+        let mut fed = false;
+        for &m in &self.members {
+            // The prefix of m's chain both others reference, in the version I hold.
+            let stable = self.members.iter().filter(|&&y| y != m).map(|&y| self.matched_ref(y, m)).min().unwrap_or(0);
+            let acks = self.ack_by_stamp.get(&m)?;
+            let (_, &first_after) = acks.range(start..).next()?;
+            if first_after > stable {
+                return None;
+            }
+            if let Some((_, &last_before)) = acks.range(..start).next_back() {
+                fed |= self.anchored_acks.get(&m).is_some_and(|a| a.contains(&last_before));
+            }
+        }
+        Some(fed)
+    }
+
     fn quorum_q(&self) -> usize {
         quorum(QuorumRule::Bft, self.members.len()).1
     }

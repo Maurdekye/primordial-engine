@@ -691,7 +691,7 @@ impl Sim {
             }
             for (w, r) in &p.worlds {
                 level.insert((*w, p.id), r.level);
-                if r.sim.localized() && r.sim.members.contains(&p.id) {
+                if (r.sim.localized() || r.sim.fed_mode_capable()) && r.sim.members.contains(&p.id) {
                     todo.push((*w, p.id, r.sim.members.iter().copied().collect()));
                     room.entry(*w).or_insert_with(|| r.sim.members.len().saturating_sub(pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, r.sim.members.len()).1));
                 }
@@ -948,7 +948,7 @@ impl Sim {
                 // reads the bottleneck directly; production estimates a LEDBAT-style one-way queueing
                 // delay, 10.9). Up fast, down slowly, and slower still into the level where congestion
                 // began or a finer one.
-                let b = if self.feed && r.sim.localized() {
+                let b = if self.feed && (r.sim.localized() || r.sim.fed_mode_capable()) {
                     // Thin links Part B, rule 5: the smallest backlog over receivers not on the feed. Congestion on
                     // this member's own uplink shows toward every receiver; a backlog toward one receiver is that
                     // receiver's downlink, which its feed controller takes care of.

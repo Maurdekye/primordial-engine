@@ -363,6 +363,11 @@ pub fn capped(o: &Opts) {
             let l = sim.replica(1, 1).level_ms;
             if o.localize {
                 println!("RESULT     time on the state feed per member: {} ms", fed_ms.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "));
+                if n == 3 {
+                    let r1 = &sim.replica(1, 1).sim;
+                    let modes: Vec<String> = (0..(o.end_s * hz / 300)).map(|k| match r1.window_mode(k) { Some(true) => "fed", Some(false) => "D54", None => "?" }.to_string()).collect();
+                    println!("RESULT     3 players, window modes at member 1 (300 frames each): {}", modes.join(" "));
+                }
                 println!(
                     "RESULT     rule 1's echo, per member: echoes matched/mismatched {}",
                     ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" ")
