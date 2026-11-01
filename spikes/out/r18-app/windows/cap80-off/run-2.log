@@ -1,0 +1,26 @@
+pe-app: member 2 of session b6447beb3cb33c3c on 127.0.0.1:7422; 3 members, 1800 frames
+[m2 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m2 t=0ms f=0] session start received: epoch 1280694 (leader clock), my offset 11032 us, best rtt 59055 us
+[m2 t=734ms f=44] status: frame 44 now 44 conf 38 members {1, 2, 3} rollbacks 0 | sent 60 faulted 0 capped 0 recv 59 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms (not fed)
+[m2 t=2746ms f=164] status: frame 164 now 164 conf 146 members {1, 2, 3} rollbacks 31 | sent 180 faulted 0 capped 0 recv 187 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)
+[m2 t=4684ms f=280] paused at frame 280 (speculation limit)
+[m2 t=4762ms f=280] status: frame 280 now 284 conf 160 members {1, 2, 3} rollbacks 94 | sent 304 faulted 0 capped 0 recv 315 rejected {} bad entry sigs 0 | R18 level 0 signal Some(10) ms (not fed)
+[m2 t=6762ms f=280] status: frame 280 now 405 conf 160 members {1, 2, 3} rollbacks 106 | sent 425 faulted 0 capped 0 recv 445 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)
+[m2 t=6962ms f=280] membership decision: epoch 1, removed [1]
+[m2 t=7049ms f=417] resumed at frame 417
+[m2 t=8762ms f=525] status: frame 525 now 525 conf 520 members {2, 3} rollbacks 107 | sent 502 faulted 0 capped 0 recv 575 rejected {} bad entry sigs 0 | R18 level 0 signal Some(6) ms (not fed)
+[m2 t=10763ms f=645] status: frame 645 now 645 conf 640 members {2, 3} rollbacks 107 | sent 566 faulted 0 capped 0 recv 705 rejected {} bad entry sigs 0 | R18 level 0 signal Some(6) ms (not fed)
+[m2 t=12765ms f=765] status: frame 765 now 765 conf 760 members {2, 3} rollbacks 107 | sent 630 faulted 0 capped 0 recv 833 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms (not fed)
+[m2 t=14766ms f=885] status: frame 885 now 885 conf 882 members {2, 3} rollbacks 107 | sent 693 faulted 0 capped 0 recv 964 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)
+[m2 t=16767ms f=1006] status: frame 1006 now 1006 conf 1000 members {2, 3} rollbacks 107 | sent 758 faulted 0 capped 0 recv 1094 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms (not fed)
+[m2 t=18768ms f=1126] status: frame 1126 now 1126 conf 1120 members {2, 3} rollbacks 107 | sent 822 faulted 0 capped 0 recv 1222 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms (not fed)
+[m2 t=20770ms f=1246] status: frame 1246 now 1246 conf 1238 members {2, 3} rollbacks 107 | sent 886 faulted 0 capped 0 recv 1349 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)
+[m2 t=22771ms f=1366] status: frame 1366 now 1366 conf 1360 members {2, 3} rollbacks 107 | sent 950 faulted 0 capped 0 recv 1477 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms (not fed)
+[m2 t=24773ms f=1486] status: frame 1486 now 1486 conf 1482 members {2, 3} rollbacks 107 | sent 1013 faulted 0 capped 0 recv 1605 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms (not fed)
+[m2 t=26774ms f=1606] status: frame 1606 now 1606 conf 1602 members {2, 3} rollbacks 107 | sent 1076 faulted 0 capped 0 recv 1734 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms (not fed)
+[m2 t=28775ms f=1726] status: frame 1726 now 1726 conf 1722 members {2, 3} rollbacks 107 | sent 1140 faulted 0 capped 0 recv 1864 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms (not fed)
+[m2 t=30776ms f=1846] status: frame 1846 now 1846 conf 1798 members {2, 3} rollbacks 107 | sent 1204 faulted 0 capped 0 recv 1969 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms (not fed)
+[m2 t=31689ms f=1868] DONE frames 0..1800: digest 00cf089f4bffcb68 replay 00cf089f4bffcb68 (EQUAL), conf 1800, members [2, 3]
+[m2 t=31689ms f=1868] slow step: 550 ms (receive 0 ms, tick 0 ms, send 550 ms)
+[m2 t=32776ms f=1966] status: frame 1966 now 1966 conf 1962 members {2, 3} rollbacks 107 | sent 1251 faulted 0 capped 0 recv 2086 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)
+member 2: frames 0..1800 digest 00cf089f4bffcb68 replay 00cf089f4bffcb68 (EQUAL), conf 1800, members at end [2, 3], rollbacks 107, checks ok 58 bad 0

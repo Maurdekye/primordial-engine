@@ -1,0 +1,11 @@
+pe-app: member 4 of session d84438f34db05926 on 172.19.40.73:7404; 4 members, 1800 frames
+[m4 t=0ms f=0] session start received: epoch 3335246 (leader clock), my offset 2131723 us, best rtt 1153 us
+[m4 t=796ms f=47] status: frame 47 now 47 conf 45 members {1, 2, 3, 4} rollbacks 0 | sent 86 faulted 0 recv 84 rejected {} bad entry sigs 0
+[m4 t=2796ms f=167] status: frame 167 now 167 conf 164 members {1, 2, 3, 4} rollbacks 0 | sent 291 faulted 0 recv 291 rejected {} bad entry sigs 0
+[m4 t=4797ms f=287] status: frame 287 now 287 conf 278 members {1, 2, 3, 4} rollbacks 6 | sent 542 faulted 0 recv 533 rejected {} bad entry sigs 0
+[m4 t=6797ms f=407] status: frame 407 now 407 conf 400 members {1, 2, 3, 4} rollbacks 12 | sent 787 faulted 0 recv 779 rejected {} bad entry sigs 0
+[m4 t=8798ms f=527] status: frame 527 now 527 conf 518 members {1, 2, 3, 4} rollbacks 18 | sent 1024 faulted 0 recv 1013 rejected {} bad entry sigs 0
+[m4 t=10799ms f=647] status: frame 647 now 647 conf 638 members {1, 2, 3, 4} rollbacks 24 | sent 1265 faulted 0 recv 1232 rejected {} bad entry sigs 0
+[m4 t=12800ms f=768] status: frame 768 now 768 conf 759 members {1, 2, 3, 4} rollbacks 30 | sent 1489 faulted 0 recv 1453 rejected {} bad entry sigs 0
+[m4 t=14800ms f=888] status: frame 888 now 888 conf 882 members {1, 2, 3, 4} rollbacks 36 | sent 1748 faulted 0 recv 1698 rejected {} bad entry sigs 0
+[m4] scripted drop-out at 15000 ms: exiting without a word

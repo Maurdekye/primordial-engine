@@ -15,10 +15,10 @@ name = "pe-mcp"
 path = "src/main.rs"
 
 [dependencies]
-# Phase 2 drives a peer of the in-process session simulator; P2-3's pe-session replaces it behind
-# the `DrivenPeer` trait (src/backend.rs).
-pe-sim-core.workspace = true
-pe-spike-session-sim = { path = "../../spikes/session-sim" }
+# The protocol core (P2-3) and its in-process scenario harness; a live peer (pe-app) drives the same
+# core over UDP behind the `DrivenPeer` trait (src/backend.rs).
+pe-session = { path = "../pe-session" }
+pe-session-harness = { path = "../pe-session-harness" }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-async-rw", "transport-streamable-http-server"] }
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "process"] }
 tokio-util = "0.7"

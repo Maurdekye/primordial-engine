@@ -88,19 +88,19 @@ impl WorldSim {
         }
         let mut out = Vec::new();
         // D80: a pending kick outlives an epoch that did not carry it out: freeze its target again.
-        let kicks: Vec<(EntryId, MemberId, MemberId)> = self
+        let kicks: Vec<(EntryId, MemberId, MemberId, Rejoin)> = self
             .vcm.admin_pending
             .iter()
             .filter_map(|id| {
                 let e = self.entries.get(id)?;
                 match e.payload {
-                    Payload::Kick { target, .. } => Some((*id, e.member, target)),
+                    Payload::Kick { target, rejoin, .. } => Some((*id, e.member, target, rejoin)),
                     _ => None,
                 }
             })
             .collect();
-        for (id, author, t) in kicks {
-            if self.vcm.members.contains(&t) && self.vcm.members.contains(&author) && self.admin_run().kick_allowed(author, t) && !self.voted(t) && !self.vcm.withhold_vc {
+        for (id, author, t, rejoin) in kicks {
+            if self.vcm.members.contains(&t) && self.vcm.members.contains(&author) && self.admin_run().kick_ok(author, t, rejoin) && !self.voted(t) && !self.vcm.withhold_vc {
                 if t == self.me {
                     out.extend(self.self_kick_vote(id));
                 } else {

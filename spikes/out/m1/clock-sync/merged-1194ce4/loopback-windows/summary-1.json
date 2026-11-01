@@ -1,0 +1,84 @@
+{
+  "session": "949cc0a5f687c100",
+  "member": 1,
+  "frames": 1200,
+  "conf": 1376,
+  "digest": "cc40c86b5d925a87",
+  "replay_digest": "cc40c86b5d925a87",
+  "replay_equal": true,
+  "members_at_end": [
+    1,
+    2,
+    3
+  ],
+  "evicted": [
+    4
+  ],
+  "epoch": 1,
+  "rollbacks": 74,
+  "max_rollback_depth": 25,
+  "checks_ok": 94,
+  "checks_bad": 0,
+  "entries_authored": 54,
+  "clock_offset_us": 11717,
+  "best_rtt_us": 515,
+  "clock_rate_ppm": 491.6019935197807,
+  "traffic": {
+    "datagrams_sent": 2073,
+    "datagrams_dropped_by_fault": 0,
+    "datagrams_dropped_by_cap": 0,
+    "datagrams_dropped_by_codel": 0,
+    "datagrams_dropped_rx_full": 0,
+    "datagrams_received": 1514,
+    "bytes_sent": 611317,
+    "rejected": {}
+  },
+  "link": {
+    "signal_fed": true,
+    "level_ticks": [
+      12983,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "max_level": 0,
+    "max_signal_ms": 11.0,
+    "max_true_queue_ms": 0.0,
+    "hand_entries": 0,
+    "clamped_steps": 1617,
+    "rx": {
+      "2": [
+        517,
+        91
+      ],
+      "3": [
+        720,
+        57
+      ],
+      "4": [
+        277,
+        0
+      ]
+    }
+  },
+  "events": [
+    "[m1 t=0ms f=0] every member ready: session epoch 1381073",
+    "[m1 t=620ms f=37] status: frame 37 now 37 conf 24 members {1, 2, 3, 4} rollbacks 0 | sent 72 faulted 0 capped 0 recv 74 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 1151 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]",
+    "[m1 t=2625ms f=157] status: frame 157 now 157 conf 144 members {1, 2, 3, 4} rollbacks 7 | sent 312 faulted 0 capped 0 recv 276 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 4283 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 47), (3, Some(0), 31), (4, Some(0), 0)]",
+    "[m1 t=4626ms f=277] status: frame 277 now 277 conf 264 members {1, 2, 3, 4} rollbacks 19 | sent 583 faulted 0 capped 0 recv 477 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 4283 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 52), (3, Some(31), 33), (4, Some(0), 0)]",
+    "[m1 t=6627ms f=397] status: frame 397 now 397 conf 352 members {1, 2, 3, 4} rollbacks 31 | sent 843 faulted 0 capped 0 recv 649 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 4283 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(44), 52), (3, Some(26), 33), (4, Some(0), 0)]",
+    "[m1 t=7883ms f=472] paused at frame 472 (speculation limit)",
+    "[m1 t=8629ms f=472] status: frame 472 now 517 conf 352 members {1, 2, 3, 4} rollbacks 39 | sent 1076 faulted 0 capped 0 recv 747 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 4283 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(43), 52), (3, Some(28), 33), (4, None, 0)]",
+    "[m1 t=9316ms f=472] membership decision: epoch 1, removed [4]",
+    "[m1 t=9324ms f=559] resumed at frame 559",
+    "[m1 t=10620ms f=637] status: frame 637 now 637 conf 612 members {1, 2, 3} rollbacks 48 | sent 1294 faulted 0 capped 0 recv 868 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset -5046 us, rate -588 ppm, rtt excess ms (member, round trip, way back) [(2, Some(53), 147), (3, Some(0), 0)]",
+    "[m1 t=12611ms f=756] status: frame 756 now 756 conf 740 members {1, 2, 3} rollbacks 56 | sent 1478 faulted 0 capped 0 recv 979 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms | clock offset -14970 us, rate -1558 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 1), (3, Some(0), 0)]",
+    "[m1 t=14639ms f=878] status: frame 878 now 878 conf 874 members {1, 2, 3} rollbacks 61 | sent 1674 faulted 0 capped 0 recv 1138 rejected {} bad entry sigs 0 | R18 level 0 signal Some(9) ms | clock offset 11815 us, rate -1204 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(2), 0)]",
+    "[m1 t=16637ms f=998] status: frame 998 now 998 conf 992 members {1, 2, 3} rollbacks 67 | sent 1811 faulted 0 capped 0 recv 1259 rejected {} bad entry sigs 0 | R18 level 0 signal Some(7) ms | clock offset 8193 us, rate 360 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(0), 1)]",
+    "[m1 t=18641ms f=1118] status: frame 1118 now 1118 conf 1112 members {1, 2, 3} rollbacks 73 | sent 1945 faulted 0 capped 0 recv 1390 rejected {} bad entry sigs 0 | R18 level 0 signal Some(10) ms | clock offset 10374 us, rate 364 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(1), 1)]",
+    "[m1 t=20643ms f=1238] status: frame 1238 now 1238 conf 1224 members {1, 2, 3} rollbacks 74 | sent 2013 faulted 0 capped 0 recv 1455 rejected {} bad entry sigs 0 | R18 level 0 signal Some(10) ms | clock offset 11669 us, rate 451 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 1), (3, Some(0), 0)]",
+    "[m1 t=22644ms f=1358] status: frame 1358 now 1358 conf 1344 members {1, 2, 3} rollbacks 74 | sent 2061 faulted 0 capped 0 recv 1502 rejected {} bad entry sigs 0 | R18 level 0 signal Some(9) ms | clock offset 12337 us, rate 497 ppm, rtt excess ms (member, round trip, way back) [(2, Some(1), 1), (3, Some(2), 2)]"
+  ]
+}
