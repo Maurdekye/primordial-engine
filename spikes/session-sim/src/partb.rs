@@ -36,7 +36,30 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
     let frames = ids.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(ids[0], 1).sim;
     let members: Vec<MemberId> = first.members.iter().copied().collect();
-    let rd = digest(&replay_sim_like(first, SCENE, &members, &final_log(first), frames).hashes, frames);
+    let rs = replay_sim_like(first, SCENE, &members, &final_log(first), frames);
+    let rd = digest(&rs.hashes, frames);
+    // Diagnostics: the first frame where the first replica and the offline replay differ, and what acts there.
+    if let Some(f) = (0..frames).find(|f| first.hashes.get(f) != rs.hashes.get(f)) {
+        let acts: Vec<String> = final_log(first)
+            .iter()
+            .filter(|(_, eff)| eff + 2 >= f && *eff <= f + 2)
+            .map(|(e, eff)| {
+                let id = e.id();
+                format!(
+                    "m{} s{} stamp {} eff {} live {:?} rule2 {:?} | replay {:?} rule2 {:?}",
+                    e.member,
+                    e.seq,
+                    e.stamp,
+                    eff,
+                    first.outcomes.get(&id),
+                    first.rule2.get(&id),
+                    rs.outcomes.get(&id),
+                    rs.rule2.get(&id)
+                )
+            })
+            .collect();
+        println!("  first difference from the replay at frame {f} (conf {}): acting near it {:?}", first.conf, acts);
+    }
     let ds: Vec<(MemberId, u64)> = ids.iter().map(|&m| (m, digest(&sim.replica(m, 1).sim.hashes, frames))).collect();
     let bad: u64 = ids.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
     let equal = ds.iter().all(|(_, d)| *d == rd);
