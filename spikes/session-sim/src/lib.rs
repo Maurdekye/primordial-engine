@@ -762,6 +762,12 @@ impl Sim {
                 // active throughout: calm while idle never lowers into L (idle calm stops at L + 1), and
                 // does not count once the member is active again, not even at the next gesture's first
                 // frame. Lowering above that is unchanged.
+                // Thin links (review PA-2): above the coarsest packed level, calm while idle counts too, so an
+                // idle member rests at level 5 at most and its next gesture starts packed; the climb rule moves
+                // it up within 100-300 ms if level 5 congests. Held at levels 6-8 after a second congestion
+                // instead, a third gesture started there without packs: the author's hand trailed 217-757 mm, and
+                // a fine-link sweeper's too after its thin watcher was demoted (@coordinator-opus, 2026-11-01).
+                // At level 5 and below the 5 s still count only active time.
                 // Thin links (Part A): the drain level returns to packed level 5 after 300 ms of calm, whatever
                 // D56 remembers and whether or not the member is idle, the first time in a D56 episode. That
                 // drains a first congestion's backlog of packs and gives the author its exact hand back soon.
@@ -769,7 +775,8 @@ impl Sim {
                 let (calm_needed, calm_from) = if quick_drain {
                     (300_000, r.calm_since)
                 } else if r.level > 0 && r.congested.is_some_and(|(l, _)| r.level - 1 <= l) {
-                    (CONGESTED_REENTRY_US, r.calm_since.max(r.idle_at))
+                    let idle_counts = r.level > PACKED_LEVELS;
+                    (CONGESTED_REENTRY_US, if idle_counts { r.calm_since } else { r.calm_since.max(r.idle_at) })
                 } else {
                     (300_000, r.calm_since)
                 };
