@@ -37,10 +37,10 @@ pe-app compare OUT
     (constant, no correction moves it; samples from the node's start count), (1 + ρ_j)(1 + r_j) − 1 is
     the peer's session frequency in its own raw units, exactly. It moves its correction a quarter of
     the way to the fault-tolerant midpoint of those values, its own included, so honest frequencies
-    converge as the offsets do. It also moves 2 % toward the median of the raw clocks, an anchor
-    (proposed for 10.4): agreement alone let the common frequency wander by up to 7.5 % on a
-    Windows + WSL run. The anchor takes the median, since at n <= 3 the trimmed midpoint is the
-    midrange. Fitting slopes of the peers' corrected clocks instead lags and oscillated: ±80 ms with
+    converge as the offsets do. It also moves 2 % toward the raw clocks' fault-tolerant midpoint, an
+    anchor (10.4): agreement alone let the common frequency wander by up to 7.5 % on a Windows + WSL
+    run. The anchor trims at least one value from each end when n >= 3 (the median at n = 3, where
+    the trimmed midpoint would be the midrange; coordinator, AN-1). Fitting slopes of the peers' corrected clocks instead lags and oscillated: ±80 ms with
     a 20 s period in the unit test.
   * From frame 0 its offset runs at that frequency and slews (at most 12 % of the elapsed time while
     more than 5 ms off, then 1 %) toward the fault-tolerant midpoint of the predicted offsets, its own
