@@ -1,0 +1,22 @@
+pe-app: member 2 of session 4cca40210e09fc43 on 127.0.0.1:7372; 4 members, 1200 frames
+[m2 t=0ms f=0] session start received: epoch 1225514 (leader clock), my offset 1830 us, best rtt 2532 us
+[m2 t=776ms f=46] status: frame 46 now 46 conf 43 members {1, 2, 3, 4} rollbacks 0 | sent 83 faulted 0 recv 82 rejected {} bad entry sigs 0
+[m2 t=2000ms f=119] fault: links to all now 15% loss, 40 ms +-15 ms
+[m2 t=2778ms f=166] status: frame 166 now 166 conf 158 members {1, 2, 3, 4} rollbacks 6 | sent 288 faulted 15 recv 297 rejected {} bad entry sigs 0
+[m2 t=4778ms f=286] status: frame 286 now 286 conf 280 members {1, 2, 3, 4} rollbacks 12 | sent 478 faulted 51 recv 525 rejected {} bad entry sigs 0
+[m2 t=6779ms f=406] status: frame 406 now 406 conf 354 members {1, 2, 3, 4} rollbacks 18 | sent 672 faulted 76 recv 718 rejected {} bad entry sigs 0
+[m2 t=7918ms f=474] paused at frame 474 (speculation limit)
+[m2 t=8780ms f=474] status: frame 474 now 526 conf 354 members {1, 2, 3, 4} rollbacks 21 | sent 862 faulted 103 recv 860 rejected {} bad entry sigs 0
+[m2 t=9001ms f=474] fault: links to member 1 now 30% loss, 120 ms +-40 ms
+[m2 t=9274ms f=474] membership decision: epoch 1, removed [4]
+[m2 t=9288ms f=557] resumed at frame 557
+[m2 t=10781ms f=646] status: frame 646 now 646 conf 635 members {1, 2, 3} rollbacks 27 | sent 1029 faulted 141 recv 1037 rejected {} bad entry sigs 0
+[m2 t=12781ms f=766] status: frame 766 now 766 conf 748 members {1, 2, 3} rollbacks 33 | sent 1161 faulted 187 recv 1196 rejected {} bad entry sigs 0
+[m2 t=14000ms f=839] fault: links to all now 0% loss, 0 ms +-0 ms
+[m2 t=14783ms f=887] status: frame 887 now 887 conf 881 members {1, 2, 3} rollbacks 39 | sent 1311 faulted 206 recv 1348 rejected {} bad entry sigs 0
+[m2 t=16784ms f=1007] status: frame 1007 now 1007 conf 1002 members {1, 2, 3} rollbacks 45 | sent 1448 faulted 206 recv 1479 rejected {} bad entry sigs 0
+[m2 t=18785ms f=1127] status: frame 1127 now 1127 conf 1122 members {1, 2, 3} rollbacks 51 | sent 1585 faulted 206 recv 1614 rejected {} bad entry sigs 0
+[m2 t=20786ms f=1247] status: frame 1247 now 1247 conf 1199 members {1, 2, 3} rollbacks 51 | sent 1706 faulted 206 recv 1712 rejected {} bad entry sigs 0
+[m2 t=21722ms f=1299] DONE frames 0..1200: digest abfe979e94198fef replay abfe979e94198fef (EQUAL), conf 1200, members [1, 2, 3]
+[m2 t=22787ms f=1367] status: frame 1367 now 1367 conf 1361 members {1, 2, 3} rollbacks 51 | sent 1833 faulted 206 recv 1811 rejected {} bad entry sigs 0
+member 2: frames 0..1200 digest abfe979e94198fef replay abfe979e94198fef (EQUAL), conf 1200, members at end [1, 2, 3], rollbacks 51, checks ok 82 bad 0

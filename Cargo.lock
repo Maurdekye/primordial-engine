@@ -1145,6 +1145,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
+name = "pe-app"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "pe-mcp",
+ "pe-session",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "pe-ballpit-viz"
 version = "0.0.1"
 dependencies = [
@@ -1171,8 +1185,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "getrandom 0.3.4",
- "pe-sim-core",
- "pe-spike-session-sim",
+ "pe-session",
+ "pe-session-harness",
  "rmcp",
  "schemars",
  "serde",
