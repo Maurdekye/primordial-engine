@@ -246,7 +246,7 @@ tool's `regress` is 92 of 92 identical to the new goldens.
 | p2-4-capstale | ids and hashes; D72 touch acceptance |
 | p2-4-colluders | ids and hashes; D72 touch acceptance |
 | p2-4-cutbackdate | ids and hashes; D72 touch acceptance |
-| p2-4-deepfork | ids and hashes; D72 touch acceptance |
+| p2-4-deepfork | ids and hashes; D72 touch acceptance; the ack timer (review PDF-1): 1 and 2 ack once a second here (64d4578, ec773e5), and the spike's per-message timer rounds that down to whole frames, 59 × 16,667 µs = 983 ms, where pe-session's is exactly 1,000 ms. Confirmation then lags about two acks, the 120-frame window, so pe-session's steps land a few frames past the speculation limit: 12-13 paused frames per member and conf 419 at the end, where the spike has none and 413. With 983 ms the harness pauses none and confirms 413, the spike's figures [V, traced] |
 | p2-4-fakeadmin | ids and hashes; D72 touch acceptance |
 | p2-4-fakemix | ids and hashes; D72 touch acceptance |
 | p2-4-fakeref | ids and hashes; D72 touch acceptance |
