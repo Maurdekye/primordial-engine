@@ -55,7 +55,7 @@ pub fn capped(o: &Opts) {
         prev: 0,
         stamp: 0,
         payload: Payload::Hand { obj: 500, target_mm: [0, 200, 500], active: true, span: 1, more: (1..8).map(|i| [10 * i, 200, 500]).collect() },
-        carried: None,
+        carried: None, link: 0,
     };
     println!("RESULT r18 capped: build: a stride-8 pack is {} bytes on the wire", encode_msg(&Msg::Entry(pack)).len());
     if let Some((sm, sk)) = o.slow {
