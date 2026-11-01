@@ -413,7 +413,7 @@ pub fn kickbackdate() {
             if !sent && sim.replica(2, 1).sim.frame >= 120 {
                 let r2 = sim_mut(sim, 2);
                 let epoch = r2.vcm.epoch;
-                let e = r2.author_backdated(Payload::Kick { epoch, target: 1 }, 30);
+                let e = r2.author_backdated(Payload::Kick { epoch, target: 1, rejoin: Rejoin::Free }, 30);
                 send_all(sim, 2, &ids, &e);
                 sent = true;
             }

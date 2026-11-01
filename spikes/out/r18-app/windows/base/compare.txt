@@ -1,0 +1,6 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 900 | f843890d4f5f51c2 | equal | 900 | [1, 2, 3] | 0 | 60/0 | 1717/0 |
+| 2 | 900 | f843890d4f5f51c2 | equal | 900 | [1, 2, 3] | 785 | 60/0 | 1006/0 |
+| 3 | 900 | f843890d4f5f51c2 | equal | 900 | [1, 2, 3] | 785 | 60/0 | 1005/0 |
+ALL EQUAL

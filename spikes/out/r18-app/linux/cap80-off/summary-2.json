@@ -1,0 +1,83 @@
+{
+  "session": "f129acffbb9f6bd9",
+  "member": 2,
+  "frames": 1800,
+  "conf": 1954,
+  "digest": "00cf089f4bffcb68",
+  "replay_digest": "00cf089f4bffcb68",
+  "replay_equal": true,
+  "members_at_end": [
+    2,
+    3
+  ],
+  "evicted": [
+    1
+  ],
+  "epoch": 1,
+  "rollbacks": 107,
+  "max_rollback_depth": 113,
+  "checks_ok": 59,
+  "checks_bad": 0,
+  "entries_authored": 0,
+  "clock_offset_us": -380,
+  "best_rtt_us": 55754,
+  "traffic": {
+    "datagrams_sent": 1274,
+    "datagrams_dropped_by_fault": 0,
+    "datagrams_dropped_by_cap": 0,
+    "datagrams_dropped_by_codel": 0,
+    "datagrams_received": 2039,
+    "bytes_sent": 434952,
+    "rejected": {}
+  },
+  "link": {
+    "signal_fed": false,
+    "level_ticks": [
+      28587,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "max_level": 0,
+    "max_signal_ms": 14.0,
+    "max_true_queue_ms": 0.0,
+    "hand_entries": 0,
+    "rx": {
+      "1": [
+        1086,
+        857
+      ],
+      "3": [
+        953,
+        19
+      ]
+    }
+  },
+  "events": [
+    "[m2 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms",
+    "[m2 t=0ms f=0] session start received: epoch 1250671 (leader clock), my offset -380 us, best rtt 55754 us",
+    "[m2 t=749ms f=44] status: frame 44 now 44 conf 38 members {1, 2, 3} rollbacks 0 | sent 60 faulted 0 capped 0 recv 59 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms (not fed)",
+    "[m2 t=2751ms f=165] status: frame 165 now 165 conf 146 members {1, 2, 3} rollbacks 31 | sent 178 faulted 0 capped 0 recv 186 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)",
+    "[m2 t=4700ms f=280] paused at frame 280 (speculation limit)",
+    "[m2 t=4762ms f=280] status: frame 280 now 284 conf 160 members {1, 2, 3} rollbacks 94 | sent 314 faulted 0 capped 0 recv 319 rejected {} bad entry sigs 0 | R18 level 0 signal Some(11) ms (not fed)",
+    "[m2 t=6762ms f=280] status: frame 280 now 405 conf 160 members {1, 2, 3} rollbacks 106 | sent 439 faulted 0 capped 0 recv 444 rejected {} bad entry sigs 0 | R18 level 0 signal Some(5) ms (not fed)",
+    "[m2 t=6963ms f=280] membership decision: epoch 1, removed [1]",
+    "[m2 t=7017ms f=417] resumed at frame 417",
+    "[m2 t=8763ms f=525] status: frame 525 now 525 conf 522 members {2, 3} rollbacks 107 | sent 515 faulted 0 capped 0 recv 577 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)",
+    "[m2 t=10764ms f=645] status: frame 645 now 645 conf 640 members {2, 3} rollbacks 107 | sent 580 faulted 0 capped 0 recv 704 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)",
+    "[m2 t=12764ms f=765] status: frame 765 now 765 conf 762 members {2, 3} rollbacks 107 | sent 644 faulted 0 capped 0 recv 832 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)",
+    "[m2 t=14765ms f=885] status: frame 885 now 885 conf 880 members {2, 3} rollbacks 107 | sent 707 faulted 0 capped 0 recv 964 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)",
+    "[m2 t=16765ms f=1005] status: frame 1005 now 1005 conf 1000 members {2, 3} rollbacks 107 | sent 770 faulted 0 capped 0 recv 1092 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)",
+    "[m2 t=18766ms f=1125] status: frame 1125 now 1125 conf 1118 members {2, 3} rollbacks 107 | sent 835 faulted 0 capped 0 recv 1221 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)",
+    "[m2 t=20767ms f=1246] status: frame 1246 now 1246 conf 1242 members {2, 3} rollbacks 107 | sent 899 faulted 0 capped 0 recv 1350 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms (not fed)",
+    "[m2 t=22768ms f=1366] status: frame 1366 now 1366 conf 1360 members {2, 3} rollbacks 107 | sent 963 faulted 0 capped 0 recv 1480 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)",
+    "[m2 t=24768ms f=1486] status: frame 1486 now 1486 conf 1480 members {2, 3} rollbacks 107 | sent 1027 faulted 0 capped 0 recv 1610 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)",
+    "[m2 t=26769ms f=1606] status: frame 1606 now 1606 conf 1600 members {2, 3} rollbacks 107 | sent 1091 faulted 0 capped 0 recv 1738 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)",
+    "[m2 t=28769ms f=1726] status: frame 1726 now 1726 conf 1722 members {2, 3} rollbacks 107 | sent 1155 faulted 0 capped 0 recv 1866 rejected {} bad entry sigs 0 | R18 level 0 signal Some(4) ms (not fed)",
+    "[m2 t=30770ms f=1846] status: frame 1846 now 1846 conf 1798 members {2, 3} rollbacks 107 | sent 1219 faulted 0 capped 0 recv 1973 rejected {} bad entry sigs 0 | R18 level 0 signal Some(6) ms (not fed)",
+    "[m2 t=31984ms f=1918] paused at frame 1918 (speculation limit)",
+    "[m2 t=32096ms f=1918] slow step: 112 ms (receive 0 ms, tick 0 ms, send 112 ms)"
+  ]
+}
