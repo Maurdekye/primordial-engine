@@ -95,6 +95,11 @@ full entry. The rules as built:
 
 A hand is 101 B on the wire instead of 133, and a two-member ack 106 B instead of 170.
 
+**pe-app runs explicit-only** (`core.lean_wire = false`) until @item:primordial-engine/pe-app-lean-wire-accept-msg-lean-key-versions-by
+lands: its wire allowlist refuses `Msg::Lean`, and its watch log and scripted split equivocation key
+entry versions by id, which a lean entry does not carry (found at landing, 2026-11-01: with lean on,
+every m1-loopback member stalls at frame 120; with it off, ALL EQUAL).
+
 Single gesture, batched + adaptive, member 1 (explicit = pe-session before option 1, set by `PE_LEAN=0`;
 what-if 3 = the earlier byte charge):
 
