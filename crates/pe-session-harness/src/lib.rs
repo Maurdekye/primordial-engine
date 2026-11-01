@@ -195,6 +195,7 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
 
 pub fn kind(m: &Msg) -> &'static str {
     match m {
+        Msg::Run { entries, .. } if entries.len() > 1 => "run2+",
         Msg::Run { entries, .. } => kind(&Msg::Entry(entries[0].clone())),
         Msg::Entry(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
