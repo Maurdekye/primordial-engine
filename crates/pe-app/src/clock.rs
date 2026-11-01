@@ -286,11 +286,9 @@ impl ClockSync {
         self.rate
     }
 
-    /// How fast a one-way delay measured on `peer`'s datagrams grows from the two rate-corrected
-    /// clocks alone: this member's session frequency less the peer's, both in this member's raw units
-    /// (r - s_j), once the peer's frequency is fitted.
-    pub fn drift_rate(&self, peer: u32) -> Option<f64> {
-        Some(self.rate - self.peers.get(&peer)?.session_rate()?)
+    /// Whether the frequency of `peer`'s raw clock against this one is fitted yet.
+    pub fn has_rate(&self, peer: u32) -> bool {
+        self.peers.get(&peer).is_some_and(|p| p.rate.is_some())
     }
 
     /// R18's one-way estimates of `peer` restarted at `local`: its round-trip queueing restarts too.
