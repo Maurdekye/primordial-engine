@@ -22,6 +22,8 @@ pub struct Opts {
     pub step: Option<(u64, u64)>,
     /// A second gesture this many seconds after the first ends (adaptive transport only).
     pub gap_s: Option<u64>,
+    /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
+    pub adaptive_only: bool,
 }
 
 pub fn capped(o: &Opts) {
@@ -44,7 +46,7 @@ pub fn capped(o: &Opts) {
     println!("RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state");
     // A second gesture this many seconds after the first ends, for the first-gesture-after-idle cells.
     let shift_frames = o.gap_s.map(|g| (340 - 120) + g * hz);
-    let transports: Vec<(&str, bool, bool)> = if o.gap_s.is_some() {
+    let transports: Vec<(&str, bool, bool)> = if o.gap_s.is_some() || o.adaptive_only {
         vec![("batched+adaptive", true, true)]
     } else {
         vec![("per message", false, false), ("batched", true, false), ("batched+adaptive", true, true)]
@@ -98,6 +100,10 @@ pub fn capped(o: &Opts) {
         let mut sim = Sim::new(net, peers, o.end_s * 1_000_000);
         let mut qmax = vec![0u64; n];
         let mut lag_max = vec![0u64; n];
+        // Thin links: each member's mean confirmation lag (frames, its present minus its confirmed frame)
+        // from the gesture's start to the end of the run, to compare with the same cell uncapped.
+        let mut lag_sum = vec![0u64; n];
+        let mut lag_n = 0u64;
         // When each frame became confirmed at each member (wall clock, us), for the hand entries'
         // confirmation latency below.
         let mut conf_at: Vec<Vec<u64>> = vec![Vec::new(); n];
@@ -137,6 +143,9 @@ pub fn capped(o: &Opts) {
                 let r = &sim.replica(m, 1).sim;
                 let l = r.now.saturating_sub(r.conf);
                 lag_max[i] = lag_max[i].max(l);
+                if now >= w0 {
+                    lag_sum[i] += l;
+                }
                 while (conf_at[i].len() as u64) < r.conf.min(r.now + 1) {
                     conf_at[i].push(now);
                 }
@@ -180,6 +189,9 @@ pub fn capped(o: &Opts) {
                 if now >= w3 && back2.is_none() && all_lag_ok && q_now < 50_000 {
                     back2 = Some(now - w3);
                 }
+            }
+            if now >= w0 {
+                lag_n += 1;
             }
             sim.net.now_us += 1000;
         }
@@ -233,6 +245,10 @@ pub fn capped(o: &Opts) {
             })
             .collect();
         println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
+        println!(
+            "RESULT     mean confirmation lag per member from the gesture's start, frames: {}",
+            join(lag_sum.iter().map(|s| format!("{:.1}", *s as f64 / lag_n.max(1) as f64)).collect())
+        );
         println!(
             "RESULT     member 1's own hand against its target, over {} gesture frames: mean {:.2} mm, max {:.2} mm",
             own_err.len(),
