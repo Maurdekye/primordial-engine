@@ -1,0 +1,3 @@
+code: p2/m1-gaps 6cb68cd (main aa2680b + the equivocation fault)
+b69fa542c32e353f1019e6a84ac036f5742f7dc4184222c41e53ca70ffe012f7  pe-app.exe (Windows release)
+run: bash crates/pe-app/m1-equivocate.sh target/release/pe-app.exe <out>
