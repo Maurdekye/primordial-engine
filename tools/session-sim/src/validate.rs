@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use spike::Sim;
+use pe_session_harness::Sim;
 
 use crate::scenario::{id, ActionSpec, Byzantine, Honest, Ids, Report, Scenario, When};
 use crate::setup::{end_us, fixes_off, hz, peer_order, rel};
