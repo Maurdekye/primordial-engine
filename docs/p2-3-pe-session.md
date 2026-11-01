@@ -39,7 +39,7 @@ Every run: `SUMMARY: every scenario ALL EQUAL, no panic, 0 false checks, 0 non-f
 31 unit and integration tests in pe-session [V].
 
 **Linux** (static musl builds in WSL2, kernel 6.6.87.2, `scripts/p2-3/run_linux.sh`, `run_linux_regress.sh`):
-at 1980281 (V1-V3), every test passes and every harness log equals the Windows log, timings masked (94
+at 81faaab (V1-V3 with V3-1), every test passes and every harness log equals the Windows log, timings masked (94
 identical, SUMMARY ALL EQUAL); the tool's `regress` is 99 of 99 identical [V]; earlier at 06c2953 (D73: 93, 98),
 73bcbc6 (93, 97), 87410b6 (round 8: 93, 97), 90e0c22/5881aae
 (D58: 88, 92), 7891209 (41 tests, 88, 92), 3c7ec50/44a1b2f (31 tests, 88, 92), 8ded87a (85 identical) and 1404a0c (70) [V].
