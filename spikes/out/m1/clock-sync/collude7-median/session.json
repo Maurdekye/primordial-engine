@@ -1,6 +1,6 @@
 {
-  "session": 9349826912033127866,
-  "nonce": "b318e921569fdeb56b67272fa3724bcd568699be0e0500daae567e5cb60e42e7",
+  "session": 16137571529973537234,
+  "nonce": "7c188e77f4d05e9ce12b3524eb93eb7625a08a365cb008194cd0436f847bfa8b",
   "name": "m1",
   "scene": "pile",
   "size": 4,
@@ -10,38 +10,38 @@
   "members": [
     {
       "id": 1,
-      "addr": "127.0.0.1:7551",
-      "key": "d3de02c506a31c75743187d3c18fd91e05481fc0164bb5ad2520ba7f5f769b93"
+      "addr": "127.0.0.1:7561",
+      "key": "5225ae03a0e1c94ac3773730aa8f37a0d0ee05f2a460e1047d4752fac6f3ea4f"
     },
     {
       "id": 2,
-      "addr": "127.0.0.1:7552",
-      "key": "34ee97d3e0edc396e0ef15e608ad5e227326231746a028daa1cfcabf44d4d6eb"
+      "addr": "127.0.0.1:7562",
+      "key": "a17b79e90c3b16e8eff3727dd34dcb366ecc25eab233d18ae7d180ada8901186"
     },
     {
       "id": 3,
-      "addr": "127.0.0.1:7553",
-      "key": "d16bf83e46efd2ecadf9679ab505f73c33acd2fa383013762f7a7147c1676ccd"
+      "addr": "127.0.0.1:7563",
+      "key": "203acb4bb8222dd91fa2be36c9f505716d35b0c4add2ee51093269f8c19b0c57"
     },
     {
       "id": 4,
-      "addr": "127.0.0.1:7554",
-      "key": "cb11dbe7c351c6f38d546efec6d9a917c26d8e6569c60ad16ba6c7684195b4b8"
+      "addr": "127.0.0.1:7564",
+      "key": "574080272d0c70625d5238dda45031c29e65aa393251d4da444ca3e07a7439ca"
     },
     {
       "id": 5,
-      "addr": "127.0.0.1:7555",
-      "key": "0a88fc0dfe476d62f8bf2344e75ed8b679c0760fb63c267540bdad74997da65d"
+      "addr": "127.0.0.1:7565",
+      "key": "6d92bac044dea57e58660b92c4212523b4d41e623717bba560f9711861a98814"
     },
     {
       "id": 6,
-      "addr": "127.0.0.1:7556",
-      "key": "e4eed04cbdb27ee4035cc364b58c8c0e199fcaa5687a11009e22653bd4212308"
+      "addr": "127.0.0.1:7566",
+      "key": "76a5aa4c7eee695d7eb2e528aa3560defd726fb33df0777b740fed56267f32c0"
     },
     {
       "id": 7,
-      "addr": "127.0.0.1:7557",
-      "key": "234396b08926b2c0fe9764a4d19c0131f00c03d5fe71c92da2da605c8f8c7ba6"
+      "addr": "127.0.0.1:7567",
+      "key": "96026c51c2f6db52c34267c751198302b6059ac581ba0012f5d134606c7babb0"
     }
   ]
 }

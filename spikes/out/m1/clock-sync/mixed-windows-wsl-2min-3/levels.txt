@@ -1,0 +1,4 @@
+member 1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 18.0 clamped ticks 59829 of 69877 clock rate ppm -23813.276437873683
+member 2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 39.0 clamped ticks 60186 of 69102 clock rate ppm -24617.12990331485
+member 3 level share % [69.3, 2.9, 4.3, 4.2, 5.9, 13.4] max signal ms 46.664 clamped ticks 107119 of 110131 clock rate ppm 26208.334208686738
+member 4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 14.0 clamped ticks 108894 of 110104 clock rate ppm 25598.08222281871

@@ -1,0 +1,7 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 7200 | 502cbc4e7ecc18b7 | equal | 7378 | [1, 2, 3, 4] | 631 | 738/0 | 15306/0 |
+| 2 | 7200 | 502cbc4e7ecc18b7 | equal | 7378 | [1, 2, 3, 4] | 462 | 738/0 | 13535/1510 |
+| 3 | 7200 | 502cbc4e7ecc18b7 | equal | 7378 | [1, 2, 3, 4] | 352 | 738/0 | 14729/713 |
+| 4 | 7200 | 502cbc4e7ecc18b7 | equal | 7378 | [1, 2, 3, 4] | 636 | 738/0 | 15248/0 |
+ALL EQUAL
