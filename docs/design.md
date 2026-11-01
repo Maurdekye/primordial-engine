@@ -2332,7 +2332,10 @@ and there is no fork-proof indicator (same ruling).
        version this replica holds, is below r. **Guard** (review IND-2): k is named only if k's newest ack
        this replica has applied is stamped at least 1 s (the show threshold) after j's entry r, so k has had
        time to hold r. If k's newest ack is recent but stamped less than 1 s after r, nothing is shown for k
-       yet (review IND-7). If k's acks are old, k is shown as **behind (k)**, which is also what this
+       yet (review IND-7), unless that ack was already at least W/8 old (15 frames, 0.25 s) when this
+       replica holds it: then k is slow, its view reaching here late, and is shown as **behind (k)** with
+       that age. Without this, a member on a 0.4-0.7 s link, whose newest ack always arrives that old, is
+       never shown, though it holds confirmation 1.5 s back [V ind-slow, found in the build]. If k's acks are old, k is shown as **behind (k)**, which is also what this
        replica sees when it isn't hearing k, unless this replica holds an entry of k beyond a gap, which is
        this replica's own gap (IND-7). Shown with P minus the stamp of r. This is a cheater
        withholding references, and equally an honest member with a one-way inbound cut, which can't
@@ -2366,10 +2369,21 @@ and there is no fork-proof indicator (same ruling).
     Nothing that feeds L, Q, E or G is a report; a member moves them only by behaving, stamping or sending
     its acks late (@engine-architect). So this hint is about behaviour, measured on one path with no clock:
     * **Only this replica's own entries.** For each of its entries e and each member X: S is the local
-      time the transport handed e to the link toward X, after this replica's own send queue; and for each
-      ack of X, R is its local arrival time. X's ack is **late** if R − S exceeds this replica's measured
-      round trip to X (the median of the transport's pings over 10 s) plus a margin, and its reference to
-      this replica's chain is still below e (in the version this replica sent).
+      time the transport last handed e to the link toward X, after this replica's own send queue (a
+      repair restarts it); and for each ack of X, R is its local arrival time. X's ack is **late** if
+      R − S exceeds this replica's measured round trip to X plus a margin, and its reference to this
+      replica's chain is still below e (in the version this replica sent).
+    * **The round trip is the largest the transport's pings measured over the last 10 s**, not the
+      median: a path that just got slower (a cut, a filling queue) exempts acks at once, rather than after
+      the median catches up. Like the stamp rule, it can only exempt. [V ind-aheadlink: with the median,
+      the honest member behind the 5 s cut was flagged; found in the build.]
+    * **A fetch restarts the clock** (found in the build): when X asks for this replica's chain from seq
+      a, it lacks a and can reference nothing past the hole until it's repaired (references cover only a
+      contiguous prefix), so S for every entry from a on becomes the fetch's arrival. On a thin downlink
+      that tail-drops, an honest member's references wait on repairs [V ind-thindown: flagged without
+      this]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
+      still shows as not referencing.
+    * **Only current members' acks** are judged; a removed member's are ignored.
     * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
       least e's stamp plus half the round trip. Otherwise the time it waited in X's own send queue (R18,
       upstream of the transport, so the pings skip it) would make an honest member with a thin uplink look
@@ -2393,6 +2407,9 @@ and there is no fork-proof indicator (same ruling).
     * **Limit:** it sees only withholding of this replica's own chain. For other chains, the hint pairs
       "not referencing (k, j)" with whether k references this replica's chain promptly: if it does, the
       withholding is targeted at j, or j's link toward k is cut. Still a hint, not proof.
+  * **The harness's pings** (session-sim): a ping's round trip is what a small datagram offered now would
+    take through the two links' queues and delays (mean jitter), plus any scripted fault on the whole
+    link (a stateless copy of the fault rules that name no message kind); a dropped one is lost.
   * **Scenarios** (@coordinator-opus; review LA-5): a withholding cheater, an honest slow member, the
     one-way cut (`aheadlink`), a thin watcher (down-k8-m3), a thin sweeper as author, a thin sweeper as the
     judged member (up-k8-m4), 10% loss, and an asymmetric link.
