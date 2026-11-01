@@ -1,0 +1,24 @@
+RESULT loss acceptance, uncontended checks: 25/25 equal at that instant and 25/25 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 33/35 equal to the author's copy at that instant, 33/35 equal to the author's final history
+  differs at that instant: world 1 receiver m1 author m2 obj 50 frame 121; equal to the author's final history: true
+  differs at that instant: world 1 receiver m1 author m2 obj 50 frame 126; equal to the author's final history: true
+  m1 world 1: rollbacks 9 max depth 3 resim frames 34 (18.9 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 756 frame 773
+  m2 world 1: rollbacks 9 max depth 4 resim frames 36 (19.0 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 754 frame 774
+  m3 world 1: rollbacks 12 max depth 11 resim frames 54 (25.1 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 750 frame 773
+  bytes: entries 38 msgs 7144 B (avg 188 B), acks 3579 msgs 799520 B, dropped 426
+OUTCOME loss w1 m1 s31 push Accepted
+OUTCOME loss w1 m1 s61 push Accepted
+OUTCOME loss w1 m1 s65 push Accepted
+OUTCOME loss w1 m1 s132 push Accepted
+OUTCOME loss w1 m1 s155 push Accepted
+OUTCOME loss w1 m1 s203 push Accepted
+OUTCOME loss w1 m2 s46 push Accepted
+OUTCOME loss w1 m2 s61 push Accepted
+OUTCOME loss w1 m2 s65 push Accepted
+OUTCOME loss w1 m2 s103 push Accepted
+OUTCOME loss w1 m2 s167 push Accepted
+OUTCOME loss w1 m2 s237 push Accepted
+OUTCOME loss w1 m3 s75 push Accepted
+OUTCOME loss w1 m3 s150 push Accepted
+OUTCOME loss w1 m3 s224 push Accepted
+RESULT loss world 1: frames 0..700 digests m1=be8f1d273096d823 m2=be8f1d273096d823 m3=be8f1d273096d823 | offline replay be8f1d273096d823 | ALL EQUAL

@@ -1,0 +1,54 @@
+{
+  "session": "46868e1ee042ef5d",
+  "member": 3,
+  "frames": 1800,
+  "conf": 1800,
+  "digest": "496bfda93606ce24",
+  "replay_digest": "496bfda93606ce24",
+  "replay_equal": true,
+  "members_at_end": [
+    1,
+    2,
+    3
+  ],
+  "evicted": [
+    4
+  ],
+  "epoch": 2,
+  "rollbacks": 72,
+  "max_rollback_depth": 4,
+  "checks_ok": 140,
+  "checks_bad": 0,
+  "entries_authored": 84,
+  "clock_offset_us": 584052,
+  "best_rtt_us": 15158,
+  "traffic": {
+    "datagrams_sent": 2142,
+    "datagrams_dropped_by_fault": 0,
+    "datagrams_received": 2679,
+    "bytes_sent": 743869,
+    "rejected": {}
+  },
+  "events": [
+    "[m3 t=0ms f=0] session start received: epoch 1803605 (leader clock), my offset 585111 us, best rtt 15169 us",
+    "[m3 t=781ms f=46] status: frame 46 now 46 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 64 faulted 0 recv 69 rejected {} bad entry sigs 0",
+    "[m3 t=2787ms f=167] status: frame 167 now 167 conf 161 members {1, 2, 3, 4} rollbacks 2 | sent 213 faulted 0 recv 266 rejected {} bad entry sigs 0",
+    "[m3 t=4795ms f=287] status: frame 287 now 287 conf 282 members {1, 2, 3, 4} rollbacks 8 | sent 383 faulted 0 recv 491 rejected {} bad entry sigs 0",
+    "[m3 t=6801ms f=408] status: frame 408 now 408 conf 403 members {1, 2, 3, 4} rollbacks 13 | sent 542 faulted 0 recv 706 rejected {} bad entry sigs 0",
+    "[m3 t=8804ms f=528] status: frame 528 now 528 conf 523 members {1, 2, 3, 4} rollbacks 19 | sent 695 faulted 0 recv 915 rejected {} bad entry sigs 0",
+    "[m3 t=10813ms f=648] status: frame 648 now 648 conf 644 members {1, 2, 3, 4} rollbacks 24 | sent 867 faulted 0 recv 1144 rejected {} bad entry sigs 0",
+    "[m3 t=12815ms f=768] status: frame 768 now 768 conf 763 members {1, 2, 3, 4} rollbacks 30 | sent 1030 faulted 0 recv 1359 rejected {} bad entry sigs 0",
+    "[m3 t=14822ms f=889] status: frame 889 now 889 conf 882 members {1, 2, 3, 4} rollbacks 36 | sent 1200 faulted 0 recv 1588 rejected {} bad entry sigs 0",
+    "[m3 t=16829ms f=1009] status: frame 1009 now 1009 conf 896 members {1, 2, 3, 4} rollbacks 42 | sent 1360 faulted 0 recv 1735 rejected {} bad entry sigs 0",
+    "[m3 t=16953ms f=1016] paused at frame 1016 (speculation limit)",
+    "[m3 t=18060ms f=1016] membership decision: epoch 1, removed []",
+    "[m3 t=18528ms f=1016] membership decision: epoch 2, removed [4]",
+    "[m3 t=18556ms f=1112] resumed at frame 1112",
+    "[m3 t=18838ms f=1130] status: frame 1130 now 1130 conf 1123 members {1, 2, 3} rollbacks 44 | sent 1520 faulted 0 recv 1891 rejected {} bad entry sigs 0",
+    "[m3 t=20843ms f=1250] status: frame 1250 now 1250 conf 1244 members {1, 2, 3} rollbacks 49 | sent 1632 faulted 0 recv 2029 rejected {} bad entry sigs 0",
+    "[m3 t=22855ms f=1371] status: frame 1371 now 1371 conf 1365 members {1, 2, 3} rollbacks 56 | sent 1750 faulted 0 recv 2176 rejected {} bad entry sigs 0",
+    "[m3 t=24869ms f=1492] status: frame 1492 now 1492 conf 1486 members {1, 2, 3} rollbacks 62 | sent 1857 faulted 0 recv 2315 rejected {} bad entry sigs 0",
+    "[m3 t=26871ms f=1612] status: frame 1612 now 1612 conf 1607 members {1, 2, 3} rollbacks 67 | sent 1974 faulted 0 recv 2463 rejected {} bad entry sigs 0",
+    "[m3 t=28881ms f=1732] status: frame 1732 now 1732 conf 1728 members {1, 2, 3} rollbacks 72 | sent 2078 faulted 0 recv 2600 rejected {} bad entry sigs 0"
+  ]
+}

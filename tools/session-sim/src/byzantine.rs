@@ -6,8 +6,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use pe_sim_core::session::*;
-use spike::{Fate, Sim, WorldId};
+use pe_session::session::*;
+use pe_session_harness::{Fate, Sim, WorldId};
 
 use crate::faults::Hook;
 use crate::report::{template, Vars};
@@ -695,7 +695,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 let r = sim_mut(sim, *member, 1);
                 let epoch = r.vcm.epoch;
-                let e = r.author_backdated(Payload::Kick { epoch, target: *target }, *back);
+                let e = r.author_backdated(Payload::Kick { epoch, target: *target, rejoin: Rejoin::Free }, *back);
                 send_to(sim, *member, to, &e);
                 act.fired = true;
             }
@@ -808,7 +808,7 @@ fn sim_mut(sim: &mut Sim, member: MemberId, w: WorldId) -> &mut WorldSim {
 
 /// Before the step: the join requests due (each once, at the first millisecond at or after its
 /// time), in file order.
-pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result<(), String> {
+pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool], keys: &[(u32, u32, u32)]) -> Result<(), String> {
     for (j, done) in joins.iter().zip(sent.iter_mut()) {
         if *done || sim.net.now_us < j.at_ms * 1000 {
             continue;
@@ -821,7 +821,10 @@ pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result
         for &m in &j.to {
             let a = if j.attests_to.as_ref().is_none_or(|t| t.contains(&m)) { attests.clone() } else { vec![] };
             let msg = match j.sig {
-                None => join_msg(&sim.replica(m, j.world).sim.session(), j.member, a, u64::MAX),
+                None => match keys.iter().find(|(w, mm, _)| *w == j.world && *mm == j.member) {
+                    Some(&(_, _, id)) => join_msg_as(&sim.replica(m, j.world).sim.session(), j.member, id, a, u64::MAX),
+                    None => join_msg(&sim.replica(m, j.world).sim.session(), j.member, a, u64::MAX),
+                },
                 // A scenario's own signature (a forged one): its 64-bit value padded to 64 bytes, which never verifies.
                 Some(sig) => Msg::Join { member: j.member, attests: a, sig: std::array::from_fn(|i| if i < 8 { sig.to_le_bytes()[i] } else { 0 }), expires: u64::MAX },
             };
@@ -867,7 +870,7 @@ fn author(sim: &mut Sim, member: MemberId, w: WorldId, p: Payload) -> SignedEntr
 /// P2-5: a forged arrival from the dishonest-majority world W (6, members 2 and 3), signed by both
 /// of W's members, into world `w` by member `by` (session-sim main.rs `forge_from_w`).
 fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chain: Vec<Hop>) -> SignedEntry {
-    let fake = id_of(pe_sim_core::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64));
+    let fake = id_of(pe_session::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64));
     let deadline = sim.replica(by, w).sim.now + 600;
     let fact = fact_departed(6, fake, &record, w, deadline, chain_hash(&chain));
     let cert: Vec<(MemberId, Sig)> = [2u32, 3].iter().map(|&m| (m, test_fact_sig(m, 6, fact))).collect();
@@ -1093,5 +1096,5 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
 
 /// A scenario file's 64-bit entry id (0 = none) as a 256-bit one: the spike's ids were 64-bit.
 fn id_of(x: u64) -> EntryId {
-    if x == 0 { EntryId::NONE } else { spike::fake_id(x) }
+    if x == 0 { EntryId::NONE } else { pe_session_harness::fake_id(x) }
 }

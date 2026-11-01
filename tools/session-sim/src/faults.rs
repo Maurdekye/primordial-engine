@@ -1,7 +1,7 @@
 //! Fault injection: message rules compiled into the simulator's send filter, and crashes.
 
-use pe_sim_core::session::{Msg, Payload};
-use spike::{Fate, Filter, Sim};
+use pe_session::session::{Msg, Payload};
+use pe_session_harness::{Fate, Filter, Sim};
 
 use crate::scenario::{Crash, FaultRule};
 
@@ -31,6 +31,7 @@ pub fn is_class(m: &Msg, c: &str) -> bool {
                 | (Payload::Portal { .. }, "portal")
                 | (Payload::Provenance { .. }, "provenance")
                 | (Payload::Ownership { .. }, "ownership")
+                | (Payload::Ban { .. }, "ban")
         ),
         _ => false,
     }
@@ -143,18 +144,18 @@ pub fn apply_crashes(sim: &mut Sim, crashes: &[Crash]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pe_sim_core::session::{Entry, EntryId};
+    use pe_session::session::{Entry, EntryId};
 
     fn rule(t: &str) -> FaultRule {
         toml::from_str(t).unwrap()
     }
 
     fn touch(member: u32, seq: u32, stamp: u64) -> Msg {
-        Msg::Entry(pe_sim_core::sign::test_sign(1, Entry { member, seq, prev: EntryId::NONE, stamp, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None }))
+        Msg::Entry(pe_session::sign::test_sign(1, Entry { member, seq, prev: EntryId::NONE, stamp, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None }))
     }
 
     fn ack(member: u32) -> Msg {
-        Msg::Entry(pe_sim_core::sign::test_sign(1, Entry { member, seq: 1, prev: EntryId::NONE, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None, epoch: 0 }, carried: None }))
+        Msg::Entry(pe_session::sign::test_sign(1, Entry { member, seq: 1, prev: EntryId::NONE, stamp: 0, payload: Payload::Ack { horizon: 0, heads: vec![], check: None, epoch: 0 }, carried: None }))
     }
 
     fn fate(f: &mut Filter, t_ms: u64, from: u32, to: u32, m: &Msg) -> String {
@@ -200,7 +201,7 @@ mod tests {
     }
 
     fn vote(member: u32, payload: Payload) -> Msg {
-        Msg::Entry(pe_sim_core::sign::test_sign(1, Entry { member, seq: 1, prev: EntryId::NONE, stamp: 0, payload, carried: None }))
+        Msg::Entry(pe_session::sign::test_sign(1, Entry { member, seq: 1, prev: EntryId::NONE, stamp: 0, payload, carried: None }))
     }
 
     #[test]

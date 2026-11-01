@@ -213,7 +213,9 @@ pub enum Payload {
     /// target's chain for the cut, never to approve it. The view change commits it in order with
     /// every other membership change. Like every admin entry it stays pending across epochs until a
     /// decision applies or refuses it; `epoch` is the first epoch whose change may include it.
-    Kick { epoch: u32, target: MemberId },
+    /// `rejoin` (12.4 kick options, user 2026-11-01): what the kick records for the target's key:
+    /// nothing (a plain kick), a rejoin role or a ban for this session, or a perma-ban for the world.
+    Kick { epoch: u32, target: MemberId, rejoin: Rejoin },
     /// Give `member` the role `role`, for the view change that ends `epoch` (ROLES permission).
     /// Refused if it would leave the session without an admin.
     SetRole { epoch: u32, member: MemberId, role: RoleId },
@@ -225,6 +227,25 @@ pub enum Payload {
     /// A view change commits it in commit order, and it applies if it is valid against the book
     /// the entries before it leave, so every replica holds the same owners after each decision.
     Ownership { epoch: u32, cert: Cert },
+    /// 12.4 bans: ban identity key `key`, which no member holds (a present player is banned by a kick
+    /// with a ban option), or (`on` = false) lift its ban. `perma` = false: this session's ban list (BAN
+    /// permission; a lift also clears the key's rejoin role). `perma` = true: the world's perma-bans (an
+    /// owner's key). An admin entry like a kick: the view change commits it in commit order.
+    Ban { epoch: u32, key: Key, on: bool, perma: bool },
+}
+
+/// What a kick leaves in the world's ACL for its target's identity key (12.4 kick options).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rejoin {
+    /// A plain kick: the player may rejoin as the join rules say.
+    Free,
+    /// Kick and remove Admin: when the key rejoins with a role that counts as an admin, it gets this
+    /// role instead.
+    Role(RoleId),
+    /// Kick and ban, for this session (BAN permission).
+    Ban,
+    /// Kick and perma-ban, for the world (an owner's key).
+    PermaBan,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -274,6 +295,12 @@ pub enum Msg {
     FetchEntry { id: EntryId, back: u8 },
     /// Design 9.5: a joiner asks a member for its newest confirmed check-frame state.
     FetchState,
+    /// The R18 below-20 item, option 1 (@coordinator-opus, 2026-11-01): an author's own entry, live,
+    /// without the ids its receiver rebuilds from what it holds: `prev` (its entry at `(member, seq -
+    /// 1)`) and an ack's head ids (its entry at each `(q, s)`). They decode as `EntryId::NONE`. The
+    /// signature still covers the full entry, so a receiver whose ids differ (a fork) fails to verify
+    /// it and fetches the explicit form from the author ([`WorldSim::insert_lean`]).
+    Lean(SignedEntry),
     /// The answer: a state transfer, which the joiner restores only after its checks (P22S-1).
     State(Box<StateTransfer>),
 }
@@ -317,9 +344,15 @@ impl Wr {
         for x in a { self.u8(x.rel.tag()); self.u32(x.with); self.sig(&x.sig_with); self.sig(&x.sig_joiner) }
     }
     pub(super) fn entry(&mut self, e: &Entry) {
+        self.entry_opt(e, false)
+    }
+    /// `lean`: without the rebuilt ids ([`Msg::Lean`]).
+    pub(super) fn entry_opt(&mut self, e: &Entry, lean: bool) {
         self.u32(e.member);
         self.u32(e.seq);
-        self.id(e.prev);
+        if !lean {
+            self.id(e.prev);
+        }
         self.u64(e.stamp);
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
@@ -352,7 +385,10 @@ impl Wr {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
                 // their entry ids; a later epoch is tag 14 with the epoch appended.
                 self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
-                for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.id(*id) }
+                for (q, s, id) in heads {
+                    self.u32(*q); self.u32(*s);
+                    if !lean { self.id(*id) }
+                }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.0.extend_from_slice(&h.0) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
             }
@@ -361,7 +397,15 @@ impl Wr {
                 self.u8(if *kick == EntryId::NONE { 8 } else { 15 }); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.id(frozen.1);
                 if *kick != EntryId::NONE { self.id(*kick) }
             }
-            Payload::Kick { epoch, target } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
+            // A plain kick keeps tag 17 (and so its id); a kick with an option is tag 22.
+            Payload::Kick { epoch, target, rejoin: Rejoin::Free } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
+            Payload::Kick { epoch, target, rejoin } => {
+                self.u8(22); self.u32(*epoch); self.u32(*target);
+                match rejoin { Rejoin::Role(r) => { self.u8(1); self.u32(*r as u32) } Rejoin::PermaBan => self.u8(3), _ => self.u8(2) }
+            }
+            Payload::Ban { epoch, key, on, perma } => {
+                self.u8(23); self.u32(*epoch); self.0.extend_from_slice(&key.0); self.u8(*on as u8 | (*perma as u8) << 1)
+            }
             Payload::SetRole { epoch, member, role } => { self.u8(18); self.u32(*epoch); self.u32(*member); self.u32(*role as u32) }
             Payload::DefineRole { epoch, role, perms } => { self.u8(19); self.u32(*epoch); self.u32(*role as u32); self.u64(*perms) }
             Payload::Ownership { epoch, cert } => {
@@ -428,6 +472,7 @@ impl Wr {
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e); self.0.extend_from_slice(&e.sig) }
+            Msg::Lean(e) => { self.u8(12); self.entry_opt(e, true); self.0.extend_from_slice(&e.sig) }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
@@ -534,9 +579,12 @@ impl<'a> Rd<'a> {
         Some(BodyState(s))
     }
     pub(super) fn entry(&mut self) -> Option<Entry> {
+        self.entry_opt(false)
+    }
+    pub(super) fn entry_opt(&mut self, lean: bool) -> Option<Entry> {
         let member = self.u32()?;
         let seq = self.u32()?;
-        let prev = self.id()?;
+        let prev = if lean { EntryId::NONE } else { self.id()? };
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
@@ -576,7 +624,7 @@ impl<'a> Rd<'a> {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
-                for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.id()?)) }
+                for _ in 0..n { heads.push((self.u32()?, self.u32()?, if lean { EntryId::NONE } else { self.id()? })) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, CheckHash(self.take(32)?.try_into().ok()?))) } else { None };
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
@@ -586,7 +634,26 @@ impl<'a> Rd<'a> {
                 let kick = if tag == 15 { self.id()? } else { EntryId::NONE };
                 Payload::Vote { epoch, target, seq, frozen, kick }
             }
-            17 => Payload::Kick { epoch: self.u32()?, target: self.u32()? },
+            17 => Payload::Kick { epoch: self.u32()?, target: self.u32()?, rejoin: Rejoin::Free },
+            22 => {
+                let (epoch, target) = (self.u32()?, self.u32()?);
+                let rejoin = match self.u8()? {
+                    1 => Rejoin::Role(self.role()?),
+                    2 => Rejoin::Ban,
+                    3 => Rejoin::PermaBan,
+                    _ => return None,
+                };
+                Payload::Kick { epoch, target, rejoin }
+            }
+            23 => {
+                let epoch = self.u32()?;
+                let key = Key(self.take(32)?.try_into().ok()?);
+                let f = self.u8()?;
+                if f > 3 {
+                    return None;
+                }
+                Payload::Ban { epoch, key, on: f & 1 != 0, perma: f & 2 != 0 }
+            }
             18 => Payload::SetRole { epoch: self.u32()?, member: self.u32()?, role: self.role()? },
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
             // Review OWNY-3: a certificate claiming more than MAX_CERT_BYTES is never read.
@@ -662,6 +729,7 @@ impl<'a> Rd<'a> {
     fn msg_in(&mut self, in_batch: bool) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(SignedEntry { entry: self.entry()?, sig: self.take(64)?.try_into().ok()? }),
+            12 => Msg::Lean(SignedEntry { entry: self.entry_opt(true)?, sig: self.take(64)?.try_into().ok()? }),
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
             4 if !in_batch => {
                 let n = self.u32()? as usize;
@@ -715,6 +783,7 @@ pub fn is_protocol(p: &Payload) -> bool {
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
             | Payload::Ownership { .. }
+            | Payload::Ban { .. }
     )
 }
 

@@ -1,0 +1,11 @@
+RESULT kickpartition: m1 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 412 (t=6.97 s) round 1 removed [3]
+RESULT kickpartition: m2 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 412 (t=6.97 s) round 1 removed [3]
+RESULT kickpartition: m4 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 412 (t=6.97 s) round 1 removed [3]
+RESULT kickpartition: m1: 1 kicks 3 @180: applied
+RESULT kickpartition: m2: 1 kicks 3 @180: applied
+RESULT kickpartition: m4: 1 kicks 3 @180: applied
+RESULT kickpartition: decided during the partition: false; members after: m1 {1, 2, 4}, m4 {1, 2, 4} -> ONE SESSION, 3 removed after the heal
+  m1: conf 705 frame 713 members {1, 2, 4} evicted {3: (56, 112)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 35 bad 0
+  m2: conf 705 frame 713 members {1, 2, 4} evicted {3: (56, 112)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 34 bad 0
+  m4: conf 707 frame 713 members {1, 2, 4} evicted {3: (56, 112)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 35 bad 0
+RESULT kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s): frames 0..712 honest m1=7c542a49a1963886 m2=7c542a49a1963886 m4=7c542a49a1963886 | offline replay 7c542a49a1963886 | ALL EQUAL, NO FALSE CHECKS ; checks ok 104 bad 0

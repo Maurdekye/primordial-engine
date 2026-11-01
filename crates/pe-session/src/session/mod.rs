@@ -57,6 +57,8 @@ mod replay;
 mod seam;
 #[cfg(test)]
 mod ownership_tests;
+#[cfg(test)]
+mod bans_tests;
 
 pub use entry::*;
 pub use membership::*;
@@ -123,6 +125,16 @@ struct Keyframe {
     t: Tables,
 }
 
+/// A lean entry waiting in [`WorldSim::insert_lean`]: its sender, the entry, since when (frame), and
+/// whether its explicit form has been asked for.
+#[derive(Clone, Debug)]
+pub struct LeanWait {
+    pub from: MemberId,
+    pub se: SignedEntry,
+    pub since: u64,
+    pub asked: bool,
+}
+
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Stats {
     pub rollbacks: u64,
@@ -179,6 +191,17 @@ pub struct Stats {
     pub admin_refused: u64,
     /// Received entries dropped because their signature did not verify (S3).
     pub bad_sigs: u64,
+    /// Lean entries ([`Msg::Lean`]) received, and those this member could not rebuild and verify,
+    /// whose explicit form it fetched from their author instead.
+    pub lean_in: u64,
+    pub lean_fallbacks: u64,
+    /// Lean entries that waited for an entry they name, and their total wait in frames.
+    pub lean_waited: u64,
+    pub lean_wait_frames: u64,
+    /// The longest a lean entry waited, frames.
+    pub lean_wait_max: u64,
+    /// Fetch requests sent (gap repair, conflicts, lean entries).
+    pub fetches_sent: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -464,6 +487,8 @@ pub struct WorldSim {
     busy_stamp: Option<u64>,
     /// The version of each (member, seq) this member holds and references: the first one seen.
     by_author: BTreeMap<(MemberId, u32), EntryId>,
+    /// Lean entries waiting for entries they name ([`WorldSim::insert_lean`]), by (member, seq).
+    lean_wait: BTreeMap<(MemberId, u32), LeanWait>,
     /// Per author: the verified contiguous prefix (hash-linked) held.
     contiguous: BTreeMap<MemberId, u32>,
     /// Void by a chain-local rule (horizon violations): identical for every holder.
@@ -668,6 +693,12 @@ pub struct ViewChangeMembership {
     /// World ownership (12.5): the world's ownership chain. Governance, like roles: changed only by
     /// the certificates decided view changes commit, never rewound by a rollback.
     pub book: Option<Book>,
+    /// 12.4: this session's bans and rejoin roles, by identity key; never written into the world.
+    /// Governance, like roles: changed only by decided admin entries, never rewound by a rollback,
+    /// outside the check hash.
+    pub bans: BTreeMap<Key, Restrict>,
+    /// 12.4: the world's perma-bans (its ACL), by identity key; governance like `bans`.
+    pub perma_bans: BTreeSet<Key>,
     /// This epoch's admin entries from members allowed to make them, as held.
     admin_pending: BTreeSet<EntryId>,
     /// Review OWNY-2: ownership entries not pending only because a parent certificate is not in the
@@ -780,6 +811,8 @@ impl WorldSim {
                 join_attests: BTreeMap::new(),
                 owners: BTreeSet::new(),
                 book: None,
+                bans: BTreeMap::new(),
+                perma_bans: BTreeSet::new(),
                 admin_pending: BTreeSet::new(),
                 own_held: BTreeSet::new(),
                 admin_outcomes: BTreeMap::new(),
@@ -816,6 +849,7 @@ impl WorldSim {
             entries: BTreeMap::new(),
             busy_stamp: None,
             by_author: BTreeMap::new(),
+            lean_wait: BTreeMap::new(),
             contiguous: BTreeMap::new(),
             violations: BTreeSet::new(),
             disputed: BTreeSet::new(),
@@ -893,7 +927,7 @@ mod d73_review {
         let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
         let a = Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Ack { horizon: 12, heads: vec![], check: None, epoch: 0 }, carried: None };
         let sa = test_sign(1, a);
-        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3 }, carried: None };
+        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3, rejoin: Rejoin::Free }, carried: None };
         let sk = test_sign(1, k);
         let kid = sk.id();
         s.insert(sa);

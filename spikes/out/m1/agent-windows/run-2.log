@@ -1,0 +1,110 @@
+pe-app: member 2 of session ef2f15546ab27203 on 127.0.0.1:7312; 4 members, 12000 frames
+[m2 t=0ms f=0] session start received: epoch 1156089 (leader clock), my offset -133745 us, best rtt 2067 us
+[m2 t=709ms f=42] status: frame 42 now 42 conf 39 members {1, 2, 3, 4} rollbacks 0 | sent 82 faulted 0 recv 76 rejected {} unsigned 0 | sigs 84
+[m2 t=2709ms f=162] status: frame 162 now 162 conf 158 members {1, 2, 3, 4} rollbacks 0 | sent 265 faulted 0 recv 258 rejected {} unsigned 0 | sigs 328
+[m2 t=4711ms f=282] status: frame 282 now 282 conf 279 members {1, 2, 3, 4} rollbacks 0 | sent 451 faulted 0 recv 443 rejected {} unsigned 0 | sigs 575
+[m2 t=6711ms f=402] status: frame 402 now 402 conf 398 members {1, 2, 3, 4} rollbacks 0 | sent 637 faulted 0 recv 624 rejected {} unsigned 0 | sigs 819
+[m2 t=8712ms f=522] status: frame 522 now 522 conf 518 members {1, 2, 3, 4} rollbacks 0 | sent 826 faulted 0 recv 808 rejected {} unsigned 0 | sigs 1066
+[m2 t=10712ms f=642] status: frame 642 now 642 conf 639 members {1, 2, 3, 4} rollbacks 0 | sent 1012 faulted 0 recv 992 rejected {} unsigned 0 | sigs 1312
+[m2 t=12713ms f=762] status: frame 762 now 762 conf 759 members {1, 2, 3, 4} rollbacks 0 | sent 1201 faulted 0 recv 1175 rejected {} unsigned 0 | sigs 1558
+[m2 t=14714ms f=882] status: frame 882 now 882 conf 880 members {1, 2, 3, 4} rollbacks 0 | sent 1387 faulted 0 recv 1359 rejected {} unsigned 0 | sigs 1804
+[m2 t=16714ms f=1002] status: frame 1002 now 1002 conf 999 members {1, 2, 3, 4} rollbacks 0 | sent 1573 faulted 0 recv 1540 rejected {} unsigned 0 | sigs 2049
+[m2 t=18716ms f=1122] status: frame 1122 now 1122 conf 1119 members {1, 2, 3, 4} rollbacks 0 | sent 1759 faulted 0 recv 1722 rejected {} unsigned 0 | sigs 2295
+[m2 t=20717ms f=1243] status: frame 1243 now 1243 conf 1239 members {1, 2, 3, 4} rollbacks 0 | sent 1948 faulted 0 recv 1905 rejected {} unsigned 0 | sigs 2541
+[m2 t=22718ms f=1363] status: frame 1363 now 1363 conf 1360 members {1, 2, 3, 4} rollbacks 0 | sent 2134 faulted 0 recv 2089 rejected {} unsigned 0 | sigs 2787
+[m2 t=24719ms f=1483] status: frame 1483 now 1483 conf 1479 members {1, 2, 3, 4} rollbacks 0 | sent 2317 faulted 0 recv 2270 rejected {} unsigned 0 | sigs 3031
+[m2 t=26720ms f=1603] status: frame 1603 now 1603 conf 1600 members {1, 2, 3, 4} rollbacks 0 | sent 2506 faulted 0 recv 2455 rejected {} unsigned 0 | sigs 3279
+[m2 t=28721ms f=1723] status: frame 1723 now 1723 conf 1720 members {1, 2, 3, 4} rollbacks 0 | sent 2692 faulted 0 recv 2638 rejected {} unsigned 0 | sigs 3524
+[m2 t=30721ms f=1843] status: frame 1843 now 1843 conf 1797 members {1, 2, 3, 4} rollbacks 0 | sent 2881 faulted 0 recv 2799 rejected {} unsigned 0 | sigs 3749
+[m2 t=31968ms f=1917] paused at frame 1917 (speculation limit)
+[m2 t=32722ms f=1917] status: frame 1917 now 1963 conf 1797 members {1, 2, 3, 4} rollbacks 0 | sent 3061 faulted 0 recv 2917 rejected {} unsigned 0 | sigs 3927
+[m2 t=32991ms f=1917] membership decision: epoch 1, removed [4]
+[m2 t=33003ms f=1980] resumed at frame 1980
+[m2 t=34723ms f=2083] status: frame 2083 now 2083 conf 2081 members {1, 2, 3} rollbacks 0 | sent 3204 faulted 0 recv 3045 rejected {} unsigned 0 | sigs 4126
+[m2 t=36726ms f=2203] status: frame 2203 now 2203 conf 2200 members {1, 2, 3} rollbacks 0 | sent 3328 faulted 0 recv 3165 rejected {} unsigned 0 | sigs 4309
+[m2 t=38727ms f=2323] status: frame 2323 now 2323 conf 2319 members {1, 2, 3} rollbacks 0 | sent 3452 faulted 0 recv 3286 rejected {} unsigned 0 | sigs 4492
+[m2 t=40728ms f=2443] status: frame 2443 now 2443 conf 2440 members {1, 2, 3} rollbacks 0 | sent 3576 faulted 0 recv 3406 rejected {} unsigned 0 | sigs 4676
+[m2 t=42729ms f=2563] status: frame 2563 now 2563 conf 2560 members {1, 2, 3} rollbacks 0 | sent 3700 faulted 0 recv 3527 rejected {} unsigned 0 | sigs 4859
+[m2 t=44729ms f=2683] status: frame 2683 now 2683 conf 2681 members {1, 2, 3} rollbacks 0 | sent 3826 faulted 0 recv 3648 rejected {} unsigned 0 | sigs 5043
+[m2 t=46729ms f=2803] status: frame 2803 now 2803 conf 2800 members {1, 2, 3} rollbacks 0 | sent 3948 faulted 0 recv 3768 rejected {} unsigned 0 | sigs 5225
+[m2 t=48730ms f=2923] status: frame 2923 now 2923 conf 2919 members {1, 2, 3} rollbacks 0 | sent 4072 faulted 0 recv 3888 rejected {} unsigned 0 | sigs 5407
+[m2 t=50730ms f=3043] status: frame 3043 now 3043 conf 3041 members {1, 2, 3} rollbacks 0 | sent 4198 faulted 0 recv 4010 rejected {} unsigned 0 | sigs 5592
+[m2 t=52731ms f=3163] status: frame 3163 now 3163 conf 3160 members {1, 2, 3} rollbacks 0 | sent 4320 faulted 0 recv 4130 rejected {} unsigned 0 | sigs 5774
+[m2 t=54732ms f=3283] status: frame 3283 now 3283 conf 3281 members {1, 2, 3} rollbacks 0 | sent 4446 faulted 0 recv 4251 rejected {} unsigned 0 | sigs 5958
+[m2 t=56733ms f=3403] status: frame 3403 now 3403 conf 3401 members {1, 2, 3} rollbacks 0 | sent 4568 faulted 0 recv 4370 rejected {} unsigned 0 | sigs 6141
+[m2 t=58733ms f=3523] status: frame 3523 now 3523 conf 3520 members {1, 2, 3} rollbacks 0 | sent 4690 faulted 0 recv 4490 rejected {} unsigned 0 | sigs 6323
+[m2 t=60734ms f=3643] status: frame 3643 now 3643 conf 3639 members {1, 2, 3} rollbacks 0 | sent 4816 faulted 0 recv 4610 rejected {} unsigned 0 | sigs 6506
+[m2 t=62734ms f=3763] status: frame 3763 now 3763 conf 3761 members {1, 2, 3} rollbacks 0 | sent 4938 faulted 0 recv 4731 rejected {} unsigned 0 | sigs 6689
+[m2 t=64735ms f=3884] status: frame 3884 now 3884 conf 3880 members {1, 2, 3} rollbacks 0 | sent 5060 faulted 0 recv 4852 rejected {} unsigned 0 | sigs 6872
+[m2 t=66735ms f=4004] status: frame 4004 now 4004 conf 4001 members {1, 2, 3} rollbacks 0 | sent 5186 faulted 0 recv 4973 rejected {} unsigned 0 | sigs 7056
+[m2 t=68736ms f=4124] status: frame 4124 now 4124 conf 4121 members {1, 2, 3} rollbacks 0 | sent 5310 faulted 0 recv 5094 rejected {} unsigned 0 | sigs 7239
+[m2 t=70738ms f=4244] status: frame 4244 now 4244 conf 4241 members {1, 2, 3} rollbacks 0 | sent 5434 faulted 0 recv 5213 rejected {} unsigned 0 | sigs 7421
+[m2 t=72740ms f=4364] status: frame 4364 now 4364 conf 4361 members {1, 2, 3} rollbacks 0 | sent 5556 faulted 0 recv 5334 rejected {} unsigned 0 | sigs 7604
+[m2 t=74741ms f=4484] status: frame 4484 now 4484 conf 4480 members {1, 2, 3} rollbacks 0 | sent 5680 faulted 0 recv 5454 rejected {} unsigned 0 | sigs 7786
+[m2 t=76742ms f=4604] status: frame 4604 now 4604 conf 4601 members {1, 2, 3} rollbacks 0 | sent 5806 faulted 0 recv 5575 rejected {} unsigned 0 | sigs 7970
+[m2 t=78743ms f=4724] status: frame 4724 now 4724 conf 4720 members {1, 2, 3} rollbacks 0 | sent 5930 faulted 0 recv 5694 rejected {} unsigned 0 | sigs 8152
+[m2 t=80744ms f=4844] status: frame 4844 now 4844 conf 4840 members {1, 2, 3} rollbacks 0 | sent 6054 faulted 0 recv 5814 rejected {} unsigned 0 | sigs 8334
+[m2 t=82745ms f=4964] status: frame 4964 now 4964 conf 4962 members {1, 2, 3} rollbacks 0 | sent 6180 faulted 0 recv 5936 rejected {} unsigned 0 | sigs 8519
+[m2 t=84745ms f=5084] status: frame 5084 now 5084 conf 5081 members {1, 2, 3} rollbacks 0 | sent 6304 faulted 0 recv 6056 rejected {} unsigned 0 | sigs 8701
+[m2 t=86747ms f=5204] status: frame 5204 now 5204 conf 5201 members {1, 2, 3} rollbacks 0 | sent 6428 faulted 0 recv 6176 rejected {} unsigned 0 | sigs 8883
+[m2 t=88748ms f=5324] status: frame 5324 now 5324 conf 5320 members {1, 2, 3} rollbacks 0 | sent 6554 faulted 0 recv 6296 rejected {} unsigned 0 | sigs 9066
+[m2 t=90750ms f=5444] status: frame 5444 now 5444 conf 5442 members {1, 2, 3} rollbacks 0 | sent 6678 faulted 0 recv 6416 rejected {} unsigned 0 | sigs 9250
+[m2 t=92753ms f=5565] status: frame 5565 now 5565 conf 5562 members {1, 2, 3} rollbacks 0 | sent 6802 faulted 0 recv 6536 rejected {} unsigned 0 | sigs 9432
+[m2 t=94755ms f=5685] status: frame 5685 now 5685 conf 5682 members {1, 2, 3} rollbacks 0 | sent 6928 faulted 0 recv 6655 rejected {} unsigned 0 | sigs 9615
+[m2 t=96756ms f=5805] status: frame 5805 now 5805 conf 5802 members {1, 2, 3} rollbacks 0 | sent 7052 faulted 0 recv 6775 rejected {} unsigned 0 | sigs 9798
+[m2 t=98756ms f=5925] status: frame 5925 now 5925 conf 5922 members {1, 2, 3} rollbacks 0 | sent 7176 faulted 0 recv 6896 rejected {} unsigned 0 | sigs 9981
+[m2 t=100756ms f=6045] status: frame 6045 now 6045 conf 6042 members {1, 2, 3} rollbacks 0 | sent 7298 faulted 0 recv 7016 rejected {} unsigned 0 | sigs 10163
+[m2 t=102758ms f=6165] status: frame 6165 now 6165 conf 6162 members {1, 2, 3} rollbacks 0 | sent 7424 faulted 0 recv 7137 rejected {} unsigned 0 | sigs 10347
+[m2 t=104760ms f=6285] status: frame 6285 now 6285 conf 6282 members {1, 2, 3} rollbacks 0 | sent 7546 faulted 0 recv 7258 rejected {} unsigned 0 | sigs 10530
+[m2 t=106762ms f=6405] status: frame 6405 now 6405 conf 6402 members {1, 2, 3} rollbacks 0 | sent 7668 faulted 0 recv 7378 rejected {} unsigned 0 | sigs 10712
+[m2 t=108762ms f=6525] status: frame 6525 now 6525 conf 6521 members {1, 2, 3} rollbacks 0 | sent 7792 faulted 0 recv 7498 rejected {} unsigned 0 | sigs 10895
+[m2 t=110763ms f=6645] status: frame 6645 now 6645 conf 6643 members {1, 2, 3} rollbacks 0 | sent 7916 faulted 0 recv 7620 rejected {} unsigned 0 | sigs 11079
+[m2 t=112763ms f=6765] status: frame 6765 now 6765 conf 6762 members {1, 2, 3} rollbacks 0 | sent 8040 faulted 0 recv 7740 rejected {} unsigned 0 | sigs 11261
+[m2 t=114765ms f=6885] status: frame 6885 now 6885 conf 6881 members {1, 2, 3} rollbacks 0 | sent 8162 faulted 0 recv 7859 rejected {} unsigned 0 | sigs 11443
+[m2 t=116767ms f=7005] status: frame 7005 now 7005 conf 7003 members {1, 2, 3} rollbacks 0 | sent 8286 faulted 0 recv 7979 rejected {} unsigned 0 | sigs 11627
+[m2 t=118768ms f=7125] status: frame 7125 now 7125 conf 7122 members {1, 2, 3} rollbacks 0 | sent 8408 faulted 0 recv 8099 rejected {} unsigned 0 | sigs 11809
+[m2 t=120770ms f=7246] status: frame 7246 now 7246 conf 7242 members {1, 2, 3} rollbacks 0 | sent 8532 faulted 0 recv 8220 rejected {} unsigned 0 | sigs 11992
+[m2 t=122771ms f=7366] status: frame 7366 now 7366 conf 7363 members {1, 2, 3} rollbacks 0 | sent 8656 faulted 0 recv 8341 rejected {} unsigned 0 | sigs 12176
+[m2 t=124772ms f=7486] status: frame 7486 now 7486 conf 7482 members {1, 2, 3} rollbacks 0 | sent 8780 faulted 0 recv 8462 rejected {} unsigned 0 | sigs 12359
+[m2 t=126774ms f=7606] status: frame 7606 now 7606 conf 7603 members {1, 2, 3} rollbacks 0 | sent 8904 faulted 0 recv 8582 rejected {} unsigned 0 | sigs 12541
+[m2 t=128774ms f=7726] status: frame 7726 now 7726 conf 7723 members {1, 2, 3} rollbacks 0 | sent 9030 faulted 0 recv 8703 rejected {} unsigned 0 | sigs 12725
+[m2 t=130776ms f=7846] status: frame 7846 now 7846 conf 7843 members {1, 2, 3} rollbacks 0 | sent 9154 faulted 0 recv 8824 rejected {} unsigned 0 | sigs 12908
+[m2 t=132777ms f=7966] status: frame 7966 now 7966 conf 7962 members {1, 2, 3} rollbacks 0 | sent 9278 faulted 0 recv 8944 rejected {} unsigned 0 | sigs 13090
+[m2 t=134778ms f=8086] status: frame 8086 now 8086 conf 8084 members {1, 2, 3} rollbacks 0 | sent 9404 faulted 0 recv 9064 rejected {} unsigned 0 | sigs 13274
+[m2 t=136779ms f=8206] status: frame 8206 now 8206 conf 8204 members {1, 2, 3} rollbacks 0 | sent 9528 faulted 0 recv 9185 rejected {} unsigned 0 | sigs 13457
+[m2 t=138780ms f=8326] status: frame 8326 now 8326 conf 8323 members {1, 2, 3} rollbacks 0 | sent 9652 faulted 0 recv 9305 rejected {} unsigned 0 | sigs 13639
+[m2 t=140781ms f=8446] status: frame 8446 now 8446 conf 8443 members {1, 2, 3} rollbacks 0 | sent 9778 faulted 0 recv 9425 rejected {} unsigned 0 | sigs 13822
+[m2 t=142782ms f=8566] status: frame 8566 now 8566 conf 8564 members {1, 2, 3} rollbacks 0 | sent 9902 faulted 0 recv 9547 rejected {} unsigned 0 | sigs 14006
+[m2 t=144782ms f=8686] status: frame 8686 now 8686 conf 8684 members {1, 2, 3} rollbacks 0 | sent 10026 faulted 0 recv 9666 rejected {} unsigned 0 | sigs 14188
+[m2 t=146782ms f=8806] status: frame 8806 now 8806 conf 8803 members {1, 2, 3} rollbacks 0 | sent 10152 faulted 0 recv 9786 rejected {} unsigned 0 | sigs 14371
+[m2 t=148782ms f=8926] status: frame 8926 now 8926 conf 8923 members {1, 2, 3} rollbacks 0 | sent 10276 faulted 0 recv 9906 rejected {} unsigned 0 | sigs 14554
+[m2 t=150783ms f=9046] status: frame 9046 now 9046 conf 9044 members {1, 2, 3} rollbacks 0 | sent 10402 faulted 0 recv 10026 rejected {} unsigned 0 | sigs 14737
+[m2 t=152785ms f=9166] status: frame 9166 now 9166 conf 9163 members {1, 2, 3} rollbacks 0 | sent 10526 faulted 0 recv 10147 rejected {} unsigned 0 | sigs 14920
+[m2 t=154787ms f=9287] status: frame 9287 now 9287 conf 9284 members {1, 2, 3} rollbacks 0 | sent 10650 faulted 0 recv 10268 rejected {} unsigned 0 | sigs 15103
+[m2 t=156788ms f=9407] status: frame 9407 now 9407 conf 9403 members {1, 2, 3} rollbacks 0 | sent 10774 faulted 0 recv 10387 rejected {} unsigned 0 | sigs 15284
+[m2 t=158789ms f=9527] status: frame 9527 now 9527 conf 9524 members {1, 2, 3} rollbacks 0 | sent 10898 faulted 0 recv 10507 rejected {} unsigned 0 | sigs 15468
+[m2 t=160789ms f=9647] status: frame 9647 now 9647 conf 9643 members {1, 2, 3} rollbacks 0 | sent 11022 faulted 0 recv 10628 rejected {} unsigned 0 | sigs 15651
+[m2 t=162790ms f=9767] status: frame 9767 now 9767 conf 9764 members {1, 2, 3} rollbacks 0 | sent 11144 faulted 0 recv 10748 rejected {} unsigned 0 | sigs 15833
+[m2 t=164792ms f=9887] status: frame 9887 now 9887 conf 9884 members {1, 2, 3} rollbacks 0 | sent 11270 faulted 0 recv 10868 rejected {} unsigned 0 | sigs 16017
+[m2 t=166792ms f=10007] status: frame 10007 now 10007 conf 10004 members {1, 2, 3} rollbacks 0 | sent 11394 faulted 0 recv 10989 rejected {} unsigned 0 | sigs 16200
+[m2 t=168793ms f=10127] status: frame 10127 now 10127 conf 10124 members {1, 2, 3} rollbacks 0 | sent 11518 faulted 0 recv 11109 rejected {} unsigned 0 | sigs 16382
+[m2 t=170794ms f=10247] status: frame 10247 now 10247 conf 10243 members {1, 2, 3} rollbacks 0 | sent 11642 faulted 0 recv 11230 rejected {} unsigned 0 | sigs 16565
+[m2 t=172794ms f=10367] status: frame 10367 now 10367 conf 10363 members {1, 2, 3} rollbacks 0 | sent 11766 faulted 0 recv 11348 rejected {} unsigned 0 | sigs 16748
+[m2 t=174796ms f=10487] status: frame 10487 now 10487 conf 10484 members {1, 2, 3} rollbacks 0 | sent 11890 faulted 0 recv 11469 rejected {} unsigned 0 | sigs 16931
+[m2 t=176798ms f=10607] status: frame 10607 now 10607 conf 10604 members {1, 2, 3} rollbacks 0 | sent 12014 faulted 0 recv 11588 rejected {} unsigned 0 | sigs 17113
+[m2 t=178799ms f=10727] status: frame 10727 now 10727 conf 10723 members {1, 2, 3} rollbacks 0 | sent 12138 faulted 0 recv 11708 rejected {} unsigned 0 | sigs 17296
+[m2 t=180800ms f=10847] status: frame 10847 now 10847 conf 10845 members {1, 2, 3} rollbacks 0 | sent 12262 faulted 0 recv 11830 rejected {} unsigned 0 | sigs 17480
+[m2 t=182802ms f=10967] status: frame 10967 now 10967 conf 10964 members {1, 2, 3} rollbacks 0 | sent 12388 faulted 0 recv 11950 rejected {} unsigned 0 | sigs 17663
+[m2 t=184802ms f=11087] status: frame 11087 now 11087 conf 11084 members {1, 2, 3} rollbacks 0 | sent 12512 faulted 0 recv 12070 rejected {} unsigned 0 | sigs 17845
+[m2 t=186803ms f=11207] status: frame 11207 now 11207 conf 11205 members {1, 2, 3} rollbacks 0 | sent 12636 faulted 0 recv 12192 rejected {} unsigned 0 | sigs 18029
+[m2 t=188804ms f=11328] status: frame 11328 now 11328 conf 11325 members {1, 2, 3} rollbacks 0 | sent 12758 faulted 0 recv 12312 rejected {} unsigned 0 | sigs 18211
+[m2 t=190804ms f=11448] status: frame 11448 now 11448 conf 11443 members {1, 2, 3} rollbacks 0 | sent 12884 faulted 0 recv 12431 rejected {} unsigned 0 | sigs 18394
+[m2 t=192807ms f=11568] status: frame 11568 now 11568 conf 11564 members {1, 2, 3} rollbacks 0 | sent 13008 faulted 0 recv 12553 rejected {} unsigned 0 | sigs 18578
+[m2 t=194807ms f=11688] status: frame 11688 now 11688 conf 11684 members {1, 2, 3} rollbacks 0 | sent 13132 faulted 0 recv 12673 rejected {} unsigned 0 | sigs 18760
+[m2 t=196808ms f=11808] status: frame 11808 now 11808 conf 11805 members {1, 2, 3} rollbacks 0 | sent 13258 faulted 0 recv 12793 rejected {} unsigned 0 | sigs 18944
+[m2 t=198809ms f=11928] status: frame 11928 now 11928 conf 11924 members {1, 2, 3} rollbacks 0 | sent 13382 faulted 0 recv 12913 rejected {} unsigned 0 | sigs 19127
+[m2 t=200969ms f=12003] DONE frames 0..12000: digest f6929dbb5bf6f6a7 replay f6929dbb5bf6f6a7 (EQUAL), conf 12000, members [1, 2, 3]
+[m2 t=200969ms f=12003] slow step: 914 ms (receive 0 ms, tick 0 ms, send 914 ms)
+[m2 t=200969ms f=12003] status: frame 12003 now 12003 conf 12000 members {1, 2, 3} rollbacks 0 | sent 13456 faulted 0 recv 12987 rejected {} unsigned 0 | sigs 19238
+[m2 t=202969ms f=12177] status: frame 12177 now 12177 conf 12175 members {1, 2, 3} rollbacks 0 | sent 13574 faulted 0 recv 13105 rejected {} unsigned 0 | sigs 19415
+member 2: frames 0..12000 digest f6929dbb5bf6f6a7 replay f6929dbb5bf6f6a7 (EQUAL), conf 12000, members at end [1, 2, 3], rollbacks 0, checks ok 850 bad 0

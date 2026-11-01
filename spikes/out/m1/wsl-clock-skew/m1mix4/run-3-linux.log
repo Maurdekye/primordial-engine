@@ -1,0 +1,62 @@
+pe-app: member 3 of session 246f069c105dbc06 on 172.19.40.73:7433; 4 members, 1800 frames
+[m3 t=0ms f=0] session start received: epoch 1226696 (leader clock), my offset 22989 us, best rtt 1156 us
+[m3 t=796ms f=47] status: frame 47 now 47 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 86 faulted 0 capped 0 recv 85 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms
+[m3 t=2797ms f=167] status: frame 167 now 167 conf 160 members {1, 2, 3, 4} rollbacks 0 | sent 255 faulted 0 capped 0 recv 284 rejected {} bad entry sigs 0 | R18 level 5 signal Some(87) ms
+[m3 t=3000ms f=179] fault: links to all now 5% loss, 25 ms +-10 ms
+[m3 t=4797ms f=287] status: frame 287 now 287 conf 272 members {1, 2, 3, 4} rollbacks 0 | sent 336 faulted 2 capped 0 recv 462 rejected {} bad entry sigs 0 | R18 level 5 signal Some(283) ms
+[m3 t=6798ms f=407] status: frame 407 now 407 conf 392 members {1, 2, 3, 4} rollbacks 0 | sent 409 faulted 10 capped 0 recv 639 rejected {} bad entry sigs 0 | R18 level 5 signal Some(478) ms
+[m3 t=8798ms f=527] status: frame 527 now 527 conf 512 members {1, 2, 3, 4} rollbacks 0 | sent 480 faulted 16 capped 0 recv 811 rejected {} bad entry sigs 0 | R18 level 5 signal Some(664) ms
+[m3 t=10799ms f=647] status: frame 647 now 647 conf 632 members {1, 2, 3, 4} rollbacks 0 | sent 559 faulted 23 capped 0 recv 986 rejected {} bad entry sigs 0 | R18 level 5 signal Some(846) ms
+[m3 t=12800ms f=767] status: frame 767 now 767 conf 752 members {1, 2, 3, 4} rollbacks 0 | sent 639 faulted 27 capped 0 recv 1162 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1015) ms
+[m3 t=14800ms f=888] status: frame 888 now 888 conf 872 members {1, 2, 3, 4} rollbacks 0 | sent 723 faulted 33 capped 0 recv 1341 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1167) ms
+[m3 t=16501ms f=990] membership decision: epoch 1, removed []
+[m3 t=16800ms f=1008] status: frame 1008 now 1008 conf 888 members {1, 2, 3, 4} rollbacks 0 | sent 823 faulted 39 capped 0 recv 1494 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1168) ms
+[m3 t=16817ms f=1008] paused at frame 1008 (speculation limit)
+[m3 t=17146ms f=1008] membership decision: epoch 2, removed []
+[m3 t=17465ms f=1008] membership decision: epoch 3, removed []
+[m3 t=17755ms f=1008] membership decision: epoch 4, removed []
+[m3 t=18034ms f=1008] membership decision: epoch 5, removed []
+[m3 t=18215ms f=1008] membership decision: epoch 6, removed [4]
+[m3 t=18219ms f=1093] resumed at frame 1093
+[m3 t=18360ms f=1101] membership decision: epoch 7, removed [3]
+[m3 t=18801ms f=1128] status: frame 1128 now 1128 conf 1164 members {1, 2} rollbacks 1 | sent 951 faulted 44 capped 0 recv 1655 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1122) ms
+[m3 t=20802ms f=1248] status: frame 1248 now 1248 conf 1164 members {1, 2} rollbacks 1 | sent 1000 faulted 47 capped 0 recv 1664 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1043) ms
+[m3 t=21417ms f=1284] paused at frame 1284 (speculation limit)
+[m3 t=22802ms f=1284] status: frame 1284 now 1368 conf 1164 members {1, 2} rollbacks 1 | sent 1039 faulted 48 capped 0 recv 1668 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1042) ms
+[m3 t=24803ms f=1284] status: frame 1284 now 1488 conf 1164 members {1, 2} rollbacks 1 | sent 1075 faulted 50 capped 0 recv 1671 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1043) ms
+[m3 t=26803ms f=1284] status: frame 1284 now 1608 conf 1164 members {1, 2} rollbacks 1 | sent 1107 faulted 52 capped 0 recv 1674 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1041) ms
+[m3 t=28804ms f=1284] status: frame 1284 now 1728 conf 1164 members {1, 2} rollbacks 1 | sent 1143 faulted 54 capped 0 recv 1678 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1042) ms
+[m3 t=30804ms f=1284] status: frame 1284 now 1848 conf 1164 members {1, 2} rollbacks 1 | sent 1181 faulted 54 capped 0 recv 1682 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1041) ms
+[m3 t=32805ms f=1284] status: frame 1284 now 1968 conf 1164 members {1, 2} rollbacks 1 | sent 1214 faulted 55 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1040) ms
+[m3 t=34806ms f=1284] status: frame 1284 now 2088 conf 1164 members {1, 2} rollbacks 1 | sent 1242 faulted 57 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1040) ms
+[m3 t=36807ms f=1284] status: frame 1284 now 2208 conf 1164 members {1, 2} rollbacks 1 | sent 1271 faulted 58 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1040) ms
+[m3 t=38807ms f=1284] status: frame 1284 now 2328 conf 1164 members {1, 2} rollbacks 1 | sent 1301 faulted 58 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=40808ms f=1284] status: frame 1284 now 2448 conf 1164 members {1, 2} rollbacks 1 | sent 1330 faulted 59 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=42808ms f=1284] status: frame 1284 now 2568 conf 1164 members {1, 2} rollbacks 1 | sent 1357 faulted 62 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=44808ms f=1284] status: frame 1284 now 2688 conf 1164 members {1, 2} rollbacks 1 | sent 1385 faulted 64 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=46809ms f=1284] status: frame 1284 now 2808 conf 1164 members {1, 2} rollbacks 1 | sent 1414 faulted 65 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=48810ms f=1284] status: frame 1284 now 2928 conf 1164 members {1, 2} rollbacks 1 | sent 1443 faulted 66 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=50811ms f=1284] status: frame 1284 now 3048 conf 1164 members {1, 2} rollbacks 1 | sent 1471 faulted 68 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=52811ms f=1284] status: frame 1284 now 3168 conf 1164 members {1, 2} rollbacks 1 | sent 1499 faulted 71 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=54812ms f=1284] status: frame 1284 now 3288 conf 1164 members {1, 2} rollbacks 1 | sent 1525 faulted 74 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=56812ms f=1284] status: frame 1284 now 3408 conf 1164 members {1, 2} rollbacks 1 | sent 1554 faulted 75 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=58813ms f=1284] status: frame 1284 now 3528 conf 1164 members {1, 2} rollbacks 1 | sent 1583 faulted 76 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=60813ms f=1284] status: frame 1284 now 3648 conf 1164 members {1, 2} rollbacks 1 | sent 1613 faulted 76 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=62813ms f=1284] status: frame 1284 now 3768 conf 1164 members {1, 2} rollbacks 1 | sent 1643 faulted 76 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=64814ms f=1284] status: frame 1284 now 3888 conf 1164 members {1, 2} rollbacks 1 | sent 1672 faulted 77 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=66814ms f=1284] status: frame 1284 now 4008 conf 1164 members {1, 2} rollbacks 1 | sent 1700 faulted 79 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=68814ms f=1284] status: frame 1284 now 4128 conf 1164 members {1, 2} rollbacks 1 | sent 1728 faulted 81 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=70815ms f=1284] status: frame 1284 now 4248 conf 1164 members {1, 2} rollbacks 1 | sent 1758 faulted 81 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=72815ms f=1284] status: frame 1284 now 4368 conf 1164 members {1, 2} rollbacks 1 | sent 1787 faulted 82 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=74816ms f=1284] status: frame 1284 now 4488 conf 1164 members {1, 2} rollbacks 1 | sent 1817 faulted 82 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=76817ms f=1284] status: frame 1284 now 4608 conf 1164 members {1, 2} rollbacks 1 | sent 1845 faulted 84 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=78818ms f=1284] status: frame 1284 now 4728 conf 1164 members {1, 2} rollbacks 1 | sent 1872 faulted 87 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=80819ms f=1284] status: frame 1284 now 4849 conf 1164 members {1, 2} rollbacks 1 | sent 1900 faulted 89 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=82819ms f=1284] status: frame 1284 now 4969 conf 1164 members {1, 2} rollbacks 1 | sent 1930 faulted 90 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=84819ms f=1284] status: frame 1284 now 5089 conf 1164 members {1, 2} rollbacks 1 | sent 1958 faulted 91 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=86820ms f=1284] status: frame 1284 now 5209 conf 1164 members {1, 2} rollbacks 1 | sent 1987 faulted 92 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=88821ms f=1284] status: frame 1284 now 5329 conf 1164 members {1, 2} rollbacks 1 | sent 2016 faulted 93 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=90821ms f=1284] status: frame 1284 now 5449 conf 1164 members {1, 2} rollbacks 1 | sent 2043 faulted 96 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=92822ms f=1284] status: frame 1284 now 5569 conf 1164 members {1, 2} rollbacks 1 | sent 2073 faulted 96 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=94823ms f=1284] status: frame 1284 now 5689 conf 1164 members {1, 2} rollbacks 1 | sent 2101 faulted 98 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms
+[m3 t=96824ms f=1284] status: frame 1284 now 5809 conf 1164 members {1, 2} rollbacks 1 | sent 2131 faulted 98 capped 0 recv 1684 rejected {} bad entry sigs 0 | R18 level 5 signal Some(25) ms

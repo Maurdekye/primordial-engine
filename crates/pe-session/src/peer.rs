@@ -137,6 +137,9 @@ pub struct SessionCore {
     /// Test fixture (review VCR-12 under 7.6 reduction 2): ack only on the member's own interval, never
     /// at once on leaving idle, so a member set to ack rarely keeps a stale horizon.
     pub ack_grid_only: bool,
+    /// The R18 below-20 item, option 1: this member's own entries go out live as [`Msg::Lean`]
+    /// (without the ids receivers rebuild). Off: explicit, as before.
+    pub lean_wire: bool,
     last_frame_seen: u64,
     /// R18: adapt the hand-pose stride and ack interval to the uplink queue delay. On by default.
     pub adapt: bool,
@@ -205,6 +208,7 @@ impl SessionCore {
             ack_on_frames: true,
             was_idle: false,
             ack_grid_only: false,
+            lean_wire: true,
             last_frame_seen: u64::MAX,
             adapt: true,
             level: 0,
@@ -315,11 +319,6 @@ impl SessionCore {
         }
     }
 
-    fn send(&mut self, class: Class, msg: Msg) {
-        let to = self.audience();
-        self.send_to_all(&to, class, msg);
-    }
-
     /// A joiner asks member `from` for its newest confirmed check-frame state (design 9.5). The answer
     /// is restored only against a check hash a quorum signed in the acks this replica holds (P22S-1), so
     /// it needs the log first; [`Event::Transfer`] reports the outcome.
@@ -356,10 +355,17 @@ impl SessionCore {
 
     fn receive_one(&mut self, from: MemberId, m: Msg, now_us: u64, audience: &[MemberId]) {
         match m {
-            Msg::Entry(e) => {
+            Msg::Entry(_) | Msg::Lean(_) => {
+                let mut v = match m {
+                    Msg::Lean(e) => self.sim.insert_lean(from, e),
+                    Msg::Entry(e) => self.sim.insert(e),
+                    _ => unreachable!(),
+                };
+                // Lean entries that waited for this one.
+                v.extend(self.sim.resolve_lean());
                 // Proofs of equivocation come back with this member's vote: broadcast them.
-                for v in self.sim.insert(e) {
-                    self.send_to_all(audience, Class::Control, Msg::Entry(v));
+                for e in v {
+                    self.send_to_all(audience, Class::Control, Msg::Entry(e));
                 }
                 self.fetches(now_us);
             }
@@ -533,7 +539,7 @@ impl SessionCore {
             };
         let send = |s: &mut Self, v: Vec<SignedEntry>, class| {
             for e in v {
-                s.send_to_all(&t.audience, class, Msg::Entry(e));
+                s.send_live(&t.audience, class, e);
             }
         };
         // Test fixture (review VC3R-6): a joiner that starts from a state transfer acks only once admitted.
@@ -549,6 +555,10 @@ impl SessionCore {
         send(self, v, Class::Control);
         let v = self.sim.view_change_due();
         send(self, v, Class::Control);
+        // Lean entries held past their wait ask for their explicit form.
+        for e in self.sim.resolve_lean() {
+            self.send_to_all(&t.audience, Class::Control, Msg::Entry(e));
+        }
         self.fetches(now_us);
         self.note_events();
     }
@@ -613,7 +623,8 @@ impl SessionCore {
                 }
                 match p {
                     Payload::Touch { obj, .. } => self.sim.author(p, Some(obj)),
-                    Payload::Kick { target, .. } => self.sim.kick(target),
+                    Payload::Kick { target, rejoin, .. } => self.sim.kick_with(target, rejoin),
+                    Payload::Ban { key, on, perma, .. } => self.sim.ban(key, on, perma),
                     Payload::SetRole { member, role, .. } => self.sim.set_role(member, role),
                     Payload::DefineRole { role, perms, .. } => self.sim.define_role(role, perms),
                     p => self.sim.author(p, None),
@@ -642,8 +653,21 @@ impl SessionCore {
     /// entries, an adversarial member moving another's hand).
     pub fn sent(&mut self, e: SignedEntry) -> SignedEntry {
         self.mine.insert(e.id(), None);
-        self.send(Class::Live, Msg::Entry(e.clone()));
+        let to = self.audience();
+        self.send_live(&to, Class::Live, e.clone());
         e
+    }
+
+    /// An entry going out live: this member's own lean ([`Msg::Lean`]) to the peers that hold its
+    /// chain, and any chain an ack names, nearly to it ([`WorldSim::lean_to`]), explicit to the
+    /// others; anything else explicit.
+    fn send_live(&mut self, to: &[MemberId], class: Class, e: SignedEntry) {
+        if !self.lean_wire || e.member != self.sim.me {
+            return self.send_to_all(to, class, Msg::Entry(e));
+        }
+        let (lean, explicit): (Vec<MemberId>, Vec<MemberId>) = to.iter().partition(|&&p| self.sim.lean_to(p, &e));
+        self.send_to_all(&explicit, class, Msg::Entry(e.clone()));
+        self.send_to_all(&lean, class, Msg::Lean(e));
     }
 
     pub fn outbox(&mut self) -> Vec<Out> {

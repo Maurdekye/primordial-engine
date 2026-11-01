@@ -45,7 +45,8 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
     supply its own evidence in that time, including the prevotes its precommit names, by fetch. So other
     members' delays never make an accusation of a clean member correct. That is VC4R-1's case: the
     missing prevotes were a third member's, and the capper was clean.
-  * Keeping up, because the silence, demotion and withheld-reference rules judge a member's own
+  * Keeping up, because the silence and demotion rules (and, until trust survey #4, the
+    withheld-reference rule) judge a member's own
     responsiveness. A member that stalls (a paused process, an overloaded machine) may still have its few
     messages arrive promptly, but its horizon falls behind. It is not clean, and those rules' votes
     against it are what 10.9 item 7 prescribes (review S6-1).
@@ -59,8 +60,13 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
 
 ## Liveness (hold after GST, within a bound)
 
-* **L1 Progress, within a lag bound.** After GST, the members that are honest, not crashed and still
-  members confirm within a bounded lag of their present: at the end of the run no such member's present
+* **L1 Progress, within a lag bound, once the admin has kicked.** After GST, the members that are honest,
+  not crashed and still members confirm within a bounded lag of their present. Since trust survey #4
+  (user rulings 2026-11-01) a live faulty member that holds confirmation (fake references, a bogus cap,
+  a ghost kick vote, acks climbing to an epoch no decision backs) is no longer voted out but left to an
+  admin, so the generator models that admin: at GST the honest member with the lowest id kicks every
+  such faulty member still in the session, and L1 is measured as before, at the end of the run, three
+  windows or more after the kicks. So for the relaxed shapes L1 reads "until kicked": at the end of the run no such member's present
   minus its confirmed frame exceeds two speculation windows (about 4 s). The present is the member's
   clock frame (`now`, driven by the wall clock each tick), not its speculative sim frame: on a halt the
   sim stops one window ahead of the frozen confirmed frame, so `frame - conf` is pinned at one window
@@ -71,16 +77,19 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
   which a halt pins one window behind the clock so it never reached the bound (review of round 6.1).
   Both were @design-reviewer's findings; the RG-1 control `randsched --seed 1 --fixes-off 0x800000`
   now fails L1 (lag 653 > 240 at the end, present 920, conf frozen at 267 since GST).]
-* **L2 Faulty members do not hold the session.** A faulty member that stalls confirmation — by going
-  silent, by withholding or faking references, by a stale cap, by a ghost kick vote, or by a join
-  request that reaches only part of the session — is removed, or its lever is neutralised, within a
-  bounded time, so L1 holds despite it. [checked indirectly through L1; the named repros check each
-  lever directly]
+* **L2 Faulty members do not hold the session, past an admin's kick.** A faulty member that goes silent,
+  or whose own horizon falls behind, is removed by the silence and demotion rules; a proven equivocator
+  is excluded and removed. A live faulty member that stalls confirmation any other way (withholding or
+  faking references, a stale cap, a ghost kick vote, a frozen head nobody delivers, acks claiming an
+  epoch no decision backs, or forcing view changes) holds the session until an admin kicks it: the
+  user's trust principle (trust survey #4, which absorbed the open question **V4**). Its cost is
+  latency, never safety. [checked indirectly through L1, with the generator's kicks at GST; the named
+  repros check each lever and that the kick ends it]
 
-L2 has one accepted exception, the user's open question **V4**: a faulty member that keeps forcing view
-changes by voting against members everyone hears, or by staying just inside every timer, is not removed
-automatically. It costs latency, not safety (L1 still holds, with a higher confirmation lag), and an
-admin can kick it. The generator does not fail a run for this.
+The same rulings accept one cost for honest members: a live member with a one-way inbound cut (its own
+messages reach everyone, it hears almost nothing) is caught by neither silence nor demotion, and holds
+confirmation until its link heals or an admin kicks it (`aheadlink-long`, `aheadlink-cut`). The
+generator draws no such member: its honest links are clean.
 
 ## The generator
 
@@ -90,7 +99,8 @@ Each seed draws, from a splitmix64 stream:
 - `n` in 4..=7, and a faulty set of size 0..=t;
 - one behaviour per faulty member: crash, slow-send, selective/rotating send, fake references, a
   climbing ack epoch, a withheld view-change vote, a bogus capped precommit each epoch, suspicion-vote
-  churn, a ghost kick vote, or an equivocated view-change prevote;
+  churn, a ghost kick vote, or an equivocated view-change prevote (at GST the honest admin kicks the fake
+  referencers, bogus cappers, ghost voters and climbers, L1);
 - an optional outside joiner whose request reaches a random subset of the members, optionally crashing
   after its first prevote;
 - a GST after which the faulty members' network games stop. A crash stays, and so does a ClimbAhead
@@ -109,17 +119,22 @@ stream, so the other draws keep theirs:
 | VC3R-1 | ClimbAhead: a member climbs to an unbacked epoch and delivers each of its own entries to one member only, rotating, for the rest of the run | a quarter of the remaining draws with a faulty member |
 
 `--fixes-off HEX` sets `WorldSim::fixes_off` on every member, so the generator can be run against an
-older protocol to confirm it finds that round's holes. Measured on 120 seeds each [V, widen/randsched]:
+older protocol to confirm it finds that round's holes. Measured on 120 seeds each, after trust survey #4
+(with the admin's kicks at GST) [V, relax-antistall]:
 
 | Fixes off | Seeds that fail (of 120) | First | Invariant |
 |---|---|---|---|
 | none | none | - | every one holds |
-| VC4R-1 and VC8R-1 (`0x1001000000`; VC8R-1 alone also blocks the attack) | 5: 20, 23, 60, 70, 72 | 20 | S6 |
+| VC8R-1 (`0x1000000000`) | none | - | every one holds (before #4, with VC4R-1 off too: 5 seeds, S6; no rule accuses a capper now) |
 | VC4R-2 (`0x400000`) | 3: 35, 58, 114 | 35 | L1 |
-| VC-5 (`0x8`) | 6: 4, 17, 18, 34, 54, 95 | 4 | L1 |
+| VC-5's epoch rule (`0x8`) | none | - | every one holds (before #4: 6 seeds, L1) |
 | VCR-12 (`0x2000`) | 8: 1, 22, 74, 76, 78, 100, 105, 106 | 1 | L1 |
-| VC3R-1 (`0x8000`) | 3: 4, 17, 18 | 4 | L1 |
-| VC4R-3, RG-1 (`0x800000`) | 8: 39, 44, 62, 92, 96, 99, 110, 113 | 39 | L1 |
+| VC4R-3, RG-1 (`0x800000`) | none | - | every one holds (before #4: 8 seeds, L1) |
+
+VC4R-1 and VC3R-1 are retired with the rules they fixed (their bits do nothing). Without VC-5's epoch
+rule or VC4R-3's held-references rule, the halt each leaves is a live faulty member holding confirmation,
+which the generator's admin now ends at GST, so L1 can no longer tell those fixes are off. The named
+repros still show each: `futureack`'s fix-off control stops at frame 108, and `slowref`'s at frame 102.
 
 Two generator bugs had hidden VC4R-1. A late prevote reached the nil side at once, through a third
 member's repair. And the drawn late member could be the capper itself, whose precommit then waited
@@ -127,6 +142,7 @@ behind its own prevote, so the cap and the polka arrived together.
 
 `randsched` found one hole the reviewer had not (RG-1): a faulty member that references a healthy
 member's chain beyond what it holds, with a small live offset that hides inside normal lag, caps that
-chain's stability without being caught as a withholder. The fix (a reference counts toward stability and
-against a withholder only once the entry it names is held) is in `suspects_due`/`withholders_due`, under
-`fix::VC4R3`, and `randsched --fixes-off 0x800000` reproduces the halt.
+chain's stability without being caught as a withholder. The fix (a reference counts toward stability only
+once the entry it names is held) is in `stable_seq`, under `fix::VC4R3`. Until trust survey #4 it also
+fed the withholding rule, and `randsched --fixes-off 0x800000` reproduced the halt; since #4 the faker is
+left to the admin, whose kick at GST ends it.

@@ -30,7 +30,7 @@ use report::{Ctx, Probe};
 use scenario::{Report, Scenario};
 
 /// Load-time checks on one part, and the built simulator with its behaviours and reports.
-fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Probe>), String> {
+fn prepare(mut s: Scenario) -> Result<(Scenario, pe_session_harness::Sim, Vec<Actor>, Vec<Probe>), String> {
     for r in &s.fault {
         faults::validate(r)?;
     }
@@ -59,6 +59,8 @@ fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, St
         println!("{}", report::template(t, &report::Vars { sim: &sim, world: 1, entry: None }));
     }
     let mut joined = vec![false; s.join.len()];
+    // 12.4: joiners that sign with another identity's key, as (world, member, identity).
+    let join_keys: Vec<(u32, u32, u32)> = s.world.iter().filter_map(|(w, c)| Some((scenario::id(w).ok()?, c))).flat_map(|(w, c)| c.keys.iter().map(move |&(m, id)| (w, m, id))).collect();
     ctx.started = Some(std::time::Instant::now());
     let hook = s.quiet_panics.then(|| {
         let h = std::panic::take_hook();
@@ -69,7 +71,7 @@ fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, St
     // R14 forgeries and probes after it.
     while sim.net.now_us <= sim.end_us {
         faults::apply_crashes(&mut sim, &s.crash);
-        byzantine::send_joins(&mut sim, &s.join, &mut joined)?;
+        byzantine::send_joins(&mut sim, &s.join, &mut joined, &join_keys)?;
         byzantine::before_step(&mut sim, &mut actors);
         for p in probes.iter_mut() {
             p.pre_sample(&sim);

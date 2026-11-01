@@ -1,0 +1,4 @@
+run-1-windows.log: 1 decisions; epoch 1, removed [2]
+run-2-windows.log: 0 decisions; 
+run-3-linux.log: 1 decisions; epoch 1, removed [2]
+run-4-laptop.log: 1 decisions; epoch 1, removed [2]
