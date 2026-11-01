@@ -1,8 +1,8 @@
-  t=6768 ms: before 9 equivocates: member 1's touch at m2: m1s31@60 eff=Some(60) void=false
-  member 1's touch at m1: m1s31@60 eff=Some(60) void=false
-  member 1's touch at m2: m1s31@60 eff=Some(60) void=false
-  member 1's touch at m3: m1s31@60 eff=Some(60) void=false
-  m1: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 3 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
-  m2: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 4 max depth 8 violations 0 equivocations 1 checks ok 54 bad 0
-  m3: conf 587 frame 593 members {1, 2, 3} evicted {9: (198, 399)} rollbacks 4 max depth 9 violations 0 equivocations 1 checks ok 54 bad 0
-RESULT evict (late entry, then an eviction): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+  t=6768 ms: before 9 equivocates: member 1's touch at m2: m1s9@60 eff=Some(60) void=false
+  member 1's touch at m1: m1s9@60 eff=Some(60) void=false
+  member 1's touch at m2: m1s9@60 eff=Some(60) void=false
+  member 1's touch at m3: m1s9@60 eff=Some(60) void=false
+  m1: conf 577 frame 593 members {1, 2, 3} evicted {9: (55, 400)} rollbacks 3 max depth 8 violations 0 equivocations 1 checks ok 52 bad 0
+  m2: conf 577 frame 593 members {1, 2, 3} evicted {9: (55, 400)} rollbacks 4 max depth 8 violations 0 equivocations 1 checks ok 52 bad 0
+  m3: conf 577 frame 593 members {1, 2, 3} evicted {9: (55, 400)} rollbacks 4 max depth 8 violations 0 equivocations 1 checks ok 52 bad 0
+RESULT evict (late entry, then an eviction): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 156 bad 0
