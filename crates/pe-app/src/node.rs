@@ -55,8 +55,9 @@ const BASE_BUCKETS: usize = 12;
 const CURRENT_US: u64 = 100_000;
 const CURRENT_SAMPLES: usize = 4;
 /// A report counts at most this much above the reporter's round-trip excess (design 10.4's clamp: a
-/// clock-frequency error cannot fake queueing beyond what the round trip, on one clock, shows).
-const RTT_CLAMP_MARGIN_US: u64 = 20_000;
+/// clock-frequency error cannot fake queueing beyond what the round trip, on one clock, shows). Below
+/// R18's 10 ms calm level, so a clamped signal can still read as calm.
+const RTT_CLAMP_MARGIN_US: u64 = 5_000;
 /// A member's report counts at its last value for 5 s (fresh within 1 s), then is ignored.
 const REPORT_HOLD_US: u64 = 5_000_000;
 /// The scripted bandwidth cap's token bucket (the harness's `Cap` model).
@@ -319,6 +320,8 @@ pub struct Node {
     last_ping: u64,
     /// Pings still unanswered, (member, send time): a pong counts only if it echoes one of them.
     pings_out: BTreeSet<(u32, u64)>,
+    /// Per member, the send time of the latest ping it answered.
+    answered: BTreeMap<u32, u64>,
     /// Session time has reached frame 0: from here the clock slews among the members.
     synced: bool,
     skew: f64,
@@ -457,6 +460,7 @@ impl Node {
             epoch: None,
             last_ping: 0,
             pings_out: BTreeSet::new(),
+            answered: BTreeMap::new(),
             synced: false,
             skew: 1.0 + o.clock_skew_ppm as f64 / 1e6,
             clock_lie_us: o.clock_lie_us,
@@ -595,6 +599,8 @@ impl Node {
                 if sender == self.leader {
                     self.pongs += 1;
                 }
+                let a = self.answered.entry(sender).or_insert(t);
+                *a = (*a).max(t);
                 self.clock.sample(sender, t, recv_us, r, raw);
                 self.apply_clock();
             }
@@ -888,11 +894,13 @@ impl Node {
     }
 
     /// The queueing on the round trip to member `m` now: the latest pong's excess over the best, or,
-    /// while pongs are late, the age of the oldest unanswered ping over the best (a lower bound).
+    /// while pongs are late, the age of the oldest unanswered ping over the best (a lower bound). A
+    /// ping older than the latest answered one was lost, not late.
     fn rtt_excess(&self, m: u32, now: u64) -> Option<u64> {
         let fresh = self.clock.rtt_excess(m, now);
         let best = self.clock.best_rtt_us();
-        let waiting = self.pings_out.iter().filter(|p| p.0 == m).map(|p| now.saturating_sub(p.1)).max().filter(|&a| a > SYNC_EVERY_US && best < u64::MAX).map(|a| a - best.min(a));
+        let after = self.answered.get(&m).copied().unwrap_or(0);
+        let waiting = self.pings_out.iter().filter(|p| p.0 == m && p.1 > after).map(|p| now.saturating_sub(p.1)).max().filter(|&a| a > SYNC_EVERY_US && best < u64::MAX).map(|a| a - best.min(a));
         match (fresh, waiting) {
             (None, None) => None,
             (f, w) => Some(f.unwrap_or(0).max(w.unwrap_or(0))),
