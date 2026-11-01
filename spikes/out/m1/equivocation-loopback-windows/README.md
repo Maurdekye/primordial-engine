@@ -20,3 +20,7 @@ another impulse) with its own key and sends it to member 1 only.
 * Members 1, 2 and 4 finish all 1800 frames: **ALL EQUAL**, each equal to its offline replay, 148
   checks ok, 0 bad, `equivocation_proofs` 1 in each summary (`compare.txt`).
 * Member 3, removed, stops confirming and runs until its timeout ends it, so it writes no summary.
+* What this covers: a late second version of an entry that was already sent (here already confirmed),
+  as in session-sim's `badvote`. A split before either version is seen, with each half of the members
+  holding a different version, is covered only by the simulator's scenarios (prevotefork, fork9,
+  deepfork).

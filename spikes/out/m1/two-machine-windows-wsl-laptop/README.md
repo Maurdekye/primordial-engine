@@ -1,7 +1,8 @@
 # M1 mixed run across two physical machines (M1 evidence gap 2)
 
 Measured on p2/m1-gaps 813400a (main aa2680b plus the equivocation fault and `pe-app relay`); every
-binary's hash in `provenance.txt`. Four members over Tailscale, 3600 frames (60 s), 3 touches/s each:
+binary's hash in `provenance.txt`. Four members over Tailscale, 3600 frames (60 s), 3 touches/s each.
+The machines are joined by Tailscale (about 5 ms between them), not a plain LAN segment:
 
 | Member | Machine | OS | Faults |
 |---|---|---|---|
