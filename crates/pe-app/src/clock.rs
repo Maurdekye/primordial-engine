@@ -243,7 +243,10 @@ impl ClockSync {
     /// Advance to local time `local` toward the members' fault-tolerant midpoint (`members` are the
     /// live members other than this one; a peer without samples does not count yet). Returns the
     /// offset to use, µs.
-    pub fn tick(&mut self, local: u64, members: &[u32]) -> i64 {
+    /// Before frame 0 (`offsets` false) only the frequency rounds run: the corrections converge
+    /// before the session, so the rate-corrected clocks do not part right after frame 0 (by up to
+    /// 4.6 % for a second in a Windows + WSL run, measured), and the bootstrap sets the offset.
+    pub fn tick(&mut self, local: u64, members: &[u32], offsets: bool) -> i64 {
         let dt = self.last.map_or(0.0, |t| (local as f64 - t as f64).max(0.0));
         self.last = Some(local);
         self.rc += (1.0 + self.rate) * dt;
@@ -267,6 +270,10 @@ impl ClockSync {
             }
         }
         let follow = self.off + self.rate * dt;
+        if !offsets {
+            self.off = follow;
+            return self.off.round() as i64;
+        }
         let mut offs = vec![follow];
         offs.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.predict(local, self.rate))));
         let target = if enough(&offs) { midpoint_t(offs, t, self.plain_median) } else { follow };
@@ -364,8 +371,8 @@ mod tests {
             if !synced {
                 b.bootstrap(1, lb(t));
             }
-            oa = a.tick(la(t), if synced { &[2] } else { &[] });
-            ob = b.tick(lb(t), if synced { &[1] } else { &[] });
+            oa = a.tick(la(t), &[2], synced);
+            ob = b.tick(lb(t), &[1], synced);
             let sa = la(t) as i64 + oa;
             assert!(sa >= last_a, "a's session time ran backwards at {ms} ms");
             if ms > 0 {
@@ -406,8 +413,8 @@ mod tests {
             if !synced {
                 b.bootstrap(1, lb(t));
             }
-            oa = a.tick(la(t), if synced { &[2] } else { &[] });
-            ob = b.tick(lb(t), if synced { &[1] } else { &[] });
+            oa = a.tick(la(t), &[2], synced);
+            ob = b.tick(lb(t), &[1], synced);
             let gap = ((la(t) as i64 + oa) - (lb(t) as i64 + ob)).abs() as f64;
             let w = &mut worst[(ms / 1000) as usize];
             *w = w.max(gap);
@@ -441,7 +448,7 @@ mod tests {
                 c.sample(2, t, t + 1000, t + 500 + 300_000, t + 500, 0.0);
             }
             let before = c.rc(t);
-            c.tick(t, &[2]);
+            c.tick(t, &[2], true);
             let after = c.rc(t + 1000);
             assert!(after >= before && after - before <= 1_100, "rc moved {} µs in 1 ms", after - before);
         }
