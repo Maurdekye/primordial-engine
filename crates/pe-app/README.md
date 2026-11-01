@@ -29,14 +29,17 @@ pe-app compare OUT
 * **The session starts** once every member is up. The lowest id leads: each member estimates its clock
   offset to the leader from ping round trips (it keeps the lowest-RTT sample), then reports Ready. The
   leader sends an epoch 1 s ahead.
-* **Clocks stay in sync** (design 10.4). From frame 0 every member pings every live member every 500 ms
-  (a pong carries the replier's session time and its raw local clock), taking the best round trip of
-  each 2 s bucket in the last 30 s. Its offset runs at the fault-tolerant midpoint of the members' raw
-  clock frequencies (the slope of each peer's raw clock against its own, its own 0 included: constant,
-  so nobody's correction feeds back into another's) and slews (at most 12 % of the elapsed time while more than 5 ms off,
-  then 1 %) toward the fault-tolerant midpoint of the predicted offsets, its own included: drop the
-  t = ⌊(n − 1)/3⌋ lowest and highest, take the midpoint of the rest's extremes. It never steps. R18's
-  stamps use the rate-corrected clock (local time at the fitted frequency, without the slew).
+* **Clocks stay in sync** (design 10.4). Every member pings every live member every 500 ms from its
+  start (a pong carries the replier's session time and its raw local clock), taking the best round
+  trip of each 2 s bucket in the last 30 s.
+  * Its frequency is the fault-tolerant midpoint of the members' raw clock frequencies: the slope of
+    each peer's raw clock against its own, its own 0 included. Raw clocks are constant ratios, so
+    nobody's correction feeds back into another's; samples from before frame 0 count.
+  * From frame 0 its offset runs at that frequency and slews (at most 12 % of the elapsed time while
+    more than 5 ms off, then 1 %) toward the fault-tolerant midpoint of the predicted offsets, its own
+    included: drop the t lowest and highest (t = ⌊(n − 1)/3⌋ from the membership, and nothing moves
+    until 2t + 1 values are in), take the midpoint of the rest's extremes. It never steps.
+  * R18's stamps use the rate-corrected clock (local time at the fitted frequency, without the slew).
   * Test switches: `--clock-skew-ppm N` runs this member's local clock N ppm fast (a simulated skewed
     machine), `--clock-lie 2:-500,3:500:20000` makes its pongs to member 2 lie by -500 ms and to member
     3 by 500 ms plus 2 % of its clock (a skewed clock shown to one peer), and `--clock-median` takes a
@@ -145,6 +148,16 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
   the core drops entries it already holds.
 * Clock sync assumes fewer than a third of the members lie about their clocks (10.8's bound); the
   bootstrap before frame 0 trusts the leader.
+  * Start-up: until a peer's frequency is fitted (raw-clock samples spanning 6 s, gathered from the
+    node's start), offsets are predicted from the newest sample, so two clocks skewed by s differ by
+    up to s x 500 ms: 11 / 24 / 43 ms at 2.3 / 5 / 9 %, under 5 ms from about 8 / 12 / 12 s (unit test,
+    two members).
+  * Two-faced liars: the frequency is chosen once from raw clocks, so honest members can keep
+    different frequencies (the 7-member collusion run: 0 against +2.63 %). Only the offsets iterate
+    and converge; the slew takes up the difference while it stays under 12 %, and at a difference
+    above the 1 % slew the pair's offset error sits near the 5 ms edge.
+  * A lost ping counts as in flight until a later ping is answered (up to a ping interval), which can
+    only loosen R18's round-trip clamp.
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
   only protection.
 * Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe
