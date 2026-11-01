@@ -77,6 +77,9 @@ pub struct PeerClock {
     /// Session offsets sampled before this local time are void (members still bootstrapping); raw
     /// offsets stay valid, since no correction moves a raw clock.
     session_from: u64,
+    /// R18's round-trip queueing counts samples from this local time on: its one-way estimates of
+    /// this peer restarted then, and the clamp compares the two.
+    queue_from: u64,
     /// The peer's applied frequency correction, as its latest pong reported it.
     applied: f64,
 }
@@ -133,7 +136,7 @@ impl PeerClock {
             return None;
         }
         let best = self.queue_best()?;
-        let least = self.samples.iter().rev().take(RTT_EXCESS_SAMPLES).filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
+        let least = self.samples.iter().rev().take(RTT_EXCESS_SAMPLES).filter(|s| s.0 >= self.queue_from).map(|s| s.3).min()?;
         Some(least - best)
     }
 
@@ -154,11 +157,17 @@ impl PeerClock {
         Some(s.1 as f64 + rate * (local as f64 - s.0 as f64))
     }
 
-    /// The shortest round trip since frame 0 (in the window): R18's one-way estimates restart there
-    /// too, and the clamp compares the two (a delay step between the node's start and frame 0 read as
-    /// forward queue, measured).
+    /// The shortest round trip since R18's one-way estimates of this peer restarted (in the window):
+    /// the clamp compares the two (a delay step between the node's start and frame 0 read as forward
+    /// queue, measured).
     fn queue_best(&self) -> Option<u64> {
-        self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()
+        self.samples.iter().filter(|s| s.0 >= self.queue_from).map(|s| s.3).min()
+    }
+
+    /// Restart the round-trip queueing at `local`, keeping the newest sample: without one the clamp
+    /// would have no bound, and a reporter's report drifted before the restart passed (932 ms, measured).
+    fn restart_queue(&mut self, local: u64) {
+        self.queue_from = self.samples.back().map_or(local, |s| s.0.min(local));
     }
 
     fn best_rtt(&self) -> Option<u64> {
@@ -227,6 +236,7 @@ impl ClockSync {
     pub fn restart_fits(&mut self, local: u64) {
         for p in self.peers.values_mut() {
             p.session_from = local;
+            p.restart_queue(local);
         }
     }
 
@@ -281,6 +291,13 @@ impl ClockSync {
     /// (r - s_j), once the peer's frequency is fitted.
     pub fn drift_rate(&self, peer: u32) -> Option<f64> {
         Some(self.rate - self.peers.get(&peer)?.session_rate()?)
+    }
+
+    /// R18's one-way estimates of `peer` restarted at `local`: its round-trip queueing restarts too.
+    pub fn restart_queue(&mut self, peer: u32, local: u64) {
+        if let Some(p) = self.peers.get_mut(&peer) {
+            p.restart_queue(local);
+        }
     }
 
     /// The shortest round trip to `peer` in the window.

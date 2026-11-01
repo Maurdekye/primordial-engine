@@ -82,11 +82,22 @@ measures that queue and feeds it (`set_link`) every tick.
     buffer would.
 * **Feed:** the largest report from any member. A report is held up to 5 s; with none left, the core
   gets no signal (`set_link(None)`), which holds the level and is never read as calm.
-  * Each report is capped at the reporter's round-trip excess + 5 ms (design 10.4's fallback) once it
-    has stood above that bound for 1.5 s: the latest ping's round trip over the best to that member
-    in 30 s, or while a ping is unanswered its age. The grace lets a congestion onset through before
-    the round trip catches up; a frequency error drifts slowly and persists. The round trip is on one clock, so a clock-frequency error cannot fake queueing;
-    a real uplink queue delays the pings too. Clamped ticks are counted (`link.clamped_ticks`).
+  * **Clock drift** (design 10.4, review H1). A receiver keeps its delays less the drift clock sync
+    knows of: the integral of its own session frequency less the sender's (r − s_j), restarting the
+    estimates when the sender's frequency is first fitted (before it, the whole skew drifts in). The
+    estimates also restart at frame 0. What is left is the error of the fitted frequencies.
+  * **The round-trip clamp** handles that error. A report's bound is the reporter's round-trip queueing
+    + 5 ms: the least of its last 4 round trips over the best since frame 0, less the queue this node
+    measures on that member's datagrams (the way back). The round trip is on one clock, so no
+    frequency error fakes it, and a real uplink queue delays the pings too. Unanswered pings do not count.
+    * While a report stands above its bound, the reporter gets a probe ping every 100 ms. Each probe
+      that returns gives a verdict: a queue if the lesser excess of it and the probe before (less the
+      way back), plus 5 ms, accounts for at least 3/4 of the report it was sent against. Otherwise the
+      report is a clock's drift and is clamped to the bound.
+    * Until the first verdict the report passes (at most 0.5 s if the probes are lost). So a drift
+      passes for about one probe round trip, and the onset of real congestion is not clamped. Dipping
+      the signal at an onset made D56 remember a coarse level as the congested one (measured).
+    * Clamped ticks are counted (`link.clamped_ticks`).
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
 * `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
 * **Test tooling:** scripted faults take `rate_kbps` (a token bucket with a 4 kB burst), `queue_ms`
@@ -145,8 +156,8 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
   * A path-delay increase reads as queue until it ages out of the 2-minute base (the stream is thinned
     meanwhile, never stalled); a standing queue lasting longer than 2 minutes becomes the base, and the
     stream then takes its share of tail drops (the loss rule is a follow-up).
-  * Clock drift between machines is removed by the rate-corrected clock (design 10.4); what is left is
-    the error of the fitted frequency.
+  * Clock drift between machines is removed by the rate-corrected clock and the receiver's drift
+    correction (design 10.4); the round-trip clamp bounds what the fitted frequencies get wrong.
   * A bottleneck that drops early (AQM) can keep the delay under the 40 ms trigger; loss is not fed.
   * A link below level 5's rate (about 60 kbit/s per link for a sweeping member in the 500-ball pit)
     still removes the member.
@@ -160,10 +171,15 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
     node's start), offsets are carried from the newest sample at no frequency, so two clocks skewed by
     s differ by up to s x 500 ms: 11 / 24 / 43 ms at 2.3 / 5 / 9 %, under 5 ms from about second 12-13
     (unit test, two members).
-  * Two-faced liars: with fewer than a third lying, the honest frequencies and offsets converge (the
-    7-member collusion run ends with every member at the same session frequency).
-  * A lost ping counts as in flight until a later ping is answered (up to a ping interval), which can
-    only loosen R18's round-trip clamp.
+  * Two-faced liars: with fewer than a third lying, the honest offsets converge, and the frequencies
+    to within the anchor's pull. In the 7-member collusion run, members 1-5 end at one session
+    frequency and the slow pair 6-7 at one 0.35 % below it. The anchor pulls each side 2 % per round
+    toward its own raw median, against the agreement step's 25 % (review L1). R18 clamps the
+    resulting drift on 6 and 7.
+  * R18 with a path-delay step on the way back while clocks drift: the drift drains the step out of
+    this node's estimate of the way back, so the round trip shows it as queue on the way out, and a
+    drifting report passes up to it. In the 2-minute Windows + WSL run, where the scripted 25-30 ms
+    delays start at 2-3 s, this is what remains (see the evidence).
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
   only protection.
 * Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe
