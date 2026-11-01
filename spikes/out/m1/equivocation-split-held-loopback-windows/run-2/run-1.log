@@ -1,0 +1,89 @@
+pe-app: member 1 of session 0ac5cd20e2dd718e on 127.0.0.1:7431; 4 members, 1800 frames
+[m1 t=0ms f=0] every member ready: session epoch 1431784
+[m1 t=570ms f=34] status: frame 34 now 34 conf 24 members {1, 2, 3, 4} rollbacks 0 | sent 72 faulted 0 capped 0 recv 75 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 1470 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m1 t=1005ms f=60] SEEN member 3 touch seq 9 version 1 (3d82245808031260), stamped 60, at my conf 48, frame 60
+[m1 t=1336ms f=79] SEEN member 3 touch seq 18 version 1 (208926a9e4b2a7b8), stamped 80, at my conf 76, frame 79
+[m1 t=1668ms f=100] SEEN member 3 touch seq 29 version 1 (6e827f14b40a0055), stamped 100, at my conf 96, frame 100
+[m1 t=2002ms f=120] SEEN member 3 touch seq 39 version 1 (a15c8de89393c780), stamped 120, at my conf 117, frame 120
+[m1 t=2338ms f=140] SEEN member 3 touch seq 50 version 1 (f0738f01b9b8731c), stamped 140, at my conf 137, frame 140
+[m1 t=2576ms f=154] status: frame 154 now 154 conf 150 members {1, 2, 3, 4} rollbacks 0 | sent 252 faulted 0 capped 0 recv 227 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 6769 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m1 t=2669ms f=160] SEEN member 3 touch seq 60 version 1 (c719134b8983c080), stamped 160, at my conf 156, frame 160
+[m1 t=3002ms f=180] SEEN member 3 touch seq 70 version 1 (41aff02765e2663b), stamped 180, at my conf 177, frame 180
+[m1 t=3336ms f=200] SEEN member 3 touch seq 80 version 1 (258d46e055f150fa), stamped 200, at my conf 197, frame 200
+[m1 t=3670ms f=220] SEEN member 3 touch seq 92 version 1 (e592e5ea4fe3a1b6), stamped 220, at my conf 217, frame 220
+[m1 t=4001ms f=240] SEEN member 3 touch seq 102 version 1 (286f41f3e2159bb4), stamped 240, at my conf 237, frame 240
+[m1 t=4337ms f=260] SEEN member 3 touch seq 113 version 1 (28b3c5c9290d797b), stamped 260, at my conf 257, frame 260
+[m1 t=4581ms f=274] status: frame 274 now 274 conf 272 members {1, 2, 3, 4} rollbacks 0 | sent 472 faulted 0 capped 0 recv 424 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 11676 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m1 t=4669ms f=280] SEEN member 3 touch seq 123 version 1 (0d2723fe4361a53f), stamped 280, at my conf 277, frame 280
+[m1 t=5002ms f=300] SEEN member 3 touch seq 135 version 1 (d4f74cc96ebcfdab), stamped 300, at my conf 297, frame 300
+[m1 t=5336ms f=320] SEEN member 3 touch seq 145 version 1 (048a4986db2ba012), stamped 320, at my conf 317, frame 320
+[m1 t=5669ms f=340] SEEN member 3 touch seq 156 version 1 (eb374d96399e941e), stamped 340, at my conf 337, frame 340
+[m1 t=6004ms f=360] SEEN member 3 touch seq 166 version 1 (b0842d7c962d2e82), stamped 360, at my conf 357, frame 360
+[m1 t=6336ms f=380] SEEN member 3 touch seq 178 version 1 (2e229fe8ba73dac4), stamped 380, at my conf 377, frame 380
+[m1 t=6586ms f=395] status: frame 395 now 395 conf 392 members {1, 2, 3, 4} rollbacks 0 | sent 691 faulted 0 capped 0 recv 621 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 16847 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m1 t=6668ms f=400] SEEN member 3 touch seq 188 version 1 (45228dcba9c43765), stamped 400, at my conf 397, frame 400
+[m1 t=7002ms f=419] SEEN member 3 touch seq 200 version 1 (a2296cec9ae4b1e0), stamped 420, at my conf 417, frame 419
+[m1 t=7337ms f=440] SEEN member 3 touch seq 209 version 1 (8b9f2ac6b81d1b61), stamped 440, at my conf 436, frame 440
+[m1 t=7673ms f=460] SEEN member 3 touch seq 221 version 1 (dd4a5571b4eff49d), stamped 460, at my conf 457, frame 460
+[m1 t=7900ms f=473] fault: links to member 4 now 0% loss, 120 ms +-0 ms
+[m1 t=7917ms f=475] TRACE at frame 475 conf 470: hashes 474=cf1a181a | obj 0 velocity [0.347, 1.215, -0.644]
+[m1 t=7936ms f=476] TRACE at frame 476 conf 470: hashes 475=b6341d70 | obj 0 velocity [0.347, 1.048, -0.644]
+[m1 t=7950ms f=477] TRACE at frame 477 conf 470: hashes 476=8d88fd29 | obj 0 velocity [0.347, 0.882, -0.644]
+[m1 t=7968ms f=478] TRACE at frame 478 conf 472: hashes 477=75a82e4a | obj 0 velocity [0.347, 0.715, -0.644]
+[m1 t=7985ms f=479] TRACE at frame 479 conf 472: hashes 478=b2137cd8 | obj 0 velocity [0.347, 0.548, -0.644]
+[m1 t=7990ms f=479] SEEN member 3 touch seq 231 version 1 (3dd451de03272056), stamped 479, at my conf 472, frame 479
+[m1 t=8001ms f=479] SEEN member 3 touch seq 232 version 1 (d1e382661b30371e), stamped 480, at my conf 472, frame 479
+[m1 t=8001ms f=480] TRACE at frame 480 conf 472: hashes 479=1b04327b | obj 0 velocity [4.253, 6.241, -0.644]
+[m1 t=8018ms f=481] TRACE at frame 481 conf 476: hashes 480=ee2183b6 | obj 0 velocity [4.253, 6.074, -0.644]
+[m1 t=8033ms f=482] TRACE at frame 482 conf 476: hashes 481=18886b8f | obj 0 velocity [4.253, 5.908, -0.644]
+[m1 t=8050ms f=483] TRACE at frame 483 conf 476: hashes 482=e67b9af9 | obj 0 velocity [4.253, 5.741, -0.644]
+[m1 t=8068ms f=484] TRACE at frame 484 conf 476: hashes 483=f078b7d2 | obj 0 velocity [4.253, 5.574, -0.644]
+[m1 t=8084ms f=485] TRACE at frame 485 conf 476: hashes 484=1149514c | obj 0 velocity [4.253, 5.408, -0.644]
+[m1 t=8102ms f=486] TRACE at frame 486 conf 476: hashes 485=a6fd48e2 | obj 0 velocity [4.253, 5.241, -0.644]
+[m1 t=8117ms f=487] TRACE at frame 487 conf 476: hashes 486=a2439cc9 | obj 0 velocity [4.253, 5.074, -0.644]
+[m1 t=8125ms f=487] SEEN member 3 touch seq 231 version 2 (88edbca284867034), stamped 479, at my conf 476, frame 487
+[m1 t=8126ms f=487] TRACE at frame 487 conf 476: rollback (resimulated 11 frames; rollbacks 1, max depth 8) hashes 479=404274c6 480=d7455f79 481=15631231 482=139724b2 483=79d1f238 484=b5eb7825 485=8b580fc0 486=2bf4f3d7 | obj 0 velocity [0.053, -0.233, -0.526]
+[m1 t=8126ms f=487] [w1 m1 f487 c476] EQUIVOCATION proof: member 3 signed two versions of seq 231 (3dd451de03272056 / 88edbca284867034)
+[m1 t=8134ms f=488] TRACE at frame 488 conf 476: hashes 487=d6073bd4 | obj 0 velocity [0.004, -0.319, -0.524]
+[m1 t=8134ms f=488] membership decision: epoch 1, removed [3]
+[m1 t=8137ms f=488] TRACE at frame 488 conf 476: rollback (resimulated 12 frames; rollbacks 2, max depth 9) hashes 479=1b04327b 480=ee2183b6 481=18886b8f 482=e67b9af9 483=f078b7d2 484=1149514c 485=a6fd48e2 486=a2439cc9 487=851ef0af | obj 0 velocity [4.253, 4.908, -0.644]
+[m1 t=8150ms f=489] TRACE at frame 489 conf 476: hashes 488=774c9540 | obj 0 velocity [4.253, 4.741, -0.644]
+[m1 t=8167ms f=490] TRACE at frame 490 conf 476: hashes 489=ef1ad3e9 | obj 0 velocity [4.253, 4.574, -0.644]
+[m1 t=8184ms f=491] TRACE at frame 491 conf 478: hashes 490=cec1e354 | obj 0 velocity [4.253, 4.408, -0.644]
+[m1 t=8200ms f=492] TRACE at frame 492 conf 478: hashes 491=b080fdb3 | obj 0 velocity [4.253, 4.241, -0.644]
+[m1 t=8217ms f=493] TRACE at frame 493 conf 478: hashes 492=41a25722 | obj 0 velocity [4.253, 4.074, -0.644]
+[m1 t=8233ms f=494] TRACE at frame 494 conf 478: hashes 493=075245a1 | obj 0 velocity [4.253, 3.908, -0.644]
+[m1 t=8251ms f=495] TRACE at frame 495 conf 478: hashes 494=5492bbe2 | obj 0 velocity [4.253, 3.741, -0.644]
+[m1 t=8267ms f=496] TRACE at frame 496 conf 480: hashes 495=b1a0a964 | obj 0 velocity [4.253, 3.574, -0.644]
+[m1 t=8283ms f=497] TRACE at frame 497 conf 480: hashes 496=4d9b6f60 | obj 0 velocity [4.253, 3.408, -0.644]
+[m1 t=8300ms f=498] TRACE at frame 498 conf 482: hashes 497=baee8a57 | obj 0 velocity [4.253, 3.241, -0.644]
+[m1 t=8316ms f=499] TRACE at frame 499 conf 482: hashes 498=15fd7109 | obj 0 velocity [4.253, 3.074, -0.644]
+[m1 t=8334ms f=500] TRACE at frame 500 conf 484: hashes 499=d678eb31 | obj 0 velocity [4.253, 2.908, -0.644]
+[m1 t=8335ms f=500] SEEN member 3 touch seq 246 version 1 (b993e482ff142b1f), stamped 500, at my conf 484, frame 500
+[m1 t=8353ms f=501] TRACE at frame 501 conf 484: hashes 500=c0f7d5b4 | obj 0 velocity [4.253, 2.741, -0.644]
+[m1 t=8405ms f=504] TRACE at frame 504 conf 488: rollback (resimulated 8 frames; rollbacks 3, max depth 9) hashes 497=43213103 498=a18885d5 499=6cb29c92 500=d0bc2269 | obj 0 velocity [4.253, 2.241, -0.644]
+[m1 t=8591ms f=515] status: frame 515 now 515 conf 500 members {1, 2, 4} rollbacks 3 | sent 925 faulted 0 capped 0 recv 857 rejected {} bad entry sigs 0 | R18 level 4 signal Some(120) ms | clock offset 20526 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 120)]
+[m1 t=8668ms f=520] SEEN member 3 touch seq 251 version 1 (d76f6a6fb5e72dd7), stamped 520, at my conf 500, frame 520
+[m1 t=8701ms f=521] fault: links to member 4 now 0% loss, 0 ms +-0 ms
+[m1 t=8742ms f=524] TRACE at frame 524 conf 508: rollback (resimulated 8 frames; rollbacks 4, max depth 9) | obj 0 velocity [4.253, -1.092, -0.644]
+[m1 t=9004ms f=540] SEEN member 3 touch seq 255 version 1 (ace0e7680c01250c), stamped 540, at my conf 528, frame 540
+[m1 t=9337ms f=560] SEEN member 3 touch seq 260 version 1 (0eec75e10926fe84), stamped 560, at my conf 552, frame 560
+[m1 t=9670ms f=580] SEEN member 3 touch seq 265 version 1 (df607b08f9cbb8c1), stamped 580, at my conf 568, frame 580
+[m1 t=10002ms f=600] SEEN member 3 touch seq 273 version 1 (1ae8c2175d4f3256), stamped 600, at my conf 592, frame 600
+[m1 t=10597ms f=635] status: frame 635 now 635 conf 624 members {1, 2, 4} rollbacks 4 | sent 1025 faulted 0 capped 0 recv 1010 rejected {} bad entry sigs 0 | R18 level 5 signal Some(0) ms | clock offset 25055 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(1), 0), (4, Some(0), 120)]
+[m1 t=12602ms f=756] status: frame 756 now 756 conf 744 members {1, 2, 4} rollbacks 4 | sent 1097 faulted 0 capped 0 recv 1143 rejected {} bad entry sigs 0 | R18 level 5 signal Some(0) ms | clock offset 28276 us, rate -8 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=14606ms f=876] status: frame 876 now 876 conf 870 members {1, 2, 4} rollbacks 4 | sent 1177 faulted 0 capped 0 recv 1277 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 32108 us, rate -1 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=16610ms f=996] status: frame 996 now 996 conf 990 members {1, 2, 4} rollbacks 4 | sent 1268 faulted 0 capped 0 recv 1418 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 36345 us, rate 5 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=18616ms f=1116] status: frame 1116 now 1116 conf 1110 members {1, 2, 4} rollbacks 4 | sent 1358 faulted 0 capped 0 recv 1560 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 41920 us, rate 8 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=20621ms f=1237] status: frame 1237 now 1237 conf 1230 members {1, 2, 4} rollbacks 4 | sent 1443 faulted 0 capped 0 recv 1700 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 46826 us, rate 11 ppm, rtt excess ms (member, round trip, way back) [(2, Some(1), 0), (4, Some(0), 0)]
+[m1 t=22627ms f=1357] status: frame 1357 now 1357 conf 1350 members {1, 2, 4} rollbacks 4 | sent 1530 faulted 0 capped 0 recv 1840 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 51377 us, rate 6 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=24633ms f=1477] status: frame 1477 now 1477 conf 1470 members {1, 2, 4} rollbacks 4 | sent 1616 faulted 0 capped 0 recv 1978 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 55753 us, rate 1 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=26636ms f=1598] status: frame 1598 now 1598 conf 1590 members {1, 2, 4} rollbacks 4 | sent 1703 faulted 0 capped 0 recv 2119 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 58704 us, rate 3 ppm, rtt excess ms (member, round trip, way back) [(2, Some(1), 0), (4, Some(1), 0)]
+[m1 t=28642ms f=1718] status: frame 1718 now 1718 conf 1710 members {1, 2, 4} rollbacks 4 | sent 1790 faulted 0 capped 0 recv 2259 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 63248 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=30647ms f=1838] status: frame 1838 now 1838 conf 1824 members {1, 2, 4} rollbacks 4 | sent 1854 faulted 0 capped 0 recv 2381 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 67528 us, rate 2 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(1), 0)]
+[m1 t=32652ms f=1959] status: frame 1959 now 1959 conf 1944 members {1, 2, 4} rollbacks 4 | sent 1914 faulted 0 capped 0 recv 2504 rejected {} bad entry sigs 0 | R18 level 4 signal Some(0) ms | clock offset 70939 us, rate 1 ppm, rtt excess ms (member, round trip, way back) [(2, Some(0), 0), (4, Some(0), 0)]
+[m1 t=33142ms f=1988] FINAL: member Some(3) touch seq 231: version 1 counts, version 2 withdrawn (removed with its chain cut at seq 236, from frame 486)
+[m1 t=33142ms f=1988] TRACE FINAL (conf 1976): hashes 474=cf1a181a 475=b6341d70 476=8d88fd29 477=75a82e4a 478=b2137cd8 479=1b04327b 480=ee2183b6 481=18886b8f 482=e67b9af9 483=f078b7d2 484=1149514c 485=a6fd48e2 486=a2439cc9 487=851ef0af 488=774c9540 489=ef1ad3e9 490=cec1e354 491=b080fdb3 492=41a25722 493=075245a1 494=5492bbe2 495=b1a0a964 496=4d9b6f60 497=43213103 498=a18885d5 499=6cb29c92 500=d0bc2269
+[m1 t=33243ms f=1988] DONE frames 0..1800: digest 713d3092da4ae52c replay 713d3092da4ae52c (EQUAL), conf 1976, members [1, 2, 4]
+[m1 t=33243ms f=1988] slow step: 100 ms (receive 0 ms, tick 0 ms, send 100 ms)
+member 1: frames 0..1800 digest 713d3092da4ae52c replay 713d3092da4ae52c (EQUAL), conf 1976, members at end [1, 2, 4], rollbacks 4, checks ok 148 bad 0

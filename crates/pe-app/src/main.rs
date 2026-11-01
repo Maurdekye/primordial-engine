@@ -4,7 +4,8 @@
 //! pe-app init --members N (--host IP | --addrs A1,A2,..) [--base-port P] [--frames F] [--scene pile|ballpit]
 //!             [--size S] [--window W] [--seed X] [--name NAME] --out DIR
 //!     Write DIR/session.json (ids, addresses, public keys) and DIR/member-<id>.key (secret keys).
-//! pe-app run --session FILE --key FILE --me N [--bind ADDR] [--faults FILE] [--crash-at-ms T]
+//! pe-app run --session FILE --key FILE --me N [--bind ADDR] [--faults FILE] [--crash-at-ms T] [--equivocate-at-ms T --equivocate-to M]
+//!            [--equivocate-split T:M,..] [--watch-member M] [--trace-frames A:B]
 //!            [--touches-per-s R] [--hand-sweep] [--no-link-signal] [--out DIR] [-v] [--mcp-pipe] [--mcp-http] [--scopes ..] [--principal NAME]
 //!            [--clock-skew-ppm N] [--clock-lie M:MS[:PPM],..] [--clock-median] [-- CMD ARGS..]
 //!     Run one member until every frame of the session is confirmed (plus a short linger), then
@@ -12,6 +13,10 @@
 //!     and CMD (a harness such as Claude Code) is launched with PE_MCP_TOKEN / PE_MCP_PIPE / PE_MCP_URL.
 //! pe-app compare DIR
 //!     Compare every summary-<id>.json and hashes-<id>.txt in DIR: identical histories?
+//! pe-app relay --listen ADDR --to ADDR [--for-s N]
+//!     Forward every datagram arriving at ADDR to the other ADDR, for N seconds (default 600). Test
+//!     tooling: a member in WSL2's NAT mode is reached from another machine through a relay on its host
+//!     (pe-app checks signatures, not source addresses).
 //! ```
 
 mod clock;
@@ -149,7 +154,48 @@ async fn run(mut a: Args) -> Result<(), String> {
         Some(v) => Some(v.parse().map_err(|_| "--crash-at-ms: not a number")?),
         None => None,
     };
+    let equivocate = match (a.take("--equivocate-at-ms"), a.take("--equivocate-to")) {
+        (Some(t), Some(m)) => {
+            let m: u32 = m.parse().map_err(|_| "--equivocate-to: not a member id")?;
+            if m == me || !session.members.iter().any(|x| x.id == m) {
+                return Err(format!("--equivocate-to {m}: not another member of the session"));
+            }
+            Some((t.parse().map_err(|_| "--equivocate-at-ms: not a number")?, m))
+        }
+        (None, None) => None,
+        _ => return Err("--equivocate-at-ms and --equivocate-to go together".into()),
+    };
+    let equivocate_split = match a.take("--equivocate-split") {
+        Some(v) => {
+            let (t, ms) = v.split_once(':').ok_or("--equivocate-split: want T:M[,M..]")?;
+            let group: std::collections::BTreeSet<u32> = ms.split(',').map(|m| m.trim().parse::<u32>()).collect::<Result<_, _>>().map_err(|_| "--equivocate-split: bad member list")?;
+            if group.is_empty() || group.contains(&me) || group.iter().any(|m| !session.members.iter().any(|x| x.id == *m)) {
+                return Err("--equivocate-split: the group must be other members of the session".into());
+            }
+            Some((t.parse().map_err(|_| "--equivocate-split: bad time")?, group))
+        }
+        None => None,
+    };
+    let watch = match a.take("--watch-member") {
+        Some(m) => Some(m.parse::<u32>().map_err(|_| "--watch-member: not a member id")?),
+        None => None,
+    };
+    let trace = match a.take("--trace-frames") {
+        Some(v) => {
+            let (x, y) = v.split_once(':').ok_or("--trace-frames: want A:B")?;
+            let (x, y): (u64, u64) = (x.parse().map_err(|_| "--trace-frames: bad frame")?, y.parse().map_err(|_| "--trace-frames: bad frame")?);
+            if y < x || y - x > 200 {
+                return Err("--trace-frames A:B: want A <= B and at most 200 frames".into());
+            }
+            Some((x, y))
+        }
+        None => None,
+    };
     let touches_per_s: u32 = a.num("--touches-per-s", 0)?;
+    // Review L2: the late equivocation forks this member's latest touch, so it needs touches.
+    if equivocate.is_some() && touches_per_s == 0 {
+        return Err("--equivocate-at-ms needs touches of this member's own to fork (--touches-per-s)".into());
+    }
     let hand_sweep = a.flag("--hand-sweep");
     if hand_sweep && session.scene != "ballpit" {
         return Err("--hand-sweep needs a ballpit session (init --scene ballpit)".into());
@@ -191,7 +237,7 @@ async fn run(mut a: Args) -> Result<(), String> {
 
     let socket = UdpSocket::bind(bind).map_err(|e| format!("bind {bind}: {e}"))?;
     let finished = Arc::new(AtomicBool::new(false));
-    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, touches_per_s, hand_sweep, link_signal, clock_skew_ppm, clock_lie_us, clock_median, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
+    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, equivocate, equivocate_split, watch, trace, touches_per_s, hand_sweep, link_signal, clock_skew_ppm, clock_lie_us, clock_median, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
     eprintln!("pe-app: member {me} of session {:016x} on {bind}; {} members, {} frames", session.session, session.members.len(), session.frames);
     let engine = EngineHandle::spawn_ticking(move || Engine::new(Box::new(Node::new(opts))), Duration::from_millis(1));
     let _hosted = if mcp_pipe || mcp_http {
@@ -295,15 +341,43 @@ fn compare(mut a: Args) -> Result<bool, String> {
     Ok(ok)
 }
 
+/// `pe-app relay`: a one-way UDP forwarder (see the module doc).
+fn relay(mut a: Args) -> Result<(), String> {
+    let listen = a.take("--listen").ok_or("--listen ADDR is required")?;
+    let to: std::net::SocketAddr = a.take("--to").ok_or("--to ADDR is required")?.parse().map_err(|e| format!("--to: {e}"))?;
+    let secs: u64 = a.num("--for-s", 600)?;
+    a.done()?;
+    let sock = UdpSocket::bind(&listen).map_err(|e| format!("bind {listen}: {e}"))?;
+    sock.set_read_timeout(Some(Duration::from_millis(500))).map_err(|e| e.to_string())?;
+    let (start, mut buf) = (std::time::Instant::now(), vec![0u8; 65536]);
+    let (mut n, mut bytes, mut next) = (0u64, 0u64, 10u64);
+    eprintln!("pe-app relay: {listen} -> {to} for {secs} s");
+    while start.elapsed().as_secs() < secs {
+        if let Ok((k, _)) = sock.recv_from(&mut buf) {
+            if sock.send_to(&buf[..k], to).is_ok() {
+                n += 1;
+                bytes += k as u64;
+            }
+        }
+        if start.elapsed().as_secs() >= next {
+            eprintln!("pe-app relay: {n} datagrams, {bytes} bytes forwarded after {next} s");
+            next += 10;
+        }
+    }
+    eprintln!("pe-app relay: done, {n} datagrams, {bytes} bytes forwarded");
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        return fail("usage: pe-app init|run|compare ...");
+        return fail("usage: pe-app init|run|compare|relay ...");
     }
     let mode = args.remove(0);
     let a = Args(args);
     match mode.as_str() {
         "init" => init(a).map_or_else(fail, |_| ExitCode::SUCCESS),
+        "relay" => relay(a).map_or_else(fail, |_| ExitCode::SUCCESS),
         "compare" => match compare(a) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::from(1),

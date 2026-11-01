@@ -1,0 +1,5 @@
+code: p2/m1-gaps 80fc608
+49190aa06a62f2c7704014e1f1782d2c06fbc4f0d21745c75812eef589875880  pe-app.exe (Windows release)
+run: bash crates/pe-app/m1-equivocate.sh target/release/pe-app.exe <out> 7421 split-held
+machine: this PC, Windows (Git Bash), MINGW64_NT-10.0-26200 3.6.5-22c95533.x86_64 x86_64; 4 peers on 127.0.0.1
+member 3's output (out-equivocator) is not kept: removed, it is ended by the timeout before writing
