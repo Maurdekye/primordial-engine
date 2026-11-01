@@ -1418,7 +1418,49 @@ if our bulk transport proves weak.
 * **RTT is measured by the receiver, from its own send and receive times** (review H5). The remote's
   reported receive time is used only for the offset, never to excuse lateness. Since round 2 nothing is
   re-stamped (8.2): clocks only place an author's entries at its own present.
-* Continuous re-estimation, and a median across peers [I].
+* **Continuous, fault-tolerant sync among the members** (@coordinator-opus, 2026-10-31, from
+  @shader-lang's M1 finding). A sync done once at the start broke a Windows + WSL session: WSL2's
+  monotonic clock ran 2.3% slow when idle and up to about 9% under load. With R18 on, the skew read as a
+  queue growing to 1.1 s, and an honest member was removed. With R18 off, a 2-minute run made 215 empty
+  view-change decisions, against none with every member on Windows [V pe-app p2/app af58f53,
+  spikes/out/m1/wsl-clock-skew].
+  Real machines drift about 10-100 ppm, so the VM is the case that matters, and M1 mixes the two.
+  1. Every member pings every live member about every 500 ms. For each peer it fits that peer's offset
+     against its own clock as a + b·t, over the recent lowest-RTT samples.
+  2. Its target is the **fault-tolerant midpoint** of the predicted offsets to all members, its own (0)
+     included (review CM-1). It drops the t lowest and the t highest, with t = floor((n - 1) / 3) as in
+     10.8, and targets the midpoint of the lowest and highest that remain. Two members (t = 0) split the
+     difference. Only members count: not a joiner or a spectator before it is admitted, and not a
+     removed member. A joiner sets its offset once, before its first frame, and then slews like
+     everyone else.
+  3. It slews toward the target and never steps. The correction per tick must exceed the worst drift
+     (9% is 1.5 ms per 60 Hz tick), and it stays well under a frame, so no frame is skipped. One way is
+     to run the clock at the fitted frequency (item 4) and cap only the residual offset correction.
+  4. R18's one-way delay stamps use the **rate-corrected clock**: the monotonic clock run at the fitted
+     frequency, without the slewed offset (review CM-2). That removes the skew. A constant offset is
+     absorbed by the estimator's base (10.9, item 3), and a slew never reads as queue. Stamped in slewed
+     session time, a slew at join, or a liar moving the target, would look like queue growth and could
+     trip the 40 ms trigger with no queue. The frequency comes from the same trimmed selection: the
+     fault-tolerant midpoint of the members' fitted rates, its own included.
+  * **Why not the leader** [I]: a faulty leader could give each member a different time. A member pushed
+    behind looks exactly like a slow link: its acks arrive late, confirmation stalls, and the slow-member
+    rule demotes it (10.9, item 7). So one faulty member could get honest ones removed. The leader also
+    changes at every view change.
+  * **Fault bound** [I, fault-tolerant averaging: Dolev, Lynch, Pinter, Stark and Weihl, 1986]: with
+    n >= 3t + 1, the session's own bound (10.8), every honest member's target lies within the honest
+    members' offsets, and the honest spread at least halves at each round.
+  * **A plain median is not enough** (review CM-1). It stays within the honest range, but faulty members
+    can be two-faced and pin it. At n = 7 with two colluders, suppose two honest members share a slow VM
+    and the other three are ahead by d. The colluders report far behind to the slow pair and far ahead
+    to the rest. The slow pair then see a median of about 0, never correct, drift at 2-9%, and are
+    demoted as slow. The trimmed midpoint gives them about d/2.
+  * **Evidence for the build:**
+    * the 2-minute Windows + WSL run with R18 on: all equal, no empty view change, and no honest member
+      removed;
+    * the 80 kbit/s R18 run unchanged;
+    * within 10.8's bound (review CM-3), a 4-member run in which one member reports a skewed clock to one
+      peer only, and the 7-member case above with two colluders. Each runs with the trimmed midpoint and,
+      for contrast, with a plain median, and no honest member may be removed under the trimmed midpoint.
 
 ### 10.5 NAT traversal without a central server [I]
 
@@ -2575,6 +2617,32 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   retired.
 * **Genesis.** Every creator signs it. The world id is the hash of the genesis document, which contains
   the genesis certificate [I]. (The spike uses the genesis certificate's id.)
+* **Signatures and ids in pe-session** (agreed with @world-chunks and @engine-architect, 2026-10-31)
+  [V: pe-session ownership unit tests and harness]:
+  * `Key` is the owner's 32-byte Ed25519 verifying key. A certificate's signatures are checked against
+    the keys it carries, with no directory, so backup keys and owners who left still verify.
+  * The id (`CertId`) is the `FactKind::OwnerCert` digest (BLAKE3, 256 bits) of the body's one
+    encoding: `world` 32 B, `seq` u32, the parents (u32 count, 32 B each), the change (a code, then
+    fixed-width fields). A 64-bit id would let copies with different signatures merge on a 2^32
+    birthday collision.
+  * Owner keys sign `"pe-own  " | id`: their own domain, with **no world and no session**. This is
+    the one exception to P23R-3's session-bound facts (`"pe-fact " | world | session_of(world)`): a
+    certificate belongs to the world, must verify in every session of it, and the id already covers
+    its `world`.
+  * The world id is the genesis certificate's id (its own `world` is zero) until the genesis document
+    exists [I]. The genesis nonce is 32 bytes, as SX-1's session nonce, and the genesis owners are
+    strictly increasing, so a genesis has one encoding and one id.
+  * An attestation is the `FactKind::OwnerCommit` fact (world, certificate, lineage, epoch, frame, the
+    committed key signatures), signed by a strict majority of the lineage's members and checked through
+    P2-4's epoch certificates (`EpochCerts::cert_ok`). A lineage is one session: the verifier's
+    directory maps it to exactly one session id, which `fact_message` binds into every signature.
+  * `key_of(member)` reads the member's key from the session's key directory; in production the join
+    certificate carries the player's identity key, signed by it [I]. A member with no key owns nothing.
+    Validity (row 0, the owner join target, Q27) depends on that key, so production must take it from
+    logged, signed state (the join request a change carries, or an earlier entry), never from a local
+    directory: replicas whose directories differed would disagree on a change's validity (review
+    OWNP-2; liveness, since decisions stay agreed).
+  * The 22.10 lease is out of scope: commits prove ownership history, not trade.
 * **Valid, attested, counting.**
   * **Valid:** a certificate's signatures satisfy the rule of the owner set at its parent. That is a
     function of its causal past alone (OWN-5). A certificate whose parent isn't held is refused, never

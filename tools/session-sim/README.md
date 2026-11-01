@@ -48,12 +48,12 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
 | `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
-| `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes. Pending on pe-session (`pe-pending.txt`): its log is the spike's |
+| `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes. On pe-session its outcomes are the spike's, line for line (digests and key names aside) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 | `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
-| `pe-pending.txt` | - | scenario files whose behaviour pe-session does not have yet (world ownership); skipped and reported |
+| `pe-pending.txt` | - | scenario files whose behaviour pe-session does not have yet; skipped and reported (empty now) |
 
 All but `faults/` are the suite of `scripts/run_session_sim.sh --pe` (and the three controls of P2-5
 and P2-4, whose logs are in `spikes/out/session-sim-pe/p2-5-controls/` and `p2-4-controls/`); their
@@ -327,9 +327,9 @@ behaviour `x` has fired.
 
 Backdated touches are a plan action (`backdated`).
 
-An `owner` plan action (spike API; not in this pe-session tool yet, so `ownership` is in
-`pe-pending.txt`) publishes a world-ownership certificate built on the member's present
-ownership head and signed by `signers` (spike signatures: any member can sign as any key). `change` is
+An `owner` plan action publishes a world-ownership certificate built on the member's present
+ownership head and signed by `signers`. Keys are test identities named by number (Ed25519 keys any
+member can derive, so a scenario can sign as any key); member m's key is identity m. `change` is
 `add`, `leave` or `remove` (rule C only) with `key`, `set_recovery` (`key` is the owner, `recovery` its
 backup key, or none to clear it), `set_rule` (`rule`) or `merge` (joins every head). An owner's
 recovery key signs as the owner (consent-only ownership, OT = (a)). The world needs `ownership`. The
