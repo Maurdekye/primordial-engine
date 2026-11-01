@@ -701,6 +701,18 @@ impl WorldSim {
             if ep > self.epoch {
                 continue;
             }
+            // Held but not validated yet (behind a hole in its author's chain): its epoch is the validated prefix's
+            // unless an ack in between, held but unvalidated, names a later one; then it waits.
+            if e.seq > self.contiguous.get(&e.member).copied().unwrap_or(0) {
+                let from = self.contiguous.get(&e.member).copied().unwrap_or(0) + 1;
+                let later = self
+                    .by_author
+                    .range((e.member, from)..(e.member, e.seq))
+                    .any(|(_, hid)| matches!(self.entries.get(hid).map(|x| &x.payload), Some(Payload::Ack { epoch, .. }) if *epoch > ep));
+                if later {
+                    continue;
+                }
+            }
             if !ctxs.contains_key(&ep) {
                 let c = self.ctx(ep);
                 ctxs.insert(ep, c);
