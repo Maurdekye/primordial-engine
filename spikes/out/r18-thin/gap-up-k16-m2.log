@@ -1,4 +1,4 @@
-PROVENANCE commit cd5b8350e4da, sources 48c50e0703787232, binary 3138ab754ca3be12
+PROVENANCE commit ff4e407719f5, sources ecf407a58a7a6b1b, binary bad9c04b00b3d4ac
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 66 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 1 is on a slow link: 16 kbit/s to and from every peer
@@ -8,4 +8,4 @@ RESULT     hand entries' confirmation latency, frames (max / mean): m1 63.3 / 18
 RESULT     mean confirmation lag per member from the gesture's start, frames: 15.5 / 15.2
 RESULT     member 1's own hand against its target, over 442 gesture frames: mean 144.39 mm, max 837.30 mm
 RESULT     second gesture (40 s after the first): level at its start Some(1); max queue ms per member 394 / 0; stalled frames during it 0 / 0; back to real time after it 593 ms; hand entries' latency (max / mean) m1 43.3 / 19.1, m2 42.6 / 19.9
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2652, 40556, 500, 949, 900, 12000, 6266, 1185, 894] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2652, 40556, 500, 949, 900, 16700, 1566, 1185, 894] ms

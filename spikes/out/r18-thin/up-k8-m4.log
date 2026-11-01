@@ -1,11 +1,11 @@
-PROVENANCE commit cd5b8350e4da, sources 48c50e0703787232, binary 3138ab754ca3be12
+PROVENANCE commit ff4e407719f5, sources ecf407a58a7a6b1b, binary bad9c04b00b3d4ac
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 1 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  64.2 /  60.5 /  62.9 /  52.8 |  484 /  498 /  499 /  499 |   91 | 1529 / 135 / 135 / 135 | 1410 / 254 / 254 / 254 | 12 (own entries moved: 0) |  9.6/s, 114 | 4797 ms | m2 16e77a3e64d6a768 / m3 16e77a3e64d6a768 / m4 16e77a3e64d6a768 replay 16e77a3e64d6a768 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 481.0 / 191.0, m2 254.4 / 111.9, m3 254.4 / 111.9, m4 254.4 / 111.9
-RESULT     mean confirmation lag per member from the gesture's start, frames: 645.0 / 33.8 / 33.9 / 33.9
+RESULT   batched+adaptive |  64.2 /  60.5 /  62.9 /  52.8 |  484 /  498 /  499 /  499 |   91 | 1529 / 135 / 135 / 135 | 1410 / 254 / 254 / 254 | 12 (own entries moved: 0) |  9.6/s, 114 | 4800 ms | m2 16e77a3e64d6a768 / m3 16e77a3e64d6a768 / m4 16e77a3e64d6a768 replay 16e77a3e64d6a768 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 481.6 / 191.2, m2 254.4 / 111.9, m3 254.4 / 111.9, m4 254.4 / 111.9
+RESULT     mean confirmation lag per member from the gesture's start, frames: 645.1 / 31.9 / 32.0 / 31.8
 RESULT     member 1's own hand against its target, over 146 gesture frames: mean 296.92 mm, max 861.69 mm
 RESULT     removed from the session (cut, from frame): {1: (59, 146)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2402, 100, 100, 100, 100, 842, 1700, 9544, 15014] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2402, 100, 100, 100, 100, 842, 1699, 9544, 15015] ms
