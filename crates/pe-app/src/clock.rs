@@ -223,8 +223,8 @@ impl ClockSync {
 
     /// Before the session: take the offset from `leader` at once, predicted at local time `local` as
     /// from frame 0 (its newest sample near the best round trip, carried at its session frequency once
-    /// fitted). Frame 0 waits for the frequencies (about 10 s), and a sample from the start carried
-    /// without its frequency put a member 9 % slow 1.3 s behind (measured).
+    /// fitted). The best sample carried flat drifts with the skew while frame 0 waits: with frame 0
+    /// 14 s after the start, a member 9 % slow began 1.3 s behind (measured).
     pub fn bootstrap(&mut self, leader: u32, local: u64) -> Option<i64> {
         self.off = self.peers.get(&leader)?.predict(local, 0.0)?;
         Some(self.off.round() as i64)
