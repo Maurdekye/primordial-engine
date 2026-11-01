@@ -2055,8 +2055,9 @@ is fixed once the author's chain is contiguous up to it.
     change, which needs no confirmation progress, and its decision ends every cap, freeze and vote of the
     epoch [V the eight repros above with a kick at 6 s: the worst honest lag at the kick is 177-251
     frames (window 120), the cheater is removed 0.17-0.55 s later, and the lag at the end is 7-17
-    frames; every replica equals the replay]. The "holding the session" indicator is on hold with the
-    user, so for now only the admin's own judgment tells who to kick.
+    frames; every replica equals the replay]. The user authorized a "holding the session" indicator
+    for admins (Admin indicators, below); until it's built, only the admin's own judgment tells who to
+    kick.
   * **Accepted cost: a live honest member with a one-way inbound cut holds the session too** (user
     ruling 2026-11-01, "A. Accept it"). Its own entries reach everyone, so silence never fires, and its
     acks declare its present horizon, so demotion never fires; but it references no more of the chains it
@@ -2276,6 +2277,75 @@ is fixed once the author's chain is contiguous up to it.
   `colluders`' two removals into two changes. The rows above are refreshed to it, with some that had
   gone stale before it (`bridge`, `deepfork`, `strikeframe`, `joinwedge`, `aheadlink`, and by a frame
   `kickpartition` and `cutbackdate`).
+
+**Admin indicators** (user ruling 2026-11-01 16:27Z, msg mf32513b5c469: "Holding the session · Implausible
+reports"; trust survey #4, #6 and #7) [proposal; I, nothing built]. Automatic removals no longer end a live
+cheater's stall, so an admin's kick does (Limits, above). Two indicators show admins whom to look at. **An
+indicator never acts:** it doesn't remove, demote, vote, or change any timer, cap or deadline. Equivocator
+exclusion and its fork proof stay as they are, and there is no fork-proof indicator (same ruling).
+* **Where they are computed.** On the admin's own replica, when its client asks, from what that replica
+  already holds: the chains and their references, the acks and their horizons, the membership state, and
+  (for the delay hint) the app's own clock-sync round trips. Nothing goes on the wire, into the log or
+  into the check hash. So an indicator can't fork the session, can't be fed by another member except
+  through the member's own behaviour, and costs nothing in steady state. A query costs one pass over the
+  members' references, O(n²) map reads, the same work `recompute_conf` does on every entry. Two replicas
+  can show slightly different answers, since each sees its own arrivals; that is acceptable for a hint.
+* **Admin-only.** `SessionCore::indicators(asker)` returns nothing unless `asker` holds the Kick
+  permission in the decided roles (12.4): the indicators exist to inform a kick. pe-mcp exposes them as a
+  `session_indicators` tool, returning nothing for a token whose driven member lacks Kick; pe-app prints
+  an admin status line while the local member holds Kick and an indicator names someone. **The gate is
+  presentation only:** the inputs are data every replica holds, so a modified client can compute the same
+  thing. Nothing is secret, and nothing depends on non-admins not seeing it.
+
+* **"Holding the session"**: whom confirmation is waiting on, and for how long.
+  * **Shown only when confirmation lags:** the present frame P minus the confirmed frame C is at least a
+    quarter of the speculation window (30 frames at the 120-frame window, 0.5 s) and has been for at least
+    1 s. Ordinary lag is 7-17 frames on the scenarios' links [V votechurn, the eight 10.8 repros after
+    the kick], so ordinary jitter names nobody.
+  * **Attribution.** It takes confirmation's own bound apart (Stability and confirmation, above). For
+    each member j whose term bounds C (the minimum over members of j's stable horizon + 1):
+    * **Behind (j):** the newest ack of j that this replica holds declares no horizon at or past C. j
+      itself hasn't declared progress: a slow or stalled peer, a cheater withholding acks, or j's packets
+      not reaching this replica. Shown with how far j is behind, P minus j's newest declared horizon.
+    * **Not referencing (k, j):** j has declared a horizon past C in an ack with seq r, but r isn't stable,
+      because some member k's newest reference to j's chain, in the version this replica holds, is below
+      r. k is shown as holding the session, with the wait P minus the stamp of j's entry r. This is a
+      cheater withholding references, and equally an honest member with a one-way inbound cut, which
+      can't reference what it can't hear (Limits, accepted cost); the indicator can't tell them apart,
+      and says so.
+    * **This replica (network):** this replica doesn't hold j's chain contiguously up to r, so its own copy
+      is what waits. It names nobody else.
+    * **Membership change:** the bound comes from a join cap, an ack from a newer epoch, or a removed
+      member's prefix not yet held (`recompute_conf`'s other terms). It names no member: it ends with the
+      view change.
+  * **Output:** per named member, its causes, and the lag in frames and in seconds (frames / hz). The same
+    member can be behind and not referencing at once.
+  * **With Part B** (for sessions of 4 or more; 10.9 thin link), "verdicts waiting on" is the same
+    attribution over the open verdicts that hold back a frame's close: for an entry still undecided, the
+    members whose echo-stable acks are missing for its void-or-count status. Built with Part B's
+    pe-session port.
+
+* **"Implausible reports"**: a soft warning, labelled as a hint and never as proof. Two parts:
+  * **Backlog reports** (Part B, rule 5, P2's plain smallest): in production each receiver reports its
+    downlink backlog in its acks, and a sender's controller reads the smallest over its non-fed
+    receivers, so one receiver reporting zero switches off back-off for every sender (trust survey #7,
+    accepted). A receiver's report is implausible when it disagrees with what the echo-stable acks show
+    about delivery to it: it reports near zero while its δ for a sender's entries (its first echo-stable
+    reference minus the entry's stamp) runs well past that sender's L + Q, or reports high while δ stays
+    near L. It's flagged when that disagreement holds over k consecutive windows (proposal: 3) from
+    window k − 2's settled data, the same data Part B uses. Fed members are left out: their acks
+    reference nothing. Built with Part B's pe-session port, which brings the reports (@engine-architect:
+    the spike reads backlogs directly, so no report exists until then).
+  * **Late acks for the link** [proposal, beyond the ruled text]: nothing that feeds L, Q, E or G is a report;
+    a member can move them only by behaving, stamping or sending its acks late (@engine-architect). So the
+    second hint is about behaviour: a member whose median δ as a receiver over the last 10 s exceeds its
+    one-way delay as this replica's clock sync measures it (half the median round trip, 10.4) by more than
+    100 ms, plus Q once Part B is in. Here δ for an entry e is the stamp of the member's first ack that
+    references e minus e's stamp: from echo-stable acks under Part B, from the stable prefix before it. A slow honest link has a high round trip, which explains its late acks; a member
+    with a fast link whose acks still reference others' entries late has no such excuse. This is the hint
+    that tells a slow honest player from a withholder, the problem the ruling names. Clock-sync pings
+    aren't logged, so it's local, like everything here. It reads only pe-session's chains plus the app's
+    round trips, so it can be built now, before Part B.
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
