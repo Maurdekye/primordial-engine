@@ -285,7 +285,25 @@ impl Net {
             } else {
                 m
             };
-            match f(self.now_us, world, from, to, seen) {
+            let fate = match m {
+                // Option 2: a run of two or more entries meets the filter entry by entry, as each did
+                // when it was its own message (a filter written for entries would otherwise let every
+                // relayed run past it). One datagram: dropped if any entry is, else the longest delay.
+                Msg::Run { entries, .. } if entries.len() > 1 => {
+                    let mut fate = Fate::Deliver;
+                    for e in entries {
+                        match (f(self.now_us, world, from, to, &Msg::Entry(e.clone())), &fate) {
+                            (Fate::Drop, _) => fate = Fate::Drop,
+                            (Fate::Delay(d), Fate::Deliver) => fate = Fate::Delay(d),
+                            (Fate::Delay(d), Fate::Delay(x)) if d > *x => fate = Fate::Delay(d),
+                            _ => {}
+                        }
+                    }
+                    fate
+                }
+                _ => f(self.now_us, world, from, to, seen),
+            };
+            match fate {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
