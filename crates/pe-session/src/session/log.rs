@@ -215,11 +215,13 @@ impl WorldSim {
     }
 
     /// Idle (design 7.6, reduction 2): every entry this replica holds, other than acks, is stamped
-    /// below `conf` (at or before its last confirmed frame). Judged from its own copy; acks are left
-    /// out, or each ack would keep every member busy. A new entry, its own or anyone's, is stamped at
-    /// or after `conf`, so it makes the member busy until `conf` passes it.
+    /// below `conf` (at or before its last confirmed frame), and it holds no unsent hand pack (D73(a):
+    /// the pack's poses are not entries yet, and it goes out backdated to its first frame). Judged
+    /// from its own copy; acks are left out, or each ack would keep every member busy. A new entry,
+    /// its own or anyone's, is stamped at or after `conf`, so it makes the member busy until `conf`
+    /// passes it.
     pub fn idle(&self) -> bool {
-        self.busy_stamp.is_none_or(|s| s < self.conf)
+        self.busy_stamp.is_none_or(|s| s < self.conf) && self.hold_horizon_below.is_none()
     }
 
     /// Store a received or fetched entry, once its signature verifies (S3; a bad one is dropped and
