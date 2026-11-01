@@ -2380,8 +2380,9 @@ and there is no fork-proof indicator (same ruling).
     * **A fetch restarts the clock** (found in the build): when X asks for this replica's chain from seq
       a, it lacks a and can reference nothing past the hole until it's repaired (references cover only a
       contiguous prefix), so S for every entry from a on becomes the fetch's arrival. On a thin downlink
-      that tail-drops, an honest member's references wait on repairs [V ind-thindown: flagged without
-      this]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
+      that tail-drops, an honest member's references wait on repairs [V ind-thindown on main
+      699f8fb's R18: flagged without this; since the thin-link landing (a0af773) that watcher no longer
+      lags past the threshold at all]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
       still shows as not referencing.
     * **Only current members' acks** are judged; a removed member's are ignored.
     * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
