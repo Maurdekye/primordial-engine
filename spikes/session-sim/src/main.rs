@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 mod history;
+mod partb;
 mod r18;
 mod review2;
 mod p24r;
@@ -1411,6 +1412,8 @@ fn main() {
         Some("join") => viewchange::join(),
         Some("refwithhold") => viewchange::refwithhold(),
         Some("handowner") => handowner(),
+        Some("stale") => partb::stale(),
+        Some("late") => partb::late(),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
         Some("bogusprecommit") => p24r::bogusprecommit(),

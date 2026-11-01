@@ -37,6 +37,9 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_WORDS};
+
+mod localize;
+pub use localize::{WindowVals, WINDOW};
 use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
@@ -1592,6 +1595,9 @@ pub struct Tables {
     /// Active hands: frames since the hand's last entry, that entry's `span`, and whether it continues
     /// a stream, so the hand may coast past its span (dead reckoning, `SimConfig::hand_predict`).
     pub hand_idle: BTreeMap<u32, (u64, u8, bool)>,
+    /// Thin links Part B, rule 2: per object, per author, the carried-state writes applied to it (seq ->
+    /// stamp), the last 2 speculation windows of them.
+    pub writes: BTreeMap<u32, BTreeMap<MemberId, BTreeMap<u32, u64>>>,
 }
 
 #[derive(Clone)]
@@ -1640,6 +1646,9 @@ pub struct Stats {
     /// D80: kicks and role entries the decided changes applied, and those they refused.
     pub admin_applied: u64,
     pub admin_refused: u64,
+    /// Thin links Part B, rule 2: carried-state writes skipped as stale (counted at every simulation of
+    /// their frame, re-simulations included).
+    pub stale_skips: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -1709,6 +1718,18 @@ pub struct SimConfig {
     pub ack_heads: bool,
     /// How far ahead of its present a proposer puts a join's boundary frame (P2-4).
     pub join_lead: u64,
+    /// Thin links, Part B (thin-link plan revision 17): localized verdicts and stale-write skips for
+    /// sessions of 4 or more members. Off keeps today's rules; the spike switches it on per scenario
+    /// while Part B is built.
+    pub localize: bool,
+    /// Part B, section 3, in frames: Q's limits (admin entries in production), the floor F under every
+    /// deadline, and an acceptable connection's jitter and delay limits and its re-fetch allowance R.
+    pub q_min: u64,
+    pub q_max: u64,
+    pub floor_f: u64,
+    pub j_acc: u64,
+    pub y_acc: u64,
+    pub refetch_r: u64,
 }
 
 impl Default for SimConfig {
@@ -1727,6 +1748,13 @@ impl Default for SimConfig {
             vc_timeout_step: 10,
             ack_heads: true,
             join_lead: 60,
+            localize: false,
+            q_min: 4,
+            q_max: 45,
+            floor_f: 32,
+            j_acc: 3,
+            y_acc: 9,
+            refetch_r: 16,
         }
     }
 }
@@ -1909,6 +1937,31 @@ pub struct WorldSim {
     /// Per author: the highest seq ever found stable. Stability is permanent (chains only grow), so
     /// a later conflicting reference can never shrink it (review R3-1).
     stable_hi: BTreeMap<MemberId, u32>,
+    /// Part B, section 3: (referrer, author) -> head seq -> (the referrer's first ack that reached it:
+    /// its seq and stamp; the head's id). First write wins, where `refs` keeps the latest.
+    first_ref: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (u32, u64, EntryId)>>,
+    /// Part B, rules 1 and 2: (acker, author) -> ack seq -> the head of the author's chain that ack named,
+    /// with its id.
+    ack_head_hist: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (u32, EntryId)>>,
+    /// Part B, rule 1: per acker, ack stamp -> the highest seq of its acks with that stamp.
+    ack_by_stamp: BTreeMap<MemberId, BTreeMap<u64, u32>>,
+    /// Part B, rule 1: the verdict of each judged entry, once decided (true: it counts), and the entries
+    /// still without one, by stamp.
+    pub verdicts: BTreeMap<EntryId, bool>,
+    pending: BTreeSet<(u64, EntryId)>,
+    /// Part B, rule 1: entries void because q members provably lacked them at their deadline.
+    late_void: BTreeSet<EntryId>,
+    /// Part B: windows whose values a decision used before they were final (rule 2 at speculation).
+    provisional: BTreeMap<u64, WindowVals>,
+    /// Part B: an offline replay, which reads the live replica's window values and computes none.
+    replaying: bool,
+    /// Part B, rule 2: each carried-state entry's decision at its frame's latest simulation (true: skipped).
+    pub rule2: BTreeMap<EntryId, bool>,
+    /// Part B, section 3: (window, author) -> the seqs of the author's entries stamped in that window.
+    win_seqs: BTreeMap<(u64, MemberId), BTreeSet<u32>>,
+    /// Part B, section 3: each window's values, once final, and each settled window's data.
+    windows: BTreeMap<u64, WindowVals>,
+    window_data_cache: BTreeMap<u64, localize::WindowData>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
@@ -2175,6 +2228,18 @@ impl WorldSim {
             ack_stamps: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
+            first_ref: BTreeMap::new(),
+            ack_head_hist: BTreeMap::new(),
+            ack_by_stamp: BTreeMap::new(),
+            verdicts: BTreeMap::new(),
+            pending: BTreeSet::new(),
+            late_void: BTreeSet::new(),
+            provisional: BTreeMap::new(),
+            replaying: false,
+            rule2: BTreeMap::new(),
+            win_seqs: BTreeMap::new(),
+            windows: BTreeMap::new(),
+            window_data_cache: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
@@ -2375,6 +2440,14 @@ impl WorldSim {
         for (o, (n, span, stream)) in &self.t.hand_idle {
             v.extend([*o as u64, *n, *span as u64, *stream as u64, 11]);
         }
+        // Thin links Part B, rule 2's write index (empty with Part B off).
+        for (o, ws) in &self.t.writes {
+            for (m, seqs) in ws {
+                for (s, st) in seqs {
+                    v.extend([*o as u64, *m as u64, *s as u64, *st, 13]);
+                }
+            }
+        }
         fnv_u64s(v)
     }
 
@@ -2408,7 +2481,7 @@ impl WorldSim {
     }
 
     fn is_void(&self, id: EntryId) -> bool {
-        self.violations.contains(&id) || self.disputed.contains(&id)
+        self.violations.contains(&id) || self.disputed.contains(&id) || self.late_void.contains(&id)
     }
 
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
@@ -2687,6 +2760,12 @@ impl WorldSim {
     /// * any other entry is void if stamped at or before a horizon its author declared earlier.
     fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
+        // Part B, section 3: d(e) is measured for every entry, void or not, so verdicts can't censor it.
+        self.win_seqs.entry((e.stamp / WINDOW, m)).or_default().insert(e.seq);
+        // Part B, rule 1: a perturbation or hand entry waits for its verdict.
+        if self.localized() && localize::judged(&e.payload) && !self.verdicts.contains_key(&id) {
+            self.pending.insert((e.stamp, id));
+        }
         // D80: an admin entry stays pending across epochs until a decision judges it.
         let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
@@ -2751,6 +2830,7 @@ impl WorldSim {
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
                 self.ack_stamps.entry(m).or_default().insert(e.seq, e.stamp);
+                self.ack_by_stamp.entry(m).or_default().insert(e.stamp, e.seq);
                 for &(q, s, hid) in &heads {
                     if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);
@@ -2760,6 +2840,7 @@ impl WorldSim {
                             self.want_from(m, q, s, s);
                         }
                     }
+                    self.ack_head_hist.entry((m, q)).or_default().insert(e.seq, (s, hid));
                     // Review R3-1: once m has voted against q, its vote's frozen head is its last
                     // word on q's chain in this epoch; later references never count toward stability.
                     if self.votes.get(&q).is_some_and(|v| v.contains_key(&m)) {
@@ -2770,6 +2851,7 @@ impl WorldSim {
                         self.ref_advanced.insert((m, q), self.now);
                     }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
+                    self.note_first_ref(m, e.seq, e.stamp, q, s, hid);
                 }
                 if m != self.me {
                     if let Some((f, hh)) = check {
@@ -2875,14 +2957,34 @@ impl WorldSim {
         }
         let mut c = u64::MAX;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
+        // Thin links Part B, rule 1: decide the verdicts whose statuses are known.
+        let localized = self.localized();
+        if localized {
+            // Windows 0 and 1 need no data (Q = Q_max). They must exist before the loop below: rule 3's
+            // deadline bound reads them, and the loop returns early for a member with neither an echo-stable
+            // horizon nor a bound. Initialized after it, a member whose first ack took 2.5 s held conf at 0,
+            // and every member paused from frame W until that ack was echo-stable.
+            if self.windows.is_empty() && std::env::var_os("PE_TMP_LATE_WINDOWS").is_none() {
+                self.window_vals(1);
+            }
+            self.decide_verdicts();
+        }
         for j in members {
-            let mut s = self.stable_seq(j);
+            // Part B, rule 3: a prefix is evidence once echo-stable; D54's stability for 2-3 members.
+            let mut s = if localized { self.echo_stable(j) } else { self.stable_seq(j) };
             // An ack from an epoch newer than mine never counts toward my confirmation (10.8): its
             // author may know of members I do not.
             if let Some(&first) = self.ack_epoch_from.get(&j).and_then(|a| a.range(self.epoch + 1..).map(|(_, s)| s).min()) {
                 s = s.min(first.saturating_sub(1));
             }
             let mut h = self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h);
+            // Part B, rule 3: or the frames for which anything j could still author would be past its
+            // deadline at q members.
+            if localized {
+                if let Some(hb) = self.deadline_bound(j) {
+                    h = Some(h.map_or(hb, |x| x.max(hb)));
+                }
+            }
             // After precommitting a join, its author's acks count only below the join's boundary.
             if let (Some(hh), Some(&(at, b))) = (h, self.join_caps.get(&j)) {
                 if s > at {
@@ -2907,9 +3009,35 @@ impl WorldSim {
                 // Review VC-2: past the prefix verified against every member's references, my copy may
                 // be another branch of a fork, so only that prefix's acks bound confirmation; the
                 // robust cut contains it.
-                let upto = if self.fixes_off & fix::VC2 == 0 { self.stable_hi.get(&x).copied().unwrap_or(0).min(cut) } else { held.min(cut) };
+                // Part B, rule 3: there the verified prefix is the echo-stable one (stable_hi isn't kept).
+                let upto = if localized {
+                    self.echo_stable(x).min(cut)
+                } else if self.fixes_off & fix::VC2 == 0 {
+                    self.stable_hi.get(&x).copied().unwrap_or(0).min(cut)
+                } else {
+                    held.min(cut)
+                };
                 let h = self.ack_hist.get(&x).and_then(|a| a.range(..=upto).next_back()).map_or(0, |(_, h)| h + 1);
                 c = c.min(h);
+            }
+        }
+        // Thin links Part B, section 3: nothing is confirmed in a window before its values are final, so a
+        // decision taken with provisional values can still be re-simulated (`finalize_windows`).
+        // Part B, rule 3: and every judged entry stamped below conf has its verdict.
+        if localized && c != u64::MAX {
+            if let Some(&(s, _)) = self.pending.iter().next() {
+                c = c.min(s);
+            }
+        }
+        if self.localized() && c != u64::MAX {
+            if self.windows.is_empty() {
+                self.window_vals(1);
+            }
+            self.finalize_windows();
+            let next = self.windows.keys().next_back().map_or(0, |&k| k + 1);
+            c = c.min(next * WINDOW);
+            if let Some(&j) = self.provisional.keys().next() {
+                c = c.min(j * WINDOW);
             }
         }
         if c != u64::MAX && c > self.conf {
@@ -3236,7 +3364,9 @@ impl WorldSim {
                 self.now
             };
             let silent = self.now >= heard + self.cfg.suspect_after;
-            let slow = self.now >= since + self.cfg.suspect_after;
+            // Thin links Part B, rule 4: no demotion for a slow link in sessions of 4 or more; its late actions
+            // are void instead (rule 1). Silence is still removed.
+            let slow = !self.localized() && self.now >= since + self.cfg.suspect_after;
             if !silent && !slow {
                 self.suspect_since.remove(&j);
                 continue;
@@ -5525,6 +5655,11 @@ impl WorldSim {
     ) -> Outcome {
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
+                // Part B, rule 2: this simulation's decision replaces any earlier one; a touch refused below
+                // never reaches it.
+                if self.localized() {
+                    self.rule2.remove(&id);
+                }
                 // Review HO-1: an object a member owns (a hand) is touched by no one else: refused,
                 // so no claim is taken that would block the owner.
                 if self.not_owner(*obj, e.member) {
@@ -5565,7 +5700,23 @@ impl WorldSim {
                 }
                 if let Some((cobj, st)) = e.carried {
                     if self.eff.get(&id) == Some(&e.stamp) {
-                        carry.push((cobj, st));
+                        // Thin links Part B, rule 2: a write its author made without having seen an older
+                        // one by another member is skipped; the push above still acts.
+                        let stale = self.localized() && self.stale_write(e, cobj);
+                        if self.localized() {
+                            self.rule2.insert(id, stale);
+                        }
+                        if stale {
+                            self.stats.stale_skips += 1;
+                            if record_effects {
+                                self.ev(format!("rule 2: m{} s{} stamped {}: carried state for {cobj} skipped (stale)", e.member, e.seq, e.stamp));
+                            }
+                        } else {
+                            carry.push((cobj, st));
+                            if self.localized() {
+                                self.note_write(cobj, e.member, e.seq, e.stamp);
+                            }
+                        }
                     }
                 }
                 Outcome::Accepted
@@ -6128,6 +6279,12 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
     s.provenance = like.provenance;
     s.import_policy = like.import_policy.clone();
     s.hand_owners = like.hand_owners.clone();
+    // Thin links Part B: the replay holds no acks, so rule 2 reads the live replica's window values and the
+    // heads its acks named. Every replica derives them from the same log, which the digests compare.
+    s.windows = like.windows.clone();
+    s.provisional = like.provisional.clone();
+    s.ack_head_hist = like.ack_head_hist.clone();
+    s.replaying = true;
     s.run_log(log, frames)
 }
 
