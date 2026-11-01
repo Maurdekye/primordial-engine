@@ -1,7 +1,8 @@
 description = """
-P2-4 review round 3, VCR-1: at 2 s, 9 votes against 2 for a kick that does not exist. Since round \
-4 (VC3R-2), a vote naming a kick nobody delivers gets its voter voted out. Part 1 runs with \
-VCR-1's fix switched off, part 2 as shipped."""
+P2-4 review round 3, VCR-1: at 2 s, 9 votes against 2 for a kick that does not exist. Since trust \
+survey #4 its voter is no longer voted out (round 4 did so after half a window); the vote freezes \
+2's chain at 9 and holds confirmation until admin 1 kicks 9 at 6 s, which ends it. (Its VCR-1 \
+control is dropped: with VC3R-2 on, VCR-1's flag no longer changes anything.)"""
 include = ["../common/review.toml"]
 end_ms = 10000
 quiet_panics = true
@@ -12,6 +13,15 @@ members = [1, 2, 3, 9]
 [world.1.plan]
 1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 500, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
 
+# Trust survey #4: admin 1 kicks the ghost voter at 6 s (listed first, as the spike steps it first).
+[[byzantine]]
+kind = "admin_kick"
+member = 1
+target = 9
+at_ms = 6000
+honest = [1, 2, 3]
+to = [2, 3, 9]
+
 [[byzantine]]
 kind = "ghost_vote"
 member = 9
@@ -20,16 +30,23 @@ target = 2
 kick = 0xDEADBEEF
 to = [1, 2, 3]
 
-[[part]]
-world.1.fixes_off = ["VCR1"]
-report = [
-    { kind = "before_fix", honest = [1, 2, 3], label = "ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist)", fix = "VCR-1's fix" },
-]
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3]
+label = "ghostkick"
 
-[[part]]
-report = [
-    { kind = "view_changes", honest = [1, 2, 3], label = "ghostkick" },
-    { kind = "confs", honest = [1, 2, 3], label = "ghostkick" },
-    { kind = "check", case = "removed", label = "ghostkick", at = 1, target = 9, text = "VOTED OUT" },
-    { kind = "verdict", honest = [1, 2, 3], label = "ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist)" },
-]
+[[report]]
+kind = "confs"
+honest = [1, 2, 3]
+label = "ghostkick"
+
+[[report]]
+kind = "check"
+case = "admin_kick"
+label = "ghostkick"
+honest = [1, 2, 3]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist; admin 1 kicks 9 at 6 s)"

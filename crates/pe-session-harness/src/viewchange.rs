@@ -24,6 +24,7 @@ use std::rc::Rc;
 use pe_session_sim::*;
 use pe_session::session::*;
 
+use crate::p24r::AdminKick;
 use crate::review2::{link, plan, run_to_end, touch, touch_state, verdict};
 use crate::review3::{equivocate_after_conf, report};
 
@@ -365,7 +366,10 @@ pub fn refwithhold() {
     let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 12_000_000);
     let i8 = sim.peers.iter().position(|p| p.id == 8).unwrap();
     let mut hiding = false;
+    // Trust survey #4: withheld references hold confirmation until an admin kicks 8.
+    let mut kick = AdminKick::new(1, 8, 6_000_000);
     let panic_at = run_to_end(&mut sim, |sim| {
+        kick.step(sim, &[1, 2, 3], &ids);
         if !hiding && sim.net.now_us >= 2_000_000 {
             sim.peers[i8].worlds.get_mut(&1).unwrap().sim.freeze_others();
             hiding = true;
@@ -373,5 +377,6 @@ pub fn refwithhold() {
     });
     report(&sim, &[1, 2, 3], "refwithhold");
     vc_report(&sim, &[1, 2, 3], "refwithhold");
-    verdict(&sim, &[1, 2, 3], "refwithhold (8 stops referencing others' chains at t=2 s)", panic_at);
+    kick.report(&sim, &[1, 2, 3], "refwithhold");
+    verdict(&sim, &[1, 2, 3], "refwithhold (8 stops referencing others' chains at t=2 s; admin 1 kicks 8 at 6 s)", panic_at);
 }
