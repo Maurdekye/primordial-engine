@@ -1,6 +1,6 @@
 {
-  "session": 4443844291293575426,
-  "nonce": "ae3449284fc5470abf66c472b8c07dc0c87dd246f444e851b3900fcceb3fa119",
+  "session": 9349826912033127866,
+  "nonce": "b318e921569fdeb56b67272fa3724bcd568699be0e0500daae567e5cb60e42e7",
   "name": "m1",
   "scene": "pile",
   "size": 4,
@@ -10,38 +10,38 @@
   "members": [
     {
       "id": 1,
-      "addr": "127.0.0.1:7541",
-      "key": "b689bb3397f90f939f4289568900af35f81eea65e0953dd13f7e869fcd841d61"
+      "addr": "127.0.0.1:7551",
+      "key": "d3de02c506a31c75743187d3c18fd91e05481fc0164bb5ad2520ba7f5f769b93"
     },
     {
       "id": 2,
-      "addr": "127.0.0.1:7542",
-      "key": "137cd702708de18256543de44ec5a8e1e9f6b539df88fd17c39e0cd17b3145ea"
+      "addr": "127.0.0.1:7552",
+      "key": "34ee97d3e0edc396e0ef15e608ad5e227326231746a028daa1cfcabf44d4d6eb"
     },
     {
       "id": 3,
-      "addr": "127.0.0.1:7543",
-      "key": "d48d9ea8d17430ec4199b4ebe5458555b1a554e040b4e4d6249c401fc6370953"
+      "addr": "127.0.0.1:7553",
+      "key": "d16bf83e46efd2ecadf9679ab505f73c33acd2fa383013762f7a7147c1676ccd"
     },
     {
       "id": 4,
-      "addr": "127.0.0.1:7544",
-      "key": "d0f3bf023e7f6456492bcfb599a2a6b8942825e35b5842520138f83017e4c9e6"
+      "addr": "127.0.0.1:7554",
+      "key": "cb11dbe7c351c6f38d546efec6d9a917c26d8e6569c60ad16ba6c7684195b4b8"
     },
     {
       "id": 5,
-      "addr": "127.0.0.1:7545",
-      "key": "1da77ab7946c95fab6f3b34dd3edb818d8746259ddb6619f07eab8177df9cf32"
+      "addr": "127.0.0.1:7555",
+      "key": "0a88fc0dfe476d62f8bf2344e75ed8b679c0760fb63c267540bdad74997da65d"
     },
     {
       "id": 6,
-      "addr": "127.0.0.1:7546",
-      "key": "d912a5721fb24917e7d7cf88255056975b50cf66b5e625fbe3430193f3c45864"
+      "addr": "127.0.0.1:7556",
+      "key": "e4eed04cbdb27ee4035cc364b58c8c0e199fcaa5687a11009e22653bd4212308"
     },
     {
       "id": 7,
-      "addr": "127.0.0.1:7547",
-      "key": "8631bba056c9220c8281593ec10bd340cc7f2da2cf4895959a5c0ebe83d09579"
+      "addr": "127.0.0.1:7557",
+      "key": "234396b08926b2c0fe9764a4d19c0131f00c03d5fe71c92da2da605c8f8c7ba6"
     }
   ]
 }

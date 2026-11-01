@@ -1,6 +1,6 @@
 {
-  "session": 8912780175281402040,
-  "nonce": "f827a3610d918cedf7169521480275b112b5f7995cea2e7382a241e50aee52ef",
+  "session": 5321133960074068970,
+  "nonce": "779aec5c5dbf09673e373aede8f938052bd580b6a8aaa8b091cce30ebe21a10b",
   "name": "m1",
   "scene": "pile",
   "size": 4,
@@ -11,22 +11,22 @@
     {
       "id": 1,
       "addr": "127.0.0.1:7391",
-      "key": "3ac89ad0dcd2f27cd2aac9869b8c5bb0899146f2ed97f70e7c76843b7fbbdc5c"
+      "key": "d5d4063b3cc7d77267a2f0eb495ac3fe1589eccdca3b039120dd0930e31c68e2"
     },
     {
       "id": 2,
       "addr": "127.0.0.1:7392",
-      "key": "9ad398c3b46ee66043dbdcc93feec6f20a926789674cf717a7fbb57543fcbd2c"
+      "key": "99e2c95581cfc2e19a97da7939f9f9bd9e3d856cd6997cb3a9d5a6e0397b47f3"
     },
     {
       "id": 3,
       "addr": "127.0.0.1:7393",
-      "key": "8f28baa0717fa2299359d56261c822ea3aff0e5a445182031b0d12920321e2cd"
+      "key": "ec76e04324941a1b4c9b60d27188af4b68478565d451f57bc03e294869c0b995"
     },
     {
       "id": 4,
       "addr": "127.0.0.1:7394",
-      "key": "4e54266b3f354012fad4e733193fb02e4b4e4e7d9015f272756dd31b8b9793a6"
+      "key": "d81857378e873a19c81232e26f3408945a5b1262f8a8a9aa96a7783c2373eec5"
     }
   ]
 }

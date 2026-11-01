@@ -1,6 +1,6 @@
-pe-app: member 4 of session 7bb08e58f4cab0b8 on 127.0.0.1:7394; 4 members, 1200 frames
-[m4 t=0ms f=0] session start received: epoch 1221616 (leader clock), my offset 20306 us, best rtt 1075 us
-[m4 t=800ms f=48] status: frame 48 now 48 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 97 faulted 0 capped 0 recv 93 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 20741 us, rate 0 ppm, rtt excess ms [(1, Some(1)), (2, Some(0)), (3, Some(0))]
-[m4 t=2803ms f=168] status: frame 168 now 168 conf 154 members {1, 2, 3, 4} rollbacks 8 | sent 335 faulted 0 capped 0 recv 303 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 21081 us, rate 0 ppm, rtt excess ms [(1, Some(0)), (2, Some(48)), (3, Some(34))]
-[m4 t=4798ms f=287] status: frame 287 now 287 conf 278 members {1, 2, 3, 4} rollbacks 19 | sent 573 faulted 0 capped 0 recv 477 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 16073 us, rate 0 ppm, rtt excess ms [(1, Some(0)), (2, Some(291)), (3, Some(36))]
-[m4] scripted drop-out at 6001 ms: exiting without a word
+pe-app: member 4 of session 49d87724e47b83ea on 127.0.0.1:7394; 4 members, 1200 frames
+[m4 t=0ms f=0] session start received: epoch 1230070 (leader clock), my offset 27980 us, best rtt 1066 us
+[m4 t=801ms f=48] status: frame 48 now 48 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 110 faulted 0 capped 0 recv 106 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 29452 us, rate 0 ppm, rtt excess ms [(1, Some(3)), (2, Some(0)), (3, Some(1))]
+[m4 t=2804ms f=168] status: frame 168 now 168 conf 154 members {1, 2, 3, 4} rollbacks 8 | sent 362 faulted 0 capped 0 recv 331 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 31894 us, rate 0 ppm, rtt excess ms [(1, Some(1)), (2, Some(41)), (3, Some(31))]
+[m4 t=4805ms f=288] status: frame 288 now 288 conf 278 members {1, 2, 3, 4} rollbacks 20 | sent 632 faulted 0 capped 0 recv 531 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 31894 us, rate 0 ppm, rtt excess ms [(1, Some(3)), (2, Some(488)), (3, Some(28))]
+[m4] scripted drop-out at 6000 ms: exiting without a word
