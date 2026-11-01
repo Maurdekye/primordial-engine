@@ -950,8 +950,32 @@ impl Wr {
                 self.u8(if more.is_empty() { 2 } else { 21 });
                 self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
                 if !more.is_empty() {
+                    // Thin links (Part A): a pack's extra targets as deltas from the previous target, in
+                    // the narrowest width that holds every axis of every step (1: i8, 2: i16, 0: whole i32).
+                    // A stride-8 pack falls from 129 to 67 bytes.
                     self.u8(more.len() as u8);
-                    for t in more { for c in t { self.i32(*c) } }
+                    let mut prev = *target_mm;
+                    let mut maxd = 0i64;
+                    for t in more {
+                        for i in 0..3 {
+                            maxd = maxd.max((t[i] as i64 - prev[i] as i64).abs());
+                        }
+                        prev = *t;
+                    }
+                    let mode = if maxd <= 127 { 1u8 } else if maxd <= 32767 { 2 } else { 0 };
+                    self.u8(mode);
+                    let mut prev = *target_mm;
+                    for t in more {
+                        for i in 0..3 {
+                            let d = t[i].wrapping_sub(prev[i]);
+                            match mode {
+                                1 => self.u8(d as i8 as u8),
+                                2 => self.0.extend_from_slice(&(d as i16).to_le_bytes()),
+                                _ => self.i32(t[i]),
+                            }
+                        }
+                        prev = *t;
+                    }
                 }
             }
             Payload::Depart { obj, dest, deadline, hop } => {
@@ -1152,8 +1176,20 @@ impl Rd<'_> {
                     if n == 0 || n + 1 > PACK_MAX {
                         return None;
                     }
+                    let mode = self.u8()?;
+                    let mut prev = target_mm;
                     for _ in 0..n {
-                        more.push([self.i32()?, self.i32()?, self.i32()?]);
+                        let mut t = [0i32; 3];
+                        for (i, c) in t.iter_mut().enumerate() {
+                            *c = match mode {
+                                1 => prev[i].wrapping_add(self.u8()? as i8 as i32),
+                                2 => prev[i].wrapping_add(i16::from_le_bytes(self.take(2)?.try_into().ok()?) as i32),
+                                0 => self.i32()?,
+                                _ => return None,
+                            };
+                        }
+                        more.push(t);
+                        prev = t;
                     }
                 }
                 Payload::Hand { obj, target_mm, active, span, more }
