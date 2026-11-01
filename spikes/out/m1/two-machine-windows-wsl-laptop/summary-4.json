@@ -1,0 +1,106 @@
+{
+  "session": "1156d081e228ee93",
+  "member": 4,
+  "frames": 3600,
+  "conf": 3776,
+  "digest": "067b06889a6981f4",
+  "replay_digest": "067b06889a6981f4",
+  "replay_equal": true,
+  "members_at_end": [
+    1,
+    3,
+    4
+  ],
+  "evicted": [
+    2
+  ],
+  "epoch": 1,
+  "rollbacks": 168,
+  "max_rollback_depth": 28,
+  "checks_ok": 274,
+  "equivocation_proofs": 0,
+  "checks_bad": 0,
+  "entries_authored": 174,
+  "clock_offset_us": 367685,
+  "best_rtt_us": 2324,
+  "clock_rate_ppm": 2326.1969095248746,
+  "traffic": {
+    "datagrams_sent": 3262,
+    "datagrams_dropped_by_fault": 326,
+    "datagrams_dropped_by_cap": 0,
+    "datagrams_dropped_by_codel": 0,
+    "datagrams_dropped_rx_full": 0,
+    "datagrams_received": 5516,
+    "bytes_sent": 918071,
+    "rejected": {}
+  },
+  "link": {
+    "signal_fed": true,
+    "level_ticks": [
+      1482,
+      27,
+      27,
+      40,
+      27,
+      2456
+    ],
+    "max_level": 5,
+    "max_signal_ms": 47.0,
+    "max_true_queue_ms": 0.0,
+    "hand_entries": 0,
+    "clamped_steps": 3272,
+    "rx": {
+      "1": [
+        2694,
+        0
+      ],
+      "2": [
+        573,
+        0
+      ],
+      "3": [
+        2249,
+        138
+      ]
+    }
+  },
+  "events": [
+    "[m4 t=0ms f=0] session start received: epoch 1485550 (leader clock), my offset 270721 us, best rtt 2912 us",
+    "[m4 t=792ms f=47] status: frame 47 now 47 conf 32 members {1, 2, 3, 4} rollbacks 0 | sent 52 faulted 0 capped 0 recv 52 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 271033 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (2, Some(0), 0), (3, Some(0), 44)]",
+    "[m4 t=2003ms f=119] fault: links to all now 10% loss, 30 ms +-10 ms",
+    "[m4 t=2798ms f=167] status: frame 167 now 167 conf 160 members {1, 2, 3, 4} rollbacks 0 | sent 211 faulted 3 capped 0 recv 257 rejected {} bad entry sigs 0 | R18 level 4 signal Some(46) ms | clock offset 273614 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(33), 1), (2, Some(47), 2), (3, Some(44), 70)]",
+    "[m4 t=4803ms f=288] status: frame 288 now 288 conf 276 members {1, 2, 3, 4} rollbacks 5 | sent 306 faulted 13 capped 0 recv 501 rejected {} bad entry sigs 0 | R18 level 5 signal Some(45) ms | clock offset 273614 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(48), 1), (2, Some(48), 2), (3, Some(80), 206)]",
+    "[m4 t=6807ms f=408] status: frame 408 now 408 conf 388 members {1, 2, 3, 4} rollbacks 11 | sent 405 faulted 18 capped 0 recv 721 rejected {} bad entry sigs 0 | R18 level 5 signal Some(46) ms | clock offset 273614 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(47), 1), (2, Some(44), 2), (3, Some(75), 369)]",
+    "[m4 t=8814ms f=528] status: frame 528 now 528 conf 498 members {1, 2, 3, 4} rollbacks 17 | sent 503 faulted 29 capped 0 recv 938 rejected {} bad entry sigs 0 | R18 level 5 signal Some(45) ms | clock offset 273614 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(46), 2), (2, Some(31), 2), (3, Some(69), 534)]",
+    "[m4 t=10831ms f=649] status: frame 649 now 649 conf 620 members {1, 2, 3, 4} rollbacks 23 | sent 605 faulted 44 capped 0 recv 1184 rejected {} bad entry sigs 0 | R18 level 5 signal Some(0) ms | clock offset 273721 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 1), (2, Some(46), 2), (3, Some(71), 537)]",
+    "[m4 t=12840ms f=770] status: frame 770 now 770 conf 750 members {1, 2, 3, 4} rollbacks 36 | sent 698 faulted 58 capped 0 recv 1431 rejected {} bad entry sigs 0 | R18 level 5 signal Some(14) ms | clock offset 270942 us, rate -57 ppm, rtt excess ms (member, round trip, way back) [(1, Some(17), 3), (2, Some(0), 3), (3, Some(0), 29)]",
+    "[m4 t=14849ms f=890] status: frame 890 now 890 conf 878 members {1, 2, 3, 4} rollbacks 48 | sent 793 faulted 73 capped 0 recv 1670 rejected {} bad entry sigs 0 | R18 level 5 signal Some(13) ms | clock offset 270152 us, rate -122 ppm, rtt excess ms (member, round trip, way back) [(1, Some(16), 6), (2, Some(15), 6), (3, Some(0), 103)]",
+    "[m4 t=16829ms f=1008] paused at frame 1008 (speculation limit)",
+    "[m4 t=16862ms f=1008] status: frame 1008 now 1011 conf 888 members {1, 2, 3, 4} rollbacks 55 | sent 876 faulted 82 capped 0 recv 1831 rejected {} bad entry sigs 0 | R18 level 5 signal Some(13) ms | clock offset 269176 us, rate -249 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 10), (2, Some(13), 6), (3, Some(4), 138)]",
+    "[m4 t=18134ms f=1008] membership decision: epoch 1, removed [2]",
+    "[m4 t=18175ms f=1089] resumed at frame 1089",
+    "[m4 t=18826ms f=1129] status: frame 1129 now 1129 conf 1120 members {1, 3, 4} rollbacks 55 | sent 955 faulted 86 capped 0 recv 1967 rejected {} bad entry sigs 0 | R18 level 5 signal Some(13) ms | clock offset 231428 us, rate -2279 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 10), (3, Some(14), 28)]",
+    "[m4 t=20803ms f=1248] status: frame 1248 now 1248 conf 1232 members {1, 3, 4} rollbacks 55 | sent 1027 faulted 95 capped 0 recv 2093 rejected {} bad entry sigs 0 | R18 level 5 signal Some(0) ms | clock offset 199665 us, rate -3463 ppm, rtt excess ms (member, round trip, way back) [(1, Some(3), 11), (3, Some(5), 5)]",
+    "[m4 t=22803ms f=1368] status: frame 1368 now 1368 conf 1360 members {1, 3, 4} rollbacks 57 | sent 1114 faulted 104 capped 0 recv 2251 rejected {} bad entry sigs 0 | R18 level 5 signal Some(5) ms | clock offset 194748 us, rate -3388 ppm, rtt excess ms (member, round trip, way back) [(1, Some(16), 10), (3, Some(5), 47)]",
+    "[m4 t=24817ms f=1489] status: frame 1489 now 1489 conf 1480 members {1, 3, 4} rollbacks 63 | sent 1195 faulted 116 capped 0 recv 2426 rejected {} bad entry sigs 0 | R18 level 5 signal Some(4) ms | clock offset 204036 us, rate -2706 ppm, rtt excess ms (member, round trip, way back) [(1, Some(15), 10), (3, Some(10), 80)]",
+    "[m4 t=26830ms f=1609] status: frame 1609 now 1609 conf 1600 members {1, 3, 4} rollbacks 67 | sent 1274 faulted 123 capped 0 recv 2597 rejected {} bad entry sigs 0 | R18 level 5 signal Some(3) ms | clock offset 208202 us, rate -2347 ppm, rtt excess ms (member, round trip, way back) [(1, Some(15), 11), (3, Some(1), 0)]",
+    "[m4 t=28849ms f=1730] status: frame 1730 now 1730 conf 1720 members {1, 3, 4} rollbacks 67 | sent 1350 faulted 126 capped 0 recv 2766 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1) ms | clock offset 221744 us, rate -1755 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 10), (3, Some(12), 14)]",
+    "[m4 t=30931ms f=1855] status: frame 1855 now 1855 conf 1848 members {1, 3, 4} rollbacks 71 | sent 1441 faulted 133 capped 0 recv 2944 rejected {} bad entry sigs 0 | R18 level 5 signal Some(0) ms | clock offset 298164 us, rate 773 ppm, rtt excess ms (member, round trip, way back) [(1, Some(15), 11), (3, Some(22), 89)]",
+    "[m4 t=32924ms f=1975] status: frame 1975 now 1975 conf 1966 members {1, 3, 4} rollbacks 77 | sent 1524 faulted 142 capped 0 recv 3112 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1) ms | clock offset 285875 us, rate 794 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 11), (3, Some(3), 174)]",
+    "[m4 t=34906ms f=2094] status: frame 2094 now 2094 conf 2080 members {1, 3, 4} rollbacks 83 | sent 1608 faulted 149 capped 0 recv 3290 rejected {} bad entry sigs 0 | R18 level 5 signal Some(1) ms | clock offset 264547 us, rate 2659 ppm, rtt excess ms (member, round trip, way back) [(1, Some(16), 10), (3, Some(15), 135)]",
+    "[m4 t=36965ms f=2217] status: frame 2217 now 2217 conf 2208 members {1, 3, 4} rollbacks 85 | sent 1692 faulted 154 capped 0 recv 3460 rejected {} bad entry sigs 0 | R18 level 5 signal Some(3) ms | clock offset 311309 us, rate 3645 ppm, rtt excess ms (member, round trip, way back) [(1, Some(15), 11), (3, Some(16), 47)]",
+    "[m4 t=38993ms f=2339] status: frame 2339 now 2339 conf 2328 members {1, 3, 4} rollbacks 92 | sent 1768 faulted 163 capped 0 recv 3624 rejected {} bad entry sigs 0 | R18 level 5 signal Some(2) ms | clock offset 332011 us, rate 4296 ppm, rtt excess ms (member, round trip, way back) [(1, Some(2), 10), (3, Some(7), 124)]",
+    "[m4 t=40994ms f=2459] status: frame 2459 now 2459 conf 2448 members {1, 3, 4} rollbacks 104 | sent 1842 faulted 173 capped 0 recv 3792 rejected {} bad entry sigs 0 | R18 level 5 signal Some(0) ms | clock offset 331659 us, rate 2320 ppm, rtt excess ms (member, round trip, way back) [(1, Some(3), 10), (3, Some(20), 204)]",
+    "[m4 t=42983ms f=2578] status: frame 2578 now 2578 conf 2566 members {1, 3, 4} rollbacks 116 | sent 1959 faulted 189 capped 0 recv 3976 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms | clock offset 312544 us, rate 1689 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 10), (3, Some(7), 170)]",
+    "[m4 t=45006ms f=2700] status: frame 2700 now 2700 conf 2692 members {1, 3, 4} rollbacks 123 | sent 2092 faulted 209 capped 0 recv 4141 rejected {} bad entry sigs 0 | R18 level 0 signal Some(2) ms | clock offset 322400 us, rate 1855 ppm, rtt excess ms (member, round trip, way back) [(1, Some(14), 12), (3, Some(12), 76)]",
+    "[m4 t=47028ms f=2821] status: frame 2821 now 2821 conf 2814 members {1, 3, 4} rollbacks 132 | sent 2236 faulted 225 capped 0 recv 4313 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms | clock offset 335902 us, rate 498 ppm, rtt excess ms (member, round trip, way back) [(1, Some(14), 12), (3, Some(18), 116)]",
+    "[m4 t=49020ms f=2941] status: frame 2941 now 2941 conf 2932 members {1, 3, 4} rollbacks 144 | sent 2380 faulted 231 capped 0 recv 4486 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 320885 us, rate -1981 ppm, rtt excess ms (member, round trip, way back) [(1, Some(13), 14), (3, Some(17), 198)]",
+    "[m4 t=51024ms f=3061] status: frame 3061 now 3061 conf 3048 members {1, 3, 4} rollbacks 150 | sent 2524 faulted 254 capped 0 recv 4670 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 321633 us, rate -3598 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 14), (3, Some(17), 182)]",
+    "[m4 t=53062ms f=3183] status: frame 3183 now 3183 conf 3178 members {1, 3, 4} rollbacks 153 | sent 2679 faulted 262 capped 0 recv 4837 rejected {} bad entry sigs 0 | R18 level 0 signal Some(1) ms | clock offset 345066 us, rate -2992 ppm, rtt excess ms (member, round trip, way back) [(1, Some(14), 14), (3, Some(13), 85)]",
+    "[m4 t=55087ms f=3305] status: frame 3305 now 3305 conf 3298 members {1, 3, 4} rollbacks 154 | sent 2835 faulted 276 capped 0 recv 5006 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 362608 us, rate -3133 ppm, rtt excess ms (member, round trip, way back) [(1, Some(15), 14), (3, Some(6), 92)]",
+    "[m4 t=57091ms f=3425] status: frame 3425 now 3425 conf 3416 members {1, 3, 4} rollbacks 159 | sent 2985 faulted 291 capped 0 recv 5185 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 359766 us, rate -2996 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 14), (3, Some(20), 172)]",
+    "[m4 t=59083ms f=3544] status: frame 3544 now 3544 conf 3534 members {1, 3, 4} rollbacks 168 | sent 3136 faulted 307 capped 0 recv 5369 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 345768 us, rate -1195 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 14), (3, Some(15), 155)]",
+    "[m4 t=61104ms f=3666] status: frame 3666 now 3666 conf 3648 members {1, 3, 4} rollbacks 168 | sent 3206 faulted 319 capped 0 recv 5443 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 360085 us, rate 1652 ppm, rtt excess ms (member, round trip, way back) [(1, Some(15), 15), (3, Some(17), 65)]",
+    "[m4 t=63122ms f=3787] status: frame 3787 now 3787 conf 3776 members {1, 3, 4} rollbacks 168 | sent 3261 faulted 326 capped 0 recv 5513 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 366523 us, rate 2271 ppm, rtt excess ms (member, round trip, way back) [(1, Some(14), 15), (3, Some(16), 41)]"
+  ]
+}
