@@ -598,9 +598,9 @@ impl Node {
             if self.me != self.leader {
                 let _ = self.clock.bootstrap(self.leader, local);
             }
-            self.session.ids().into_iter().filter(|&m| m != self.me).collect()
+            vec![]
         };
-        let o = self.clock.tick(local, &members, self.synced);
+        let o = self.clock.tick(local, &members);
         if o != self.offset_us {
             self.offset_us = o;
             self.core.set_offset(o);
