@@ -2298,6 +2298,9 @@ exclusion and its fork proof stay as they are, and there is no fork-proof indica
   thing. Nothing is secret, and nothing depends on non-admins not seeing it.
 
 * **"Holding the session"**: whom confirmation is waiting on, and for how long.
+  * **Thresholds are starting values** (same ruling): W/4 for 1 s here, 3 windows and 100 ms below. The
+    scenarios check them: in each, an honest slow member is never shown as a withholder, and ordinary
+    jitter names nobody.
   * **Shown only when confirmation lags:** the present frame P minus the confirmed frame C is at least a
     quarter of the speculation window (30 frames at the 120-frame window, 0.5 s) and has been for at least
     1 s. Ordinary lag is 7-17 frames on the scenarios' links [V votechurn, the eight 10.8 repros after
@@ -2340,7 +2343,9 @@ exclusion and its fork proof stay as they are, and there is no fork-proof indica
     window k − 2's settled data, the same data Part B uses. Fed members are left out: their acks
     reference nothing. Built with Part B's pe-session port, which brings the reports (@engine-architect:
     the spike reads backlogs directly, so no report exists until then).
-  * **Late acks for the link** [proposal, beyond the ruled text]: nothing that feeds L, Q, E or G is a report;
+  * **Late acks for the link** (@coordinator-opus's ruling 2026-11-01 16:32Z, msg m31b4deb20f58: kept, as
+    part of "implausible reports", labelled plainly as a timing hint, not proof): nothing that feeds L, Q,
+    E or G is a report;
     a member can move them only by behaving, stamping or sending its acks late (@engine-architect). So the
     second hint is about behaviour: a member whose median δ as a receiver over the last 10 s exceeds its
     one-way delay as this replica's clock sync measures it (half the median round trip, 10.4) by more than
