@@ -1106,7 +1106,8 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
                     let guest = need(role, case, "role");
                     let demoted = honest.iter().filter(|&&m| m != p).all(|&m| sim.replica(m, 1).sim.vcm.roles.get(&p) == Some(&guest));
                     println!("REPRO {label}: f={f}, P={p}; {f} removed at {removed}; P demoted: {demoted}; live at the end: {up}; {}", confs(sim, honest));
-                    let fixed = label.ends_with("fixes_off=0x0");
+                    // Validation ties the label's mask to the part's; the verdict reads the run's.
+                    let fixed = sim.replica(honest[0], 1).sim.fixes_off == 0;
                     if label.starts_with("voiddeep valid") {
                         repro_verdict("voiddeep valid", true, gone && up && demoted, "THE LISTING, VALID ON ITS OWN ANCESTRY, IS DECIDED EVERYWHERE", "");
                     } else if fixed {
