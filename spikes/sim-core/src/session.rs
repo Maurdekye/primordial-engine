@@ -2205,6 +2205,8 @@ pub struct WorldSim {
     pb_pending: BTreeSet<MemberId>,
     /// Diagnostics: the last second of my present traced (PE_CONF_TRACE).
     dbg_conf_at: u64,
+    /// Rev 22: each member's leave request in this epoch, taken by value (a vote on itself without a kick).
+    leaves: BTreeMap<MemberId, EntryId>,
     /// Rule 4 (D): bytes reaching me directly from each member, by my present's frame (`note_rx`).
     rx_bytes: BTreeMap<MemberId, BTreeMap<u64, u64>>,
     /// Rule 4 (D): when I first saw each fed member's ack say it is fed (cleared when it leaves the feed).
@@ -2454,6 +2456,7 @@ impl WorldSim {
             pb_pending: BTreeSet::new(),
             dbg_conf_at: u64::MAX,
             rx_bytes: BTreeMap::new(),
+            leaves: BTreeMap::new(),
             fed_seen: BTreeMap::new(),
             vote_hist: BTreeMap::new(),
             genesis: members.to_vec(),
@@ -2928,6 +2931,13 @@ impl WorldSim {
             self.note_proposal(id);
         }
         let mut out = Vec::new();
+        // Revision 22: a leave request (its author's vote on itself, no kick) is taken by value by every replica: it is
+        // evidence for its author's removal on its own, and it may arrive ahead of its author's queued entries (D-5).
+        if let Payload::Vote { epoch, target, kick: 0, .. } = self.entries[&id].payload {
+            if target == member && epoch == self.epoch && self.members.contains(&member) {
+                self.leaves.entry(member).or_insert(id);
+            }
+        }
         // Revision 22: a fed member takes part in the view change outside its log. It holds votes, proposals,
         // prevotes and precommits by value (each signed on itself, O2-1), as PF-1 holds precommits, since it can't
         // place them in chain order without the log. A kick needs the kicker's chain segment (D73-1, not built): a
@@ -3939,6 +3949,32 @@ impl WorldSim {
 
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
     /// every replica judges it.
+    /// Revision 22: ask to leave (a member under a floor whose removal needs a fed member's vote leaves on its own,
+    /// path 4): a vote on myself without a kick, freezing my own head. Sent first, ahead of queued entries (D-5).
+    /// Revision 22: whether I've asked to leave in this epoch.
+    pub fn leaving(&self) -> bool {
+        self.leaves.contains_key(&self.me)
+    }
+
+    pub fn request_leave(&mut self) -> Option<Entry> {
+        if !self.members.contains(&self.me) || self.leaves.contains_key(&self.me) {
+            return None;
+        }
+        let e = Entry {
+            member: self.me,
+            seq: self.my_seq + 1,
+            prev: self.my_last,
+            stamp: self.frame.max(self.now),
+            payload: Payload::Vote { epoch: self.epoch, target: self.me, seq: 0, frozen: (self.my_seq, self.my_last), kick: 0 },
+            carried: None,
+            link: 0,
+        };
+        let e = self.publish(e);
+        self.leaves.insert(self.me, e.id());
+        self.ev(format!("member {} asks to leave", self.me));
+        Some(e)
+    }
+
     pub fn kick(&mut self, target: MemberId) -> Entry {
         let epoch = self.epoch;
         self.author_vc(Payload::Kick { epoch, target })
@@ -4334,6 +4370,17 @@ impl WorldSim {
             run.members.remove(&x);
             run.roles.remove(&x);
         }
+        // Revision 22: a member's own leave request removes it on its own, cut at the head it froze.
+        let leavers: Vec<(MemberId, EntryId)> = self.leaves.iter().map(|(&x, &id)| (x, id)).filter(|(x, _)| run.members.contains(x)).collect();
+        for (x, id) in leavers {
+            if remove.iter().any(|r: &Removal| r.member == x) {
+                continue;
+            }
+            let Some(Payload::Vote { frozen, .. }) = self.entries.get(&id).map(|e| e.payload.clone()) else { continue };
+            remove.push(Removal { member: x, votes: vec![id], cut: frozen, kick: 0 });
+            run.members.remove(&x);
+            run.roles.remove(&x);
+        }
         // A join's boundary is about now plus a join lead: a request expiring before it is not proposed.
         let lead_at = (self.now + self.cfg.join_lead).max(self.decided.last().map_or(0, |d| d.0.boundary));
         let carry = self.fixes_off & fix::VC4R2 == 0;
@@ -4557,6 +4604,17 @@ impl WorldSim {
         let mut seen = BTreeSet::new();
         for r in &c.remove {
             let x = r.member;
+            // Revision 22: a member's own leave request removes it on its own, cut at the head it froze.
+            if r.kick == 0 && r.votes.len() == 1 && self.leaves.get(&x) == Some(&r.votes[0]) {
+                let frozen = match self.entries.get(&r.votes[0]).map(|e| &e.payload) {
+                    Some(Payload::Vote { frozen, .. }) => *frozen,
+                    _ => return Some(false),
+                };
+                if !self.members.contains(&x) || !seen.insert(x) || !run.members.contains(&x) || r.cut != frozen {
+                    return Some(false);
+                }
+                continue;
+            }
             if !self.members.contains(&x) || !seen.insert(x) || r.votes.len() < q {
                 return Some(false);
             }
@@ -5168,6 +5226,7 @@ impl WorldSim {
         ));
         // A new epoch: the old one's votes, freezes and view-change state end.
         self.votes.clear();
+        self.leaves.clear();
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
         self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
