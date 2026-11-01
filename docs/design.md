@@ -2625,8 +2625,8 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
     encoding: `world` 32 B, `seq` u32, the parents (u32 count, 32 B each), the change (a code, then
     fixed-width fields). A 64-bit id would let copies with different signatures merge on a 2^32
     birthday collision.
-  * Owner keys sign `"pe-own  " | id`: their own domain, with **no world and no session**. This is
-    the one exception to P23R-3's session-bound facts (`"pe-fact " | world | session_of(world)`): a
+  * Owner keys sign `"pe-own\0\0" | id`: their own domain, with **no world and no session**. This is
+    the one exception to P23R-3's session-bound facts (`"pe-fact\0" | world | session_of(world)`): a
     certificate belongs to the world, must verify in every session of it, and the id already covers
     its `world`.
   * The world id is the genesis certificate's id (its own `world` is zero) until the genesis document
