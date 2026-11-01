@@ -395,7 +395,7 @@ impl WorldSim {
         let held = self.by_author.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
         let Some(end) = [waiting, held].into_iter().flatten().min() else { return };
         let mut bits = 0;
-        if self.lean_wire && below_verified {
+        if self.lean_wire && below_verified && std::env::var("PE_LEANREP").map_or(true, |v| v != "0") {
             bits |= HELD_BELOW;
         }
         if self.run_wire {
