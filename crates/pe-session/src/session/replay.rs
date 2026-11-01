@@ -59,7 +59,9 @@ impl WorldSim {
             self.by_author.insert((e.member, e.seq), id);
             self.entries.insert(id, e.clone());
             self.eff.insert(id, *eff);
-            self.at_frame.entry(*eff).or_default().insert(id);
+            for g in *eff..=*eff + e.payload.extra_frames() {
+                self.at_frame.entry(g).or_default().insert(id);
+            }
         }
         self.conf = u64::MAX / 2;
         while self.frame < frames {
