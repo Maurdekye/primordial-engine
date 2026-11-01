@@ -45,6 +45,9 @@ const MIN_SPAN_US: u64 = 10_000_000;
 const MIN_PAIR_US: u64 = 4_000_000;
 /// A round trip counts toward the RTT excess (R18's clamp) while it is this recent.
 const RTT_FRESH_US: u64 = 2_000_000;
+/// The RTT excess is the least of the last this many round trips (over the best): jitter on a path
+/// then reads as no queue, while a standing queue lifts every one of them (review H1).
+const RTT_EXCESS_SAMPLES: usize = 4;
 /// The offset is predicted from the peer's newest sample within this of its best round trip.
 const NEAR_RTT_US: u64 = 2_000;
 /// The residual correction beyond the frequency, per µs of local time: 12 % while more than `NEAR_US`
@@ -126,7 +129,12 @@ impl PeerClock {
     /// one clock, so neither skew nor a frequency error can fake it.
     fn rtt_excess(&self, local: u64) -> Option<u64> {
         let latest = self.samples.back()?;
-        (latest.0 + RTT_FRESH_US >= local).then(|| latest.3 - self.best_rtt().unwrap_or(latest.3))
+        if latest.0 + RTT_FRESH_US < local {
+            return None;
+        }
+        let best = self.best_rtt().unwrap_or(latest.3);
+        let least = self.samples.iter().rev().take(RTT_EXCESS_SAMPLES).map(|s| s.3).min()?;
+        Some(least - best)
     }
 
     /// The peer's session frequency against this member's raw clock, (1 + ρ)(1 + r_j) - 1, once ρ is
@@ -144,11 +152,6 @@ impl PeerClock {
         let best = self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
         let s = self.samples.iter().rev().find(|s| s.0 >= self.session_from && s.3 <= best + NEAR_RTT_US)?;
         Some(s.1 as f64 + rate * (local as f64 - s.0 as f64))
-    }
-
-    /// The shortest round trip to this peer in the window.
-    pub fn best_rtt_us(&self) -> Option<u64> {
-        self.best_rtt()
     }
 
     fn best_rtt(&self) -> Option<u64> {
@@ -268,8 +271,9 @@ impl ClockSync {
 
     /// The shortest round trip to `peer` in the window.
     pub fn best_rtt_to(&self, peer: u32) -> Option<u64> {
-        self.peers.get(&peer)?.best_rtt_us()
+        self.peers.get(&peer)?.best_rtt()
     }
+
 
     /// The queueing on the round trip to `peer` now (see `PeerClock::rtt_excess`).
     pub fn rtt_excess(&self, peer: u32, local: u64) -> Option<u64> {
