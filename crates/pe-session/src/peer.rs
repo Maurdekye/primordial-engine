@@ -149,6 +149,15 @@ pub struct SessionCore {
     /// congestion. [proposal: 5 s and 30 s, tuned by the 80 kbit/s run.]
     pub recall_calm_us: u64,
     pub forget_us: u64,
+    /// The memory's ceiling: forgotten this long after the last congestion, idle or not, so a
+    /// session of short gestures re-probes finer levels eventually [proposal: 5 min].
+    pub ceiling_us: u64,
+    /// When the uplink was last congested (any queue above 40 ms keeps the memory: review D56-1).
+    congested_t: u64,
+    /// The last tick at which this member was idle (design 7.6): calm before it does not count
+    /// toward lowering into the remembered level, and idle time does not age the memory
+    /// (@coordinator-opus, 2026-11-01; the spike at main 867495a).
+    idle_at: u64,
     /// The highest level at which congestion began (the signal crossed 40 ms upward), if remembered.
     pub congested_at: Option<usize>,
     over: bool,
@@ -204,6 +213,9 @@ impl SessionCore {
             queue_delay_us: None,
             recall_calm_us: 5_000_000,
             forget_us: 30_000_000,
+            ceiling_us: 300_000_000,
+            congested_t: 0,
+            idle_at: 0,
             congested_at: None,
             over: false,
             quiet_us: 0,
@@ -419,14 +431,22 @@ impl SessionCore {
             self.level = self.level.min(HAND_STRIDE.len() - 1);
             let dt = self.last_adapt_us.map_or(0, |t| now_us.saturating_sub(t));
             self.last_adapt_us = Some(now_us);
+            // Design 7.6's idle state: idle calm says nothing about whether the link can carry a
+            // gesture (@coordinator-opus, 2026-11-01).
+            let idle_now = self.sim.idle();
             match self.queue_delay_us {
                 Some(b) if b > RAISE_US => {
                     // D56: remember the level at which congestion began, not the levels the
-                    // controller climbs through while the queue drains.
-                    if !self.over {
-                        self.over = true;
-                        self.congested_at = self.congested_at.max(Some(self.level));
-                    }
+                    // controller climbs through while the queue drains. Any congestion keeps the
+                    // memory, raise or not (review D56-1).
+                    let onset = !self.over;
+                    self.over = true;
+                    self.congested_at = match self.congested_at {
+                        Some(l) if onset => Some(l.max(self.level)),
+                        Some(l) => Some(l),
+                        None => Some(self.level),
+                    };
+                    self.congested_t = now_us;
                     self.quiet_us = 0;
                     self.calm_since = 0;
                     if now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
@@ -436,9 +456,9 @@ impl SessionCore {
                 }
                 Some(b) => {
                     self.over = false;
-                    self.quiet_us += dt;
-                    if self.quiet_us >= self.forget_us {
-                        self.congested_at = None;
+                    // Idle time does not age the memory.
+                    if !idle_now {
+                        self.quiet_us += dt;
                     }
                     if b < CALM_US {
                         if self.calm_since == 0 {
@@ -451,10 +471,23 @@ impl SessionCore {
                 // No signal: hold. Not calm, and the forget timer stops.
                 None => self.calm_since = 0,
             }
+            if self.congested_at.is_some() && (self.quiet_us >= self.forget_us || now_us >= self.congested_t + self.ceiling_us) {
+                self.congested_at = None;
+            }
+            if idle_now {
+                self.idle_at = now_us;
+            }
             if self.level > 0 && self.calm_since > 0 {
+                // Lowering into the remembered level or a finer one takes the longer calm with the
+                // member active throughout: calm while idle never lowers into L (idle calm stops at
+                // L + 1), nor counts once the member is active again. Lowering above L is unchanged.
                 let into = self.level - 1;
-                let calm = if self.congested_at.is_some_and(|c| into <= c) { self.recall_calm_us } else { LOWER_AFTER_US };
-                if now_us >= self.calm_since + calm && now_us >= self.level_t + LOWER_AFTER_US {
+                let (calm, from) = if self.congested_at.is_some_and(|c| into <= c) {
+                    (self.recall_calm_us, self.calm_since.max(self.idle_at))
+                } else {
+                    (LOWER_AFTER_US, self.calm_since)
+                };
+                if now_us >= from + calm && now_us >= self.level_t + LOWER_AFTER_US {
                     self.level = into;
                     self.level_t = now_us;
                     self.calm_since = now_us;

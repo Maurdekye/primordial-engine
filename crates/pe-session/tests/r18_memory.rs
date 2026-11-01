@@ -9,13 +9,25 @@ fn core() -> SessionCore {
     c
 }
 
-/// Run from `from_ms` to `to_ms` with the signal `q(ms)`; returns the level at every millisecond.
+/// Run from `from_ms` to `to_ms` with the signal `q(ms)`, the member active (it touches a ball every
+/// frame, so it is never idle, design 7.6); returns the level at every millisecond.
 fn run(c: &mut SessionCore, from_ms: u64, to_ms: u64, q: impl Fn(u64) -> Option<u64>) -> Vec<usize> {
+    run_as(c, from_ms, to_ms, q, true)
+}
+
+/// The same with the member idle (it authors nothing; only its acks go out).
+fn run_idle(c: &mut SessionCore, from_ms: u64, to_ms: u64, q: impl Fn(u64) -> Option<u64>) -> Vec<usize> {
+    run_as(c, from_ms, to_ms, q, false)
+}
+
+fn run_as(c: &mut SessionCore, from_ms: u64, to_ms: u64, q: impl Fn(u64) -> Option<u64>, busy: bool) -> Vec<usize> {
     let mut v = Vec::new();
     for ms in from_ms..to_ms {
         let now = ms * 1000;
         c.set_link(q(ms));
-        c.begin_tick(now, false);
+        if c.begin_tick(now, false).is_some() && busy {
+            let _ = c.author(Payload::Touch { obj: (ms % 8) as u32, impulse: [0.0, 0.1, 0.0], grab: false }, 0);
+        }
         c.end_tick(now);
         c.outbox();
         v.push(c.level);
@@ -99,4 +111,34 @@ fn a_core_without_a_signal_stays_at_level_0() {
     let mut c = core();
     let v = run(&mut c, 0, 2_000, |_| None);
     assert!(v.iter().all(|&l| l == 0));
+}
+
+#[test]
+fn idle_time_does_not_age_the_memory_and_idle_calm_stops_above_it() {
+    let mut c = core();
+    // Congestion begins at level 0 while the member is active, and the level climbs.
+    run(&mut c, 0, 500, |_| Some(60_000));
+    assert_eq!(c.congested_at, Some(0));
+    // 40 s idle and calm: the memory stays (idle time does not count toward the 30 s), and idle calm
+    // lowers to level 1 but not into the remembered level 0.
+    let idle = run_idle(&mut c, 500, 40_500, |_| Some(0));
+    assert_eq!(c.congested_at, Some(0), "40 s of idle time does not age the memory");
+    assert_eq!(*idle.last().unwrap(), 1, "idle calm stops at L + 1");
+    // Active again and calm: into level 0 only after 5 s of active calm, counted from the activity.
+    let active = run(&mut c, 40_500, 47_000, |_| Some(0));
+    let at0 = first_at(&active, 40_500, 0).unwrap();
+    assert!((40_500 + 5_000..40_500 + 5_100).contains(&at0), "level 0 at {at0} ms");
+}
+
+#[test]
+fn the_ceiling_forgets_five_minutes_after_the_last_congestion_idle_or_not() {
+    let mut c = core();
+    assert_eq!(c.ceiling_us, 300_000_000);
+    run(&mut c, 0, 300, |_| Some(60_000));
+    assert_eq!(c.congested_at, Some(0));
+    run_idle(&mut c, 300, 299_000, |_| Some(0));
+    assert_eq!(c.congested_at, Some(0), "not yet 5 minutes");
+    let v = run_idle(&mut c, 299_000, 301_000, |_| Some(0));
+    assert_eq!(c.congested_at, None, "forgotten at the ceiling");
+    assert_eq!(*v.last().unwrap(), 0, "once forgotten, idle calm lowers all the way");
 }
