@@ -191,8 +191,14 @@ impl WorldSim {
                 let k_newest = self.ack_stamps.get(&k).and_then(|a| a.iter().next_back()).map(|(_, st)| *st);
                 match k_newest {
                     Some(st) if st >= r_stamp + guard => lagging.push(k),
-                    // IND-7: recent but early: nothing yet. Old: k is behind, or a gap here.
-                    Some(st) if present.saturating_sub(st) < guard => {}
+                    // IND-7: recent but early. If k's newest ack was already a quarter of a second old
+                    // or more when this replica holds it, k is slow (its view reaches here late):
+                    // behind (k), with that age. Otherwise nothing yet. Old: behind, or a gap here.
+                    Some(st) if present.saturating_sub(st) < guard => {
+                        if present.saturating_sub(st) >= self.cfg.window / 8 {
+                            out.push(Hold::Behind { of: k, frames: present.saturating_sub(st) });
+                        }
+                    }
                     _ => {
                         let kh = self.contiguous.get(&k).copied().unwrap_or(0);
                         if self.by_author.range((k, kh + 1)..=(k, u32::MAX)).next().is_some() {
