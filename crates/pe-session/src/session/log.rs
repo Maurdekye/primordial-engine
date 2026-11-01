@@ -98,6 +98,11 @@ impl WorldSim {
         v.into_iter().map(|e| self.signed(e)).collect()
     }
 
+    /// The id of the version of `(member, seq)` this member holds and references.
+    pub fn id_at(&self, member: MemberId, seq: u32) -> Option<EntryId> {
+        self.by_author.get(&(member, seq)).copied()
+    }
+
     /// The entry `id` with its author's signature, for relaying.
     pub fn signed_entry(&self, id: EntryId) -> Option<SignedEntry> {
         self.entries.get(&id).map(|e| self.signed(e.clone()))
@@ -245,6 +250,164 @@ impl WorldSim {
             self.stats.bad_sigs += 1;
             return vec![];
         }
+        self.insert_verified(se)
+    }
+
+    /// Whether this member's own entry `e` goes to `p` lean: always, unless it is an ack naming
+    /// another member's chain more than [`Self::LEAN_HEAD_SLACK`] entries past what `p`'s newest ack
+    /// holds of it. Such a head may never reach `p` (one past a removed member's cut does not cross a
+    /// partition: bridge), so the lean ack would wait for it; the explicit form is inserted as before.
+    /// A missing previous entry needs no such rule: the chain extends only past it either way.
+    pub fn lean_to(&self, p: MemberId, e: &Entry) -> bool {
+        let held = |q: MemberId| self.refs.get(&(p, q)).and_then(|r| r.keys().next_back()).copied().unwrap_or(0);
+        match &e.payload {
+            Payload::Ack { heads, .. } => heads.iter().all(|&(q, s, _)| q == p || held(q) + Self::LEAN_HEAD_SLACK >= s),
+            _ => true,
+        }
+    }
+    pub const LEAN_HEAD_SLACK: u32 = 32;
+
+    /// At most this many lean entries wait for entries they name.
+    const LEAN_WAIT_MAX: usize = 1024;
+    /// A lean entry waits this long before its explicit form is asked for too: well inside half the
+    /// speculation window (condition (c)); a hole or a head in flight usually arrives sooner.
+    pub const LEAN_HOLD_FRAMES: u64 = 15;
+
+    /// A lean entry from `from` ([`Msg::Lean`]): rebuild its ids from what this member holds, verify,
+    /// insert. One that names an entry this member does not hold yet (its author's previous entry,
+    /// or an ack's head) waits for it, and asks for it as an explicit entry would (the hole from all,
+    /// a head from the acker, who holds it). One still missing a head after
+    /// [`Self::LEAN_HOLD_FRAMES`] also asks the sender for its explicit form. One whose rebuilt form does not verify (this member holds another
+    /// version: a fork) is fetched explicit from the sender at once, so the explicit path sees what it
+    /// would have seen (review conditions (b) and (c), @engine-architect, 2026-11-01).
+    pub fn insert_lean(&mut self, from: MemberId, se: SignedEntry) -> Vec<SignedEntry> {
+        self.stats.lean_in += 1;
+        let (m, seq) = (se.member, se.seq);
+        let (prev_missing, heads_missing) = self.lean_missing(&se);
+        if !prev_missing && heads_missing.is_empty() {
+            return self.insert_rebuilt(from, se);
+        }
+        if m != self.me && self.known.contains(&m) {
+            if prev_missing {
+                let c = self.contiguous.get(&m).copied().unwrap_or(0);
+                self.want_all(m, c + 1, seq - 1);
+            }
+            for (q, s) in heads_missing {
+                if q != self.me {
+                    let c = self.contiguous.get(&q).copied().unwrap_or(0);
+                    self.want_from(from, q, c + 1, s);
+                }
+            }
+            // Condition (c) (S6): an author whose entries arrive is heard from even while they wait,
+            // as an explicit entry past a hole is (insert_entry). The IO authenticates the sender, so
+            // one withheld entry cannot make an honest member look silent.
+            if from == m {
+                self.heard.insert(m, self.now);
+            }
+        }
+        // Design 7.6's idle predicate: a waiting entry keeps this member busy, as an explicit entry
+        // inserted past a hole does, so it does not thin its acks while entries are arriving.
+        self.note_held(&se.entry);
+        self.lean_wait.insert((m, seq), LeanWait { from, se, since: self.now, asked: false });
+        // Bounded: the oldest waiting entries go first (the hole fetch brings them back explicit).
+        while self.lean_wait.len() > Self::LEAN_WAIT_MAX {
+            self.lean_wait.pop_first();
+        }
+        vec![]
+    }
+
+    /// What a lean entry names that this member does not hold: its author's previous entry, and the
+    /// (q, s) of each ack head.
+    fn lean_missing(&self, se: &Entry) -> (bool, Vec<(MemberId, u32)>) {
+        let prev = se.seq > 1 && !self.by_author.contains_key(&(se.member, se.seq - 1));
+        let heads = match &se.payload {
+            Payload::Ack { heads, .. } => heads.iter().filter(|&&(q, s, _)| s > 0 && !self.by_author.contains_key(&(q, s))).map(|&(q, s, _)| (q, s)).collect(),
+            _ => Vec::new(),
+        };
+        (prev, heads)
+    }
+
+    /// Lean entries whose missing entries have arrived since; and, for those still waiting past
+    /// [`Self::LEAN_HOLD_FRAMES`], a request for their explicit form. Called on every receipt and tick.
+    pub fn resolve_lean(&mut self) -> Vec<SignedEntry> {
+        let mut out = Vec::new();
+        loop {
+            let ready: Vec<(MemberId, u32)> = self
+                .lean_wait
+                .iter()
+                .filter(|(_, w)| {
+                    let (p, h) = self.lean_missing(&w.se);
+                    !p && h.is_empty()
+                })
+                .map(|(k, _)| *k)
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            for k in ready {
+                let w = self.lean_wait.remove(&k).expect("listed");
+                self.stats.lean_waited += 1;
+                self.stats.lean_wait_frames += self.now.saturating_sub(w.since);
+                out.extend(self.insert_rebuilt(w.from, w.se));
+            }
+        }
+        // Only for a head this member still lacks: a missing previous entry is already asked for, and
+        // the explicit form could not extend the chain past it either (extend_chain).
+        let now = self.now;
+        let late: Vec<(MemberId, u32)> = self
+            .lean_wait
+            .iter()
+            .filter(|(_, w)| !w.asked && now >= w.since + Self::LEAN_HOLD_FRAMES && !self.lean_missing(&w.se).1.is_empty())
+            .map(|(k, _)| *k)
+            .collect();
+        let due: Vec<(MemberId, MemberId, u32)> = late
+            .into_iter()
+            .map(|k| {
+                let w = self.lean_wait.get_mut(&k).expect("listed");
+                w.asked = true;
+                (w.from, w.se.member, w.se.seq)
+            })
+            .collect();
+        for (from, m, seq) in due {
+            self.stats.lean_fallbacks += 1;
+            self.want_from(from, m, seq, seq);
+        }
+        out
+    }
+
+    fn insert_rebuilt(&mut self, from: MemberId, mut se: SignedEntry) -> Vec<SignedEntry> {
+        let (m, seq) = (se.member, se.seq);
+        let mut ok = true;
+        se.entry.prev = if seq <= 1 { EntryId::NONE } else { self.by_author.get(&(m, seq - 1)).copied().unwrap_or(EntryId::NONE) };
+        if let Payload::Ack { heads, .. } = &mut se.entry.payload {
+            for (q, s, id) in heads.iter_mut() {
+                match self.by_author.get(&(*q, *s)) {
+                    Some(&h) => *id = h,
+                    None if *s == 0 => *id = EntryId::NONE,
+                    None => ok = false,
+                }
+            }
+        }
+        let id = se.id();
+        if ok && self.entries.contains_key(&id) {
+            return vec![];
+        }
+        if !ok || !self.keys.verify(self.world_id, &se) {
+            self.stats.lean_fallbacks += 1;
+            self.want_from(from, m, seq, seq);
+            // Most likely its author holds another version of seq - 1 (a fork): ask everyone for
+            // theirs now, as the explicit form would make this member ask (extend_chain), so the
+            // proof does not wait a round trip more.
+            if ok && seq > 1 && m != self.me {
+                self.want_all(m, seq - 1, seq - 1);
+            }
+            return vec![];
+        }
+        self.insert_verified(se)
+    }
+
+    fn insert_verified(&mut self, se: SignedEntry) -> Vec<SignedEntry> {
+        let id = se.id();
         self.sigs.insert(id, se.sig);
         let out = self.insert_entry(se.entry);
         if !self.entries.contains_key(&id) {
