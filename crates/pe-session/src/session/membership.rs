@@ -1335,14 +1335,16 @@ impl WorldSim {
         for p in seg.iter().rev() {
             if let Payload::Ack { horizon, epoch, .. } = p.payload {
                 let epoch_ok = self.fixes_off & fix::VC5 != 0 || (epoch >= prev_epoch && (epoch <= prev_epoch + 1 || epoch <= adm));
-                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack >= p.stamp && epoch_ok {
+                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack + PACK_MAX - 1 >= p.stamp && epoch_ok {
                     max_h = Some(max_h.map_or(horizon, |x| x.max(horizon)));
                     last_ack = p.stamp;
                     prev_epoch = prev_epoch.max(epoch);
                 }
             }
         }
-        Some(self.fixes_off & fix::VCR9 != 0 || max_h.is_none_or(|h| e.stamp > h))
+        // D73(a), review D73-1: the same bound as `validate`'s admin arm, so a listed admin entry stamped
+        // in the wider ack gap (more than horizon_slack before its author's last ack) is void on both paths.
+        Some(self.fixes_off & fix::VCR9 != 0 || (max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack))
     }
 
     pub(super) fn change_valid(&mut self, c: &Change) -> Option<bool> {
