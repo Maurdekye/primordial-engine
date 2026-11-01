@@ -475,6 +475,14 @@ impl WorldSim {
         let Some((_, &k)) = self.ack_by_stamp.get(&x).and_then(|a| a.range(..=deadline).next_back()) else {
             return Some(false);
         };
+        // Revision 21 (a): once x has voted against m, earlier in its chain than this ack, its vote's frozen head of
+        // m's chain is its last word for holder status too (R3-1 covered stability only). Ordered by x's chain, so
+        // every replica reads it alike.
+        if let Some(rec) = self.votes.get(&m).and_then(|v| v.get(&x)) {
+            if self.entries.get(&rec.id).is_some_and(|v| v.seq < k) && seq > rec.frozen.0 {
+                return Some(false);
+            }
+        }
         let head = self.ack_head_hist.get(&(x, m)).and_then(|h| h.range(..=k).next_back()).map(|(_, &hh)| hh);
         match head {
             // A head of m's chain I don't hold yet: whether it is my version is unproven, so wait (fetching it).
@@ -596,9 +604,14 @@ impl WorldSim {
             .filter(|&&x| x != j)
             .filter_map(|&x| {
                 let es = self.echo_stable(x);
-                let head = self.ack_head_hist.get(&(x, j)).and_then(|h| h.range(..=es).next_back()).map_or(0, |(_, &(h, _))| h);
-                if head > held {
-                    return None;
+                let head = self.ack_head_hist.get(&(x, j)).and_then(|h| h.range(..=es).next_back()).map(|(_, &hh)| hh);
+                // Skipped, not counted, if I can't place its head of j's chain: beyond my held prefix, or (revision
+                // 21, RV20-2) another version at a position I hold. Counted as a lacker, it let a version I don't
+                // hold be vouched with a stamp below a frame this bound confirmed.
+                if let Some((h, hid)) = head {
+                    if h > held || (h > 0 && self.by_author.get(&(j, h)) != Some(&hid)) {
+                        return None;
+                    }
                 }
                 self.ack_stamps.get(&x).and_then(|a| a.range(..=es).next_back()).map(|(_, &st)| st)
             })
