@@ -1,6 +1,6 @@
   joiner admitted at m1: false
   lagprecommit (3 acks once every 1.5 s; 9 casts no view-change vote, so the join needs 3's precommit) with VCR-12's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 224 of frame 344, m2 conf 224 of frame 344, m3 conf 224 of frame 344; at m1: members {1, 2, 3, 9}, evicted []
-RESULT lagprecommit: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
+RESULT lagprecommit: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 170 (t=2.93 s) round 0 removed []
 RESULT lagprecommit: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
 RESULT lagprecommit: m3 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
 RESULT lagprecommit: m5 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
