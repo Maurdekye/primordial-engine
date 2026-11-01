@@ -343,10 +343,10 @@ impl AdminRun {
                     return false;
                 }
                 // 12.4: an admin's explicit promotion lifts the member's rejoin role.
-                if self.role_admin_like(role) {
-                    if let Some(k) = self.keys.get(&member) {
-                        lift_rejoin_role(&mut self.bans, k);
-                    }
+                if self.role_admin_like(role)
+                    && let Some(k) = self.keys.get(&member)
+                {
+                    lift_rejoin_role(&mut self.bans, k);
                 }
                 true
             }
@@ -2120,10 +2120,10 @@ impl WorldSim {
                     Some(Payload::SetRole { member, role, .. }) => {
                         self.vcm.roles.insert(member, role);
                         // 12.4: as in the run, an explicit promotion lifts the member's rejoin role.
-                        if role == ADMIN || self.vcm.role_defs.get(&role).is_some_and(|p| p & perm::ROLES != 0) {
-                            if let Some(k) = self.key_of(member) {
-                                lift_rejoin_role(&mut self.vcm.bans, &k);
-                            }
+                        if (role == ADMIN || self.vcm.role_defs.get(&role).is_some_and(|p| p & perm::ROLES != 0))
+                            && let Some(k) = self.key_of(member)
+                        {
+                            lift_rejoin_role(&mut self.vcm.bans, &k);
                         }
                     }
                     // 12.4: the kick's option, for the target's key (its removal is among the removals).
