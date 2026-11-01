@@ -867,3 +867,26 @@ impl WorldSim {
         self.events.push(format!("[w{} m{} f{} c{}] {s}", self.world_id, self.me, self.frame, self.conf));
     }
 }
+
+#[cfg(test)]
+mod d73_review {
+    use super::*;
+    use crate::sign::test_sign;
+
+    /// Review D73-1 (@design-reviewer's probe): an admin entry stamped within the wider ack lag but
+    /// more than horizon_slack before its author's last ack stamp is void where linked (`validate`),
+    /// and `valid_on_own_branch` (change_valid, VC7R-1) agrees.
+    #[test]
+    fn admin_backdating_bound_agrees_on_both_paths() {
+        let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
+        let a = Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Ack { horizon: 12, heads: vec![], check: None, epoch: 0 }, carried: None };
+        let sa = test_sign(1, a);
+        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3 }, carried: None };
+        let sk = test_sign(1, k);
+        let kid = sk.id();
+        s.insert(sa);
+        s.insert(sk);
+        assert!(s.violations.contains(&kid), "void where linked");
+        assert_eq!(s.valid_on_own_branch(kid), Some(false), "void on its own branch too");
+    }
+}
