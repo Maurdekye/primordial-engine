@@ -1,8 +1,10 @@
 description = """
 P2-4 review round 3, VCR-12: from 1.9 s to 7 s, 3 hears only 4's own acks on time; everything else \
-reaches it 5 s late, while the others decide an epoch. 3 is removed for not keeping up, and its \
-votes, cast in an epoch the others have left, remove none of the members ahead. A check since \
-round 4 (VC3R-8): round 3's exemption is gone, so there is no fix to switch off."""
+reaches it 5 s late, while the others decide an epoch. Any vote it casts is cast in an epoch the \
+others have left and removes none of the members ahead. Since trust survey #4 (no withholding \
+rule) 3 is kept: it holds everyone's confirmation until its link heals, the cost the user \
+accepted. A check since round 4 (VC3R-8): round 3's exemption is gone, so there is no fix to \
+switch off."""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
@@ -63,4 +65,4 @@ honest = [1, 2, 3, 4]
 [[report]]
 kind = "verdict"
 honest = [1, 2, 3, 4]
-label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up)"
+label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is kept and catches up)"
