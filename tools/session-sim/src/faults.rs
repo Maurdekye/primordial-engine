@@ -31,6 +31,7 @@ pub fn is_class(m: &Msg, c: &str) -> bool {
                 | (Payload::Portal { .. }, "portal")
                 | (Payload::Provenance { .. }, "provenance")
                 | (Payload::Ownership { .. }, "ownership")
+                | (Payload::Ban { .. }, "ban")
         ),
         _ => false,
     }

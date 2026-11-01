@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pe_sim_core::ownership::{test_key, Cert, Change, SignRule};
-use pe_sim_core::session::{fix, JoinRule, JoinRules, QuorumRule, Rel, SceneKind, SimConfig, Target, ADMIN};
+use pe_sim_core::session::{fix, JoinRule, JoinRules, QuorumRule, Rejoin, Rel, SceneKind, SimConfig, Target, ADMIN};
 use spike::{ballpit_sweep, Action, Cap, Link, Net, Peer, Sim};
 
 use crate::scenario::{id, ActionSpec, OwnerSpec, CapCfg, LinkCfg, Scenario, SceneCfg, WorldCfg};
@@ -157,10 +157,11 @@ fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, St
         a.define_role.is_some(),
         a.hand_path.is_some(),
         a.owner.is_some(),
+        a.ban.is_some(),
     ];
     if kinds.iter().filter(|&&k| k).count() != 1 {
         return Err(format!(
-            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, hand_path, kick, set_role, define_role, owner: {a:?}"
+            "member {member}: each action needs exactly one of touch, hand, portal, carry, backdated, ballpit_sweep, hand_path, kick, set_role, define_role, owner, ban: {a:?}"
         ));
     }
     if let Some(s) = &a.ballpit_sweep {
@@ -188,7 +189,15 @@ fn expand(a: &ActionSpec, member: u32, hz: u64) -> Result<Vec<(u64, Action)>, St
     } else if let Some(c) = &a.carry {
         Action::Carry { transfer: c.transfer, obj: c.obj, dest: c.dest }
     } else if let Some(k) = &a.kick {
-        Action::Kick { target: k.target }
+        match (k.remove_admin, k.ban, k.perma) {
+            (None, false, false) => Action::Kick { target: k.target },
+            (Some(r), false, false) => Action::KickWith { target: k.target, rejoin: Rejoin::Role(r) },
+            (None, true, false) => Action::KickWith { target: k.target, rejoin: Rejoin::Ban },
+            (None, false, true) => Action::KickWith { target: k.target, rejoin: Rejoin::PermaBan },
+            _ => return Err(format!("member {member}: a kick takes at most one of remove_admin, ban, perma")),
+        }
+    } else if let Some(b) = &a.ban {
+        Action::Ban { key: b.key, on: b.on, perma: b.perma }
     } else if let Some(r) = &a.set_role {
         Action::SetRole { member: r.member, role: r.role }
     } else if let Some(r) = &a.define_role {
@@ -261,6 +270,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
             if !w.members.contains(&pid) && !joiner {
                 continue;
             }
+            if !w.keys.is_empty() {
+                p.identities.insert(wid, w.keys.iter().copied().collect());
+            }
             p.join(wid, &w.members, scene(w.scene), config(w), w.epoch_ms * 1000, plan(w, pid)?);
             p.route(wid, &w.routes);
             let off = fixes_off(w)?;
@@ -311,6 +323,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
             }
             if let Some(o) = &w.ownership {
                 r.sim.set_ownership(Cert::genesis_test(&o.keys, sign_rule(&o.rule)?, o.nonce));
+            }
+            if !w.perma_bans.is_empty() {
+                r.sim.set_perma_bans(w.perma_bans.iter().map(|&n| test_key(n)).collect());
             }
             r.sim.fixes_off = off;
         }
