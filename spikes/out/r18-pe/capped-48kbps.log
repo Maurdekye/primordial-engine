@@ -4,6 +4,6 @@ RESULT   per message      | 151.0 /  62.2 |  499 /  499 |  264 | 338 / 357 | 458
 RESULT     member 1's own hand against its target, over 136 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT   batched          | 140.9 /  63.4 |  499 /  499 |  177 | 338 / 355 | 458 / 461 | 0 (own entries moved: 0) | 20.5/s,  32 | never | m1 5e2f4cccb83814ca / m2 175a302957345e4b replay 5e2f4cccb83814ca DIFFER
 RESULT     member 1's own hand against its target, over 136 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched+adaptive |  48.2 /  50.6 |  326 /  106 |    0 |   0 /   0 |  35 /  35 | 50 (own entries moved: 0) | 14.2/s,  24 | 92 ms | m1 8eb41e88c05540ce / m2 8eb41e88c05540ce replay 8eb41e88c05540ce EQUAL
+RESULT   batched+adaptive |  39.0 /  43.2 |  326 /   99 |    0 |   0 /   0 |  35 /  35 | 35 (own entries moved: 0) | 10.4/s,  24 | 0 ms | m1 8eb41e88c05540ce / m2 8eb41e88c05540ce replay 8eb41e88c05540ce EQUAL
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2672, 1200, 1336, 1642, 1179, 1873] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2052, 100, 100, 100, 1636, 5914] ms
