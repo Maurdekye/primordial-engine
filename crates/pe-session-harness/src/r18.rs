@@ -260,12 +260,17 @@ pub fn capped(o: &Opts) {
                 println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
                 let st = sim.replica(m, 1).sim.stats;
                 println!(
-                    "RESULT     member {m}'s lean entries received: {}, explicit form asked for: {}; waited: {} (mean {:.1} frames); fetch requests sent (whole run): {}",
+                    "RESULT     member {m}'s lean entries received: {}, explicit form asked for: {}; waited: {} (mean {:.1}, max {} frames); fetch requests sent (whole run): {}",
                     st.lean_in,
                     st.lean_fallbacks,
                     st.lean_waited,
                     st.lean_wait_frames as f64 / st.lean_waited.max(1) as f64,
+                    st.lean_wait_max,
                     st.fetches_sent
+                );
+                println!(
+                    "RESULT     member {m}'s rollbacks: {}, max depth {} frames, frames resimulated {}",
+                    st.rollbacks, st.max_depth, st.resim_frames
                 );
             }
         }
