@@ -46,7 +46,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `ballpit/` | 5 | the 500-ball pit: 60 Hz, no loss, input delay 4, 90 Hz, two hands |
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
-| `d80/` | 5 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose, joinrules |
+| `d80/` | 6 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose (V3: the close removes everyone), joinrules, kickadmin (V1-V2) |
 | `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes. On pe-session its outcomes are the spike's, line for line (digests and key names aside) |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
@@ -142,6 +142,8 @@ fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1.
                                     #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S, VC6R1, VC6R3,
                                     #   VC6R4, PF1, VC7R1, VC7R2, RECUT, VC8R1
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
+role_defs = [[2, 1], [3, 2]]        # roles defined at genesis, [role, perms] (after guests; V1-V2)
+roles = [[2, 2], [3, 3]]            # members' roles at genesis, [member, role] (after guests)
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
 ownership = { keys = [10], rule = "all", nonce = 1 }   # world ownership genesis (12.5); rule all, any or k
@@ -168,6 +170,7 @@ throttle_ms = 250                   # background world from throttle_from_ms (de
 throttle_from_ms = 3000
 adapt = true                        # R18 congestion control (opt-in here; see the note below)
 ack_every_ms = 1000                 # this member acks this often
+ack_grid_only = true                # only on its own interval, never at once on leaving idle (7.6; fixture)
 withhold_vc = true                  # Byzantine: casts no view-change entry
 byz_ally = true                     # Byzantine: backs every vote and proposal, applies no decision
 byz_no_precommit = true             # Byzantine: prevotes but never precommits

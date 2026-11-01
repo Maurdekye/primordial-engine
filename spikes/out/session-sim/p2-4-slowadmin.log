@@ -1,13 +1,13 @@
-  slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first) with VCR-8's fix switched off (the behaviour before the fix): the run stopped at t=2234 ms: a replica hit an assertion or a panic; m1 conf 120 of frame 128, m2 conf 120 of frame 128, m3 conf 120 of frame 128, m4 conf 120 of frame 128, m6 conf 101 of frame 128; at m1: members {1, 2, 3, 4}, evicted []
-RESULT slowadmin: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []
+  slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first) with VCR-8's fix switched off (the behaviour before the fix): the run stopped at t=2251 ms: a replica hit an assertion or a panic; m1 conf 122 of frame 129, m2 conf 122 of frame 129, m3 conf 122 of frame 129, m4 conf 122 of frame 129, m6 conf 92 of frame 129; at m1: members {1, 2, 3, 4}, evicted []
+RESULT slowadmin: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 215 (t=3.68 s) round 0 removed []
 RESULT slowadmin: role definitions m1 {1: 0}, m2 {1: 0}, m3 {1: 0}, m4 {1: 0}, m6 {1: 0}
-  m1: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
-  m2: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 54 bad 0
-  m3: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
-  m4: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
-  m6: conf 526 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 72 bad 0
+  m1: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
+  m2: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 54 bad 0
+  m3: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
+  m4: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
+  m6: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 72 bad 0
 RESULT slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first): frames 0..532 honest m1=b7cc3d11e88c04e9 m2=b7cc3d11e88c04e9 m3=b7cc3d11e88c04e9 m4=b7cc3d11e88c04e9 m6=b7cc3d11e88c04e9 | offline replay b7cc3d11e88c04e9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 288 bad 0

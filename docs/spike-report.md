@@ -739,9 +739,18 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
     is demoted, and removes 9 by proof at 4.55 s; before, it removed 9 in round 2 at 3.13 s. slowcapper
     decides the join at 2.72 s and removes 1 at 3.80 s (5.07 and 6.23 s before), while 9's prevotes are
     still held back, so 9 is voted against and kept by two resets.
+* **The user's V1-V3 (08:31Z), after round 8:**
+  * Kicking a member who counts as an admin needs its own permission (V1).
+  * A roles-holder counts as an admin for the last-admin rules (V2 = (b), @coordinator-opus's call).
+  * A close removes every member left (V3).
+  * A replica judges a received kick by the commit rule against its current state, so a refused kick
+    freezes no one.
+  * Evidence: `kickadmin` [V: only the guest is kicked, no one frozen for the two refused kicks, the
+    session stays open after the Admin leaves; with the old receipt check both refused kicks froze their
+    targets], and `adminclose` [V: closed at 432, members 2 and 3 removed].
 * **Not done yet:** the port into `pe-session` (P2-3, @world-chunks) and real networks; removed members
-  are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 are open
-  (22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
+  are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 were open
+  then (fixed since, in P2-5's follow-up; 22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
   widened.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
