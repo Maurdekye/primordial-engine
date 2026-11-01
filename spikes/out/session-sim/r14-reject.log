@@ -1,17 +1,17 @@
   carrier: t=2766ms depart authored in world 1 at frame 160
   carrier: t=3004ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 142
   carrier: t=3504ms arrival confirmed in world 2 (frame 142, accepted=false); verdict authored in world 1 at frame 204 (its sim there at frame 204)
-  carrier: t=3686ms verdict confirmed in world 1; transfer 2295193718719379848 resolved
+  carrier: t=3686ms verdict confirmed in world 1; transfer 1186697181293127913 resolved
   carrier: phase Done accepted Some(false)
   carrier: depart entry final outcome at A frame 160: Accepted
-  m1 world A: object 40 live copies 1; escrow ["T2295193718719379848:Returned"]; arrivals []
-  m2 world A: object 40 live copies 1; escrow ["T2295193718719379848:Returned"]; arrivals []
-  m1 world B: object 40 live copies 0; escrow []; arrivals ["T2295193718719379848:Rejected { frame: 142, until: 730 }"]
-  m3 world B: object 40 live copies 0; escrow []; arrivals ["T2295193718719379848:Rejected { frame: 142, until: 730 }"]
+  m1 world A: object 40 live copies 1; escrow ["T1186697181293127913:Returned"]; arrivals []
+  m2 world A: object 40 live copies 1; escrow ["T1186697181293127913:Returned"]; arrivals []
+  m1 world B: object 40 live copies 0; escrow []; arrivals ["T1186697181293127913:Rejected { frame: 142, until: 730 }"]
+  m3 world B: object 40 live copies 0; escrow []; arrivals ["T1186697181293127913:Rejected { frame: 142, until: 730 }"]
 RESULT r14 reject: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 3 max depth 4 resim frames 15 (2.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 514 frame 534
-  m2 world 1: rollbacks 14 max depth 3 resim frames 58 (8.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 515 frame 533
-  m1 world 2: rollbacks 3 max depth 10 resim frames 32 (3.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
-  m3 world 2: rollbacks 1 max depth 3 resim frames 5 (0.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 423 frame 442
-RESULT r14 reject A world 1: frames 0..500 digests m1=78e8285aa018cf57 m2=78e8285aa018cf57 | offline replay 78e8285aa018cf57 | ALL EQUAL
-RESULT r14 reject B world 2: frames 0..400 digests m1=07da15ef67da2775 m3=07da15ef67da2775 | offline replay 07da15ef67da2775 | ALL EQUAL
+  m1 world 1: rollbacks 3 max depth 4 resim frames 15 (2.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 514 frame 534
+  m2 world 1: rollbacks 14 max depth 3 resim frames 58 (10.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 515 frame 533
+  m1 world 2: rollbacks 3 max depth 10 resim frames 32 (4.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
+  m3 world 2: rollbacks 1 max depth 3 resim frames 5 (0.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 423 frame 442
+RESULT r14 reject A world 1: frames 0..500 digests m1=50f8ee3698fce230 m2=50f8ee3698fce230 | offline replay 50f8ee3698fce230 | ALL EQUAL
+RESULT r14 reject B world 2: frames 0..400 digests m1=9d4affdba687c5cf m3=9d4affdba687c5cf | offline replay 9d4affdba687c5cf | ALL EQUAL
