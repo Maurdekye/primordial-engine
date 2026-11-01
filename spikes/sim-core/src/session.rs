@@ -2935,7 +2935,7 @@ impl WorldSim {
         // Part B, section 3: d(e) is measured for every entry, void or not, so verdicts can't censor it.
         self.win_seqs.entry((e.stamp / WINDOW, m)).or_default().insert(e.seq);
         // Part B, rule 1: a perturbation or hand entry waits for its verdict.
-        if self.localized() && localize::judged(&e.payload) && !self.verdicts.contains_key(&id) {
+        if (self.localized() || self.fed_mode_capable()) && localize::judged(&e.payload) && !self.verdicts.contains_key(&id) {
             self.pending.insert((e.stamp, id));
         }
         // D80: an admin entry stays pending across epochs until a decision judges it.
@@ -3132,6 +3132,16 @@ impl WorldSim {
                 for rs in unmatched {
                     self.want_from(j, m, rs, rs);
                 }
+                // Part B at 3 players (S-2): a fed member's echo counts as its reference, so entries pending across its
+                // switch-in complete under D54.
+                if self.fed_mode_capable() {
+                    let e = self
+                        .echo_refs
+                        .get(&(j, m))
+                        .and_then(|r| r.range(..=mine).rev().find(|(es, (hid, _))| self.by_author.get(&(m, **es)) == Some(hid)))
+                        .map(|(es, _)| *es);
+                    matched = matched.max(e);
+                }
                 match matched {
                     Some(rs) => s = s.min(rs),
                     None => {
@@ -3168,11 +3178,8 @@ impl WorldSim {
         if self.adopting || self.fed.is_some() {
             return;
         }
-        let mut c = u64::MAX;
-        let members: Vec<MemberId> = self.members.iter().copied().collect();
         // Thin links Part B, rule 1: decide the verdicts whose statuses are known.
-        let localized = self.localized();
-        if localized {
+        if self.localized() || self.fed_mode_capable() {
             // Windows 0 and 1 need no data (Q = Q_max). They must exist before the loop below: rule 3's
             // deadline bound reads them, and the loop returns early for a member with neither an echo-stable
             // horizon nor a bound. Initialized after it, a member whose first ack took 2.5 s held conf at 0,
@@ -3182,6 +3189,46 @@ impl WorldSim {
             }
             self.decide_verdicts();
         }
+        let c = if self.fed_mode_capable() {
+            // Part B at 3 players (step 2): fed windows close by rule 3, the others by D54.
+            let c_b = self.conf_candidate(true);
+            let c_d = self.conf_candidate(false);
+            self.walk_windows(c_b, c_d)
+        } else {
+            let localized = self.localized();
+            self.conf_candidate(localized)
+        };
+        if let Some(c) = c {
+            if c > self.conf {
+                self.conf = c;
+            }
+        }
+    }
+
+    /// Part B at 3 players (step 2): the combined frontier. From my confirmed frame, window by window: a fed window
+    /// closes up to rule 3's candidate, a D54 window up to D54's; a window whose mode isn't known yet stops it.
+    fn walk_windows(&self, c_b: Option<u64>, c_d: Option<u64>) -> Option<u64> {
+        let mut f = self.conf;
+        loop {
+            let k = f / WINDOW;
+            let end = (k + 1) * WINDOW;
+            let limit = match self.window_mode(k) {
+                None => return Some(f),
+                Some(true) => c_b,
+                Some(false) => c_d,
+            };
+            let Some(limit) = limit else { return Some(f) };
+            if limit < end {
+                return Some(f.max(limit));
+            }
+            f = end;
+        }
+    }
+
+    /// The confirmed frame one rule set allows: Part B's rule 3 (`part_b`) or D54. None if a member has neither.
+    fn conf_candidate(&mut self, localized: bool) -> Option<u64> {
+        let mut c = u64::MAX;
+        let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
             // Part B, rule 3: a prefix is evidence once echo-stable; D54's stability for 2-3 members.
             let mut s = if localized { self.echo_stable(j) } else { self.stable_seq(j) };
@@ -3208,7 +3255,7 @@ impl WorldSim {
                 (Some(h), Some(&b)) => c = c.min((h + 1).max(b)),
                 (None, Some(&b)) => c = c.min(b),
                 (Some(h), None) => c = c.min(h + 1),
-                (None, None) => return,
+                (None, None) => return None,
             }
         }
         // P2-4: a removed member's entries up to its cut count, and a replica that did not vote
@@ -3242,7 +3289,7 @@ impl WorldSim {
                 c = c.min(s);
             }
         }
-        if self.localized() && c != u64::MAX {
+        if localized && c != u64::MAX {
             self.finalize_windows();
             let next = self.windows.keys().next_back().map_or(0, |&k| k + 1);
             c = c.min(next * WINDOW);
@@ -3250,9 +3297,7 @@ impl WorldSim {
                 c = c.min(j * WINDOW);
             }
         }
-        if c != u64::MAX && c > self.conf {
-            self.conf = c;
-        }
+        (c != u64::MAX).then_some(c)
     }
 
     /// Two signed entries of `m` contradict each other (`a` at seq `k`, `b` another version of it
