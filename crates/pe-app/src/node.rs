@@ -1239,11 +1239,11 @@ impl Node {
             self.last_status = local;
             let (s, t) = (&self.core.sim, &self.traffic);
             let line = format!(
-                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} capped {} recv {} rejected {:?} bad entry sigs {} | R18 level {} signal {:?} ms{} | clock offset {} us, rate {:.0} ppm, rtt excess ms {:?}",
+                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} capped {} recv {} rejected {:?} bad entry sigs {} | R18 level {} signal {:?} ms{} | clock offset {} us, rate {:.0} ppm, rtt excess ms (member, round trip, way back) {:?}",
                 s.frame, s.now, s.conf, s.membership().members(), s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_dropped_by_cap, t.datagrams_received, t.rejected, s.stats.bad_sigs,
                 self.core.level, self.signal_us.map(|v| v / 1000), if self.link_signal { "" } else { " (not fed)" },
                 self.offset_us, self.clock.rate() * 1e6,
-                s.membership().members().iter().filter(|&&m| m != self.me).map(|&m| (m, self.rtt_excess(m, local).map(|x| x / 1000))).collect::<Vec<_>>()
+                s.membership().members().iter().filter(|&&m| m != self.me).map(|&m| (m, self.clock.rtt_excess(m, local).map(|x| x / 1000), self.back_queue(m) / 1000)).collect::<Vec<_>>()
             );
             self.note(line);
         }
