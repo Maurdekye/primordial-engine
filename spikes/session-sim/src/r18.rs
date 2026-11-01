@@ -31,6 +31,10 @@ pub struct Opts {
     pub localize: bool,
     /// The slow member's link recovers at this many ms (its caps are lifted).
     pub slow_until_ms: Option<u64>,
+    /// Thin links Part B: member M freezes its references at T ms (a liar referencing stale versions).
+    pub freeze: Option<(MemberId, u64)>,
+    /// Receivers don't credit fed members' echoes (to measure what the echo carries).
+    pub no_echo: bool,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
 }
@@ -95,7 +99,7 @@ pub fn capped(o: &Opts) {
         })
         .collect();
     for (label, batching, adapt) in transports {
-        let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, localize: o.localize, ..SimConfig::default() };
+        let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, localize: o.localize, echo: !o.no_echo, ..SimConfig::default() };
         let scene = SceneKind::BallPit { balls: 500, hands: 2 };
         let ids: Vec<MemberId> = (1..=o.members).collect();
         let peers: Vec<Peer> = ids
@@ -150,6 +154,11 @@ pub fn capped(o: &Opts) {
             if let Some((ms, sk)) = o.step {
                 if sim.net.now_us == ms * 1000 {
                     sim.net.default_cap = Some(Cap { rate_bps: sk * 1000 / div, burst_bytes: 4000 / div, max_queue_us: 500_000 });
+                }
+            }
+            if let Some((fm, ms)) = o.freeze {
+                if sim.net.now_us == ms * 1000 {
+                    crate::p24r::sim_mut(&mut sim, fm).freeze_others();
                 }
             }
             if let (Some(ms), Some((sm, _))) = (o.slow_until_ms, o.slow) {
@@ -354,6 +363,10 @@ pub fn capped(o: &Opts) {
             let l = sim.replica(1, 1).level_ms;
             if o.localize {
                 println!("RESULT     time on the state feed per member: {} ms", fed_ms.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "));
+                println!(
+                    "RESULT     rule 1's echo, per member: echoes matched/mismatched {}",
+                    ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" ")
+                );
             }
             println!(
                 "RESULT     controller on member 1: time at each level (hand stride {:?}, acks every {:?} frames): {:?} ms",

@@ -90,12 +90,20 @@ impl WorldSim {
 
     /// The newest seq of `x`'s chain that `y`'s acks have referenced in the version I hold, at or below my
     /// own held head (as `stable_seq` matches references, review VC5R-2). 0 if none.
+    /// A fed member's echo (rule 1, TLP-15) counts here as its references: `echo_refs`.
     fn matched_ref(&self, y: MemberId, x: MemberId) -> u32 {
         let held = self.contiguous.get(&x).copied().unwrap_or(0);
-        self.refs
+        let r = self
+            .refs
             .get(&(y, x))
             .and_then(|r| r.range(..=held).rev().find(|(s, (hid, _))| self.by_author.get(&(x, **s)) == Some(hid)))
-            .map_or(0, |(s, _)| *s)
+            .map_or(0, |(s, _)| *s);
+        let e = self
+            .echo_refs
+            .get(&(y, x))
+            .and_then(|r| r.range(..=held).rev().find(|(s, hid)| self.by_author.get(&(x, **s)) == Some(*hid)))
+            .map_or(0, |(s, _)| *s);
+        r.max(e)
     }
 
     /// Rule 1 (TLP-9): the echo-stable prefix of `x`'s chain. Its acks up to this seq have been referenced

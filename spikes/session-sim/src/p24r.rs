@@ -308,13 +308,13 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
                 }
             } else if extra < 10 && now >= next_t {
                 // Ten more acks on B only, so 3's copy of 9's chain is longer than A.
-                let (Some(last), Some(Payload::Ack { horizon, heads, check, epoch })) = (b_last.clone(), b_ack.clone()) else { return };
+                let (Some(last), Some(Payload::Ack { horizon, heads, check, epoch, fed })) = (b_last.clone(), b_ack.clone()) else { return };
                 let mut b = Entry {
                     member: 9,
                     seq: last.seq + 1,
                     prev: last.id(),
                     stamp: last.stamp + 3,
-                    payload: Payload::Ack { horizon: horizon + 3, heads, check, epoch },
+                    payload: Payload::Ack { horizon: horizon + 3, heads, check, epoch, fed },
                     carried: None, link: 0,
                 };
                 b.link = ckpt_link_for(b_ck, b.stamp);
