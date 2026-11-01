@@ -1,26 +1,20 @@
-# Equivocation on real peers (M1 evidence gap 1)
+# Equivocation on real peers, late version (M1 evidence gap 1)
 
-Measured on p2/m1-gaps 6cb68cd (main aa2680b plus pe-app's scripted equivocation), Windows loopback,
-release build (`provenance.txt`): `bash crates/pe-app/m1-equivocate.sh`. Four pe-app processes
-exchange signed UDP datagrams. At 8 s member 3 signs a second version of its latest touch (same seq,
-another impulse) with its own key and sends it to member 1 only.
+Measured on p2/m1-gaps bb5f5f6, Windows loopback, release (`provenance.txt`):
+`bash crates/pe-app/m1-equivocate.sh <pe-app> <out> 7381 late`. Four pe-app processes over signed
+UDP, every one logging member 3's touches (`--watch-member 3`). At 8 s member 3 signs a second version of
+its latest touch (seq 228, stamped 460 and sent at 7.67 s, already below every member's conf) with its
+own key and sends it to member 1 only. `key-lines.txt` has the lines below.
 
-    [m1 t=8003ms f=480] [w1 m1 f480 c477] EQUIVOCATION proof: member 3 signed two versions of seq 226 (1d55c3fc9056a0b4 / ce6a664dbfd35f7d)
-    [m1 t=8011ms f=480] membership decision: epoch 1, removed [3]
-    [m2 t=8007ms f=480] [w1 m2 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 226 (1d55c3fc9056a0b4 / ce6a664dbfd35f7d)
-    [m2 t=8012ms f=480] membership decision: epoch 1, removed [3]
-    [m3 t=8002ms f=479] EQUIVOCATE (scripted): signed a second version of my seq 226 (frame 460) and sent it to member 1 only
-    [m3 t=8005ms f=480] [w1 m3 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 226 (1d55c3fc9056a0b4 / ce6a664dbfd35f7d)
-    [m3 t=8011ms f=480] membership decision: epoch 1, removed [3]
-    [m4 t=8007ms f=480] [w1 m4 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 226 (1d55c3fc9056a0b4 / ce6a664dbfd35f7d)
-    [m4 t=8012ms f=480] membership decision: epoch 1, removed [3]
-
-* Member 1 holds both versions, which is pe-session's transferable proof. Members 2 and 4 hold it
-  within 5 ms, and every member, member 3 included, decides **epoch 1, removed [3]** at about 8.01 s.
-* Members 1, 2 and 4 finish all 1800 frames: **ALL EQUAL**, each equal to its offline replay, 148
-  checks ok, 0 bad, `equivocation_proofs` 1 in each summary (`compare.txt`).
-* Member 3, removed, stops confirming and runs until its timeout ends it, so it writes no summary.
-* What this covers: a late second version of an entry that was already sent (here already confirmed),
-  as in session-sim's `badvote`. A split before either version is seen, with each half of the members
-  holding a different version, is covered only by the simulator's scenarios (prevotefork, fork9,
-  deepfork).
+* **What this covers:** a late second version of an entry that was already sent and confirmed, as in
+  session-sim's `badvote`. There is nothing to repair. The split before confirmation is
+  `../equivocation-split-loopback-windows/`.
+* **Detection:** member 1 sees version 2 at 8.004 s (its conf 476) and holds the proof at once. Members
+  2, 3 and 4 hold it by 8.007 s, and every member decides **epoch 1, removed [3]** by 8.013 s.
+* **Which version counts:** version 1 everywhere, with version 2 withdrawn (`FINAL` lines).
+  pe-session's rule (review NEW-2, `reconcile`): after a proof the member's entries from the disputed
+  seq on are withdrawn unless held identically by every member, so version 1, stable at all of them,
+  stays; after the view change, exactly the cut.
+* **End state:** members 1, 2 and 4 ALL EQUAL, each equal to its offline replay, 0 rollbacks, 148 checks
+  ok, 0 bad, `equivocation_proofs` 1 each (`compare.txt`). Member 3, removed, stops confirming and its
+  timeout ends it, so it writes no summary.

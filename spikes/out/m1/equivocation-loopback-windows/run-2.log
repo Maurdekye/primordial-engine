@@ -1,24 +1,54 @@
-pe-app: member 2 of session 0bd49853956dfca5 on 127.0.0.1:7382; 4 members, 1800 frames
-[m2 t=0ms f=0] session start received: epoch 1234805 (leader clock), my offset 11232 us, best rtt 1208 us
-[m2 t=778ms f=46] status: frame 46 now 46 conf 32 members {1, 2, 3, 4} rollbacks 0 | sent 51 faulted 0 capped 0 recv 49 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 11748 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
-[m2 t=2782ms f=166] status: frame 166 now 166 conf 162 members {1, 2, 3, 4} rollbacks 0 | sent 231 faulted 0 capped 0 recv 239 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 15352 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
-[m2 t=4787ms f=287] status: frame 287 now 287 conf 282 members {1, 2, 3, 4} rollbacks 0 | sent 426 faulted 0 capped 0 recv 444 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 19426 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
-[m2 t=6792ms f=407] status: frame 407 now 407 conf 402 members {1, 2, 3, 4} rollbacks 0 | sent 615 faulted 0 capped 0 recv 646 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 23644 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (3, Some(0), 0), (4, Some(0), 0)]
-[m2 t=8007ms f=480] [w1 m2 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 226 (1d55c3fc9056a0b4 / ce6a664dbfd35f7d)
-[m2 t=8012ms f=480] membership decision: epoch 1, removed [3]
-[m2 t=8797ms f=527] status: frame 527 now 527 conf 522 members {1, 2, 4} rollbacks 0 | sent 823 faulted 0 capped 0 recv 893 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 26977 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=10803ms f=648] status: frame 648 now 648 conf 638 members {1, 2, 4} rollbacks 0 | sent 964 faulted 0 capped 0 recv 1121 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 29621 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (4, Some(0), 0)]
-[m2 t=12808ms f=768] status: frame 768 now 768 conf 768 members {1, 2, 4} rollbacks 0 | sent 1091 faulted 0 capped 0 recv 1325 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 32551 us, rate 33 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=14812ms f=888] status: frame 888 now 888 conf 888 members {1, 2, 4} rollbacks 0 | sent 1218 faulted 0 capped 0 recv 1524 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 34989 us, rate 48 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=16816ms f=1008] status: frame 1008 now 1008 conf 1000 members {1, 2, 4} rollbacks 0 | sent 1345 faulted 0 capped 0 recv 1723 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 38333 us, rate 52 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=18819ms f=1129] status: frame 1129 now 1129 conf 1128 members {1, 2, 4} rollbacks 0 | sent 1471 faulted 0 capped 0 recv 1924 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 41735 us, rate 47 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=20824ms f=1249] status: frame 1249 now 1249 conf 1240 members {1, 2, 4} rollbacks 0 | sent 1596 faulted 0 capped 0 recv 2126 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 45047 us, rate 40 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (4, Some(0), 0)]
-[m2 t=22827ms f=1369] status: frame 1369 now 1369 conf 1368 members {1, 2, 4} rollbacks 0 | sent 1721 faulted 0 capped 0 recv 2327 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 47559 us, rate 32 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=24830ms f=1489] status: frame 1489 now 1489 conf 1488 members {1, 2, 4} rollbacks 0 | sent 1848 faulted 0 capped 0 recv 2525 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 49912 us, rate 25 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (4, Some(0), 0)]
-[m2 t=26833ms f=1609] status: frame 1609 now 1609 conf 1608 members {1, 2, 4} rollbacks 0 | sent 1975 faulted 0 capped 0 recv 2727 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 52997 us, rate 21 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (4, Some(1), 0)]
-[m2 t=28838ms f=1730] status: frame 1730 now 1730 conf 1728 members {1, 2, 4} rollbacks 0 | sent 2102 faulted 0 capped 0 recv 2928 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 55506 us, rate 18 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=30841ms f=1850] status: frame 1850 now 1850 conf 1840 members {1, 2, 4} rollbacks 0 | sent 2172 faulted 0 capped 0 recv 3063 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 57806 us, rate 12 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=32845ms f=1970] status: frame 1970 now 1970 conf 1960 members {1, 2, 4} rollbacks 0 | sent 2233 faulted 0 capped 0 recv 3187 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 60250 us, rate 5 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
-[m2 t=33247ms f=1988] DONE frames 0..1800: digest a5502c49736f6fd5 replay a5502c49736f6fd5 (EQUAL), conf 1976, members [1, 2, 4]
-[m2 t=33247ms f=1988] slow step: 106 ms (receive 0 ms, tick 0 ms, send 106 ms)
+pe-app: member 2 of session b2bb688e19c9b4a1 on 127.0.0.1:7382; 4 members, 1800 frames
+[m2 t=0ms f=0] session start received: epoch 1248091 (leader clock), my offset 12478 us, best rtt 1183 us
+[m2 t=766ms f=45] status: frame 45 now 45 conf 32 members {1, 2, 3, 4} rollbacks 0 | sent 54 faulted 0 capped 0 recv 46 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 13843 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m2 t=1001ms f=60] SEEN member 3 touch seq 9 version 1 (1b3cb043c370e851), stamped 60, at my conf 48, frame 60
+[m2 t=1337ms f=80] SEEN member 3 touch seq 19 version 1 (93ac829a96e88c31), stamped 80, at my conf 77, frame 80
+[m2 t=1669ms f=100] SEEN member 3 touch seq 31 version 1 (04529f71e3d5c849), stamped 100, at my conf 97, frame 100
+[m2 t=2004ms f=120] SEEN member 3 touch seq 41 version 1 (eeae9cd7a07bd6bb), stamped 120, at my conf 117, frame 120
+[m2 t=2338ms f=140] SEEN member 3 touch seq 53 version 1 (fcf5c52b1adbf719), stamped 140, at my conf 137, frame 140
+[m2 t=2669ms f=159] SEEN member 3 touch seq 63 version 1 (cf56c96ca3b7a3b6), stamped 160, at my conf 157, frame 159
+[m2 t=2772ms f=166] status: frame 166 now 166 conf 162 members {1, 2, 3, 4} rollbacks 0 | sent 227 faulted 0 capped 0 recv 234 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 17187 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m2 t=3001ms f=179] SEEN member 3 touch seq 75 version 1 (3919a30352793062), stamped 180, at my conf 177, frame 179
+[m2 t=3336ms f=200] SEEN member 3 touch seq 85 version 1 (d3b960a3163db825), stamped 200, at my conf 197, frame 200
+[m2 t=3667ms f=219] SEEN member 3 touch seq 97 version 1 (2ffd0dbfbfeb9cec), stamped 220, at my conf 217, frame 219
+[m2 t=4004ms f=240] SEEN member 3 touch seq 107 version 1 (9086a42486c3155a), stamped 240, at my conf 237, frame 240
+[m2 t=4338ms f=260] SEEN member 3 touch seq 118 version 1 (003f8fa1514a80c3), stamped 260, at my conf 258, frame 260
+[m2 t=4670ms f=280] SEEN member 3 touch seq 128 version 1 (b222b2cbe75715f8), stamped 280, at my conf 277, frame 280
+[m2 t=4777ms f=286] status: frame 286 now 286 conf 282 members {1, 2, 3, 4} rollbacks 0 | sent 424 faulted 0 capped 0 recv 442 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 20953 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m2 t=5004ms f=300] SEEN member 3 touch seq 140 version 1 (2dfa78c527c43393), stamped 300, at my conf 297, frame 300
+[m2 t=5336ms f=320] SEEN member 3 touch seq 150 version 1 (8dc747073c1ccba1), stamped 320, at my conf 316, frame 320
+[m2 t=5669ms f=340] SEEN member 3 touch seq 162 version 1 (0bc7750ea898c830), stamped 340, at my conf 337, frame 340
+[m2 t=6003ms f=360] SEEN member 3 touch seq 172 version 1 (44cf29cf1b2e6b41), stamped 360, at my conf 356, frame 360
+[m2 t=6336ms f=380] SEEN member 3 touch seq 184 version 1 (eb4b67e6b8ba7a29), stamped 380, at my conf 377, frame 380
+[m2 t=6669ms f=399] SEEN member 3 touch seq 194 version 1 (e1d928dffd2d7a54), stamped 400, at my conf 397, frame 399
+[m2 t=6781ms f=406] status: frame 406 now 406 conf 402 members {1, 2, 3, 4} rollbacks 0 | sent 615 faulted 0 capped 0 recv 645 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 24743 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (3, Some(0), 0), (4, Some(0), 0)]
+[m2 t=7002ms f=420] SEEN member 3 touch seq 206 version 1 (04dd03e09ba0002f), stamped 420, at my conf 417, frame 420
+[m2 t=7336ms f=440] SEEN member 3 touch seq 216 version 1 (c9d153b1faab8bff), stamped 440, at my conf 437, frame 440
+[m2 t=7670ms f=460] SEEN member 3 touch seq 228 version 1 (8d06c76b094fbc0e), stamped 460, at my conf 457, frame 460
+[m2 t=8004ms f=480] SEEN member 3 touch seq 238 version 1 (cfb9032dac425edb), stamped 480, at my conf 476, frame 480
+[m2 t=8006ms f=480] SEEN member 3 touch seq 228 version 2 (b2f569a263a8a871), stamped 460, at my conf 478, frame 480
+[m2 t=8006ms f=480] [w1 m2 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 228 (8d06c76b094fbc0e / b2f569a263a8a871)
+[m2 t=8013ms f=480] membership decision: epoch 1, removed [3]
+[m2 t=8337ms f=500] SEEN member 3 touch seq 251 version 1 (7d6df58e43d92280), stamped 500, at my conf 498, frame 500
+[m2 t=8669ms f=520] SEEN member 3 touch seq 262 version 1 (f2b96f424600b794), stamped 520, at my conf 518, frame 520
+[m2 t=8786ms f=527] status: frame 527 now 527 conf 522 members {1, 2, 4} rollbacks 0 | sent 817 faulted 0 capped 0 recv 891 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 28941 us, rate 0 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=9002ms f=539] SEEN member 3 touch seq 273 version 1 (774034f69cc07c3f), stamped 540, at my conf 537, frame 539
+[m2 t=9336ms f=560] SEEN member 3 touch seq 284 version 1 (926d85d0e3a964a9), stamped 560, at my conf 558, frame 560
+[m2 t=9671ms f=580] SEEN member 3 touch seq 295 version 1 (543eed20ad390a6b), stamped 580, at my conf 578, frame 580
+[m2 t=10002ms f=600] SEEN member 3 touch seq 306 version 1 (408d74723c30ff79), stamped 600, at my conf 598, frame 600
+[m2 t=10790ms f=647] status: frame 647 now 647 conf 638 members {1, 2, 4} rollbacks 0 | sent 962 faulted 0 capped 0 recv 1115 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 31460 us, rate 20 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=12796ms f=767] status: frame 767 now 767 conf 758 members {1, 2, 4} rollbacks 0 | sent 1082 faulted 0 capped 0 recv 1316 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 35768 us, rate 33 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=14800ms f=888] status: frame 888 now 888 conf 878 members {1, 2, 4} rollbacks 0 | sent 1211 faulted 0 capped 0 recv 1517 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 39164 us, rate 31 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=16805ms f=1008] status: frame 1008 now 1008 conf 1008 members {1, 2, 4} rollbacks 0 | sent 1338 faulted 0 capped 0 recv 1722 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 42773 us, rate 29 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=18809ms f=1128] status: frame 1128 now 1128 conf 1128 members {1, 2, 4} rollbacks 0 | sent 1458 faulted 0 capped 0 recv 1921 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 46117 us, rate 29 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=20813ms f=1248] status: frame 1248 now 1248 conf 1248 members {1, 2, 4} rollbacks 0 | sent 1584 faulted 0 capped 0 recv 2122 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 49537 us, rate 27 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(1), 0)]
+[m2 t=22817ms f=1369] status: frame 1369 now 1369 conf 1360 members {1, 2, 4} rollbacks 0 | sent 1710 faulted 0 capped 0 recv 2322 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 53204 us, rate 22 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=24820ms f=1489] status: frame 1489 now 1489 conf 1488 members {1, 2, 4} rollbacks 0 | sent 1837 faulted 0 capped 0 recv 2520 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 55710 us, rate 21 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(1), 0)]
+[m2 t=26825ms f=1609] status: frame 1609 now 1609 conf 1608 members {1, 2, 4} rollbacks 0 | sent 1960 faulted 0 capped 0 recv 2718 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 59669 us, rate 15 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(0), 0)]
+[m2 t=28830ms f=1729] status: frame 1729 now 1729 conf 1728 members {1, 2, 4} rollbacks 0 | sent 2087 faulted 0 capped 0 recv 2918 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 63404 us, rate 13 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (4, Some(1), 0)]
+[m2 t=30833ms f=1849] status: frame 1849 now 1849 conf 1840 members {1, 2, 4} rollbacks 0 | sent 2159 faulted 0 capped 0 recv 3055 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 65753 us, rate 12 ppm, rtt excess ms (member, round trip, way back) [(1, Some(1), 0), (4, Some(1), 0)]
+[m2 t=32836ms f=1970] status: frame 1970 now 1970 conf 1960 members {1, 2, 4} rollbacks 0 | sent 2220 faulted 0 capped 0 recv 3179 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 68771 us, rate 11 ppm, rtt excess ms (member, round trip, way back) [(1, Some(0), 0), (4, Some(1), 0)]
+[m2 t=33141ms f=1988] FINAL: member Some(3) touch seq 228: version 1 counts, version 2 withdrawn
+[m2 t=33258ms f=1988] DONE frames 0..1800: digest a5502c49736f6fd5 replay a5502c49736f6fd5 (EQUAL), conf 1976, members [1, 2, 4]
+[m2 t=33258ms f=1988] slow step: 117 ms (receive 0 ms, tick 0 ms, send 117 ms)
 member 2: frames 0..1800 digest a5502c49736f6fd5 replay a5502c49736f6fd5 (EQUAL), conf 1976, members at end [1, 2, 4], rollbacks 0, checks ok 148 bad 0
