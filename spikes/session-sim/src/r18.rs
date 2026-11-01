@@ -20,6 +20,8 @@ pub struct Opts {
     pub slow: Option<(MemberId, u64)>,
     /// The cap drops to this many kbit/s at this time (ms): (ms, kbit/s).
     pub step: Option<(u64, u64)>,
+    /// A second gesture this many seconds after the first ends (adaptive transport only).
+    pub gap_s: Option<u64>,
 }
 
 pub fn capped(o: &Opts) {
@@ -40,10 +42,22 @@ pub fn capped(o: &Opts) {
         println!("RESULT r18 capped: at t = {ms} ms every cap drops to {sk} kbit/s");
     }
     println!("RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state");
+    // A second gesture this many seconds after the first ends, for the first-gesture-after-idle cells.
+    let shift_frames = o.gap_s.map(|g| (340 - 120) + g * hz);
+    let transports: Vec<(&str, bool, bool)> = if o.gap_s.is_some() {
+        vec![("batched+adaptive", true, true)]
+    } else {
+        vec![("per message", false, false), ("batched", true, false), ("batched+adaptive", true, true)]
+    };
     // Member 1's targets by frame (its hand poses are stamped at their clock frame), for its own-hand
     // error: a kinematic hand reaches its frame's target within the frame, so after frame f it should be
     // at target(f) (D73(a) makes this exact even when R18 thins the stream).
-    let plan1 = crate::history::sweep(hz, 500);
+    let mut plan1 = crate::history::sweep(hz, 500);
+    if let Some(sh) = shift_frames {
+        for (fr, acts) in crate::history::sweep(hz, 500) {
+            plan1.entry(fr + sh).or_default().extend(acts);
+        }
+    }
     let target: BTreeMap<u64, [f64; 3]> = plan1
         .iter()
         .filter_map(|(&f, v)| {
@@ -53,7 +67,7 @@ pub fn capped(o: &Opts) {
             })
         })
         .collect();
-    for (label, batching, adapt) in [("per message", false, false), ("batched", true, false), ("batched+adaptive", true, true)] {
+    for (label, batching, adapt) in transports {
         let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, ..SimConfig::default() };
         let scene = SceneKind::BallPit { balls: 500, hands: 2 };
         let ids: Vec<MemberId> = (1..=o.members).collect();
@@ -91,6 +105,13 @@ pub fn capped(o: &Opts) {
         // Member 1's own hand against its target, the first time each sweep frame is simulated (mm).
         let mut own_err: BTreeMap<u64, f64> = BTreeMap::new();
         let (mut rb0, mut rb1) = (0u64, 0u64);
+        // The second gesture's window, its queue peak (to 10 s after it), its stalls and recovery.
+        let sh_us = shift_frames.map_or(0, |s| s * 1_000_000 / hz);
+        let (w2, w3) = (w0 + sh_us, w1 + sh_us);
+        let mut q2 = vec![0u64; n];
+        let mut paused2 = vec![0u64; n];
+        let mut back2: Option<u64> = None;
+        let mut level2: Option<usize> = None;
         while sim.net.now_us <= sim.end_us {
             if let Some((ms, sk)) = o.step {
                 if sim.net.now_us == ms * 1000 {
@@ -139,6 +160,26 @@ pub fn capped(o: &Opts) {
             // Back to real time: every member within 20 frames of confirmation, queues under 50 ms.
             if now >= w1 && back.is_none() && all_lag_ok && q_now < 50_000 {
                 back = Some(now - w1);
+            }
+            if shift_frames.is_some() {
+                if now >= w2 && level2.is_none() {
+                    level2 = Some(sim.replica(1, 1).level);
+                    for (i, &m) in ids.iter().enumerate() {
+                        paused2[i] = sim.replica(m, 1).sim.stats.paused_frames;
+                    }
+                }
+                if now >= w2 && now < w3 + 10_000_000 {
+                    for (i, &m) in ids.iter().enumerate() {
+                        for &p in &ids {
+                            if p != m {
+                                q2[i] = q2[i].max(sim.net.backlog_us(m, p));
+                            }
+                        }
+                    }
+                }
+                if now >= w3 && back2.is_none() && all_lag_ok && q_now < 50_000 {
+                    back2 = Some(now - w3);
+                }
             }
             sim.net.now_us += 1000;
         }
@@ -198,6 +239,26 @@ pub fn capped(o: &Opts) {
             own_err.values().sum::<f64>() / own_err.len().max(1) as f64,
             own_err.values().cloned().fold(0.0, f64::max)
         );
+        if let Some(g) = o.gap_s {
+            let s0b = 120 + shift_frames.unwrap();
+            let lat2: Vec<String> = conf_at
+                .iter()
+                .zip(&ids)
+                .map(|(c, m)| {
+                    let l: Vec<f64> = stamps.iter().filter(|&&s| s >= s0b && (s as usize) < c.len()).map(|&s| (c[s as usize] as f64 - (100_000 + s * dt_us) as f64) / dt_us as f64).collect();
+                    let max = l.iter().cloned().fold(0.0, f64::max);
+                    format!("m{m} {max:.1} / {:.1}", l.iter().sum::<f64>() / l.len().max(1) as f64)
+                })
+                .collect();
+            println!(
+                "RESULT     second gesture ({g} s after the first): level at its start {:?}; max queue ms per member {}; stalled frames during it {}; back to real time after it {}; hand entries' latency (max / mean) {}",
+                level2,
+                join(q2.iter().map(|q| format!("{}", q / 1000)).collect()),
+                join(ids.iter().enumerate().map(|(i, &m)| format!("{}", sim.replica(m, 1).sim.stats.paused_frames - paused2[i])).collect()),
+                back2.map_or("never".to_string(), |t| format!("{} ms", t / 1000)),
+                lat2.join(", ")
+            );
+        }
         let ev = sim.replica(1, 1).sim.members_evicted().clone();
         if !ev.is_empty() {
             println!("RESULT     removed from the session (cut, from frame): {ev:?}");
