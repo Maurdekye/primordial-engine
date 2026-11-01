@@ -122,6 +122,9 @@ impl V<'_> {
         if let (Some(o), false) = (obj, a.missing_ok) {
             self.object(w, o, &what);
         }
+        if a.owner.is_some() && self.s.world.get(&w.to_string()).is_some_and(|c| c.ownership.is_none()) {
+            self.err(format!("{what}: an owner certificate in world {w}, which has no `ownership`"));
+        }
         if let Some(c) = &a.carry {
             if !self.s.world.contains_key(&c.dest.to_string()) {
                 self.err(format!("{what}: carry to world {}, which does not exist", c.dest));
@@ -525,6 +528,21 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     let reached = v.frames_reached(*world);
                     if *frames > reached {
                         v.err(format!("check_world: frames {frames} is past the last frame every member of world {world} reaches ({reached})"));
+                    }
+                }
+            }
+            Report::Ownership { world, frames, at, .. } => {
+                checks += 1;
+                if v.world(*world, "ownership") {
+                    if v.s.world[&world.to_string()].ownership.is_none() {
+                        v.err(format!("ownership: world {world} has no `ownership`"));
+                    }
+                    let reached = v.frames_reached(*world);
+                    if *frames > reached {
+                        v.err(format!("ownership: frames {frames} is past the last frame every member of world {world} reaches ({reached})"));
+                    }
+                    if at.iter().any(|f| f > frames) {
+                        v.err(format!("ownership: `at` {at:?} reaches past frames {frames}"));
                     }
                 }
             }

@@ -362,6 +362,13 @@ pub struct Replica {
     pub level: usize,
     level_t: u64,
     calm_since: u64,
+    /// D56: the level at which congestion began (the highest such level while the memory lasts), and
+    /// when the uplink was last congested. The controller lowers into that level or any finer one only
+    /// after a longer calm (`CONGESTED_REENTRY_US`), and forgets it after `CONGESTED_MEMORY_US` with no
+    /// congestion.
+    congested: Option<(usize, u64)>,
+    /// Whether the uplink queue was above 40 ms at the last tick, to find where congestion begins.
+    over: bool,
     hand_last: BTreeMap<u32, u64>,
     /// Time spent at each congestion level (ms), and the highest level reached.
     pub level_ms: [u64; 6],
@@ -442,6 +449,8 @@ impl Peer {
                 level: 0,
                 level_t: 0,
                 calm_since: 0,
+                congested: None,
+                over: false,
                 hand_last: BTreeMap::new(),
                 level_ms: [0; 6],
                 pending_accept: Vec::new(),
@@ -471,6 +480,12 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
 /// hand entry and an ack share one datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
+/// or any finer level only after this much calm instead of 300 ms, and forgets L after
+/// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
+/// cap cycled about every 3 s.
+pub const CONGESTED_REENTRY_US: u64 = 5_000_000;
+pub const CONGESTED_MEMORY_US: u64 = 30_000_000;
 
 impl Sim {
     pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
@@ -617,12 +632,31 @@ impl Sim {
             let members: Vec<MemberId> = r.sim.audience();
             if r.adapt {
                 // R18 congestion control. Signal: this member's own uplink queue delay (the spike
-                // reads the bottleneck directly; production estimates it from the one-way delay
-                // gradient of acks, as WebRTC's GCC does). Up fast, down slowly.
+                // reads the bottleneck directly; production estimates a LEDBAT-style one-way queueing
+                // delay, 10.9). Up fast, down slowly, and slower still into the level where congestion
+                // began or a finer one.
                 let b = members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
-                if b > 40_000 && now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
-                    r.level += 1;
-                    r.level_t = now;
+                if b > 40_000 {
+                    // D56: remember the level at which congestion began, not the levels climbed through
+                    // while the queue drains. Any congestion keeps the memory, raise or not (review
+                    // D56-1): it is forgotten only after 30 s with none.
+                    let onset = !r.over;
+                    r.over = true;
+                    let l = match r.congested {
+                        Some((l, _)) if onset => l.max(r.level),
+                        Some((l, _)) => l,
+                        None => r.level,
+                    };
+                    r.congested = Some((l, now));
+                    if now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
+                        r.level += 1;
+                        r.level_t = now;
+                    }
+                } else {
+                    r.over = false;
+                }
+                if r.congested.is_some_and(|(_, t)| now >= t + CONGESTED_MEMORY_US) {
+                    r.congested = None;
                 }
                 if b < 10_000 {
                     if r.calm_since == 0 {
@@ -631,7 +665,12 @@ impl Sim {
                 } else {
                     r.calm_since = 0;
                 }
-                if r.level > 0 && r.calm_since > 0 && now >= r.calm_since + 300_000 && now >= r.level_t + 300_000 {
+                let calm_needed = if r.level > 0 && r.congested.is_some_and(|(l, _)| r.level - 1 <= l) {
+                    CONGESTED_REENTRY_US
+                } else {
+                    300_000
+                };
+                if r.level > 0 && r.calm_since > 0 && now >= r.calm_since + calm_needed && now >= r.level_t + 300_000 {
                     r.level -= 1;
                     r.level_t = now;
                     r.calm_since = now;

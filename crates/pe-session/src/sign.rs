@@ -82,6 +82,11 @@ pub enum FactKind {
     Rel,
     /// Round 4's join signature (a fix-off fixture).
     Join,
+    /// World ownership (12.5): a certificate's body, its id, which owner keys sign
+    /// (`ownership::owner_message`).
+    OwnerCert,
+    /// World ownership: a session committed a certificate (`ownership::Attest`), signed by its members.
+    OwnerCommit,
 }
 
 impl FactKind {
@@ -93,6 +98,8 @@ impl FactKind {
             FactKind::Verdict => "primordial-engine 2026 fact verdict v1",
             FactKind::Rel => "primordial-engine 2026 fact rel v1",
             FactKind::Join => "primordial-engine 2026 fact join v1",
+            FactKind::OwnerCert => "primordial-engine 2026 fact owner-cert v1",
+            FactKind::OwnerCommit => "primordial-engine 2026 fact owner-commit v1",
         }
     }
 }
