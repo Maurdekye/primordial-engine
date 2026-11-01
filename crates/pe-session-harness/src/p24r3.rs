@@ -512,8 +512,12 @@ fn aheadlink_for(cut_us: u64, lost: bool) {
     let late = move || if lost { Fate::Drop } else { Fate::Delay(5_000_000) };
     net.filter = Some(Box::new(move |t, _w, from, to, m| {
         let during = (1_900_000..1_900_000 + cut_us).contains(&t);
+        let own_ack = |e: &SignedEntry| from == 4 && e.member == 4 && matches!(e.payload, Payload::Ack { .. });
         match m {
-            Msg::Entry(e) if during && to == 3 && !(from == 4 && e.member == 4 && matches!(e.payload, Payload::Ack { .. })) => late(),
+            Msg::Entry(e) if during && to == 3 && !own_ack(e) => late(),
+            // A run (shown here as a batch of its entries) is on time only if all of it is 4's own acks:
+            // otherwise 4's relays and hole-fill answers would reach 3 on time and the premise is gone.
+            Msg::Batch(v) if during && to == 3 && v.iter().any(|x| !matches!(x, Msg::Entry(e) if own_ack(e))) => late(),
             _ if during && to == 3 && from != 4 => late(),
             _ => Fate::Deliver,
         }

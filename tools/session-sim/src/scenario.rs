@@ -110,6 +110,10 @@ pub struct WorldCfg {
     /// Review repros: these fixes switched off on every replica (`fix::VC2` etc., by name).
     #[serde(default)]
     pub fixes_off: Vec<String>,
+    /// Option 2: no runs on the wire (every entry explicit, signed on itself), the harness's
+    /// `set_no_runs`. Review repros' fix-off parts use it where the bug's path needs entries one by one.
+    #[serde(default)]
+    pub no_runs: bool,
     /// D80: define role `role` with no permissions and give it to every member and joiner, except
     /// `admins`, who keep ADMIN (the spike's `guests`).
     pub guests: Option<GuestsCfg>,

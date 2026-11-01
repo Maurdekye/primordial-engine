@@ -324,6 +324,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 r.sim.set_perma_bans(w.perma_bans.iter().map(|&n| test_key(n)).collect());
             }
             r.sim.fixes_off = off;
+            if w.no_runs {
+                r.sim.run_wire = false;
+            }
         }
         peers.push(p);
     }

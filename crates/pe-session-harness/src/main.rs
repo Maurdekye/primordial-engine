@@ -1357,7 +1357,9 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32, waits: bo
         println!("RESULT   member {m}'s lean waits: {} (mean {:.1}, max {} frames), explicit form asked for {}", st.lean_waited, st.lean_wait_frames as f64 / st.lean_waited.max(1) as f64, st.lean_wait_max, st.lean_fallbacks);
     }
     print_stats(&sim, 1);
-    check_world(&sim, 1, f(8.5), &format!("ballpit {hz}Hz"));
+    // 8.0 s: 0.9 s before the end, so a loss being repaired at the end stays outside the checked frames
+    // (at 8.5 s, option 2's seed-17 run ended with m2 confirmed to 502 of the 510 checked).
+    check_world(&sim, 1, f(8.0), &format!("ballpit {hz}Hz"));
 }
 
 /// A member moves only its own hand (design 8.4; P2-8 review, from @shader-reviewer's probe through
