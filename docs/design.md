@@ -2462,6 +2462,9 @@ and the engager's hand replayed after the gesture had ended.
          stride-8 pack falls from 129 to 67 bytes in the spike. Ids hash the canonical encoding: one mode per
          pack, chosen by its largest step. So a pack sent in another mode decodes to the same entry and
          the same id.
+         * **For the pe-session port** (review PA-3): the decoder accepts a non-canonical mode. That is safe
+           only while ids and signatures are computed over the re-encoded entry, never over the bytes
+           received.
      * An unpacked entry keeps D53's `span`: its target is reached over that many frames, and dead
        reckoning (6.10) covers the gaps. Both builds' authors now send span 1, since a pack covers what a
        span did. D52's coast (up to 6 frames at most 3 m/s, then hold) applies only to a gap past the span
@@ -2646,6 +2649,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
       (_teams/1827/thin-link-partA-variants.md).
       * **Landed: v3cap,** which is v3's climb rule plus v6's D56 cap. It is the only variant with both no
         cell worse than main and no added lag: the others' lag is 14-19 frames where nothing stalls.
+        * **One stated exception** (review PA-1): in the 2-player 16 kbit/s thin-sweeper cell, the second
+          gesture starts at level 1, and the observer's latency on it rises from a mean of 11.4 frames to
+          19.9, with no stall [V spikes/out/r18-thin, gap-up-k16-m2]. The comparison counts whole cells,
+          and in that one main stalls 452 frames in the first gesture.
       * **This overrides the order fixed before the data.** That order was: no cell worse than main, then
         the others' total stalls, then lag. Strictly, it picks v3, with 56 fewer stalled frames, nearly all in
         one cell (12 kbit/s, 4 players: 57 against 116).
