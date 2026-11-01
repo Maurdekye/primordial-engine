@@ -29,7 +29,7 @@ use pe_mcp::backend::{Authored, Counters, DrivenPeer, EntryId, EntryStatus, Inte
 use pe_mcp::model::*;
 use pe_mcp::sim_view;
 use pe_session::peer::{AuthorError, Event, SessionCore};
-use pe_session::session::{digest, final_log, replay_sim_like, Payload, SceneKind, WorldSim};
+use pe_session::session::{digest, final_log, replay_sim_like, Msg, Payload, SceneKind, WorldSim};
 use pe_session::splitmix64;
 use serde::{Deserialize, Serialize};
 
@@ -301,6 +301,10 @@ pub struct NodeOpts {
     pub faults: Vec<FaultStep>,
     /// The member stops dead at this session time (a scripted drop-out): no goodbye, no flush.
     pub crash_at_ms: Option<u64>,
+    /// A scripted equivocation (M1's fault, design 10.8): at this session time the member signs a
+    /// second version of its latest touch (same seq, another impulse) and sends it to this member
+    /// only. Honest members holding both versions have a transferable proof and vote it out.
+    pub equivocate: Option<(u64, u32)>,
     pub touches_per_s: u32,
     /// Author this member's hand along a sweep every frame (ball pit only); R18 thins it.
     pub hand_sweep: bool,
@@ -352,6 +356,9 @@ pub struct Summary {
     pub rollbacks: u64,
     pub max_rollback_depth: u64,
     pub checks_ok: u64,
+    /// Members this replica holds a proof of equivocation against (pe-session's count).
+    #[serde(default)]
+    pub equivocation_proofs: u64,
     pub checks_bad: u64,
     pub entries_authored: u64,
     pub clock_offset_us: i64,
@@ -425,6 +432,8 @@ pub struct Node {
     row_bytes: u64,
     rng: u64,
     crash_at_ms: Option<u64>,
+    equivocate: Option<(u64, u32)>,
+    sim_events_seen: usize,
     plan: BTreeMap<u64, Vec<Payload>>,
     authored: u64,
     out_dir: PathBuf,
@@ -564,6 +573,8 @@ impl Node {
             row_bytes: 0,
             rng: splitmix64(o.me as u64 ^ 0x5EED),
             crash_at_ms: o.crash_at_ms,
+            equivocate: o.equivocate,
+            sim_events_seen: 0,
             plan,
             authored: 0,
             out_dir: o.out_dir,
@@ -975,6 +986,26 @@ impl Node {
         }
     }
 
+    /// The scripted equivocation (see `NodeOpts::equivocate`), once.
+    fn equivocate(&mut self) {
+        let Some((at, to)) = self.equivocate else { return };
+        if self.session_ms().is_none_or(|ms| ms < at) {
+            return;
+        }
+        let me = self.me;
+        let mine = self.core.sim.all_entries().into_iter().filter(|e| e.member == me && matches!(e.payload, Payload::Touch { .. })).max_by_key(|e| e.seq);
+        let Some(x) = mine else { return };
+        self.equivocate = None;
+        let mut x2 = x.clone();
+        if let Payload::Touch { obj, impulse, grab } = x.payload {
+            x2.payload = Payload::Touch { obj, impulse: [impulse[0] + 1.0, impulse[1], impulse[2]], grab };
+        }
+        x2.carried = None;
+        let se = self.session.key_ring(self.key.clone()).sign(WORLD, x2);
+        self.note(format!("EQUIVOCATE (scripted): signed a second version of my seq {} (frame {}) and sent it to member {to} only", x.seq, x.stamp));
+        self.push_control(to, Item::Msg(Msg::Entry(se)));
+    }
+
     // ---- R18 ----------------------------------------------------------------------------------------
 
     /// The controller's input: the largest queue delay members report on my datagrams to them.
@@ -1110,6 +1141,12 @@ impl Node {
     }
 
     fn drain_events(&mut self) {
+        // pe-session's own log of an equivocation proof, into this node's log.
+        let new: Vec<String> = self.core.sim.events.get(self.sim_events_seen..).unwrap_or_default().iter().filter(|e| e.contains("EQUIVOCATION")).cloned().collect();
+        self.sim_events_seen = self.core.sim.events.len();
+        for e in new {
+            self.note(e);
+        }
         for e in self.core.events() {
             match e {
                 Event::Epoch { epoch, removed } => self.note(format!("membership decision: epoch {epoch}, removed {removed:?}")),
@@ -1172,6 +1209,7 @@ impl Node {
             rollbacks: s.stats.rollbacks,
             max_rollback_depth: s.stats.max_depth,
             checks_ok: s.stats.checks_ok,
+            equivocation_proofs: s.stats.equivocations,
             checks_bad: s.stats.checks_bad,
             entries_authored: self.authored,
             clock_offset_us: self.offset_us,
@@ -1223,6 +1261,7 @@ impl Node {
                 std::process::exit(3);
             }
         }
+        self.equivocate();
         let t0 = self.local_us();
         self.receive_all();
         let t1 = self.local_us();
