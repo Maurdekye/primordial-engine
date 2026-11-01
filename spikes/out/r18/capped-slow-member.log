@@ -9,8 +9,8 @@ RESULT   batched          | 147.5 /  76.8 /  72.0 |  500 /  500 /  500 | 1069 | 
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 245.6 / 130.8, m2 248.7 / 133.7, m3 414.0 / 60.7 (188 of 222 unconfirmed)
 RESULT     member 1's own hand against its target, over 154 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (55, 192)}
-RESULT   batched+adaptive |  48.4 /  38.0 /  37.6 |  499 /  500 /  500 |   53 |  95 /  99 / 927 | 215 / 218 / 1040 | 0 (own entries moved: 0) | 13.4/s,   3 | 553 ms | m1 e7c6c61e6e69b6ad / m2 e7c6c61e6e69b6ad replay e7c6c61e6e69b6ad EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 215.6 / 65.4, m2 218.8 / 66.9, m3 301.9 / 30.3 (27 of 58 unconfirmed)
-RESULT     member 1's own hand against its target, over 154 gesture frames: mean 112.29 mm, max 229.92 mm
-RESULT     removed from the session (cut, from frame): {3: (72, 328)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [10008, 5100, 400, 400, 400, 3594] ms
+RESULT   batched+adaptive |  66.6 /  39.9 /  38.4 |  500 /  498 /  500 |  106 | 204 / 207 / 924 | 322 / 326 / 1038 | 22 (own entries moved: 0) | 14.2/s,  10 | 2378 ms | m1 12624ed5cee35a55 / m2 12624ed5cee35a55 replay 12624ed5cee35a55 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 323.0 / 118.8, m2 326.3 / 121.1, m3 415.1 / 49.0 (29 of 63 unconfirmed)
+RESULT     member 1's own hand against its target, over 156 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     removed from the session (cut, from frame): {3: (57, 208)}
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [8185, 5100, 400, 400, 400, 5417] ms

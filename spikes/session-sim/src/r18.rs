@@ -149,8 +149,12 @@ pub fn capped(o: &Opts) {
         let last = live.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap().saturating_sub(1);
         let hs: Vec<u64> = live.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
         let r1 = &sim.replica(1, 1).sim;
-        let members: Vec<MemberId> = r1.members.iter().copied().collect();
-        let rd = digest(&replay_sim_with(1, scene, r1.cfg, &members, &r1.peers_of, &final_log(r1), last).hashes, last);
+        // The offline replay is built from a live member's log, and keeps that replica's hand owners, as
+        // the suite's check does: a demoted member's log stops at its removal, and its hand entries
+        // before it still count (D73 made member 1 removable here, on the shared uplink).
+        let rl = &sim.replica(live[0], 1).sim;
+        let members: Vec<MemberId> = rl.members.iter().copied().collect();
+        let rd = digest(&replay_sim_like(rl, scene, &members, &final_log(rl), last).hashes, last);
         let restamped = r1.all_entries().iter().filter(|e| e.member == 1 && r1.effective_frame(e.id()).is_some_and(|f| f != e.stamp)).count();
         let join = |v: Vec<String>| v.join(" / ");
         let s2 = sim.replica(2, 1).sim.stats;

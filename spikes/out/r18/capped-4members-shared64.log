@@ -6,7 +6,8 @@ RESULT     member 1's own hand against its target, over 136 gesture frames: mean
 RESULT   batched          | 224.3 / 118.7 / 119.3 / 118.7 |  499 /  499 /  499 /  499 | 4665 | 1532 / 1547 / 1547 / 1548 | 1652 / 1655 / 1655 / 1655 | 0 (own entries moved: 0) | 20.5/s,  33 | never | m1 3b023880285873df / m2 a82509d7a10daa5d / m3 a82509d7a10daa5d / m4 a82509d7a10daa5d replay 3b023880285873df DIFFER
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 51.5 / 19.9 (200 of 222 unconfirmed), m2 36.8 / 19.3 (204 of 222 unconfirmed), m3 36.7 / 19.3 (204 of 222 unconfirmed), m4 36.7 / 19.4 (204 of 222 unconfirmed)
 RESULT     member 1's own hand against its target, over 142 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched+adaptive |  53.8 /  72.6 /  72.6 /  72.6 |  256 /  171 /  171 /  171 |    0 |   0 /   0 /   0 /   0 |  39 /  39 /  37 /  39 | 0 (own entries moved: 0) | 11.7/s,  18 | 0 ms | m1 739a44c35db52515 / m2 739a44c35db52515 / m3 739a44c35db52515 / m4 739a44c35db52515 replay 739a44c35db52515 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 39.9 / 17.5, m2 40.1 / 18.6, m3 37.1 / 18.5, m4 39.8 / 18.6
-RESULT     member 1's own hand against its target, over 221 gesture frames: mean 153.07 mm, max 602.08 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [4004, 5100, 5100, 5100, 5100, 5498] ms
+RESULT   batched+adaptive |  79.1 /  71.4 /  71.4 /  71.4 |  493 /  454 /  449 /  452 |   21 | 1408 / 156 / 157 / 157 | 1378 / 273 / 274 / 274 | 27 (own entries moved: 0) | 10.4/s, 115 | 1442 ms | m2 55a3b2037864b5c2 / m3 55a3b2037864b5c2 / m4 55a3b2037864b5c2 replay 55a3b2037864b5c2 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 269.9 / 106.7, m2 270.0 / 108.1, m3 270.1 / 108.1, m4 270.1 / 108.1
+RESULT     member 1's own hand against its target, over 156 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     removed from the session (cut, from frame): {1: (55, 156)}
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2202, 100, 100, 367, 500, 26633] ms
