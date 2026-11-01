@@ -2,11 +2,12 @@ RESULT ballpit 60 Hz, 1 hand(s), input delay 4 frames, loss 2%: sweep window 3.6
 RESULT   perturbation source (hand target per frame + acks): hand entries 286 (10393 B/s payload, 14456 B/s wire est.), acks 259 (18399 B/s wire est.), all messages 33406 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 285 balls changed per frame; exact state 1166995 B/s, quantized ~26 B/ball 446798 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 28.9 acks/s (7511 B/s wire est.), m2 28.9 acks/s (7511 B/s wire est.)
   sweep-window traffic ack: 259 messages, 53872 B payload (18399 B/s wire est.)
   sweep-window traffic entry/hand: 286 messages, 38038 B payload (14456 B/s wire est.)
   sweep-window traffic fetch: 31 messages, 403 B payload (551 B/s wire est.)
-RESULT   member 2 during the sweep: 2.2 rollbacks/s, 18.6 re-simulated frames/s, re-sim 0.18 ms per rendered sim frame (40 ms over the window); step avg 0.240 ms; max depth 9
+RESULT   member 2 during the sweep: 2.2 rollbacks/s, 18.6 re-simulated frames/s, re-sim 0.17 ms per rendered sim frame (37 ms over the window); step avg 0.225 ms; max depth 9
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
   m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 534
-  m2 world 1: rollbacks 8 max depth 9 resim frames 68 (40.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m2 world 1: rollbacks 8 max depth 9 resim frames 68 (37.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=03f2dd329f453bf0 m2=03f2dd329f453bf0 | offline replay 03f2dd329f453bf0 | ALL EQUAL
