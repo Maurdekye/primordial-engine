@@ -145,6 +145,13 @@ impl WorldSim {
         self.ack_epoch_from.get(&m).and_then(|a| a.iter().filter(|&(_, &s)| s <= seq).map(|(&ep, _)| ep).max()).map_or(base, |ep| ep.max(base))
     }
 
+    /// F2: Part B's rules apply to entry `e`: its epoch (by its author's chain) had 4 or more members. Rule 2 reads
+    /// this rather than the current membership, so a frame re-simulated after a removal, and the offline replay,
+    /// apply the rules the frame's entries were judged by.
+    pub(super) fn part_b_entry(&self, e: &Entry) -> bool {
+        self.cfg.localize && self.ctx(self.entry_epoch(e.member, e.seq)).is_some_and(|c| c.members.len() >= 4)
+    }
+
     /// F2: epoch `epoch`'s members and quorum. The current epoch's from the live membership.
     pub(super) fn ctx(&self, epoch: u32) -> Option<Ctx> {
         let members: Vec<MemberId> = if epoch == self.epoch { self.members.iter().copied().collect() } else { self.members_at(epoch)? };

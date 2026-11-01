@@ -5747,9 +5747,11 @@ impl WorldSim {
     ) -> Outcome {
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
+                // Part B, rule 2, by the entry's own epoch (F2).
+                let pb = self.part_b_entry(e);
                 // Part B, rule 2: this simulation's decision replaces any earlier one; a touch refused below
                 // never reaches it.
-                if self.localized() {
+                if pb {
                     self.rule2.remove(&id);
                 }
                 // Review HO-1: an object a member owns (a hand) is touched by no one else: refused,
@@ -5794,8 +5796,8 @@ impl WorldSim {
                     if self.eff.get(&id) == Some(&e.stamp) {
                         // Thin links Part B, rule 2: a write its author made without having seen an older
                         // one by another member is skipped; the push above still acts.
-                        let stale = self.localized() && self.stale_write(e, cobj);
-                        if self.localized() {
+                        let stale = pb && self.stale_write(e, cobj);
+                        if pb {
                             self.rule2.insert(id, stale);
                         }
                         if stale {
@@ -5805,7 +5807,7 @@ impl WorldSim {
                             }
                         } else {
                             carry.push((cobj, st));
-                            if self.localized() {
+                            if pb {
                                 self.note_write(cobj, e.member, e.seq, e.stamp);
                             }
                         }
@@ -6381,6 +6383,12 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
     s.windows = like.windows.clone();
     s.provisional = like.provisional.clone();
     s.ack_head_hist = like.ack_head_hist.clone();
+    // F2: and the epochs, so rule 2 applies by each entry's own epoch as it did live.
+    s.genesis = like.genesis.clone();
+    s.decided = like.decided.clone();
+    s.epoch = like.epoch;
+    s.ack_epoch_from = like.ack_epoch_from.clone();
+    s.admitted_epoch = like.admitted_epoch.clone();
     s.replaying = true;
     s.run_log(log, frames)
 }
