@@ -21,7 +21,9 @@ Run 1 (seq 235; run 2, seq 236, is the same to the millisecond's spread):
 
 * **Truly split:** both versions are stamped at frame 479, above every receiver's conf (477-478) when they
   arrive. Member 4 does not see A until after its proof: the proof is member 3's next entry, which names A
-  as its predecessor, against B. Members 1 and 2 see B only in member 4's proof broadcast.
+  as its predecessor, against B. Member 4's proof line names that entry's id, not A's: run 1 reads "two
+  versions of seq 235 (e48f2208... / 1e97b175...)", where 1e97b175 is member 3's seq 236, and run 2 names
+  seq 237. Members 1 and 2 see B only in member 4's proof broadcast.
 * **No disagreement was simulated.** Members hold different versions for 2-6 ms. Every line about the
   split, from the first sightings to the decisions, is at frame 480 in run 1. pe-session simulates once
   per new clock frame and folds that frame's late arrivals into one rollback, so by its next simulation
