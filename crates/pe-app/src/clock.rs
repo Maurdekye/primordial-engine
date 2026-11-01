@@ -132,8 +132,8 @@ impl PeerClock {
         if latest.0 + RTT_FRESH_US < local {
             return None;
         }
-        let best = self.best_rtt().unwrap_or(latest.3);
-        let least = self.samples.iter().rev().take(RTT_EXCESS_SAMPLES).map(|s| s.3).min()?;
+        let best = self.queue_best()?;
+        let least = self.samples.iter().rev().take(RTT_EXCESS_SAMPLES).filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
         Some(least - best)
     }
 
@@ -152,6 +152,13 @@ impl PeerClock {
         let best = self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
         let s = self.samples.iter().rev().find(|s| s.0 >= self.session_from && s.3 <= best + NEAR_RTT_US)?;
         Some(s.1 as f64 + rate * (local as f64 - s.0 as f64))
+    }
+
+    /// The shortest round trip since frame 0 (in the window): R18's one-way estimates restart there
+    /// too, and the clamp compares the two (a delay step between the node's start and frame 0 read as
+    /// forward queue, measured).
+    fn queue_best(&self) -> Option<u64> {
+        self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()
     }
 
     fn best_rtt(&self) -> Option<u64> {
@@ -271,7 +278,7 @@ impl ClockSync {
 
     /// The shortest round trip to `peer` in the window.
     pub fn best_rtt_to(&self, peer: u32) -> Option<u64> {
-        self.peers.get(&peer)?.best_rtt()
+        self.peers.get(&peer)?.queue_best()
     }
 
 
