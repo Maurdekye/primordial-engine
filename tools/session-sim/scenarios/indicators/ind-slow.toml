@@ -1,5 +1,5 @@
 description = """
-Admin indicators (design 10.8): an honest slow member. Every link to and from member 3 takes 700 +- \
+Admin indicators (design 10.8): an honest slow member. Every link to and from member 3 takes 400 +- \
 20 ms. Confirmation lags past a quarter of the window, and admin 1's indicators show 3 as behind, \
 never as not referencing, and never flag its acks late: its round trip explains them."""
 include = ["../common/review.toml"]
@@ -12,10 +12,10 @@ end_ms = 8000
 seed = 7
 link = { delay_ms = 30, jitter_ms = 10 }
 links = [
-    { from = 3, to = 1, delay_ms = 700, jitter_ms = 20 },
-    { from = 3, to = 2, delay_ms = 700, jitter_ms = 20 },
-    { from = 1, to = 3, delay_ms = 700, jitter_ms = 20 },
-    { from = 2, to = 3, delay_ms = 700, jitter_ms = 20 },
+    { from = 3, to = 1, delay_ms = 400, jitter_ms = 20 },
+    { from = 3, to = 2, delay_ms = 400, jitter_ms = 20 },
+    { from = 1, to = 3, delay_ms = 400, jitter_ms = 20 },
+    { from = 2, to = 3, delay_ms = 400, jitter_ms = 20 },
 ]
 
 [[report]]
