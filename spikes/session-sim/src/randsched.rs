@@ -318,8 +318,11 @@ fn run_seed(seed: u64, fixes_off: u64, verbose: bool) -> Outcome {
         None => (Vec::new(), Vec::new(), None),
     };
     let v_side2 = v_side.clone();
-    // S6's exception: members whose round-0 prevotes are drawn late (past W/2) are not clean-linked.
-    let unclean: Vec<MemberId> = late.as_ref().map(|l| l.0.clone()).unwrap_or_default();
+    // S6's exceptions, the honest members that are not clean: the drawn late members (round-0 prevotes
+    // held back past W/2), and VCR-12's slow acker, which does not keep up (its declared horizon falls
+    // up to 1.5 s behind its present).
+    let mut unclean: Vec<MemberId> = late.as_ref().map(|l| l.0.clone()).unwrap_or_default();
+    unclean.extend(sch.slow_acker);
     // When each late member's round-0 prevote first went out (us).
     let late_t0: Rc<RefCell<BTreeMap<MemberId, u64>>> = Rc::default();
     let mut net = Net::new(link(30, 10, 0), (seed & 0xFFFF) | 1);
@@ -591,11 +594,12 @@ fn check(
             }
         }
     }
-    // S6 no false accusation (experimental until the widening's review; INVARIANTS.md): an honest
-    // member never votes to remove or demote an honest, non-crashed member whose links are clean, every
-    // message it sends reaching every honest member within W/2 frames. The generator's honest members are
-    // clean but for the drawn late members (`unclean`, round-0 prevotes held back past W/2). VC4R-1's harm
-    // is such a vote; with one faulty member it never gathers a quorum, so S5 alone misses it.
+    // S6 no false accusation (INVARIANTS.md): an honest member never votes to remove or demote an
+    // honest, non-crashed, clean member: every message it sends reaches every honest member within W/2
+    // frames, it acks at its configured interval, and its declared horizon stays within W/2 of its
+    // present (review S6-1: a stalled member's few messages arrive promptly, yet silence and demotion
+    // rightly vote against it). The generator's honest members are clean but for `unclean`. VC4R-1's
+    // harm is such a vote; with one faulty member it never gathers a quorum, so S5 alone misses it.
     for &h in honest {
         for ev in &sim.replica(h, 1).sim.events {
             let Some(rest) = ev.split_once("] member ").map(|(_, r)| r) else { continue };
