@@ -7,7 +7,7 @@ RESULT     removed from the session (cut, from frame): {3: (17, 32)}
 RESULT   batched          | 248.1 / 124.7 / 148.0 |  499 /  482 /  500 | 1301 | 101 / 106 / 1048 | 221 / 224 / 1166 | 0 (own entries moved: 0) | 31.1/s,   3 | 0 ms | m1 18c392f18d36bdc9 / m2 18c392f18d36bdc9 replay 18c392f18d36bdc9 EQUAL
 RESULT     member 1's own hand against its target, over 120 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (17, 32)}
-RESULT   batched+adaptive |  83.4 /  49.2 /  40.7 |  479 /  479 /  498 |  239 | 102 / 106 / 1047 | 221 / 224 / 1166 | 32 (own entries moved: 0) |  8.2/s,  10 | 0 ms | m1 18c392f18d36bdc9 / m2 18c392f18d36bdc9 replay 18c392f18d36bdc9 EQUAL
+RESULT   batched+adaptive |  83.4 /  49.2 /  40.7 |  479 /  479 /  498 |  239 | 102 / 106 / 1047 | 221 / 224 / 1166 | 33 (own entries moved: 0) |  8.2/s,  10 | 0 ms | m1 18c392f18d36bdc9 / m2 18c392f18d36bdc9 replay 18c392f18d36bdc9 EQUAL
 RESULT     member 1's own hand against its target, over 120 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (17, 32)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [14771, 400, 400, 400, 400, 3531] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [10071, 5100, 400, 400, 400, 3531] ms
