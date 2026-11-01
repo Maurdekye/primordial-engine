@@ -58,11 +58,18 @@ const CURRENT_SAMPLES: usize = 4;
 /// clock-frequency error cannot fake queueing beyond what the round trip, on one clock, shows). Below
 /// R18's 10 ms calm level, so a clamped signal can still read as calm.
 const RTT_CLAMP_MARGIN_US: u64 = 5_000;
-/// A report is clamped only after it has stood above the round-trip bound this long: a frequency
-/// error drifts slowly and persists, while at a congestion onset the round trip catches up within a
-/// ping interval and a queued ping's age (with the ping phase unlucky, a clamp without grace held
-/// back the 80 kbit/s run's first raise: queue peak 480 against 394 ms, measured).
-const RTT_CLAMP_GRACE_US: u64 = 1_500_000;
+/// While a report stands above its round-trip bound (an episode), the reporter gets a probe ping
+/// this often (review H1). Each probe that returns gives a verdict: a queue if the lesser excess of
+/// it and the probe before shows at least half the report it was sent against (and more than the
+/// margin), else the report is a clock's drift and is clamped. A queue lifts every probe; jitter
+/// lifts one now and then, and a drifted report soon stands far above any jitter. Until the first
+/// verdict the report passes, so the onset of real congestion is not clamped: dipping the signal
+/// there made D56 remember a coarse level as the congested one (measured). A drift passes for about
+/// one probe's round trip instead of a fixed grace.
+const PROBE_EVERY_US: u64 = 100_000;
+/// With no probe back (lost) the episode is clamped after this long; a probe unanswered this long
+/// is forgotten.
+const RTT_CLAMP_GRACE_US: u64 = 500_000;
 /// A member's report counts at its last value for 5 s (fresh within 1 s), then is ignored.
 const REPORT_HOLD_US: u64 = 5_000_000;
 /// The scripted bandwidth cap's token bucket (the harness's `Cap` model).
@@ -136,6 +143,20 @@ struct Shaper {
     row_max_us: u64,
 }
 
+/// R18's clamp: one reporter's episode above the round-trip bound (see `PROBE_EVERY_US`).
+#[derive(Default)]
+struct Over {
+    since: u64,
+    last_probe: Option<u64>,
+    /// Probes out: send time -> the report then.
+    probes: BTreeMap<u64, u64>,
+    /// The last probe's round-trip excess.
+    last_excess: Option<u64>,
+    /// A probe has come back; whether the latest verdict is a queue.
+    decided: bool,
+    queue: bool,
+}
+
 /// R18: what this node measures on one member's datagrams to it.
 #[derive(Default)]
 struct RxLink {
@@ -152,6 +173,13 @@ struct RxLink {
 }
 
 impl RxLink {
+    /// Forget the delays measured so far (the loss counts stay).
+    fn restart(&mut self) {
+        self.base.clear();
+        self.recent.clear();
+        self.q_us = None;
+    }
+
     fn sample(&mut self, st: Stamp, recv_us: u64) {
         let ts = match self.last_ts {
             None => st.ts as i64,
@@ -326,8 +354,6 @@ pub struct Node {
     last_burst: u64,
     /// Pings still unanswered, (member, send time): a pong counts only if it echoes one of them.
     pings_out: BTreeSet<(u32, u64)>,
-    /// Per member, the send time of the latest ping it answered.
-    answered: BTreeMap<u32, u64>,
     /// Session time has reached frame 0: from here the clock slews among the members.
     synced: bool,
     skew: f64,
@@ -349,8 +375,8 @@ pub struct Node {
     signal_held: bool,
     max_signal_us: u64,
     clamped_ticks: u64,
-    /// Per reporter: since when its report has stood above the round-trip bound.
-    over_since: BTreeMap<u32, u64>,
+    /// Per reporter: its report's episode above the round-trip bound, if one is open.
+    over: BTreeMap<u32, Over>,
     max_true_queue_us: u64,
     hand: Option<u32>,
     hand_frame: u64,
@@ -471,7 +497,6 @@ impl Node {
             last_ping: 0,
             last_burst: 0,
             pings_out: BTreeSet::new(),
-            answered: BTreeMap::new(),
             synced: false,
             skew: 1.0 + o.clock_skew_ppm as f64 / 1e6,
             clock_lie_us: o.clock_lie_us,
@@ -491,7 +516,7 @@ impl Node {
             signal_held: false,
             max_signal_us: 0,
             clamped_ticks: 0,
-            over_since: BTreeMap::new(),
+            over: BTreeMap::new(),
             max_true_queue_us: 0,
             hand,
             hand_frame: u64::MAX,
@@ -614,10 +639,19 @@ impl Node {
                 if sender == self.leader {
                     self.pongs += 1;
                 }
-                let a = self.answered.entry(sender).or_insert(t);
-                *a = (*a).max(t);
                 self.clock.sample(sender, t, recv_us, r, raw, f64::from_bits(rate));
                 self.apply_clock();
+                // A probe's verdict on its episode (see `PROBE_EVERY_US`).
+                let best = self.clock.best_rtt_to(sender).unwrap_or(u64::MAX);
+                if let Some(o) = self.over.get_mut(&sender)
+                    && let Some(q) = o.probes.remove(&t)
+                {
+                    let excess = recv_us.saturating_sub(t).saturating_sub(best);
+                    let least = o.last_excess.map_or(excess, |l| l.min(excess));
+                    o.last_excess = Some(excess);
+                    o.decided = true;
+                    o.queue = least > RTT_CLAMP_MARGIN_US && least >= q / 2;
+                }
             }
             Item::Pong(..) => {}
             Item::Ready if self.me == self.leader => {
@@ -648,6 +682,12 @@ impl Node {
             // Frame 0: every member has its epoch (sent 1 s ahead), so nobody jumps from here on.
             self.synced = true;
             self.clock.restart_fits(local);
+            // R18's one-way delays restart too: before the epoch the members' frequencies are not
+            // fitted yet, and a skewed sender's stamps drift (up to 150 ms/s) into the base.
+            for r in self.rx.values_mut() {
+                r.restart();
+            }
+            self.reports.clear();
         }
         // Every member every 500 ms from the start (raw-clock samples gathered before frame 0 count
         // toward the frequencies), and the bootstrap burst to the leader until enough pongs.
@@ -877,24 +917,37 @@ impl Node {
     /// Reports are held at their last value for 5 s; with none left the core gets no signal (None),
     /// which holds the level and is never read as calm.
     fn feed_link(&mut self, now: u64) {
-        // Each report is capped at the reporter's round-trip excess plus a margin (design 10.4), once
-        // it has stood above that bound for the grace time.
+        // Each report is capped at the reporter's round-trip queueing plus a margin (design 10.4),
+        // unless a probe shows its episode above that bound is a queue.
         let mut clamped = false;
         let fresh: Vec<(u32, u64)> = self.reports.iter().filter(|(_, r)| now < r.1 + REPORT_HOLD_US).map(|(&m, r)| (m, r.0 as u64 * 1000)).collect();
+        // A stale report's episode starts afresh when it comes back (review L3).
+        self.over.retain(|m, _| fresh.iter().any(|f| f.0 == *m));
         let mut v = None;
         for (m, q) in fresh {
             let q = match self.rtt_excess(m, now).map(|x| x + RTT_CLAMP_MARGIN_US) {
                 Some(bound) if q > bound => {
-                    let since = *self.over_since.entry(m).or_insert(now);
-                    if now >= since + RTT_CLAMP_GRACE_US {
+                    let o = self.over.entry(m).or_insert_with(|| Over { since: now, ..Over::default() });
+                    let probe = o.last_probe.is_none_or(|t| now >= t + PROBE_EVERY_US);
+                    if probe {
+                        o.last_probe = Some(now);
+                        o.probes.retain(|&t, _| t + RTT_CLAMP_GRACE_US > now);
+                        o.probes.insert(now, q);
+                    }
+                    let pass = o.queue || (!o.decided && now < o.since + RTT_CLAMP_GRACE_US);
+                    if probe {
+                        self.pings_out.insert((m, now));
+                        self.push_control(m, Item::Ping(now));
+                    }
+                    if pass {
+                        q
+                    } else {
                         clamped = true;
                         bound
-                    } else {
-                        q
                     }
                 }
                 _ => {
-                    self.over_since.remove(&m);
+                    self.over.remove(&m);
                     q
                 }
             };
@@ -913,20 +966,12 @@ impl Node {
         }
     }
 
-    /// The queueing on the round trip to member `m` now: the larger of the latest pong's excess over
-    /// the best and the age of the oldest unanswered ping over the best (a lower bound that grows in
-    /// real time while a ping waits in a queue, so the clamp opens at a congestion onset instead of
-    /// up to a ping interval later). A ping older than the latest answered one was lost, not late.
+    /// The queueing on the round trip to member `m` now: the least excess of its last few round
+    /// trips over the best to m (review M1). Unanswered pings do not count: a lost one read as up to
+    /// a ping interval of excess and opened the clamp (review H1), and the clamp's grace already lets
+    /// a congestion onset through until the round trips show it.
     fn rtt_excess(&self, m: u32, now: u64) -> Option<u64> {
-        let fresh = self.clock.rtt_excess(m, now);
-        // The round trip to m itself, not to the nearest peer (review M1).
-        let best = self.clock.best_rtt_to(m).unwrap_or(u64::MAX);
-        let after = self.answered.get(&m).copied().unwrap_or(0);
-        let waiting = self.pings_out.iter().filter(|p| p.0 == m && p.1 > after).map(|p| now.saturating_sub(p.1)).max().filter(|_| best < u64::MAX).map(|a| a - best.min(a));
-        match (fresh, waiting) {
-            (None, None) => None,
-            (f, w) => Some(f.unwrap_or(0).max(w.unwrap_or(0))),
-        }
+        self.clock.rtt_excess(m, now)
     }
 
     /// One hand pose per clock frame along a sweep across the pit; the core keeps only those due at
