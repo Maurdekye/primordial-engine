@@ -2385,6 +2385,9 @@ and there is no fork-proof indicator (same ruling).
       lags past the threshold at all]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
       still shows as not referencing.
     * **Only current members' acks** are judged; a removed member's are ignored.
+    * **In pe-app, S is the socket hand-off:** the core's outbox and the clock-sync pings go through one
+      pack and one shaper per peer, in one flush, and pe-app has no other send queue [V node.rs
+      `flush_out`, @design-reviewer].
     * **What it can't do** (review IB-1): it catches a withholder that doesn't game it. A withholder that
       slows one pong in every 2 s (raising the round trip it is judged by) or keeps re-fetching this
       replica's chain (restarting the clock) is never flagged, at no visible cost. So no flag proves
