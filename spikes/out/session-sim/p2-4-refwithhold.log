@@ -1,10 +1,11 @@
-RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (43, 293)} conf 697 frame 713 paused frames 80 lying votes found 0
-RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (43, 293)} conf 697 frame 713 paused frames 80 lying votes found 0
-RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (43, 293)} conf 697 frame 713 paused frames 80 lying votes found 0
-RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-  m1: conf 697 frame 713 members {1, 2, 3} evicted {8: (43, 293)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 46 bad 0
-  m2: conf 697 frame 713 members {1, 2, 3} evicted {8: (43, 293)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 46 bad 0
-  m3: conf 697 frame 713 members {1, 2, 3} evicted {8: (43, 293)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 46 bad 0
-RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=4b400809a6c60dd7 m2=4b400809a6c60dd7 m3=4b400809a6c60dd7 | offline replay 4b400809a6c60dd7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (50, 349)} conf 699 frame 713 paused frames 136 lying votes found 0
+RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (50, 349)} conf 697 frame 713 paused frames 136 lying votes found 0
+RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (50, 349)} conf 697 frame 713 paused frames 136 lying votes found 0
+RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 364 (t=6.17 s) round 0 removed [8]
+RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 364 (t=6.17 s) round 0 removed [8]
+RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 364 (t=6.17 s) round 0 removed [8]
+RESULT refwithhold: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 245 frames (window 120); 8 removed at 6.17 s; lag at the end 16 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
+  m1: conf 699 frame 713 members {1, 2, 3} evicted {8: (50, 349)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 46 bad 0
+  m2: conf 697 frame 713 members {1, 2, 3} evicted {8: (50, 349)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 47 bad 0
+  m3: conf 697 frame 713 members {1, 2, 3} evicted {8: (50, 349)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 47 bad 0
+RESULT refwithhold (8 stops referencing others' chains at t=2 s; admin 1 kicks 8 at 6 s): frames 0..712 honest m1=4b400809a6c60dd7 m2=4b400809a6c60dd7 m3=4b400809a6c60dd7 | offline replay 4b400809a6c60dd7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 140 bad 0

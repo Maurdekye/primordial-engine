@@ -493,7 +493,8 @@ impl WorldSim {
             | Payload::Kick { .. }
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
-            | Payload::Ownership { .. } => Outcome::Accepted,
+            | Payload::Ownership { .. }
+            | Payload::Ban { .. } => Outcome::Accepted,
         }
     }
 

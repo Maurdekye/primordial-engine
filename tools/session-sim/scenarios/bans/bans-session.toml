@@ -1,0 +1,85 @@
+description = """
+12.4 bans (user 2026-11-01, msgs m7c37f5485e6f and m5c4b84d186a8), session 1 of a world. Member 1 is \
+the world's owner and an Admin, member 2 an Admin who isn't an owner, 3 and 4 guests. The join rules \
+admit anyone as a guest (role 1). 2 kicks and session-bans 3: applied. 2 tries to perma-ban absent key 7: \
+refused, since only a world owner may perma-ban. 2 session-bans absent key 6: applied. The owner, 1, \
+perma-bans key 5 and kicks and perma-bans 4: both applied. At 4.5 s, 3 comes back under a new member id \
+(13, still signing with key 3), and 4, 5 and 6 ask to join: all refused, whatever the join rules say. \
+The session ends holding session bans {3, 6} and perma-bans {4, 5}; the owner writes only the \
+perma-bans into the world's acl/, and bans-next.toml is the world's next session."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 3, 4]
+joiners = [13, 5, 6, 14]
+keys = [[13, 3], [14, 4]]
+guests = { role = 1, admins = [1, 2] }
+owners = [1]
+
+[world.1.join_rules]
+fallback = 1
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 180, ban = { key = 5, perma = true } },
+    { at = 220, kick = { target = 4, perma = true } },
+]
+2 = [
+    { at = 120, kick = { target = 3, ban = true } },
+    { at = 140, ban = { key = 7, perma = true } },
+    { at = 160, ban = { key = 6 } },
+    { at = 300, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[join]]
+at_ms = 4500
+member = 13
+to = [1, 2]
+
+[[join]]
+at_ms = 4500
+member = 14
+to = [1, 2]
+
+[[join]]
+at_ms = 4500
+member = 5
+to = [1, 2]
+
+[[join]]
+at_ms = 4500
+member = 6
+to = [1, 2]
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2]
+label = "bans-session"
+
+[[report]]
+kind = "admin"
+honest = [1, 2]
+label = "bans-session"
+outcomes = true
+roles = true
+bans = true
+
+[[report]]
+kind = "expect"
+at = 1
+members = [1, 2]
+label = "bans-session: 3 and 4 kicked; 13 (key 3), 14 (key 4), 5 and 6 refused"
+
+[[report]]
+kind = "expect"
+at = 2
+members = [1, 2]
+label = "bans-session: member 2 agrees"
+
+[[report]]
+kind = "check_world"
+frames = 420
+label = "bans-session"
+skip_evicted_at = 1

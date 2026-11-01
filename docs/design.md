@@ -1205,8 +1205,9 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
 * "Soonest" is fair to the precision of clock sync plus the tie permutation. The spike's same-frame
   conflicts were scripted (review L5), so fairness under real skew is [I].
 * Cheating is bounded (8.2), not prevented. Strangers may join from day one (D21): the phase-2 view change
-  removes silent, withholding or colluding members (10.8), and provenance checks guard objects from other
-  worlds (D46).
+  removes silent and proven-faulty members (10.8), a live cheater that stalls confirmation is left to an
+  admin's kick (trust survey #4, under the trust principle), and provenance checks guard objects from
+  other worlds (D46).
 
 ---
 
@@ -1724,6 +1725,13 @@ is fixed once the author's chain is contiguous up to it.
   * or its horizon has trailed the present by more than half the speculation limit for as long (R3-9:
     demotion; it can follow as a spectator).
 
+  Those, and an admin's kick (D80, below), are the only reasons. **A live member that stalls confirmation
+  any other way is left to the admins** (trust survey #4; user rulings 2026-11-01, under the trust
+  principle): withholding references, a capped precommit no quorum explains, a kick vote naming no kick,
+  a vote whose frozen head nobody delivers, or acks claiming an epoch no decision backs. Each holds
+  confirmation until an admin kicks the member (Limits, below). Until then P2-4 voted such members out
+  automatically; those rules took most of its eight review rounds.
+
   A vote names the voter's **frozen head** of that chain: the most of it the voter references for the rest
   of the epoch, so its later references to that chain never count toward stability (R3-1). The voter keeps
   processing the chain, though: a member wrongly suspected must still be heard in the reset that keeps it
@@ -1818,11 +1826,11 @@ is fixed once the author's chain is contiguous up to it.
   references can make entries stable that the withdrawn vote's frozen head drops, and a change naming
   that vote would cut them.
   * A vote that names a kick (D80, below) freezes the target only for that kick. Members fetch a kick they
-    do not hold from the voter and from everyone. A voter whose kick nobody has delivered within 60 frames
-    (half the speculation window) froze a chain for nothing, and is voted out (review VCR-1; round 3
-    answered such a vote with a reset after 180 frames, which kept the voter, review VC3R-2) [V ghostkick:
-    9 votes against 2 for a kick that does not exist; 9 is voted out at 3.17 s. Before the VCR-1 fix
-    confirmation stopped for good at frame 108].
+    do not hold from the voter and from everyone. A vote naming a kick nobody delivers froze a chain for
+    nothing; no reset answers it, and since trust survey #4 its voter is no longer voted out either (round
+    4 did that after 60 frames, review VCR-1). It holds confirmation until an admin kicks the voter [V
+    ghostkick: 9 votes against 2 for a kick that does not exist at 2 s; confirmation lags 251 frames when
+    admin 1 kicks 9 at 6 s, 9 is removed at 6.18 s, and the lag is back to 11 frames].
   * A reset waits until the newest standing vote has stood 12 frames, and at most 36 from the oldest, and
     never overtakes a removal that a quorum has voted for and that waits only for entries this replica is
     still fetching (review VC3R-1, VC3R-2). Members that suspect the same member vote within a few frames
@@ -1909,53 +1917,48 @@ is fixed once the author's chain is contiguous up to it.
     Before the fix 3's precommit was void and nothing was decided].
   * Once some member's acks are capped at or below B, others may precommit late, without a cap: every
     reader then confirms nothing from B on before the decision, whoever holds the cap (review VC-3).
-  * A cap is justified by the quorum of prevotes it followed, and a **capped precommit carries the ids
-    of those prevotes** (review VC4R-1). A faulty proposer that sends its prevote for the value to the
-    capper and a nil version to the others would otherwise make the capper's polka invisible to them,
-    and they would vote the honest capper out. So before a member votes a capper out for an unexplained
-    cap, it fetches the prevote ids the cap named and counts them in **any version it then holds**:
-    either they reach the quorum (fetching the proposer's value-prevote completes the polka), or holding
-    two versions of one prevote proves the proposer equivocated and removes it. Locks, re-proposals and
-    decisions also count a proven forker's prevotes and precommits in any version (PF-1 and VC8R-1,
-    under Agreement) [V prevotefork: proposer 1 sends its prevote for the join to capper 2 and nil to
-    observer 3. With VC4R-1's fix off (and VC8R-1's, which lets the join be decided before any cap is
-    judged) 3 votes 2 out; with it 3 fetches 1's value-prevote and keeps 2].
-  * The fetch has a budget (reviews VC6R-1, VC7R-2). An honest capper holds its own polka, but its
-    replies can be slow. If ids the cap named are still missing once the cap has ripened and a further
-    `suspect_after` (3 s, the allowance a slow member gets) has passed, they count as prevotes nobody
-    holds, and the capper is voted out. Every prevote the precommit named counts as soon as it is held,
-    linked into its author's chain or not. Round 7 gave the fetch a further half window (1 s) and
-    counted only prevotes it had linked or recorded as another version (VC7R-2) [V capfake: 9's capped
-    precommit names a polka id that exists nowhere. 9 is removed at 6.17 s (4.15 s on round 7's budget).
-    With the fix off, the id is fetched for good, 9 is never removed, and confirmation stops at frame
-    143]. A vote's frozen head gets the same allowance (below).
-  * A cap that no quorum of prevotes explains holds every reader's confirmation below B, as a silent
-    member would. A member whose capped precommit has stood 60 frames here, for a value no quorum here
-    prevoted, is voted out (review VC3R-2; round 3 cleared such a cap with a reset, which kept its
-    author). An honest cap follows a quorum of prevotes, which acks and fetches bring every member within
-    a few round trips [V bogusprecommit: a precommit with boundary 1 is void; one just ahead of its
-    author's horizon gets 9 voted out at 3.17 s, with no reset and no pause. Before the VC-4 fix
-    confirmation stopped for good, at frames 112 and 143. V capstale: 9 signs such a precommit in every
-    epoch; no reset, voted out at 3.17 s].
+  * A capped precommit carries the ids of the prevotes whose quorum it followed (review VC4R-1). They
+    served one rule only: voting out the author of a cap no quorum explains, with a fetch of the named
+    prevotes counted in any version and a fetch budget (reviews VC4R-1, VC6R-1, VC7R-2). Trust survey #4
+    retired that rule, so **nothing reads the ids any more**; they stay on the wire for now, and removing
+    them (with `MAX_POLKA` and the prevote-id index) is a follow-up wire change. Locks, re-proposals and
+    decisions count a proven forker's prevotes and precommits in any version (PF-1 and VC8R-1, under
+    Agreement), which the ids never affected [V prevotefork: proposer 1 sends its prevote for the join to
+    capper 2 and nil to observer 3; 3 casts no vote against 2, every member decides the join and 1 is
+    removed. V slowcapper: the same with the forked prevote reaching 3 1.5 s late; 3 casts no vote
+    against 2].
+  * **A cap that no quorum of prevotes explains holds every reader's confirmation below B until an admin
+    kicks its author**, as a silent member would have until removed. Round 4 voted such an author out
+    after 60 frames (review VC3R-2), and round 3 cleared the cap with a reset that kept its author;
+    trust survey #4 does neither. An honest cap follows a quorum of prevotes, which acks and fetches
+    bring every member within a few round trips, so a cap that stays unexplained comes from a cheater [V
+    bogusprecommit: a precommit with boundary 1 is void; one just ahead of its author's horizon holds
+    confirmation (lag 210 frames when admin 1 kicks 9 at 6 s), 9 is removed at 6.17 s, no reset. Before
+    the VC-4 fix confirmation stopped for good, at frames 112 and 143. V capstale: 9 signs such a
+    precommit in every epoch; no reset, the same lag and removal. V capfake: the precommit also names a
+    polka id that exists nowhere, now dead bytes; the same].
   * **Nothing counts against a member whose vote a reset overruled** (review VC3R-2). Round 3 counted it:
     overruled in 3 of the last 8 epochs, a member was voted out. But suspicion by timing cannot tell the
     voter's fault from the suspect's: a member that controls when each other member hears from it can
     make one honest member's silence timer alone fire, then reappear, again and again [V strikeframe: 9
     runs honest code with hostile timing only; with round 3's rule 1 is voted out in two of five timings,
     now in none]. A member that keeps forcing resets costs latency, not safety, and an admin can kick it
-    (Limits, below). The levers round 3's rule was meant to bound have their own rules: stale caps and
-    ghost kick votes get their authors voted out (above), and no timer restarts at a decision [V capchurn:
-    from 2 s, 9 signs a capped precommit for no proposal in every epoch and its acks claim the next one;
-    no reset, 9 voted out at 3.17 s (round 3: three resets, then 2.50 s). Before the VCR-4 fix: 88 resets,
-    and 9 never removed].
+    (Limits, below). The levers round 3's rule was meant to bound, stale caps and ghost kick votes, are
+    answered by no reset either: they hold confirmation until an admin's kick (above) [V capchurn: from
+    2 s, 9 signs a capped precommit for no proposal in every epoch and its acks claim the next one; no
+    reset; confirmation lags 245 frames when admin 1 kicks 9 at 6 s, and 9 is removed at 6.17 s (round 3:
+    three resets, then 2.50 s)].
   * Acks carry their author's epoch. An ack from an epoch newer than the reader's never counts toward the
     reader's confirmation, so a member that decides late cannot confirm a frame from B on without the
     joiner either. Together: no member confirms a frame from B on before it knows of the join.
-  * An ack's epoch never falls and rises by at most one per ack (chain-local; otherwise void), and a
-    member whose acks claim an epoch the reader has not reached within 180 frames is voted out, like a
-    silent one (review VC-5) [V futureack: acks claiming epoch 999 are void and 9 is removed at 5.23 s
-    as too slow; acks claiming epoch 1 with no decision get it voted out at 5.17 s. Before the fix
-    confirmation stopped for good at frame 112].
+  * An ack's epoch never falls and rises by at most one per ack (chain-local; otherwise void; review
+    VC-5), and an ack from an epoch the reader has not reached never counts toward its confirmation
+    (above), so a false epoch claim never makes an honest member act on an epoch that does not exist.
+    A member whose acks claim such an epoch holds confirmation until an admin kicks it: trust survey #4
+    retired VC-5's vote, which removed it after 180 frames [V futureack: acks claiming epoch 999 are void,
+    and 9 is demoted at 6.03 s as too slow (its declared horizons stop counting); acks claiming epoch 1
+    with no decision hold confirmation (lag 245 frames when admin 1 kicks 9 at 6 s), and 9 is removed at
+    6.17 s. With the epoch rule off, confirmation stops for good at frame 108].
   * An honest member's acks never skip an epoch, because it acks on entering each (above), and a joiner
     that catches up on several decisions at once acks each (review VCR-3) [V ackgap: 3 acks once a
     second and two decisions fall between two of its acks; V latejoin: 5 catches up on two decisions at
@@ -1966,53 +1969,46 @@ is fixed once the author's chain is contiguous up to it.
     since genesis (review VC3R-6). Its chain is validated only once it is admitted, so every member
     judges those acks alike [V joinskip: 5 authors no ack before it is admitted at epoch 2, and stays.
     Before the fix its acks were void and it was voted out].
-  * The 180-frame timer runs whatever other members' acks show. Round 3 paused it while the reader looked
-    behind (VCR-12), but a climbing member that keeps one chain a step ahead somewhere kept that true for
-    good (review VC3R-1) [V aheadshield: 9's acks claim epoch 1 while it sends each of its entries to one
-    honest member only, in turn; voted out at 5.30 s. Before the fix: never, and confirmation stopped at
-    frame 112]. A reader that really is behind may vote against a member that is ahead legitimately, and
+  * With VC-5's vote went its 180-frame timer and review VC3R-1's fix to it (round 3 paused the timer
+    while the reader looked behind, which a climbing member could keep true for good) [V aheadshield: 9's
+    acks claim epoch 1 while it sends each of its entries to one honest member only, in turn; confirmation
+    lags 245 frames when admin 1 kicks 9 at 6 s, and 9 is removed at 6.23 s. Rotating alone is harmless].
+    A reader that really is behind may vote against a member that is ahead legitimately (by silence), and
     that vote is harmless: the member can be ahead only if the epoch has decided, an epoch decides once,
     and the vote ends with the epoch when the reader applies the decision [V aheadlink: 3 hears only 4's
-    acks for 5 s while the others decide; its votes against the members ahead, in epochs 0 and 1, remove
-    none of them, and 3 is removed for not keeping up].
+    acks for 5 s while the others decide; its silence votes against 1, 2 and 4 in epoch 0 remove none of
+    them, and 3 is kept (the cost, under Limits)].
   * Nothing the joiner signs acts before it is admitted. Once admitted, its entries stamped before B are
     void (a chain-local rule), and it counts toward confirmation from B on. It gets the state at a
     confirmed frame and the log after it (9.5); in the spike it follows the log from the start.
   * A removal needs no cap like a join's: no member can confirm a frame past a removed member's last
     horizon inside the cut before the decision, because every entry stable anywhere lies inside the cut.
-* **Withheld references are suspected too** [V refwithhold]. Stability needs every member's references, so
-  a member that keeps acking but stops referencing some chain stalls everyone's confirmation as surely
-  as a silent one. A member whose acks have referenced no more of some chain for 180 frames, while every
-  other member (the checking replica included) holds and references more of it, is voted out the same
-  way. A member that only acks slowly still advances, and is not. A member that has voted against a
-  chain's author no longer references it, so that pair is skipped, and a new member's references count
-  from its admission (review VC-9).
-  * **A reference counts only once the entry it names is held** (reviews VC4R-3, VC5R-2, and the
-    randomized generator's RG-1): both toward a chain's stability and against a member as a withholder, a
-    reference to seq *s* of chain *y* counts only if this replica holds *y* up to *s* in the version the
-    reference names. For stability, the member's contribution is the newest of its references that
-    resolves this way, not zero when its newest names a version I lack: so a faulty member alternating a
-    fake head with a stale real one cannot cap the chain either, and the unresolved references are still
-    fetched for the proof. A faulty member that references entries nobody has — a fake head, even one
-    only a little above the real chain so it hides in normal lag — advances its raw reference but never
-    its counted one, so it stalls no chain and is caught as a withholder like one that stops referencing
-    [V slowref: a member that grows slower while another fakes references to its chain is removed at
-    7.4 s; fakemix: a member alternating a fake head with a refreshed stale one raises the confirmation
-    lag but halts nothing; the generator's seed 1: a member faking a reference to a healthy member's
-    chain is voted out. Before the fix each stalled confirmation for good].
+* **Withheld references are left to the admins** (trust survey #4). Stability needs every member's
+  references, so a member that keeps acking but stops referencing some chain stalls everyone's
+  confirmation as surely as a silent one. P2-4 voted such a member out after 180 frames (the withholding
+  rule); now it holds confirmation until an admin kicks it [V refwithhold: 8 stops referencing the others'
+  chains at 2 s; confirmation lags 245 frames when admin 1 kicks 8 at 6 s, and 8 is removed at 6.17 s].
+  * **A reference counts toward stability only once the entry it names is held** (reviews VC4R-3, VC5R-2,
+    and the randomized generator's RG-1): a reference to seq *s* of chain *y* counts only if this replica
+    holds *y* up to *s* in the version the reference names. The member's contribution is the newest of
+    its references that resolves this way, not zero when its newest names a version I lack, and the
+    unresolved references are still fetched for the proof. So a faulty member's fake head never counts:
+    referencing entries nobody has advances its raw reference but never its counted one. Its counted one
+    stops, so it holds that chain's stability like a withholder, until an admin kicks it [V fakemix: a
+    member faking a head holds confirmation (lag 247 frames when admin 1 kicks it at 6 s, removed at
+    6.18 s); one alternating a fake head with a refreshed stale one raises the lag but halts nothing].
   * While another member references more of a silent or slow member's chain than this replica holds, it
     fetches the difference before suspecting, but only for a silence limit from when that member first
-    fell behind (review VC4R-3): references that never deliver no longer spare it without end. The silent
-    member is removed regardless, because its own references stop [V fakeref: 9 falls silent at 2 s while
-    8 fakes references to 9's chain; 9 is removed at 5.2 s].
-  * **A decision resets only the timers its cleared votes made stale** (review VC6R-4). A decision
-    clears every vote of the epoch. A voter froze its target's chain, so its reference to that chain stood
-    still, and the targets of this replica's own votes looked silent or slow to it: only those timers,
-    and new members', restart. Round 6 cleared every reference and suspicion timer at every decision, so a
-    member that forces decisions, with a no-op admin entry every 2 s, kept its own timers from ever
-    ripening [V fakeadmin: 8 fakes references and authors a no-op SetRole every 2 s; 8 is removed at 5.23 s.
-    With the fix off, six decisions reset its timers, 8 is never removed and confirmation stops at frame
-    110].
+    fell behind (review VC4R-3): references that never deliver no longer spare it without end, so an
+    honest crash is still removed while another member fakes references to it [V fakeref: 9 falls silent
+    at 2 s while 8 fakes references to 9's chain; 9 is removed at 8.13 s. V slowref: a member that grows
+    slower while another fakes references to its chain is demoted at 10.03 s].
+  * **A decision resets only the timers its cleared votes made stale** (review VC6R-4): the targets of
+    this replica's own votes looked silent or slow to it, so only those silence spare-windows, and new
+    members', restart. Round 6 cleared every timer at every decision, so a member that forces decisions,
+    with a no-op admin entry every 2 s, kept a timer from ever ripening [V fakeadmin: 8 fakes references
+    and authors a no-op SetRole every 2 s, forcing a decision each time; it holds confirmation through
+    them (lag 247 frames when admin 1 kicks it at 6 s), and 8 is removed at 6.25 s].
 * **Epoch certificates (review R3-8b).** Each decision yields a certificate: the decided change (so the
   signatures cover exactly what is certified), the round, the new member list, a quorum's precommit
   signatures (exactly a quorum: the lowest member ids among those held, review VC7R-5), and the two
@@ -2051,6 +2047,26 @@ is fixed once the author's chain is contiguous up to it.
     3 s in each of four windows causes one to four resets in 26 s, and is removed in three of five
     timings]. The user ruled that such a member is left to admins, with no automatic rule (V4 = (a),
     08:31Z).
+  * **A live cheater that stalls confirmation holds it until an admin kicks it** (trust survey #4, user
+    rulings 2026-11-01, under the trust principle "we rely on admins to manually evict cheaters"). That
+    covers withheld or fake references, a capped precommit no quorum explains, a kick vote naming no
+    kick, a vote whose frozen head nobody delivers, and acks claiming an epoch no decision backs. None of
+    them can fork the session: cuts, quorums, proofs and the epoch rules are unchanged. A kick is a view
+    change, which needs no confirmation progress, and its decision ends every cap, freeze and vote of the
+    epoch [V the eight repros above with a kick at 6 s: the worst honest lag at the kick is 177-251
+    frames (window 120), the cheater is removed 0.17-0.55 s later, and the lag at the end is 7-17
+    frames; every replica equals the replay]. The "holding the session" indicator is on hold with the
+    user, so for now only the admin's own judgment tells who to kick.
+  * **Accepted cost: a live honest member with a one-way inbound cut holds the session too** (user
+    ruling 2026-11-01, "A. Accept it"). Its own entries reach everyone, so silence never fires, and its
+    acks declare its present horizon, so demotion never fires; but it references no more of the chains it
+    cannot hear, so their stability stalls. The withholding rule removed it after 180 frames; now it ends
+    when the link heals or an admin kicks it [V aheadlink: 3 hears only 4's acks for 5 s; confirmation
+    lags up to 313 frames, until the link heals at 7 s. V aheadlink-long: the same for 30 s, the rest
+    reaching 3 5 s late; confirmation trails the present by about 5-10 s throughout, worst 626 frames
+    (10.4 s). V aheadlink-cut: the same with the rest lost; confirmation stops for the whole cut, worst
+    lag 1831 frames (30.5 s), and recovers when it ends. 3 is removed in none of them]. A crashed member
+    is still removed by `suspect_after`.
   * A faulty proposer can decide a reset in a round it proposes, ending the epoch's votes; they are cast
     again at once, and the next honest proposer carries them [I].
   * A faulty proposer chooses which of a joiner's attestations its change carries, so it can give the
@@ -2061,12 +2077,10 @@ is fixed once the author's chain is contiguous up to it.
     with the same backoff as a range fetch, so one lost reply no longer stops a cut walk or a decision
     for good (review VC4R-4). A removal that a quorum has voted for waits only for entries this replica is
     still fetching. A vote whose frozen head nobody delivers within half the speculation window counts
-    toward no cut and holds back no reset (review VC4R-5). Its voter is voted out, as a ghost kick's voter
-    is, but only once the head is still missing after `suspect_after` (review VC7R-2). An honest voter's
-    head may lie past a forker's fork, on a branch only it holds, so delivering it waits on that voter's
-    replies [V slowcapper: the forked prevote reaches 3 1.5 s late, and 3 keeps 2. With the fix off, 3
-    votes against 2 after 1 s, for its vote against the forker, whose head 3 cannot walk yet; one false
-    vote removes no one, so 2 stays].
+    toward no cut and holds back no reset (review VC4R-5). Its voter is not voted out (trust survey #4;
+    reviews VC4R-5 and VC7R-2 did so after a budget): an honest voter's head may lie past a forker's fork,
+    on a branch only it holds, so delivering it waits on that voter's replies, and a faulty voter's
+    undeliverable head is left to the admins.
   * A removed member is not told yet: the others stop sending to it, so it pauses. It should get the
     certificate that removed it, to rejoin as a new member (a spectator can follow at once) [I].
   * **Epoch-at-frame for R14 facts** (reviews VC-7, VC-8; P2-5's follow-up, branch
@@ -2156,6 +2170,20 @@ is fixed once the author's chain is contiguous up to it.
       session stays open. 3 cannot drop the roles permission from its own role; it makes itself Admin,
       and then can. With the receipt check as before (a manual run), both refused kicks froze their
       targets].
+    * **Bans and kick options** (12.4, user 2026-11-01, msgs m7c37f5485e6f and m5c4b84d186a8). `Kick`
+      gains a rejoin field: none (a plain kick, its wire form unchanged), a rejoin role, a session ban, or a
+      perma-ban. A new admin entry, `Ban { epoch, key, on, perma }`, bans a key no member holds, or
+      (on = false) lifts a ban (a session unban also clears a rejoin role). The admin run holds the
+      session's bans and rejoin roles and the world's perma-bans beside roles and the ownership book, and
+      `join_role` checks them after row 0. A session ban needs the Ban permission, a perma-ban an owner's
+      key, each with the kick's permissions when it kicks; a kick with a rejoin role needs that role
+      defined and not counting as an admin [V bans-session: Admin 2 kicks and session-bans 3, session-bans
+      absent key 6, and its perma-ban of key 7 is refused (not an owner); owner 1 perma-bans key 5 and
+      kicks and perma-bans 4. At 4.5 s, 3 back as member 13 under key 3, and 14 (key 4), 5 and 6 are all
+      refused under Public-as-guest rules. Control without the bans: all four admitted. bans-next, the
+      world's next session from perma-bans {4, 5}: 3 and 6 admitted, 4 and 5 refused; owner 1's
+      perma-unban of 5 admits 5's open request; Admin 2's perma-unban of 4 is refused. The writing of
+      perma-bans into `acl/` (16.10) is not built: a scenario starts from a given list (`perma_bans`)].
     * A close records every member left as removed (`closed_members`) and says so in its event; nothing
       stamped at or after its boundary acts [V adminclose: closed at frame 432 everywhere, members 2 and
       3 removed]. The port into pe-session (P2-3) is to empty the member list and tell the players.
@@ -2189,13 +2217,13 @@ is fixed once the author's chain is contiguous up to it.
 | `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
 | `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
 | `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.48 s |
-| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (515 paused frames); after the heal one session, and a reset at 13.28 s keeps all five, since 8 behaves again and is proven of nothing (round 1 removed it as a withholder; its references stopped only behind its own votes, which review VC-9 no longer counts). (a): {1,2} removes 3 and 4 at 6.08 s, {3,4} removes 1 and 2 at 7.70 s, and each side then removes 8: **two sessions** |
+| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (515 paused frames); after the heal one session, and a reset at 13.28 s keeps all five, since 8 behaves again and is proven of nothing (round 1 removed it as a withholder; its references stopped only behind its own votes, which review VC-9 no longer counts). (a): {1,2} removes 3 and 4 at 6.08 s, {3,4} removes 1 and 2 at 7.70 s, and 8 at 15.50 s ({1,2} keeps 8 since trust survey #4): **two sessions** |
 | `join` | member 4 asks to join at 2 s, touches an object at frame 420 | admitted at 2.10 s with boundary frame 176; its touch applies at every member; all four equal |
-| `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s | 8 removed at 5.23 s; paused 80 frames; all equal |
+| `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s; admin 1 kicks 8 at 6 s | confirmation held (lag 245 frames at the kick); 8 removed at 6.17 s; all equal (before trust survey #4: voted out at 5.23 s) |
 | `fork9` | 9 forks its chain: 1 and 2 get a branch with its touch at frame 120, 3 a longer one without it; 3's votes 300 ms late | 9 removed at 2.30 s with the touch's branch as the cut; 3 adopts it; all equal (before the VC-2 fix 3 confirmed past the touch, then hit the rollback assertion) |
 | `jointiming` | 5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary | decided in round 0 at 3.6 s, all five equal (before the VC-3 fix: wedged, confirmation stuck at frame 176) |
-| `bogusprecommit` | 9 signs a precommit with boundary 1, or just ahead of its horizon | the first is void; for the second, 9 is voted out at 3.15 s with no reset and no pause; confirmation goes on (before the VC-4 fix: stuck at frames 100-108 and 143) |
-| `futureack` | 9's acks claim epoch 999, or epoch 1 with no decision | 9 removed at 5.23 s, and at 5.20 s; confirmation resumes (before the VC-5 fix: stuck at frame 108) |
+| `bogusprecommit` | 9 signs a precommit with boundary 1, or just ahead of its horizon; admin 1 kicks 9 at 6 s | the first is void; the second holds confirmation (lag 210 frames at the kick), no reset; 9 removed at 6.17 s (before the VC-4 fix: stuck at frames 100-108 and 143) |
+| `futureack` | 9's acks claim epoch 999, or epoch 1 with no decision (then admin 1 kicks 9 at 6 s) | the first are void and 9 is demoted at 6.03 s; the second hold confirmation (lag 245 frames at the kick), 9 removed at 6.17 s (with the epoch rule off: stuck at frame 108) |
 | `kickwar` | admins 1 and 2 kick each other at frame 120 | 1's kick applies first in commit order: 2 removed at 2.30 s, 2's kick refused; all equal |
 | `kickpartition` | partition {1,2} / {3,4} from 2 to 6 s; admin 1 kicks 3 at 3 s | nothing decided during it; 3 removed at 6.80 s after the heal; one session |
 | `lastadmin` | the only admin releases the role; later hands it to 2, then releases | release refused (2.17 s); hand-over and release applied (4.17 s, 4.23 s); admins {2} |
@@ -2203,29 +2231,30 @@ is fixed once the author's chain is contiguous up to it.
 | `kickadmin` | 2 holds only the kick permission, 3 only the roles permission, 4 is a guest; 2 kicks 1 (Admin), 3 and 4; the Admin silent from 4 s | only 4 removed (2.93 s), no one frozen for the refused kicks (V1); 1 removed at 7.47 s and the session stays open (V2); 3's release of the roles permission refused, then it makes itself Admin; all equal |
 | `joinrules` | rules: friends of an admin join as Guest, confidants of an owner as Admin; four ask | the friend joins as Guest, the confidant and the owner (row 0) as Admin, the stranger is refused |
 | `onesided` (control) | 3 of 6 collude, above the bound; partition {1,2} / {3}; proofs only for 1 and 2 | two different epoch-1 decisions: the session forks, as the restated bound allows |
-| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | nobody delivers the kick, and 9 is voted out at 3.15 s (round 3: a reset at 5.13 s kept it; before the VCR-1 fix: stuck at frame 102) |
+| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist; admin 1 kicks 9 at 6 s | nobody delivers the kick; confirmation held (lag 251 frames at the kick); 9 removed at 6.18 s (round 4: voted out at 3.15 s; round 3: a reset at 5.13 s kept it) |
 | `selfkickhead` | admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed | 4 removed at 2.27 s (before the VCR-2 fix: never; confirmation stuck at frame 108) |
 | `ackgap` | 3 acks once a second; two decisions 0.25 s apart fall between two of its acks | both decided, 3 stays (before the VCR-3 fix: its later acks void, and 3 voted out as too slow) |
 | `latejoin` | 5 catches up on two decisions at once, then joins at epoch 3 | admitted at 3.10 s and stays (before the VCR-3 fix: voted out after joining) |
-| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | no reset; 9 voted out at 3.15 s (round 3: three resets, then 2.52 s; before the VCR-4 fix: 87 resets, 9 never removed) |
+| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next; admin 1 kicks 9 at 6 s | no reset; confirmation held (lag 245 frames at the kick); 9 removed at 6.17 s (round 4: voted out at 3.15 s; round 3: three resets, then 2.52 s) |
 | `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second, so the cut lies over 16 entries past what 3 holds and few acks name them | 9 removed at 3.58 s; 3 fetches the branch by id, 16 entries per request; all equal (before the VCR-5 fix: 3 never gets the whole cut branch and stops at frame 235). The once-a-second acks are new: a member fetches the version an ack's head names, so with acks every few frames 3 had nearly all of the branch before the cut, and from round 6 the run with the fix off passed |
 | `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.28 s) |
-| `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits | 5 joins as Guest; 9 is removed later for not referencing 5's chain (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
+| `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits; admin 1 kicks 9 at 6 s | 5 joins as Guest; 9, which never applies the decision, holds confirmation (lag 177 frames at the kick) and is removed at 6.55 s (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
 | `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.68 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.25 s) |
 | `kickbackdate` | `kickwar`, with 2's kick backdated 30 frames | 2's kick is void; 2 removed at 2.27 s (before the VCR-9 fix: the backdated kick removed 1) |
 | `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.93 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224). Since idle thinning, 3 acks strictly on its grid, never on leaving idle (a fixture) |
-| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.25 s for not keeping up; its votes against the members ahead, in epochs 0 and 1, remove none of them |
+| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 kept; its votes against the members ahead remove none of them; confirmation lags up to 313 frames until the link heals (before trust survey #4: 3 removed at 5.25 s) |
+| `aheadlink-long`, `aheadlink-cut` | the same for 30 s; what 3 misses arrives 5 s late, or is lost | 3 never removed; confirmation trails 5-10 s (worst 626 frames), or stops for the whole cut (worst 1831 frames), and recovers |
 | `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in two (before the VC3R-2 fix, round 3's strikes voted 1 out in four of the five; five before idle thinning) |
-| `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn | voted out at 5.42 s (climbing alone: 5.20 s; rotating alone is harmless, conf 688 of 713); before the VC3R-1 fix: never, stuck at frame 108 |
-| `fakeref` | 9 silent from 2 s; 8's acks claim 5 more of 9's entries than anyone holds | the withholding rule removes 9 at 5.25 s |
-| `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch | no reset; voted out at 3.15 s (round 3: three resets, then 2.52 s) |
+| `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn; admin 1 kicks 9 at 6 s | confirmation held (lag 245 frames at the kick); 9 removed at 6.23 s (climbing alone: 6.17 s; rotating alone is harmless, conf 688 of 713); before trust survey #4: voted out at 5.42 s |
+| `fakeref` | 9 silent from 2 s; 8's acks claim 5 more of 9's entries than anyone holds | the silence vote removes 9 at 8.13 s, once VC4R-3's bound ends the spare (before trust survey #4 the withholding rule removed it at 5.25 s) |
+| `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; admin 1 kicks 9 at 6 s | no reset; confirmation held (lag 210 frames at the kick); 9 removed at 6.17 s (round 4: voted out at 3.15 s; round 3: three resets, then 2.52 s) |
 | `lagchurn` | from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch | two resets; 9 demoted at 6.40 s (with round 3's timer restarts: never, after 8 resets) |
 | `votechurn` | 2-10 s: 9 votes against 2 in every epoch; admin 1 kicks 9 at 10 s | 20 resets, 2.5 a second; confirmation lag median/max 13/19 frames before, 17/37 during, 15/19 after (idle before and after, so acks every 8 frames; 7/8 before idle thinning); the kick ends it |
 | `adminvoid` | 9 proposes a change listing its own horizon-void SetRole demoting 3 | refused; 3 stays Admin (before the VC3R-3 fix: applied) |
 | `joinsquat` | 9 asks to join in 5's name before 5 does | 9's request refused; 5's two requests merge; 5 joins as Guest at 2.63 s (before the VC3R-4 fix: never) |
 | `joinskip` | 5 authors no ack before it is admitted at epoch 2 | 5 stays (before the VC3R-6 fix: its acks void, voted out) |
 | `joinwedge` | 5's signed request reaches 1, 2 and 9 only; 9 crashes after its first prevote | 5 admitted at 2.13 s, 9 removed at 5.62 s (before the VC4R-2 fix: 1 and 2 locked on a join 3 can't validate, stuck at frame 108) |
-| `slowref` | a member grows slower while another fakes references to its chain | the slow member removed at 7.4 s (before the VC4R-3 fix: never, stuck at frame 102) |
+| `slowref` | a member grows slower while another fakes references to its chain | the slow member demoted at 10.03 s (before the VC4R-3 fix: never, stuck at frame 102) |
 | `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77-2.78 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
 
   Every scenario's honest members equal each other and the offline replay of the final log, with no false
@@ -2387,6 +2416,21 @@ and the engager's hand replayed after the gesture had ended.
          member active, so idle calm does not count at the next gesture's first frame either (decided,
          @coordinator-opus, 2026-11-01). Before, L aged out between two gestures 40 s apart, and the
          second one congested the link from level 0 again (below the table).
+         * **Except above the coarsest packed level** (reviews PA-2 and PA2-1; decided, @coordinator-opus,
+           2026-11-01 12:05Z and 13:12Z). There, calm lowers an idle member at the normal 300 ms pace, and an
+           active one after 5 s of calm, idle or not. So an idle member is back at level 5 within about a
+           second, and its next gesture starts packed. If level 5 congests, the climb rule moves it up within
+           100-300 ms.
+         * Held at levels 6-8 instead, after a second congestion in one D56 episode, a third gesture started
+           there without packs, and the author's hand trailed 217-757 mm during it. Once it was a fine-link
+           sweeper's, after its thin watcher had been demoted. With idle calm counting toward 5 s per level,
+           a gesture 15 s after the one before still started at level 6 (review PA2-1). The three-gesture
+           cells are under the table below.
+         * **A later gesture can still trail where level 5 itself congests** (review PA2-2), as on a
+           2-player 8 kbit/s link. Idle at level 5, a member acks every 8 frames, about 7.4 kbit/s with
+           datagram overhead, so the link's 4 kB burst allowance barely refills between gestures [I: the
+           author's sends during the gesture were identical under both rules, and only the levels before it
+           differed]. The figures are under the table below.
        * Idle is 7.6's predicate, read every tick (decided, @coordinator-opus, 2026-11-01: the ceiling
          bounds what it costs). A gesture's author stays busy throughout (a pending pack holds it), but an
          observer counts as idle between packs: during a level-5 gesture at 16 kbit/s it turned busy 28
@@ -2535,10 +2579,12 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
 | 32 kbit/s | **batched + adaptive** | 31 kbit/s | **196 ms**, 0 | **0 / 0** | 25 frames | **at once** | equal |
 | 16 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 494 ms, 3 | **0 / 0** | 63 frames | **at once** | equal |
 | 12 kbit/s | batched + adaptive (30 s run) | 21 kbit/s | 498 ms, 9 | **0 / 0** | 119 frames | **at once** | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.5 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.3 s | equal |
 | 64, then 16 from t = 3 s | batched + adaptive (30 s run) | 37 kbit/s | 496 ms, 4 | **0 / 0** | 87 frames | 0.1 s | equal |
 | 64 per uplink, shared by 3 peers (4 members) | batched + adaptive (30 s run) | 61 kbit/s | 479 ms, 3 | **0 / 0 / 0 / 0** | 57 frames | **at once** | all equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 494 ms on member 3's links | 95 / 98 before the demotion | 218 frames | 0.6 s | member 3 demoted after 3 s of lag (from frame 352); members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | per message (20 s run) | 174 kbit/s | 500 ms, 1,227 | 171 / 177 | 294 frames | 1.7 s | member 3 removed from frame 188; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched (20 s run) | 148 kbit/s | 500 ms, 1,106 | 167 / 172 | 290 frames | 1.75 s | member 3 removed from frame 192; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 490 ms, 42 | 618 / 618 / 621 | 716 frames | 10.5 s | all equal; member 3 is no longer removed since trust survey #4 (below). Before: 95 / 98, removed from frame 352, back after 0.6 s |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
@@ -2599,45 +2645,69 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     effects stay with its own player (@item:primordial-engine/localize-congestion-to-the-thin-link-player-othe).
     * **The cells:** one member on its own slow link both ways, the others at 256 kbit/s; member 1 sweeps;
       batched + adaptive; each against main's D73 as built.
-    * **Evidence** [V spikes/out/r18-thin, 43 cells, Windows and Linux identical]. Each log records its
+    * **Evidence** [V spikes/out/r18-thin, 64 cells with reviews PA-2's and PA2-1's three-gesture ones, on main as
+      merged with trust survey #4 (p2/thin-link ff939a5), Windows and Linux identical]. Each log records its
       commit, its source and binary hashes, and the linked encoder's size for a fixed stride-8 pack: 68 bytes
       on the wire with deltas, 130 without.
 
-    | Thin member | Players | Others' stalled frames, main → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s |
+    | Thin member | Players | Others' stalled frames, main (before Part A and before trust survey #4) → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s [Part A at its landing, where trust survey #4 changed it] |
     |---|---|---|
     | sweeper | 2 | 1,521 → 209 / 873 → 0 / 452 → 0 / 0 → 0 / 0 → 0 |
-    | sweeper | 4 | 136 → 135 / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
-    | sweeper | 8 | 124 → 124 / 117 → 114 / 138 → 96 / 128 → 0 / 0 → 0 |
-    | watcher | 3 | 207 → 98 / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
-    | watcher | 4 | 105 → 105 / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
-    | watcher | 8 | 92 → 91 / 112 → 111 / 132 → 115 / 1 → 0 / 0 → 0 |
+    | sweeper | 4 | 136 → 161 [135] / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
+    | sweeper | 8 | 124 → 138 [124] / 117 → 139 [114] / 138 → 96 / 128 → 0 / 0 → 0 |
+    | watcher | 3 | 207 → 618 [98] / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
+    | watcher | 4 | 105 → 464 [105] / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
+    | watcher | 8 | 92 → 146 [91] / 112 → 541 [111] / 132 → 115 / 1 → 0 / 0 → 0 |
+
+    * **Since trust survey #4 (f)** (main 1233ef4, the user's rulings of 2026-11-01), the withholding rule is gone,
+      and with it what removed a thin watcher whose downlink clogs [I: its uplink is thin too, but once Part A
+      thins its sending it carries little more than acks, so its horizon stays timely and R3-9 doesn't fire]. The
+      bracketed figures above are from before it.
+      * **The thin watcher stays a member** at 8 kbit/s with 3-4 players and at 12 kbit/s with 8. Its references
+        hold D54's confirmation until its downlink drains. Everyone stalls 458-621 frames per gesture, against the
+        others' 95-111 before, and the others' confirmation lag is 119-173 frames.
+      * At 8 kbit/s with 8 players it is still removed, from the same frame, but the others stall 146 frames
+        instead of 91.
+      * **PA-2's step-down (D56 above) is what brings these cells back:** they are back in real time 7.5-10.5 s
+        after the gesture. On main 993daf7 without it, the fast members sat at level 8 for 19.6-25 s and never
+        returned within the run [V @design-reviewer's builds of 993daf7 and of the merged tree].
+      * **The thin sweeper's cells cost the others more too:** 138-161 stalled frames instead of 114-135.
+      * **At 3 players Part A now costs the others more than no adaptation does** (review PL-1) [V spikes/out/r18,
+        capped-slow-member, below]. With Part A the others stall 618 frames, are back in real time after 10.5 s,
+        and member 3 is never removed. With plain batching they stall 167-172 frames and are back after 1.75 s,
+        and with per-message sends 171-177 and 1.7 s; both remove member 3, from frame 192 and 188.
+        * The likely reason [I]: Part A's thinning keeps the watcher's acks flowing, so nothing removes it.
+          Without adaptation its uplink clogs as well, and R3-9, which survey #4 kept, removes it.
+      * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
+        plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
 
     * **Four members sharing one 64 kbit/s uplink:** 1,408 stalled frames (the member making the gesture,
       then demoted) and 156 for the others → 0.
     * **The others' confirmation lag** is a mean of 14-19 frames wherever nothing stalls (14 uncapped), and
-      22-48 where stalls remain.
+      22-45 where stalls remain (22-48 before review PA-2, below). The exception is the three thin-watcher cells
+      that trust survey #4 left stalling (above), at 119-173 frames.
     * **Second gestures,** 40 s later at 16 and 32 kbit/s, never stall. On main they stalled 2,427 frames in
       those cells.
       * They start at level 5, except the 2-player 16 kbit/s thin sweeper's, which starts at level 1 (the first
         gesture after idle, below).
       * The sweeper's hand is exact through both gestures at 32 kbit/s, and trails a mean of 143-161 mm over
         both at 16.
-    * **No cell is worse than main for the others,** in stalled frames or, where main itself doesn't stall,
-      in hand entries' confirmation latency.
+    * **Until trust survey #4, no cell was worse than main for the others,** in stalled frames or, where main
+      itself doesn't stall, in hand entries' confirmation latency.
     * **Where Part A stops** (Part B's ground, in the thin-link plan):
-      * 8 players at 16 kbit/s or less still stall 91-124 frames, and 4 players at 8-12 kbit/s 35-135. The
+      * 8 players at 16 kbit/s or less still stall 96-541 frames, and 4 players at 8-12 kbit/s 35-464 (91-124 and
+        35-135 before trust survey #4). The
         others wait on the thin member's references (D54).
       * Demotion remains:
-        * the thin watcher at 8 kbit/s with 3 or more players;
+        * the thin watcher at 8 kbit/s with 8 players (with 3-4 it has stayed a member since trust survey #4);
         * the thin sweeper at 8 kbit/s with 4 players, and at 12 kbit/s with 8.
     * **Known costs:**
       * **The thin player's own hand** trails while it is thinned: a mean of 0-373 mm, up to 862 mm. It is
         exact at 32 kbit/s with up to 4 players. D73 is relaxed on its side only, as the user's goal allows.
-      * **After a second congestion in one D56 episode,** the controller can rest at the drain level while
-        idle. In the 2-player 16 kbit/s thin-sweeper cell it spent 17.4 s at level 6, nearly all of it idle
-        after the second gesture [V]. So a third gesture there would start without packs, its hand trailing,
-        until D56 forgets the level [I; no cell has a third gesture]. The others aren't affected: level 6 sends
-        less than level 5.
+      * **After a second congestion in one D56 episode** v3cap left an idle member at levels 6-8, so its next
+        gesture started without packs. Reviews PA-2 and PA2-1 measured it, and an idle member now returns to
+        level 5 within about a second (D56, item 3, and the tables below). On a 2-player 8 kbit/s link, level
+        5 can then congest in a later gesture (PA2-2).
       * **A player whose own link is fine:** in the thin-watcher cells the sweeper's link is fast, yet its
         hand trails 0-338 mm on average at 24-32 kbit/s (exact at 32 with up to 4 players), and up to 373 mm
         at 8-16 kbit/s.
@@ -2661,17 +2731,72 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         order didn't weigh (@coordinator-opus, 2026-11-01).
       * Variants v2-v7 were first compared on Windows builds that linked a stale sim-core without delta
         packs, from a target dir shared with another worktree. Those comparisons were void, and were redone.
+      * **Then reviews PA-2 and PA2-1: an idle member returns to level 5 within about a second** (p2/thin-link
+        fb12cb4 and ff4e407; @coordinator-opus, 2026-11-01). Three gestures, 40 s apart, in the 16 cells with a
+        thin sweeper (2 and 4 players) or a thin watcher (3 and 4) at 8-32 kbit/s, under v3cap and under the
+        rule as landed [V p2/thin-link 898f667's spikes/out/r18-thin, gap3-*, before main's trust survey #4 was
+        merged; v3cap from the same sources with the rule switched off, not kept as logs]:
+
+        | Cell | Third gesture under v3cap: level, author's hand mean (max), others' latency | As landed |
+        |---|---|---|
+        | 4 players, thin sweeper, 12 kbit/s | level 8, 757 mm (1,507), 42 frames | level 5, exact, 19.4 frames |
+        | 2 players, thin sweeper, 8 kbit/s | level 7, 430 mm (1,052), 19.7 frames | level 5, exact, 17.3 frames (level 5 congests: PA2-2) |
+        | 2 players, thin sweeper, 16 kbit/s | level 6, 217 mm (982), 19.0 frames | level 5, exact, 15.5 frames |
+        | 4 players, thin watcher, 8 kbit/s (the fine-link sweeper's hand; the watcher is demoted) | level 6, 217 mm (982), 19.4-19.5 frames | level 5, exact, 19.4-19.5 frames |
+
+        * A fifth cell (4 players, thin sweeper at 8 kbit/s, which is demoted) changed only in the others'
+          latency during the later gestures: 25-33 frames, now 12.
+        * The other 11 cells are byte-identical under both rules. The others' stalls are identical in every
+          cell, and every end state is equal.
+        * Over the 43 single- and two-gesture cells, nothing changed but the controller's level times and the
+          others' lag where stalls remain, which fell in 3 cells (12 kbit/s with 4 players 44 → 34 frames, 8
+          kbit/s with 2 players 48 → 45, with 4 players 42 → 34). The likely cause [I]: v3cap idled at levels
+          7-8, where acks go every 16-32 frames.
+        * These bullets compare v3cap with fb12cb4, which counted idle calm toward 5 s per level. **Review
+          PA2-1** (ff4e407) then lowered an idle member every 300 ms instead. Against fb12cb4's logs, 49 of
+          these 59 cells are byte-identical. In the 10 that moved, the others' stalls are identical, every
+          end state is equal, and the others' lag fell in 5 of them, by up to 4.6 frames (12 kbit/s with 4
+          players, 34.1 → 29.5).
+          * One got worse: the 2-player 8 kbit/s sweeper, 40 s apart. Its later gestures now congest at level
+            5, with queues of 180 and 282 ms and the other's latency up to 36 frames instead of 20.
+          * Its hand over all three gestures went from 45 to 58 mm on average (476 → 750 mm at most). It is
+            still exact during the third.
+          * The table's figures are ff4e407's.
+        * Three gestures 15 s apart, and one cell 30 s apart, under fb12cb4's rule and as landed
+          [V p2/thin-link 898f667, gap15-* and gap30-*, before the merge; fb12cb4's from its build, not kept as
+          logs]:
+
+          | Cell | fb12cb4: 5 s per level while idle | As landed (ff4e407): 300 ms while idle |
+          |---|---|---|
+          | 4 players, thin sweeper, 12 kbit/s, 15 s apart | second gesture at level 6; author's hand over the run 94 mm (982) | level 5; 67 mm (780); the others' lag 24.1 → 21.9 frames |
+          | 2 players, thin sweeper, 8 kbit/s, 15 s apart | second gesture queues 193 ms, back in real time after 4.1 s, latency up to 51 frames; third exact; hand over the run 76 mm (1,013) | second queues 175 ms, no catching up, latency up to 32; third queues 240 ms, hand 143 mm (1,027) during it; over the run 172 mm (1,027) |
+          | 2 players, thin sweeper, 8 kbit/s, 30 s apart | second queues 40 ms; third 142 ms, hand 82.7 mm (677) during it | second queues 257 ms; third 301 ms, hand 3.9 mm (238); over the run 76 → 90 mm (677 → 1,032) |
+          | 2 players, thin sweeper, 16 kbit/s; 4 players, thin watcher, 8 kbit/s; both 15 s apart | the same outcomes | level times only; the lag up to 1 frame lower |
+
+          At 8 kbit/s with 2 players the rule moves the cost between gestures rather than removing it (D56
+          above). In every other cell the others' outcomes are the same or better, and the author's hand the
+          same or closer.
+        * **Merged with trust survey #4** (ff939a5), 4 of the 21 three-gesture cells changed and 17 are
+          byte-identical [V spikes/out/r18-thin, on main]:
+          * In three, a thin watcher at 8 kbit/s is no longer removed (gap3-down-k8-m3, gap3-down-k8-m4,
+            gap15-down-k8-m4). The fine-link sweeper then backs off for it in every later gesture.
+            * Its hand trails 355 mm on average during the third gesture (955 at most), and 547 at 15 s apart.
+            * At 3 players its second gesture starts at level 8.
+          * In gap3-up-k8-m4 the thin sweeper is removed as before, but it costs the others 161 stalled frames
+            instead of 135.
 * **Thin links, Part A (p2/thin-link)** then moved every adaptive cell in the table below 64 kbit/s
   [V spikes/out/r18]:
   * **Below 20 kbit/s the recovery is back.**
     * 16 and 12 kbit/s no longer stall (449 and 874 stalled frames before). They are back in real time at
       once, instead of after 7.3 and 13.6 s.
     * So does the step from 64 to 16 kbit/s (285 before), back after 0.1 s instead of 5.1 s.
-    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.5 s after the gesture.
+    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.3 s after the gesture (3.5 s
+      before review PA2-1).
   * **On the shared uplink nobody stalls or is demoted.** Before, the member making the gesture stalled 1,408
     frames and was demoted, and the others stalled 156-157.
-  * **The slow member** costs the others 95 / 98 stalled frames instead of 204 / 207, and is demoted from frame
-    352 instead of 208.
+  * **The slow member** cost the others 95 / 98 stalled frames instead of 204 / 207, and was demoted from frame
+    352 instead of 208. Since trust survey #4 (Part A's notes above) it stays a member, and all three stall
+    618-621 frames, back in real time after 10.5 s.
   * **The cost is the author's own hand** while the levels above 5 send single poses, where D73(a) had made it
     exact:
     * a mean of 152-373 mm behind its targets (max 862) at 8-16 kbit/s, in the step and on the shared uplink,
@@ -2794,6 +2919,9 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   the ACL (10.8; review H3).
 * **Every peer validates** every interaction and commit against the ACL state *as of that frame*. A
   non-authorized action is rejected identically everywhere, with a machine-readable reason.
+* **Perma-bans:** the ACL also holds the world's perma-bans, by identity key (12.4). Owners make and lift
+  them by admin entries that a view change commits, and the owner's client writes them into `acl/`
+  (16.10). A session's ordinary bans are never written here.
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
   concern (D10). Who the owners are is now the world's ownership chain (12.5).
 
@@ -2874,6 +3002,128 @@ entries that the view change commits (10.8).
   * An owner always joins as Admin: **row 0** of every join rule list, fixed and not removable (22:48Z).
   * An owner may give up Admin; only a co-owner demotes or kicks an owner (Q27, 22:49Z and 22:51Z). An
     owner demoted or kicked that way can rejoin as Admin through row 0.
+* **Bans** (user, 2026-11-01 11:00Z, msg m7c37f5485e6f: "yes bans"; the trust principle of 10:22Z: admins
+  evict cheaters by kicks and bans; the two kinds, msg m5c4b84d186a8). A kick alone keeps no one out: the
+  kicked player rejoins at once as a new member (10.8), and under Public as Admin. There are two kinds of
+  ban [proposal; V pe-session `session/bans_tests.rs`, scenarios `bans/bans-session` and `bans/bans-next`]:
+  * **A session ban** keeps a player out of this session. Any Admin may make one (user: "Any Admin"). It is
+    never saved with the world and is gone when the session ends (user: "bans are not saved with the world
+    automatically, they only count for the current session").
+  * **A perma-ban** keeps a player out of every later session of the world, until it is lifted. Only a
+    world owner may make one (user: "a separate "perma-ban" can be made with anyone who has world-saving
+    ownership, which do save"). It is saved in the world's ACL (12.2).
+  * **Both name an identity key.** Each is the 32-byte Ed25519 key that signs a player's join request, the
+    key 12.5 compares with the owners, read from logged, signed state (OWNP-2). A ban names that key and
+    nothing else: a player's relationships (friendships, confidant marks, invite tickets) are all signed by
+    it, so there is no second identity to name.
+  * **One key, one member** (review BN-3): a join by a key that a current member holds is refused, so a
+    player is in a session once, whatever its devices. A ban reaches every key delegated from the banned
+    key: a device key it certifies (10.3), and agent and panel keys (12.3). Every key is judged as the
+    identity key it is delegated from, for one key, one member as for bans, so a device or agent key can't
+    make a present player a second member either. A peer that crashes and rejoins at once (10.8) is refused
+    until its old member is removed (`suspect_after`, about 3 s); its client keeps the request open and
+    retries until then. pe-session has one key per member, the identity key itself, and no delegated keys
+    yet [V code].
+  * **Checked at the join, after row 0 and before the other rows**: the perma-bans, then the session's bans.
+    A joiner whose key either lists is refused, whatever the rows say. Row 0 stays on top (22:48Z): an
+    owner always joins. So neither kind of ban may name a current owner's key, and a kick of an owner with
+    a ban option is refused too, even a co-owner's. Co-owners who want to keep an owner out first remove
+    that owner from the ownership chain (12.5, O1), then ban the key.
+  * **Who may ban:**
+    * A session ban or its lifting needs a new permission in the catalogue, Ban. Admin holds it, like
+      every permission, and a session may give it to other roles.
+    * A perma-ban or its lifting needs the author's key to be a world owner's, as the entries before it
+      in the change leave the owners (12.5). It needs no role permission: it is a world owner's power, not
+      a session role's. An Admin who isn't an owner can't make one.
+    * So an owner who has given up Admin can still perma-ban an absent key, but can't kick and perma-ban a
+      present player without the kick permissions (review PB-2).
+  * **A ban implies a kick.** Banning a present player is a kick with a ban option, in one entry, so it
+    needs what that kick needs (Kick, and Kick admins if the player counts as an admin, V1) as well as the
+    ban's own right. A ban entry on its own names a key that no member holds: a player who has left, whom
+    the UI offers from the session's recent players. A ban entry naming a member's key is refused (kick
+    and ban instead), so a banned key is never a member's.
+  * **Decided like a kick.** Kicks with an option, bans and unbans of both kinds are admin entries (D80):
+    signed by the author, pending until a view change commits them in commit order with the other admin
+    entries, and judged against the state the entries before them leave. A replica judges one it receives
+    against its current state and drops it if it would be refused (V13-1). The change judges its joins
+    after its admin entries, so a ban and a join by its key in one change refuse the join.
+  * **Lifting.** The two lists are separate, and so are their unbans:
+    * a session unban (Ban permission) takes the key off the session's list and clears its rejoin role
+      (below);
+    * a perma-unban (an owner) takes the key off the world's list.
+    * A key on both lists stays out until both are lifted. A perma-ban of a key with a session ban, or a
+      session ban of a perma-banned key, adds the other entry; neither replaces the other.
+  * **Persistence.** Both lists are governance, like roles and the ownership book: a rollback never rewinds
+    them, the check hash doesn't cover them, and agreement on each decision covers them.
+    * **Session bans and rejoin roles** live in the session only. The session never writes them into the
+      world, and the world's next session starts without them.
+    * **Perma-bans** are the world's ACL (`acl/`). The owner's client writes a decided perma-ban or
+      perma-unban into `acl/` as an owner-signed commit (16.10) at once, without waiting for an autosave,
+      so the world's next session starts with it, and loading a backup never rewinds it (16.10, ruling
+      2026-10-31 09:35Z) [proposal]. If the owner leaves before writing, the decided entry is session
+      state, listed for the owners like the session's edits (16.10), and any owner's client writes it,
+      since the session's decision certificate and the owner's signature on the entry prove it [I].
+    * **Writes follow decision order, not write order** (review PB-1). Different owners can write a
+      perma-ban and a later perma-unban of one key at different times. So each write carries its session
+      id and its decision position (the deciding change's epoch, and the entry's place in that change's
+      admin list). Per key, `acl/` keeps the latest write by position, and an earlier-positioned write
+      never replaces a later one. Writes from different sessions are ordered by the world's history: a
+      session that started from a head holding another session's write for the key comes after it.
+    * **A decided perma-ban never lapses** (review PB-2). With no owner left in the session to write it,
+      the author's client keeps it as a pending write, with the session's decision certificate, and commits
+      it at its next chance, under the same ordering.
+  * **A joiner's copy** (review BN-1). A 9.5 state transfer covers world state only: its check hash
+    doesn't cover governance, so no donor can hand a joiner either list. The joiner derives both, as it
+    derives roles, join rules and the ownership book: from the session's starting governance (the world
+    head's `acl/` and governance fields, in an owner-signed commit, 16.10) and the admin entries of every
+    decided change since genesis, each change verified by its epoch certificate from the genesis members
+    (`epoch_cert_ok`), with the listed entries fetched by id (VCR-8). Session bans come from those entries
+    alone. P23-8 relies on the same: a joiner holds the decided changes up to its check frame. The cost
+    grows with the session's decisions; a quorum-signed digest of governance at check frames would bound
+    it. This is the same for all governance, not only bans, and is not built for any of it [I;
+    cross-cutting, docketed by @coordinator-opus].
+  * **Merges** (D87 q2; review BN-4): when two copies of a world merge, their perma-ban lists merge against
+    the common ancestor, key by key, like the rest of the merge. A key that only one copy changed since
+    the ancestor takes that copy's entry, so a deliberate perma-unban on one side survives. A key both
+    copies changed differently stays banned. So a merge never lets back in a player whom both copies acted
+    on and either kept out [proposal]. Session bans never reach a world, so they never merge.
+  * **At most 4,096 keys on each list** (128 KiB); a ban past that is refused, and the UI asks for an unban
+    first [proposal].
+  * **What a ban stops.** Keys cost nothing to make. Under Public join rules a banned player comes back at
+    once under a new key, so there a ban stops only casual cheaters. A ban sticks under the rules that need
+    a relationship (Invite only, Friends only, Friends+, a home world): a new key holds no friendships,
+    confidant marks or tickets, and the banned key's own are useless, since the key itself is refused. A
+    persistent identity that costs something to replace is not part of the design.
+* **Kick options** (same ruling: "no automatic demotions, optional when kicking"). A kick never demotes on
+  its own. The kick action offers **Kick**, **Kick and remove Admin**, **Kick and ban**, and, for an owner,
+  **Kick and perma-ban** [proposal; V `bans_tests.rs`, `bans/bans-session`].
+  * **Kick and remove Admin** records the kicked player's key in the session with a **rejoin role**. When
+    the key next joins this session and the join rules would admit it with a role that counts as an admin
+    (Admin, or a role holding the roles permission, V2), it joins with the rejoin role instead. A row that
+    refuses it, or admits it with a role that doesn't count as an admin, applies unchanged. Row 0 is above
+    it: an owner kicked this way still rejoins as Admin, as the user accepted for kicked owners (22:51Z)
+    [V bans-rejoinrole: under Public as Admin, Admin 3 kicked with rejoin role 2 comes back as member 13
+    under key 3 with role 2 on every replica, the joiner's included; 1's grant of Admin to 13 lifts the
+    rejoin role; control, a plain kick: 13 rejoins as Admin].
+  * The rejoin role must be a defined role that doesn't count as an admin when the kick is decided;
+    otherwise the whole kick is refused, and the refusal notice offers a plain kick at once. It is checked
+    again at the join (review BN-2): if the role has since been deleted or redefined to count as an
+    admin, the join is refused, which keeps the kick's intent. The engine never creates a role for it:
+    roles are only defined by hand or come with a preset world template (user, 2026-11-01, msg
+    mabfa0670b915). So "Kick and remove Admin" offers the world's existing roles that don't count as an
+    admin to rejoin with. A world with none (the default, where Admin is the only role, 22:15Z) offers no
+    such option, and the dialog says a role without Admin must first be defined, or come from a template
+    [proposal].
+  * The rejoin role lasts until it is lifted: by a session unban, or by an admin later giving the rejoined
+    player a role that counts as an admin (a grant naming the player overrides it; redefining a role is
+    not a promotion). Like a session ban, it lives in the session only, so the next session doesn't keep
+    it [proposal: the user ruled that ordinary bans count only for the current session; a rejoin role is
+    an ordinary Admin's choice too].
+* **Agents** may request kicks, bans and unbans, like the other session admin actions:
+  `session.request_kick {member, option}` (option: none, remove_admin, ban or perma_ban),
+  `session.request_ban {key, perma}` and `session.request_unban {key, perma}`. Each request waits in its
+  owner's approval layer (Gnosarium UX section 15, item 11), and `acl.view` lists both lists and the
+  rejoin roles [proposal].
 * **Join rules** (22:37Z; a matrix since 22:47Z, extended at 22:51Z): after row 0, an ordered list of
   rows "if the joiner [relation] [target], then [action]", then a fallback.
   * Relations: is; is friends with; is a confidant of; has an invite ticket from; is a named player.
@@ -2891,7 +3141,8 @@ entries that the view change commits (10.8).
   * Discovery advertises a session's access level, so a stranger is not offered a session it cannot join
     (D9, D35) [I].
   * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
-    rows [proposal].
+    rows [proposal]. The ban lists and rejoin roles (above) are not rows, and they apply whatever the rows
+    say.
 
 ### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
 
@@ -4177,7 +4428,7 @@ tools also exists as an MCP tool, with structured input and output.
 | Logic | `logic.read`, `logic.write` (draft workspace), `logic.check` (rustc `--error-format=json` diagnostics), `logic.test_in_fork`, `scm.commit`, `scm.status`, `scm.rebase`, `scm.seat_status` |
 | Shaders | `shader.validate` (naga spans), `shader.commit`, `shader.preview_in_fork` (render-only) |
 | Assets | `asset.import`, `asset.get`, `asset.list`, `prefab.save` |
-| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`). Session admin actions (kicks, roles, join rules; 12.4) likewise: an agent may request one, and the request waits in its owner's approval layer [proposal, Gnosarium UX section 15, item 11] |
+| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`). Session admin actions (kicks, bans and perma-bans, roles, join rules; 12.4) likewise: an agent may request one (`session.request_kick`, `session.request_ban`, `session.request_unban`), and the request waits in its owner's approval layer [proposal, Gnosarium UX section 15, item 11] |
 | Panels and hubs (R13) | `panel.connect` (private session only); `panel.send` (private session: any of its connections; inbox session: its own); `panel.inbox` (private session: owner-forwarded items only); `panel.close`; `panel.requests.*` (decider session only); `hub.contacts`; `hub.send` (first contact needs owner approval); `hub.inbox` (private session: owner-forwarded items only) (21.6, 21.7) |
 | Worlds and portals (R14) | `worlds.list`, `worlds.join`, `worlds.leave`, `worlds.set_presence` (owner-confirmed), `portal.*`, `transfer.request`, `transfer.status`. Every tool takes an explicit `world` (22.9) |
 | Panel turn, voice and context (21.5, 21.11-21.13) | `panel.turn.sender` (the verified sender, its standing as owner, guest or confidant, and `input: voice`); `panel.speak {text}`; resource `primordial://panel/context` (the turn's spatial context; a live subscription only with the live-feed permission); `annotation.list`, `annotation.get`, resource `primordial://panel/annotations` |
@@ -6365,7 +6616,9 @@ Rules for every package:
   repros and a randomized Byzantine schedule generator (`randsched`) that checks the written invariants
   (`spikes/out/session-sim/INVARIANTS.md`) on every run; it found one further hole (RG-1), now fixed.
   Widened before M1 (widen/randsched, 2026-11-01): with each fix off, it finds VC4R-1, VC4R-2, VC-5,
-  VCR-12, VC3R-1 and RG-1 by itself; for each, the first failing seed is between 1 and 39 [V]. It also
+  VCR-12, VC3R-1 and RG-1 by itself; for each, the first failing seed is between 1 and 39 [V] (since trust
+  survey #4, VC4R-1 and VC3R-1 are retired, and VC-5's and RG-1's halts are ended by the admin's kick at
+  GST, so only VC4R-2 and VCR-12 still fail L1 with their fix off; INVARIANTS.md). It also
   checks a sixth invariant, S6: no honest member votes against an honest member that is timely and keeps
   up (INVARIANTS.md has the definition, the shapes and the seed counts).
   Review round 5 (changes requested: VC4R-1's stronger fix, VC5R-2, an L1 lag bound) is answered in
@@ -6429,6 +6682,14 @@ Rules for every package:
     slowcapper's decisions come before 9's held-back prevotes are released at 5 s, so 9 trails, is
     voted against, and two resets keep it (4.72 s and 5.38 s).
   The port into pe-session is P2-3, @world-chunks's; membership reaches it through a `Membership` seam.
+  **Trust survey #4** (user rulings 2026-11-01, under the trust principle): the automatic removals that
+  only counter a live cheater's stall are retired, in the spike and in pe-session: the withholding rule,
+  the ghost-kick and false-vote voter removals (VCR-1, VC4R-5/VC7R-2), the unexplained-cap author removal
+  with its polka fetch and budget (VC3R-2, VC4R-1, VC6R-1, VC7R-2), and VC-5's vote (with VC3R-1's fix to
+  its timer). Every safety rule stays. Their repros keep their cheaters and now show the stall held
+  until an admin's kick, which ends it (10.8, Limits); randsched's L1 is checked once the honest admin
+  has kicked the stalling faulty members at GST. Accepted cost: a live honest member with a one-way
+  inbound cut holds the session until the link heals or an admin kicks (`aheadlink-long`, `-cut`).
 
 **P2-5. Per-object provenance chains (D46's option for untrusted partners, now MVP under D21).**
 * What: every global id bound to its birth world; each `Arrive` certificate references the certified

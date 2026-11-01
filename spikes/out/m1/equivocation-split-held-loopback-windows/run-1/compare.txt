@@ -1,0 +1,6 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | 0251bd249d397813 | equal | 1976 | [1, 2, 4] | 4 | 148/0 | 1984/0 |
+| 2 | 1800 | 0251bd249d397813 | equal | 1976 | [1, 2, 4] | 4 | 148/0 | 1699/0 |
+| 4 | 1800 | 0251bd249d397813 | equal | 1976 | [1, 2, 4] | 6 | 148/0 | 1945/0 |
+ALL EQUAL

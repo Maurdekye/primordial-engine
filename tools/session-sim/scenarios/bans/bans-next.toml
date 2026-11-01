@@ -1,0 +1,106 @@
+description = """
+12.4 bans, the world's next session after bans-session.toml. It starts from the world's acl/ as that \
+session's owner wrote it: perma-bans {4, 5} and no session bans, which are never saved. Member 1 is \
+the owner and an Admin, member 2 an Admin who isn't an owner; the join rules admit anyone as a guest. \
+At 2 s, 3 and 6 (session-banned last session) join: admitted. 4 and 5 (perma-banned) are refused. \
+2 tries to lift 4's perma-ban: refused, not an owner. 1 lifts 5's perma-ban (decided at 3.2 s), and \
+5's request, still open, is admitted at the next change; 4, asking again at 4 s, is still refused. \
+The session ends holding perma-bans {4}. A first part cuts the run at 2.9 s, before the unban: 3 and \
+6 in, 4 and 5 out."""
+include = ["../common/review.toml"]
+end_ms = 7000
+
+[world.1]
+members = [1, 2]
+joiners = [3, 4, 5, 6]
+guests = { role = 1, admins = [1, 2] }
+owners = [1]
+perma_bans = [4, 5]
+
+[world.1.join_rules]
+fallback = 1
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 180, ban = { key = 5, on = false, perma = true } },
+]
+2 = [
+    { at = 150, ban = { key = 4, on = false, perma = true } },
+    { at = 300, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+[[join]]
+at_ms = 2000
+member = 3
+to = [1, 2]
+
+[[join]]
+at_ms = 2000
+member = 6
+to = [1, 2]
+
+[[join]]
+at_ms = 2000
+member = 4
+to = [1, 2]
+
+[[join]]
+at_ms = 2000
+member = 5
+to = [1, 2]
+
+[[join]]
+at_ms = 4000
+member = 4
+to = [1, 2]
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2]
+label = "bans-next"
+
+[[report]]
+kind = "admin"
+honest = [1, 2]
+label = "bans-next"
+outcomes = true
+roles = true
+bans = true
+
+[[report]]
+kind = "expect"
+at = 1
+members = [1, 2, 3, 5, 6]
+label = "bans-next: 3 and 6 admitted; 5 admitted after its perma-unban; 4 refused again"
+
+[[report]]
+kind = "expect"
+at = 2
+members = [1, 2, 3, 5, 6]
+label = "bans-next: member 2 agrees"
+
+[[report]]
+kind = "check_world"
+frames = 360
+label = "bans-next"
+
+# The same session cut at 2.9 s, before 1's perma-unban of 5 (frame 180): 3 and 6 are in, 4 and 5 out.
+[[part]]
+end_ms = 2900
+world.1.plan.1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+world.1.plan.2 = [{ at = 150, ban = { key = 4, on = false, perma = true } }]
+join = [
+    { at_ms = 2000, member = 3, to = [1, 2] },
+    { at_ms = 2000, member = 6, to = [1, 2] },
+    { at_ms = 2000, member = 4, to = [1, 2] },
+    { at_ms = 2000, member = 5, to = [1, 2] },
+]
+report = [
+    { kind = "expect", at = 1, members = [1, 2, 3, 6], label = "bans-next at 2.9 s: 3 and 6 admitted; 4 and 5 refused (perma-banned)" },
+    { kind = "expect", at = 2, members = [1, 2, 3, 6], label = "bans-next at 2.9 s: member 2 agrees" },
+    { kind = "admin", honest = [1], label = "bans-next at 2.9 s", bans = true },
+    { kind = "check_world", frames = 150, label = "bans-next at 2.9 s" },
+]
+
+[[part]]

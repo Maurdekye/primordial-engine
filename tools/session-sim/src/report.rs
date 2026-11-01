@@ -10,10 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use pe_sim_core::ownership::{test_key_name, Book, Insert, Key, View};
-use pe_sim_core::session::*;
-use pe_sim_core::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
-use spike::{Acceptance, Replica, Sim, WorldId};
+use pe_session::ownership::{test_key_name, Book, Insert, Key, View};
+use pe_session::session::*;
+use pe_session::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
+use pe_session_harness::{Acceptance, Replica, Sim, WorldId};
 
 use crate::byzantine::Forged;
 use crate::scenario::{Honest, Report, Scenario};
@@ -398,13 +398,22 @@ impl Probe {
                     println!("  m{m}: admitted {:?}; {joiner}'s touches: {}", r.vcm.admitted, touch_state(sim, 1, m, *joiner));
                 }
             }
-            Report::Admin { honest: h, label, outcomes: o, roles } => {
+            Report::Admin { honest: h, label, outcomes: o, roles, bans } => {
                 for m in honest(h, sim) {
                     if *o {
                         println!("RESULT {label}: m{m}: {}", outcomes(sim, m));
                     }
                     if *roles {
                         println!("  {}", roles_line(sim, m));
+                    }
+                    if *bans {
+                        let r = &sim.replica(m, 1).sim;
+                        let (ban, role): (Vec<&Key>, Vec<(&Key, &RoleId)>) = (
+                            r.vcm.bans.iter().filter(|(_, x)| **x == Restrict::Ban).map(|(k, _)| k).collect(),
+                            r.vcm.bans.iter().filter_map(|(k, x)| if let Restrict::Role(q) = x { Some((k, q)) } else { None }).collect(),
+                        );
+                        let role: Vec<String> = role.iter().map(|(k, q)| format!("{} -> role {q}", key_names([*k]))).collect();
+                        println!("  m{m}: session bans {}, rejoin roles [{}], perma-bans {}", key_names(ban), role.join(", "), key_names(r.perma_bans()));
                     }
                 }
             }
@@ -426,7 +435,7 @@ impl Probe {
                     );
                 }
             }
-            Report::Expect { world, at, conf_max, conf_min, members, label } => {
+            Report::Expect { world, at, conf_max, conf_min, members, roles, rejoin_roles, label } => {
                 let r = &sim.replica(*at, *world).sim;
                 let mut bad = Vec::new();
                 if conf_max.is_some_and(|m| r.conf > m) {
@@ -440,8 +449,33 @@ impl Probe {
                         bad.push(format!("members not {want:?}"));
                     }
                 }
+                let mut extra = String::new();
+                if let Some(want) = roles {
+                    let have: Vec<(u32, Option<u16>)> = want.iter().map(|&(m, _)| (m, r.vcm.roles.get(&m).copied())).collect();
+                    extra += &format!(" roles {have:?}");
+                    if want.iter().zip(&have).any(|(w, h)| Some(w.1) != h.1) {
+                        bad.push(format!("roles not {want:?}"));
+                    }
+                }
+                if let Some(want) = rejoin_roles {
+                    // Fill test_key_name's table for the low test identities, so ban keys print by number.
+                    for n in 0..256 {
+                        pe_session::ownership::test_key(n);
+                    }
+                    let mut have: Vec<(u32, u16)> = r
+                        .vcm
+                        .bans
+                        .iter()
+                        .filter_map(|(k, x)| if let Restrict::Role(q) = x { Some((test_key_name(*k).unwrap_or(u32::MAX), *q)) } else { None })
+                        .collect();
+                    have.sort_unstable();
+                    extra += &format!(" rejoin roles {have:?}");
+                    if have != *want {
+                        bad.push(format!("rejoin roles not {want:?}"));
+                    }
+                }
                 println!(
-                    "RESULT {label}: m{at} world {world} conf {} members {:?} evicted {:?} -> {}",
+                    "RESULT {label}: m{at} world {world} conf {} members {:?} evicted {:?}{extra} -> {}",
                     r.conf,
                     r.vcm.members,
                     r.members_evicted(),
@@ -505,6 +539,7 @@ impl Probe {
         // The idle session's acks (design 7.6, reduction 2; session-sim main.rs `ballpit`): each member's
         // acks stamped in 1.0-1.9 s, from member 1's copy of the log, with the wire estimate used above.
         let f = |s: f64| (s * hz as f64).round() as u64;
+        let lean = sim.replica(1, 1).lean_wire;
         let r1 = &sim.replica(1, 1).sim;
         let all = r1.all_entries();
         let idle_secs = 0.9;
@@ -513,7 +548,10 @@ impl Probe {
             .iter()
             .map(|&m| {
                 let acks: Vec<&Entry> = all.iter().filter(|e| e.member == m && matches!(e.payload, Payload::Ack { .. }) && (f(1.0)..f(1.9)).contains(&e.stamp)).collect();
-                let b: u64 = acks.iter().map(|e| encode_msg(&Msg::Entry(r1.signed_entry(e.id()).expect("a held entry"))).len() as u64 + 52).sum();
+                let b: u64 = acks.iter().map(|e| encode_msg(&{
+                let se = r1.signed_entry(e.id()).expect("a held entry");
+                if lean { Msg::Lean(se) } else { Msg::Entry(se) }
+            }).len() as u64 + 52).sum();
                 format!("m{m} {:.1} acks/s ({:.0} B/s wire est.)", acks.len() as f64 / idle_secs, b as f64 / idle_secs)
             })
             .collect();
@@ -620,9 +658,13 @@ fn outcomes(sim: &Sim, m: MemberId) -> String {
         .filter_map(|(id, ok)| {
             let e = r.all_entries().into_iter().find(|e| e.id() == *id)?;
             let what = match e.payload {
-                Payload::Kick { target, .. } => format!("{} kicks {target}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::Free, .. } => format!("{} kicks {target}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::Role(r), .. } => format!("{} kicks {target}, rejoin role {r}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::Ban, .. } => format!("{} kicks and bans {target}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::PermaBan, .. } => format!("{} kicks and perma-bans {target}", e.member),
                 Payload::SetRole { member, role, .. } => format!("{} gives {member} role {role}", e.member),
                 Payload::DefineRole { role, perms, .. } => format!("{} defines role {role} = {perms:#x}", e.member),
+                Payload::Ban { key, on, perma, .. } => format!("{} {}{} {key:?}", e.member, if on { "bans" } else { "unbans" }, if perma { " (perma)" } else { "" }),
                 _ => return None,
             };
             Some((e.stamp, format!("{what} @{}: {}", e.stamp, if *ok { "applied" } else { "refused" })))
@@ -1106,7 +1148,8 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
                     let guest = need(role, case, "role");
                     let demoted = honest.iter().filter(|&&m| m != p).all(|&m| sim.replica(m, 1).sim.vcm.roles.get(&p) == Some(&guest));
                     println!("REPRO {label}: f={f}, P={p}; {f} removed at {removed}; P demoted: {demoted}; live at the end: {up}; {}", confs(sim, honest));
-                    let fixed = label.ends_with("fixes_off=0x0");
+                    // Validation ties the label's mask to the part's; the verdict reads the run's.
+                    let fixed = sim.replica(honest[0], 1).sim.fixes_off == 0;
                     if label.starts_with("voiddeep valid") {
                         repro_verdict("voiddeep valid", true, gone && up && demoted, "THE LISTING, VALID ON ITS OWN ANCESTRY, IS DECIDED EVERYWHERE", "");
                     } else if fixed {
@@ -1251,6 +1294,11 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
 
 /// Keys as the scenario names them (test identities, by number), sorted by number.
 fn key_names<'a>(ks: impl IntoIterator<Item = &'a Key>) -> String {
+    // Name every low test identity, including keys no certificate on this thread has derived yet
+    // (members' identity keys in ban lists, 12.4).
+    for n in 0..256 {
+        pe_session::ownership::test_key(n);
+    }
     let mut known: Vec<u32> = Vec::new();
     let mut other: Vec<String> = Vec::new();
     for k in ks {
