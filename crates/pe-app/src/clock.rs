@@ -221,12 +221,12 @@ impl ClockSync {
         self.round = true;
     }
 
-    /// Before the session: take the offset from `leader`'s best round trip at once.
-    pub fn bootstrap(&mut self, leader: u32) -> Option<i64> {
-        let p = self.peers.get(&leader)?;
-        // The best round trip; the newest on a tie (an older sample carries the drift since).
-        let s = p.samples.iter().rev().min_by_key(|s| s.3)?;
-        self.off = s.1 as f64;
+    /// Before the session: take the offset from `leader` at once, predicted at local time `local` as
+    /// from frame 0 (its newest sample near the best round trip, carried at its session frequency once
+    /// fitted). Frame 0 waits for the frequencies (about 10 s), and a sample from the start carried
+    /// without its frequency put a member 9 % slow 1.3 s behind (measured).
+    pub fn bootstrap(&mut self, leader: u32, local: u64) -> Option<i64> {
+        self.off = self.peers.get(&leader)?.predict(local, 0.0)?;
         Some(self.off.round() as i64)
     }
 
@@ -362,7 +362,7 @@ mod tests {
                 a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid), b.rate());
             }
             if !synced {
-                b.bootstrap(1);
+                b.bootstrap(1, lb(t));
             }
             oa = a.tick(la(t), if synced { &[2] } else { &[] });
             ob = b.tick(lb(t), if synced { &[1] } else { &[] });
@@ -404,7 +404,7 @@ mod tests {
                 a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid), b.rate());
             }
             if !synced {
-                b.bootstrap(1);
+                b.bootstrap(1, lb(t));
             }
             oa = a.tick(la(t), if synced { &[2] } else { &[] });
             ob = b.tick(lb(t), if synced { &[1] } else { &[] });

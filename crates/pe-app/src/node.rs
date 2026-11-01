@@ -42,6 +42,9 @@ const PINGS: usize = 12;
 /// From frame 0, a member pings every live member this often (design 10.4).
 const SYNC_EVERY_US: u64 = 500_000;
 const LINGER_US: u64 = 3_000_000;
+/// A member reports ready once every peer's frequency is fitted (raw samples spanning 10 s), or
+/// after this long from its start.
+const FIT_WAIT_US: u64 = 20_000_000;
 
 // R18 link signal (design 10.9): a LEDBAT-style one-way queueing delay (RFC 6817), measured by the
 // receiver from each datagram's send time and echoed back in the datagram stamp (`qrep`).
@@ -593,7 +596,7 @@ impl Node {
             self.core.sim.membership().members().iter().copied().filter(|&m| m != self.me).collect()
         } else {
             if self.me != self.leader {
-                let _ = self.clock.bootstrap(self.leader);
+                let _ = self.clock.bootstrap(self.leader, local);
             }
             vec![]
         };
@@ -758,15 +761,18 @@ impl Node {
             }
         }
         self.apply_clock();
+        // A member is ready once it has every peer's frequency (or after FIT_WAIT_US): from frame 0
+        // nothing drifts unmeasured into R18's estimates, and the offsets start fitted (review H1, M2).
+        let fitted = others.iter().all(|&m| self.clock.has_rate(m)) || local >= FIT_WAIT_US;
         if self.me != self.leader {
-            if self.pongs >= PINGS / 2 && self.epoch.is_none() && local >= self.last_ready + 200_000 {
+            if fitted && self.pongs >= PINGS / 2 && self.epoch.is_none() && local >= self.last_ready + 200_000 {
                 self.last_ready = local;
                 let l = self.leader;
                 self.push_control(l, Item::Ready);
             }
             return;
         }
-        if self.epoch.is_none() && others.iter().all(|m| self.ready_from.contains(m)) {
+        if fitted && self.epoch.is_none() && others.iter().all(|m| self.ready_from.contains(m)) {
             let e = self.now_us() + 1_000_000;
             self.epoch = Some(e);
             self.core.start(e);
@@ -1022,7 +1028,7 @@ impl Node {
         }
         self.signal_us = v;
         self.signal_held = v.is_none() && !self.reports.is_empty();
-        if let Some(v) = v {
+        if let Some(v) = v.filter(|_| self.synced) {
             self.max_signal_us = self.max_signal_us.max(v);
         }
         if self.link_signal {
