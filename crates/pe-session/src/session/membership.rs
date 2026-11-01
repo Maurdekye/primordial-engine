@@ -2648,6 +2648,16 @@ impl WorldSim {
     /// One run (option 2): the predecessors bottom up, the entry, and its author's entries above it
     /// up to its cover.
     pub fn on_fetch_entry(&self, id: EntryId, back: u8) -> Vec<Msg> {
+        // Without runs on the wire (A/B): main's form, every entry signed on itself.
+        if !self.run_wire {
+            let mut out = Vec::new();
+            let mut next = Some(id);
+            while let Some(e) = next.and_then(|i| self.signed_entry(i)) {
+                next = (out.len() < back.min(15) as usize && e.seq > 1).then_some(e.prev);
+                out.push(Msg::Entry(e));
+            }
+            return out;
+        }
         let Some(mut run) = self.run_of(id) else { return vec![] };
         let mut below = Vec::new();
         let mut e = run[0].entry.clone();
