@@ -895,3 +895,26 @@ mod d73_review {
         assert_eq!(s.valid_on_own_branch(kid), Some(false), "void on its own branch too");
     }
 }
+
+#[cfg(test)]
+mod v3_review {
+    use super::*;
+    use crate::sign::test_sign;
+
+    /// Review V3-1 (@design-reviewer's probe): after a close empties `vcm.members`, a former member's
+    /// two versions of a current-epoch proposal reach `note_proposal`; `proposer()` must not index an
+    /// empty order (it panicked, "remainder with a divisor of zero").
+    #[test]
+    fn a_proposal_after_a_close_does_not_panic() {
+        let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
+        // What a close leaves (membership.rs apply_change, V3): no members.
+        s.closed_members = s.vcm.members.iter().copied().collect();
+        s.vcm.members.clear();
+        s.vcm.closed_at = Some(10);
+        let ep = s.vcm.epoch;
+        let mk = |b: u64| test_sign(1, Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Propose { epoch: ep, round: 0, valid_round: 0, change: Change { epoch: ep, boundary: b, ..Default::default() } }, carried: None });
+        s.insert(mk(30));
+        s.insert(mk(31));
+        assert_eq!(s.proposer(ep, 0), LOGIC, "no one proposes in a closed session");
+    }
+}

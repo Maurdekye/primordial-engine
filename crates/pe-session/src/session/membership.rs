@@ -976,6 +976,10 @@ impl WorldSim {
     pub(super) fn note_proposal(&mut self, id: EntryId) {
         let e = &self.entries[&id];
         let Payload::Propose { epoch, round, ref change, .. } = e.payload else { return };
+        // V3 (review V3-1): a closed session decides nothing more; a former member's proposal is inert.
+        if self.vcm.closed_at.is_some() {
+            return;
+        }
         let v = change.value();
         self.vcm.proposal_ids.entry(v).or_insert(id);
         if epoch > self.vcm.epoch && self.fixes_off & fix::PF1 == 0 {
@@ -993,6 +997,10 @@ impl WorldSim {
         let mut order: Vec<MemberId> = self.vcm.members.iter().copied().collect();
         let salt = self.cfg.seed ^ ((self.world_id as u64) << 40) ^ ((epoch as u64) << 8);
         order.sort_by_key(|&m| (splitmix64(salt ^ (m as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)), m));
+        // A closed session has no members (V3; review V3-1): no one proposes.
+        if order.is_empty() {
+            return LOGIC;
+        }
         order[round as usize % order.len()]
     }
 
