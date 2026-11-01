@@ -460,6 +460,81 @@
     }
   },
   {
+    "name": "session_indicators",
+    "description": "Admin indicators for the driven member, if it holds the Kick permission (design 10.8): whom confirmation is waiting on and for how long (it says who, never why), and the late-acks timing hint per member. Hints for a kick, never proof; nothing acts on them.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "LateAcks": {
+          "properties": {
+            "eligible": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "flagged": {
+              "type": "boolean"
+            },
+            "late": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "member": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "member",
+            "late",
+            "eligible",
+            "flagged"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "holding": {
+          "description": "Whom confirmation waits on (empty unless the lag has been at least a quarter of the\nspeculation window for 1 s). It says who, never why.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "lag_frames": {
+          "description": "The present frame minus the confirmed frame.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lag_secs": {
+          "type": "number"
+        },
+        "late_acks": {
+          "description": "The late-acks timing hint per member judged over the last 10 s: a hint, not proof.",
+          "items": {
+            "$ref": "#/$defs/LateAcks"
+          },
+          "type": "array"
+        },
+        "me": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "me",
+        "lag_frames",
+        "lag_secs",
+        "holding",
+        "late_acks"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "session_info",
     "description": "Who you are (principal, scopes, the member you drive) and the session: scenario, members, scene, clock, frame and confirmed frame.",
     "inputSchema": {

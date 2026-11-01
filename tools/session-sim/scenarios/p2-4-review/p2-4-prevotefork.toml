@@ -2,12 +2,12 @@ description = """
 P2-4 review rounds 5-7, VC4R-1 and PF-1: public join rules. At 1 s joiner 5 asks to join. Round-0 \
 proposer 1 equivocates its round-0 prevote: the join's value to capper 2, nil to observer 3 and 9; \
 9's round-0 prevotes are lost until 2.5 s. 2 sees a polka and precommits with a cap; 3 sees only 2 \
-and 3 prevote the value. With VC4R-1's fix off 3 votes 2 out for an unjustified cap. 1's chain \
-continues from its own version of the forked seq, which 3 and 9 never hold: with PF-1's fix off \
-they cannot count 1's precommit, stay in epoch 0, and confirmation halts for good. As shipped, 2 \
-is kept, 1 is removed and confirmation goes on. Parts: VC4R-1 off, PF-1 off, shipped. Since round \
-8 (VC8R-1) 3 and 9 count 1's prevote and decide the join without it, so both controls switch \
-VC8R-1's fix off as well (pfsilent shows PF-1 needed with VC8R-1 on)."""
+and 3 prevote the value. Before VC4R-1's fix 3 voted 2 out for an unjustified cap; trust survey #4 \
+retired the cap rule (and VC4R-1's control), so the shipped run checks that 3 casts no vote \
+against 2. 1's chain continues from its own version of the forked seq, which 3 and 9 never hold: \
+with PF-1's fix off (and VC8R-1's) they cannot count 1's precommit, stay in epoch 0, and \
+confirmation halts for good. As shipped, 2 is kept, 1 is removed and confirmation goes on. Parts: \
+PF-1 off, shipped."""
 include = ["../common/review.toml"]
 end_ms = 10000
 quiet_panics = true
@@ -42,13 +42,6 @@ msg = "prevote"
 round = 0
 before_ms = 2500
 drop = true
-
-[[part]]
-world.1.fixes_off = ["VC4R1", "VC8R1"]
-report = [
-    { kind = "check", case = "prevotefork_off", at = 3, target = 2, event = "member 2's precommit caps" },
-    { kind = "before_fix", honest = [1, 2, 3], label = "prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it)", fix = "VC4R-1's fix (and VC8R-1's)" },
-]
 
 [[part]]
 world.1.fixes_off = ["PF1", "VC8R1"]

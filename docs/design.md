@@ -2055,8 +2055,9 @@ is fixed once the author's chain is contiguous up to it.
     change, which needs no confirmation progress, and its decision ends every cap, freeze and vote of the
     epoch [V the eight repros above with a kick at 6 s: the worst honest lag at the kick is 177-251
     frames (window 120), the cheater is removed 0.17-0.55 s later, and the lag at the end is 7-17
-    frames; every replica equals the replay]. The "holding the session" indicator is on hold with the
-    user, so for now only the admin's own judgment tells who to kick.
+    frames; every replica equals the replay]. The user authorized a "holding the session" indicator
+    for admins (Admin indicators, below); until it's built, only the admin's own judgment tells who to
+    kick.
   * **Accepted cost: a live honest member with a one-way inbound cut holds the session too** (user
     ruling 2026-11-01, "A. Accept it"). Its own entries reach everyone, so silence never fires, and its
     acks declare its present horizon, so demotion never fires; but it references no more of the chains it
@@ -2277,6 +2278,152 @@ is fixed once the author's chain is contiguous up to it.
   gone stale before it (`bridge`, `deepfork`, `strikeframe`, `joinwedge`, `aheadlink`, and by a frame
   `kickpartition` and `cutbackdate`).
 
+**Admin indicators** (user ruling 2026-11-01 16:27Z, msg mf32513b5c469: "Holding the session · Implausible
+reports"; trust survey #4, #6 and #7; @coordinator-opus's rulings 16:32Z and 16:35Z, msgs m31b4deb20f58
+and m4f022c20a7c8, after @design-reviewer's review IND-1 to IND-6 and LA-1 to LA-4) [proposal; I, nothing
+built]. Automatic removals no longer end a live cheater's stall, so an admin's kick does (Limits, above).
+Two indicators show admins whom to look at. **An indicator never acts:** it doesn't remove, demote, vote,
+fetch, or change any timer, cap or deadline. Equivocator exclusion and its fork proof stay as they are,
+and there is no fork-proof indicator (same ruling).
+* **Where they are computed.** On the admin's own replica, when its client asks, from what that replica
+  already holds: the chains and their references, the acks and their horizons, the membership state, and
+  (for the timing hint) the transport's send times and round trips toward each member. Nothing goes on the
+  wire, into the log or into the check hash. So an indicator can't fork the session, can't be fed by
+  another member except through that member's own behaviour, and costs nothing in steady state.
+  * **Read-only** (review IND-6). `stable_seq` is `&mut`: it queues fetch requests (`want_from`) and raises
+    `stable_hi`. The indicator uses a read-only twin that computes the same value and changes nothing, so
+    "never acts, nothing on the wire" holds.
+  * A query costs one pass over the members' references, O(n²) map reads, the work `recompute_conf` does on
+    every ack. Two replicas can show slightly different answers, since each sees its own arrivals; that is
+    acceptable for a hint.
+* **Admin-only.** `SessionCore::indicators(asker)` returns nothing unless `asker` holds the Kick
+  permission in the decided roles (12.4): the indicators exist to inform a kick. pe-mcp exposes them as a
+  `session_indicators` tool, returning nothing for a token whose driven member lacks Kick; pe-app prints
+  an admin status line while the local member holds Kick and an indicator names someone. **The gate is
+  presentation only:** the inputs are data every replica holds, so a modified client can compute the same
+  thing. Nothing is secret, and nothing depends on non-admins not seeing it.
+* **Thresholds are starting values** (@coordinator-opus): W/4 for 1 s for holding, and the timing hint's
+  margin and share below. The scenarios check them: in each, no honest member is shown as late or as
+  withholding, and ordinary jitter names nobody.
+
+* **"Holding the session"**: whom confirmation is waiting on, and for how long. **It says who, never why**
+  (review): a slow honest member holds confirmation as surely as a cheater, and is named too. Honest thin
+  members' confirmation lag is 120-190 frames in r18-thin's down cells [V runs20], well past the threshold.
+  * **Shown only when confirmation lags:** the present frame P minus the confirmed frame C is at least a
+    quarter of the speculation window (30 frames at the 120-frame window, 0.5 s) and has been for at least
+    1 s. Ordinary lag is 7-17 frames on the scenarios' links [V votechurn, the eight 10.8 repros after
+    the kick], so ordinary jitter names nobody.
+  * **Attribution.** It takes confirmation's own bound apart (Stability and confirmation, above;
+    `recompute_conf` and `stable_seq`). C is the minimum over members j of j's term. For each member j whose
+    term equals C, the first of these that applies is its cause (review IND-2's order):
+    1. **Membership change** (names no member; it ends with the view change): the replica is adopting a
+       decision (`adopting()` freezes C); the term is capped by a join (`join_cap`), by an ack from a newer
+       epoch, or by a removed member's prefix not yet held; or a vote holds it (review IND-1): this replica
+       voted against j, so its copy counts only up to j's frozen head, or a member k voted against j, so k's
+       later references to j never count (R3-1). Shown as "k voted against j; waits for the view change".
+    2. **Behind (j): no ack yet** (review IND-5): j has no ack this replica has applied and isn't admitted.
+    3. **This replica (gap in j's chain)** (review IND-4): this replica holds an entry of j beyond a gap
+       (applied means contiguous: `ack_hist` fills in chain order), so its own copy is what waits.
+    4. **Behind (j):** j's newest applied ack declares no horizon at or past C. j hasn't declared progress
+       that this replica has heard: a slow or stalled peer, a cheater withholding acks, or j's packets not
+       reaching this replica. Shown with P minus j's newest declared horizon.
+    5. **Not referencing (k, j):** let r be the **lowest** seq of j whose applied ack declares a horizon at or
+       past C (review IND-3). r isn't stable because some member k's newest reference to j's chain, in the
+       version this replica holds, is below r. **Guard** (review IND-2): k is named only if k's newest ack
+       this replica has applied is stamped at least 1 s (the show threshold) after j's entry r, so k has had
+       time to hold r. If k's newest ack is recent but stamped less than 1 s after r, nothing is shown for k
+       yet (review IND-7), unless that ack was already at least W/8 old (15 frames, 0.25 s) when this
+       replica holds it: then k is slow, its view reaching here late, and is shown as **behind (k)** with
+       that age. Without this, a member on a 0.4-0.7 s link, whose newest ack always arrives that old, is
+       never shown, though it holds confirmation 1.5 s back [V ind-slow, found in the build]. If k's acks are old, k is shown as **behind (k)**, which is also what this
+       replica sees when it isn't hearing k, unless this replica holds an entry of k beyond a gap, which is
+       this replica's own gap (IND-7). Shown with P minus the stamp of r. This is a cheater
+       withholding references, and equally an honest member with a one-way inbound cut, which can't
+       reference what it can't hear (Limits, accepted cost); the indicator can't tell them apart, and says
+       so. The timing hint below, for this replica's own chain, is the nearest thing to a tie-breaker.
+    6. **Not heard (j):** when more than t of the other members are each named "not referencing (·, j)"
+       under the guard, the common cause is j's outbound link, not that many members withholding at once,
+       so it is shown as j not heard instead of naming them. At n = 3 (t = 0, one other member) the two
+       readings can't be told apart, and both are shown. The guard keeps this sound: without it, slow
+       inbound to this replica from the others would make every j look not heard.
+  * **Output:** per named member, its causes, and the lag in frames and in seconds (frames / hz). The same
+    member can be behind and not referencing at once.
+  * **With Part B** (for sessions of 4 or more; 10.9 thin link), "verdicts waiting on" is the same
+    attribution over the open verdicts that hold back a frame's close: for an entry still undecided, the
+    members whose echo-stable acks are missing for its void-or-count status. Built with Part B's
+    pe-session port.
+
+* **"Implausible reports"**: soft warnings, labelled as hints and never as proof. Two parts:
+  * **Backlog reports** (Part B, rule 5, P2's plain smallest): in production each receiver reports its
+    downlink backlog in its acks, and a sender's controller reads the smallest over its non-fed
+    receivers, so one receiver reporting zero switches off back-off for every sender (trust survey #7,
+    accepted). A receiver's report is implausible when it disagrees with what the echo-stable acks show
+    about delivery to it: it reports near zero while its δ for a sender's entries (its first echo-stable
+    reference minus the entry's stamp) runs well past that sender's L + Q, or reports high while δ stays
+    near L. It's flagged when that disagreement holds over 3 consecutive windows, from window k − 2's
+    settled data, the same data Part B uses. Fed members are left out: their acks reference nothing. Built
+    with Part B's pe-session port, which brings the reports (@engine-architect: the spike reads backlogs
+    directly, so no report exists until then).
+  * **Late acks: a timing hint, not proof** (@coordinator-opus's ruling, 16:35Z: the clock-free test;
+    review LA-5).
+    Nothing that feeds L, Q, E or G is a report; a member moves them only by behaving, stamping or sending
+    its acks late (@engine-architect). So this hint is about behaviour, measured on one path with no clock:
+    * **Only this replica's own entries.** For each of its entries e and each member X: S is the local
+      time the transport last handed e to the link toward X, after this replica's own send queue (a
+      repair restarts it); and for each ack of X, R is its local arrival time. X's ack is **late** if
+      R − S exceeds this replica's measured round trip to X plus a margin, and its reference to this
+      replica's chain is still below e (in the version this replica sent).
+    * **The round trip is the largest the transport's pings measured over the last 2 s** (review IB-1:
+      2 s, not 10), not the median: a path that just got slower (a cut, a filling queue) exempts acks at once, rather than after
+      the median catches up. Like the stamp rule, it can only exempt. [V ind-aheadlink: with the median,
+      the honest member behind the 5 s cut was flagged; found in the build.]
+    * **A fetch restarts the clock** (found in the build): when X asks for this replica's chain from seq
+      a, it lacks a and can reference nothing past the hole until it's repaired (references cover only a
+      contiguous prefix), so S for every entry from a on becomes the fetch's arrival. On a thin downlink
+      that tail-drops, an honest member's references wait on repairs [V ind-thindown on main
+      699f8fb's R18: flagged without this; since the thin-link landing (a0af773) that watcher no longer
+      lags past the threshold at all]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
+      still shows as not referencing.
+    * **Only current members' acks** are judged; a removed member's are ignored.
+    * **In pe-app, S is the socket hand-off:** the core's outbox and the clock-sync pings go through one
+      pack and one shaper per peer, in one flush, and pe-app has no other send queue [V node.rs
+      `flush_out`, @design-reviewer].
+    * **What it can't do** (review IB-1): it catches a withholder that doesn't game it. A withholder that
+      slows one pong in every 2 s (raising the round trip it is judged by) or keeps re-fetching this
+      replica's chain (restarting the clock) is never flagged, at no visible cost. So no flag proves
+      nothing; and "holding the session" still names such a member as not referencing.
+    * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
+      least e's stamp plus half the round trip. Otherwise the time it waited in X's own send queue (R18,
+      upstream of the transport, so the pings skip it) would make an honest member with a thin uplink look
+      late: its acks arrive seconds after they were built, before e could have reached it. The stamp can
+      only exempt an ack, never flag one. A liar that backdates its acks' stamps to be exempted drags their
+      horizons down with them, since an ack's horizon stays within slack of its stamp (8.2); it then holds
+      confirmation and shows as behind.
+    * **Why it doesn't misfire** (review LA-1 to LA-3): R − S and the round trip are both round trips on
+      the same path, so asymmetric links and clock-sync error don't enter; S is taken after this
+      replica's own queue, so another author's queue or a thin sweeper's uplink doesn't either; and each
+      ack is judged on its own, so ack cadence (2-8 frames) doesn't count. The margin covers X's own
+      packing: an ack can be built up to PACK_MAX (8) frames before it is sent, so the margin is PACK_MAX
+      frames plus 50 ms (183 ms at 60 Hz).
+    * **Flagged** when, over the last 10 s, more than half of X's acks that arrived after S + round trip +
+      margin for some e were late. The share absorbs loss: at 10% loss a hole delays some references by a
+      repair round trip, up to 21 frames [V runs19], but not most. "Eligible" means counted under the stamp
+      rule above.
+    * **Excluded** (review LA-4): a joiner still catching up (before its first applied ack declares a
+      horizon at or past its admission), a member that voted against this replica (its references are
+      frozen by construction), and fed members under Part B.
+    * **Limit:** it sees only withholding of this replica's own chain. For other chains, the hint pairs
+      "not referencing (k, j)" with whether k references this replica's chain promptly: if it does, the
+      withholding is targeted at j, or j's link toward k is cut. Still a hint, not proof.
+  * **The harness's pings** (session-sim): a ping's round trip is what a small datagram offered now would
+    take through the two links' queues and delays (mean jitter), plus any scripted fault on the whole
+    link (a stateless copy of the fault rules that name no message kind); a dropped one is lost.
+  * **Scenarios** (@coordinator-opus; review LA-5): a withholding cheater, an honest slow member, the
+    one-way cut (`aheadlink`), a thin watcher (down-k8-m3), a thin sweeper as author, a thin sweeper as the
+    judged member (up-k8-m4), 10% loss, and an asymmetric link.
+    The cheater is named in each place it should be; no honest member is ever flagged late; and the honest
+    slow member is shown as behind, never as withholding.
+
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
   and epochs. Its members are the peers that simulate that region.
@@ -2416,6 +2563,21 @@ and the engager's hand replayed after the gesture had ended.
          member active, so idle calm does not count at the next gesture's first frame either (decided,
          @coordinator-opus, 2026-11-01). Before, L aged out between two gestures 40 s apart, and the
          second one congested the link from level 0 again (below the table).
+         * **Except above the coarsest packed level** (reviews PA-2 and PA2-1; decided, @coordinator-opus,
+           2026-11-01 12:05Z and 13:12Z). There, calm lowers an idle member at the normal 300 ms pace, and an
+           active one after 5 s of calm, idle or not. So an idle member is back at level 5 within about a
+           second, and its next gesture starts packed. If level 5 congests, the climb rule moves it up within
+           100-300 ms.
+         * Held at levels 6-8 instead, after a second congestion in one D56 episode, a third gesture started
+           there without packs, and the author's hand trailed 217-757 mm during it. Once it was a fine-link
+           sweeper's, after its thin watcher had been demoted. With idle calm counting toward 5 s per level,
+           a gesture 15 s after the one before still started at level 6 (review PA2-1). The three-gesture
+           cells are under the table below.
+         * **A later gesture can still trail where level 5 itself congests** (review PA2-2), as on a
+           2-player 8 kbit/s link. Idle at level 5, a member acks every 8 frames, about 7.4 kbit/s with
+           datagram overhead, so the link's 4 kB burst allowance barely refills between gestures [I: the
+           author's sends during the gesture were identical under both rules, and only the levels before it
+           differed]. The figures are under the table below.
        * Idle is 7.6's predicate, read every tick (decided, @coordinator-opus, 2026-11-01: the ceiling
          bounds what it costs). A gesture's author stays busy throughout (a pending pack holds it), but an
          observer counts as idle between packs: during a level-5 gesture at 16 kbit/s it turned busy 28
@@ -2564,10 +2726,12 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
 | 32 kbit/s | **batched + adaptive** | 31 kbit/s | **196 ms**, 0 | **0 / 0** | 25 frames | **at once** | equal |
 | 16 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 494 ms, 3 | **0 / 0** | 63 frames | **at once** | equal |
 | 12 kbit/s | batched + adaptive (30 s run) | 21 kbit/s | 498 ms, 9 | **0 / 0** | 119 frames | **at once** | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.5 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.3 s | equal |
 | 64, then 16 from t = 3 s | batched + adaptive (30 s run) | 37 kbit/s | 496 ms, 4 | **0 / 0** | 87 frames | 0.1 s | equal |
 | 64 per uplink, shared by 3 peers (4 members) | batched + adaptive (30 s run) | 61 kbit/s | 479 ms, 3 | **0 / 0 / 0 / 0** | 57 frames | **at once** | all equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 494 ms on member 3's links | 95 / 98 before the demotion | 218 frames | 0.6 s | member 3 demoted after 3 s of lag (from frame 352); members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | per message (20 s run) | 174 kbit/s | 500 ms, 1,227 | 171 / 177 | 294 frames | 1.7 s | member 3 removed from frame 188; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched (20 s run) | 148 kbit/s | 500 ms, 1,106 | 167 / 172 | 290 frames | 1.75 s | member 3 removed from frame 192; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 490 ms, 42 | 618 / 618 / 621 | 716 frames | 10.5 s | all equal; member 3 is no longer removed since trust survey #4 (below). Before: 95 / 98, removed from frame 352, back after 0.6 s |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
@@ -2628,45 +2792,69 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     effects stay with its own player (@item:primordial-engine/localize-congestion-to-the-thin-link-player-othe).
     * **The cells:** one member on its own slow link both ways, the others at 256 kbit/s; member 1 sweeps;
       batched + adaptive; each against main's D73 as built.
-    * **Evidence** [V spikes/out/r18-thin, 43 cells, Windows and Linux identical]. Each log records its
+    * **Evidence** [V spikes/out/r18-thin, 64 cells with reviews PA-2's and PA2-1's three-gesture ones, on main as
+      merged with trust survey #4 (p2/thin-link ff939a5), Windows and Linux identical]. Each log records its
       commit, its source and binary hashes, and the linked encoder's size for a fixed stride-8 pack: 68 bytes
       on the wire with deltas, 130 without.
 
-    | Thin member | Players | Others' stalled frames, main → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s |
+    | Thin member | Players | Others' stalled frames, main (before Part A and before trust survey #4) → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s [Part A at its landing, where trust survey #4 changed it] |
     |---|---|---|
     | sweeper | 2 | 1,521 → 209 / 873 → 0 / 452 → 0 / 0 → 0 / 0 → 0 |
-    | sweeper | 4 | 136 → 135 / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
-    | sweeper | 8 | 124 → 124 / 117 → 114 / 138 → 96 / 128 → 0 / 0 → 0 |
-    | watcher | 3 | 207 → 98 / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
-    | watcher | 4 | 105 → 105 / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
-    | watcher | 8 | 92 → 91 / 112 → 111 / 132 → 115 / 1 → 0 / 0 → 0 |
+    | sweeper | 4 | 136 → 161 [135] / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
+    | sweeper | 8 | 124 → 138 [124] / 117 → 139 [114] / 138 → 96 / 128 → 0 / 0 → 0 |
+    | watcher | 3 | 207 → 618 [98] / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
+    | watcher | 4 | 105 → 464 [105] / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
+    | watcher | 8 | 92 → 146 [91] / 112 → 541 [111] / 132 → 115 / 1 → 0 / 0 → 0 |
+
+    * **Since trust survey #4 (f)** (main 1233ef4, the user's rulings of 2026-11-01), the withholding rule is gone,
+      and with it what removed a thin watcher whose downlink clogs [I: its uplink is thin too, but once Part A
+      thins its sending it carries little more than acks, so its horizon stays timely and R3-9 doesn't fire]. The
+      bracketed figures above are from before it.
+      * **The thin watcher stays a member** at 8 kbit/s with 3-4 players and at 12 kbit/s with 8. Its references
+        hold D54's confirmation until its downlink drains. Everyone stalls 458-621 frames per gesture, against the
+        others' 95-111 before, and the others' confirmation lag is 119-173 frames.
+      * At 8 kbit/s with 8 players it is still removed, from the same frame, but the others stall 146 frames
+        instead of 91.
+      * **PA-2's step-down (D56 above) is what brings these cells back:** they are back in real time 7.5-10.5 s
+        after the gesture. On main 993daf7 without it, the fast members sat at level 8 for 19.6-25 s and never
+        returned within the run [V @design-reviewer's builds of 993daf7 and of the merged tree].
+      * **The thin sweeper's cells cost the others more too:** 138-161 stalled frames instead of 114-135.
+      * **At 3 players Part A now costs the others more than no adaptation does** (review PL-1) [V spikes/out/r18,
+        capped-slow-member, below]. With Part A the others stall 618 frames, are back in real time after 10.5 s,
+        and member 3 is never removed. With plain batching they stall 167-172 frames and are back after 1.75 s,
+        and with per-message sends 171-177 and 1.7 s; both remove member 3, from frame 192 and 188.
+        * The likely reason [I]: Part A's thinning keeps the watcher's acks flowing, so nothing removes it.
+          Without adaptation its uplink clogs as well, and R3-9, which survey #4 kept, removes it.
+      * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
+        plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
 
     * **Four members sharing one 64 kbit/s uplink:** 1,408 stalled frames (the member making the gesture,
       then demoted) and 156 for the others → 0.
     * **The others' confirmation lag** is a mean of 14-19 frames wherever nothing stalls (14 uncapped), and
-      22-48 where stalls remain.
+      22-45 where stalls remain (22-48 before review PA-2, below). The exception is the three thin-watcher cells
+      that trust survey #4 left stalling (above), at 119-173 frames.
     * **Second gestures,** 40 s later at 16 and 32 kbit/s, never stall. On main they stalled 2,427 frames in
       those cells.
       * They start at level 5, except the 2-player 16 kbit/s thin sweeper's, which starts at level 1 (the first
         gesture after idle, below).
       * The sweeper's hand is exact through both gestures at 32 kbit/s, and trails a mean of 143-161 mm over
         both at 16.
-    * **No cell is worse than main for the others,** in stalled frames or, where main itself doesn't stall,
-      in hand entries' confirmation latency.
+    * **Until trust survey #4, no cell was worse than main for the others,** in stalled frames or, where main
+      itself doesn't stall, in hand entries' confirmation latency.
     * **Where Part A stops** (Part B's ground, in the thin-link plan):
-      * 8 players at 16 kbit/s or less still stall 91-124 frames, and 4 players at 8-12 kbit/s 35-135. The
+      * 8 players at 16 kbit/s or less still stall 96-541 frames, and 4 players at 8-12 kbit/s 35-464 (91-124 and
+        35-135 before trust survey #4). The
         others wait on the thin member's references (D54).
       * Demotion remains:
-        * the thin watcher at 8 kbit/s with 3 or more players;
+        * the thin watcher at 8 kbit/s with 8 players (with 3-4 it has stayed a member since trust survey #4);
         * the thin sweeper at 8 kbit/s with 4 players, and at 12 kbit/s with 8.
     * **Known costs:**
       * **The thin player's own hand** trails while it is thinned: a mean of 0-373 mm, up to 862 mm. It is
         exact at 32 kbit/s with up to 4 players. D73 is relaxed on its side only, as the user's goal allows.
-      * **After a second congestion in one D56 episode,** the controller can rest at the drain level while
-        idle. In the 2-player 16 kbit/s thin-sweeper cell it spent 17.4 s at level 6, nearly all of it idle
-        after the second gesture [V]. So a third gesture there would start without packs, its hand trailing,
-        until D56 forgets the level [I; no cell has a third gesture]. The others aren't affected: level 6 sends
-        less than level 5.
+      * **After a second congestion in one D56 episode** v3cap left an idle member at levels 6-8, so its next
+        gesture started without packs. Reviews PA-2 and PA2-1 measured it, and an idle member now returns to
+        level 5 within about a second (D56, item 3, and the tables below). On a 2-player 8 kbit/s link, level
+        5 can then congest in a later gesture (PA2-2).
       * **A player whose own link is fine:** in the thin-watcher cells the sweeper's link is fast, yet its
         hand trails 0-338 mm on average at 24-32 kbit/s (exact at 32 with up to 4 players), and up to 373 mm
         at 8-16 kbit/s.
@@ -2690,17 +2878,72 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         order didn't weigh (@coordinator-opus, 2026-11-01).
       * Variants v2-v7 were first compared on Windows builds that linked a stale sim-core without delta
         packs, from a target dir shared with another worktree. Those comparisons were void, and were redone.
+      * **Then reviews PA-2 and PA2-1: an idle member returns to level 5 within about a second** (p2/thin-link
+        fb12cb4 and ff4e407; @coordinator-opus, 2026-11-01). Three gestures, 40 s apart, in the 16 cells with a
+        thin sweeper (2 and 4 players) or a thin watcher (3 and 4) at 8-32 kbit/s, under v3cap and under the
+        rule as landed [V p2/thin-link 898f667's spikes/out/r18-thin, gap3-*, before main's trust survey #4 was
+        merged; v3cap from the same sources with the rule switched off, not kept as logs]:
+
+        | Cell | Third gesture under v3cap: level, author's hand mean (max), others' latency | As landed |
+        |---|---|---|
+        | 4 players, thin sweeper, 12 kbit/s | level 8, 757 mm (1,507), 42 frames | level 5, exact, 19.4 frames |
+        | 2 players, thin sweeper, 8 kbit/s | level 7, 430 mm (1,052), 19.7 frames | level 5, exact, 17.3 frames (level 5 congests: PA2-2) |
+        | 2 players, thin sweeper, 16 kbit/s | level 6, 217 mm (982), 19.0 frames | level 5, exact, 15.5 frames |
+        | 4 players, thin watcher, 8 kbit/s (the fine-link sweeper's hand; the watcher is demoted) | level 6, 217 mm (982), 19.4-19.5 frames | level 5, exact, 19.4-19.5 frames |
+
+        * A fifth cell (4 players, thin sweeper at 8 kbit/s, which is demoted) changed only in the others'
+          latency during the later gestures: 25-33 frames, now 12.
+        * The other 11 cells are byte-identical under both rules. The others' stalls are identical in every
+          cell, and every end state is equal.
+        * Over the 43 single- and two-gesture cells, nothing changed but the controller's level times and the
+          others' lag where stalls remain, which fell in 3 cells (12 kbit/s with 4 players 44 → 34 frames, 8
+          kbit/s with 2 players 48 → 45, with 4 players 42 → 34). The likely cause [I]: v3cap idled at levels
+          7-8, where acks go every 16-32 frames.
+        * These bullets compare v3cap with fb12cb4, which counted idle calm toward 5 s per level. **Review
+          PA2-1** (ff4e407) then lowered an idle member every 300 ms instead. Against fb12cb4's logs, 49 of
+          these 59 cells are byte-identical. In the 10 that moved, the others' stalls are identical, every
+          end state is equal, and the others' lag fell in 5 of them, by up to 4.6 frames (12 kbit/s with 4
+          players, 34.1 → 29.5).
+          * One got worse: the 2-player 8 kbit/s sweeper, 40 s apart. Its later gestures now congest at level
+            5, with queues of 180 and 282 ms and the other's latency up to 36 frames instead of 20.
+          * Its hand over all three gestures went from 45 to 58 mm on average (476 → 750 mm at most). It is
+            still exact during the third.
+          * The table's figures are ff4e407's.
+        * Three gestures 15 s apart, and one cell 30 s apart, under fb12cb4's rule and as landed
+          [V p2/thin-link 898f667, gap15-* and gap30-*, before the merge; fb12cb4's from its build, not kept as
+          logs]:
+
+          | Cell | fb12cb4: 5 s per level while idle | As landed (ff4e407): 300 ms while idle |
+          |---|---|---|
+          | 4 players, thin sweeper, 12 kbit/s, 15 s apart | second gesture at level 6; author's hand over the run 94 mm (982) | level 5; 67 mm (780); the others' lag 24.1 → 21.9 frames |
+          | 2 players, thin sweeper, 8 kbit/s, 15 s apart | second gesture queues 193 ms, back in real time after 4.1 s, latency up to 51 frames; third exact; hand over the run 76 mm (1,013) | second queues 175 ms, no catching up, latency up to 32; third queues 240 ms, hand 143 mm (1,027) during it; over the run 172 mm (1,027) |
+          | 2 players, thin sweeper, 8 kbit/s, 30 s apart | second queues 40 ms; third 142 ms, hand 82.7 mm (677) during it | second queues 257 ms; third 301 ms, hand 3.9 mm (238); over the run 76 → 90 mm (677 → 1,032) |
+          | 2 players, thin sweeper, 16 kbit/s; 4 players, thin watcher, 8 kbit/s; both 15 s apart | the same outcomes | level times only; the lag up to 1 frame lower |
+
+          At 8 kbit/s with 2 players the rule moves the cost between gestures rather than removing it (D56
+          above). In every other cell the others' outcomes are the same or better, and the author's hand the
+          same or closer.
+        * **Merged with trust survey #4** (ff939a5), 4 of the 21 three-gesture cells changed and 17 are
+          byte-identical [V spikes/out/r18-thin, on main]:
+          * In three, a thin watcher at 8 kbit/s is no longer removed (gap3-down-k8-m3, gap3-down-k8-m4,
+            gap15-down-k8-m4). The fine-link sweeper then backs off for it in every later gesture.
+            * Its hand trails 355 mm on average during the third gesture (955 at most), and 547 at 15 s apart.
+            * At 3 players its second gesture starts at level 8.
+          * In gap3-up-k8-m4 the thin sweeper is removed as before, but it costs the others 161 stalled frames
+            instead of 135.
 * **Thin links, Part A (p2/thin-link)** then moved every adaptive cell in the table below 64 kbit/s
   [V spikes/out/r18]:
   * **Below 20 kbit/s the recovery is back.**
     * 16 and 12 kbit/s no longer stall (449 and 874 stalled frames before). They are back in real time at
       once, instead of after 7.3 and 13.6 s.
     * So does the step from 64 to 16 kbit/s (285 before), back after 0.1 s instead of 5.1 s.
-    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.5 s after the gesture.
+    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.3 s after the gesture (3.5 s
+      before review PA2-1).
   * **On the shared uplink nobody stalls or is demoted.** Before, the member making the gesture stalled 1,408
     frames and was demoted, and the others stalled 156-157.
-  * **The slow member** costs the others 95 / 98 stalled frames instead of 204 / 207, and is demoted from frame
-    352 instead of 208.
+  * **The slow member** cost the others 95 / 98 stalled frames instead of 204 / 207, and was demoted from frame
+    352 instead of 208. Since trust survey #4 (Part A's notes above) it stays a member, and all three stall
+    618-621 frames, back in real time after 10.5 s.
   * **The cost is the author's own hand** while the levels above 5 send single poses, where D73(a) had made it
     exact:
     * a mean of 152-373 mm behind its targets (max 862) at 8-16 kbit/s, in the step and on the shared uplink,

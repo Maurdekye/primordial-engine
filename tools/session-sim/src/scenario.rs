@@ -710,6 +710,18 @@ pub enum Byzantine {
         carry_ms: u64,
         plant_ms: u64,
     },
+    /// Trust survey #4: not a cheater but an honest admin. At `at_ms`, `member` signs a kick of
+    /// `target` and sends it to `to` (session-sim p24r.rs `AdminKick`: signed directly, since a planned
+    /// action waits while the sim is paused). The worst confirmation lag among `honest` at that moment
+    /// is kept for the `admin_kick` check. List it before the cheater it kicks, as the spike steps it
+    /// first.
+    AdminKick {
+        member: u32,
+        target: u32,
+        at_ms: u64,
+        honest: Vec<u32>,
+        to: Vec<u32>,
+    },
     /// At `at_ms`, `member` votes against `target` for a kick `kick` that does not exist, with
     /// `target`'s head as it holds it as the frozen head; sent to `to`.
     GhostVote {
@@ -892,6 +904,10 @@ fn one() -> u32 {
     1
 }
 
+fn every_250() -> u64 {
+    250
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct R14Attack {
@@ -1008,6 +1024,28 @@ pub enum Report {
     },
     /// Each member's confirmed and simulated frame on one line (`RESULT {label}: m1 conf ...`).
     Confs { honest: Vec<u32>, label: String },
+    /// Admin indicators (design 10.8): admin `at` asks its replica every `every_ms`; a line each time
+    /// the answer changes, then OK or FAIL against the scenario's expectations: each of `named` is
+    /// shown holding the session at least once; none of `honest` is ever shown not referencing or
+    /// flagged late; with `quiet`, nobody is ever shown or flagged.
+    Indicators {
+        #[serde(default = "one")]
+        world: u32,
+        at: u32,
+        #[serde(default = "every_250")]
+        every_ms: u64,
+        label: String,
+        #[serde(default)]
+        named: Vec<u32>,
+        #[serde(default)]
+        honest: Vec<u32>,
+        /// Honest members that can't reference what they can't hear (a one-way cut, a thin downlink):
+        /// shown not referencing is expected (design 10.8), flagged late is still a FAIL.
+        #[serde(default)]
+        may_not_reference: Vec<u32>,
+        #[serde(default)]
+        quiet: bool,
+    },
     /// The line a run with its fix switched off ends with: whether it stopped, or every replica
     /// of `honest` equals the replay; their frames; and the first one's members and evictions.
     BeforeFix { honest: Honest, label: String, fix: String },

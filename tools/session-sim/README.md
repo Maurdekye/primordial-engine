@@ -47,9 +47,10 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `review/` | 7 | round-2 and round-3 review repros: ackfork, lateequiv, evict, outage, badvote, liar, crashstall |
 | `p2-4/` | 11 | P2-4's view change (design 10.8): twosilent, twosilent5 (both quorum rules), withheld, colluders, badproposer, bridge (both rules), join, refwithhold, vcscale-64, vcscale-256; and handowner (design 8.4, review HO-1) |
 | `d80/` | 6 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose (V3: the close removes everyone), joinrules, kickadmin (V1-V2) |
-| `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
+| `p2-4-review/` | 41 | P2-4's review repros, each run with its fix switched off and then as shipped (since trust survey #4, the controls of retired rules are dropped, and the stalling cheaters' runs end with an admin's kick at 6 s): fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin (round 7; since trust survey #4 each holds until the kick), adminwedge (round 7, a halt with its fix off); voidfork (round 7, fixed in round 8), slowcapper (round 7; its budget retired with #4); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; aheadlink-long and aheadlink-cut (trust survey #4, the accepted cost); and the control onesided (VC-1) |
 | `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes. On pe-session its outcomes are the spike's, line for line (digests and key names aside) |
 | `bans/` | 3 | session bans, perma-bans and kick options (design 12.4): `bans-rejoinrole`, Kick and remove Admin end to end: the kicked Admin rejoins under its key with the rejoin role instead of Admin, an explicit grant lifts it, and a plain-kick control rejoins as Admin; `bans-session`, a session in which an Admin kicks and bans, an Admin who isn't an owner can't perma-ban, an owner perma-bans, and every banned key is refused under Public rules, including one back under a new member id; `bans-next`, the world's next session, started from the perma-bans the first wrote: the session bans are gone, the perma-bans hold until an owner lifts one |
+| `indicators/` | 8 | admin indicators (design 10.8): a withholder named not referencing and flagged late; an honest slow member shown behind, never accused; the one-way cut (`aheadlink`) and a thin watcher shown not referencing but never flagged late; a thin sweeper as author and as the judged member, 10% loss, asymmetric links and a quiet run flag no honest member |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `not-mirrored.txt` | - | committed logs not mirrored as scenario files yet (see below) |
@@ -141,8 +142,9 @@ quorum = "majority"                 # D80 quorum rule; default "bft"
 ack_heads = false                   # acks without heads (design 25.5.2); default true
 ack_every_frames = 30               # every replica acks this often
 fixes_off = ["VC2"]                 # review fixes switched off: VC2..VC5, VCR1..VCR9, VCR12, HO1,
-                                    #   VC3R1..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R1..VC4R6, VC3R3S, VC6R1, VC6R3,
-                                    #   VC6R4, PF1, VC7R1, VC7R2, RECUT, VC8R1
+                                    #   VC3R2..VC3R4, VC3R6, VC3R7, LAGKEEP, VC4R2..VC4R6, VC3R3S, VC6R3,
+                                    #   VC6R4, PF1, VC7R1, RECUT, VC8R1 (VC3R1, VC4R1, VC6R1 and VC7R2
+                                    #   retired with trust survey #4)
 guests = { role = 1, admins = [1] } # role 1 with no permissions for everyone but the admins
 role_defs = [[2, 1], [3, 2]]        # roles defined at genesis, [role, perms] (after guests; V1-V2)
 roles = [[2, 2], [3, 3]]            # members' roles at genesis, [member, role] (after guests)
@@ -292,6 +294,10 @@ behaviour `x` has fired.
   `polka = ["0xDEADBEEF00000001"]`: the prevote ids it names, as hex strings (TOML integers stop
   at i64).
 - `fake_ack_epoch`: from `from_ms`, `member`'s acks claim `epoch`, or `ahead` epochs past its own.
+- `admin_kick` (not a cheater; trust survey #4): at `at_ms` honest admin `member` signs a kick of
+  `target` and sends it to `to`, as session-sim p24r.rs `AdminKick` (signed directly: a planned action
+  waits while the sim is paused). The worst confirmation lag among `honest` at that moment feeds the
+  `admin_kick` check. List it before the cheater it kicks: the spike steps it first.
 - `ghost_vote`: at `at_ms`, `member` votes against `target` for a kick `kick` that does not exist.
 - `self_kick_vote`: once `member` holds a kick against itself, it votes on it naming `frozen`.
 - `backdated_kick`: once `member` reaches `at_frame`, it signs a kick of `target` backdated `back`
@@ -351,6 +357,7 @@ book the admin entries before it leave; one that can't apply when received is ne
 Reports print after the run, in file order, in the spike's formats:
 
 - `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`. It prints `UNCONFIRMED` (a failure) if `frames` passes the lowest confirmed frame of the checked replicas.
+- `indicators`: admin `at` asks its replica for the admin indicators every `every_ms` (default 250): a line each time the answer changes, then OK or FAIL: each of `named` is shown holding the session at least once; none of `honest` is shown not referencing (unless also in `may_not_reference`) or flagged late; with `quiet`, nothing is shown at all. The harness feeds round trips every 250 ms, as a ping through the links' queues and link-wide faults would measure them (design 10.8).
 - `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`, and (12.4) `roles = [[member, role]]` those members hold and the exact `rejoin_roles = [[test key, role]]`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
 - `ownership`: each replica's owner view (owners, rule, heads, DISPUTED, recovery keys) and outcomes against an offline reference: a fresh book from the genesis certificate with the certificates of the first replica's decided changes applied in order; every decided certificate with its epoch and boundary, applied or refused; every certificate never committed, with the reason against the book as decided before its stamp; each fork proof, checked as a third party holding only the chain prefix would check it; and with `at = [f, ...]`, the reference's view after the decisions with boundaries up to f.
@@ -368,14 +375,17 @@ Reports print after the run, in file order, in the spike's formats:
 - `fork_info`: where `fork_branch` forked and how long branch B is.
 - `check`: the spike's one-off checks, ported verbatim: `bridge`, `kickwar`, `kickpartition`,
   `lastadmin`, `adminclose`, `joinrules`, `vcscale`, `selfkickhead`, `capchurn`, `joinattests`,
-  `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink`, `onesided`, `removed`, `strikeframe`,
+  `slowadmin`, `kickbackdate`, `lagprecommit`, `aheadlink` and `aheadlink_long` (both sample the worst
+  confirmation lag among `members` before each step), `admin_kick` (the stall held until the part's
+  `admin_kick` behaviour, which ends it), `onesided`, `removed`, `strikeframe`,
   `strikeframe_total` (over kept runs), `aheadshield`, `fakeref`, `capstale`, `lagchurn`,
   `votechurn` (it samples a confirmation lag before each step, every 100 ms), `votechurn_off`,
   `adminvoid`, `joinskip`, `joinwedge`, `slowref`, `fakemix`, `adminfork`, `prevotefork`,
-  `prevotefork_off`, `prevotefork_pf`, `capfake`, `fakeadmin`, `adminwedge`, `voidfork`, `slowcapper`,
-  `voiddeep`, `plainfork`, `pfsilent` (the round-7 and round-8 cases report liveness: every listed
-  member's frame within a window of its confirmed frame; each prints the spike's verdict line,
-  `RESULT <name> fixed=<b>: -> ...`, FAIL when a fix-off run no longer fails or a shipped run does).
+  `prevotefork_pf`, `capfake`, `fakeadmin`, `adminwedge`, `voidfork`, `slowcapper`, `voiddeep`,
+  `plainfork`, `pfsilent` (the round-7 and round-8 cases report liveness: every listed member's frame
+  within a window of its confirmed frame; adminwedge, voidfork, voiddeep, plainfork and pfsilent print
+  the spike's verdict line, `RESULT <name> fixed=<b>: -> ...`, FAIL when a fix-off run no longer fails
+  or a shipped run does).
   The fields each reads are listed in scenario.rs (`Report::Check`).
 - `handowner`: review HO-1 over three kept runs (`forged`, `clean`, `fixoff`).
 - `stats`.
