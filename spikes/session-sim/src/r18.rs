@@ -35,6 +35,8 @@ pub struct Opts {
     pub freeze: Option<(MemberId, u64)>,
     /// Receivers don't credit fed members' echoes (to measure what the echo carries).
     pub no_echo: bool,
+    /// Member M crashes at T ms (it stops for good).
+    pub crash: Option<(MemberId, u64)>,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
 }
@@ -154,6 +156,12 @@ pub fn capped(o: &Opts) {
             if let Some((ms, sk)) = o.step {
                 if sim.net.now_us == ms * 1000 {
                     sim.net.default_cap = Some(Cap { rate_bps: sk * 1000 / div, burst_bytes: 4000 / div, max_queue_us: 500_000 });
+                }
+            }
+            if let Some((cm, ms)) = o.crash {
+                if sim.net.now_us == ms * 1000 {
+                    let i = sim.peers.iter().position(|p| p.id == cm).unwrap();
+                    sim.peers[i].crashed = true;
                 }
             }
             if let Some((fm, ms)) = o.freeze {
@@ -363,6 +371,19 @@ pub fn capped(o: &Opts) {
             let l = sim.replica(1, 1).level_ms;
             if o.localize {
                 println!("RESULT     time on the state feed per member: {} ms", fed_ms.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "));
+                {
+                    let r1 = &sim.replica(1, 1).sim;
+                    let vcs: Vec<String> = r1.vc_log.iter().map(|d| format!("epoch {} at frame {} ({:.2} s) removed {:?}", d.0, d.1, d.1 as f64 / hz as f64, d.3)).collect();
+                    if !vcs.is_empty() {
+                        println!("RESULT     view changes at member 1: {}", vcs.join("; "));
+                    }
+                    if o.crash.is_some() {
+                        println!(
+                            "RESULT     removal votes cast per member (silence): {}",
+                            ids.iter().map(|&m| sim.replica(m, 1).sim.stats.suspicions.to_string()).collect::<Vec<_>>().join(" / ")
+                        );
+                    }
+                }
                 if n == 3 {
                     let r1 = &sim.replica(1, 1).sim;
                     let modes: Vec<String> = (0..(o.end_s * hz / 300)).map(|k| match r1.window_mode(k) { Some(true) => "fed", Some(false) => "D54", None => "?" }.to_string()).collect();

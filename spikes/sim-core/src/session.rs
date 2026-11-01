@@ -3326,8 +3326,12 @@ impl WorldSim {
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<Entry> {
-        // Part B, rule 5: a fed replica receives no entries, so it has no evidence about anyone.
-        if !self.members.contains(&self.me) || self.closed_at.is_some() || self.fed.is_some() {
+        // Part B, rule 5: a fed replica receives no entries; it votes only on what it can check without a log
+        // (revision 21, RV20-3).
+        if self.fed.is_some() {
+            return self.fed_suspects();
+        }
+        if !self.members.contains(&self.me) || self.closed_at.is_some() {
             return vec![];
         }
         let mut out = Vec::new();

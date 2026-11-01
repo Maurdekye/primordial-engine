@@ -1399,6 +1399,10 @@ fn main() {
             localize: args.iter().any(|a| a == "--localize"),
             slow_until_ms: get("--slow-until").map(|v| v.parse().unwrap()),
             no_echo: args.iter().any(|a| a == "--no-echo"),
+            crash: get("--crash").map(|v| {
+                let (a, b) = v.split_once(':').expect("--crash M:T");
+                (a.parse().unwrap(), b.parse().unwrap())
+            }),
             freeze: get("--freeze").map(|v| {
                 let (a, b) = v.split_once(':').expect("--freeze M:T");
                 (a.parse().unwrap(), b.parse().unwrap())
