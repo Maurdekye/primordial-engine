@@ -73,11 +73,15 @@ impl WorldSim {
     /// Fetch requests from gap and conflict detection: (who to ask, request), rate-limited.
     pub fn take_fetches(&mut self, now_ms: u64) -> Vec<(MemberId, Msg)> {
         let mut out = Vec::new();
+        // Backoff state for ranges the author's verified prefix has passed is done with.
+        let contiguous = &self.contiguous;
+        self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
         for (to, author, from, upto, held) in std::mem::take(&mut self.wants) {
             // Review R3-9: the same range is re-asked with exponential backoff, 60 ms doubling up to
             // 2 s, so a congested link is not flooded with repeats of requests whose replies are
             // still queued (a fixed 60 ms was shorter than a congested round trip).
-            let wait = match self.fetch_asked.get(&(to, author)).copied() {
+            // Review O2-3: per (holder, author, from), so several gaps of one author keep their own backoff.
+            let wait = match self.fetch_asked.get(&(to, author, from)).copied() {
                 Some((f, t, w)) if f == from => {
                     if now_ms < t + w {
                         continue;
@@ -86,7 +90,7 @@ impl WorldSim {
                 }
                 _ => 60,
             };
-            self.fetch_asked.insert((to, author), (from, now_ms, wait));
+            self.fetch_asked.insert((to, author, from), (from, now_ms, wait));
             out.push((to, Msg::Fetch { author, from, to: upto, held }));
             self.stats.fetches_sent += 1;
         }

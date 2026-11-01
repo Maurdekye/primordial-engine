@@ -399,39 +399,52 @@ impl WorldSim {
     /// or verified past a hole), so the reply needs no signature; and it may be lean if the requester
     /// holds the entry below verified.
     fn want_gap(&mut self, m: MemberId) {
+        // Review O2-3: every gap up to the newest waiting or held entry, not only the first. Under loss
+        // several holes are open at once, and asking one per round trip made a 10 %-loss wait several
+        // round trips long. Bounded per call; each gap has its own backoff (`take_fetches`).
+        let known: Vec<MemberId> = self.known.iter().copied().collect();
         let mut s = self.contiguous.get(&m).copied().unwrap_or(0) + 1;
         let mut below_verified = true;
-        loop {
-            if self.by_author.contains_key(&(m, s)) {
-                s += 1;
-                below_verified = true;
-            } else if let Some(x) = self.lean_wait.get(&(m, s)) {
-                s += x.entries.len() as u32;
-                below_verified = false;
-            } else {
-                break;
+        for _ in 0..Self::GAPS_MAX {
+            loop {
+                if self.by_author.contains_key(&(m, s)) {
+                    s += 1;
+                    below_verified = true;
+                } else if let Some(x) = self.lean_wait.get(&(m, s)) {
+                    s += x.entries.len() as u32;
+                    below_verified = false;
+                } else {
+                    break;
+                }
             }
-        }
-        let waiting = self.lean_wait.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
-        let held = self.by_author.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
-        let Some(end) = [waiting, held].into_iter().flatten().min() else { return };
-        let mut bits = 0;
-        if self.lean_wire && below_verified {
-            bits |= HELD_BELOW;
-        }
-        // Review O2-4: an unsigned answer is covered by the entry above it, so it is asked for only if
-        // the chain from the hole up to that entry's own cover fits one run (`run_of` stays whole for
-        // relays and proofs). A waiting run above is joined within RUN_MAX (`resolve_lean`).
-        let fits = held != Some(end)
-            || self.by_author.get(&(m, end)).and_then(|id| self.run_of(*id)).is_some_and(|r| r.len() + (end - s) as usize <= Self::RUN_MAX);
-        if self.run_wire && fits {
-            bits |= HELD_ABOVE;
-        }
-        let known: Vec<MemberId> = self.known.iter().copied().collect();
-        for j in known {
-            self.want_from_held(j, m, s, end - 1, bits);
+            let waiting = self.lean_wait.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
+            let held = self.by_author.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
+            let Some(end) = [waiting, held].into_iter().flatten().min() else { return };
+            let mut bits = 0;
+            if self.lean_wire && below_verified {
+                bits |= HELD_BELOW;
+            }
+            // Review O2-4: an unsigned answer is covered by the entry above it, so it is asked for only
+            // if the chain from the hole up to that entry's own cover fits one run (`run_of` stays whole
+            // for relays and proofs). A waiting run above is joined within RUN_MAX (`resolve_lean`).
+            let fits = held != Some(end)
+                || self.by_author.get(&(m, end)).and_then(|id| self.run_of(*id)).is_some_and(|r| r.len() + (end - s) as usize <= Self::RUN_MAX);
+            if self.run_wire && fits {
+                bits |= HELD_ABOVE;
+            }
+            for &j in &known {
+                self.want_from_held(j, m, s, end - 1, bits);
+            }
+            s = end;
         }
     }
+
+    /// The hole rule's fallback (ask everyone for the whole range) after this many frames of waiting:
+    /// about one round trip on a fast link (review O2-3), so a lost answer costs one more round trip.
+    pub const HOLE_HOLD_FRAMES: u64 = 15;
+
+    /// At most this many gaps of one author are asked for per call ([`Self::want_gap`]).
+    pub const GAPS_MAX: usize = 8;
 
     /// What a waiting run names that this member does not hold: its author's entry below it (when
     /// left out), and the (q, s) of each ack head left out.
@@ -523,7 +536,7 @@ impl WorldSim {
         let stuck: Vec<(MemberId, u32)> = self
             .lean_wait
             .iter()
-            .filter(|(k, w)| hole_rule && !w.asked_all && k.0 != self.me && now >= w.since + Self::LEAN_HOLD_FRAMES && self.lean_missing(w).0)
+            .filter(|(k, w)| hole_rule && !w.asked_all && k.0 != self.me && now >= w.since + Self::HOLE_HOLD_FRAMES && self.lean_missing(w).0)
             .map(|(k, _)| *k)
             .collect();
         for k in stuck {

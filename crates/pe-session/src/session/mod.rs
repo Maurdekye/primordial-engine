@@ -593,7 +593,7 @@ pub struct WorldSim {
     pub lie_in_votes: bool,
     my_last: EntryId,
     /// (holder, author) -> (first seq asked, when, current retry interval), all in ms.
-    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
+    fetch_asked: BTreeMap<(MemberId, MemberId, u32), (u32, u64, u64)>,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
     pub check_hashes: BTreeMap<u64, CheckHash>,
