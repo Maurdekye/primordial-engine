@@ -1,14 +1,14 @@
   5's role at m3: None
   joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits) with VCR-7's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 176 of frame 296, m2 conf 176 of frame 296, m3 conf 176 of frame 296; at m1: members {1, 2, 3, 9}, evicted []
-RESULT joinattests: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 393 (t=6.65 s) round 1 removed [9]
-RESULT joinattests: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 393 (t=6.65 s) round 1 removed [9]
-RESULT joinattests: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 392 (t=6.63 s) round 1 removed [9]
+RESULT joinattests: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 391 (t=6.62 s) round 1 removed [9]
+RESULT joinattests: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 392 (t=6.63 s) round 1 removed [9]
+RESULT joinattests: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 334 (t=5.67 s) round 1 removed []; epoch 3 at frame 392 (t=6.63 s) round 1 removed [9]
   m1: members {1, 2, 3, 5} roles {1: 0, 2: 0, 3: 0, 5: 1} admins [1, 2, 3] closed at None
   m2: members {1, 2, 3, 5} roles {1: 0, 2: 0, 3: 0, 5: 1} admins [1, 2, 3] closed at None
   m3: members {1, 2, 3, 5} roles {1: 0, 2: 0, 3: 0, 5: 1} admins [1, 2, 3] closed at None
-RESULT joinattests: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593
-  m1: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 50 bad 0
-  m2: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 50 bad 0
-  m3: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 50 bad 0
-  m5: conf 587 frame 593 members {1, 2, 3, 5} evicted {9: (177, 356)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 50 bad 0
-RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=03f70a77b88894cf m2=03f70a77b88894cf m3=03f70a77b88894cf m5=03f70a77b88894cf | offline replay 03f70a77b88894cf | ALL EQUAL, NO FALSE CHECKS ; checks ok 200 bad 0
+RESULT joinattests: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 575 of frame 593, m2 conf 575 of frame 593, m3 conf 575 of frame 593
+  m1: conf 575 frame 593 members {1, 2, 3, 5} evicted {9: (76, 356)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 48 bad 0
+  m2: conf 575 frame 593 members {1, 2, 3, 5} evicted {9: (76, 356)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
+  m3: conf 575 frame 593 members {1, 2, 3, 5} evicted {9: (76, 356)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 47 bad 0
+  m5: conf 575 frame 593 members {1, 2, 3, 5} evicted {9: (76, 356)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
+RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=03f70a77b88894cf m2=03f70a77b88894cf m3=03f70a77b88894cf m5=03f70a77b88894cf | offline replay 03f70a77b88894cf | ALL EQUAL, NO FALSE CHECKS ; checks ok 191 bad 0
