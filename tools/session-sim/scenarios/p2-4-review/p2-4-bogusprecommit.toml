@@ -1,8 +1,8 @@
 description = """
 P2-4 review round 2, VC-4: at 2 s, 9 signs a precommit for no proposal whose boundary is 1 (parts \
 1 and 2), or just ahead of its horizon (parts 3 and 4). Confirmation must not stop for good. Each \
-case runs with VC-4's fix switched off (and round 4's cap rule, VC3R-2, which would vote 9 out as \
-well), then as shipped."""
+case runs with VC-4's fix switched off (and VC3R-2's), then as shipped. Since trust survey #4 the \
+second cap holds confirmation until admin 1 kicks 9 at 6 s, which ends it."""
 include = ["../common/review.toml"]
 end_ms = 9000
 quiet_panics = true
@@ -37,10 +37,12 @@ report = [
 ]
 
 [[part]]
-byzantine = [{ kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, ahead = 30, to = [1, 2, 3] }]
+# Trust survey #4: the cap holds confirmation until admin 1 kicks 9 at 6 s.
+byzantine = [{ kind = "admin_kick", member = 1, target = 9, at_ms = 6000, honest = [1, 2, 3], to = [2, 3, 9] }, { kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, ahead = 30, to = [1, 2, 3] }]
 report = [
     { kind = "membership", honest = [1, 2, 3], label = "bogusprecommit-2" },
     { kind = "view_changes", honest = [1, 2, 3], label = "bogusprecommit-2" },
     { kind = "confs", honest = [1, 2, 3], label = "bogusprecommit-2" },
+    { kind = "check", case = "admin_kick", label = "bogusprecommit-2", honest = [1, 2, 3] },
     { kind = "verdict", honest = [1, 2, 3], label = "bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon)" },
 ]

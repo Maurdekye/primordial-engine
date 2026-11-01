@@ -65,6 +65,8 @@ pub struct Actor {
     /// ForkSegment: its real branch B and its forged branch A.
     seg_a: Vec<SignedEntry>,
     seg_b: Vec<SignedEntry>,
+    /// AdminKick: the worst confirmation lag among its `honest` when the kick was signed.
+    kick_lag: Option<u64>,
 }
 
 impl Actor {
@@ -109,6 +111,7 @@ impl Actor {
             p0: Cell::new(0),
             seg_a: Vec::new(),
             seg_b: Vec::new(),
+            kick_lag: None,
         })
     }
 
@@ -116,6 +119,12 @@ impl Actor {
     pub fn wedge_info(&self) -> Option<(MemberId, MemberId, u32, Option<u64>)> {
         let Byzantine::AdminWedge { part, .. } = &self.spec else { return None };
         Some((self.p0.get(), *part, self.step, self.crash_at))
+    }
+
+    /// AdminKick: (admin, target, when it is signed in us, the worst honest lag then if signed).
+    pub fn kick_info(&self) -> Option<(MemberId, MemberId, u64, Option<u64>)> {
+        let Byzantine::AdminKick { member, target, at_ms, .. } = &self.spec else { return None };
+        Some((*member, *target, at_ms * 1000, self.kick_lag))
     }
 
     /// ForkSegment: (forker, P, step reached, crash time in us).
@@ -475,6 +484,15 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                     act.head.0 = 3;
                     act.fired = true;
                 }
+            }
+            Byzantine::AdminKick { member, target, at_ms, honest, to } if !act.fired => {
+                if sim.net.now_us < at_ms * 1000 {
+                    continue;
+                }
+                act.kick_lag = Some(honest.iter().map(|&m| sim.replica(m, 1).sim.now.saturating_sub(sim.replica(m, 1).sim.conf)).max().unwrap_or(0));
+                let e = sim_mut(sim, *member, 1).kick(*target);
+                send_to(sim, *member, to, &e);
+                act.fired = true;
             }
             Byzantine::GhostVote { member, at_ms, target, kick, to } if !act.fired => {
                 if sim.net.now_us < at_ms * 1000 {

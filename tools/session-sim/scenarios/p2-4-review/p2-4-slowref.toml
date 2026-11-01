@@ -3,7 +3,8 @@ P2-4 review round 5, VC4R-3 (a halt): fakeref, but 9 stays connected and grows s
 it sends at t >= 2 s arrives about 2t - 2 s), while from 2 s 8 (which takes no part in view \
 changes) claims in its acks 5 more of 9's entries than anyone holds. With the fix off the claim \
 shields 9 for good; with it, it spares 9 only a silence limit and 9 is demoted. Part 1 runs with \
-VC4R-3's fix switched off, part 2 as shipped."""
+VC4R-3's fix switched off, part 2 as shipped. Part 1 is the only guard left on VC4R-3 (review \
+RA-1): keep it."""
 include = ["../common/review.toml"]
 end_ms = 16000
 quiet_panics = true

@@ -1,7 +1,8 @@
 description = """
 P2-4: a member that withholds references. From t = 2 s member 8's acks reference no more of \
-anyone's chain, while its horizon keeps advancing. Before, that stalled every member's \
-confirmation for good; now 1, 2 and 3 vote it out once it has held back for suspect_after frames."""
+anyone's chain, while its horizon keeps advancing. That stalls every member's confirmation. Until \
+trust survey #4 the withholding rule voted it out; now it holds confirmation until admin 1 kicks \
+it at 6 s, which ends it."""
 include = ["../common/review.toml"]
 end_ms = 12000
 
@@ -10,6 +11,15 @@ members = [1, 2, 3, 8]
 
 [world.1.plan]
 1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+# Trust survey #4: admin 1 kicks 8 at 6 s (listed first, as the spike steps it first).
+[[byzantine]]
+kind = "admin_kick"
+member = 1
+target = 8
+at_ms = 6000
+honest = [1, 2, 3]
+to = [2, 3, 8]
 
 [[byzantine]]
 kind = "hide_refs"
@@ -27,6 +37,12 @@ honest = [1, 2, 3]
 label = "refwithhold"
 
 [[report]]
+kind = "check"
+case = "admin_kick"
+label = "refwithhold"
+honest = [1, 2, 3]
+
+[[report]]
 kind = "verdict"
 honest = [1, 2, 3]
-label = "refwithhold (8 stops referencing others' chains at t=2 s)"
+label = "refwithhold (8 stops referencing others' chains at t=2 s; admin 1 kicks 8 at 6 s)"
