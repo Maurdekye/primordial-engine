@@ -2776,6 +2776,8 @@ entries that the view change commits (10.8).
     * A perma-ban or its lifting needs the author's key to be a world owner's, as the entries before it
       in the change leave the owners (12.5). It needs no role permission: it is a world owner's power, not
       a session role's. An Admin who isn't an owner can't make one.
+    * So an owner who has given up Admin can still perma-ban an absent key, but can't kick and perma-ban a
+      present player without the kick permissions (review PB-2).
   * **A ban implies a kick.** Banning a present player is a kick with a ban option, in one entry, so it
     needs what that kick needs (Kick, and Kick admins if the player counts as an admin, V1) as well as the
     ban's own right. A ban entry on its own names a key that no member holds: a player who has left, whom
@@ -2802,6 +2804,15 @@ entries that the view change commits (10.8).
       2026-10-31 09:35Z) [proposal]. If the owner leaves before writing, the decided entry is session
       state, listed for the owners like the session's edits (16.10), and any owner's client writes it,
       since the session's decision certificate and the owner's signature on the entry prove it [I].
+    * **Writes follow decision order, not write order** (review PB-1). Different owners can write a
+      perma-ban and a later perma-unban of one key at different times. So each write carries its session
+      id and its decision position (the deciding change's epoch, and the entry's place in that change's
+      admin list). Per key, `acl/` keeps the latest write by position, and an earlier-positioned write
+      never replaces a later one. Writes from different sessions are ordered by the world's history: a
+      session that started from a head holding another session's write for the key comes after it.
+    * **A decided perma-ban never lapses** (review PB-2). With no owner left in the session to write it,
+      the author's client keeps it as a pending write, with the session's decision certificate, and commits
+      it at its next chance, under the same ordering.
   * **A joiner's copy** (review BN-1). A 9.5 state transfer covers world state only: its check hash
     doesn't cover governance, so no donor can hand a joiner either list. The joiner derives both, as it
     derives roles, join rules and the ownership book: from the session's starting governance (the world
