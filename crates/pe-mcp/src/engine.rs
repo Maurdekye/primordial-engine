@@ -282,6 +282,11 @@ impl Engine {
         Ok(self.peer()?.sync())
     }
 
+    /// Admin indicators (design 10.8): refused unless the driven member holds the Kick permission.
+    pub fn indicators(&self) -> ToolResult<Indicators> {
+        self.peer()?.indicators().ok_or_else(|| ToolError::new(ErrorCode::Forbidden, "the driven member doesn't hold the Kick permission; the admin indicators are for admins"))
+    }
+
     /// Replace the session. Allowed while faulted (it is the way out).
     pub fn load(&mut self, who: &Principal, p: &LoadParams) -> ToolResult<SessionInfo> {
         if !self.simulated {

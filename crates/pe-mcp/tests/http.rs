@@ -218,7 +218,7 @@ async fn scopes_come_from_the_token() {
     assert_eq!(res["isError"], true, "{}", r.body);
     assert_eq!(res["structuredContent"]["code"], "forbidden");
     let r = raw(&f.addr, post(&f.host, &h, &json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}))).await;
-    assert_eq!(r.json()["result"]["tools"].as_array().unwrap().len(), 7, "{}", r.body);
+    assert_eq!(r.json()["result"]["tools"].as_array().unwrap().len(), 8, "{}", r.body); // 8 read tools: session_indicators (design 10.8) is one
     let r = raw(&f.addr, post(&f.host, &h, &call(5, "session_info", json!({})))).await;
     assert_eq!(r.json()["result"]["structuredContent"]["principal"], "reader");
 }

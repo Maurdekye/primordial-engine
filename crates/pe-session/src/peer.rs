@@ -24,9 +24,9 @@
 //! (`crates/pe-session-harness`), which drives its peers through this core, reproduces the spike's
 //! digests.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, TransferError, WorldSim};
+use crate::session::{perm, EntryId, Hold, MemberId, Msg, Outcome, Payload, SignedEntry, TransferError, WorldSim, PACK_MAX};
 
 /// R18: frames between hand poses, and between acks, at each congestion level. Review R3-9 added
 /// levels 4 and 5 for links of about 8-16 kbit/s; both are aligned to the same frame ticks, so a
@@ -185,6 +185,54 @@ pub struct SessionCore {
     state_asked: BTreeSet<MemberId>,
     /// Review P23-4: when each requester last got a state from this member.
     state_served: BTreeMap<MemberId, u64>,
+    /// Local time of the call in progress (receive or tick), for the admin indicators' send times.
+    now_us: u64,
+    ind: IndState,
+}
+
+/// Admin indicators (design 10.8): what an admin's client gets from [`SessionCore::indicators`].
+/// A hint for a kick, never proof; nothing acts on it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Indicators {
+    /// The present frame minus the confirmed frame.
+    pub lag_frames: u64,
+    pub lag_secs: f64,
+    /// Whom confirmation waits on: empty unless the lag has been at least a quarter of the
+    /// speculation window for at least 1 s. It says who, never why.
+    pub holding: Vec<Hold>,
+    /// The late-acks timing hint, per member this replica has judged.
+    pub late: Vec<LateAcks>,
+}
+
+/// One member's late acks over the last 10 s (design 10.8, the clock-free test).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LateAcks {
+    pub member: MemberId,
+    pub late: u32,
+    pub eligible: u32,
+    /// More than half of at least [`LATE_MIN_ACKS`] eligible acks were late.
+    pub flagged: bool,
+}
+
+/// The late-acks hint's window, and its round-trip median's (design 10.8).
+pub const LATE_WINDOW_US: u64 = 10_000_000;
+/// The window the late-acks hint's round trip is the largest sample of (review IB-1).
+pub const RTT_MAX_WINDOW_US: u64 = 2_000_000;
+/// Fewer eligible acks than this in the window flag nobody.
+pub const LATE_MIN_ACKS: u32 = 10;
+/// The margin's fixed part, on top of PACK_MAX frames (an ack built up to PACK_MAX frames before it is sent).
+pub const LATE_MARGIN_US: u64 = 50_000;
+
+#[derive(Clone, Debug, Default)]
+struct IndState {
+    /// Per member: my entry seq -> (when last handed to the link toward it, the entry's stamp, its id).
+    sent: BTreeMap<MemberId, BTreeMap<u32, (u64, u64, EntryId)>>,
+    /// Per member: round-trip samples (local time, round trip), from the IO's pings.
+    rtt: BTreeMap<MemberId, VecDeque<(u64, u64)>>,
+    /// Per member: its eligible acks (arrival, late).
+    acks: BTreeMap<MemberId, VecDeque<(u64, bool)>>,
+    /// Since when the lag has been at least a quarter of the speculation window.
+    lag_since: Option<u64>,
 }
 
 /// Review P23-4: a member answers one `FetchState` per requester per this interval.
@@ -238,6 +286,8 @@ impl SessionCore {
             last_checks_bad: 0,
             state_asked: BTreeSet::new(),
             state_served: BTreeMap::new(),
+            now_us: 0,
+            ind: IndState::default(),
         }
     }
 
@@ -314,6 +364,7 @@ impl SessionCore {
 
     fn send_to_all(&mut self, to: &[MemberId], class: Class, msg: Msg) {
         let to: Vec<MemberId> = to.iter().copied().filter(|&m| m != self.sim.me).collect();
+        self.note_sent(&to, &msg);
         if !to.is_empty() {
             self.out.push(Out { to, class, msg });
         }
@@ -336,6 +387,7 @@ impl SessionCore {
 
     fn send_to(&mut self, to: MemberId, class: Class, msg: Msg) {
         if to != self.sim.me {
+            self.note_sent(&[to], &msg);
             self.out.push(Out { to: vec![to], class, msg });
         }
     }
@@ -348,6 +400,7 @@ impl SessionCore {
 
     /// A message from member `from`. Entries are verified here; the IO has authenticated `from`.
     pub fn receive(&mut self, from: MemberId, m: Msg, now_us: u64) {
+        self.now_us = now_us;
         let audience = self.sim.audience();
         self.receive_one(from, m, now_us, &audience);
         self.note_events();
@@ -356,6 +409,14 @@ impl SessionCore {
     fn receive_one(&mut self, from: MemberId, m: Msg, now_us: u64, audience: &[MemberId]) {
         match m {
             Msg::Entry(_) | Msg::Lean(_) => {
+                // Admin indicators: an ack straight from its author, judged on arrival (late acks).
+                if let Msg::Entry(e) | Msg::Lean(e) = &m
+                    && e.member == from
+                    && from != self.sim.me
+                    && let Payload::Ack { horizon, heads, .. } = &e.payload
+                {
+                    self.judge_ack(from, e.stamp, *horizon, heads, now_us, matches!(m, Msg::Lean(_)));
+                }
                 let mut v = match m {
                     Msg::Lean(e) => self.sim.insert_lean(from, e),
                     Msg::Entry(e) => self.sim.insert(e),
@@ -373,6 +434,15 @@ impl SessionCore {
             // and every answer is a repair, which the IO may drop under a long queue.
             Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } | Msg::FetchState if !audience.contains(&from) => {}
             Msg::Fetch { author, from: a, to: b } => {
+                // Admin indicators: `from` lacks my chain from `a`, so it can't reference anything past
+                // the hole until it is repaired: that restarts the late-acks clock from `a` on.
+                if author == self.sim.me
+                    && let Some(sent) = self.ind.sent.get_mut(&from)
+                {
+                    for (_, v) in sent.range_mut(a..) {
+                        v.0 = v.0.max(now_us);
+                    }
+                }
                 for r in self.sim.on_fetch(author, a, b) {
                     self.send_to(from, Class::Repair, r);
                 }
@@ -425,6 +495,7 @@ impl SessionCore {
     /// present frame (unless the world is background and not due; `burst` forces it). Returns
     /// the clock frame if the sim was advanced, which is when the IO authors that frame's actions.
     pub fn begin_tick(&mut self, now_us: u64, burst: bool) -> Option<u64> {
+        self.now_us = now_us;
         let Some(clock_frame) = self.clock_frame(now_us) else {
             self.tick = None;
             return None;
@@ -523,6 +594,15 @@ impl SessionCore {
     /// The second half of a tick: ack when due, then attestations, suspicions, the view change and
     /// fetch requests.
     pub fn end_tick(&mut self, now_us: u64) {
+        self.now_us = now_us;
+        // Admin indicators: since when confirmation has lagged by a quarter of the window or more.
+        if let Some(f) = self.clock_frame(now_us) {
+            if f.saturating_sub(self.sim.conf) >= self.sim.cfg.window / 4 {
+                self.ind.lag_since.get_or_insert(now_us);
+            } else {
+                self.ind.lag_since = None;
+            }
+        }
         let Some(t) = self.tick.take() else { return };
         // 7.6 reduction 2 (spike 562b2fb): an idle member acks every IDLE_ACK_FRAMES frames at any R18
         // level, the longer of the two intervals; the ack that leaves idle goes at once, off the grid.
@@ -656,6 +736,107 @@ impl SessionCore {
         let to = self.audience();
         self.send_live(&to, Class::Live, e.clone());
         e
+    }
+
+    /// A round-trip sample toward `member`, from the IO's pings (pe-app's clock sync; the harness
+    /// stands in with what a ping through the same link queues would take). Admin indicators only.
+    pub fn rtt_sample(&mut self, member: MemberId, rtt_us: u64, now_us: u64) {
+        let q = self.ind.rtt.entry(member).or_default();
+        q.push_back((now_us, rtt_us));
+        while q.front().is_some_and(|&(t, _)| t + LATE_WINDOW_US < now_us) {
+            q.pop_front();
+        }
+    }
+
+    /// The largest round trip sampled toward `member` over the last [`RTT_MAX_WINDOW_US`]:
+    /// conservative, so a path that just got slower exempts acks at once instead of after a median
+    /// catches up. It can only exempt an ack, never flag one. The short window makes a withholder
+    /// that slows its pongs to be exempted pay with a slow pong every 2 s (review IB-1).
+    fn window_rtt(&self, member: MemberId, now_us: u64) -> Option<u64> {
+        self.ind.rtt.get(&member)?.iter().filter(|&&(t, _)| t + RTT_MAX_WINDOW_US >= now_us).map(|&(_, r)| r).max()
+    }
+
+    /// Admin indicators: the latest time each of my own entries was handed to the link toward each
+    /// member. A repair restarts the clock: a copy lost on a full queue isn't the receiver's fault.
+    fn note_sent(&mut self, to: &[MemberId], msg: &Msg) {
+        let me = self.sim.me;
+        let now = self.now_us;
+        let mine = |e: &SignedEntry, ind: &mut IndState| {
+            if e.member == me {
+                for &m in to {
+                    ind.sent.entry(m).or_default().insert(e.seq, (now, e.stamp, e.id()));
+                }
+            }
+        };
+        match msg {
+            Msg::Entry(e) | Msg::Lean(e) => mine(e, &mut self.ind),
+            Msg::Batch(v) => {
+                for x in v {
+                    if let Msg::Entry(e) | Msg::Lean(e) = x {
+                        mine(e, &mut self.ind);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Admin indicators, late acks (design 10.8, the clock-free test): an ack of `x` arriving at
+    /// `now_us` is eligible if some entry e of mine went to `x` more than its round trip plus the
+    /// margin ago and `x` built the ack after it could hold e (stamp >= e's stamp + half the round
+    /// trip, review LA-5); it is late if it still doesn't reference e in the version I sent. A lean
+    /// ack's heads carry no ids (the receiver rebuilds them from its own copy), so for it the seq alone counts.
+    fn judge_ack(&mut self, x: MemberId, stamp: u64, horizon: u64, heads: &[(MemberId, u32, EntryId)], now_us: u64, lean: bool) {
+        // Review LA-4: a member that voted against me, and a joiner still catching up, are left out.
+        if !self.sim.is_member(x) || self.sim.voted_against_me(x) || self.sim.admitted_at(x).is_some_and(|b| horizon < b) {
+            return;
+        }
+        let Some(rtt) = self.window_rtt(x, now_us) else { return };
+        let margin = PACK_MAX * self.dt_us + LATE_MARGIN_US;
+        let half = rtt / 2 / self.dt_us.max(1);
+        let me = self.sim.me;
+        let Some(sent) = self.ind.sent.get_mut(&x) else { return };
+        while sent.first_key_value().is_some_and(|(_, &(t, _, _))| t + 2 * LATE_WINDOW_US < now_us) {
+            sent.pop_first();
+        }
+        let due = sent.iter().rev().find(|(_, v)| now_us.saturating_sub(v.0) > rtt + margin && stamp >= v.1 + half);
+        let Some((&seq, &(_, _, id))) = due else { return };
+        let late = !heads.iter().any(|&(q, s, hid)| q == me && (s > seq || (s == seq && (lean || hid == id))));
+        let q = self.ind.acks.entry(x).or_default();
+        q.push_back((now_us, late));
+        while q.front().is_some_and(|&(t, _)| t + LATE_WINDOW_US < now_us) {
+            q.pop_front();
+        }
+    }
+
+    /// Admin indicators (design 10.8): whom confirmation waits on, and the late-acks hint. Nothing
+    /// unless `asker` holds the Kick permission in the decided roles. The gate is presentation only:
+    /// every input is data this replica holds. Read-only: it sends, fetches and changes nothing.
+    pub fn indicators(&self, asker: MemberId, now_us: u64) -> Option<Indicators> {
+        if self.sim.perms_of(asker) & perm::KICK == 0 {
+            return None;
+        }
+        let present = self.clock_frame(now_us).unwrap_or(self.sim.now);
+        let lag_frames = present.saturating_sub(self.sim.conf);
+        let shown = self.ind.lag_since.is_some_and(|t| now_us >= t + 1_000_000) && lag_frames >= self.sim.cfg.window / 4;
+        let holding = if shown { self.sim.holding(present) } else { Vec::new() };
+        let late = self
+            .ind
+            .acks
+            .iter()
+            .filter(|&(&member, _)| self.sim.is_member(member))
+            .map(|(&member, q)| {
+                let (mut late, mut eligible) = (0u32, 0u32);
+                for &(t, l) in q {
+                    if t + LATE_WINDOW_US >= now_us {
+                        eligible += 1;
+                        late += l as u32;
+                    }
+                }
+                LateAcks { member, late, eligible, flagged: eligible >= LATE_MIN_ACKS && 2 * late > eligible }
+            })
+            .collect();
+        Some(Indicators { lag_frames, lag_secs: lag_frames as f64 * self.dt_us as f64 / 1e6, holding, late })
     }
 
     /// An entry going out live: this member's own lean ([`Msg::Lean`]) to the peers that hold its
