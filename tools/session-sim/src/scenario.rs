@@ -136,6 +136,13 @@ pub struct WorldCfg {
     /// World ownership (design 12.5): the genesis certificate's owner keys (test identities, by
     /// number; all sign it), rule and nonce.
     pub ownership: Option<OwnersCfg>,
+    /// 12.4: `[member, identity]` pairs: the member signs with test identity `identity`'s key (a
+    /// player back under a new member id).
+    #[serde(default)]
+    pub keys: Vec<(u32, u32)>,
+    /// 12.4: the world's saved perma-bans the session starts from (test identities).
+    #[serde(default)]
+    pub perma_bans: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -293,6 +300,8 @@ pub struct ActionSpec {
     pub define_role: Option<DefineRoleSpec>,
     /// World ownership: publish a certificate.
     pub owner: Option<OwnerSpec>,
+    /// 12.4: a ban entry.
+    pub ban: Option<BanSpec>,
     /// Accept this action on an object the scene lacks (the protocol rejects it as gone). Only
     /// for reproducing a spike scenario that did this; say why next to it.
     #[serde(default)]
@@ -356,6 +365,28 @@ pub struct HandPathSpec {
 #[serde(deny_unknown_fields)]
 pub struct KickSpec {
     pub target: u32,
+    /// 12.4 kick options: remove Admin (rejoin with this role), ban for the session, or perma-ban.
+    pub remove_admin: Option<u16>,
+    #[serde(default)]
+    pub ban: bool,
+    #[serde(default)]
+    pub perma: bool,
+}
+
+/// 12.4: ban (or, `on = false`, lift the ban of) test identity `key`'s key, for the session or
+/// (`perma`) the world.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BanSpec {
+    pub key: u32,
+    #[serde(default = "yes")]
+    pub on: bool,
+    #[serde(default)]
+    pub perma: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -971,6 +1002,9 @@ pub enum Report {
         outcomes: bool,
         #[serde(default)]
         roles: bool,
+        /// 12.4: also each member's session bans and perma-bans.
+        #[serde(default)]
+        bans: bool,
     },
     /// Each member's confirmed and simulated frame on one line (`RESULT {label}: m1 conf ...`).
     Confs { honest: Vec<u32>, label: String },
