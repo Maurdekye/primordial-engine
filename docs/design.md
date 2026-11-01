@@ -1478,7 +1478,8 @@ if our bulk transport proves weak.
        part is separate from this item.)
      * Each round, member i knows each peer's session frequency in its own raw units exactly:
        (1 + ρ_ij)(1 + r_j) - 1, from the peer's reported correction r_j and the fitted raw ratio ρ_ij. ρ
-       depends on nobody's correction, so its fit converges once and closes no loop. The member targets the
+       depends on nobody's correction, so it closes no loop; its fit converges once while raw drift is steady,
+       and a change (WSL's idle to load) only adds tracking lag. The member targets the
        fault-tolerant midpoint of those values, its own r_i included, and moves r_i toward it with a gain
        per round, never in a step.
      * So the exchanged values are the members' applied corrections, combined with each member's fitted
