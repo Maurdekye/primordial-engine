@@ -196,6 +196,8 @@ pub struct Stats {
     /// Lean entries that waited for an entry they name, and their total wait in frames.
     pub lean_waited: u64,
     pub lean_wait_frames: u64,
+    /// The longest a lean entry waited, frames.
+    pub lean_wait_max: u64,
     /// Fetch requests sent (gap repair, conflicts, lean entries).
     pub fetches_sent: u64,
 }

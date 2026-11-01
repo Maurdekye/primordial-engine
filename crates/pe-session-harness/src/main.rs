@@ -1348,6 +1348,12 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32) {
     let last = sim.replica(1, 1).sim.frame.min(sim.replica(2, 1).sim.frame) - 1;
     let (h1, h2) = (sim.replica(1, 1).sim.hashes[&last], sim.replica(2, 1).sim.hashes[&last]);
     println!("RESULT   end state at frame {last} (all 500 balls, both hands, all tables): m1 {h1:016x} m2 {h2:016x} -> {}", if h1 == h2 { "IDENTICAL" } else { "DIFFERENT" });
+    // With --loss: how long lean entries waited for a lost entry they name (review LN-1, condition
+    // (c): inside W/2 on a link that keeps up). Not printed without loss, so the suite's log is unchanged.
+    for m in (1..=2).filter(|_| loss > 0) {
+        let st = sim.replica(m, 1).sim.stats;
+        println!("RESULT   member {m}'s lean waits: {} (mean {:.1}, max {} frames), explicit form asked for {}", st.lean_waited, st.lean_wait_frames as f64 / st.lean_waited.max(1) as f64, st.lean_wait_max, st.lean_fallbacks);
+    }
     print_stats(&sim, 1);
     check_world(&sim, 1, f(8.5), &format!("ballpit {hz}Hz"));
 }
