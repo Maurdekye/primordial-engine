@@ -88,7 +88,7 @@ first-gesture idle gate in pe-session. Re-measured at 1194ce4 (the same code):
 | `skew4-ftm/`, `single4-ftm/`, `single4-median/` | ALL EQUAL; every member at level 0 throughout (member 4 of skew4: largest signal 13 ms) |
 | `cap80-1/`, `cap80-2/` | ALL EQUAL. Real queue mean 24.9 / 21.8 ms, max 404 / 341 ms; lag max 28 / 28 frames; 0 cap drops. The level mix moves to level 3 (52 %), with 489 / 487 rollbacks: D73's packs (a pack's insertion rolls the author's replica back to its first frame) and the ack reductions |
 | `mixed-steps/` (with the steps) | ALL EQUAL, 0 decisions. Members 1-2 at level 0 for 100 %; member 3 for 42 %, member 4 for 75 % |
-| `loopback-windows/`, `tests-windows.log`, `linux-wsl.log` | ALL EQUAL; pe-session + pe-mcp + pe-app tests 188 pass; WSL native build, tests and loopback ALL EQUAL |
+| `loopback-windows/`, `tests-windows.log`, `linux-wsl.log` | ALL EQUAL; pe-session + pe-mcp + pe-app tests 188 pass; WSL native build, tests and loopback ALL EQUAL. In the loopback run, member 2 (scripted 40 ± 15 ms delay from 2 s, 120 ± 40 ms towards member 1 from 9 to 14 s) is at level 0 for 9.4 % of the controller's ticks, against 27.4 % before the merge: its steps read as queue, and the idle gate holds the level |
 
 * **D56's idle gate holds a raise in an idle session.** These runs touch only (3 a second, no hands),
   so the members are idle most of the time, and idle calm never lowers into the remembered level (main
