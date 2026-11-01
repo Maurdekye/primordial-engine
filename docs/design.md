@@ -2416,6 +2416,21 @@ and the engager's hand replayed after the gesture had ended.
          member active, so idle calm does not count at the next gesture's first frame either (decided,
          @coordinator-opus, 2026-11-01). Before, L aged out between two gestures 40 s apart, and the
          second one congested the link from level 0 again (below the table).
+         * **Except above the coarsest packed level** (reviews PA-2 and PA2-1; decided, @coordinator-opus,
+           2026-11-01 12:05Z and 13:12Z). There, calm lowers an idle member at the normal 300 ms pace, and an
+           active one after 5 s of calm, idle or not. So an idle member is back at level 5 within about a
+           second, and its next gesture starts packed. If level 5 congests, the climb rule moves it up within
+           100-300 ms.
+         * Held at levels 6-8 instead, after a second congestion in one D56 episode, a third gesture started
+           there without packs, and the author's hand trailed 217-757 mm during it. Once it was a fine-link
+           sweeper's, after its thin watcher had been demoted. With idle calm counting toward 5 s per level,
+           a gesture 15 s after the one before still started at level 6 (review PA2-1). The three-gesture
+           cells are under the table below.
+         * **A later gesture can still trail where level 5 itself congests** (review PA2-2), as on a
+           2-player 8 kbit/s link. Idle at level 5, a member acks every 8 frames, about 7.4 kbit/s with
+           datagram overhead, so the link's 4 kB burst allowance barely refills between gestures [I: the
+           author's sends during the gesture were identical under both rules, and only the levels before it
+           differed]. The figures are under the table below.
        * Idle is 7.6's predicate, read every tick (decided, @coordinator-opus, 2026-11-01: the ceiling
          bounds what it costs). A gesture's author stays busy throughout (a pending pack holds it), but an
          observer counts as idle between packs: during a level-5 gesture at 16 kbit/s it turned busy 28
@@ -2564,10 +2579,12 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
 | 32 kbit/s | **batched + adaptive** | 31 kbit/s | **196 ms**, 0 | **0 / 0** | 25 frames | **at once** | equal |
 | 16 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 494 ms, 3 | **0 / 0** | 63 frames | **at once** | equal |
 | 12 kbit/s | batched + adaptive (30 s run) | 21 kbit/s | 498 ms, 9 | **0 / 0** | 119 frames | **at once** | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.5 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.3 s | equal |
 | 64, then 16 from t = 3 s | batched + adaptive (30 s run) | 37 kbit/s | 496 ms, 4 | **0 / 0** | 87 frames | 0.1 s | equal |
 | 64 per uplink, shared by 3 peers (4 members) | batched + adaptive (30 s run) | 61 kbit/s | 479 ms, 3 | **0 / 0 / 0 / 0** | 57 frames | **at once** | all equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 494 ms on member 3's links | 95 / 98 before the demotion | 218 frames | 0.6 s | member 3 demoted after 3 s of lag (from frame 352); members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | per message (20 s run) | 174 kbit/s | 500 ms, 1,227 | 171 / 177 | 294 frames | 1.7 s | member 3 removed from frame 188; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched (20 s run) | 148 kbit/s | 500 ms, 1,106 | 167 / 172 | 290 frames | 1.75 s | member 3 removed from frame 192; members 1 and 2 equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 490 ms, 42 | 618 / 618 / 621 | 716 frames | 10.5 s | all equal; member 3 is no longer removed since trust survey #4 (below). Before: 95 / 98, removed from frame 352, back after 0.6 s |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
@@ -2628,45 +2645,69 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     effects stay with its own player (@item:primordial-engine/localize-congestion-to-the-thin-link-player-othe).
     * **The cells:** one member on its own slow link both ways, the others at 256 kbit/s; member 1 sweeps;
       batched + adaptive; each against main's D73 as built.
-    * **Evidence** [V spikes/out/r18-thin, 43 cells, Windows and Linux identical]. Each log records its
+    * **Evidence** [V spikes/out/r18-thin, 64 cells with reviews PA-2's and PA2-1's three-gesture ones, on main as
+      merged with trust survey #4 (p2/thin-link ff939a5), Windows and Linux identical]. Each log records its
       commit, its source and binary hashes, and the linked encoder's size for a fixed stride-8 pack: 68 bytes
       on the wire with deltas, 130 without.
 
-    | Thin member | Players | Others' stalled frames, main → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s |
+    | Thin member | Players | Others' stalled frames, main (before Part A and before trust survey #4) → Part A, at 8 / 12 / 16 / 24 / 32 kbit/s [Part A at its landing, where trust survey #4 changed it] |
     |---|---|---|
     | sweeper | 2 | 1,521 → 209 / 873 → 0 / 452 → 0 / 0 → 0 / 0 → 0 |
-    | sweeper | 4 | 136 → 135 / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
-    | sweeper | 8 | 124 → 124 / 117 → 114 / 138 → 96 / 128 → 0 / 0 → 0 |
-    | watcher | 3 | 207 → 98 / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
-    | watcher | 4 | 105 → 105 / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
-    | watcher | 8 | 92 → 91 / 112 → 111 / 132 → 115 / 1 → 0 / 0 → 0 |
+    | sweeper | 4 | 136 → 161 [135] / 155 → 116 / 154 → 0 / 0 → 0 / 0 → 0 |
+    | sweeper | 8 | 124 → 138 [124] / 117 → 139 [114] / 138 → 96 / 128 → 0 / 0 → 0 |
+    | watcher | 3 | 207 → 618 [98] / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
+    | watcher | 4 | 105 → 464 [105] / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
+    | watcher | 8 | 92 → 146 [91] / 112 → 541 [111] / 132 → 115 / 1 → 0 / 0 → 0 |
+
+    * **Since trust survey #4 (f)** (main 1233ef4, the user's rulings of 2026-11-01), the withholding rule is gone,
+      and with it what removed a thin watcher whose downlink clogs [I: its uplink is thin too, but once Part A
+      thins its sending it carries little more than acks, so its horizon stays timely and R3-9 doesn't fire]. The
+      bracketed figures above are from before it.
+      * **The thin watcher stays a member** at 8 kbit/s with 3-4 players and at 12 kbit/s with 8. Its references
+        hold D54's confirmation until its downlink drains. Everyone stalls 458-621 frames per gesture, against the
+        others' 95-111 before, and the others' confirmation lag is 119-173 frames.
+      * At 8 kbit/s with 8 players it is still removed, from the same frame, but the others stall 146 frames
+        instead of 91.
+      * **PA-2's step-down (D56 above) is what brings these cells back:** they are back in real time 7.5-10.5 s
+        after the gesture. On main 993daf7 without it, the fast members sat at level 8 for 19.6-25 s and never
+        returned within the run [V @design-reviewer's builds of 993daf7 and of the merged tree].
+      * **The thin sweeper's cells cost the others more too:** 138-161 stalled frames instead of 114-135.
+      * **At 3 players Part A now costs the others more than no adaptation does** (review PL-1) [V spikes/out/r18,
+        capped-slow-member, below]. With Part A the others stall 618 frames, are back in real time after 10.5 s,
+        and member 3 is never removed. With plain batching they stall 167-172 frames and are back after 1.75 s,
+        and with per-message sends 171-177 and 1.7 s; both remove member 3, from frame 192 and 188.
+        * The likely reason [I]: Part A's thinning keeps the watcher's acks flowing, so nothing removes it.
+          Without adaptation its uplink clogs as well, and R3-9, which survey #4 kept, removes it.
+      * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
+        plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
 
     * **Four members sharing one 64 kbit/s uplink:** 1,408 stalled frames (the member making the gesture,
       then demoted) and 156 for the others → 0.
     * **The others' confirmation lag** is a mean of 14-19 frames wherever nothing stalls (14 uncapped), and
-      22-48 where stalls remain.
+      22-45 where stalls remain (22-48 before review PA-2, below). The exception is the three thin-watcher cells
+      that trust survey #4 left stalling (above), at 119-173 frames.
     * **Second gestures,** 40 s later at 16 and 32 kbit/s, never stall. On main they stalled 2,427 frames in
       those cells.
       * They start at level 5, except the 2-player 16 kbit/s thin sweeper's, which starts at level 1 (the first
         gesture after idle, below).
       * The sweeper's hand is exact through both gestures at 32 kbit/s, and trails a mean of 143-161 mm over
         both at 16.
-    * **No cell is worse than main for the others,** in stalled frames or, where main itself doesn't stall,
-      in hand entries' confirmation latency.
+    * **Until trust survey #4, no cell was worse than main for the others,** in stalled frames or, where main
+      itself doesn't stall, in hand entries' confirmation latency.
     * **Where Part A stops** (Part B's ground, in the thin-link plan):
-      * 8 players at 16 kbit/s or less still stall 91-124 frames, and 4 players at 8-12 kbit/s 35-135. The
+      * 8 players at 16 kbit/s or less still stall 96-541 frames, and 4 players at 8-12 kbit/s 35-464 (91-124 and
+        35-135 before trust survey #4). The
         others wait on the thin member's references (D54).
       * Demotion remains:
-        * the thin watcher at 8 kbit/s with 3 or more players;
+        * the thin watcher at 8 kbit/s with 8 players (with 3-4 it has stayed a member since trust survey #4);
         * the thin sweeper at 8 kbit/s with 4 players, and at 12 kbit/s with 8.
     * **Known costs:**
       * **The thin player's own hand** trails while it is thinned: a mean of 0-373 mm, up to 862 mm. It is
         exact at 32 kbit/s with up to 4 players. D73 is relaxed on its side only, as the user's goal allows.
-      * **After a second congestion in one D56 episode,** the controller can rest at the drain level while
-        idle. In the 2-player 16 kbit/s thin-sweeper cell it spent 17.4 s at level 6, nearly all of it idle
-        after the second gesture [V]. So a third gesture there would start without packs, its hand trailing,
-        until D56 forgets the level [I; no cell has a third gesture]. The others aren't affected: level 6 sends
-        less than level 5.
+      * **After a second congestion in one D56 episode** v3cap left an idle member at levels 6-8, so its next
+        gesture started without packs. Reviews PA-2 and PA2-1 measured it, and an idle member now returns to
+        level 5 within about a second (D56, item 3, and the tables below). On a 2-player 8 kbit/s link, level
+        5 can then congest in a later gesture (PA2-2).
       * **A player whose own link is fine:** in the thin-watcher cells the sweeper's link is fast, yet its
         hand trails 0-338 mm on average at 24-32 kbit/s (exact at 32 with up to 4 players), and up to 373 mm
         at 8-16 kbit/s.
@@ -2690,17 +2731,72 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         order didn't weigh (@coordinator-opus, 2026-11-01).
       * Variants v2-v7 were first compared on Windows builds that linked a stale sim-core without delta
         packs, from a target dir shared with another worktree. Those comparisons were void, and were redone.
+      * **Then reviews PA-2 and PA2-1: an idle member returns to level 5 within about a second** (p2/thin-link
+        fb12cb4 and ff4e407; @coordinator-opus, 2026-11-01). Three gestures, 40 s apart, in the 16 cells with a
+        thin sweeper (2 and 4 players) or a thin watcher (3 and 4) at 8-32 kbit/s, under v3cap and under the
+        rule as landed [V p2/thin-link 898f667's spikes/out/r18-thin, gap3-*, before main's trust survey #4 was
+        merged; v3cap from the same sources with the rule switched off, not kept as logs]:
+
+        | Cell | Third gesture under v3cap: level, author's hand mean (max), others' latency | As landed |
+        |---|---|---|
+        | 4 players, thin sweeper, 12 kbit/s | level 8, 757 mm (1,507), 42 frames | level 5, exact, 19.4 frames |
+        | 2 players, thin sweeper, 8 kbit/s | level 7, 430 mm (1,052), 19.7 frames | level 5, exact, 17.3 frames (level 5 congests: PA2-2) |
+        | 2 players, thin sweeper, 16 kbit/s | level 6, 217 mm (982), 19.0 frames | level 5, exact, 15.5 frames |
+        | 4 players, thin watcher, 8 kbit/s (the fine-link sweeper's hand; the watcher is demoted) | level 6, 217 mm (982), 19.4-19.5 frames | level 5, exact, 19.4-19.5 frames |
+
+        * A fifth cell (4 players, thin sweeper at 8 kbit/s, which is demoted) changed only in the others'
+          latency during the later gestures: 25-33 frames, now 12.
+        * The other 11 cells are byte-identical under both rules. The others' stalls are identical in every
+          cell, and every end state is equal.
+        * Over the 43 single- and two-gesture cells, nothing changed but the controller's level times and the
+          others' lag where stalls remain, which fell in 3 cells (12 kbit/s with 4 players 44 → 34 frames, 8
+          kbit/s with 2 players 48 → 45, with 4 players 42 → 34). The likely cause [I]: v3cap idled at levels
+          7-8, where acks go every 16-32 frames.
+        * These bullets compare v3cap with fb12cb4, which counted idle calm toward 5 s per level. **Review
+          PA2-1** (ff4e407) then lowered an idle member every 300 ms instead. Against fb12cb4's logs, 49 of
+          these 59 cells are byte-identical. In the 10 that moved, the others' stalls are identical, every
+          end state is equal, and the others' lag fell in 5 of them, by up to 4.6 frames (12 kbit/s with 4
+          players, 34.1 → 29.5).
+          * One got worse: the 2-player 8 kbit/s sweeper, 40 s apart. Its later gestures now congest at level
+            5, with queues of 180 and 282 ms and the other's latency up to 36 frames instead of 20.
+          * Its hand over all three gestures went from 45 to 58 mm on average (476 → 750 mm at most). It is
+            still exact during the third.
+          * The table's figures are ff4e407's.
+        * Three gestures 15 s apart, and one cell 30 s apart, under fb12cb4's rule and as landed
+          [V p2/thin-link 898f667, gap15-* and gap30-*, before the merge; fb12cb4's from its build, not kept as
+          logs]:
+
+          | Cell | fb12cb4: 5 s per level while idle | As landed (ff4e407): 300 ms while idle |
+          |---|---|---|
+          | 4 players, thin sweeper, 12 kbit/s, 15 s apart | second gesture at level 6; author's hand over the run 94 mm (982) | level 5; 67 mm (780); the others' lag 24.1 → 21.9 frames |
+          | 2 players, thin sweeper, 8 kbit/s, 15 s apart | second gesture queues 193 ms, back in real time after 4.1 s, latency up to 51 frames; third exact; hand over the run 76 mm (1,013) | second queues 175 ms, no catching up, latency up to 32; third queues 240 ms, hand 143 mm (1,027) during it; over the run 172 mm (1,027) |
+          | 2 players, thin sweeper, 8 kbit/s, 30 s apart | second queues 40 ms; third 142 ms, hand 82.7 mm (677) during it | second queues 257 ms; third 301 ms, hand 3.9 mm (238); over the run 76 → 90 mm (677 → 1,032) |
+          | 2 players, thin sweeper, 16 kbit/s; 4 players, thin watcher, 8 kbit/s; both 15 s apart | the same outcomes | level times only; the lag up to 1 frame lower |
+
+          At 8 kbit/s with 2 players the rule moves the cost between gestures rather than removing it (D56
+          above). In every other cell the others' outcomes are the same or better, and the author's hand the
+          same or closer.
+        * **Merged with trust survey #4** (ff939a5), 4 of the 21 three-gesture cells changed and 17 are
+          byte-identical [V spikes/out/r18-thin, on main]:
+          * In three, a thin watcher at 8 kbit/s is no longer removed (gap3-down-k8-m3, gap3-down-k8-m4,
+            gap15-down-k8-m4). The fine-link sweeper then backs off for it in every later gesture.
+            * Its hand trails 355 mm on average during the third gesture (955 at most), and 547 at 15 s apart.
+            * At 3 players its second gesture starts at level 8.
+          * In gap3-up-k8-m4 the thin sweeper is removed as before, but it costs the others 161 stalled frames
+            instead of 135.
 * **Thin links, Part A (p2/thin-link)** then moved every adaptive cell in the table below 64 kbit/s
   [V spikes/out/r18]:
   * **Below 20 kbit/s the recovery is back.**
     * 16 and 12 kbit/s no longer stall (449 and 874 stalled frames before). They are back in real time at
       once, instead of after 7.3 and 13.6 s.
     * So does the step from 64 to 16 kbit/s (285 before), back after 0.1 s instead of 5.1 s.
-    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.5 s after the gesture.
+    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.3 s after the gesture (3.5 s
+      before review PA2-1).
   * **On the shared uplink nobody stalls or is demoted.** Before, the member making the gesture stalled 1,408
     frames and was demoted, and the others stalled 156-157.
-  * **The slow member** costs the others 95 / 98 stalled frames instead of 204 / 207, and is demoted from frame
-    352 instead of 208.
+  * **The slow member** cost the others 95 / 98 stalled frames instead of 204 / 207, and was demoted from frame
+    352 instead of 208. Since trust survey #4 (Part A's notes above) it stays a member, and all three stall
+    618-621 frames, back in real time after 10.5 s.
   * **The cost is the author's own hand** while the levels above 5 send single poses, where D73(a) had made it
     exact:
     * a mean of 152-373 mm behind its targets (max 862) at 8-16 kbit/s, in the step and on the shared uplink,
