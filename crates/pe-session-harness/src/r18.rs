@@ -20,6 +20,8 @@ pub struct Opts {
     pub slow: Option<(MemberId, u64)>,
     /// The cap drops to this many kbit/s at this time (ms): (ms, kbit/s).
     pub step: Option<(u64, u64)>,
+    /// A second gesture this many seconds after the first ends (adaptive transport only; spike 867495a).
+    pub gap_s: Option<u64>,
 }
 
 pub fn capped(o: &Opts) {
@@ -43,7 +45,19 @@ pub fn capped(o: &Opts) {
     // Member 1's targets by frame (its hand poses are stamped at their clock frame), for its own-hand
     // error: a kinematic hand reaches its frame's target within the frame, so after frame f it
     // should be at target(f) (D73(a): exact even when R18 thins the stream).
-    let plan1 = crate::history::sweep(hz, 500);
+    // A second gesture this many seconds after the first ends, for the first-gesture-after-idle cells.
+    let shift_frames = o.gap_s.map(|g| (340 - 120) + g * hz);
+    let transports: Vec<(&str, bool, bool)> = if o.gap_s.is_some() {
+        vec![("batched+adaptive", true, true)]
+    } else {
+        vec![("per message", false, false), ("batched", true, false), ("batched+adaptive", true, true)]
+    };
+    let mut plan1 = crate::history::sweep(hz, 500);
+    if let Some(sh) = shift_frames {
+        for (fr, acts) in crate::history::sweep(hz, 500) {
+            plan1.entry(fr + sh).or_default().extend(acts);
+        }
+    }
     let target: BTreeMap<u64, [f64; 3]> = plan1
         .iter()
         .filter_map(|(&f, v)| v.iter().find_map(|a| match a {
@@ -51,7 +65,7 @@ pub fn capped(o: &Opts) {
             _ => None,
         }))
         .collect();
-    for (label, batching, adapt) in [("per message", false, false), ("batched", true, false), ("batched+adaptive", true, true)] {
+    for (label, batching, adapt) in transports {
         let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, ..SimConfig::default() };
         let scene = SceneKind::BallPit { balls: 500, hands: 2 };
         let ids: Vec<MemberId> = (1..=o.members).collect();
@@ -83,6 +97,13 @@ pub fn capped(o: &Opts) {
         let mut qmax = vec![0u64; n];
         let mut lag_max = vec![0u64; n];
         let mut back: Option<u64> = None;
+        // The second gesture's window, its queue peak (to 10 s after it), its stalls and recovery.
+        let sh_us = shift_frames.map_or(0, |s| s * 1_000_000 / hz);
+        let (w2, w3) = (w0 + sh_us, w1 + sh_us);
+        let mut q2 = vec![0u64; n];
+        let mut paused2 = vec![0u64; n];
+        let mut back2: Option<u64> = None;
+        let mut level2: Option<usize> = None;
         // When each frame became confirmed at each member (wall clock, us), for the hand entries'
         // confirmation latency below (spike 5ad7546).
         let mut conf_at: Vec<Vec<u64>> = vec![Vec::new(); n];
@@ -137,6 +158,26 @@ pub fn capped(o: &Opts) {
             if now >= w1 && back.is_none() && all_lag_ok && q_now < 50_000 {
                 back = Some(now - w1);
             }
+            if shift_frames.is_some() {
+                if now >= w2 && level2.is_none() {
+                    level2 = Some(sim.replica(1, 1).level);
+                    for (i, &m) in ids.iter().enumerate() {
+                        paused2[i] = sim.replica(m, 1).sim.stats.paused_frames;
+                    }
+                }
+                if now >= w2 && now < w3 + 10_000_000 {
+                    for (i, &m) in ids.iter().enumerate() {
+                        for &p in &ids {
+                            if p != m {
+                                q2[i] = q2[i].max(sim.net.backlog_us(m, p));
+                            }
+                        }
+                    }
+                }
+                if now >= w3 && back2.is_none() && all_lag_ok && q_now < 50_000 {
+                    back2 = Some(now - w3);
+                }
+            }
             sim.net.now_us += 1000;
         }
         let secs = (w1 - w0) as f64 / 1e6;
@@ -169,22 +210,39 @@ pub fn capped(o: &Opts) {
         // (design 7.6: unchanged by idle thinning while anything happens). In frames, max / mean.
         let dt_us = 1_000_000 / hz;
         let stamps: Vec<u64> = r1.all_entries().iter().filter(|e| e.member == 1 && matches!(e.payload, Payload::Hand { .. })).map(|e| e.stamp).collect();
-        let lat: Vec<String> = conf_at
-            .iter()
-            .zip(&ids)
-            .map(|(c, m)| {
-                let l: Vec<f64> = stamps.iter().filter(|&&s| (s as usize) < c.len()).map(|&s| (c[s as usize] as f64 - (100_000 + s * dt_us) as f64) / dt_us as f64).collect();
-                let open = stamps.len() - l.len();
-                let max = l.iter().cloned().fold(0.0, f64::max);
-                let mean = l.iter().sum::<f64>() / l.len().max(1) as f64;
-                match open {
-                    _ if l.is_empty() => format!("m{m} none of {} confirmed", stamps.len()),
-                    0 => format!("m{m} {max:.1} / {mean:.1}"),
-                    _ => format!("m{m} {max:.1} / {mean:.1} ({open} of {} unconfirmed)", stamps.len()),
-                }
-            })
-            .collect();
+        // The first gesture's entries, or the second's (the gap cells), per member.
+        let s0b = shift_frames.map_or(u64::MAX, |sh| 120 + sh);
+        let lat_of = |second: bool| -> Vec<String> {
+            let st: Vec<u64> = stamps.iter().copied().filter(|&s| (s >= s0b) == second).collect();
+            conf_at
+                .iter()
+                .zip(&ids)
+                .map(|(c, m)| {
+                    let l: Vec<f64> = st.iter().filter(|&&s| (s as usize) < c.len()).map(|&s| (c[s as usize] as f64 - (100_000 + s * dt_us) as f64) / dt_us as f64).collect();
+                    let open = st.len() - l.len();
+                    let max = l.iter().cloned().fold(0.0, f64::max);
+                    let mean = l.iter().sum::<f64>() / l.len().max(1) as f64;
+                    match open {
+                        _ if l.is_empty() => format!("m{m} none of {} confirmed", st.len()),
+                        0 => format!("m{m} {max:.1} / {mean:.1}"),
+                        _ => format!("m{m} {max:.1} / {mean:.1} ({open} of {} unconfirmed)", st.len()),
+                    }
+                })
+                .collect()
+        };
+        let lat = lat_of(false);
         println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
+        if let Some(g) = o.gap_s {
+            let lat2 = lat_of(true);
+            println!(
+                "RESULT     second gesture ({g} s after the first): level at its start {}; max queue ms per member {}; stalled frames during it {}; back to real time after it {}; hand entries' latency (max / mean) {}",
+                level2.map_or("-".to_string(), |l| l.to_string()),
+                join(q2.iter().map(|q| format!("{}", q / 1000)).collect()),
+                join(ids.iter().enumerate().map(|(i, &m)| format!("{}", sim.replica(m, 1).sim.stats.paused_frames - paused2[i])).collect()),
+                back2.map_or("never".to_string(), |t| format!("{} ms", t / 1000)),
+                lat2.join(", ")
+            );
+        }
         let n_err = own_err.len().max(1) as f64;
         println!(
             "RESULT     member 1's own hand against its target, over {} gesture frames: mean {:.2} mm, max {:.2} mm",
