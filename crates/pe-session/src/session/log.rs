@@ -237,9 +237,12 @@ impl WorldSim {
     /// its own or anyone's, is stamped at or after `conf`, so it makes the member busy until `conf`
     /// passes it.
     pub fn idle(&self) -> bool {
-        // Review LN-2: lean entries waiting for an entry they name keep the member busy, as the
-        // explicit entries would once inserted, without their unverified stamps noted.
-        self.busy_stamp.is_none_or(|s| s < self.conf) && self.hold_horizon_below.is_none() && self.lean_wait.is_empty()
+        // Review LN-2: lean entries other than acks waiting for an entry they name keep the member
+        // busy, as they would once inserted (`note_held` skips acks), without their unverified stamps
+        // noted.
+        self.busy_stamp.is_none_or(|s| s < self.conf)
+            && self.hold_horizon_below.is_none()
+            && self.lean_wait.values().all(|w| matches!(w.se.payload, Payload::Ack { .. }))
     }
 
     /// Store a received or fetched entry, once its signature verifies (S3; a bad one is dropped and
