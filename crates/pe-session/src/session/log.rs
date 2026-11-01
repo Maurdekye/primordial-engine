@@ -133,7 +133,7 @@ impl WorldSim {
     /// itself, else its run up to its cover (explicit).
     pub fn relay(&self, id: EntryId) -> Option<Msg> {
         let mut run = self.run_of(id)?;
-        Some(if run.len() == 1 { Msg::Entry(run.pop().expect("one")) } else { Msg::Run { lean: false, signed: true, entries: run } })
+        Some(if run.len() == 1 { Msg::Entry(run.pop().expect("one")) } else { Msg::Run { lean: false, heads: false, signed: true, entries: run } })
     }
 
     pub(super) fn relay_all(&self, v: Vec<Entry>) -> Vec<Msg> {
@@ -328,17 +328,17 @@ impl WorldSim {
     /// form. One whose rebuilt form does not verify (this member holds another version: a fork) is
     /// fetched that way at once, so the explicit path sees what it would have seen (review conditions
     /// (b) and (c), @engine-architect, 2026-11-01).
-    pub fn insert_run(&mut self, from: MemberId, lean: bool, signed: bool, entries: Vec<SignedEntry>) -> Vec<Msg> {
+    pub fn insert_run(&mut self, from: MemberId, lean: bool, heads: bool, signed: bool, entries: Vec<SignedEntry>) -> Vec<Msg> {
         let Some(top) = entries.last() else { return vec![] };
         let sig = signed.then_some(top.sig);
         let (m, s0) = (entries[0].member, entries[0].seq);
-        if lean {
+        if lean || heads {
             self.stats.lean_in += entries.len() as u64;
         }
         let w = LeanWait {
             from,
             first_prev: !lean,
-            lean_heads: lean,
+            lean_heads: heads,
             entries: entries.into_iter().map(|e| e.entry).collect(),
             sig,
             since: self.now,
