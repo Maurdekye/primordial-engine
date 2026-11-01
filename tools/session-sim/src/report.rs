@@ -91,6 +91,7 @@ pub const CHECKS: &[&str] = &[
     "kickpartition",
     "lastadmin",
     "adminclose",
+    "kickadmin",
     "joinrules",
     "vcscale",
     "selfkickhead",
@@ -698,15 +699,44 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
             println!("RESULT {label}: admins at the end {admins:?} -> {}", if ok { "the release was refused, the hand-over held" } else { "FAIL" });
         }
         "adminclose" => {
+            // V3 (user 08:31Z): the close removes every member left (pe-session empties its list).
             let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.vcm.closed_at).collect();
-            let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]);
+            let removed: Vec<Vec<MemberId>> = honest.iter().map(|&m| sim.replica(m, 1).sim.closed_members.clone()).collect();
+            let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]) && removed.iter().all(|r| r == honest);
             println!(
-                "RESULT {label}: {text}; session closed at frame {:?} at m{}, {:?} at m{} -> {}",
+                "RESULT {label}: {text}; session closed at frame {:?} at m{}, {:?} at m{}; members the close removed {:?} at m{}, {:?} at m{} -> {}",
                 closed[0],
                 honest[0],
                 closed[1],
                 honest[1],
-                if ok { "CLOSED, the same frame everywhere" } else { "FAIL" }
+                removed[0],
+                honest[0],
+                removed[1],
+                honest[1],
+                if ok { "CLOSED, the same frame everywhere, every member left removed" } else { "FAIL" }
+            );
+        }
+        "kickadmin" => {
+            // V1/V2 (session-sim p24r.rs `kickadmin`): kicks of `members` (an admin and a roles-holder)
+            // by a kick-only role freeze no one; the session stays open with `honest` left; `target`
+            // made itself Admin and then set role `role` to the kick permission.
+            let (x, y) = (members[0], members[1]);
+            let t = need(target, case, "target");
+            let r = need(role, case, "role");
+            let kick_votes = |v: MemberId| {
+                sim.peers.iter().filter_map(|p| p.worlds.get(&1)).any(|w| w.sim.all_entries().iter().any(|e| matches!(e.payload, Payload::Vote { target, kick, .. } if kick != EntryId::NONE && target == v)))
+            };
+            let (fx, fy) = (kick_votes(x), kick_votes(y));
+            let r0 = &sim.replica(honest[0], 1).sim;
+            let left: Vec<MemberId> = r0.vcm.members.iter().copied().collect();
+            let open = honest.iter().all(|&m| sim.replica(m, 1).sim.vcm.closed_at.is_none());
+            let same = honest.iter().all(|&m| sim.replica(m, 1).sim.vcm.roles == r0.vcm.roles && sim.replica(m, 1).sim.vcm.role_defs == r0.vcm.role_defs);
+            let ok = !fx && !fy && &left == honest && open && same && r0.vcm.roles.get(&t) == Some(&ADMIN) && r0.vcm.role_defs.get(&r) == Some(&perm::KICK);
+            println!(
+                "RESULT {label}: kick votes against {x}: {fx}, against {y}: {fy}; members left {left:?}; open {open}; {t}'s role {:?}, role {r} = {:#x} -> {}",
+                r0.vcm.roles.get(&t),
+                r0.vcm.role_defs.get(&r).copied().unwrap_or(0),
+                if ok { "ADMINS SAFE FROM A KICK-ONLY ROLE, AND A ROLES-HOLDER KEEPS THE SESSION OPEN" } else { "FAIL" }
             );
         }
         "joinrules" => {

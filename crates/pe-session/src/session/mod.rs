@@ -503,6 +503,10 @@ pub struct WorldSim {
     hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
+    /// V3 (user 08:31Z): the members the close removed, every one left; everyone is told (the
+    /// `SESSION CLOSED` event) and no further change is made to the world. The spike keeps its member
+    /// list for its own bookkeeping and records the removal here; pe-session empties the list.
+    pub closed_members: Vec<MemberId>,
     /// Test fixture: review fixes switched off (see [`fix`]).
     pub fixes_off: u64,
     /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
@@ -823,6 +827,7 @@ impl WorldSim {
             hidden: None,
             join_reqs: BTreeMap::new(),
             genesis: members.to_vec(),
+            closed_members: Vec::new(),
             fixes_off: 0,
             entry_backoff: BTreeMap::new(),
             ref_seen: BTreeMap::new(),
@@ -888,5 +893,28 @@ mod d73_review {
         s.insert(sk);
         assert!(s.violations.contains(&kid), "void where linked");
         assert_eq!(s.valid_on_own_branch(kid), Some(false), "void on its own branch too");
+    }
+}
+
+#[cfg(test)]
+mod v3_review {
+    use super::*;
+    use crate::sign::test_sign;
+
+    /// Review V3-1 (@design-reviewer's probe): after a close empties `vcm.members`, a former member's
+    /// two versions of a current-epoch proposal reach `note_proposal`; `proposer()` must not index an
+    /// empty order (it panicked, "remainder with a divisor of zero").
+    #[test]
+    fn a_proposal_after_a_close_does_not_panic() {
+        let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
+        // What a close leaves (membership.rs apply_change, V3): no members.
+        s.closed_members = s.vcm.members.iter().copied().collect();
+        s.vcm.members.clear();
+        s.vcm.closed_at = Some(10);
+        let ep = s.vcm.epoch;
+        let mk = |b: u64| test_sign(1, Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Propose { epoch: ep, round: 0, valid_round: 0, change: Change { epoch: ep, boundary: b, ..Default::default() } }, carried: None });
+        s.insert(mk(30));
+        s.insert(mk(31));
+        assert_eq!(s.proposer(ep, 0), LOGIC, "no one proposes in a closed session");
     }
 }
