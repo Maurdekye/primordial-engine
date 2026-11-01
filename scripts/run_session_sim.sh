@@ -69,6 +69,8 @@ for v in kickwar kickpartition lastadmin adminclose joinrules; do run d80-$v $v;
 run d80-kickadmin kickadmin
 # P2-4 review round 3 (design 10.8): each repro also reports its run with the fix switched off.
 for v in ghostkick selfkickhead ackgap latejoin capchurn deepfork cutbackdate joinattests slowadmin kickbackdate lagprecommit aheadlink; do run p2-4-$v $v; done
+# Trust survey #4: aheadlink's cut-off lasting 30 s, its misses 5 s late (long) or lost (cut): nothing removes 3.
+for v in aheadlink-long aheadlink-cut; do run p2-4-$v $v; done
 # P2-4 review round 4 (design 10.8): the same, for the round-3 findings and round 4's own changes.
 for v in strikeframe aheadshield fakeref capstale lagchurn votechurn adminvoid joinsquat joinskip; do run p2-4-$v $v; done
 # P2-4 review round 5 (design 10.8): the join wedge and the slow/fake-reference halt.
