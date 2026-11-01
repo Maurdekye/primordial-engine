@@ -67,7 +67,8 @@ Frame 486: a2439cc9 / 4c17fa13, then 2bf4f3d7, and a2439cc9 at the end.
 * **Truly split.**
   - Both versions are stamped at frame 479, above every receiver's conf (472-474) when they arrive.
   - Member 4 first sees A at 8.253 s (run 1) / 8.248 s (run 2). That is after its proof, which is member
-    3's next entry naming A as its predecessor, against B.
+    3's next entry naming A as its predecessor, against B. Member 4's proof line therefore names that
+    entry's id, not A's: run 1's 3f4ae16d is member 3's seq 239, and run 2's d1e38266 is seq 232.
   - Members 1 and 2 first see B about 140 ms after A, through member 4's delayed link.
 * **The disagreement, measured.**
   - From frame 479 to 486 the groups simulate different states. Frame 479's hash is 22d79413 (A) at
