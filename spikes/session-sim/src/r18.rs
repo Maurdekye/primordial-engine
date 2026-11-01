@@ -39,6 +39,8 @@ pub struct Opts {
     pub crash: Option<(MemberId, u64)>,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
+    /// Count offered bytes over the whole run instead of the first gesture's window.
+    pub count_all: bool,
 }
 
 pub fn capped(o: &Opts) {
@@ -126,8 +128,8 @@ pub fn capped(o: &Opts) {
             }
         }
         net.batching = batching;
-        net.count_from_us = w0;
-        net.count_to_us = w1;
+        net.count_from_us = if o.count_all { 0 } else { w0 };
+        net.count_to_us = if o.count_all { u64::MAX } else { w1 };
         let mut sim = Sim::new(net, peers, o.end_s * 1_000_000);
         sim.feed = o.localize;
         // Thin links Part B: each member's time on the state feed (ms).
@@ -251,7 +253,9 @@ pub fn capped(o: &Opts) {
             sim.net.now_us += 1000;
         }
         let secs = (w1 - w0) as f64 / 1e6;
-        let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / secs;
+        // Offered bytes are counted over the whole run with --count-all.
+        let bsecs = if o.count_all { o.end_s as f64 } else { secs };
+        let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / bsecs;
         // A member demoted (removed) from the session no longer counts: compare the others.
         let live: Vec<MemberId> = ids.iter().copied().filter(|m| sim.replica(1, 1).sim.members.contains(m)).collect();
         let last = live.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap().saturating_sub(1);
@@ -307,7 +311,7 @@ pub fn capped(o: &Opts) {
                 v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
                 let parts: Vec<String> = v
                     .iter()
-                    .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / secs, *n as f64 / secs, b / (*n).max(1)))
+                    .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / bsecs, *n as f64 / bsecs, b / (*n).max(1)))
                     .collect();
                 println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
             }
