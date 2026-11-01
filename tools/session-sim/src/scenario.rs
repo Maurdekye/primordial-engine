@@ -1027,6 +1027,10 @@ pub enum Report {
         named: Vec<u32>,
         #[serde(default)]
         honest: Vec<u32>,
+        /// Honest members that can't reference what they can't hear (a one-way cut, a thin downlink):
+        /// shown not referencing is expected (design 10.8), flagged late is still a FAIL.
+        #[serde(default)]
+        may_not_reference: Vec<u32>,
         #[serde(default)]
         quiet: bool,
     },

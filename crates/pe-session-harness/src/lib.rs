@@ -106,6 +106,9 @@ pub enum Fate {
 }
 
 pub type Filter = Box<dyn FnMut(u64, WorldId, MemberId, MemberId, &Msg) -> Fate>;
+/// What a scripted fault does to a ping (time, from, to): only faults that apply to every message
+/// on a link reach pings; it has no state, so asking changes nothing (admin indicators, design 10.8).
+pub type PingFilter = Box<dyn Fn(u64, MemberId, MemberId) -> Fate>;
 
 pub struct Net {
     pub now_us: u64,
@@ -115,6 +118,7 @@ pub struct Net {
     pub default_link: Link,
     rng: u64,
     pub filter: Option<Filter>,
+    pub ping_filter: Option<PingFilter>,
     /// (world, kind) -> (messages, payload bytes)
     pub sent: BTreeMap<(WorldId, &'static str), (u64, u64)>,
     pub dropped: u64,
@@ -166,6 +170,7 @@ impl Net {
             default_link,
             rng: seed,
             filter: None,
+            ping_filter: None,
             sent: BTreeMap::new(),
             dropped: 0,
             count_from_us: 0,
@@ -249,12 +254,17 @@ impl Net {
 
     /// What a small ping offered now would take from `a` to `b` and back through the links'
     /// queues and delays, without loss (mean jitter): the harness's stand-in for clock sync's pings,
-    /// for the admin indicators' late-acks hint (design 10.8). Filters' extra delays aren't seen,
-    /// as a ping on another path wouldn't see them.
-    pub fn ping_rtt_us(&self, a: MemberId, b: MemberId) -> u64 {
+    /// for the admin indicators' late-acks hint (design 10.8). A scripted fault on the whole link
+    /// reaches it (`ping_filter`); one that picks messages doesn't. None: the ping is lost.
+    pub fn ping_rtt_us(&self, a: MemberId, b: MemberId) -> Option<u64> {
         let ab = self.links.get(&(a, b)).copied().unwrap_or(self.default_link);
         let ba = self.links.get(&(b, a)).copied().unwrap_or(self.default_link);
-        self.backlog_us(a, b) + ab.delay_us + ab.jitter_us / 2 + self.backlog_us(b, a) + ba.delay_us + ba.jitter_us / 2
+        let fault = |from, to| match self.ping_filter.as_ref().map_or(Fate::Deliver, |f| f(self.now_us, from, to)) {
+            Fate::Deliver => Some(0),
+            Fate::Drop => None,
+            Fate::Delay(d) => Some(d),
+        };
+        Some(self.backlog_us(a, b) + ab.delay_us + ab.jitter_us / 2 + fault(a, b)? + self.backlog_us(b, a) + ba.delay_us + ba.jitter_us / 2 + fault(b, a)?)
     }
 
     /// Send now, or queue for this tick's batch to that peer.
@@ -626,8 +636,9 @@ impl Sim {
             if now % 250_000 == 0 {
                 for m in r.sim.audience() {
                     if m != pid {
-                        let rtt = self.net.ping_rtt_us(pid, m);
-                        r.core.rtt_sample(m, rtt, now);
+                        if let Some(rtt) = self.net.ping_rtt_us(pid, m) {
+                            r.core.rtt_sample(m, rtt, now);
+                        }
                     }
                 }
             }

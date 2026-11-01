@@ -213,8 +213,10 @@ struct IndProbe {
     last: String,
     /// Members shown holding the session at least once.
     named: BTreeSet<MemberId>,
-    /// Members shown not referencing, or flagged late, at least once.
+    /// Members shown not referencing at least once.
     accused: BTreeSet<MemberId>,
+    /// Members flagged late at least once.
+    late: BTreeSet<MemberId>,
     /// Anything shown or flagged at all.
     any: bool,
     asked: u32,
@@ -317,7 +319,7 @@ impl Probe {
                             p.accused.insert(*by);
                         }
                     }
-                    p.accused.extend(i.late.iter().filter(|l| l.flagged).map(|l| l.member));
+                    p.late.extend(i.late.iter().filter(|l| l.flagged).map(|l| l.member));
                     p.any |= !i.holding.is_empty() || !late.is_empty();
                     let line = format!("holding [{}] late acks flagged [{}]", text.join(", "), late.join(", "));
                     if line != p.last {
@@ -481,7 +483,7 @@ impl Probe {
                 }
             }
             Report::Confs { honest, label } => println!("RESULT {label}: {}", confs(sim, honest)),
-            Report::Indicators { label, named, honest, quiet, at, .. } => {
+            Report::Indicators { label, named, honest, may_not_reference, quiet, at, .. } => {
                 let p = &self.ind;
                 for l in &p.lines {
                     println!("{l}");
@@ -494,18 +496,23 @@ impl Probe {
                 if !missed.is_empty() {
                     bad.push(format!("never named: {missed:?}"));
                 }
-                let wrong: Vec<&u32> = honest.iter().filter(|m| p.accused.contains(m)).collect();
+                let wrong: Vec<&u32> = honest.iter().filter(|m| p.accused.contains(m) && !may_not_reference.contains(m)).collect();
                 if !wrong.is_empty() {
-                    bad.push(format!("honest shown not referencing or late: {wrong:?}"));
+                    bad.push(format!("honest shown not referencing: {wrong:?}"));
+                }
+                let late: Vec<&u32> = honest.iter().filter(|m| p.late.contains(m)).collect();
+                if !late.is_empty() {
+                    bad.push(format!("honest flagged late: {late:?}"));
                 }
                 if *quiet && p.any {
                     bad.push("something was shown in a quiet run".into());
                 }
                 println!(
-                    "RESULT {label}: m{at} asked {} times; named {:?}; not referencing or late {:?} -> {}",
+                    "RESULT {label}: m{at} asked {} times; named {:?}; not referencing {:?}; late {:?} -> {}",
                     p.asked,
                     p.named,
                     p.accused,
+                    p.late,
                     if bad.is_empty() { "OK".to_string() } else { format!("FAIL ({})", bad.join("; ")) }
                 );
             }
