@@ -31,8 +31,28 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
   members agree on the member set, the roles, and every admin entry's applied/refused outcome.
   [checked: equal member sets; the admin scenarios check outcomes]
 * **S5 No honest removal.** A member that is honest and not crashed, whose links to the other honest
-  members are clean (the generator's honest members always are), is never removed at any honest member.
+  members are clean (the generator's honest members are, but for S6's drawn late members, whom the check
+  covers too), is never removed at any honest member.
   [checked: no honest, non-crashed member appears in any honest member's evicted set]
+* **S6 No false accusation** (experimental until @design-reviewer approves the generator's widening;
+  @coordinator-opus, 2026-11-01). A member that is honest, not crashed and clean is never voted against,
+  to remove or to demote it, by any honest member.
+  * *Clean* means every message the member sends reaches every honest member within W/2 frames of being
+    sent: half the speculation window, 60 frames, 1 s at 60 Hz.
+  * W/2 is the shortest time any view-change rule waits for a member's evidence before acting on its
+    absence: a capped precommit's polka, a kick vote's kick. A clean member can always supply its own
+    evidence in that time, including the prevotes its precommit names, by fetch. So other members' delays
+    never make an accusation of a clean member correct. That is VC4R-1's case: the missing prevotes were
+    a third member's, and the capper's links were clean.
+  * A member whose own messages take longer may be suspected legitimately, by the rules that wait longer:
+    silence (`suspect_after`, 180 frames), a horizon trailing by over W/2 for 3 s (demotion), or
+    references withheld for `suspect_after`.
+  * Why S5 is not enough: with one faulty member, the honest members a false accusation fools plus the
+    faulty member stay short of a quorum, so nobody is removed. The vote itself is the fault, as
+    prevotefork's control checks.
+  [checked: no honest member's event log holds a vote against an honest, non-crashed member, except the
+  drawn late members, whose round-0 prevotes are held back past W/2. With VC4R-1 and VC8R-1 off it fails
+  on 5 of 120 seeds, the first at seed 20; with every fix on, all 120 hold]
 
 ## Liveness (hold after GST, within a bound)
 
@@ -63,15 +83,44 @@ admin can kick it. The generator does not fail a run for this.
 
 `pe-spike-session-sim randsched [--seeds N] [--from S] [--seed S] [--fixes-off HEX] [--verbose]`.
 
-Each seed draws, from a splitmix64 stream: `n` in 4..=7; a faulty set of size 0..=t; one behaviour per
-faulty member (crash, slow-send, selective/rotating send, fake references, a climbing ack epoch, a
-withheld view-change vote, a bogus capped precommit each epoch, suspicion-vote churn, or a ghost kick
-vote); an optional outside joiner whose request reaches a random subset of the members, optionally
-crashing after its first prevote; and a GST after which the faulty members' network games stop (a crash
-stays). It runs the deterministic simulator and checks S1-S5 and L1 on every seed.
+Each seed draws, from a splitmix64 stream:
+- `n` in 4..=7, and a faulty set of size 0..=t;
+- one behaviour per faulty member: crash, slow-send, selective/rotating send, fake references, a
+  climbing ack epoch, a withheld view-change vote, a bogus capped precommit each epoch, suspicion-vote
+  churn, a ghost kick vote, or an equivocated view-change prevote;
+- an optional outside joiner whose request reaches a random subset of the members, optionally crashing
+  after its first prevote;
+- a GST after which the faulty members' network games stop. A crash stays, and so does a ClimbAhead
+  member's rotation (below): a faulty member's own links may stay adversarial.
+
+It runs the deterministic simulator and checks S1-S6 (S6 experimental) and L1 on every seed.
+
+Four review holes need a particular shape. The generator builds each a share of the time, from its own
+stream, so the other draws keep theirs:
+
+| Hole | Shape | Share |
+|---|---|---|
+| VC4R-1 (prevotefork) | An equivocator sends its value-prevote to k cappers and nil to the rest. h - q + 1 other honest members' round-0 prevotes reach everyone at least 1.2 s late, by every path. The remaining honest members observe. A capper counts q prevotes and caps; an observer counts q - 1 and judges the cap; k + 1 < q precommits decide nothing first | half the equivocator draws |
+| VC4R-2 (joinwedge) | A faulty member crashes right after its first view-change prevote, and the join request reaches it and q - 1 honest members only | a quarter of the draws with a faulty member and a joiner |
+| VCR-12 (lagprecommit) | Every faulty member withholds its view-change votes. One honest member acks once every 1.5 s, strictly on its grid, and the joiner asks everyone 2.7-2.95 s in, late in that member's period. Drawn only where the honest members are no more than q | a quarter of the draws with a faulty member |
+| VC3R-1 | ClimbAhead: a member climbs to an unbacked epoch and delivers each of its own entries to one member only, rotating, for the rest of the run | a quarter of the remaining draws with a faulty member |
 
 `--fixes-off HEX` sets `WorldSim::fixes_off` on every member, so the generator can be run against an
-older protocol to confirm it finds that round's holes. Coverage is reported in the round-5 note.
+older protocol to confirm it finds that round's holes. Measured on 120 seeds each [V, widen/randsched]:
+
+| Fixes off | Seeds that fail (of 120) | First | Invariant |
+|---|---|---|---|
+| none | none | - | every one holds |
+| VC4R-1 and VC8R-1 (`0x1001000000`; VC8R-1 alone also blocks the attack) | 5: 20, 23, 60, 70, 72 | 20 | S6 |
+| VC4R-2 (`0x400000`) | 3: 35, 58, 114 | 35 | L1 |
+| VC-5 (`0x8`) | 6: 4, 17, 18, 34, 54, 95 | 4 | L1 |
+| VCR-12 (`0x2000`) | 8: 1, 22, 74, 76, 78, 100, 105, 106 | 1 | L1 |
+| VC3R-1 (`0x8000`) | 3: 4, 17, 18 | 4 | L1 |
+| VC4R-3, RG-1 (`0x800000`) | 8: 39, 44, 62, 92, 96, 99, 110, 113 | 39 | L1 |
+
+Two generator bugs had hidden VC4R-1. A late prevote reached the nil side at once, through a third
+member's repair. And the drawn late member could be the capper itself, whose precommit then waited
+behind its own prevote, so the cap and the polka arrived together.
 
 `randsched` found one hole the reviewer had not (RG-1): a faulty member that references a healthy
 member's chain beyond what it holds, with a small live offset that hides inside normal lag, caps that
