@@ -1,18 +1,18 @@
 RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]
-RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 277 (t=4.72 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
-RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 277 (t=4.72 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
-REPRO slowcapper fixed=false (3 receives the cap's polka prevote 1.5 s late): m3 votes to remove capper 2: true; 2 kept: true; live at the end (2, 3, 9, 5): true; m1 conf 53 of frame 173, m2 conf 587 of frame 593, m3 conf 587 of frame 593
+RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 318 (t=5.40 s) round 0 removed []
+RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 318 (t=5.40 s) round 0 removed []
+REPRO slowcapper fixed=false (3 receives the cap's polka prevote 1.5 s late): m3 votes to remove capper 2: true; 2 kept: true; live at the end (2, 3, 9, 5): true; m1 conf 48 of frame 168, m2 conf 582 of frame 593, m3 conf 582 of frame 593
 RESULT slowcapper fixed=false: -> 3 VOTES AGAINST THE HONEST CAPPER, AS BEFORE THE FIX
-  m1: conf 53 frame 173 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 8 bad 0
-  m2: conf 587 frame 593 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 38 bad 0
-  m3: conf 587 frame 593 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 38 bad 0
-RESULT slowcapper fixed=false: frames 0..172 honest m1=a899c0cdfcb930cc m2=a899c0cdfcb930cc m3=a899c0cdfcb930cc | offline replay a899c0cdfcb930cc | ALL EQUAL, NO FALSE CHECKS ; checks ok 84 bad 0
-RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 223 (t=3.82 s) round 2 removed [1]
-RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
-RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 223 (t=3.82 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
-REPRO slowcapper fixed=true (3 receives the cap's polka prevote 1.5 s late): m3 votes to remove capper 2: false; 2 kept: true; live at the end (2, 3, 9, 5): true; m1 conf 53 of frame 173, m2 conf 587 of frame 593, m3 conf 587 of frame 593
+  m1: conf 48 frame 168 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 8 bad 0
+  m2: conf 582 frame 593 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 38 bad 0
+  m3: conf 582 frame 593 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 37 bad 0
+RESULT slowcapper fixed=false: frames 0..167 honest m1=9175d186ddd9e178 m2=9175d186ddd9e178 m3=9175d186ddd9e178 | offline replay 9175d186ddd9e178 | ALL EQUAL, NO FALSE CHECKS ; checks ok 83 bad 0
+RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]
+RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]; epoch 3 at frame 279 (t=4.75 s) round 1 removed []; epoch 4 at frame 318 (t=5.40 s) round 0 removed []
+RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 318 (t=5.40 s) round 0 removed []
+REPRO slowcapper fixed=true (3 receives the cap's polka prevote 1.5 s late): m3 votes to remove capper 2: false; 2 kept: true; live at the end (2, 3, 9, 5): true; m1 conf 48 of frame 168, m2 conf 582 of frame 593, m3 conf 582 of frame 593
 RESULT slowcapper fixed=true: -> THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON
-  m1: conf 53 frame 173 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 8 bad 0
-  m2: conf 587 frame 593 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 38 bad 0
-  m3: conf 587 frame 593 members {2, 3, 5, 9} evicted {1: (30, 55)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 38 bad 0
-RESULT slowcapper fixed=true: frames 0..172 honest m1=a899c0cdfcb930cc m2=a899c0cdfcb930cc m3=a899c0cdfcb930cc | offline replay a899c0cdfcb930cc | ALL EQUAL, NO FALSE CHECKS ; checks ok 84 bad 0
+  m1: conf 48 frame 168 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 8 bad 0
+  m2: conf 582 frame 593 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 38 bad 0
+  m3: conf 582 frame 593 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 37 bad 0
+RESULT slowcapper fixed=true: frames 0..167 honest m1=9175d186ddd9e178 m2=9175d186ddd9e178 m3=9175d186ddd9e178 | offline replay 9175d186ddd9e178 | ALL EQUAL, NO FALSE CHECKS ; checks ok 83 bad 0

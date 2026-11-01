@@ -1,11 +1,11 @@
   5's role at m3: None
-  joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend) with VC3R-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593; at m1: members {1, 2, 3, 9}, evicted []
+  joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend) with VC3R-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 586 of frame 593, m2 conf 586 of frame 593, m3 conf 586 of frame 593; at m1: members {1, 2, 3, 9}, evicted []
 RESULT joinsquat: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
 RESULT joinsquat: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
 RESULT joinsquat: m3 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
-RESULT joinsquat: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 587 of frame 593
-  m1: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 80 bad 0
-  m2: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
-  m3: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 80 bad 0
-  m5: conf 587 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 80 bad 0
-RESULT joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend): frames 0..592 honest m1=03f70a77b88894cf m2=03f70a77b88894cf m3=03f70a77b88894cf m5=03f70a77b88894cf | offline replay 03f70a77b88894cf | ALL EQUAL, NO FALSE CHECKS ; checks ok 320 bad 0
+RESULT joinsquat: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 576 of frame 593, m2 conf 576 of frame 593, m3 conf 576 of frame 593, m5 conf 576 of frame 593
+  m1: conf 576 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 76 bad 0
+  m2: conf 576 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 76 bad 0
+  m3: conf 576 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 76 bad 0
+  m5: conf 576 frame 593 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 76 bad 0
+RESULT joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend): frames 0..592 honest m1=03f70a77b88894cf m2=03f70a77b88894cf m3=03f70a77b88894cf m5=03f70a77b88894cf | offline replay 03f70a77b88894cf | ALL EQUAL, NO FALSE CHECKS ; checks ok 304 bad 0

@@ -273,6 +273,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 r.throttle_us = rc.throttle_ms.map(|x| x * 1000);
                 r.throttle_from_us = rc.throttle_from_ms * 1000;
                 r.adapt = rc.adapt;
+                if rc.ack_grid_only {
+                    r.ack_grid_only = true;
+                }
                 if let Some(ms) = rc.ack_every_ms {
                     r.ack_every_us = ms * 1000;
                 }
@@ -293,6 +296,12 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 for m in ms {
                     r.sim.vcm.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
                 }
+            }
+            for &(role, perms) in &w.role_defs {
+                r.sim.vcm.role_defs.insert(role, perms);
+            }
+            for &(m, role) in &w.roles {
+                r.sim.vcm.roles.insert(m, role);
             }
             if !w.owners.is_empty() {
                 r.sim.vcm.owners = w.owners.iter().copied().collect();

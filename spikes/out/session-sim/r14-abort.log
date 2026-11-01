@@ -1,15 +1,15 @@
   carrier: t=2766ms depart authored in world 1 at frame 160
-  carrier: t=3068ms depart confirmed but not pending (Some(Escrow { obj: 40, record: None, status: DepartRejected, depart_frame: 160, depart: 18226385659928983257, dest: 2, deadline: 730 })); nothing relayed
+  carrier: t=3092ms depart confirmed but not pending (Some(Escrow { obj: 40, record: None, status: DepartRejected, depart_frame: 160, depart: 3380870236741025810, dest: 2, deadline: 730 })); nothing relayed
   carrier: phase Done accepted None
   carrier: depart entry final outcome at A frame 160: RejectedClaimed { by: 2, until: 190 }
-  m1 world A: object 40 live copies 1; escrow ["T938709852674086701:DepartRejected"]; arrivals []
-  m2 world A: object 40 live copies 1; escrow ["T938709852674086701:DepartRejected"]; arrivals []
+  m1 world A: object 40 live copies 1; escrow ["T15291952766955469963:DepartRejected"]; arrivals []
+  m2 world A: object 40 live copies 1; escrow ["T15291952766955469963:DepartRejected"]; arrivals []
   m1 world B: object 40 live copies 0; escrow []; arrivals []
   m3 world B: object 40 live copies 0; escrow []; arrivals []
 RESULT r14 abort: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 17 max depth 12 resim frames 230 (32.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
-  m2 world 1: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
-  m1 world 2: rollbacks 2 max depth 2 resim frames 4 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-  m3 world 2: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
-RESULT r14 abort A world 1: frames 0..500 digests m1=d47c2e695e5d4f5b m2=d47c2e695e5d4f5b | offline replay d47c2e695e5d4f5b | ALL EQUAL
+  m1 world 1: rollbacks 17 max depth 30 resim frames 248 (32.8 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 520 frame 534
+  m2 world 1: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 521 frame 533
+  m1 world 2: rollbacks 2 max depth 2 resim frames 4 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 432 frame 442
+  m3 world 2: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 428 frame 442
+RESULT r14 abort A world 1: frames 0..500 digests m1=111a0d0cf1e43308 m2=111a0d0cf1e43308 | offline replay 111a0d0cf1e43308 | ALL EQUAL
 RESULT r14 abort B world 2: frames 0..400 digests m1=f73153e379dca938 m3=f73153e379dca938 | offline replay f73153e379dca938 | ALL EQUAL

@@ -459,6 +459,9 @@ pub struct WorldSim {
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
+    /// The newest stamp of any entry held other than an ack (design 7.6's idle predicate): void
+    /// ones, fork versions, own and protocol entries included; raised at insert, as the spike's.
+    busy_stamp: Option<u64>,
     /// The version of each (member, seq) this member holds and references: the first one seen.
     by_author: BTreeMap<(MemberId, u32), EntryId>,
     /// Per author: the verified contiguous prefix (hash-linked) held.
@@ -503,6 +506,10 @@ pub struct WorldSim {
     hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
+    /// V3 (user 08:31Z): the members the close removed, every one left; everyone is told (the
+    /// `SESSION CLOSED` event) and no further change is made to the world. The spike keeps its member
+    /// list for its own bookkeeping and records the removal here; pe-session empties the list.
+    pub closed_members: Vec<MemberId>,
     /// Test fixture: review fixes switched off (see [`fix`]).
     pub fixes_off: u64,
     /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
@@ -543,6 +550,14 @@ pub struct WorldSim {
     my_seq: u32,
     /// Test fixture (review H5): publish horizons this many frames behind the present.
     pub horizon_lag: u64,
+    /// D73(a): this member's own hand poses waiting for their pack, by (frame, hand): applied at their
+    /// frames on this replica only (`step_frame`). Set by `SessionCore`.
+    pub own_pending: BTreeMap<(u64, u32), [i32; 3]>,
+    /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
+    /// it, so nothing it confirms can miss the pack.
+    pub hold_horizon_below: Option<u64>,
+    /// 7.6 reduction 1: the check frame this member's last ack carried.
+    last_check_sent: Option<u64>,
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
@@ -799,6 +814,7 @@ impl WorldSim {
             attested: BTreeSet::new(),
             known: members.iter().copied().chain([me]).collect(),
             entries: BTreeMap::new(),
+            busy_stamp: None,
             by_author: BTreeMap::new(),
             contiguous: BTreeMap::new(),
             violations: BTreeSet::new(),
@@ -817,6 +833,7 @@ impl WorldSim {
             hidden: None,
             join_reqs: BTreeMap::new(),
             genesis: members.to_vec(),
+            closed_members: Vec::new(),
             fixes_off: 0,
             entry_backoff: BTreeMap::new(),
             ref_seen: BTreeMap::new(),
@@ -834,6 +851,9 @@ impl WorldSim {
             now: 0,
             my_seq: 0,
             horizon_lag: 0,
+            own_pending: BTreeMap::new(),
+            hold_horizon_below: None,
+            last_check_sent: None,
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
@@ -857,5 +877,51 @@ impl WorldSim {
 
     fn ev(&mut self, s: String) {
         self.events.push(format!("[w{} m{} f{} c{}] {s}", self.world_id, self.me, self.frame, self.conf));
+    }
+}
+
+#[cfg(test)]
+mod d73_review {
+    use super::*;
+    use crate::sign::test_sign;
+
+    /// Review D73-1 (@design-reviewer's probe): an admin entry stamped within the wider ack lag but
+    /// more than horizon_slack before its author's last ack stamp is void where linked (`validate`),
+    /// and `valid_on_own_branch` (change_valid, VC7R-1) agrees.
+    #[test]
+    fn admin_backdating_bound_agrees_on_both_paths() {
+        let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
+        let a = Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Ack { horizon: 12, heads: vec![], check: None, epoch: 0 }, carried: None };
+        let sa = test_sign(1, a);
+        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3 }, carried: None };
+        let sk = test_sign(1, k);
+        let kid = sk.id();
+        s.insert(sa);
+        s.insert(sk);
+        assert!(s.violations.contains(&kid), "void where linked");
+        assert_eq!(s.valid_on_own_branch(kid), Some(false), "void on its own branch too");
+    }
+}
+
+#[cfg(test)]
+mod v3_review {
+    use super::*;
+    use crate::sign::test_sign;
+
+    /// Review V3-1 (@design-reviewer's probe): after a close empties `vcm.members`, a former member's
+    /// two versions of a current-epoch proposal reach `note_proposal`; `proposer()` must not index an
+    /// empty order (it panicked, "remainder with a divisor of zero").
+    #[test]
+    fn a_proposal_after_a_close_does_not_panic() {
+        let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
+        // What a close leaves (membership.rs apply_change, V3): no members.
+        s.closed_members = s.vcm.members.iter().copied().collect();
+        s.vcm.members.clear();
+        s.vcm.closed_at = Some(10);
+        let ep = s.vcm.epoch;
+        let mk = |b: u64| test_sign(1, Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Propose { epoch: ep, round: 0, valid_round: 0, change: Change { epoch: ep, boundary: b, ..Default::default() } }, carried: None });
+        s.insert(mk(30));
+        s.insert(mk(31));
+        assert_eq!(s.proposer(ep, 0), LOGIC, "no one proposes in a closed session");
     }
 }
