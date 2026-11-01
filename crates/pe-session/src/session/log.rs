@@ -207,6 +207,21 @@ impl WorldSim {
         self.signed(e)
     }
 
+    /// Design 7.6: track the latest stamp of a held entry other than an ack.
+    fn note_held(&mut self, e: &Entry) {
+        if !matches!(e.payload, Payload::Ack { .. }) {
+            self.busy_stamp = self.busy_stamp.max(Some(e.stamp));
+        }
+    }
+
+    /// Idle (design 7.6, reduction 2): every entry this replica holds, other than acks, is stamped
+    /// below `conf` (at or before its last confirmed frame). Judged from its own copy; acks are left
+    /// out, or each ack would keep every member busy. A new entry, its own or anyone's, is stamped at
+    /// or after `conf`, so it makes the member busy until `conf` passes it.
+    pub fn idle(&self) -> bool {
+        self.busy_stamp.is_none_or(|s| s < self.conf)
+    }
+
     /// Store a received or fetched entry, once its signature verifies (S3; a bad one is dropped and
     /// counted). Returns entries to broadcast: when it proves equivocation, both versions and this
     /// member's vote.
@@ -249,6 +264,7 @@ impl WorldSim {
         }
         if let Some(&other) = self.by_author.get(&(e.member, e.seq)) {
             // Two signed entries for the same (member, seq): a transferable proof (review C2).
+            self.note_held(&e);
             self.entries.insert(id, e.clone());
             self.disputed.insert(id);
             // Another version of a proposal still names a value someone may decide (P2-4).
@@ -287,6 +303,7 @@ impl WorldSim {
             self.disputed.insert(id);
         }
         let (member, seq) = (e.member, e.seq);
+        self.note_held(&e);
         self.entries.insert(id, e);
         self.set_eff(id);
         // Review PF-1: a proposal of a member proven to have forked may never link here; keep it by
