@@ -1,0 +1,18 @@
+member 1: 107 rows from 3000 ms
+  uplink kbit/s mean 146.6, max 313.0
+  level share % {0: 12, 1: 10, 2: 10, 3: 10, 4: 15, 5: 42}, max 5
+  signal ms mean 48.5, max 198.0; real cap queue ms mean 105.2, max 329.8
+  confirmation lag frames mean 21.3, max 92
+  conf 1800/1800, checks 112/0, rollbacks 0, cap drops 40, CoDel drops 176, hand entries 540, rx (received, lost) {'2': [932, 13], '3': [933, 8]}
+member 2: 112 rows from 3000 ms
+  uplink kbit/s mean 182.2, max 341.7
+  level share % {0: 100}, max 0
+  signal ms mean 3.6, max 9.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 23.8, max 98
+  conf 1800/1800, checks 111/0, rollbacks 527, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [624, 109], '3': [1049, 41]}
+member 3: 112 rows from 3000 ms
+  uplink kbit/s mean 182.1, max 311.1
+  level share % {0: 100}, max 0
+  signal ms mean 3.4, max 11.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 24.1, max 95
+  conf 1800/1800, checks 109/0, rollbacks 528, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [626, 111], '2': [1051, 46]}

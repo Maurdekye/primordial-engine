@@ -1,0 +1,18 @@
+pe-app: member 4 of session 758dea634f230159 on 127.0.0.1:7344; 4 members, 12000 frames
+[m4 t=0ms f=0] session start received: epoch 1152194 (leader clock), my offset -70869 us, best rtt 2043 us
+[m4 t=777ms f=46] status: frame 46 now 46 conf 43 members {1, 2, 3, 4} rollbacks 0 | sent 85 faulted 0 recv 82 rejected {} bad entry sigs 0
+[m4 t=2778ms f=166] status: frame 166 now 166 conf 163 members {1, 2, 3, 4} rollbacks 0 | sent 271 faulted 0 recv 263 rejected {} bad entry sigs 0
+[m4 t=4780ms f=286] status: frame 286 now 286 conf 282 members {1, 2, 3, 4} rollbacks 0 | sent 454 faulted 0 recv 445 rejected {} bad entry sigs 0
+[m4 t=6781ms f=406] status: frame 406 now 406 conf 402 members {1, 2, 3, 4} rollbacks 0 | sent 640 faulted 0 recv 627 rejected {} bad entry sigs 0
+[m4 t=8782ms f=526] status: frame 526 now 526 conf 524 members {1, 2, 3, 4} rollbacks 0 | sent 829 faulted 0 recv 812 rejected {} bad entry sigs 0
+[m4 t=10783ms f=646] status: frame 646 now 646 conf 643 members {1, 2, 3, 4} rollbacks 0 | sent 1015 faulted 0 recv 994 rejected {} bad entry sigs 0
+[m4 t=12785ms f=767] status: frame 767 now 767 conf 763 members {1, 2, 3, 4} rollbacks 0 | sent 1204 faulted 0 recv 1177 rejected {} bad entry sigs 0
+[m4 t=14786ms f=887] status: frame 887 now 887 conf 884 members {1, 2, 3, 4} rollbacks 0 | sent 1390 faulted 0 recv 1361 rejected {} bad entry sigs 0
+[m4 t=16787ms f=1007] status: frame 1007 now 1007 conf 1003 members {1, 2, 3, 4} rollbacks 0 | sent 1579 faulted 0 recv 1544 rejected {} bad entry sigs 0
+[m4 t=18788ms f=1127] status: frame 1127 now 1127 conf 1124 members {1, 2, 3, 4} rollbacks 0 | sent 1765 faulted 0 recv 1726 rejected {} bad entry sigs 0
+[m4 t=20788ms f=1247] status: frame 1247 now 1247 conf 1243 members {1, 2, 3, 4} rollbacks 0 | sent 1948 faulted 0 recv 1909 rejected {} bad entry sigs 0
+[m4 t=22789ms f=1367] status: frame 1367 now 1367 conf 1364 members {1, 2, 3, 4} rollbacks 0 | sent 2137 faulted 0 recv 2091 rejected {} bad entry sigs 0
+[m4 t=24789ms f=1487] status: frame 1487 now 1487 conf 1484 members {1, 2, 3, 4} rollbacks 0 | sent 2323 faulted 0 recv 2273 rejected {} bad entry sigs 0
+[m4 t=26790ms f=1607] status: frame 1607 now 1607 conf 1603 members {1, 2, 3, 4} rollbacks 0 | sent 2512 faulted 0 recv 2456 rejected {} bad entry sigs 0
+[m4 t=28791ms f=1727] status: frame 1727 now 1727 conf 1724 members {1, 2, 3, 4} rollbacks 0 | sent 2698 faulted 0 recv 2640 rejected {} bad entry sigs 0
+[m4] scripted drop-out at 30000 ms: exiting without a word

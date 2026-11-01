@@ -1,0 +1,80 @@
+{
+  "session": "649c133bda8b0a82",
+  "member": 1,
+  "frames": 1200,
+  "conf": 1200,
+  "digest": "537169852ddb5a8b",
+  "replay_digest": "537169852ddb5a8b",
+  "replay_equal": true,
+  "members_at_end": [
+    1,
+    2,
+    3
+  ],
+  "evicted": [
+    4
+  ],
+  "epoch": 1,
+  "rollbacks": 83,
+  "max_rollback_depth": 15,
+  "checks_ok": 84,
+  "checks_bad": 0,
+  "entries_authored": 54,
+  "clock_offset_us": 0,
+  "best_rtt_us": 18446744073709551615,
+  "traffic": {
+    "datagrams_sent": 1945,
+    "datagrams_dropped_by_fault": 0,
+    "datagrams_dropped_by_cap": 0,
+    "datagrams_dropped_by_codel": 0,
+    "datagrams_dropped_rx_full": 0,
+    "datagrams_received": 1397,
+    "bytes_sent": 693214,
+    "rejected": {}
+  },
+  "link": {
+    "signal_fed": true,
+    "level_ticks": [
+      11318,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "max_level": 0,
+    "max_signal_ms": 0.0,
+    "max_true_queue_ms": 0.0,
+    "hand_entries": 0,
+    "rx": {
+      "2": [
+        471,
+        52
+      ],
+      "3": [
+        648,
+        43
+      ],
+      "4": [
+        278,
+        0
+      ]
+    }
+  },
+  "events": [
+    "[m1 t=0ms f=0] every member ready: session epoch 1253658",
+    "[m1 t=746ms f=44] status: frame 44 now 44 conf 42 members {1, 2, 3, 4} rollbacks 0 | sent 107 faulted 0 capped 0 recv 111 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=2748ms f=164] status: frame 164 now 164 conf 156 members {1, 2, 3, 4} rollbacks 8 | sent 342 faulted 0 capped 0 recv 321 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=4749ms f=284] status: frame 284 now 284 conf 272 members {1, 2, 3, 4} rollbacks 20 | sent 587 faulted 0 capped 0 recv 504 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=6749ms f=404] status: frame 404 now 404 conf 352 members {1, 2, 3, 4} rollbacks 32 | sent 817 faulted 0 capped 0 recv 648 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=7884ms f=472] paused at frame 472 (speculation limit)",
+    "[m1 t=8750ms f=472] status: frame 472 now 525 conf 352 members {1, 2, 3, 4} rollbacks 39 | sent 1024 faulted 0 capped 0 recv 736 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=9269ms f=472] membership decision: epoch 1, removed [4]",
+    "[m1 t=9289ms f=557] resumed at frame 557",
+    "[m1 t=10751ms f=645] status: frame 645 now 645 conf 630 members {1, 2, 3} rollbacks 48 | sent 1214 faulted 0 capped 0 recv 837 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=12752ms f=765] status: frame 765 now 765 conf 750 members {1, 2, 3} rollbacks 61 | sent 1373 faulted 0 capped 0 recv 933 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=14753ms f=885] status: frame 885 now 885 conf 876 members {1, 2, 3} rollbacks 71 | sent 1535 faulted 0 capped 0 recv 1029 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=16754ms f=1005] status: frame 1005 now 1005 conf 1000 members {1, 2, 3} rollbacks 77 | sent 1696 faulted 0 capped 0 recv 1170 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms",
+    "[m1 t=18755ms f=1125] status: frame 1125 now 1125 conf 1120 members {1, 2, 3} rollbacks 83 | sent 1852 faulted 0 capped 0 recv 1308 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms"
+  ]
+}

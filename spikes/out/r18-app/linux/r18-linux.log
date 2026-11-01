@@ -1,0 +1,122 @@
+   Compiling pe-core v0.1.0 (<home>/pe-app-glibc/crates/pe-core)
+   Compiling box3d-rust v0.5.0 (/home/
+running 3 tests
+test wire::tests::rejects ... ok
+test wire::tests::roundtrip_and_relay ... ok
+test wire::tests::packing_respects_the_mtu ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== base
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+[m1 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m1 t=2000ms f=119] fault: links to all now 0% loss, 25 ms +-10 ms
+[m1 t=16715ms f=906] DONE frames 0..900: digest f843890d4f5f51c2 replay f843890d4f5f51c2 (EQUAL), conf 900, members [1, 2, 3]
+[m1 t=16716ms f=906] slow step: 1614 ms (receive 0 ms, tick 0 ms, send 1614 ms)
+[m2 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m2 t=16805ms f=906] DONE frames 0..900: digest f843890d4f5f51c2 replay f843890d4f5f51c2 (EQUAL), conf 900, members [1, 2, 3]
+[m2 t=16806ms f=906] slow step: 1702 ms (receive 0 ms, tick 0 ms, send 1702 ms)
+[m3 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m3 t=16785ms f=906] DONE frames 0..900: digest f843890d4f5f51c2 replay f843890d4f5f51c2 (EQUAL), conf 900, members [1, 2, 3]
+[m3 t=16786ms f=906] slow step: 1683 ms (receive 0 ms, tick 1 ms, send 1681 ms)
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 900 | f843890d4f5f51c2 | equal | 900 | [1, 2, 3] | 0 | 60/0 | 1720/0 |
+| 2 | 900 | f843890d4f5f51c2 | equal | 900 | [1, 2, 3] | 785 | 60/0 | 922/0 |
+| 3 | 900 | f843890d4f5f51c2 | equal | 900 | [1, 2, 3] | 785 | 60/0 | 922/0 |
+ALL EQUAL
+member 1: 49 rows from 3000 ms
+  uplink kbit/s mean 336.8, max 357.0
+  level share % {0: 100}, max 0
+  signal ms mean 2.1, max 5.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 6.2, max 8
+  conf 900/900, checks 60/0, rollbacks 0, cap drops 0, CoDel drops 0, hand entries 787, rx (received, lost) {'2': [468, 0], '3': [469, 0]}
+member 2: 49 rows from 3000 ms
+  uplink kbit/s mean 163.3, max 174.1
+  level share % {0: 100}, max 0
+  signal ms mean 2.9, max 6.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 6.2, max 8
+  conf 900/900, checks 60/0, rollbacks 785, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [860, 0], '3': [453, 0]}
+member 3: 49 rows from 3000 ms
+  uplink kbit/s mean 163.3, max 173.9
+  level share % {0: 100}, max 0
+  signal ms mean 2.6, max 7.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 5.9, max 8
+  conf 900/900, checks 60/0, rollbacks 785, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [860, 0], '2': [453, 0]}
+== cap80-on
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+[m1 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m1 t=2000ms f=119] fault: links to all now 0% loss, 25 ms +-10 ms, cap 80 kbit/s, 500 ms queue
+[m1 t=32960ms f=1806] DONE frames 0..1800: digest 7d2d74ec3b808acb replay 7d2d74ec3b808acb (EQUAL), conf 1800, members [1, 2, 3]
+[m1 t=32960ms f=1806] slow step: 2855 ms (receive 0 ms, tick 0 ms, send 2854 ms)
+[m1 t=33009ms f=1920] paused at frame 1920 (speculation limit)
+[m2 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m2 t=31951ms f=1916] paused at frame 1916 (speculation limit)
+[m2 t=36682ms f=1916] DONE frames 0..1800: digest 7d2d74ec3b808acb replay 7d2d74ec3b808acb (EQUAL), conf 1800, members [1, 2, 3]
+[m2 t=36682ms f=1916] slow step: 3644 ms (receive 0 ms, tick 0 ms, send 3644 ms)
+[m3 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m3 t=31950ms f=1916] paused at frame 1916 (speculation limit)
+[m3 t=36685ms f=1916] DONE frames 0..1800: digest 7d2d74ec3b808acb replay 7d2d74ec3b808acb (EQUAL), conf 1800, members [1, 2, 3]
+[m3 t=36686ms f=1916] slow step: 3648 ms (receive 0 ms, tick 0 ms, send 3648 ms)
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | 7d2d74ec3b808acb | equal | 1800 | [1, 2, 3] | 0 | 120/0 | 1415/0 |
+| 2 | 1800 | 7d2d74ec3b808acb | equal | 1800 | [1, 2, 3] | 632 | 120/0 | 1998/0 |
+| 3 | 1800 | 7d2d74ec3b808acb | equal | 1800 | [1, 2, 3] | 632 | 120/0 | 1995/0 |
+ALL EQUAL
+member 1: 109 rows from 3000 ms
+  uplink kbit/s mean 148.2, max 329.5
+  level share % {0: 17, 1: 14, 2: 12, 3: 13, 4: 12, 5: 33}, max 5
+  signal ms mean 74.8, max 372.0; real cap queue ms mean 106.4, max 388.0
+  confirmation lag frames mean 11.8, max 29
+  conf 1800/1800, checks 120/0, rollbacks 0, cap drops 0, CoDel drops 0, hand entries 632, rx (received, lost) {'2': [919, 1], '3': [917, 0]}
+member 2: 120 rows from 3000 ms
+  uplink kbit/s mean 163.2, max 180.1
+  level share % {0: 100}, max 0
+  signal ms mean 2.8, max 7.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 21.0, max 178
+  conf 1800/1800, checks 120/0, rollbacks 632, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [709, 0], '3': [990, 1]}
+member 3: 120 rows from 3000 ms
+  uplink kbit/s mean 163.0, max 174.1
+  level share % {0: 100}, max 0
+  signal ms mean 2.6, max 6.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 20.9, max 178
+  conf 1800/1800, checks 120/0, rollbacks 632, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [708, 0], '2': [991, 0]}
+== cap80-off
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+[m1 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m1 t=2000ms f=119] fault: links to all now 0% loss, 25 ms +-10 ms, cap 80 kbit/s, 500 ms queue
+[m1 t=4750ms f=284] paused at frame 284 (speculation limit)
+[m1 t=6965ms f=284] membership decision: epoch 1, removed [1]
+[m1 t=8950ms f=536] paused at frame 536 (speculation limit)
+[m2 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m2 t=4700ms f=280] paused at frame 280 (speculation limit)
+[m2 t=6963ms f=280] membership decision: epoch 1, removed [1]
+[m2 t=31984ms f=1918] paused at frame 1918 (speculation limit)
+[m2 t=32096ms f=1918] slow step: 112 ms (receive 0 ms, tick 0 ms, send 112 ms)
+[m2 t=34681ms f=1918] DONE frames 0..1800: digest 00cf089f4bffcb68 replay 00cf089f4bffcb68 (EQUAL), conf 1954, members [2, 3]
+[m2 t=34682ms f=1918] slow step: 2040 ms (receive 0 ms, tick 0 ms, send 2040 ms)
+[m3 t=-ms f=0] fault: links to all now 0% loss, 25 ms +-10 ms
+[m3 t=4685ms f=280] paused at frame 280 (speculation limit)
+[m3 t=7021ms f=280] membership decision: epoch 1, removed [1]
+[m3 t=32474ms f=1803] DONE frames 0..1800: digest 00cf089f4bffcb68 replay 00cf089f4bffcb68 (EQUAL), conf 1800, members [2, 3]
+[m3 t=32474ms f=1803] slow step: 2410 ms (receive 0 ms, tick 0 ms, send 2410 ms)
+[m3 t=32612ms f=1922] paused at frame 1922 (speculation limit)
+[m3 t=32612ms f=1922] slow step: 136 ms (receive 12 ms, tick 123 ms, send 0 ms)
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 1800 | 00cf089f4bffcb68 | equal | 1954 | [2, 3] | 107 | 59/0 | 1274/0 |
+| 3 | 1800 | 00cf089f4bffcb68 | equal | 1800 | [2, 3] | 107 | 58/0 | 1195/0 |
+ALL EQUAL
+member 2: 118 rows from 3000 ms
+  uplink kbit/s mean 101.2, max 223.8
+  level share % {0: 100}, max 0
+  signal ms mean 3.7, max 13.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 29.2, max 250
+  conf 1954/1800, checks 59/0, rollbacks 107, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [1086, 857], '3': [953, 19]}
+member 3: 108 rows from 3000 ms
+  uplink kbit/s mean 103.3, max 222.0
+  level share % {0: 100}, max 0
+  signal ms mean 2.7, max 17.0; real cap queue ms mean 0.0, max 0.0
+  confirmation lag frames mean 24.3, max 251
+  conf 1800/1800, checks 58/0, rollbacks 107, cap drops 0, CoDel drops 0, hand entries 0, rx (received, lost) {'1': [1001, 780], '2': [952, 12]}
