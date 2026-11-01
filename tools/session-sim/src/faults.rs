@@ -61,30 +61,7 @@ pub fn validate(r: &FaultRule) -> Result<(), String> {
     Ok(())
 }
 
-/// A batch of entries only (option 2: a run of two or more entries, as the send filter sees it) meets
-/// a rule on entries (a payload class, `entry`, author, stamp, seq, round or nil) through its entries:
-/// a `deliver` rule if every entry meets it, a drop or delay rule if any does. Otherwise a relayed run
-/// would slip past every rule written for the entries it carries (as the spike's p2-4-aheadlink filter).
 fn matches(r: &FaultRule, t_us: u64, w: u32, from: u32, to: u32, m: &Msg) -> bool {
-    let on_entries = r.msg.as_deref().is_some_and(|c| !matches!(c, "fetch" | "batch" | "join"))
-        || r.author.is_some()
-        || r.stamp.is_some()
-        || r.seq.is_some()
-        || r.round.is_some()
-        || r.nil.is_some();
-    match m {
-        Msg::Batch(v) if on_entries && !v.is_empty() && v.iter().all(|x| matches!(x, Msg::Entry(_))) => {
-            if r.deliver {
-                v.iter().all(|x| matches_one(r, t_us, w, from, to, x))
-            } else {
-                v.iter().any(|x| matches_one(r, t_us, w, from, to, x))
-            }
-        }
-        _ => matches_one(r, t_us, w, from, to, m),
-    }
-}
-
-fn matches_one(r: &FaultRule, t_us: u64, w: u32, from: u32, to: u32, m: &Msg) -> bool {
     let entry = match m {
         Msg::Entry(e) => Some(e),
         _ => None,
@@ -257,10 +234,6 @@ mod tests {
         assert_eq!(fate(&mut f, 0, 4, 3, &ack(1)), "delay 5", "relayed: authored by 1");
         assert_eq!(fate(&mut f, 0, 4, 3, &touch(4, 1, 0)), "delay 5", "not an ack");
         assert_eq!(fate(&mut f, 0, 4, 2, &touch(4, 1, 0)), "deliver");
-        // A run (a batch of entries to the filter) passes only if all of it is 4's own acks.
-        assert_eq!(fate(&mut f, 0, 4, 3, &Msg::Batch(vec![ack(4), ack(4)])), "deliver");
-        assert_eq!(fate(&mut f, 0, 4, 3, &Msg::Batch(vec![ack(4), touch(4, 1, 0)])), "delay 5", "a run with a touch");
-        assert_eq!(fate(&mut f, 0, 4, 3, &Msg::Batch(vec![ack(1), ack(1)])), "delay 5", "a relayed run");
     }
 
     fn vote(member: u32, payload: Payload) -> Msg {
