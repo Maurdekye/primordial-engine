@@ -17,3 +17,5 @@ clock. Both assume clock rates within about 100 ppm, so on a Windows + WSL sessi
 | `m1win7`: the same 2 minutes with all four members on Windows | 0 view changes, 0 pauses, ALL EQUAL |
 
 Earlier mixed runs (30 s, `mixed-windows-wsl-*`) passed because the drift had not built up yet.
+
+Fixed by continuous, fault-tolerant clock sync (design 10.4): `../clock-sync/`.
