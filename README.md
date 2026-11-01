@@ -20,7 +20,7 @@ show it are in [spikes/out/m1](spikes/out/m1), and [The M1 demo](#the-m1-demo) b
 - equivocation detected and the equivocator removed
   ([late](spikes/out/m1/equivocation-loopback-windows),
   [split](spikes/out/m1/equivocation-split-held-loopback-windows));
-- an AI agent driving a peer on current `main` ([agent-windows-main](spikes/out/m1/agent-windows-main)).
+- an AI agent driving a peer on `main` (aa2680b) ([agent-windows-main](spikes/out/m1/agent-windows-main)).
 
 What is on `main` now:
 
