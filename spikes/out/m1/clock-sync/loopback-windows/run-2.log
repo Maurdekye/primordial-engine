@@ -1,0 +1,22 @@
+pe-app: member 2 of session 7bb08e58f4cab0b8 on 127.0.0.1:7392; 4 members, 1200 frames
+[m2 t=0ms f=0] session start received: epoch 1221616 (leader clock), my offset -721 us, best rtt 194 us
+[m2 t=779ms f=46] status: frame 46 now 46 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 94 faulted 0 capped 0 recv 93 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 136 us, rate 0 ppm, rtt excess ms [(1, Some(0)), (3, Some(0)), (4, Some(0))]
+[m2 t=2001ms f=119] fault: links to all now 15% loss, 40 ms +-15 ms
+[m2 t=2781ms f=166] status: frame 166 now 166 conf 160 members {1, 2, 3, 4} rollbacks 6 | sent 277 faulted 8 capped 0 recv 315 rejected {} bad entry sigs 0 | R18 level 5 signal Some(46) ms | clock offset 463 us, rate 0 ppm, rtt excess ms [(1, Some(48)), (3, Some(76)), (4, Some(46))]
+[m2 t=4787ms f=287] status: frame 287 now 287 conf 280 members {1, 2, 3, 4} rollbacks 12 | sent 347 faulted 25 capped 0 recv 533 rejected {} bad entry sigs 0 | R18 level 5 signal Some(43) ms | clock offset 6787 us, rate 0 ppm, rtt excess ms [(1, Some(54)), (3, Some(269)), (4, Some(43))]
+[m2 t=6795ms f=407] status: frame 407 now 407 conf 352 members {1, 2, 3, 4} rollbacks 23 | sent 421 faulted 35 capped 0 recv 722 rejected {} bad entry sigs 0 | R18 level 5 signal Some(42) ms | clock offset 12190 us, rate 0 ppm, rtt excess ms [(1, Some(42)), (3, Some(76)), (4, Some(769))]
+[m2 t=7883ms f=472] paused at frame 472 (speculation limit)
+[m2 t=8802ms f=472] status: frame 472 now 528 conf 352 members {1, 2, 3, 4} rollbacks 27 | sent 488 faulted 52 capped 0 recv 867 rejected {} bad entry sigs 0 | R18 level 5 signal Some(46) ms | clock offset 19282 us, rate 0 ppm, rtt excess ms [(1, Some(46)), (3, Some(75)), (4, Some(2769))]
+[m2 t=9000ms f=472] fault: links to member 1 now 30% loss, 120 ms +-40 ms
+[m2 t=9238ms f=472] membership decision: epoch 1, removed [4]
+[m2 t=9257ms f=555] resumed at frame 555
+[m2 t=10813ms f=648] status: frame 648 now 648 conf 632 members {1, 2, 3} rollbacks 38 | sent 555 faulted 70 capped 0 recv 1020 rejected {} bad entry sigs 0 | R18 level 5 signal Some(148) ms | clock offset 28354 us, rate 545 ppm, rtt excess ms [(1, Some(151)), (3, Some(260))]
+[m2 t=12826ms f=769] status: frame 769 now 769 conf 744 members {1, 2, 3} rollbacks 50 | sent 612 faulted 88 capped 0 recv 1168 rejected {} bad entry sigs 0 | R18 level 5 signal Some(115) ms | clock offset 40298 us, rate 3055 ppm, rtt excess ms [(1, Some(154)), (3, Some(84))]
+[m2 t=14000ms f=839] fault: links to all now 0% loss, 0 ms +-0 ms
+[m2 t=14815ms f=888] status: frame 888 now 888 conf 882 members {1, 2, 3} rollbacks 62 | sent 687 faulted 92 capped 0 recv 1320 rejected {} bad entry sigs 0 | R18 level 3 signal Some(0) ms | clock offset 26901 us, rate 1617 ppm, rtt excess ms [(1, Some(0)), (3, Some(34))]
+[m2 t=16796ms f=1007] status: frame 1007 now 1007 conf 998 members {1, 2, 3} rollbacks 69 | sent 814 faulted 92 capped 0 recv 1418 rejected {} bad entry sigs 0 | R18 level 1 signal Some(0) ms | clock offset 8013 us, rate -426 ppm, rtt excess ms [(1, Some(0)), (3, Some(34))]
+[m2 t=18788ms f=1127] status: frame 1127 now 1127 conf 1118 members {1, 2, 3} rollbacks 71 | sent 951 faulted 92 capped 0 recv 1515 rejected {} bad entry sigs 0 | R18 level 1 signal Some(1) ms | clock offset -115 us, rate -504 ppm, rtt excess ms [(1, Some(0)), (3, Some(28))]
+[m2 t=20793ms f=1247] status: frame 1247 now 1247 conf 1238 members {1, 2, 3} rollbacks 71 | sent 1088 faulted 92 capped 0 recv 1607 rejected {} bad entry sigs 0 | R18 level 0 signal Some(3) ms | clock offset 4772 us, rate -515 ppm, rtt excess ms [(1, Some(2)), (3, Some(32))]
+[m2 t=22794ms f=1367] status: frame 1367 now 1367 conf 1358 members {1, 2, 3} rollbacks 71 | sent 1225 faulted 92 capped 0 recv 1697 rejected {} bad entry sigs 0 | R18 level 0 signal Some(5) ms | clock offset 5542 us, rate -519 ppm, rtt excess ms [(1, Some(1)), (3, Some(32))]
+[m2 t=23216ms f=1389] DONE frames 0..1200: digest 09492b19d90e0171 replay 09492b19d90e0171 (EQUAL), conf 1374, members [1, 2, 3]
+member 2: frames 0..1200 digest 09492b19d90e0171 replay 09492b19d90e0171 (EQUAL), conf 1374, members at end [1, 2, 3], rollbacks 71, checks ok 96 bad 0

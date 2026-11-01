@@ -1,0 +1,47 @@
+{
+  "session": 12734690054723604841,
+  "nonce": "4426b9ae4b9fd6f8f762a092fa3f70336e74e19ea136f167f6870af0d144a9f5",
+  "name": "m1",
+  "scene": "pile",
+  "size": 4,
+  "frames": 5400,
+  "window": 120,
+  "seed": 5787769067516609609,
+  "members": [
+    {
+      "id": 1,
+      "addr": "127.0.0.1:7541",
+      "key": "f0cec485cc2488843998ad24aaf11dae6ef1a2a038e6335a5f9708c8fa61bd6e"
+    },
+    {
+      "id": 2,
+      "addr": "127.0.0.1:7542",
+      "key": "a7c0e7c9c9e55176686a413fac9f62ad4a9aca41cea9e4e148a56e7481537d78"
+    },
+    {
+      "id": 3,
+      "addr": "127.0.0.1:7543",
+      "key": "e55c3f3ba2d8a20d22c2706d3b5306db168fbdd8ed038a8cd906e5a96704d28f"
+    },
+    {
+      "id": 4,
+      "addr": "127.0.0.1:7544",
+      "key": "bd1adc033630f6ccde51bf09e284bc070a22c5b3485b26f2d4b3509640583ce2"
+    },
+    {
+      "id": 5,
+      "addr": "127.0.0.1:7545",
+      "key": "ce437fddc7a84621a5250cab5c9bf60108c7f205e2e56b2ba8a95a51de5b2164"
+    },
+    {
+      "id": 6,
+      "addr": "127.0.0.1:7546",
+      "key": "c80196b86e992bc629628b9609018b66b111f775f13012c3db2919fcdbd458d4"
+    },
+    {
+      "id": 7,
+      "addr": "127.0.0.1:7547",
+      "key": "ef2e293c3a05df8ca246e8051cfadba3da7fa7561f02a9f54857560fac988db9"
+    }
+  ]
+}
