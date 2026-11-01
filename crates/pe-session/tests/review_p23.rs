@@ -147,7 +147,7 @@ fn p23_4_requests_from_outside_the_audience_are_not_answered() {
     run(&mut cores, 0, 3000);
     cores[0].outbox();
     let held = cores[0].sim.all_entries().into_iter().find(|e| e.member == 2).unwrap();
-    for m in [Msg::FetchState, Msg::Fetch { author: 2, from: 1, to: 5 }, Msg::FetchEntry { id: held.id(), back: 3 }, Msg::FetchValue { value: 1 }] {
+    for m in [Msg::FetchState, Msg::Fetch { author: 2, from: 1, to: 5, held: 0 }, Msg::FetchEntry { id: held.id(), back: 3 }, Msg::FetchValue { value: 1 }] {
         cores[0].receive(9, m, 3_000_000);
     }
     assert!(cores[0].outbox().is_empty());
@@ -171,7 +171,7 @@ fn p23_4_one_state_per_requester_per_interval_and_answers_are_repairs() {
     // Fetches by id and range are answered as repairs too.
     let held = cores[0].sim.all_entries().into_iter().find(|e| e.member == 2 && e.seq > 3).unwrap();
     cores[0].receive(2, Msg::FetchEntry { id: held.id(), back: 3 }, 4_100_000);
-    cores[0].receive(2, Msg::Fetch { author: 3, from: 1, to: 4 }, 4_100_000);
+    cores[0].receive(2, Msg::Fetch { author: 3, from: 1, to: 4, held: 0 }, 4_100_000);
     let out = cores[0].outbox();
     assert!(!out.is_empty() && out.iter().all(|o| o.class == Class::Repair));
 }
