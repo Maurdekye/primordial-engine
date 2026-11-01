@@ -12,6 +12,11 @@ use std::collections::BTreeMap;
 
 use super::{echo_digest, entry_id, BodyState, Entry, EntryId, FedAck, MemberId, Msg, WorldSim};
 
+/// Item 7's bandwidth floor as rule 4 (D) reads it, total over a member's peers: about 0.625 kbit/s per member (2.5 at
+/// n = 4, 5 at n = 8). A voter's share is this over n − 1. (Revision 22 restates the floor itself, pending the user's
+/// confirmation; (D) only has to catch a dead uplink, so its threshold stays at the stated figure.)
+pub const FLOOR_BPS_PER_MEMBER: u64 = 625;
+
 /// One body in a feed packet, quantized: position in 0.1 mm, orientation as a unit quaternion scaled to
 /// i16, linear velocity in cm/s. 30 bytes on the wire with its object id. Angular velocity isn't sent: the
 /// next packet corrects the view.
@@ -189,7 +194,7 @@ impl WorldSim {
     /// Rule 4's exception (TLP-25, TLP-29): if `j` is fed (its newest ack carries an anchor) and its echo of my chain
     /// has trailed my oldest checkpoint it hasn't echoed for at least X = max(W − C_max, suspect_after) frames: that
     /// lag, and X. Judged from j's own acks as I received them; a short dropout stays under X.
-    pub(super) fn floor_breach(&self, j: MemberId) -> Option<(u64, u64)> {
+    pub(super) fn floor_breach(&self, j: MemberId) -> Option<String> {
         let &echoed = self.fed_peers.get(&j)?;
         let after = echoed.or_else(|| self.covered_ckpt(j, self.me).map(|(b, _)| b));
         let lo = after.map_or(0, |b| b + 1);
@@ -198,11 +203,46 @@ impl WorldSim {
         // ack I hold: the evidence is j's own acks, X frames after I sent it, still without the echo. A replica behind
         // on j's chain (back from the feed, catching up) sees only older acks, and doesn't judge.
         let sent = *self.ckpt_first_sent.get(&(j, b))?;
-        let acked = self.ack_stamps.get(&j).and_then(|a| a.values().next_back().copied())?;
         let c_max = self.windows.values().next_back().map_or(self.cfg.window / 2, |v| v.c_max);
         let x = self.cfg.window.saturating_sub(c_max).max(self.cfg.suspect_after);
-        let lag = acked.saturating_sub(sent);
-        (lag >= x).then_some((lag, x))
+        if let Some(acked) = self.ack_stamps.get(&j).and_then(|a| a.values().next_back().copied()) {
+            let lag = acked.saturating_sub(sent);
+            if lag >= x {
+                return Some(format!("its echo of my chain has trailed my checkpoints for {lag} frames (X = {x})"));
+            }
+        }
+        self.uplink_breach(j, x)
+    }
+
+    /// Rule 4's floor test, the uplink half (D) (revision 22): the bytes of fed member j's own datagrams that reached
+    /// me directly over the last X frames, against my share of the floor, floor / (n − 1) (D-1). Only a fed j is
+    /// judged (D-2; `floor_breach` is reached only for one); a fed voter doesn't judge (its downlink carries only echo
+    /// inputs by design), and neither does a voter that hasn't watched j fed for a whole window yet.
+    fn uplink_breach(&self, j: MemberId, x: u64) -> Option<String> {
+        if self.fed.is_some() {
+            return None;
+        }
+        let since = *self.fed_seen.get(&j)?;
+        if self.now < since + x {
+            return None;
+        }
+        let got: u64 = self.rx_bytes.get(&j).map_or(0, |b| b.range(self.now.saturating_sub(x)..).map(|(_, v)| *v).sum());
+        let n = self.members.len().max(2) as u64;
+        let share_bps = FLOOR_BPS_PER_MEMBER * n / (n - 1);
+        let need = (share_bps as f64 * x as f64 * self.cfg.dt as f64 / 8.0) as u64;
+        (got < need).then(|| format!("only {got} B of its own datagrams reached me in {x} frames, under my share of the floor ({need} B)"))
+    }
+
+    /// Rule 4 (D): bytes of one datagram that reached me directly from `from` (its own, not relayed), counted by my
+    /// present's frame. The transport reports them (the spike's Net, on delivery).
+    pub fn note_rx(&mut self, from: MemberId, bytes: u64) {
+        let now = self.now;
+        let keep = now.saturating_sub(4 * self.cfg.window);
+        let b = self.rx_bytes.entry(from).or_default();
+        *b.entry(now).or_insert(0) += bytes;
+        while b.keys().next().is_some_and(|&f| f < keep) {
+            b.pop_first();
+        }
     }
 
     /// TLP-24: the newest checkpoint of `x`'s chain that `y`'s newest ack I hold references (its block and id).

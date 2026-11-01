@@ -873,6 +873,14 @@ impl Sim {
         // 1. deliveries (a batch is its messages, in order)
         let mut due = Vec::new();
         for (to, w, from, m) in self.net.due() {
+            // Rule 4 (D): each datagram's size, as it arrives directly from its sender.
+            let bytes = encode_msg(&m).len() as u64 + DATAGRAM_OVERHEAD;
+            let pi = self.peer_index(to);
+            if !self.peers[pi].crashed {
+                if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
+                    r.sim.note_rx(from, bytes);
+                }
+            }
             let mut v = Vec::new();
             flatten(m, &mut v);
             due.extend(v.into_iter().map(|x| (to, w, from, x)));
