@@ -2373,8 +2373,8 @@ and there is no fork-proof indicator (same ruling).
       repair restarts it); and for each ack of X, R is its local arrival time. X's ack is **late** if
       R − S exceeds this replica's measured round trip to X plus a margin, and its reference to this
       replica's chain is still below e (in the version this replica sent).
-    * **The round trip is the largest the transport's pings measured over the last 10 s**, not the
-      median: a path that just got slower (a cut, a filling queue) exempts acks at once, rather than after
+    * **The round trip is the largest the transport's pings measured over the last 2 s** (review IB-1:
+      2 s, not 10), not the median: a path that just got slower (a cut, a filling queue) exempts acks at once, rather than after
       the median catches up. Like the stamp rule, it can only exempt. [V ind-aheadlink: with the median,
       the honest member behind the 5 s cut was flagged; found in the build.]
     * **A fetch restarts the clock** (found in the build): when X asks for this replica's chain from seq
@@ -2385,6 +2385,10 @@ and there is no fork-proof indicator (same ruling).
       lags past the threshold at all]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
       still shows as not referencing.
     * **Only current members' acks** are judged; a removed member's are ignored.
+    * **What it can't do** (review IB-1): it catches a withholder that doesn't game it. A withholder that
+      slows one pong in every 2 s (raising the round trip it is judged by) or keeps re-fetching this
+      replica's chain (restarting the clock) is never flagged, at no visible cost. So no flag proves
+      nothing; and "holding the session" still names such a member as not referencing.
     * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
       least e's stamp plus half the round trip. Otherwise the time it waited in X's own send queue (R18,
       upstream of the transport, so the pings skip it) would make an honest member with a thin uplink look
