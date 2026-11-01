@@ -1468,6 +1468,17 @@ if our bulk transport proves weak.
      session time, a slew at join, or a liar moving the target, would look like queue growth and could
      trip the 40 ms trigger with no queue. The frequency comes from the same trimmed selection: the
      fault-tolerant midpoint of the members' fitted rates, its own included.
+  5. **The frequency is selected again at every sync round, never once** (@shader-reviewer's review of
+     pe-app a83af41, through @coordinator-opus):
+     * Rates drift: WSL2's clock ran 2.3% slow when idle and up to about 9% under load.
+     * A choice made once lets two-faced liars leave honest members on different frequencies. Skewed
+       clocks with a one-time choice disagreed by up to 58, 128 and 232 ms in the first ~15 s
+       [V @shader-reviewer]. Repeated, the trimmed midpoint draws the honest frequencies together, as it
+       does the offsets (the fault bound below covers both).
+     * The applied frequency moves gradually toward each round's selection, never in a step. So neither
+       the session clock nor R18's rate-corrected clock jumps, and what drift remains during convergence
+       is slow next to the estimator's 40 ms trigger and its base filter [I]. The build's evidence shows
+       the honest members' frequencies converging under the 7-member two-colluder case.
   * **Why not the leader** [I]: a faulty leader could give each member a different time. A member pushed
     behind looks exactly like a slow link: its acks arrive late, confirmation stalls, and the slow-member
     rule demotes it (10.9, item 7). So one faulty member could get honest ones removed. The leader also
