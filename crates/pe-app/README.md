@@ -20,10 +20,11 @@ in phase 3.
 pe-app init --members 4 --host 127.0.0.1 [--base-port 7101] [--frames 1800] [--scene pile|ballpit] [--size 4] --out DIR
 pe-app init --addrs 192.168.0.10:7101,192.168.0.11:7101,... --out DIR        # members on several machines
 pe-app run --session DIR/session.json --key DIR/member-1.key --me 1 [--out OUT] [-v]
-           [--faults FILE] [--crash-at-ms T] [--touches-per-s R] [--bind ADDR]
+           [--faults FILE] [--crash-at-ms T] [--equivocate-at-ms T --equivocate-to M] [--touches-per-s R] [--bind ADDR]
            [--mcp-pipe|--mcp-http [--scopes read,interact,control] [--principal NAME] -- HARNESS ARGS...]
            [--clock-skew-ppm N] [--clock-lie M:MS,...] [--clock-median]       # clock-sync test runs
 pe-app compare OUT
+pe-app relay --listen ADDR --to ADDR [--for-s N]                             # test tooling, see below
 ```
 
 * **The session starts** once every member is up. The lowest id leads: each member estimates its clock
@@ -59,6 +60,15 @@ pe-app compare OUT
 * **Faults** apply to this member's outgoing datagrams, at session times:
   `[{"at_ms": 2000, "loss_pct": 15, "delay_ms": 40, "jitter_ms": 15}, {"at_ms": 9000, "to": 1, ...}]`.
   `--crash-at-ms` exits the process at once, without a word: a member dropping out.
+  `--equivocate-at-ms T --equivocate-to M` makes this member equivocate at session time T: it signs a
+  second version of its latest touch (same seq, another impulse) and sends it to member M only. The
+  honest members log pe-session's proof (`EQUIVOCATION proof`), count it (summary
+  `equivocation_proofs`) and vote the member out. Removed, the equivocator stops confirming; it runs
+  until it is killed, so give it its own `--out`.
+* **Relay** (test tooling): `relay` forwards every datagram that arrives at `--listen` to `--to`. A
+  member in WSL2's default NAT mode can't be reached from another machine; with `--bind 0.0.0.0:PORT`
+  in WSL and a relay on its host at the session address, it can (pe-app checks signatures, not source
+  addresses). Its outgoing datagrams leave through WSL2's NAT directly.
 * **Binding:** by default the member binds its session address, so a loopback session never listens on
   the network. Use `--bind 0.0.0.0:PORT` behind NAT.
 * **With pe-mcp:** `--mcp-pipe` / `--mcp-http` start the pe-mcp transports for this peer, issue a token
@@ -113,6 +123,9 @@ measures that queue and feeds it (`set_link`) every tick.
 
 * `m1-loopback.sh EXE OUT [PORT]`: the M1 scenario on one machine. Four members, loss and delay on
   members 2 and 3 (worse on 2→1 from 9 s to 14 s), and member 4 dropping out at 6 s. Then `compare`.
+* `m1-equivocate.sh EXE OUT [PORT]`: M1's equivocation on one machine. Four members; at 8 s member 3
+  sends member 1 a second version of a touch; every member holds the proof, member 3 is removed, and
+  members 1, 2 and 4 compare equal.
 * `linux.sh`: from Windows, copies HEAD into WSL and, there, does a native glibc build and runs the tests
   and `m1-loopback.sh`.
 * `r18-capped.sh EXE OUT CAP_KBPS [on|off] [PORT] [FRAMES]`: three members in a 500-ball pit, member 1
