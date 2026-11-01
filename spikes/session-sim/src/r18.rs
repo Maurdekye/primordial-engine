@@ -27,6 +27,8 @@ pub struct Opts {
     pub gestures: u32,
     /// Also print each member's offered bytes in the gesture window by message kind.
     pub by_kind: bool,
+    /// Thin links Part B on (sessions of 4 or more): localized verdicts and the state feed.
+    pub localize: bool,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
 }
@@ -91,7 +93,7 @@ pub fn capped(o: &Opts) {
         })
         .collect();
     for (label, batching, adapt) in transports {
-        let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, ..SimConfig::default() };
+        let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, localize: o.localize, ..SimConfig::default() };
         let scene = SceneKind::BallPit { balls: 500, hands: 2 };
         let ids: Vec<MemberId> = (1..=o.members).collect();
         let peers: Vec<Peer> = ids
@@ -119,6 +121,9 @@ pub fn capped(o: &Opts) {
         net.count_from_us = w0;
         net.count_to_us = w1;
         let mut sim = Sim::new(net, peers, o.end_s * 1_000_000);
+        sim.feed = o.localize;
+        // Thin links Part B: each member's time on the state feed (ms).
+        let mut fed_ms = vec![0u64; n];
         let mut qmax = vec![0u64; n];
         let mut lag_max = vec![0u64; n];
         // Thin links: each member's mean confirmation lag (frames, its present minus its confirmed frame)
@@ -147,6 +152,11 @@ pub fn capped(o: &Opts) {
             }
             sim.step_ms();
             let now = sim.net.now_us;
+            for (i, &m) in ids.iter().enumerate() {
+                if sim.is_fed(1, m) {
+                    fed_ms[i] += 1;
+                }
+            }
             let mut all_lag_ok = true;
             let mut q_now = 0u64;
             // Real time is judged over the members still in the session (a demoted one follows).
@@ -335,6 +345,9 @@ pub fn capped(o: &Opts) {
         }
         if adapt {
             let l = sim.replica(1, 1).level_ms;
+            if o.localize {
+                println!("RESULT     time on the state feed per member: {} ms", fed_ms.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "));
+            }
             println!(
                 "RESULT     controller on member 1: time at each level (hand stride {:?}, acks every {:?} frames): {:?} ms",
                 HAND_STRIDE, ACK_FRAMES, l
