@@ -6,7 +6,7 @@ use spike::{Fate, Filter, Sim};
 use crate::scenario::{Crash, FaultRule};
 
 pub const MSG_CLASSES: &[&str] =
-    &["entry", "fetch", "batch", "join", "touch", "hand", "ack", "vote", "propose", "prevote", "precommit", "kick", "setrole", "definerole", "attest", "depart", "arrive", "verdict", "portal", "provenance"];
+    &["entry", "fetch", "batch", "join", "touch", "hand", "ack", "vote", "propose", "prevote", "precommit", "kick", "setrole", "definerole", "attest", "depart", "arrive", "verdict", "portal", "provenance", "ownership"];
 
 /// Does `m` belong to message class `c` (see [`FaultRule::msg`])?
 pub fn is_class(m: &Msg, c: &str) -> bool {
@@ -30,6 +30,7 @@ pub fn is_class(m: &Msg, c: &str) -> bool {
                 | (Payload::Verdict { .. }, "verdict")
                 | (Payload::Portal { .. }, "portal")
                 | (Payload::Provenance { .. }, "provenance")
+                | (Payload::Ownership { .. }, "ownership")
         ),
         _ => false,
     }
