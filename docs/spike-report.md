@@ -752,6 +752,14 @@ bash scripts/run_session_sim.sh               # 53 scenario logs, plus the P2-5 
   are not told; the departure half of a fork proof still records epoch 0, and VC-7 and VC-8 were open
   then (fixed since, in P2-5's follow-up; 22.7); VCR-10 and V4 wait for the user; the generator's join and equivocation coverage is to be
   widened.
+* **Trust survey #4 (user rulings 2026-11-01):** under the trust principle, the automatic removals that
+  only end a live cheater's stall are retired: the withholding rule, the ghost-kick and false-vote voter
+  removals, the unexplained-cap author removal (with VC4R-1's polka fetch and the VC6R-1/VC7R-2
+  budgets) and VC-5's vote. Safety rules all stay. refwithhold, ghostkick, bogusprecommit, capstale,
+  capfake, capchurn, fakeadmin, fakemix, joinattests, futureack and aheadshield keep their cheaters and
+  now show confirmation held until admin 1's kick at 6 s, which ends it; V4 is answered by the same
+  principle. Accepted cost: a live honest member with a one-way inbound cut holds the session until its
+  link heals or an admin kicks (`aheadlink-long`, `aheadlink-cut`). Design 10.8 has the numbers.
 
 ## 6. Spike (d): WASM game-logic hot-swap, plus the MCP stub
 

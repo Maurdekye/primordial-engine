@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use pe_session_sim::*;
 use pe_sim_core::session::*;
 
-use crate::p24r::{before_fix, confs, each_sim, guests, peers_of, roles_line, run_quiet, sim_mut, GUEST, SCENE};
+use crate::p24r::{before_fix, AdminKick, confs, each_sim, guests, peers_of, roles_line, run_quiet, sim_mut, GUEST, SCENE};
 use crate::review2::{link, plan, touch, verdict};
 use crate::viewchange::{sim_secs, vc_report};
 
@@ -114,15 +114,16 @@ pub fn strikeframe() {
     }
 }
 
+/// Review VC3R-1 (round 4): a climbing member that keeps its chain a step ahead somewhere. Trust survey
+/// #4 retired VC-5's vote with the newer-epoch timer VC3R-1 fixed: a climbing 9 holds confirmation
+/// (no reader counts its acks from the claimed epoch on) until admin 1 kicks it at 6 s. Rotating alone
+/// stays harmless.
 pub fn aheadshield() {
-    for fixed in RUNS {
-        let variants: &[(bool, bool)] = if fixed { &[(true, false), (false, true), (true, true)][..] } else { &[(true, true)][..] };
+    {
+        let variants: &[(bool, bool)] = &[(true, false), (false, true), (true, true)];
         for &(climb, rotate) in variants {
             let ids = [1, 2, 3, 9];
-            let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (600, touch(33, 3.0))]) } else { BTreeMap::new() });
-            if !fixed {
-                each_sim(&mut ps, |s| s.fixes_off = fix::VC3R1);
-            }
+            let ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (600, touch(33, 3.0))]) } else { BTreeMap::new() });
             let mut net = Net::new(link(30, 10, 0), 7);
             if rotate {
                 net.filter = Some(Box::new(|t, _w, from, to, m| match m {
@@ -138,7 +139,11 @@ pub fn aheadshield() {
             }
             let mut sim = Sim::new(net, ps, 12_000_000);
             let mut set = false;
+            let mut kick = climb.then(|| AdminKick::new(1, 9, 6_000_000));
             let stopped = run_quiet(&mut sim, |sim| {
+                if let Some(k) = kick.as_mut() {
+                    k.step(sim, &[1, 2, 3], &ids);
+                }
                 if climb && !set && sim.net.now_us >= 2_000_000 {
                     sim_mut(sim, 9).fake_ack_epoch = Some(1);
                     set = true;
@@ -147,23 +152,19 @@ pub fn aheadshield() {
             let honest = [1, 2, 3];
             let removed = removed_at(&sim, 1, 9);
             let label = format!("aheadshield (from 2 s, 9's acks claim epoch 1: {climb}; 9 sends each of its entries to one honest member only, in turn: {rotate})");
-            if !fixed {
-                println!("  9 removed: {}", secs(removed));
-                before_fix(&label, "VC3R-1's fix", &sim, &honest, stopped);
-                continue;
-            }
             // Rotating alone is harmless (fetches fill every gap): 9 stays and confirmation goes on.
-            let ok = if climb { removed.is_some() } else { removed.is_none() && sim.replica(1, 1).sim.conf > 600 };
-            println!(
-                "RESULT aheadshield climb={climb} rotate={rotate}: 9 removed at {}; {} -> {}",
-                secs(removed),
-                confs(&sim, &honest),
-                match (ok, climb) {
-                    (false, _) => "FAIL",
-                    (true, true) => "VOTED OUT",
-                    (true, false) => "HARMLESS",
-                }
-            );
+            if let Some(k) = &kick {
+                println!("RESULT aheadshield climb={climb} rotate={rotate}: {}", confs(&sim, &honest));
+                k.report(&sim, &honest, &format!("aheadshield climb={climb} rotate={rotate}"));
+            } else {
+                let ok = removed.is_none() && sim.replica(1, 1).sim.conf > 600;
+                println!(
+                    "RESULT aheadshield climb={climb} rotate={rotate}: 9 removed at {}; {} -> {}",
+                    secs(removed),
+                    confs(&sim, &honest),
+                    if ok { "HARMLESS" } else { "FAIL" }
+                );
+            }
             verdict(&sim, &honest, &label, stopped);
         }
     }
@@ -171,7 +172,8 @@ pub fn aheadshield() {
 
 /// Not a repro: a check that the class VC3R-1 belongs to does not reach silence. Another member's
 /// acks claiming more of a silent member's chain spare it from the silence vote while this replica
-/// fetches, but the withholding rule removes it all the same: its own references stop.
+/// fetches, but only for a silence limit from when it fell behind (VC4R-3): then the silence vote
+/// removes it all the same. (Until trust survey #4 the withholding rule removed it first.)
 pub fn fakeref() {
     let ids = [1, 2, 3, 4, 5, 8, 9];
     let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (900, touch(33, 3.0))]) } else { BTreeMap::new() });
@@ -212,7 +214,12 @@ pub fn capstale() {
         }
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut capped: BTreeSet<u32> = BTreeSet::new();
+        // Trust survey #4: the cap holds confirmation until an admin kicks 9.
+        let mut kick = fixed.then(|| AdminKick::new(1, 9, 6_000_000));
         let stopped = run_quiet(&mut sim, |sim| {
+            if let Some(k) = kick.as_mut() {
+                k.step(sim, &[1, 2, 3], &ids);
+            }
             if sim.net.now_us < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&9) {
                 return;
             }
@@ -227,20 +234,17 @@ pub fn capstale() {
         let honest = [1, 2, 3];
         let removed = removed_at(&sim, 1, 9);
         let resets = sim.replica(1, 1).sim.stats.resets;
-        let label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch)";
+        let label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch; admin 1 kicks 9 at 6 s)";
         if !fixed {
             println!("  with round 3's stale-cap resets and strikes: 9 removed at {}, after {resets} resets", secs(removed));
             before_fix(label, "VC3R-2's fix", &sim, &honest, stopped);
             continue;
         }
         vc_report(&sim, &honest, "capstale");
-        let votes = events(&sim, 1, "for a value no quorum here prevoted");
-        println!(
-            "RESULT capstale: {resets} resets, 9 removed at {} ({votes} cap vote at m1) -> {}; {}",
-            secs(removed),
-            if removed.is_some() && resets == 0 { "VOTED OUT, NO RESET" } else { "FAIL" },
-            confs(&sim, &honest)
-        );
+        println!("RESULT capstale: {resets} resets -> {}; {}", if resets == 0 { "NO RESET" } else { "FAIL" }, confs(&sim, &honest));
+        if let Some(k) = &kick {
+            k.report(&sim, &honest, "capstale");
+        }
         verdict(&sim, &honest, label, stopped);
     }
 }
@@ -627,7 +631,12 @@ pub fn fakemix() {
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut last = 0u64;
         let mut fake = false;
+        // Trust survey #4: the pure fake holds confirmation until an admin kicks 8.
+        let mut kick = (!mix).then(|| AdminKick::new(1, 8, 6_000_000));
         let stopped = run_quiet(&mut sim, |sim| {
+            if let Some(k) = kick.as_mut() {
+                k.step(sim, &[1, 2, 3, 4], &ids);
+            }
             let t = sim.net.now_us;
             if t < 2_000_000 {
                 return;
@@ -652,12 +661,10 @@ pub fn fakemix() {
             }
         });
         let honest = [1, 2, 3, 4];
-        println!(
-            "REPRO fakemix mix={mix} stale-refresh={refresh}us: 8 removed at {}; withholding votes at m1 {}; {}",
-            secs(removed_at(&sim, 1, 8)),
-            events(&sim, 1, "has referenced no more"),
-            confs(&sim, &honest)
-        );
+        println!("REPRO fakemix mix={mix} stale-refresh={refresh}us: 8 removed at {}; {}", secs(removed_at(&sim, 1, 8)), confs(&sim, &honest));
+        if let Some(k) = &kick {
+            k.report(&sim, &honest, "fakemix");
+        }
         verdict(&sim, &honest, &format!("fakemix mix={mix}"), stopped);
     }
 }
@@ -806,13 +813,13 @@ fn prevotefork_sim(off: u64, slow_us: u64, nine_until_us: u64, nine_silent_us: u
     (sim, stopped)
 }
 
-/// VC4R-1 (design-reviewer's inferred finding, built in round 5): an equivocated prevote gets an honest
+/// VC4R-1 (design-reviewer's inferred finding, built in round 5): an equivocated prevote got an honest
 /// capper voted out. The round-0 proposer (member 1) equivocates its own prevote for the join's value
 /// `v`: the real value to capper 2, nil to observer 3. Member 9's prevote is dropped, so without 1's
 /// honest prevote the observer sees only 2 and 3 prevote `v` -- short of the quorum of 3 -- while the
-/// capper sees {1, 2, 3} and precommits with a cap. With the fix off, observer 3 votes honest capper 2
-/// out for an unjustified cap; with the fix on, 2's precommit carries its polka's prevote ids, 3 fetches
-/// 1's `v`-prevote (so its count of prevotes for `v` reaches the quorum), and 3 does not vote 2 out.
+/// capper sees {1, 2, 3} and precommits with a cap. Before VC4R-1's fix, observer 3 voted honest capper
+/// 2 out for an unjustified cap. Trust survey #4 retired the cap rule, so no member is voted out for a
+/// cap at all; the run checks that 3 casts no vote against 2 and the session decides and goes on.
 ///
 /// PF-1 (@ballpit-viz, mirroring this repro): 1's chain continues from its own version of the forked
 /// seq, which 3 and 9 never hold; each keeps the first version it received, so neither links 1's later
@@ -824,7 +831,7 @@ pub fn prevotefork() {
     let (_, capper, obs, joiner) = PREVOTEFORK;
     // Since VC8R-1, 3 and 9 count 1's prevote toward the round-0 polka, lock with 2 and decide the join
     // before any cap is judged and without 1's precommit; so each control switches VC8R-1 off as well.
-    for off in [fix::VC4R1 | fix::VC8R1, fix::PF1 | fix::VC8R1, 0] {
+    for off in [fix::PF1 | fix::VC8R1, 0] {
         let (sim, stopped) = prevotefork_sim(off, 0, 2_500_000, u64::MAX);
         let honest = [1, 2, 3];
         // 1 is the faulty member (its prevote is forked) and is removed; liveness is the others'.
@@ -833,11 +840,6 @@ pub fn prevotefork() {
         let kept = sim.replica(obs, 1).sim.members.contains(&capper) && sim.replica(capper, 1).sim.members.contains(&capper);
         let label = "prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it)";
         let epochs = [1, 2, 3, 9, joiner].map(|m| format!("m{m} {}", sim.replica(m, 1).sim.epoch)).join(", ");
-        if off == fix::VC4R1 | fix::VC8R1 {
-            println!("  m{obs} votes to remove capper {capper}: {voted}");
-            before_fix(label, "VC4R-1's fix (and VC8R-1's)", &sim, &honest, stopped);
-            continue;
-        }
         if off == fix::PF1 | fix::VC8R1 {
             println!("  epochs at the end: {epochs}; confirmation live at the end (2, 3, 9, 5): {}", live(&sim, &remaining));
             before_fix(label, "PF-1's fix (and VC8R-1's)", &sim, &honest, stopped);
@@ -847,7 +849,7 @@ pub fn prevotefork() {
         println!(
             "RESULT prevotefork: m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; epochs at the end: {epochs}; confirmation live at the end (2, 3, 9, 5): {} -> {}",
             live(&sim, &remaining),
-            if !voted && kept && live(&sim, &remaining) { "THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE, AND CONFIRMATION GOES ON" } else { "FAIL" }
+            if !voted && kept && live(&sim, &remaining) { "NO VOTE AGAINST THE CAPPER, AND CONFIRMATION GOES ON" } else { "FAIL" }
         );
         verdict(&sim, &honest, label, stopped);
     }
@@ -873,18 +875,19 @@ fn repro_verdict(name: &str, fixed: bool, ok: bool, pass: &str, control: &str) {
     println!("RESULT {name} fixed={fixed}: -> {}", if ok { what } else { "FAIL" });
 }
 
-/// VC6R-1: capstale, but 9's capped precommit names a polka id that exists nowhere. Fix off (VC6R1):
-/// the missing id is fetched for good and 9 is never removed.
+/// capstale, but 9's capped precommit names a polka id that exists nowhere (review VC6R-1, round 7).
+/// Trust survey #4 retired the cap rule and its fetch budget, so the ids a capped precommit carries are
+/// dead bytes that nothing reads (their removal, a wire change, is a follow-up; capfake then folds into
+/// capstale). The cap holds confirmation until admin 1 kicks 9 at 6 s.
 pub fn capfake() {
-    for fixed in RUNS {
+    {
         let ids = [1, 2, 3, 9];
-        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
-        if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VC6R1);
-        }
+        let ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut capped: BTreeSet<u32> = BTreeSet::new();
+        let mut kick = AdminKick::new(1, 9, 6_000_000);
         let stopped = run_quiet(&mut sim, |sim| {
+            kick.step(sim, &[1, 2, 3], &ids);
             if sim.net.now_us < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&9) {
                 return;
             }
@@ -898,27 +901,26 @@ pub fn capfake() {
             }
         });
         let honest = [1, 2, 3];
-        println!("REPRO capfake fixed={fixed}: 9 removed at {}; live at the end: {}; {}", secs(removed_at(&sim, 1, 9)), live(&sim, &honest), confs(&sim, &honest));
-        let (gone, up) = (removed_at(&sim, 1, 9).is_some(), live(&sim, &honest));
-        repro_verdict("capfake", fixed, if fixed { gone && up } else { !gone && !up }, "VOTED OUT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
-        verdict(&sim, &honest, &format!("capfake fixed={fixed}"), stopped);
+        println!("REPRO capfake: 9 removed at {}; live at the end: {}; {}", secs(removed_at(&sim, 1, 9)), live(&sim, &honest), confs(&sim, &honest));
+        kick.report(&sim, &honest, "capfake");
+        verdict(&sim, &honest, "capfake", stopped);
     }
 }
 
-/// VC6R-4: fakemix's pure fake (8 removed at about 5 s), but 8 also authors a no-op SetRole every
-/// 2 s, so a decision comes every 2 s. Fix off (VC6R4): every decision clears the timers that would
-/// catch 8, and it is never removed.
+/// fakemix's pure fake, but 8 also authors a no-op SetRole every 2 s, so a decision comes every 2 s
+/// (review VC6R-4, round 6: a decision once reset the withholding timers that would catch 8). Trust
+/// survey #4 retired the withholding rule: 8 holds confirmation until admin 1 kicks it at 6 s, through
+/// the decisions its SetRoles force.
 pub fn fakeadmin() {
-    for fixed in RUNS {
+    {
         let setrole = true;
         let ids = [1, 2, 3, 4, 8];
-        let mut ps = peers_of(&ids, |m| if m == 1 { plan(&(0..40).map(|k| (60 + 20 * k, touch(10 + (k % 3) as u32, 1.0))).collect::<Vec<_>>()) } else { BTreeMap::new() });
-        if !fixed {
-            each_sim(&mut ps, |s| s.fixes_off = fix::VC6R4);
-        }
+        let ps = peers_of(&ids, |m| if m == 1 { plan(&(0..40).map(|k| (60 + 20 * k, touch(10 + (k % 3) as u32, 1.0))).collect::<Vec<_>>()) } else { BTreeMap::new() });
         let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
         let mut last = 0u64;
+        let mut kick = AdminKick::new(1, 8, 6_000_000);
         let stopped = run_quiet(&mut sim, |sim| {
+            kick.step(sim, &[1, 2, 3, 4], &ids);
             let t = sim.net.now_us;
             if t < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&8) {
                 return;
@@ -934,10 +936,9 @@ pub fn fakeadmin() {
         });
         let honest = [1, 2, 3, 4];
         let vcs = sim.replica(1, 1).sim.vc_log.len();
-        println!("REPRO fakeadmin fixed={fixed} (no-op SetRole every 2 s): 8 removed at {}; decisions at m1 {vcs}; live at the end: {}; {}", secs(removed_at(&sim, 1, 8)), live(&sim, &honest), confs(&sim, &honest));
-        let (gone, up) = (removed_at(&sim, 1, 8).is_some(), live(&sim, &honest));
-        repro_verdict("fakeadmin", fixed, if fixed { gone && up } else { !gone && !up }, "VOTED OUT, CONFIRMATION GOES ON", "HALTS, AS BEFORE THE FIX");
-        verdict(&sim, &honest, &format!("fakeadmin fixed={fixed}"), stopped);
+        println!("REPRO fakeadmin (no-op SetRole every 2 s): 8 removed at {}; decisions at m1 {vcs}; live at the end: {}; {}", secs(removed_at(&sim, 1, 8)), live(&sim, &honest), confs(&sim, &honest));
+        kick.report(&sim, &honest, "fakeadmin");
+        verdict(&sim, &honest, "fakeadmin", stopped);
     }
 }
 
@@ -1128,30 +1129,29 @@ pub fn voidfork() {
     }
 }
 
-/// VC7R-2: prevotefork's layout, with every delivery of the forked value-prevote to observer 3 delayed
-/// 1.5 s, and 9's prevote lost until 5 s (in prevotefork it is back at 2.5 s and completes the polka by
-/// itself). Only capper 2 holds the forked prevote, so 3's fetch waits on 2's replies: longer than round
-/// 7's budget (a further half window, 1 s) and well inside the allowance a slow member gets
-/// (`suspect_after`, 3 s). With the fix off (`VC7R2`), 3 votes against honest capper 2 before it
-/// arrives: here for 2's vote against 1, whose frozen head lies past 1's fork on the branch 3 lacks the
-/// forked prevote of (the same budget, VC4R-5's). One false vote removes no one, so 2 stays.
+/// VC7R-2 (round 7): prevotefork's layout, with every delivery of the forked value-prevote to observer
+/// 3 delayed 1.5 s, and 9's prevote lost until 5 s (in prevotefork it is back at 2.5 s and completes the
+/// polka by itself). Only capper 2 holds the forked prevote, so 3's fetch waits on 2's replies. Before
+/// VC7R-2's fix, 3 voted against honest capper 2 when a fetch budget ran out (for 2's vote against 1,
+/// whose frozen head lies past 1's fork). Trust survey #4 retired both budgets with the rules they fed,
+/// so the run checks that 3 casts no vote against 2 and confirmation goes on.
 pub fn slowcapper() {
     let (_, capper, obs, joiner) = PREVOTEFORK;
-    for fixed in RUNS {
-        let (sim, stopped) = prevotefork_sim(if fixed { 0 } else { fix::VC7R2 }, 1_500_000, 5_000_000, u64::MAX);
+    {
+        let (sim, stopped) = prevotefork_sim(0, 1_500_000, 5_000_000, u64::MAX);
         let honest = [1, 2, 3];
         let remaining = [capper, obs, 9, joiner];
         let voted = sim.replica(obs, 1).sim.all_entries().iter().any(|e| e.member == obs && matches!(e.payload, Payload::Vote { target, .. } if target == capper));
         let kept = sim.replica(obs, 1).sim.members.contains(&capper);
         vc_report(&sim, &honest, "slowcapper");
         println!(
-            "REPRO slowcapper fixed={fixed} (3 receives the cap's polka prevote 1.5 s late): m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; live at the end (2, 3, 9, 5): {}; {}",
+            "REPRO slowcapper (3 receives the cap's polka prevote 1.5 s late): m{obs} votes to remove capper {capper}: {voted}; {capper} kept: {kept}; live at the end (2, 3, 9, 5): {}; {}",
             live(&sim, &remaining),
             confs(&sim, &honest)
         );
         let up = live(&sim, &remaining);
-        repro_verdict("slowcapper", fixed, if fixed { !voted && kept && up } else { voted }, "THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON", "3 VOTES AGAINST THE HONEST CAPPER, AS BEFORE THE FIX");
-        verdict(&sim, &honest, &format!("slowcapper fixed={fixed}"), stopped);
+        println!("RESULT slowcapper: -> {}", if !voted && kept && up { "THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON" } else { "FAIL" });
+        verdict(&sim, &honest, "slowcapper", stopped);
     }
 }
 
