@@ -1,0 +1,10 @@
+RESULT kickadmin: m2 epoch 5 members {2, 3} view changes 5 (resets 0, highest round 1) | epoch 1 at frame 170 (t=2.93 s) round 0 removed [4]; epoch 2 at frame 442 (t=7.47 s) round 1 removed [1]; epoch 3 at frame 606 (t=10.20 s) round 0 removed []; epoch 4 at frame 666 (t=11.20 s) round 0 removed []; epoch 5 at frame 726 (t=12.20 s) round 0 removed []
+RESULT kickadmin: m3 epoch 5 members {2, 3} view changes 5 (resets 0, highest round 1) | epoch 1 at frame 170 (t=2.93 s) round 0 removed [4]; epoch 2 at frame 445 (t=7.52 s) round 1 removed [1]; epoch 3 at frame 608 (t=10.23 s) round 0 removed []; epoch 4 at frame 664 (t=11.17 s) round 0 removed []; epoch 5 at frame 728 (t=12.23 s) round 0 removed []
+RESULT kickadmin: m2: 2 kicks 4 @160: applied; 3 defines role 3 = 0x1 @600: refused; 3 gives 3 role 0 @660: applied; 3 defines role 3 = 0x1 @720: applied
+  m2: members {2, 3} roles {2: 2, 3: 0} admins [3] closed at None
+RESULT kickadmin: m3: 2 kicks 4 @160: applied; 3 defines role 3 = 0x1 @600: refused; 3 gives 3 role 0 @660: applied; 3 defines role 3 = 0x1 @720: applied
+  m3: members {2, 3} roles {2: 2, 3: 0} admins [3] closed at None
+RESULT kickadmin: kick votes against 1: false, against 3: false; members left [2, 3]; open true; 3's role Some(0), role 3 = 0x1 -> ADMINS SAFE FROM A KICK-ONLY ROLE, AND A ROLES-HOLDER KEEPS THE SESSION OPEN
+  m2: conf 941 frame 953 members {2, 3} evicted {1: (55, 232), 4: (33, 158)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 40 bad 0
+  m3: conf 943 frame 953 members {2, 3} evicted {1: (55, 232), 4: (33, 158)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 40 bad 0
+RESULT kickadmin (a kick-only role kicks admin 1, roles-holder 3 and guest 4; then admin 1 goes silent at t=4 s): frames 0..952 honest m2=9be5eb5dc0dac789 m3=9be5eb5dc0dac789 | offline replay 9be5eb5dc0dac789 | ALL EQUAL, NO FALSE CHECKS ; checks ok 80 bad 0
