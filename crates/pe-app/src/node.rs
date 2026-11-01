@@ -305,6 +305,13 @@ pub struct NodeOpts {
     /// second version of its latest touch (same seq, another impulse) and sends it to this member
     /// only. Honest members holding both versions have a transferable proof and vote it out.
     pub equivocate: Option<(u64, u32)>,
+    /// A split equivocation: at this session time the member authors a fresh touch (version A, sent as
+    /// usual) and sends these members version B instead (same seq, the opposite impulse). Version A is
+    /// kept from them; they learn of it only from the proof (the member's next entry names A).
+    pub equivocate_split: Option<(u64, BTreeSet<u32>)>,
+    /// Log this member's touches at first sight (id, stamp, this replica's conf then) and, at the end,
+    /// which of two versions of one seq counts: the evidence of an equivocation run.
+    pub watch: Option<u32>,
     pub touches_per_s: u32,
     /// Author this member's hand along a sweep every frame (ball pit only); R18 thins it.
     pub hand_sweep: bool,
@@ -433,6 +440,12 @@ pub struct Node {
     rng: u64,
     crash_at_ms: Option<u64>,
     equivocate: Option<(u64, u32)>,
+    equivocate_split: Option<(u64, BTreeSet<u32>)>,
+    /// Version A's id and the members it is kept from.
+    split_hide: Option<(pe_session::session::EntryId, BTreeSet<u32>)>,
+    watch: Option<u32>,
+    /// The watched member's touches seen, by seq: (id, stamp, this replica's conf when first seen).
+    watched: BTreeMap<u32, Vec<(pe_session::session::EntryId, u64, u64)>>,
     sim_events_seen: usize,
     plan: BTreeMap<u64, Vec<Payload>>,
     authored: u64,
@@ -574,6 +587,10 @@ impl Node {
             rng: splitmix64(o.me as u64 ^ 0x5EED),
             crash_at_ms: o.crash_at_ms,
             equivocate: o.equivocate,
+            equivocate_split: o.equivocate_split,
+            split_hide: None,
+            watch: o.watch,
+            watched: BTreeMap::new(),
             sim_events_seen: 0,
             plan,
             authored: 0,
@@ -674,7 +691,12 @@ impl Node {
         let local = self.local_us();
         match i {
             // The core verifies entry signatures; the datagram already authenticated `sender`.
-            Item::Msg(m) => self.core.receive(sender, m, local),
+            Item::Msg(m) => {
+                if let Msg::Entry(se) = &m {
+                    self.watch_entry(se);
+                }
+                self.core.receive(sender, m, local)
+            }
             // A pong carries this member's session time (a test lie added for some members).
             Item::Ping(t) => {
                 let (lie, ppm) = self.clock_lie_us.get(&sender).copied().unwrap_or((0, 0));
@@ -837,6 +859,14 @@ impl Node {
             let item = Item::Msg(o.msg);
             for to in o.to {
                 per.entry(to).or_default().push(item.clone());
+            }
+        }
+        // A split equivocation keeps version A from its group (see `NodeOpts::equivocate_split`).
+        if let Some((a, group)) = &self.split_hide {
+            for m in group {
+                if let Some(items) = per.get_mut(m) {
+                    items.retain(|it| !matches!(it, Item::Msg(Msg::Entry(e)) if e.id() == *a));
+                }
             }
         }
         // R18's clamp probes (see `PROBE_EVERY_US`).
@@ -1006,6 +1036,54 @@ impl Node {
         self.push_control(to, Item::Msg(Msg::Entry(se)));
     }
 
+    /// The scripted split equivocation (see `NodeOpts::equivocate_split`), once.
+    fn equivocate_split(&mut self) {
+        let Some((at, group)) = self.equivocate_split.clone() else { return };
+        if self.session_ms().is_none_or(|ms| ms < at) {
+            return;
+        }
+        let Ok(a) = self.core.author(Payload::Touch { obj: 0, impulse: [2.0, 3.0, 0.0], grab: false }, 0) else { return };
+        self.equivocate_split = None;
+        self.authored += 1;
+        let mut b = a.entry.clone();
+        b.payload = Payload::Touch { obj: 0, impulse: [-2.0, 3.0, 0.0], grab: false };
+        b.carried = None;
+        let b = self.session.key_ring(self.key.clone()).sign(WORLD, b);
+        let short = |id: pe_session::session::EntryId| id.0[..8].iter().map(|x| format!("{x:02x}")).collect::<String>();
+        self.note(format!(
+            "EQUIVOCATE (scripted split): my seq {} at frame {} (my conf {}): version A {} to the others, version B {} to members {:?}",
+            a.entry.seq,
+            a.entry.stamp,
+            self.core.sim.conf,
+            short(a.id()),
+            short(b.id()),
+            group
+        ));
+        for &m in &group {
+            self.push_control(m, Item::Msg(Msg::Entry(b.clone())));
+        }
+        self.split_hide = Some((a.id(), group));
+    }
+
+    /// The watched member's touch `se` arrived (see `NodeOpts::watch`).
+    fn watch_entry(&mut self, se: &pe_session::session::SignedEntry) {
+        if self.watch != Some(se.member) || !matches!(se.payload, Payload::Touch { .. }) {
+            return;
+        }
+        let id = se.id();
+        let v = self.watched.entry(se.seq).or_default();
+        if v.iter().any(|x| x.0 == id) {
+            return;
+        }
+        v.push((id, se.stamp, self.core.sim.conf));
+        if v.len() > 1 || self.split_hide.is_none() && self.equivocate_split.is_none() {
+            let n = v.len();
+            let (seq, stamp, conf, frame) = (se.seq, se.stamp, self.core.sim.conf, self.core.sim.frame);
+            let short: String = id.0[..8].iter().map(|x| format!("{x:02x}")).collect();
+            self.note(format!("SEEN member {} touch seq {seq} version {n} ({short}), stamped {stamp}, at my conf {conf}, frame {frame}", se.member));
+        }
+    }
+
     // ---- R18 ----------------------------------------------------------------------------------------
 
     /// The controller's input: the largest queue delay members report on my datagrams to them.
@@ -1172,6 +1250,20 @@ impl Node {
             self.done_at = Some(now);
         }
         if self.written.is_none() && self.done_at.is_some_and(|d| now >= d + LINGER_US) {
+            // Which version of a watched member's forked seq counts in the final log.
+            let in_log: BTreeSet<pe_session::session::EntryId> = final_log(&self.core.sim).iter().map(|(e, _)| e.id()).collect();
+            let forks: Vec<String> = self
+                .watched
+                .iter()
+                .filter(|(_, v)| v.len() > 1)
+                .map(|(seq, v)| {
+                    let each: Vec<String> = v.iter().enumerate().map(|(i, (id, _, _))| format!("version {} {}", i + 1, if in_log.contains(id) { "counts" } else { "withdrawn" })).collect();
+                    format!("FINAL: member {:?} touch seq {seq}: {}", self.watch, each.join(", "))
+                })
+                .collect();
+            for f in forks {
+                self.note(f);
+            }
             match self.write_results() {
                 Ok(s) => self.note(format!(
                     "DONE frames 0..{frames}: digest {} replay {} ({}), conf {}, members {:?}",
@@ -1262,6 +1354,7 @@ impl Node {
             }
         }
         self.equivocate();
+        self.equivocate_split();
         let t0 = self.local_us();
         self.receive_all();
         let t1 = self.local_us();

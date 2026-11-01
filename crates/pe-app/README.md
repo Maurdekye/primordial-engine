@@ -20,7 +20,8 @@ in phase 3.
 pe-app init --members 4 --host 127.0.0.1 [--base-port 7101] [--frames 1800] [--scene pile|ballpit] [--size 4] --out DIR
 pe-app init --addrs 192.168.0.10:7101,192.168.0.11:7101,... --out DIR        # members on several machines
 pe-app run --session DIR/session.json --key DIR/member-1.key --me 1 [--out OUT] [-v]
-           [--faults FILE] [--crash-at-ms T] [--equivocate-at-ms T --equivocate-to M] [--touches-per-s R] [--bind ADDR]
+           [--faults FILE] [--crash-at-ms T] [--equivocate-at-ms T --equivocate-to M] [--equivocate-split T:M,..]
+           [--watch-member M] [--touches-per-s R] [--bind ADDR]
            [--mcp-pipe|--mcp-http [--scopes read,interact,control] [--principal NAME] -- HARNESS ARGS...]
            [--clock-skew-ppm N] [--clock-lie M:MS,...] [--clock-median]       # clock-sync test runs
 pe-app compare OUT
@@ -65,9 +66,16 @@ pe-app relay --listen ADDR --to ADDR [--for-s N]                             # t
   honest members log pe-session's proof (`EQUIVOCATION proof`), count it (summary
   `equivocation_proofs`) and vote the member out. Removed, the equivocator stops confirming; it runs
   until it is killed, so give it its own `--out`. It needs a touch of its own to fork (use
-  `--touches-per-s`); with none it never fires and logs nothing. The second version comes after the
-  first was sent and may already be confirmed, as in session-sim's `badvote`; a split before either
-  version is seen (each half of the members holding a different one) is shown only in the simulator.
+  `--touches-per-s`; without it the flag is refused). The second version comes after the first was
+  sent and may already be confirmed, as in session-sim's `badvote`.
+  `--equivocate-split T:M,..` is the split before the proof: at T the member authors a fresh touch,
+  sends version A as usual but keeps it from the listed members, and sends them version B (the
+  opposite impulse) instead. They learn of A only from the proof (the member's next entry names A).
+  `--watch-member M` logs M's touches at first sight (id, stamp, this replica's conf then) and, at the
+  end, whether each version of a forked seq counts. pe-session's rule (review NEW-2, `reconcile`):
+  after a proof, the member's entries from the disputed seq on are withdrawn unless held identically
+  by every member; after the view change, exactly the cut. So a late version 2 of a stable entry is
+  withdrawn and version 1 counts, and a split touch is withdrawn in both versions.
 * **Relay** (test tooling): `relay` forwards every datagram that arrives at `--listen` to `--to`. A
   member in WSL2's default NAT mode can't be reached from another machine; with `--bind 0.0.0.0:PORT`
   in WSL and a relay on its host at the session address, it can (pe-app checks signatures, not source
@@ -126,9 +134,10 @@ measures that queue and feeds it (`set_link`) every tick.
 
 * `m1-loopback.sh EXE OUT [PORT]`: the M1 scenario on one machine. Four members, loss and delay on
   members 2 and 3 (worse on 2→1 from 9 s to 14 s), and member 4 dropping out at 6 s. Then `compare`.
-* `m1-equivocate.sh EXE OUT [PORT]`: M1's equivocation on one machine. Four members; at 8 s member 3
-  sends member 1 a second version of a touch; every member holds the proof, member 3 is removed, and
-  members 1, 2 and 4 compare equal.
+* `m1-equivocate.sh EXE OUT [PORT] [late|split]`: M1's equivocation on one machine. Four members; at 8 s
+  member 3 equivocates (late: a second version of a sent touch to member 1; split: version A to members
+  1 and 2, B to member 4, before anyone confirms it). Every member holds the proof, member 3 is removed,
+  and members 1, 2 and 4 compare equal.
 * `linux.sh`: from Windows, copies HEAD into WSL and, there, does a native glibc build and runs the tests
   and `m1-loopback.sh`.
 * `r18-capped.sh EXE OUT CAP_KBPS [on|off] [PORT] [FRAMES]`: three members in a 500-ball pit, member 1
