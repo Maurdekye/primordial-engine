@@ -22,6 +22,10 @@ pub struct Opts {
     pub step: Option<(u64, u64)>,
     /// A second gesture this many seconds after the first ends (adaptive transport only; spike 867495a).
     pub gap_s: Option<u64>,
+    /// Also print each member's offered bytes in the gesture window by message kind.
+    pub by_kind: bool,
+    /// [`crate::Net::what_if`] for every run (measurement only).
+    pub what_if: u8,
 }
 
 pub fn capped(o: &Opts) {
@@ -91,6 +95,7 @@ pub fn capped(o: &Opts) {
             }
         }
         net.batching = batching;
+        net.what_if = o.what_if;
         net.count_from_us = w0;
         net.count_to_us = w1;
         let mut sim = Sim::new(net, peers, o.end_s * 1_000_000);
@@ -242,6 +247,18 @@ pub fn capped(o: &Opts) {
                 back2.map_or("never".to_string(), |t| format!("{} ms", t / 1000)),
                 lat2.join(", ")
             );
+        }
+        if o.by_kind {
+            // Where each member's offered bytes went during the gesture (kbit/s, messages/s, mean bytes).
+            for &m in &ids {
+                let mut v: Vec<(&str, (u64, u64))> = sim.net.kinds_from.iter().filter(|((f, _), _)| *f == m).map(|((_, k), c)| (*k, *c)).collect();
+                v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+                let parts: Vec<String> = v
+                    .iter()
+                    .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / secs, *n as f64 / secs, b / (*n).max(1)))
+                    .collect();
+                println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
+            }
         }
         let n_err = own_err.len().max(1) as f64;
         println!(
