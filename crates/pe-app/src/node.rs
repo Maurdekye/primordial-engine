@@ -8,6 +8,11 @@
 //! its clock offset from the lowest-RTT sample (as spikes/p2p does), and reports Ready. Once every
 //! member is Ready, the leader picks an epoch 1 s ahead on its own clock and sends Start until each
 //! member acks. Session time = local time + offset (0 for the leader).
+//!
+//! From frame 0, clock sync keeps running (design 10.4; `clock.rs`): every member pings every live
+//! member every 500 ms (a pong carries the replier's session time) and slews toward the fault-tolerant
+//! midpoint of their clocks, never stepping. R18's stamps use the rate-corrected clock, so drift
+//! between machines (2-9 % between Windows and a WSL2 VM here) never reads as queueing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -28,11 +33,14 @@ use pe_session::session::{digest, final_log, replay_sim_like, Payload, SceneKind
 use pe_session::splitmix64;
 use serde::{Deserialize, Serialize};
 
+use crate::clock::ClockSync;
 use crate::config::SessionFile;
 use crate::wire::{self, Item, Stamp, QREP_NONE};
 
 pub const WORLD: u32 = 1;
 const PINGS: usize = 12;
+/// From frame 0, a member pings every live member this often (design 10.4).
+const SYNC_EVERY_US: u64 = 500_000;
 const LINGER_US: u64 = 3_000_000;
 
 // R18 link signal (design 10.9): a LEDBAT-style one-way queueing delay (RFC 6817), measured by the
@@ -46,11 +54,11 @@ const BASE_BUCKETS: usize = 12;
 /// The current delay is the minimum over the last 100 ms or the last 4 samples, whichever spans more.
 const CURRENT_US: u64 = 100_000;
 const CURRENT_SAMPLES: usize = 4;
+/// A report counts at most this much above the reporter's round-trip excess (design 10.4's clamp: a
+/// clock-frequency error cannot fake queueing beyond what the round trip, on one clock, shows).
+const RTT_CLAMP_MARGIN_US: u64 = 20_000;
 /// A member's report counts at its last value for 5 s (fresh within 1 s), then is ignored.
 const REPORT_HOLD_US: u64 = 5_000_000;
-/// With no report left, the controller is fed a value inside its dead band (above the 10 ms calm
-/// level, below the 40 ms trigger), so its level holds: silence is never read as calm.
-const HOLD_SIGNAL_US: u64 = 25_000;
 /// The scripted bandwidth cap's token bucket (the harness's `Cap` model).
 const CAP_BURST_BYTES: f64 = 4000.0;
 /// Scripted `codel`: CoDel's control law (RFC 8289, simplified to per-datagram decisions): once the
@@ -207,6 +215,9 @@ pub struct LinkSummary {
     pub max_signal_ms: f64,
     pub max_true_queue_ms: f64,
     pub hand_entries: u64,
+    /// Ticks at which the round-trip clamp lowered the fed signal (design 10.4).
+    #[serde(default)]
+    pub clamped_ticks: u64,
     /// Per member: (datagrams received from it, datagrams lost on its way to me).
     pub rx: BTreeMap<u32, (u64, u64)>,
 }
@@ -224,6 +235,12 @@ pub struct NodeOpts {
     pub hand_sweep: bool,
     /// Feed the R18 controller the measured link signal (off: today's level-0 behaviour, for comparison).
     pub link_signal: bool,
+    /// Test runs (design 10.4's evidence): this member's local clock runs this many ppm fast (a
+    /// simulated skewed machine); its pongs to the listed members lie by (µs, ppm of local time: a
+    /// constant and a growing lie); and a plain median instead of the fault-tolerant midpoint.
+    pub clock_skew_ppm: i64,
+    pub clock_lie_us: BTreeMap<u32, (i64, i64)>,
+    pub clock_median: bool,
     pub out_dir: PathBuf,
     /// Set once the results are written and the linger time has passed.
     pub finished: Arc<AtomicBool>,
@@ -268,6 +285,9 @@ pub struct Summary {
     pub entries_authored: u64,
     pub clock_offset_us: i64,
     pub best_rtt_us: u64,
+    /// The frequency correction of this member's session clock against its local clock, ppm (10.4).
+    #[serde(default)]
+    pub clock_rate_ppm: f64,
     pub traffic: Traffic,
     #[serde(default)]
     pub link: LinkSummary,
@@ -290,14 +310,19 @@ pub struct Node {
     leader: u32,
     /// Session time = local time + offset.
     offset_us: i64,
-    best_rtt_us: u64,
+    /// Continuous, fault-tolerant clock sync among the members (design 10.4).
+    clock: ClockSync,
     pongs: usize,
     ready_from: BTreeSet<u32>,
     acked: BTreeSet<u32>,
     epoch: Option<u64>,
     last_ping: u64,
-    /// Send times of my pings still unanswered: a pong counts only if it echoes one of them.
-    pings_out: BTreeSet<u64>,
+    /// Pings still unanswered, (member, send time): a pong counts only if it echoes one of them.
+    pings_out: BTreeSet<(u32, u64)>,
+    /// Session time has reached frame 0: from here the clock slews among the members.
+    synced: bool,
+    skew: f64,
+    clock_lie_us: BTreeMap<u32, (i64, i64)>,
     last_ready: u64,
     last_start: u64,
     control: BTreeMap<u32, Vec<Item>>,
@@ -314,6 +339,7 @@ pub struct Node {
     signal_us: Option<u64>,
     signal_held: bool,
     max_signal_us: u64,
+    clamped_ticks: u64,
     max_true_queue_us: u64,
     hand: Option<u32>,
     hand_frame: u64,
@@ -369,6 +395,7 @@ impl Node {
         let origin = Instant::now();
         let (net_tx, net_rx) = mpsc::sync_channel(RX_QUEUE);
         let rx_full = Arc::new(AtomicU64::new(0));
+        let skew = 1.0 + o.clock_skew_ppm as f64 / 1e6;
         let full = rx_full.clone();
         let rx_bytes = Arc::new(AtomicUsize::new(0));
         let queued = rx_bytes.clone();
@@ -381,7 +408,7 @@ impl Node {
                 loop {
                     match rsock.recv_from(&mut buf) {
                         Ok((n, _)) => {
-                            let t = origin.elapsed().as_micros() as u64;
+                            let t = (origin.elapsed().as_micros() as f64 * skew) as u64;
                             // This thread is the only one adding, so the check cannot overshoot.
                             if queued.load(Ordering::Acquire) + n > RX_QUEUE_BYTES {
                                 full.fetch_add(1, Ordering::Relaxed);
@@ -423,13 +450,16 @@ impl Node {
             rx_bytes,
             origin,
             offset_us: 0,
-            best_rtt_us: u64::MAX,
+            clock: ClockSync::new(o.clock_median),
             pongs: 0,
             ready_from: BTreeSet::new(),
             acked: BTreeSet::new(),
             epoch: None,
             last_ping: 0,
             pings_out: BTreeSet::new(),
+            synced: false,
+            skew: 1.0 + o.clock_skew_ppm as f64 / 1e6,
+            clock_lie_us: o.clock_lie_us,
             last_ready: 0,
             last_start: 0,
             control: BTreeMap::new(),
@@ -445,6 +475,7 @@ impl Node {
             signal_us: None,
             signal_held: false,
             max_signal_us: 0,
+            clamped_ticks: 0,
             max_true_queue_us: 0,
             hand,
             hand_frame: u64::MAX,
@@ -468,12 +499,32 @@ impl Node {
     }
 
     fn local_us(&self) -> u64 {
-        self.origin.elapsed().as_micros() as u64
+        (self.origin.elapsed().as_micros() as f64 * self.skew) as u64
     }
 
     /// Now on the session timeline.
     fn now_us(&self) -> u64 {
         (self.local_us() as i64 + self.offset_us).max(0) as u64
+    }
+
+    /// Advance the offset (design 10.4). Before frame 0 a member other than the leader takes the
+    /// leader's offset at once (the bootstrap); from frame 0 it slews toward the fault-tolerant
+    /// midpoint of the live members' clocks.
+    fn apply_clock(&mut self) {
+        let local = self.local_us();
+        let members: Vec<u32> = if self.synced {
+            self.core.sim.membership().members().iter().copied().filter(|&m| m != self.me).collect()
+        } else {
+            if self.me != self.leader {
+                let _ = self.clock.bootstrap(self.leader);
+            }
+            vec![]
+        };
+        let o = self.clock.tick(local, &members);
+        if o != self.offset_us {
+            self.offset_us = o;
+            self.core.set_offset(o);
+        }
     }
 
     fn session_ms(&self) -> Option<u64> {
@@ -510,12 +561,14 @@ impl Node {
             let r = wire::unpack(self.session.session, &buf[..n], |m| keys.get(&m).copied());
             match r {
                 Ok((sender, st, items)) if sender != self.me => {
-                    self.rx.entry(sender).or_default().sample(st, recv_us);
+                    // R18 measures on the rate-corrected clock, as the sender stamps (design 10.4).
+                    let recv_rc = self.clock.rc(recv_us);
+                    self.rx.entry(sender).or_default().sample(st, recv_rc);
                     if st.qrep != QREP_NONE {
                         self.reports.insert(sender, (st.qrep, recv_us));
                     }
                     for i in items {
-                        self.on_item(sender, i);
+                        self.on_item(sender, i, recv_us);
                     }
                 }
                 Ok(_) => {}
@@ -524,21 +577,26 @@ impl Node {
         }
     }
 
-    fn on_item(&mut self, sender: u32, i: Item) {
+    fn on_item(&mut self, sender: u32, i: Item, recv_us: u64) {
         let local = self.local_us();
         match i {
             // The core verifies entry signatures; the datagram already authenticated `sender`.
             Item::Msg(m) => self.core.receive(sender, m, local),
-            Item::Ping(t) => self.push_control(sender, Item::Pong(t, local)),
-            Item::Pong(t, r) if sender == self.leader && self.pings_out.remove(&t) => {
-                let rtt = local.saturating_sub(t);
-                self.pongs += 1;
-                if rtt < self.best_rtt_us {
-                    self.best_rtt_us = rtt;
-                    // The leader's clock read r halfway through the round trip.
-                    self.offset_us = r as i64 - (t as i64 + rtt as i64 / 2);
-                    self.core.set_offset(self.offset_us);
+            // A pong carries this member's session time (a test lie added for some members).
+            Item::Ping(t) => {
+                let (lie, ppm) = self.clock_lie_us.get(&sender).copied().unwrap_or((0, 0));
+                let local = self.local_us();
+                let lie = lie + (local as f64 * ppm as f64 / 1e6) as i64;
+                let (now, raw) = (self.now_us() as i64 + lie, local as i64 + lie);
+                self.push_control(sender, Item::Pong(t, now.max(0) as u64, raw.max(0) as u64))
+            }
+            Item::Pong(t, r, raw) if self.pings_out.remove(&(sender, t)) => {
+                // The peer's clocks read r (session) and raw (local) about halfway through the round trip.
+                if sender == self.leader {
+                    self.pongs += 1;
                 }
+                self.clock.sample(sender, t, recv_us, r, raw);
+                self.apply_clock();
             }
             Item::Pong(..) => {}
             Item::Ready if self.me == self.leader => {
@@ -549,7 +607,7 @@ impl Node {
                     self.epoch = Some(e);
                     self.core.start(e);
                     let off = self.offset_us;
-                    self.note(format!("session start received: epoch {e} (leader clock), my offset {off} us, best rtt {} us", self.best_rtt_us));
+                    self.note(format!("session start received: epoch {e} (leader clock), my offset {off} us, best rtt {} us", self.clock.best_rtt_us()));
                 }
                 self.push_control(sender, Item::StartAck);
             }
@@ -565,13 +623,33 @@ impl Node {
     fn sync_clock(&mut self) {
         let local = self.local_us();
         let others: Vec<u32> = self.session.ids().into_iter().filter(|&m| m != self.me).collect();
-        if self.me != self.leader {
-            if self.pongs < PINGS && local >= self.last_ping + 25_000 {
-                self.last_ping = local;
-                self.pings_out.insert(local);
-                let l = self.leader;
-                self.push_control(l, Item::Ping(local));
+        if !self.synced && self.epoch.is_some_and(|e| self.now_us() >= e) {
+            // Frame 0: every member has its epoch (sent 1 s ahead), so nobody jumps from here on.
+            self.synced = true;
+            self.clock.restart_fits();
+        }
+        let to: Vec<u32> = if self.synced {
+            if local >= self.last_ping + SYNC_EVERY_US {
+                self.core.sim.membership().members().iter().copied().filter(|&m| m != self.me).collect()
+            } else {
+                vec![]
             }
+        } else if self.me != self.leader && self.pongs < PINGS && local >= self.last_ping + 25_000 {
+            vec![self.leader]
+        } else {
+            vec![]
+        };
+        if !to.is_empty() {
+            self.last_ping = local;
+            // A ping lost on the way is forgotten after 5 s.
+            self.pings_out.retain(|&(_, t)| t + 5_000_000 > local);
+            for m in to {
+                self.pings_out.insert((m, local));
+                self.push_control(m, Item::Ping(local));
+            }
+        }
+        self.apply_clock();
+        if self.me != self.leader {
             if self.pongs >= PINGS / 2 && self.epoch.is_none() && local >= self.last_ready + 200_000 {
                 self.last_ready = local;
                 let l = self.leader;
@@ -644,7 +722,7 @@ impl Node {
             let link = self.links.get(&to).copied().unwrap_or(self.default_link);
             // The send time is stamped as the datagram is built, just before it is handed to the
             // network (the scripted cap and delay stand for the network).
-            let now = self.local_us();
+            let now = self.clock.rc(self.local_us());
             let qrep = self.rx.get(&to).and_then(|r| r.q_us).map_or(QREP_NONE, |q| (q / 1000).min(QREP_NONE as u64 - 1) as u16);
             let mut seq = self.out_seq.get(&to).copied().unwrap_or(0);
             let ds = wire::pack(self.session.session, self.me, &items, &self.key, || {
@@ -774,23 +852,36 @@ impl Node {
     // ---- R18 ----------------------------------------------------------------------------------------
 
     /// The controller's input: the largest queue delay members report on my datagrams to them.
-    /// Reports are held at their last value for 5 s; with none left, the level holds (dead band).
+    /// Reports are held at their last value for 5 s; with none left the core gets no signal (None),
+    /// which holds the level and is never read as calm.
     fn feed_link(&mut self, now: u64) {
-        let live: Vec<u64> = self.reports.values().filter(|r| now < r.1 + REPORT_HOLD_US).map(|r| r.0 as u64 * 1000).collect();
-        let (v, held) = match live.iter().max() {
-            Some(&m) => (Some(m), false),
-            None if self.reports.is_empty() => (None, false),
-            None => (Some(HOLD_SIGNAL_US), true),
-        };
+        // Each report is capped at the reporter's round-trip excess plus a margin (design 10.4).
+        let mut clamped = false;
+        let v = self
+            .reports
+            .iter()
+            .filter(|(_, r)| now < r.1 + REPORT_HOLD_US)
+            .map(|(&m, r)| {
+                let q = r.0 as u64 * 1000;
+                match self.clock.rtt_excess(m, now) {
+                    Some(x) if q > x + RTT_CLAMP_MARGIN_US => {
+                        clamped = true;
+                        x + RTT_CLAMP_MARGIN_US
+                    }
+                    _ => q,
+                }
+            })
+            .max();
+        if clamped {
+            self.clamped_ticks += 1;
+        }
         self.signal_us = v;
-        self.signal_held = held;
+        self.signal_held = v.is_none() && !self.reports.is_empty();
         if let Some(v) = v {
-            if !held {
-                self.max_signal_us = self.max_signal_us.max(v);
-            }
-            if self.link_signal {
-                self.core.set_link(v);
-            }
+            self.max_signal_us = self.max_signal_us.max(v);
+        }
+        if self.link_signal {
+            self.core.set_link(v);
         }
     }
 
@@ -914,7 +1005,8 @@ impl Node {
             checks_bad: s.stats.checks_bad,
             entries_authored: self.authored,
             clock_offset_us: self.offset_us,
-            best_rtt_us: self.best_rtt_us,
+            best_rtt_us: self.clock.best_rtt_us(),
+            clock_rate_ppm: self.clock.rate() * 1e6,
             traffic: Traffic { datagrams_dropped_rx_full: self.rx_full.load(Ordering::Relaxed), ..self.traffic.clone() },
             link: LinkSummary {
                 signal_fed: self.link_signal,
@@ -923,6 +1015,7 @@ impl Node {
                 max_signal_ms: self.max_signal_us as f64 / 1000.0,
                 max_true_queue_ms: self.max_true_queue_us as f64 / 1000.0,
                 hand_entries: self.hand_entries,
+                clamped_ticks: self.clamped_ticks,
                 rx: self.rx.iter().map(|(&m, r)| (m, (r.received, r.lost))).collect(),
             },
             events: self.log.clone(),
@@ -992,9 +1085,10 @@ impl Node {
             self.last_status = local;
             let (s, t) = (&self.core.sim, &self.traffic);
             let line = format!(
-                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} capped {} recv {} rejected {:?} bad entry sigs {} | R18 level {} signal {:?} ms{}",
+                "status: frame {} now {} conf {} members {:?} rollbacks {} | sent {} faulted {} capped {} recv {} rejected {:?} bad entry sigs {} | R18 level {} signal {:?} ms{} | clock offset {} us, rate {:.0} ppm",
                 s.frame, s.now, s.conf, s.membership().members(), s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_dropped_by_cap, t.datagrams_received, t.rejected, s.stats.bad_sigs,
-                self.core.level, self.signal_us.map(|v| v / 1000), if self.link_signal { "" } else { " (not fed)" }
+                self.core.level, self.signal_us.map(|v| v / 1000), if self.link_signal { "" } else { " (not fed)" },
+                self.offset_us, self.clock.rate() * 1e6
             );
             self.note(line);
         }
@@ -1050,6 +1144,9 @@ impl DrivenPeer for Node {
         // slot (at most one stride), stepping the node meanwhile.
         match i {
             Interaction::Hand { object, target_mm, active: true } => {
+                if self.hand == Some(object) {
+                    return Err(ToolError::arg("object", "this hand is driven by --hand-sweep"));
+                }
                 self.hold.set(object, target_mm);
                 let end = self.local_us() + sim_view::HOLD_WAIT_MS * 1000;
                 loop {

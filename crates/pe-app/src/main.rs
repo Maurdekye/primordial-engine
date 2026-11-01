@@ -5,7 +5,8 @@
 //!             [--size S] [--window W] [--seed X] [--name NAME] --out DIR
 //!     Write DIR/session.json (ids, addresses, public keys) and DIR/member-<id>.key (secret keys).
 //! pe-app run --session FILE --key FILE --me N [--bind ADDR] [--faults FILE] [--crash-at-ms T]
-//!            [--touches-per-s R] [--hand-sweep] [--no-link-signal] [--out DIR] [-v] [--mcp-pipe] [--mcp-http] [--scopes ..] [--principal NAME] [-- CMD ARGS..]
+//!            [--touches-per-s R] [--hand-sweep] [--no-link-signal] [--out DIR] [-v] [--mcp-pipe] [--mcp-http] [--scopes ..] [--principal NAME]
+//!            [--clock-skew-ppm N] [--clock-lie M:MS[:PPM],..] [--clock-median] [-- CMD ARGS..]
 //!     Run one member until every frame of the session is confirmed (plus a short linger), then
 //!     write DIR/hashes-<id>.txt and DIR/summary-<id>.json. With --mcp-*, an MCP server is attached
 //!     and CMD (a harness such as Claude Code) is launched with PE_MCP_TOKEN / PE_MCP_PIPE / PE_MCP_URL.
@@ -13,10 +14,12 @@
 //!     Compare every summary-<id>.json and hashes-<id>.txt in DIR: identical histories?
 //! ```
 
+mod clock;
 mod config;
 mod node;
 mod wire;
 
+use std::collections::BTreeMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -152,6 +155,26 @@ async fn run(mut a: Args) -> Result<(), String> {
         return Err("--hand-sweep needs a ballpit session (init --scene ballpit)".into());
     }
     let link_signal = !a.flag("--no-link-signal");
+    // Clock-sync test runs (design 10.4's evidence).
+    let clock_skew_ppm: i64 = a.num("--clock-skew-ppm", 0)?;
+    let clock_lie_us = match a.take("--clock-lie") {
+        Some(list) => list
+            .split(',')
+            .map(|p| {
+                let f: Vec<&str> = p.split(':').map(str::trim).collect();
+                let bad = || format!("--clock-lie: {p} is not MEMBER:MS[:PPM]");
+                if !(2..=3).contains(&f.len()) {
+                    return Err(bad());
+                }
+                let m = f[0].parse::<u32>().map_err(|_| bad())?;
+                let ms = f[1].parse::<i64>().map_err(|_| bad())?;
+                let ppm = f.get(2).map_or(Ok(0), |x| x.parse::<i64>()).map_err(|_| bad())?;
+                Ok((m, (ms * 1000, ppm)))
+            })
+            .collect::<Result<BTreeMap<u32, (i64, i64)>, String>>()?,
+        None => BTreeMap::new(),
+    };
+    let clock_median = a.flag("--clock-median");
     let out_dir = PathBuf::from(a.take("--out").unwrap_or_else(|| ".".into()));
     let verbose = a.flag("-v");
     let (mcp_pipe, mcp_http) = (a.flag("--mcp-pipe"), a.flag("--mcp-http"));
@@ -168,7 +191,7 @@ async fn run(mut a: Args) -> Result<(), String> {
 
     let socket = UdpSocket::bind(bind).map_err(|e| format!("bind {bind}: {e}"))?;
     let finished = Arc::new(AtomicBool::new(false));
-    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, touches_per_s, hand_sweep, link_signal, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
+    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, touches_per_s, hand_sweep, link_signal, clock_skew_ppm, clock_lie_us, clock_median, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
     eprintln!("pe-app: member {me} of session {:016x} on {bind}; {} members, {} frames", session.session, session.members.len(), session.frames);
     let engine = EngineHandle::spawn_ticking(move || Engine::new(Box::new(Node::new(opts))), Duration::from_millis(1));
     let _hosted = if mcp_pipe || mcp_http {

@@ -10,6 +10,7 @@ in phase 3.
 |---|---|
 | `src/wire.rs` | Datagrams: `"PE" v2, session id, sender, items, Ed25519 signature`, which authenticates the sender. An item is a pe-session protocol message; an entry carries its author's own signature inside it, so entries relayed in repair stay verifiable |
 | `src/config.rs` | `session.json` (session id, scene, length, every member's id, UDP address and public key) and `member-<id>.key` (that member's secret key). The session's 32-byte id is the BLAKE3 hash of the file's canonical JSON, which carries a fresh 256-bit nonce (design 10.3); pe-session binds every entry signature to it |
+| `src/clock.rs` | Clock sync (design 10.4): per-peer fits of the members' session clocks, the fault-tolerant midpoint, the slewed offset and the rate-corrected clock for R18 |
 | `src/node.rs` | The IO around pe-session's sans-IO `SessionCore` (P2-3): socket, clock sync (`set_offset`; the core takes local time), faults, background touches, results, and pe-mcp's `DrivenPeer`. Membership is the view-change one, so a member that drops out is removed. The core verifies entry signatures (and skips entries it already holds) |
 | `src/main.rs` | The CLI |
 
@@ -21,12 +22,25 @@ pe-app init --addrs 192.168.0.10:7101,192.168.0.11:7101,... --out DIR        # m
 pe-app run --session DIR/session.json --key DIR/member-1.key --me 1 [--out OUT] [-v]
            [--faults FILE] [--crash-at-ms T] [--touches-per-s R] [--bind ADDR]
            [--mcp-pipe|--mcp-http [--scopes read,interact,control] [--principal NAME] -- HARNESS ARGS...]
+           [--clock-skew-ppm N] [--clock-lie M:MS,...] [--clock-median]       # clock-sync test runs
 pe-app compare OUT
 ```
 
 * **The session starts** once every member is up. The lowest id leads: each member estimates its clock
   offset to the leader from ping round trips (it keeps the lowest-RTT sample), then reports Ready. The
   leader sends an epoch 1 s ahead.
+* **Clocks stay in sync** (design 10.4). From frame 0 every member pings every live member every 500 ms
+  (a pong carries the replier's session time and its raw local clock), taking the best round trip of
+  each 2 s bucket in the last 30 s. Its offset runs at the fault-tolerant midpoint of the members' raw
+  clock frequencies (the slope of each peer's raw clock against its own, its own 0 included: constant,
+  so nobody's correction feeds back into another's) and slews (at most 12 % of the elapsed time while more than 5 ms off,
+  then 1 %) toward the fault-tolerant midpoint of the predicted offsets, its own included: drop the
+  t = ⌊(n − 1)/3⌋ lowest and highest, take the midpoint of the rest's extremes. It never steps. R18's
+  stamps use the rate-corrected clock (local time at the fitted frequency, without the slew).
+  * Test switches: `--clock-skew-ppm N` runs this member's local clock N ppm fast (a simulated skewed
+    machine), `--clock-lie 2:-500,3:500:20000` makes its pongs to member 2 lie by -500 ms and to member
+    3 by 500 ms plus 2 % of its clock (a skewed clock shown to one peer), and `--clock-median` takes a
+    plain median instead of the fault-tolerant midpoint (the contrast 10.4's evidence runs).
 * **A member stops** once every frame of the session is confirmed. It keeps acking for 3 s, so the others
   confirm too, then writes `OUT/hashes-<id>.txt` and `OUT/summary-<id>.json`. The summary holds the digest,
   an offline replay of its final log, membership, traffic and events.
@@ -47,21 +61,22 @@ pe-app compare OUT
 
 SessionCore's congestion controller thins hand poses and acks when this member's uplink queue grows; pe-app
 measures that queue and feeds it (`set_link`) every tick.
-* **Estimate:** LEDBAT-style (RFC 6817). Every datagram carries a signed stamp: the sender's clock `ts`, a
-  per-destination `seq`, and `qrep`, the queue delay the sender measured on the recipient's datagrams.
+* **Estimate:** LEDBAT-style (RFC 6817). Every datagram carries a signed stamp: the sender's
+  rate-corrected clock `ts`, a per-destination `seq`, and `qrep`, the queue delay the sender measured
+  on the recipient's datagrams.
   * A receiver keeps, per sender, the one-way delay `recv − ts`, with `ts` unwrapped to 64 bits.
   * **base** is the minimum over 12 buckets of 10 s (2 minutes), expired by time; **current** is the
     minimum over the last 100 ms or 4 samples, whichever spans more. `current − base` goes back as `qrep`.
   * A receive thread stamps each datagram at the socket, so tick time never reads as queueing. It holds
     at most 1024 datagrams or 1024 × MTU bytes for the engine and drops beyond that, as a full socket
     buffer would.
-* **Feed:** the largest report from any member. A report is held up to 5 s; with none left, a value
-  inside the controller's dead band (25 ms) holds the level.
+* **Feed:** the largest report from any member. A report is held up to 5 s; with none left, the core
+  gets no signal (`set_link(None)`), which holds the level and is never read as calm.
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
 * `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
 * **Test tooling:** scripted faults take `rate_kbps` (a token bucket with a 4 kB burst), `queue_ms`
   (tail drop, default 500) and `codel` (CoDel's control law, simplified). A step at `at_ms: 0` holds
-  from the node's start. `--hand-sweep` authors the member's ball-pit hand every frame. Each member
+  from the node's start. `--hand-sweep` authors the member's ball-pit hand every frame (an agent cannot also move that hand). Each member
   writes `link-<id>.csv`: level, signal, the cap's real queue, kbit/s and confirmation lag every 250 ms.
 
 ## Scripts
@@ -113,7 +128,8 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
   * A path-delay increase reads as queue until it ages out of the 2-minute base (the stream is thinned
     meanwhile, never stalled); a standing queue lasting longer than 2 minutes becomes the base, and the
     stream then takes its share of tail drops (the loss rule is a follow-up).
-  * Clock drift between two machines moves the estimate by up to 12 ms over the base window at 100 ppm.
+  * Clock drift between machines is removed by the rate-corrected clock (design 10.4); what is left is
+    the error of the fitted frequency.
   * A bottleneck that drops early (AQM) can keep the delay under the 40 ms trigger; loss is not fed.
   * A link below level 5's rate (about 60 kbit/s per link for a sweeping member in the 500-ball pit)
     still removes the member.
@@ -121,7 +137,8 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
 * An item larger than the MTU goes out as one oversized datagram.
 * Datagrams can be replayed within a session (no nonce or recipient in them) until Noise in phase 3;
   the core drops entries it already holds.
-* The clock is synced once, before the start; long runs may drift.
+* Clock sync assumes fewer than a third of the members lie about their clocks (10.8's bound); the
+  bootstrap before frame 0 trusts the leader.
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
   only protection.
 * Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe
