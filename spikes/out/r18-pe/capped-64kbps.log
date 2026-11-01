@@ -9,4 +9,4 @@ RESULT     member 1's own hand against its target, over 176 gesture frames: mean
 RESULT   batched+adaptive |  50.6 /  39.6 |  195 /    0 |    0 |   0 /   0 |  24 /  22 | 31 (own entries moved: 0) | 16.9/s,  16 | 0 ms | m1 8eb41e88c05540ce / m2 8eb41e88c05540ce replay 8eb41e88c05540ce EQUAL
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 24.5 / 14.6, m2 22.7 / 12.5
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2502, 100, 100, 100, 1760, 5340] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2502, 100, 100, 100, 100, 7000] ms
