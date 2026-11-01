@@ -2751,8 +2751,12 @@ entries that the view change commits (10.8).
     confidant marks, invite tickets) are all signed by it, so there is no second identity to name.
   * **One key, one member** (review BN-3): a join by a key that a current member holds is refused, so a
     player is in a session once, whatever its devices. A ban reaches every key delegated from the banned
-    key: a device key it certifies (10.3), and agent and panel keys (12.3). A join or an entry under such a
-    key is judged as the banned key's. pe-session has one key per member, the identity key itself [V code].
+    key: a device key it certifies (10.3), and agent and panel keys (12.3). Every key is judged as the
+    identity key it is delegated from, for one key, one member as for bans, so a device or agent key can't
+    make a present player a second member either. A peer that crashes and rejoins at once (10.8) is refused
+    until its old member is removed (`suspect_after`, about 3 s); its client keeps the request open and
+    retries until then. pe-session has one key per member, the identity key itself, and no delegated keys
+    yet [V code].
   * **Checked at the join, after row 0 and before the other rows.** A joiner whose key is banned is refused,
     whatever the rows say. Row 0 stays on top (22:48Z): an owner always joins, so a ban entry naming a
     current owner's key is refused, and so is a kick of an owner with the ban option, even a co-owner's.
