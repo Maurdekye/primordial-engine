@@ -1393,6 +1393,7 @@ fn main() {
             slow: get("--slow").map(|v| (v.parse().unwrap(), get("--slow-kbps").map_or(8, |k| k.parse().unwrap()))),
             step: get("--step-ms").map(|v| (v.parse().unwrap(), get("--step-kbps").map_or(16, |k| k.parse().unwrap()))),
             gap_s: get("--gap").map(|v| v.parse().unwrap()),
+            adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
         }),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),
