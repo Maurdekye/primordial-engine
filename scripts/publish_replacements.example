@@ -1,0 +1,17 @@
+# Replacement rules for scripts/publish_clean.sh. Copy this file to scripts/publish_replacements.local
+# (gitignored: the rules name what they replace) and replace the examples with the real rules.
+# One rule per line, `regex:<python regex>==><replacement>`, applied in this order to every text file
+# version and every commit message of the cleaned copy. Put longer forms before the shorter ones they
+# contain. (?i) makes a rule ignore case. Never match anything the current tree still holds: the
+# check wants the copy's tip to equal the source tip.
+
+# Wording:
+regex:<old phrase>==><new phrase>
+
+# A machine's network route:
+regex:<address pattern>==><address>
+
+# Names: the longer path form first.
+regex:(?i)<user>_<suffix>==><user>
+regex:(?i)<user>==><user>
+regex:(?i)<machine name>==><machine>

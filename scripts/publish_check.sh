@@ -2,7 +2,8 @@
 # Publication check: greps every file of a commit (default HEAD) for terms that must not be
 # published, case-insensitively, prints each hit and exits 1 if there is any (2 on an error).
 # usage: scripts/publish_check.sh [--ref <ref>]          the tree of <ref> (default HEAD)
-#        scripts/publish_check.sh --history <range>...    the history over <range> (see below)
+#        scripts/publish_check.sh --history [--ignore-identity] [--blobs] <range>...
+#                                                          the history over <range> (see below)
 # Run it before every push, on the ref being pushed. It reads the committed tree, so an uncommitted
 # local fix doesn't hide a hit that is still committed.
 #
@@ -18,7 +19,9 @@
 # scripts/publish_history.py. It reports the hits per term. It fails only on the terms of a second
 # list, scripts/publish_history_terms.local or PE_PUBLISH_HISTORY_TERMS (same format, gitignored),
 # which is empty when the file is missing: the history the user ruled to keep (2026-10-31 11:49Z) is
-# reported, not failed.
+# reported, not failed. --ignore-identity never fails on author or committer fields (the accepted
+# commit email); --blobs also scans every blob, binary ones included. scripts/publish_clean.sh
+# makes the cleaned copy that is published (user ruling 2026-11-01 06:55Z) and checks it this way.
 set -u
 cd "$(dirname "$0")/.."
 terms=${PE_PUBLISH_TERMS:-scripts/publish_terms.local}

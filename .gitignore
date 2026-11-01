@@ -19,3 +19,4 @@ __pycache__/
 scripts/matrix.local.sh
 scripts/publish_terms.local
 scripts/publish_history_terms.local
+scripts/publish_replacements.local
