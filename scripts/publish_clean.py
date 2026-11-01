@@ -207,7 +207,7 @@ def main():
         cmd = ["cargo", "check", "--workspace", "--all-targets", "--offline", "-q"]
         heavy = os.environ.get("PE_HEAVY")
         if heavy:
-            cmd = ["bash", heavy, *cmd]
+            cmd = [os.environ.get("PE_BASH", "bash"), heavy, *cmd]
         r = subprocess.run(cmd, cwd=out_dir, env=env)
         print(f"  build of the copy's tip: {'ok' if r.returncode == 0 else f'FAILED (exit {r.returncode})'}")
         if r.returncode != 0:
