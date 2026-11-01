@@ -167,7 +167,8 @@ impl WorldSim {
         let q = self.quorum_q();
         let mut v: Vec<u32> = self.members.iter().filter(|&&y| y != x).map(|&y| self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0))).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
-        v.get(q - 2).copied().unwrap_or(0)
+        let i = if self.members.len() == 3 { 1 } else { q - 2 };
+        v.get(i).copied().unwrap_or(0)
     }
 
     /// Rule 1 (TLP-9): the echo-stable prefix of `x`'s chain. Its acks up to this seq have been referenced
@@ -179,7 +180,9 @@ impl WorldSim {
         let q = self.quorum_q();
         let mut v: Vec<u32> = self.members.iter().filter(|&&y| y != x).map(|&y| self.matched_ref(y, x)).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
-        v.get(q - 2).copied().unwrap_or(0)
+        // At 3 players (fed mode, S-3): both others, the fed member by its echo.
+        let i = if self.members.len() == 3 { 1 } else { q - 2 };
+        v.get(i).copied().unwrap_or(0)
     }
 
     /// Part B: record `x`'s ack `aseq` (stamped `stamp`) naming `head` of `m`'s chain with id `hid`. The
@@ -569,6 +572,19 @@ impl WorldSim {
             if !self.members.contains(&e.member) {
                 self.pending.remove(&(stamp, id));
                 continue;
+            }
+            // At 3 players: an entry in a D54 window counts (D54 voids nothing; it waits for stability), one in a
+            // fed window is judged by rule 1, and one whose window's mode isn't known yet waits.
+            if self.fed_mode_capable() {
+                match self.window_mode(stamp / WINDOW) {
+                    None => continue,
+                    Some(false) => {
+                        self.pending.remove(&(stamp, id));
+                        self.verdicts.insert(id, !self.is_void(id));
+                        continue;
+                    }
+                    Some(true) => {}
+                }
             }
             // Already void by a chain-local rule or a proof: nothing to decide.
             let decided = if self.is_void(id) {
