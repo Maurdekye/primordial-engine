@@ -5,10 +5,10 @@ RESULT fakeadmin fixed=false: -> HALTS, AS BEFORE THE FIX
   m3: conf 106 frame 226 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
   m4: conf 106 frame 226 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
 RESULT fakeadmin fixed=false: frames 0..225 honest m1=0b53ea112cff7bd7 m2=0b53ea112cff7bd7 m3=0b53ea112cff7bd7 m4=0b53ea112cff7bd7 | offline replay 0b53ea112cff7bd7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
-REPRO fakeadmin fixed=true (no-op SetRole every 2 s): 8 removed at 5.23 s; decisions at m1 3; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+REPRO fakeadmin fixed=true (no-op SetRole every 2 s): 8 removed at 5.35 s; decisions at m1 3; live at the end: true; m1 conf 826 of frame 833, m2 conf 824 of frame 833, m3 conf 824 of frame 833, m4 conf 824 of frame 833
 RESULT fakeadmin fixed=true: -> VOTED OUT, CONFIRMATION GOES ON
-  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (85, 296)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 79 bad 0
-  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (85, 296)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
-  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (85, 296)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
-  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (85, 296)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
+  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (101, 292)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 79 bad 0
+  m2: conf 824 frame 833 members {1, 2, 3, 4} evicted {8: (101, 292)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
+  m3: conf 824 frame 833 members {1, 2, 3, 4} evicted {8: (101, 292)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
+  m4: conf 824 frame 833 members {1, 2, 3, 4} evicted {8: (101, 292)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
 RESULT fakeadmin fixed=true: frames 0..832 honest m1=386390999ee7dbf7 m2=386390999ee7dbf7 m3=386390999ee7dbf7 m4=386390999ee7dbf7 | offline replay 386390999ee7dbf7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0

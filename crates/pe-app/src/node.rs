@@ -475,7 +475,11 @@ impl Node {
         let scene = s.scene_kind().expect("validated session");
         // View-change membership (the default), not the static one: M1 must survive a member
         // dropping out, which takes suspicion, votes and a new epoch.
-        let core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
+        let mut core = SessionCore::new(WorldSim::new(WORLD, o.me, &ids, scene, s.sim_config(), s.key_ring(o.key.clone())));
+        // Implicit ids (Msg::Lean) stay off in pe-app until its wire allowlist, the watch log and the
+        // scripted split equivocation handle lean entries (which carry no prev / head ids, so their
+        // id is not the entry's): every entry goes explicit, as before.
+        core.lean_wire = false;
         let keys = ids.iter().map(|&m| (m, s.key_of(m).expect("validated key"))).collect();
         // Background touches: deterministic in (seed, member), on non-hand objects.
         let mut plan: BTreeMap<u64, Vec<Payload>> = BTreeMap::new();

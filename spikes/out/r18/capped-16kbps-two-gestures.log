@@ -6,4 +6,4 @@ RESULT     hand entries' confirmation latency, frames (max / mean): m1 63.3 / 18
 RESULT     mean confirmation lag per member from the gesture's start, frames: 15.5 / 15.2
 RESULT     member 1's own hand against its target, over 442 gesture frames: mean 144.39 mm, max 837.30 mm
 RESULT     second gesture (40 s after the first): level at its start Some(1); max queue ms per member 394 / 0; stalled frames during it 0 / 0; back to real time after it 593 ms; hand entries' latency (max / mean) m1 43.3 / 19.1, m2 42.6 / 19.9
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2652, 40556, 500, 949, 900, 900, 17366, 1185, 894] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2652, 40556, 500, 949, 900, 16700, 1566, 1185, 894] ms

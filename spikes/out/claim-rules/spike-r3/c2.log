@@ -1,0 +1,11 @@
+RESULT c2 before (phase-1 rule): repair a<-x' Err(Duplicate), b<-x Err(Duplicate); hash@199 equal: false
+  event [w1 m1 f6 c0] EQUIVOCATION proof: member 9 signed two versions of seq 1 (a8cd230edf4cc9aa / 09b675e3c310c433)
+  event [w1 m2 f4 c0] EQUIVOCATION proof: member 9 signed two versions of seq 1 (09b675e3c310c433 / f014167a3b2ae8ce)
+  event [w1 m9 f6 c0] EQUIVOCATION proof: member 9 signed two versions of seq 1 (a8cd230edf4cc9aa / 09b675e3c310c433)
+  event [w1 m1 f10 c0] member 9 evicted (epoch 1): its chain is cut at seq 0; it no longer counts from frame 0
+  event [w1 m2 f13 c0] member 9 evicted (epoch 1): its chain is cut at seq 0; it no longer counts from frame 0
+  event [w1 m9 f12 c0] member 9 evicted (epoch 1): its chain is cut at seq 0; it no longer counts from frame 0
+  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (9.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 1 checks ok 16 bad 0 nonfinite 0 conf 467 frame 473
+  m2 world 1: rollbacks 8 max depth 4 resim frames 21 (8.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 1 checks ok 16 bad 0 nonfinite 0 conf 467 frame 474
+  m9 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 345 violations 0 equivocations 1 checks ok 2 bad 0 nonfinite 0 conf 8 frame 128
+RESULT c2 after (honest members 1,2) world 1: frames 0..450 digests m1=70fcaec32e3c69d2 m2=70fcaec32e3c69d2 | offline replay 70fcaec32e3c69d2 | ALL EQUAL
