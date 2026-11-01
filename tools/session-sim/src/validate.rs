@@ -486,6 +486,15 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                 v.member(1, *of, "fake_refs of");
                 v.time(*from_ms, "fake_refs");
             }
+            Byzantine::AdminKick { member, target, at_ms, honest, to } => {
+                v.member(1, *member, "admin_kick");
+                v.member(1, *target, "admin_kick target");
+                honest.iter().chain(to).for_each(|&m| v.member(1, m, "admin_kick"));
+                v.time(*at_ms, "admin_kick");
+                if honest.is_empty() || to.contains(member) || !to.contains(target) {
+                    v.err("admin_kick: needs honest members, and `to` holding the target but not the admin".into());
+                }
+            }
             Byzantine::GhostVote { member, at_ms, target, to, .. } => {
                 v.member(1, *member, "ghost_vote");
                 v.member(1, *target, "ghost_vote target");
@@ -595,22 +604,19 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "slowadmin" => !honest.is_empty(),
                     "kickbackdate" => at.is_some() && !members.is_empty(),
                     "aheadlink" => at.is_some() && !members.is_empty() && !honest.is_empty(),
+                    "aheadlink_long" => at.is_some() && target.is_some() && !members.is_empty(),
+                    // The kick it reports is the part's admin_kick behaviour.
+                    "admin_kick" => !honest.is_empty() && s.byzantine.iter().filter(|b| matches!(b, Byzantine::AdminKick { .. })).count() == 1,
                     "onesided" => members.len() == 2,
                     "strikeframe" => at.is_some() && target.is_some() && !members.is_empty(),
                     "strikeframe_total" => at.is_some() && !members.is_empty() && !runs.is_empty(),
-                    "aheadshield" => {
-                        at.is_some()
-                            && target.is_some()
-                            && !honest.is_empty()
-                            && matches!(expect.as_deref(), Some("voted_out") | Some("harmless"))
-                            && (expect.as_deref() == Some("voted_out") || conf_min.is_some())
-                    }
+                    // Only rotating alone is a check since trust survey #4 (the climbers are admin_kick's).
+                    "aheadshield" => at.is_some() && target.is_some() && !honest.is_empty() && expect.as_deref() == Some("harmless") && conf_min.is_some(),
                     "fakeref" | "capstale" | "lagchurn" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
                     "votechurn" | "votechurn_off" => at.is_some() && target.is_some() && from_ms.is_some() && until_ms.is_some(),
                     "adminvoid" | "joinskip" | "slowref" => at.is_some() && target.is_some() && !honest.is_empty(),
                     "joinwedge" | "adminfork" => at.is_some() && target.is_some() && members.len() == 1 && !honest.is_empty(),
                     "fakemix" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
-                    "prevotefork_off" => at.is_some() && target.is_some() && event.is_some(),
                     "prevotefork" => at.is_some() && target.is_some() && event.is_some() && !members.is_empty() && !honest.is_empty(),
                     "prevotefork_pf" => !members.is_empty() && !honest.is_empty(),
                     "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
