@@ -549,7 +549,8 @@ impl Probe {
             .map(|&m| {
                 let acks: Vec<&Entry> = all.iter().filter(|e| e.member == m && matches!(e.payload, Payload::Ack { .. }) && (f(1.0)..f(1.9)).contains(&e.stamp)).collect();
                 let b: u64 = acks.iter().map(|e| encode_msg(&{
-                let se = r1.signed_entry(e.id()).expect("a held entry");
+                // The size only: an entry inside a run holds no signature of its own (option 2).
+                let se = SignedEntry { entry: (*e).clone(), sig: [0; 64] };
                 if lean { Msg::Run { lean: true, heads: true, signed: true, entries: vec![se] } } else { Msg::Entry(se) }
             }).len() as u64 + 52).sum();
                 format!("m{m} {:.1} acks/s ({:.0} B/s wire est.)", acks.len() as f64 / idle_secs, b as f64 / idle_secs)
