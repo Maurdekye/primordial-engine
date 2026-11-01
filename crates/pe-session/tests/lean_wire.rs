@@ -85,6 +85,11 @@ fn waiting_entries_keep_the_member_busy_without_their_stamps_and_the_longest_wai
     // unverified stamp is not noted (idle() reads the wait list instead).
     let far = test_sign(W, Entry { member: 1, seq: 2, prev: EntryId::NONE, stamp: 1 << 40, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None });
     assert!(b.idle());
+    // A waiting ack does not make it busy, as an inserted one would not (`note_held` skips acks).
+    let _a2 = a.author_ack();
+    let a3 = a.author_ack();
+    b.insert_lean(1, lean(&a3));
+    assert!(b.lean_waiting(1, 3) && b.idle());
     b.insert_lean(1, far.clone());
     assert!(!b.idle());
     // Review LN-3: past the bound, the entry waiting longest is evicted, not the lowest key.
