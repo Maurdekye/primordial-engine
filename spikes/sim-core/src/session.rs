@@ -2203,6 +2203,8 @@ pub struct WorldSim {
     removed_in: BTreeMap<MemberId, u32>,
     /// F2: removed members whose Part B cut isn't final yet (`finalize_cuts`).
     pb_pending: BTreeSet<MemberId>,
+    /// Diagnostics: the last second of my present traced (PE_CONF_TRACE).
+    dbg_conf_at: u64,
     /// F2: every validated vote by (target, voter): (its epoch, its seq, its frozen head's seq), the first per epoch.
     vote_hist: BTreeMap<(MemberId, MemberId), Vec<(u32, u32, u32)>>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
@@ -2446,6 +2448,7 @@ impl WorldSim {
             ack_epoch_from: BTreeMap::new(),
             removed_in: BTreeMap::new(),
             pb_pending: BTreeSet::new(),
+            dbg_conf_at: u64::MAX,
             vote_hist: BTreeMap::new(),
             genesis: members.to_vec(),
             roles: members.iter().map(|&m| (m, ADMIN)).collect(),
@@ -2902,6 +2905,15 @@ impl WorldSim {
             self.disputed.insert(id);
         }
         let (member, seq) = (e.member, e.seq);
+        // Part B, rule 1: a judged entry waits for its verdict from its arrival, held behind a hole in its author's
+        // chain or not (rule 1 can decide such an entry void; it counts only once validated and vouched).
+        let judged_now = (self.localized() || self.fed_mode_capable())
+            && localize::judged(&e.payload)
+            && (self.members.contains(&e.member) || self.evicted.contains_key(&e.member))
+            && !self.verdicts.contains_key(&id);
+        if judged_now {
+            self.pending.insert((e.stamp, id));
+        }
         self.entries.insert(id, e);
         self.set_eff(id);
         // Review PF-1: a proposal of a member proven to have forked may never link here; keep it by
@@ -3252,6 +3264,24 @@ impl WorldSim {
             if c > self.conf {
                 self.conf = c;
             }
+        }
+        // Diagnostics (PE_CONF_TRACE=<member>): once a second of my present, what bounds my confirmation.
+        if self.now / 60 != self.dbg_conf_at && std::env::var("PE_CONF_TRACE").ok().and_then(|v| v.parse::<MemberId>().ok()) == Some(self.me) {
+            self.dbg_conf_at = self.now / 60;
+            let first = self.pending.iter().next().map(|&(s, id)| {
+                let e = &self.entries[&id];
+                (s, e.member, e.seq, e.seq <= self.contiguous.get(&e.member).copied().unwrap_or(0))
+            });
+            let per: Vec<String> = self
+                .members
+                .iter()
+                .map(|&j| {
+                    let es = self.echo_stable(j);
+                    let h = self.ack_hist.get(&j).and_then(|a| a.range(..=es).next_back()).map(|(_, h)| *h);
+                    format!("m{j}: es {es} held {} h {:?} bound {:?}", self.contiguous.get(&j).copied().unwrap_or(0), h, self.deadline_bound(j))
+                })
+                .collect();
+            eprintln!("CONF m{} now {} conf {} pending {} first {:?} | {}", self.me, self.now, self.conf, self.pending.len(), first, per.join(" | "));
         }
     }
 
