@@ -356,6 +356,11 @@ pub struct Replica {
     pub plan: BTreeMap<u64, Vec<Action>>,
     next_ack_us: u64,
     pub ack_every_us: u64,
+    /// 7.6 reduction 2: whether the member was idle at its last ack decision.
+    was_idle: bool,
+    /// Test fixture (review VCR-12 under 7.6 reduction 2): ack only on the member's own interval, never
+    /// at once on leaving idle, so a member set to ack rarely keeps a stale horizon.
+    pub ack_grid_only: bool,
     last_frame_seen: u64,
     /// R18: adapt the hand-entry rate and ack interval to this member's uplink queue.
     pub adapt: bool,
@@ -444,6 +449,8 @@ impl Peer {
                 // Saturating: a scenario with hz = 0 (dt = inf, so dt_us = u64::MAX) must reach the
                 // tool's validator, which refuses it, instead of overflowing here in a debug build.
                 ack_every_us: dt_us.saturating_mul(2),
+                was_idle: false,
+                ack_grid_only: false,
                 last_frame_seen: u64::MAX,
                 adapt: false,
                 level: 0,
@@ -480,6 +487,8 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
 /// hand entry and an ack share one datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
+pub const IDLE_ACK_FRAMES: u64 = 8;
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
 /// or any finer level only after this much calm instead of 300 ms, and forgets L after
 /// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
@@ -762,15 +771,22 @@ impl Sim {
                 }
             }
             let r = self.peers[pi].worlds.get_mut(&w).unwrap();
-            // With batching, acks ride in the same datagram as the frame's entries (R18, viz-4).
-            let ack_due = if self.net.batching {
-                let every = (r.ack_every_us / r.dt_us).max(1);
-                new_frame && clock_frame % every == 0
-            } else {
-                now >= r.next_ack_us
-            };
+            // With batching, acks ride in the same datagram as the frame's entries (R18, viz-4). An idle
+            // member (7.6 reduction 2) acks every IDLE_ACK_FRAMES frames at any level, the longer of the
+            // two intervals; the ack that leaves idle goes at once, off the grid.
+            let idle = r.sim.idle();
+            let leaving = r.was_idle && !idle && !r.ack_grid_only;
+            r.was_idle = idle;
+            let base = (r.ack_every_us / r.dt_us).max(1);
+            let every = if idle { base.max(IDLE_ACK_FRAMES) } else { base };
+            let ack_due = leaving
+                || if self.net.batching {
+                    new_frame && clock_frame % every == 0
+                } else {
+                    now >= r.next_ack_us
+                };
             if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
-                r.next_ack_us = now + r.ack_every_us;
+                r.next_ack_us = now + every * r.dt_us;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
             }

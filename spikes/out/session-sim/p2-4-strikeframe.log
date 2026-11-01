@@ -1,36 +1,36 @@
   strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late): at m2: members {2, 3, 9}, resets 3, strikes {1: [1, 2, 3]}
-  strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1546 of frame 1553, m3 conf 1546 of frame 1553; at m2: members {2, 3, 9}, evicted [1]
+  strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1541 of frame 1553, m3 conf 1541 of frame 1553; at m2: members {2, 3, 9}, evicted [1]
   strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {2, 3}, resets 3, strikes {1: [1, 2, 3]}
-  strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1546 of frame 1553, m3 conf 1546 of frame 1553; at m2: members {2, 3}, evicted [1, 9]
+  strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1543 of frame 1553, m3 conf 1547 of frame 1553; at m2: members {2, 3}, evicted [1, 9]
   strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late): at m2: members {2, 3, 9}, resets 3, strikes {1: [1, 2, 3]}
-  strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1546 of frame 1553, m3 conf 1546 of frame 1553; at m2: members {2, 3, 9}, evicted [1]
-  strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {2, 3}, resets 3, strikes {1: [1, 2, 3], 3: [2]}
-  strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1546 of frame 1553, m3 conf 1548 of frame 1553; at m2: members {2, 3}, evicted [1, 9]
+  strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1541 of frame 1553, m3 conf 1541 of frame 1553; at m2: members {2, 3, 9}, evicted [1]
+  strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {1, 2, 3}, resets 1, strikes {1: [1]}
+  strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 1541 of frame 1553, m2 conf 1541 of frame 1553, m3 conf 1541 of frame 1553; at m1: members {1, 2, 3}, evicted [9]
   strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): at m2: members {2, 3}, resets 3, strikes {1: [1, 2, 3]}
-  strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1548 of frame 1553, m3 conf 1546 of frame 1553; at m2: members {2, 3}, evicted [1, 9]
-RESULT strikeframe silent 3.05 s, 300 ms late: at m2 members {1, 2, 3}, resets 1, 9 removed at 10.52 s -> 1 KEPT
-  m1: conf 1546 frame 1553 members {1, 2, 3} evicted {9: (206, 412)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
-  m2: conf 1546 frame 1553 members {1, 2, 3} evicted {9: (206, 412)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 102 bad 0
-  m3: conf 1546 frame 1553 members {1, 2, 3} evicted {9: (206, 412)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 101 bad 0
-RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 303 bad 0
+  strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late) with VC3R-2's fix switched off (the behaviour before the fix): every replica equals the replay; m2 conf 1541 of frame 1553, m3 conf 1543 of frame 1553; at m2: members {2, 3}, evicted [1, 9]
+RESULT strikeframe silent 3.05 s, 300 ms late: at m2 members {1, 2, 3}, resets 2, 9 removed at 15.43 s -> 1 KEPT
+  m1: conf 1541 frame 1553 members {1, 2, 3} evicted {9: (128, 706)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 86 bad 0
+  m2: conf 1541 frame 1553 members {1, 2, 3} evicted {9: (128, 706)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 87 bad 0
+  m3: conf 1541 frame 1553 members {1, 2, 3} evicted {9: (128, 706)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 87 bad 0
+RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 260 bad 0
 RESULT strikeframe silent 3.05 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
-  m1: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 113 bad 0
-  m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 116 bad 0
-  m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 118 bad 0
-RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 347 bad 0
+  m1: conf 1541 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
+  m2: conf 1541 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 92 bad 0
+  m3: conf 1541 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 93 bad 0
+RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 276 bad 0
 RESULT strikeframe silent 3.02 s, 600 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
-  m1: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 116 bad 0
-  m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 121 bad 0
-  m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 116 bad 0
-RESULT strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 353 bad 0
-RESULT strikeframe silent 3.08 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
-  m1: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 111 bad 0
-  m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 115 bad 0
-  m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 114 bad 0
-RESULT strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 340 bad 0
-RESULT strikeframe silent 2.98 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 3, 9 removed at never -> 1 KEPT
-  m1: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 113 bad 0
-  m2: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 118 bad 0
-  m3: conf 1546 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 120 bad 0
-RESULT strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 351 bad 0
+  m1: conf 1543 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 88 bad 0
+  m2: conf 1543 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 92 bad 0
+  m3: conf 1543 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 91 bad 0
+RESULT strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 271 bad 0
+RESULT strikeframe silent 3.08 s, 1000 ms late: at m2 members {1, 2, 3}, resets 1, 9 removed at 10.45 s -> 1 KEPT
+  m1: conf 1541 frame 1553 members {1, 2, 3} evicted {9: (73, 407)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 93 bad 0
+  m2: conf 1541 frame 1553 members {1, 2, 3} evicted {9: (73, 407)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 93 bad 0
+  m3: conf 1541 frame 1553 members {1, 2, 3} evicted {9: (73, 407)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 93 bad 0
+RESULT strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 279 bad 0
+RESULT strikeframe silent 2.98 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
+  m1: conf 1541 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
+  m2: conf 1533 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 91 bad 0
+  m3: conf 1533 frame 1553 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
+RESULT strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=58509da549103f97 m2=58509da549103f97 m3=58509da549103f97 | offline replay 58509da549103f97 | ALL EQUAL, NO FALSE CHECKS ; checks ok 273 bad 0
 RESULT strikeframe: 1 kept in 5 of 5 timings -> OK

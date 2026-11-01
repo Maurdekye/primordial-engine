@@ -14,6 +14,9 @@ fn a_hand_never_stops_while_its_author_keeps_sending_through_every_level_change(
     let mut core = SessionCore::new(WorldSim::new(1, 1, &[1], SceneKind::BallPit { balls, hands: 1 }, SimConfig::default(), KeyRing::test(1)));
     assert!(core.adapt && core.ack_on_frames, "R18 is on by default");
     core.start(0);
+    // This test is about pacing through level changes: D56's memory (tests/r18_memory.rs) would
+    // stretch the schedule below, so it lowers after 300 ms of calm at every level here.
+    core.recall_calm_us = 300_000;
     let mut last: Option<[f64; 3]> = None;
     let (mut frozen, mut moved, mut levels_seen, mut transitions) = (Vec::new(), 0, [false; 6], 0);
     let mut level = 0;
@@ -23,7 +26,7 @@ fn a_hand_never_stops_while_its_author_keeps_sending_through_every_level_change(
     let delay = |ms: u64| if ms < 900 || (3_400..4_000).contains(&ms) { 50_000 } else { 0 };
     for ms in 0..6_500u64 {
         let now = ms * 1000;
-        core.set_link(delay(ms));
+        core.set_link(Some(delay(ms)));
         // D73(a): a pack's insertion rolls its author back, and the next tick reports its frame again.
         if let Some(f) = core.begin_tick(now, false).filter(|&f| last_f != Some(f)) {
             last_f = Some(f);
@@ -68,6 +71,8 @@ fn the_authors_hand_is_exact_at_every_level_and_its_packs_cover_every_frame() {
     let mk = |adapt: bool| {
         let mut c = SessionCore::new(WorldSim::new(1, 1, &[1], SceneKind::BallPit { balls, hands: 1 }, SimConfig::default(), KeyRing::test(1)));
         c.adapt = adapt;
+        // As above: D56's memory would stretch the level walk below.
+        c.recall_calm_us = 300_000;
         c.start(0);
         c
     };
@@ -79,7 +84,7 @@ fn the_authors_hand_is_exact_at_every_level_and_its_packs_cover_every_frame() {
     let (mut at_thin, mut at_full) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
     for ms in 0..6_500u64 {
         let now = ms * 1000;
-        thin.set_link(delay(ms));
+        thin.set_link(Some(delay(ms)));
         // The controller's target for a frame depends on the frame only, so both authors get the same.
         let target = |f: u64| [-600 + (f as i32 * 3) % 1200, 400 + (f as i32 % 50), 0];
         let pose = |f: u64| Payload::Hand { obj: hand, target_mm: target(f), active: true, span: 1, more: Vec::new() };

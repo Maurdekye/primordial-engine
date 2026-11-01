@@ -1,27 +1,27 @@
-REPRO voiddeep void fixes_off=0x200000000: f=1, P=4; 1 removed at never; P demoted: false; live at the end: false; m2 conf 110 of frame 230, m3 conf 110 of frame 230, m4 conf 108 of frame 228
+REPRO voiddeep void fixes_off=0x200000000: f=1, P=4; 1 removed at never; P demoted: false; live at the end: false; m2 conf 100 of frame 220, m3 conf 100 of frame 220, m4 conf 100 of frame 220
 RESULT voiddeep void fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT voiddeep: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT voiddeep: m3 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT voiddeep: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
-  m2: conf 110 frame 230 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
-  m3: conf 110 frame 230 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
-  m4: conf 108 frame 228 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 1 equivocations 1 checks ok 12 bad 0
-RESULT voiddeep void fixes_off=0x200000000: frames 0..227 honest m2=03e31880a76af28c m3=03e31880a76af28c m4=03e31880a76af28c | offline replay 03e31880a76af28c | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
-REPRO voiddeep void fixes_off=0x0: f=1, P=4; 1 removed at 2.25 s; P demoted: false; live at the end: true; m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+  m2: conf 100 frame 220 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 12 bad 0
+  m3: conf 100 frame 220 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 12 bad 0
+  m4: conf 100 frame 220 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 1 equivocations 1 checks ok 12 bad 0
+RESULT voiddeep void fixes_off=0x200000000: frames 0..219 honest m2=13b4ee7811064ae0 m3=13b4ee7811064ae0 m4=13b4ee7811064ae0 | offline replay 13b4ee7811064ae0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
+REPRO voiddeep void fixes_off=0x0: f=1, P=4; 1 removed at 2.27 s; P demoted: false; live at the end: true; m2 conf 821 of frame 833, m3 conf 815 of frame 833, m4 conf 815 of frame 833
 RESULT voiddeep void fixed=true: -> THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON
-RESULT voiddeep: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
-RESULT voiddeep: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
-RESULT voiddeep: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
-  m2: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 60 bad 0
-  m3: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 60 bad 0
-  m4: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 1 violations 1 equivocations 1 checks ok 60 bad 0
-RESULT voiddeep void fixes_off=0x0: frames 0..832 honest m2=f940b4223c23bda9 m3=f940b4223c23bda9 m4=f940b4223c23bda9 | offline replay f940b4223c23bda9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
-REPRO voiddeep valid fixes_off=0x0: f=1, P=4; 1 removed at 2.83 s; P demoted: true; live at the end: true; m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+RESULT voiddeep: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 130 (t=2.27 s) round 1 removed [1]
+RESULT voiddeep: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 130 (t=2.27 s) round 1 removed [1]
+RESULT voiddeep: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 130 (t=2.27 s) round 1 removed [1]
+  m2: conf 821 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 60 bad 0
+  m3: conf 815 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 59 bad 0
+  m4: conf 815 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 2 violations 1 equivocations 1 checks ok 59 bad 0
+RESULT voiddeep void fixes_off=0x0: frames 0..832 honest m2=f940b4223c23bda9 m3=f940b4223c23bda9 m4=f940b4223c23bda9 | offline replay f940b4223c23bda9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 178 bad 0
+REPRO voiddeep valid fixes_off=0x0: f=1, P=4; 1 removed at 2.85 s; P demoted: true; live at the end: true; m2 conf 818 of frame 833, m3 conf 818 of frame 833, m4 conf 818 of frame 833
 RESULT voiddeep valid fixed=true: -> THE LISTING, VALID ON ITS OWN ANCESTRY, IS DECIDED EVERYWHERE
-RESULT voiddeep: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 164 (t=2.83 s) round 0 removed [1]
-RESULT voiddeep: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 164 (t=2.83 s) round 0 removed [1]
-RESULT voiddeep: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 163 (t=2.82 s) round 0 removed [1]
-  m2: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 58 bad 0
-  m3: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 58 bad 0
-  m4: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 1 violations 1 equivocations 1 checks ok 58 bad 0
-RESULT voiddeep valid fixes_off=0x0: frames 0..832 honest m2=f940b4223c23bda9 m3=f940b4223c23bda9 m4=f940b4223c23bda9 | offline replay f940b4223c23bda9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
+RESULT voiddeep: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 165 (t=2.85 s) round 0 removed [1]
+RESULT voiddeep: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 159 (t=2.75 s) round 2 removed []; epoch 2 at frame 165 (t=2.85 s) round 0 removed [1]
+RESULT voiddeep: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 159 (t=2.75 s) round 2 removed []; epoch 2 at frame 165 (t=2.85 s) round 0 removed [1]
+  m2: conf 818 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 56 bad 0
+  m3: conf 818 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 56 bad 0
+  m4: conf 818 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 2 violations 1 equivocations 1 checks ok 56 bad 0
+RESULT voiddeep valid fixes_off=0x0: frames 0..832 honest m2=f940b4223c23bda9 m3=f940b4223c23bda9 m4=f940b4223c23bda9 | offline replay f940b4223c23bda9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 168 bad 0

@@ -1,18 +1,18 @@
   joiner admitted at m1: false
   jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary) with VC-3's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 176 of frame 296, m2 conf 176 of frame 296, m3 conf 176 of frame 296, m4 conf 176 of frame 296; at m1: members {1, 2, 3, 4}, evicted []
-RESULT jointiming: m1 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m2 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m3 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m4 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m5 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m1 members {1, 2, 3, 4, 5} evicted {} conf 700 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m2 members {1, 2, 3, 4, 5} evicted {} conf 700 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m3 members {1, 2, 3, 4, 5} evicted {} conf 700 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m4 members {1, 2, 3, 4, 5} evicted {} conf 700 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m5 members {1, 2, 3, 4, 5} evicted {} conf 700 frame 713 paused frames 0 lying votes found 0
 RESULT jointiming: m1 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []
 RESULT jointiming: m2 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []
 RESULT jointiming: m3 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []
 RESULT jointiming: m4 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []
 RESULT jointiming: m5 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []
-  m1: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 91 bad 0
-  m2: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 92 bad 0
-  m3: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
-  m4: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
-  m5: conf 705 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 91 bad 0
-RESULT jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary): frames 0..712 honest m1=70a9b31d9579776c m2=70a9b31d9579776c m3=70a9b31d9579776c m4=70a9b31d9579776c m5=70a9b31d9579776c | offline replay 70a9b31d9579776c | ALL EQUAL, NO FALSE CHECKS ; checks ok 456 bad 0
+  m1: conf 700 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 89 bad 0
+  m2: conf 700 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 89 bad 0
+  m3: conf 700 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 89 bad 0
+  m4: conf 700 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 88 bad 0
+  m5: conf 700 frame 713 members {1, 2, 3, 4, 5} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 89 bad 0
+RESULT jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary): frames 0..712 honest m1=70a9b31d9579776c m2=70a9b31d9579776c m3=70a9b31d9579776c m4=70a9b31d9579776c m5=70a9b31d9579776c | offline replay 70a9b31d9579776c | ALL EQUAL, NO FALSE CHECKS ; checks ok 444 bad 0
