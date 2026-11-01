@@ -2107,9 +2107,15 @@ pub struct WorldSim {
     window_data_cache: BTreeMap<u64, localize::WindowData>,
     /// Part B, rule 5: this replica is on the state feed (set by the harness, never logged).
     fed: Option<feed::Fed>,
-    /// Part B (TLP-27): per author, the newest checkpoint block on its chain and that checkpoint's id, in chain
-    /// order (a chain-local rule).
+    /// Part B (TLP-27): per author, the checkpoint state after the newest entry of its chain I validated: the
+    /// newest checkpoint's block and id.
     ckpt: BTreeMap<MemberId, (u64, EntryId)>,
+    /// Part B (TLP-27): the checkpoint state after each validated entry, by its id. An entry's expected link
+    /// follows from its prev's state, so each version of a forked chain is judged on its own line.
+    ckpt_after: BTreeMap<EntryId, (u64, EntryId)>,
+    /// Part B (TLP-19): my own chain's checkpoint state, kept at publish (a joiner validates its own chain only
+    /// once admitted).
+    my_ckpt: Option<(u64, EntryId)>,
     /// Part B (TLP-23): every checkpoint in my version, by author and block: its seq, id and rest-hash.
     ckpt_by_block: BTreeMap<(MemberId, u64), (u32, EntryId, u64)>,
     /// Part B, rule 1's echo: the checkpoints a fed member's echo credits as its references, once its digest
@@ -2387,6 +2393,8 @@ impl WorldSim {
             window_data_cache: BTreeMap::new(),
             fed: None,
             ckpt: BTreeMap::new(),
+            ckpt_after: BTreeMap::new(),
+            my_ckpt: None,
             ckpt_by_block: BTreeMap::new(),
             echo_refs: BTreeMap::new(),
             echo_pending: BTreeMap::new(),
@@ -2678,29 +2686,20 @@ impl WorldSim {
         }
     }
 
-    /// Part B (TLP-19, TLP-31): the link an entry of `m` stamped `stamp` must carry next on its chain: the id
-    /// of m's most recent checkpoint if this one starts a new 32-frame block (0 for m's first checkpoint), and 0
-    /// otherwise. With whether it is a checkpoint.
-    fn ckpt_next(&self, m: MemberId, stamp: u64) -> (bool, EntryId) {
-        match self.ckpt.get(&m) {
-            None => (true, 0),
-            Some(&(block, last)) if stamp / CKPT_FRAMES > block => (true, last),
-            Some(_) => (false, 0),
-        }
-    }
-
-    fn ckpt_link(&self, m: MemberId, stamp: u64) -> EntryId {
-        self.ckpt_next(m, stamp).1
-    }
-
-    /// The checkpoint state of `m`'s chain in my version: its newest checkpoint's block and id.
+    /// The checkpoint state of `m`'s chain in my version (mine: as I authored it): its newest checkpoint's block
+    /// and id.
     pub fn chain_ckpt(&self, m: MemberId) -> Option<(u64, EntryId)> {
-        self.ckpt.get(&m).copied()
+        if m == self.me {
+            self.my_ckpt
+        } else {
+            self.ckpt.get(&m).copied()
+        }
     }
 
     fn publish(&mut self, mut e: Entry) -> Entry {
         // Thin links Part B: a checkpoint carries the link to this member's previous checkpoint.
-        e.link = self.ckpt_link(e.member, e.stamp);
+        e.link = ckpt_link_for(self.my_ckpt, e.stamp);
+        self.my_ckpt = ckpt_step(self.my_ckpt, &e);
         self.my_seq += 1;
         self.my_last = e.id();
         let _ = self.insert(e.clone());
@@ -2979,14 +2978,22 @@ impl WorldSim {
                     && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b)
             }
         };
-        // Part B (TLP-27): the checkpoint link, a chain-local rule.
-        let (is_ckpt, want) = self.ckpt_next(m, e.stamp);
-        let link_ok = e.link == want;
-        if link_ok && is_ckpt {
-            self.ckpt.insert(m, (e.stamp / CKPT_FRAMES, id));
-            self.ckpt_by_block.insert((m, e.stamp / CKPT_FRAMES), (e.seq, id, e.rest_hash()));
-            if !self.echo_pending.is_empty() {
-                self.retry_echoes();
+        // Part B (TLP-27): the checkpoint link, a chain-local rule. The expected link follows from the state after
+        // e's prev in my version. A chain I hold from midway (no state for its prev) is taken on trust from its
+        // next checkpoint on.
+        let before = if e.prev == 0 { Some(None) } else { self.ckpt_after.get(&e.prev).map(|&c| Some(c)) };
+        let (link_ok, after) = match before {
+            Some(ck) => (e.link == ckpt_link_for(ck, e.stamp), ckpt_step(ck, &e)),
+            None => (true, if e.link != 0 { Some((e.stamp / CKPT_FRAMES, id)) } else { None }),
+        };
+        if let Some(a) = after {
+            self.ckpt_after.insert(id, a);
+            self.ckpt.insert(m, a);
+            if a.1 == id {
+                self.ckpt_by_block.insert((m, a.0), (e.seq, id, e.rest_hash()));
+                if !self.echo_pending.is_empty() {
+                    self.retry_echoes();
+                }
             }
         }
         let valid = valid && link_ok;

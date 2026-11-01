@@ -480,27 +480,39 @@ pub fn lagprecommit() {
 /// link heals; the run reports how far confirmation fell behind. The user accepted that cost
 /// (2026-11-01: it ends when the link heals or an admin kicks).
 pub fn aheadlink() {
-    aheadlink_for(5_100_000, false);
+    aheadlink_for(5_100_000, false, 4, false);
 }
 
 /// `aheadlink` with the cut-off lasting 30 s and never healing within the run (@design-reviewer's
 /// question on trust survey #4: what removes a live, partly cut-off honest member, if anything).
 pub fn aheadlink_long() {
-    aheadlink_for(30_000_000, false);
+    aheadlink_for(30_000_000, false, 4, false);
 }
 
 /// `aheadlink_long`, but what 3 does not hear on time is lost instead of 5 s late.
 pub fn aheadlink_cut() {
-    aheadlink_for(30_000_000, true);
+    aheadlink_for(30_000_000, true, 4, false);
 }
 
-fn aheadlink_for(cut_us: u64, lost: bool) {
+/// Thin links Part B on (@coordinator-opus 16:36Z): `aheadlink_long` / `aheadlink_cut` at `n` members (4 or 8),
+/// 3 the member cut off. Rule 1 counts the others' entries without 3 (n − q + 1 holders), and echo-stability
+/// needs q − 1 of the others, so nobody should wait on 3.
+pub fn aheadlink_b(lost: bool, n: u32) {
+    aheadlink_for(30_000_000, lost, n, true);
+}
+
+fn aheadlink_for(cut_us: u64, lost: bool, n: u32, localize: bool) {
     let long = cut_us > 5_100_000;
-    let ids = [1, 2, 3, 4];
-    let ps = peers_of(&ids, |m| match m {
+    let ids: Vec<MemberId> = (1..=n).collect();
+    let mut ps = peers_of(&ids, |m| match m {
         2 => plan(&[(60, touch(10, 6.0)), (120, Action::DefineRole { role: GUEST, perms: 0 }), (600, touch(33, 3.0))]),
         _ => BTreeMap::new(),
     });
+    if localize {
+        each_sim(&mut ps, |s| s.cfg.localize = true);
+    }
+    let others: Vec<MemberId> = ids.iter().copied().filter(|&m| m != 3).collect();
+    let tag = if localize { format!("-b{n}") } else { String::new() };
     let mut net = Net::new(link(30, 10, 0), 7);
     // 3 hears only 4's own acks on time from 1.9 s for `cut_us` (here 5.1 s: to 7 s); everything else
     // reaches it 5 s late (or, `lost`, never).
@@ -516,12 +528,12 @@ fn aheadlink_for(cut_us: u64, lost: bool) {
     let mut sim = Sim::new(net, ps, if long { 40_000_000 } else { 14_000_000 });
     let mut worst = (0u64, 0u64);
     let stopped = run_quiet(&mut sim, |sim| {
-        let l = lag(sim, &[1, 2, 4]);
+        let l = lag(sim, &others);
         if l > worst.0 {
             worst = (l, sim.net.now_us);
         }
     });
-    let honest = [1, 2, 3, 4];
+    let honest = ids.clone();
     let r3 = &sim.replica(3, 1).sim;
     let votes: Vec<(u32, MemberId)> = r3
         .all_entries()
@@ -534,19 +546,22 @@ fn aheadlink_for(cut_us: u64, lost: bool) {
         .collect();
     if long {
         // How 3 leaves, if it does: when the others decide it, and the first vote against it at 1.
-        vc_report(&sim, &honest, if lost { "aheadlink-cut" } else { "aheadlink-long" });
+        vc_report(&sim, &honest, &format!("{}{tag}", if lost { "aheadlink-cut" } else { "aheadlink-long" }));
         let r1 = sim.replica(1, 1);
         let removed = r1.sim.vc_log.iter().find(|d| d.3.contains(&3)).map(|d| sim_secs(r1, d.1));
         let why = r1.sim.events.iter().find(|e| e.contains("member 3") && e.contains("vote to")).cloned().unwrap_or_else(|| "no vote against 3".to_string());
         println!(
-            "RESULT aheadlink-{}: 3 removed at {}; first vote against 3 at m1: {why}; worst confirmation lag at 1, 2 and 4: {} frames, at {:.2} s",
+            "RESULT aheadlink-{}{tag}: 3 removed at {}; first vote against 3 at m1: {why}; worst confirmation lag at {}: {} frames, at {:.2} s",
             if lost { "cut" } else { "long" },
             removed.map_or("never".to_string(), |t| format!("{t:.2} s")),
+            if n == 4 { "1, 2 and 4".to_string() } else { format!("the other {}", n - 1) },
             worst.0,
             worst.1 as f64 / 1e6
         );
         let rest: Vec<MemberId> = honest.iter().copied().filter(|m| removed.is_none() || *m != 3).collect();
-        verdict(&sim, &rest, if lost { "aheadlink-cut (3 hears only 4's acks for 30 s; the rest is lost)" } else { "aheadlink-long (3 hears only 4's acks for 30 s; the rest 5 s late)" }, stopped);
+        let label = if lost { "aheadlink-cut (3 hears only 4's acks for 30 s; the rest is lost)" } else { "aheadlink-long (3 hears only 4's acks for 30 s; the rest 5 s late)" };
+        let label = if localize { format!("{label}, Part B on, {n} members") } else { label.to_string() };
+        verdict(&sim, &rest, &label, stopped);
         return;
     }
     let label = "aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is kept and catches up)";
