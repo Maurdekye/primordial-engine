@@ -366,6 +366,9 @@ pub struct Replica {
     pub adapt: bool,
     pub level: usize,
     level_t: u64,
+    /// Thin links (Part A): the uplink queue delay (us) when the level last changed, to tell a queue still
+    /// growing at the coarsest packed level from one draining there.
+    level_b: u64,
     calm_since: u64,
     /// The controller's last tick (us) at which the member was idle (7.6 reduction 2): calm before it does
     /// not count toward lowering into D56's remembered level.
@@ -381,8 +384,8 @@ pub struct Replica {
     /// Whether the uplink queue was above 40 ms at the last tick, to find where congestion begins.
     over: bool,
     /// Thin links (Part A): the drain level's quick return to packed level 5 was used in this D56 episode.
-    /// After that, leaving the drain level follows D56 like any other level, so a link the packed levels
-    /// cannot carry does not cycle.
+    /// Until then D56 remembers at most packed level 5. After that, leaving the drain level follows D56 like
+    /// any other level, so a link the packed levels cannot carry does not cycle.
     drained: bool,
     hand_last: BTreeMap<u32, u64>,
     /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
@@ -473,6 +476,7 @@ impl Peer {
                 quiet_us: 0,
                 over: false,
                 drained: false,
+                level_b: 0,
                 hand_last: BTreeMap::new(),
                 packs: BTreeMap::new(),
                 level_ms: [0; 9],
@@ -511,6 +515,9 @@ pub const PACKED_LEVELS: usize = 5;
 /// The level that drains a backlog without packs and returns to packed level 5 after 300 ms of calm, once
 /// per D56 episode.
 pub const DRAIN_LEVEL: usize = 6;
+/// From the coarsest packed level up, the controller climbs only while its queue is at least this deep (us), or
+/// still growing (by 10 ms since the last level change).
+pub const DEEP_QUEUE_US: u64 = 300_000;
 
 /// D73(a): a hand's poses not yet sent, for consecutive frames from `p0`, at stride `k`.
 struct Pack {
@@ -708,14 +715,28 @@ impl Sim {
                         Some((l, _)) => l,
                         None => r.level,
                     };
+                    // Thin links (Part A): until the drain level's quick return has been used in this episode, D56
+                    // remembers at most the coarsest packed level. The first climb through the drain and floor levels
+                    // clears a passing backlog; remembered, an onset reached on the way held a 32 kbit/s sweeper at
+                    // stride 16 for the rest of its run (26.5 s at level 7, its hand 213 mm behind) and started its
+                    // next gesture there. Congestion again after the return means the link needs the floor levels,
+                    // and from then on they are remembered: capping them always kept a two-member 8 kbit/s sweeper at
+                    // the drain level, which that link cannot carry (363 stalled frames for the other, against 209).
+                    let l = if r.drained { l } else { l.min(PACKED_LEVELS) };
                     r.congested = Some((l, now));
                     r.quiet_us = 0;
-                    // Thin links (Part A): the floor levels are climbed as fast as the others. Climbing them only
-                    // after a second at each (to spare the author's hand while a first congestion's packs drain)
-                    // let the queue fill: 15, 73 and 245 stalled frames at 16, 12 and 8 kbit/s instead of 0 at 16.
-                    if now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
+                    // Thin links (Part A): from the coarsest packed level up, climb only while the queue is deep
+                    // (`DEEP_QUEUE_US`) or still growing (by 10 ms) since the last level change. A backlog that level 5
+                    // drains with the author's hand exact stays there: on main, every cell that stalled had reached
+                    // the 500 ms router queue, and climbing on any 40 ms queue cost the sweeper's hand 86-437 mm at
+                    // 24-64 kbit/s for nothing. Climbing only past 300 ms waited too long where level 5 cannot carry
+                    // the stream: at 12 kbit/s with four members the others stalled 154 frames, against 116 with the
+                    // growth test (main: 155). Below level 5, climbs stay at 100 ms per level.
+                    let deep_enough = r.level < PACKED_LEVELS || b > DEEP_QUEUE_US || b > r.level_b + 10_000;
+                    if deep_enough && now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
                         r.level += 1;
                         r.level_t = now;
+                        r.level_b = b;
                     }
                 } else {
                     r.over = false;
@@ -758,6 +779,7 @@ impl Sim {
                     }
                     r.level -= 1;
                     r.level_t = now;
+                    r.level_b = b;
                     r.calm_since = now;
                 }
                 r.ack_every_us = ACK_FRAMES[r.level] * r.dt_us;

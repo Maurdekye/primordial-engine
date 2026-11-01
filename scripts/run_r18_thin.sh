@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Thin links, Part A (design 10.9; @item:primordial-engine/localize-congestion-to-the-thin-link-player-othe):
+# one member on its own slow link (both directions), the others at 256 kbit/s, the ball pit's sweep by
+# member 1. "up" cells: the thin member sweeps (its uplink); "down" cells: it watches member 1's sweep
+# (its downlink). Batched + adaptive only. Logs go to spikes/out/r18-thin/. Run it at low priority.
+set -eu
+cd "$(dirname "$0")/.."
+[ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim
+B=${PE_BIN:-./target/release}/pe-spike-session-sim
+O=${PE_OUT:-spikes/out}/r18-thin
+mkdir -p "$O"
+# Provenance: the commit (and whether the tree differs from it), the sources' and the binary's hashes. Each
+# log also prints the linked sim-core's encoding of a fixed pack.
+SRC=$(cat spikes/session-sim/src/*.rs spikes/sim-core/src/*.rs | sha256sum | cut -c1-16)
+PROV="commit $(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- spikes || echo ' + uncommitted changes'), sources $SRC, binary $(sha256sum "$([ -f "$B" ] && echo "$B" || echo "$B.exe")" | cut -c1-16)"
+echo "$PROV" > "$O/PROVENANCE"
+run() { local name=$1; shift; { echo "PROVENANCE $PROV"; "$B" capped "$@" --adaptive-only; } > "$O/$name.log"; grep "batched+adaptive" "$O/$name.log" | cut -c1-120; }
+for m in 2 3 4 8; do run base-m$m --kbps 256 --members $m --end 30; done
+for k in 8 12 16 24 32; do
+  for m in 2 4 8; do run up-k$k-m$m --kbps 256 --slow 1 --slow-kbps $k --members $m --end 30; done
+  for m in 3 4 8; do run down-k$k-m$m --kbps 256 --slow 3 --slow-kbps $k --members $m --end 30; done
+done
+run shared64-m4 --kbps 64 --members 4 --shared --end 30
+for k in 16 32; do
+  for m in 2 4; do run gap-up-k$k-m$m --kbps 256 --slow 1 --slow-kbps $k --members $m --gap 40 --end 66; done
+  for m in 3 4; do run gap-down-k$k-m$m --kbps 256 --slow 3 --slow-kbps $k --members $m --gap 40 --end 66; done
+done

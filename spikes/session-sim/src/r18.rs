@@ -37,6 +37,18 @@ pub fn capped(o: &Opts) {
         if o.shared { "per uplink, shared by its peers" } else { "per directed link" },
         o.end_s
     );
+    // Provenance: the linked sim-core's encoding of a fixed stride-8 pack, 68 bytes on the wire with delta-
+    // encoded targets and 130 without, so a log shows which encoder it ran with. A stale build in a target
+    // dir shared between worktrees once linked the encoder without deltas.
+    let pack = Entry {
+        member: 1,
+        seq: 1,
+        prev: 0,
+        stamp: 0,
+        payload: Payload::Hand { obj: 500, target_mm: [0, 200, 500], active: true, span: 1, more: (1..8).map(|i| [10 * i, 200, 500]).collect() },
+        carried: None,
+    };
+    println!("RESULT r18 capped: build: a stride-8 pack is {} bytes on the wire", encode_msg(&Msg::Entry(pack)).len());
     if let Some((sm, sk)) = o.slow {
         println!("RESULT r18 capped: member {sm} is on a slow link: {sk} kbit/s to and from every peer");
     }
@@ -285,6 +297,9 @@ pub fn capped(o: &Opts) {
                 "RESULT     controller on member 1: time at each level (hand stride {:?}, acks every {:?} frames): {:?} ms",
                 HAND_STRIDE, ACK_FRAMES, l
             );
+            if let Some((sm, _)) = o.slow.filter(|&(sm, _)| sm != 1) {
+                println!("RESULT     controller on member {sm}, the slow member: time at each level: {:?} ms", sim.replica(sm, 1).level_ms);
+            }
         }
     }
 }
