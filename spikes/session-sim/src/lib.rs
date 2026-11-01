@@ -153,6 +153,7 @@ pub fn kind(m: &Msg) -> &'static str {
         Msg::Join { .. } => "join",
         Msg::Batch(_) => "batch",
         Msg::Feed { .. } => "feed",
+        Msg::Ckpts { .. } => "ckpts",
     }
 }
 
@@ -762,6 +763,25 @@ impl Sim {
         }
     }
 
+    /// Thin links Part B (TLP-23): every member sends each member its log shows fed its checkpoints since that
+    /// member's echo of its chain.
+    fn send_ckpts(&mut self) {
+        let mut out = Vec::new();
+        for p in &mut self.peers {
+            if p.crashed {
+                continue;
+            }
+            for (w, r) in p.worlds.iter_mut() {
+                for (to, m) in r.sim.ckpt_msgs() {
+                    out.push((*w, p.id, to, m));
+                }
+            }
+        }
+        for (w, from, to, m) in out {
+            self.net.post(w, from, to, &m);
+        }
+    }
+
     /// Thin links Part B, rule 5: whether `m` is on the state feed in world `w` now.
     pub fn is_fed(&self, w: WorldId, m: MemberId) -> bool {
         self.net.fed.contains(&(w, m))
@@ -836,6 +856,7 @@ impl Sim {
                 }
                 Msg::Batch(_) => {}
                 Msg::Feed { frame, bodies } => r.sim.on_feed(frame, bodies),
+                Msg::Ckpts { member, after, list } => r.sim.on_ckpts(from, member, after, list),
             }
         }
         // 2. peers tick
@@ -844,6 +865,7 @@ impl Sim {
             self.tick_peer(pi, now);
         }
         if self.feed {
+            self.send_ckpts();
             self.run_feeds(now);
         }
         // 3. acceptance checks whose receiver is caught up and whose author has the frame

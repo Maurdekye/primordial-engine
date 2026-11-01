@@ -1398,6 +1398,11 @@ fn main() {
             by_kind: args.iter().any(|a| a == "--by-kind"),
             localize: args.iter().any(|a| a == "--localize"),
             slow_until_ms: get("--slow-until").map(|v| v.parse().unwrap()),
+            no_echo: args.iter().any(|a| a == "--no-echo"),
+            freeze: get("--freeze").map(|v| {
+                let (a, b) = v.split_once(':').expect("--freeze M:T");
+                (a.parse().unwrap(), b.parse().unwrap())
+            }),
             adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
         }),
         Some("ackfork") => review2::ackfork(),

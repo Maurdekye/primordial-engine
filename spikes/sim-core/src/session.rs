@@ -210,7 +210,9 @@ pub enum Payload {
     /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
     /// its author is in (design 10.8: an ack from a newer epoch than the reader's never counts
     /// toward the reader's confirmation).
-    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32 },
+    /// Thin links Part B: `fed` is set while its author is on the state feed (rule 5): its newest anchor frame
+    /// and its echo (rule 1).
+    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32, fed: Option<FedAck> },
     /// Vote, in membership epoch `epoch`, to remove `target`: it signed two versions of its entry
     /// `seq` (or another proof), or (`seq` = 0) it has gone silent or cannot keep up (reviews
     /// R3-2, R3-9). `frozen` is the head of target's chain this voter holds and will ever
@@ -876,6 +878,28 @@ pub struct Entry {
 /// Thin links Part B: a checkpoint block is 32 frames.
 pub const CKPT_FRAMES: u64 = 32;
 
+/// Thin links Part B (rule 1's echo, rule 5): what a fed member's ack adds. `anchor`: the frame of its newest
+/// state anchor (on every fed ack). `echo`: per member it echoes, the block of the newest checkpoint of that
+/// member's chain it computed (TLP-23); `digest`: the hash of the echoed (member, block, id) triples, which each
+/// receiver recomputes from its own version (production: 32 bytes, DS-4). The echo rides only on an ack after
+/// it changed (empty: as before); it is cumulative, and acks are read in chain order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FedAck {
+    pub anchor: u64,
+    pub echo: Vec<(MemberId, u64)>,
+    pub digest: u64,
+}
+
+/// H_id (TLP-22, TLP-31): an entry's id from its checkpoint link and its rest-hash.
+pub fn entry_id(link: EntryId, rest: u64) -> EntryId {
+    fnv_u64s([0x5045_5f49_445f_5631, link, rest])
+}
+
+/// Rule 1's echo: the digest over the echoed (member, block, id) triples, in member order.
+pub fn echo_digest(triples: impl IntoIterator<Item = (MemberId, u64, EntryId)>) -> u64 {
+    fnv_u64s(std::iter::once(0x5045_5f45_4348_4f31).chain(triples.into_iter().flat_map(|(m, b, id)| [m as u64, b, id])))
+}
+
 /// Thin links Part B (TLP-19): a chain's checkpoint state after `e`, from its state before it: the newest
 /// checkpoint's block and id (None before the chain's first entry). `e` is a checkpoint if it is stamped in a
 /// later block than the newest checkpoint's.
@@ -900,7 +924,7 @@ impl Entry {
     /// fed member computes a checkpoint's id from the link it holds and the rest-hash it is sent. Production:
     /// domain-separated SHA-256 / BLAKE3 over the signed bytes.
     pub fn id(&self) -> EntryId {
-        fnv_u64s([0x5045_5f49_445f_5631, self.link, self.rest_hash()])
+        entry_id(self.link, self.rest_hash())
     }
 
     /// H_rest: the hash of everything but the link's value (the encoding's flags still say whether there is one).
@@ -935,6 +959,10 @@ pub enum Msg {
     /// Thin links Part B, rule 5: the state feed to a fed member, from its feeder. The bodies' states
     /// after `frame`, quantized (`FeedBody`). Never logged.
     Feed { frame: u64, bodies: Vec<FeedBody> },
+    /// Thin links Part B (TLP-23): `member`'s checkpoints for a fed member, block and rest-hash each, from the
+    /// one after block `after` (the checkpoint the first one links to; None: the first is the chain's first).
+    /// Only from the chain's own author. Never logged.
+    Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u64)> },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -1046,13 +1074,19 @@ impl Wr {
                 assert!(w.len() <= MAX_CERT_WORDS, "an ownership certificate is at most {MAX_CERT_WORDS} words");
                 self.u8(20); self.u32(*epoch); self.u32(w.len() as u32); for x in w { self.u64(x) }
             }
-            Payload::Ack { horizon, heads, check, epoch } => {
+            Payload::Ack { horizon, heads, check, epoch, fed } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
-                // their entry ids; a later epoch is tag 14 with the epoch appended.
-                self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
+                // their entry ids; a later epoch is tag 14 with the epoch appended. A fed member's ack
+                // (Part B) is tag 22: the epoch, then its anchor and echo.
+                self.u8(if fed.is_some() { 22 } else if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.u64(*id) }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
-                if *epoch != 0 { self.u32(*epoch) }
+                if *epoch != 0 || fed.is_some() { self.u32(*epoch) }
+                if let Some(fa) = fed {
+                    self.u64(fa.anchor); self.u32(fa.echo.len() as u32);
+                    for (m, b) in &fa.echo { self.u32(*m); self.u64(*b) }
+                    if !fa.echo.is_empty() { self.u64(fa.digest) }
+                }
             }
             Payload::Vote { epoch, target, seq, frozen, kick } => {
                 // A vote that answers no kick keeps tag 8 (and so its id); a kick vote is tag 15.
@@ -1133,6 +1167,12 @@ impl Wr {
             }
             Msg::FetchEntry { id, back: 0 } => { self.u8(8); self.u64(*id) }
             Msg::FetchEntry { id, back } => { self.u8(9); self.u64(*id); self.u8(*back) }
+            Msg::Ckpts { member, after, list } => {
+                self.u8(11); self.u32(*member);
+                match after { Some(b) => { self.u8(1); self.u64(*b) } None => self.u8(0) }
+                self.u32(list.len() as u32);
+                for (b, r) in list { self.u64(*b); self.u64(*r) }
+            }
             Msg::Feed { frame, bodies } => {
                 self.u8(10); self.u64(*frame); self.u32(bodies.len() as u32);
                 for b in bodies {
@@ -1279,14 +1319,24 @@ impl Rd<'_> {
                 for _ in 0..n { w.push(self.u64()?) }
                 Payload::Ownership { epoch, cert: Cert::from_words(&w)? }
             }
-            tag @ (7 | 14) => {
+            tag @ (7 | 14 | 22) => {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
                 for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.u64()?)) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
-                let epoch = if tag == 14 { self.u32()? } else { 0 };
-                Payload::Ack { horizon, heads, check, epoch }
+                let epoch = if tag != 7 { self.u32()? } else { 0 };
+                let fed = if tag == 22 {
+                    let anchor = self.u64()?;
+                    let k = self.u32()? as usize;
+                    let mut echo = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { echo.push((self.u32()?, self.u64()?)) }
+                    let digest = if k > 0 { self.u64()? } else { 0 };
+                    Some(FedAck { anchor, echo, digest })
+                } else {
+                    None
+                };
+                Payload::Ack { horizon, heads, check, epoch, fed }
             }
             tag @ (8 | 15) => {
                 let (epoch, target, seq, frozen) = (self.u32()?, self.u32()?, self.u32()?, (self.u32()?, self.u64()?));
@@ -1385,6 +1435,14 @@ impl Rd<'_> {
             }
             8 => Msg::FetchEntry { id: self.u64()?, back: 0 },
             9 => Msg::FetchEntry { id: self.u64()?, back: self.u8()? },
+            11 => {
+                let member = self.u32()?;
+                let after = if self.u8()? == 1 { Some(self.u64()?) } else { None };
+                let n = self.u32()? as usize;
+                let mut list = Vec::with_capacity(n.min(256));
+                for _ in 0..n { list.push((self.u64()?, self.u64()?)) }
+                Msg::Ckpts { member, after, list }
+            }
             10 => {
                 let frame = self.u64()?;
                 let n = self.u32()? as usize;
@@ -1728,6 +1786,10 @@ pub struct Stats {
     /// Thin links Part B, rule 2: carried-state writes skipped as stale (counted at every simulation of
     /// their frame, re-simulations included).
     pub stale_skips: u64,
+    /// Thin links Part B, rule 1's echo: fed members' echoes whose digest matched my version (credited), and
+    /// those that didn't (production asks for the full signed heads, 7.6).
+    pub echoes_matched: u64,
+    pub echo_mismatches: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -1801,6 +1863,9 @@ pub struct SimConfig {
     /// sessions of 4 or more members. Off keeps today's rules; the spike switches it on per scenario
     /// while Part B is built.
     pub localize: bool,
+    /// Part B, rule 1's echo: receivers credit a fed member's echo (on by default; off only to measure what
+    /// it carries).
+    pub echo: bool,
     /// Part B, section 3, in frames: Q's limits (admin entries in production), the floor F under every
     /// deadline, and an acceptable connection's jitter and delay limits and its re-fetch allowance R.
     pub q_min: u64,
@@ -1828,6 +1893,7 @@ impl Default for SimConfig {
             ack_heads: true,
             join_lead: 60,
             localize: false,
+            echo: true,
             q_min: 4,
             q_max: 45,
             floor_f: 32,
@@ -2044,6 +2110,21 @@ pub struct WorldSim {
     /// Part B (TLP-27): per author, the newest checkpoint block on its chain and that checkpoint's id, in chain
     /// order (a chain-local rule).
     ckpt: BTreeMap<MemberId, (u64, EntryId)>,
+    /// Part B (TLP-23): every checkpoint in my version, by author and block: its seq, id and rest-hash.
+    ckpt_by_block: BTreeMap<(MemberId, u64), (u32, EntryId, u64)>,
+    /// Part B, rule 1's echo: the checkpoints a fed member's echo credits as its references, once its digest
+    /// matched my version. Read only by echo-stability (`matched_ref`): never holders, D54 stability or votes.
+    echo_refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, EntryId>>,
+    /// A fed member's newest echo not yet checked (I don't hold every checkpoint it names yet).
+    echo_pending: BTreeMap<MemberId, (Vec<(MemberId, u64)>, u64)>,
+    /// Members my log shows on the feed (their newest ack carries an anchor), with the block of their echo
+    /// of my chain (TLP-23).
+    fed_peers: BTreeMap<MemberId, Option<u64>>,
+    /// TLP-23: per fed member, the newest of my checkpoint blocks I sent it and the frame I sent it at.
+    ckpt_sent: BTreeMap<MemberId, (u64, u64)>,
+    /// The fed side (TLP-24): per member, the newest checkpoint of its chain I echo, its block and id. Kept
+    /// across leaving and re-entering the feed.
+    echo_last: BTreeMap<MemberId, (u64, EntryId)>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
@@ -2306,6 +2387,12 @@ impl WorldSim {
             window_data_cache: BTreeMap::new(),
             fed: None,
             ckpt: BTreeMap::new(),
+            ckpt_by_block: BTreeMap::new(),
+            echo_refs: BTreeMap::new(),
+            echo_pending: BTreeMap::new(),
+            fed_peers: BTreeMap::new(),
+            ckpt_sent: BTreeMap::new(),
+            echo_last: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
@@ -2713,7 +2800,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp,
-            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
+            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch), fed: self.fed_ack() },
             carried: None,
             link: 0,
         };
@@ -2897,6 +2984,10 @@ impl WorldSim {
         let link_ok = e.link == want;
         if link_ok && is_ckpt {
             self.ckpt.insert(m, (e.stamp / CKPT_FRAMES, id));
+            self.ckpt_by_block.insert((m, e.stamp / CKPT_FRAMES), (e.seq, id, e.rest_hash()));
+            if !self.echo_pending.is_empty() {
+                self.retry_echoes();
+            }
         }
         let valid = valid && link_ok;
         if !valid {
@@ -2907,7 +2998,7 @@ impl WorldSim {
             return;
         }
         match e.payload {
-            Payload::Ack { horizon, heads, check, epoch } => {
+            Payload::Ack { horizon, heads, check, epoch, fed } => {
                 if epoch > 0 {
                     self.ack_epoch_from.entry(m).or_default().entry(epoch).or_insert(e.seq);
                 }
@@ -2937,6 +3028,22 @@ impl WorldSim {
                 if m != self.me {
                     if let Some((f, hh)) = check {
                         self.remote_checks.entry(f).or_default().insert(m, hh);
+                    }
+                    // Part B: whether m is fed (TLP-23), and its echo (rule 1, TLP-15).
+                    match fed {
+                        Some(fa) if !fa.echo.is_empty() => {
+                            self.fed_peers.insert(m, fa.echo.iter().find(|&&(x, _)| x == self.me).map(|&(_, b)| b));
+                            self.echo_pending.insert(m, (fa.echo, fa.digest));
+                            self.retry_echoes();
+                        }
+                        // The same echo as m's previous ack.
+                        Some(_) => {
+                            self.fed_peers.entry(m).or_insert(None);
+                        }
+                        None => {
+                            self.fed_peers.remove(&m);
+                            self.echo_pending.remove(&m);
+                        }
                     }
                 }
                 self.recompute_conf();
@@ -6328,5 +6435,97 @@ mod ownership_tests {
         w.u8(0); // carried: none
         assert_eq!(decode_msg(&w.0), None);
         assert_eq!(Cert::from_words(&vec![0; MAX_CERT_WORDS + 1]), None);
+    }
+}
+
+#[cfg(test)]
+mod echo_tests {
+    //! Thin links Part B, rule 1's echo: checkpoint links, the ids a fed member computes, and the encodings.
+    use super::*;
+
+    /// A chain of acks of member 1 stamped every `step` frames, with honest checkpoint links.
+    fn chain(n: u32, step: u64) -> Vec<Entry> {
+        let (mut out, mut ck, mut prev): (Vec<Entry>, Option<(u64, EntryId)>, EntryId) = (Vec::new(), None, 0);
+        for s in 1..=n {
+            let stamp = 3 + s as u64 * step;
+            let mut e = Entry { member: 1, seq: s, prev, stamp, payload: Payload::Ack { horizon: stamp - 1, heads: vec![(2, s, 7)], check: None, epoch: 0, fed: None }, carried: None, link: 0 };
+            e.link = ckpt_link_for(ck, stamp);
+            ck = ckpt_step(ck, &e);
+            prev = e.id();
+            out.push(e);
+        }
+        out
+    }
+
+    #[test]
+    fn checkpoint_links_round_trip_and_ids_split() {
+        let c = chain(40, 7);
+        let ckpts: Vec<&Entry> = c.iter().filter(|e| e.link != 0).collect();
+        // Blocks of 32 frames at 7 frames per entry: a checkpoint in nearly every block after the first.
+        assert!(ckpts.len() >= 7, "{}", ckpts.len());
+        for e in &c {
+            assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e.clone())));
+            assert_eq!(entry_id(e.link, e.rest_hash()), e.id());
+        }
+        // Each checkpoint links to the previous one.
+        for w in ckpts.windows(2) {
+            assert_eq!(w[1].link, w[0].id());
+        }
+    }
+
+    #[test]
+    fn a_fed_member_computes_checkpoint_ids_forward() {
+        // TLP-22/23: from a checkpoint id it holds and each later checkpoint's rest-hash, a fed member gets
+        // every later checkpoint's id; a rest-hash of another fork gives an id no one holds.
+        let c = chain(40, 7);
+        let mut ck: Option<(u64, EntryId)> = None;
+        let mut firsts: Vec<(u64, EntryId, u64)> = Vec::new();
+        for e in &c {
+            let before = ck;
+            ck = ckpt_step(ck, e);
+            if ck != before {
+                firsts.push((e.stamp / CKPT_FRAMES, e.id(), e.rest_hash()));
+            }
+        }
+        let (_, mut id, _) = firsts[0];
+        for &(_, real, rest) in &firsts[1..] {
+            id = entry_id(id, rest);
+            assert_eq!(id, real);
+        }
+        let forged = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..c[39].clone() };
+        assert_ne!(entry_id(firsts[firsts.len() - 2].1, forged.rest_hash()), c[39].id());
+    }
+
+    #[test]
+    fn fed_acks_and_checkpoint_lists_round_trip() {
+        for fed in [
+            Some(FedAck { anchor: 900, echo: vec![(1, 12), (2, 11), (4, 12)], digest: 0xabcd }),
+            Some(FedAck { anchor: 901, echo: vec![], digest: 0 }),
+            None,
+        ] {
+            for epoch in [0, 3] {
+                let e = Entry { member: 3, seq: 9, prev: 5, stamp: 400, payload: Payload::Ack { horizon: 399, heads: vec![(1, 4, 8)], check: Some((300, 6)), epoch, fed: fed.clone() }, carried: None, link: 0 };
+                assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
+            }
+        }
+        for m in [Msg::Ckpts { member: 2, after: Some(11), list: vec![(12, 5), (13, 6)] }, Msg::Ckpts { member: 2, after: None, list: vec![(0, 5)] }] {
+            assert_eq!(decode_msg(&encode_msg(&m)), Some(m));
+        }
+    }
+
+    #[test]
+    fn the_decoder_refuses_unknown_flags_and_a_flagged_zero_link() {
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Attest { fact: 1, sig: 0 }, carried: None, link: 0 };
+        let mut b = encode_msg(&Msg::Entry(e));
+        let flags = b.len() - 1;
+        assert_eq!(b[flags], 0);
+        b[flags] = 4;
+        assert_eq!(decode_msg(&b), None);
+        b[flags] = 2;
+        b.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(decode_msg(&b), None);
+        let n = b.len();
+        b[n - 8] = 1;
+        assert!(decode_msg(&b).is_some());
     }
 }

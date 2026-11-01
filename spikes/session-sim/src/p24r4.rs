@@ -1212,7 +1212,7 @@ fn fork_segment_sim(seg: Segment, off: u64) -> (Sim, Option<u64>, MemberId, Memb
             } else {
                 let h = b1.stamp + 40;
                 let ack_epoch = if seg == Segment::ValidRole { epoch + 2 } else { epoch };
-                let a1 = Entry { payload: Payload::Ack { horizon: h, heads: vec![], check: None, epoch: ack_epoch }, ..b1.clone() };
+                let a1 = Entry { payload: Payload::Ack { horizon: h, heads: vec![], check: None, epoch: ack_epoch, fed: None }, ..b1.clone() };
                 let mut a2 = Entry { seq: b2.seq, prev: a1.id(), stamp: b1.stamp + 10, payload: Payload::SetRole { epoch, member: p, role: GUEST }, carried: None, ..b2.clone() };
                 a2.link = ckpt_link_for(ckpt_step(ck0, &a1), a2.stamp);
                 rf.byz_change = Some(Change { epoch, admin: vec![(a2.id(), true)], ..Default::default() });
