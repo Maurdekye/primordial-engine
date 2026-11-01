@@ -86,9 +86,9 @@ full entry. The rules as built:
 - An entry that names one the receiver lacks waits: the hole is asked for from everyone, a head from
   the acker. A head still missing after 15 frames also gets the explicit form asked for from the sender.
 - A failed verification fetches the explicit form from the sender, and everyone's version of seq - 1.
-- A waiting entry counts as hearing from its author (S6) and keeps the receiver busy (7.6's idle
-  predicate reads the wait list; an unverified stamp is never noted, and any noted stamp is clamped
-  to a window ahead: review LN-2). At most 1,024 entries wait; past that, the longest wait goes
+- A waiting entry counts as hearing from its author (S6), and one other than an ack keeps the
+  receiver busy, as it would once inserted (7.6's idle predicate reads the wait list; an unverified
+  stamp is never noted, and any noted stamp is clamped to a window ahead: review LN-2). At most 1,024 entries wait; past that, the longest wait goes
   (review LN-3).
 - An ack naming a chain more than 32 entries past what the receiver has acked holding goes explicit
   (bridge). Fetch replies and relays stay explicit.

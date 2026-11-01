@@ -1,0 +1,36 @@
+  m1 grab @100: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m2 grab @101: [Some(RejectedClaimed { by: 1, until: 130 }), Some(RejectedClaimed { by: 1, until: 130 }), Some(RejectedClaimed { by: 1, until: 130 })] at m1/m2/m3; its author first saw Some(Accepted)
+  m2 grab @220: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @221: [Some(RejectedClaimed { by: 2, until: 250 }), Some(RejectedClaimed { by: 2, until: 250 }), Some(RejectedClaimed { by: 2, until: 250 })] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @340: [Some(RejectedClaimed { by: 2, until: 370 }), Some(RejectedClaimed { by: 2, until: 370 }), Some(RejectedClaimed { by: 2, until: 370 })] at m1/m2/m3; its author first saw Some(Accepted)
+  m2 grab @340: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @460: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @470: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @480: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m3 push @480: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @490: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m2 grab @490: [Some(RejectedClaimed { by: 1, until: 510 }), Some(RejectedClaimed { by: 1, until: 510 }), Some(RejectedClaimed { by: 1, until: 510 })] at m1/m2/m3; its author first saw Some(RejectedClaimed { by: 1, until: 510 })
+  m1 grab @500: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @510: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @520: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+  m1 grab @555: [Some(RejectedCooldown { until: 560 }), Some(RejectedCooldown { until: 560 }), Some(RejectedCooldown { until: 560 })] at m1/m2/m3; its author first saw Some(RejectedCooldown { until: 560 })
+  m2 grab @562: [Some(Accepted), Some(Accepted), Some(Accepted)] at m1/m2/m3; its author first saw Some(Accepted)
+RESULT grabrace: 17 touches, 5 refused (all grabs), pushes refused 0, losers that first saw their grab accepted and then undone 3, outcomes equal at every replica: true
+OUTCOME grabrace w1 m1 s51 grab Accepted
+OUTCOME grabrace w1 m1 s111 grab RejectedClaimed { by: 2, until: 250 }
+OUTCOME grabrace w1 m1 s170 grab RejectedClaimed { by: 2, until: 370 }
+OUTCOME grabrace w1 m1 s230 grab Accepted
+OUTCOME grabrace w1 m1 s236 grab Accepted
+OUTCOME grabrace w1 m1 s242 grab Accepted
+OUTCOME grabrace w1 m1 s248 grab Accepted
+OUTCOME grabrace w1 m1 s254 grab Accepted
+OUTCOME grabrace w1 m1 s260 grab Accepted
+OUTCOME grabrace w1 m1 s265 grab Accepted
+OUTCOME grabrace w1 m1 s284 grab RejectedCooldown { until: 560 }
+OUTCOME grabrace w1 m2 s51 grab RejectedClaimed { by: 1, until: 130 }
+OUTCOME grabrace w1 m2 s110 grab Accepted
+OUTCOME grabrace w1 m2 s170 grab Accepted
+OUTCOME grabrace w1 m2 s245 grab RejectedClaimed { by: 1, until: 510 }
+OUTCOME grabrace w1 m2 s281 grab Accepted
+OUTCOME grabrace w1 m3 s237 push Accepted
+RESULT grabrace world 1: frames 0..700 digests m1=2828e963bb8adb5d m2=2828e963bb8adb5d m3=2828e963bb8adb5d | offline replay 2828e963bb8adb5d | ALL EQUAL

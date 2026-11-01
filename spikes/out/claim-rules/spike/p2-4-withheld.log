@@ -1,0 +1,14 @@
+  t=3574 ms: 9's touch s26 at frame 50 confirmed at m1: true, at m2: true (m1 conf 201) -> 9 signs a second version
+  9's touches at m1: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m2: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+  9's touches at m3: m9s26@50 eff=None void=true, m9s26@50 eff=Some(50) void=false
+RESULT withheld: m1 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
+RESULT withheld: m2 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
+RESULT withheld: m3 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
+RESULT withheld: m1 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [9]
+RESULT withheld: m2 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 219 (t=3.75 s) round 0 removed [9]
+RESULT withheld: m3 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [9]
+  m1: conf 467 frame 473 members {1, 2, 3, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 55 bad 0
+  m2: conf 467 frame 473 members {1, 2, 3, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 55 bad 0
+  m3: conf 467 frame 473 members {1, 2, 3, 8} evicted {9: (104, 208)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 55 bad 0
+RESULT withheld (9 equivocates on a confirmed touch; 8 casts no view-change entry): frames 0..472 honest m1=fee71321cc6d1c49 m2=fee71321cc6d1c49 m3=fee71321cc6d1c49 | offline replay fee71321cc6d1c49 | ALL EQUAL, NO FALSE CHECKS ; checks ok 165 bad 0

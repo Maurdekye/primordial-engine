@@ -6,7 +6,7 @@ RESULT     member 1's own hand against its target, over 130 gesture frames: mean
 RESULT   batched          | 318.5 / 132.0 / 131.7 / 132.0 |  499 /  499 /  499 /  499 | 5322 | 1542 / 1545 / 1545 / 1545 | 1662 / 1665 / 1665 / 1665 | 0 (own entries moved: 0) |  3.8/s,  28 | never | m1 8c8a6039da7e9442 / m2 a46ed8d90cdbb6e1 / m3 a46ed8d90cdbb6e1 / m4 a46ed8d90cdbb6e1 replay 8c8a6039da7e9442 DIFFER
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 45.4 / 18.9 (210 of 222 unconfirmed), m2 32.6 / 22.3 (214 of 222 unconfirmed), m3 32.6 / 22.3 (214 of 222 unconfirmed), m4 32.5 / 22.1 (214 of 222 unconfirmed)
 RESULT     member 1's own hand against its target, over 132 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched+adaptive |  93.9 /  55.3 /  55.3 /  55.3 |  499 /  499 /  498 /  498 |  140 | 1422 / 197 / 207 / 229 | 1402 / 265 / 265 / 266 | 23 (own entries moved: 0) |  3.6/s,  33 | 944 ms | m2 1178ea3ed4bea61b / m3 1178ea3ed4bea61b / m4 1178ea3ed4bea61b replay 1178ea3ed4bea61b EQUAL
+RESULT   batched+adaptive |  93.9 /  55.3 /  55.3 /  55.3 |  499 /  496 /  494 /  497 |  130 | 1422 / 177 / 157 / 162 | 1402 / 265 / 265 / 266 | 23 (own entries moved: 0) |  3.6/s,  33 | 944 ms | m2 1178ea3ed4bea61b / m3 1178ea3ed4bea61b / m4 1178ea3ed4bea61b replay 1178ea3ed4bea61b EQUAL
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 260.9 / 124.6, m2 266.0 / 142.0, m3 266.0 / 142.0, m4 266.3 / 142.1
 RESULT     member 1's own hand against its target, over 135 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {1: (37, 135)}
