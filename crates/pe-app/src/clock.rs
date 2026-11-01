@@ -15,11 +15,14 @@
 //!   is the same midpoint of the members' fitted rates, its own included. With n >= 3t + 1 every honest
 //!   target lies within the honest range and the honest spread at least halves each round (fault-
 //!   tolerant averaging); a plain median does not converge under two-faced faults (review CM-1).
-//! * The frequencies come from the members' raw clocks: a pong also carries the replier's monotonic
-//!   local time, and the slope of that against this member's clock is a pure ratio of two oscillators,
-//!   constant and independent of anyone's corrections. Taking the midpoint of those ratios (its own,
-//!   0, included) makes every member's session clock run at the same frequency without feedback
-//!   between their adjustments.
+//! * The frequency is selected again at every round (design 10.4 item 5). A pong also carries the
+//!   replier's monotonic local time and its applied frequency correction `r_j`. The slope of the raw
+//!   time against this member's clock is ρ_j, a pure ratio of two oscillators that no correction
+//!   moves; (1 + ρ_j)(1 + r_j) - 1 is then peer j's session frequency in this member's raw units,
+//!   exactly and without a fit's lag. The member moves its own correction `r` toward the
+//!   fault-tolerant midpoint of those values (its own `r` included) by a gain per round, so honest
+//!   frequencies converge as the offsets do, two-faced liars included. Fitting slopes of the peers'
+//!   corrected clocks instead lags and oscillates (two members swung +-80 ms with a 20 s period).
 //! * The offset runs at that frequency and slews toward the target by a capped residual, so session
 //!   time never steps, never runs backwards and never skips a frame.
 //! * R18's one-way stamps use the **rate-corrected clock** (`rc`): the local clock run at the fitted
@@ -34,16 +37,15 @@ use std::collections::{BTreeMap, VecDeque};
 const WINDOW_US: u64 = 30_000_000;
 /// A fit takes the shortest round trip in each bucket of this length.
 const BUCKET_US: u64 = 2_000_000;
-/// A frequency is fitted once the buckets span at least 6 s (Theil-Sen over pairs at least 3 s apart:
-/// a change of path delay shifts the measured offset, and over a short span that would read as a
-/// frequency).
-const MIN_SPAN_US: u64 = 6_000_000;
-const MIN_PAIR_US: u64 = 3_000_000;
+/// A frequency is fitted once the buckets span at least 10 s (Theil-Sen over pairs at least 4 s
+/// apart): a change of path delay, or a queue on one direction, shifts the measured offset, and over
+/// a short span that reads as a frequency (with 6 s, the 80 kbit/s run's first congestion read as
+/// +0.76 % for 2 s and worsened its queue peak by about 90 ms, measured).
+const MIN_SPAN_US: u64 = 10_000_000;
+const MIN_PAIR_US: u64 = 4_000_000;
 /// A round trip counts toward the RTT excess (R18's clamp) while it is this recent.
 const RTT_FRESH_US: u64 = 2_000_000;
-/// The offset is predicted from the best samples of the last 3 buckets, carried forward at the rate;
-/// before a peer has a rate, from its newest sample within this of the best round trip.
-const OFFSET_BUCKETS: usize = 3;
+/// The offset is predicted from the peer's newest sample within this of its best round trip.
 const NEAR_RTT_US: u64 = 2_000;
 /// The residual correction beyond the frequency, per µs of local time: 12 % while more than `NEAR_US`
 /// off (enough to follow a 9 % drift before a rate is fitted; 2 ms per 60 Hz frame), then 1 %.
@@ -52,6 +54,9 @@ const SLOW_SLEW: f64 = 0.01;
 const NEAR_US: f64 = 5_000.0;
 /// The frequency correction never exceeds this (a clock off by more is broken, not drifting).
 const MAX_RATE: f64 = 0.15;
+/// Each round (a new sample from any member) moves the correction this share of the way to the
+/// round's selection: gradual, so neither the session clock nor the rate-corrected clock jumps.
+const RATE_GAIN: f64 = 0.25;
 
 /// One peer's clocks against this member's local clock.
 #[derive(Default)]
@@ -63,10 +68,13 @@ pub struct PeerClock {
     /// Session offsets sampled before this local time are void (members still bootstrapping); raw
     /// offsets stay valid, since no correction moves a raw clock.
     session_from: u64,
+    /// The peer's applied frequency correction, as its latest pong reported it.
+    applied: f64,
 }
 
 impl PeerClock {
-    fn sample(&mut self, t1: u64, t4: u64, r: u64, raw: u64) {
+    fn sample(&mut self, t1: u64, t4: u64, r: u64, raw: u64, applied: f64) {
+        self.applied = if applied.is_finite() { applied.clamp(-MAX_RATE, MAX_RATE) } else { 0.0 };
         let rtt = t4.saturating_sub(t1);
         let mid = t1 + rtt / 2;
         self.samples.push_back((mid, r as i64 - mid as i64, raw as i64 - mid as i64, rtt));
@@ -89,7 +97,7 @@ impl PeerClock {
     }
 
     /// The slope of the raw-clock offset over the window (Theil-Sen: the median of the slopes between
-    /// bucket pairs at least 3 s apart, robust to a few buckets displaced by a path change). It is the
+    /// bucket pairs at least 4 s apart, robust to a few buckets displaced by a path change). It is the
     /// ratio of the two oscillators, constant, so the whole window sharpens it.
     fn fit_rate(&self) -> Option<f64> {
         let good = self.best();
@@ -115,23 +123,21 @@ impl PeerClock {
         (latest.0 + RTT_FRESH_US >= local).then(|| latest.3 - self.best_rtt().unwrap_or(latest.3))
     }
 
-    /// The peer's session offset predicted at local time `local`: the best samples of the last few
-    /// buckets, each carried forward at `rate` (the session frequency every member runs at), averaged.
-    /// Until this peer has a fitted frequency, only the newest bucket counts: an older one would carry
-    /// the drift since (review M2).
+    /// The peer's session frequency against this member's raw clock, (1 + ρ)(1 + r_j) - 1, once ρ is
+    /// fitted: exact, from the reported correction, so it needs no fit of the peer's corrected clock.
+    fn session_rate(&self) -> Option<f64> {
+        self.rate.map(|rho| (1.0 + rho) * (1.0 + self.applied) - 1.0)
+    }
+
+    /// The peer's session offset predicted at local time `local`: its newest valid sample whose round
+    /// trip is near the best (a queued one is biased by the queue), carried forward at the peer's own
+    /// session frequency (`rate` until that is known). An older sample would carry whatever the peer's
+    /// frequency did since (review M2).
     fn predict(&self, local: u64, rate: f64) -> Option<f64> {
-        if self.rate.is_none() {
-            // No frequency yet: the newest valid sample whose round trip is near the best.
-            let best = self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
-            let s = self.samples.iter().rev().find(|s| s.0 >= self.session_from && s.3 <= best + NEAR_RTT_US)?;
-            return Some(s.1 as f64 + rate * (local as f64 - s.0 as f64));
-        }
-        let best: Vec<_> = self.best().into_iter().filter(|s| s.0 >= self.session_from).collect();
-        let recent = &best[best.len().saturating_sub(OFFSET_BUCKETS)..];
-        if recent.is_empty() {
-            return None;
-        }
-        Some(recent.iter().map(|s| s.1 as f64 + rate * (local as f64 - s.0 as f64)).sum::<f64>() / recent.len() as f64)
+        let rate = self.session_rate().unwrap_or(rate);
+        let best = self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
+        let s = self.samples.iter().rev().find(|s| s.0 >= self.session_from && s.3 <= best + NEAR_RTT_US)?;
+        Some(s.1 as f64 + rate * (local as f64 - s.0 as f64))
     }
 
     /// The shortest round trip to this peer in the window.
@@ -171,6 +177,8 @@ pub struct ClockSync {
     /// The rate-corrected clock (R18's stamps) at local time `last`.
     rc: f64,
     last: Option<u64>,
+    /// A sample has come since the last frequency round.
+    round: bool,
     /// Contrast runs: a plain median instead of the fault-tolerant midpoint.
     pub plain_median: bool,
 }
@@ -181,9 +189,11 @@ impl ClockSync {
     }
 
     /// A pong from `peer`: the ping left at local `t1` and came back at local `t4`; the peer's session
-    /// clock read `r` and its raw local clock `raw` when it answered.
-    pub fn sample(&mut self, peer: u32, t1: u64, t4: u64, r: u64, raw: u64) {
-        self.peers.entry(peer).or_default().sample(t1, t4, r, raw);
+    /// clock read `r` and its raw local clock `raw` when it answered, and its applied frequency
+    /// correction was `applied`. Each sample is a frequency round.
+    pub fn sample(&mut self, peer: u32, t1: u64, t4: u64, r: u64, raw: u64, applied: f64) {
+        self.peers.entry(peer).or_default().sample(t1, t4, r, raw, applied);
+        self.round = true;
     }
 
     /// Before the session: take the offset from `leader`'s best round trip at once.
@@ -215,11 +225,16 @@ impl ClockSync {
         // liar could move the midpoint, so nothing moves until enough members are sampled (review L2).
         let t = members.len() / 3;
         let enough = |v: &Vec<f64>| v.len() > 2 * t;
-        // The frequency: the midpoint of the members' raw clocks against this one (its own: 0).
-        let mut rates = vec![0.0];
-        rates.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.rate)));
-        if enough(&rates) {
-            self.rate = midpoint_t(rates, t, self.plain_median).clamp(-MAX_RATE, MAX_RATE);
+        // The frequency round (item 5): each peer's session frequency in this member's raw units,
+        // (1 + ρ_j)(1 + r_j) - 1, and its own correction; a gain toward their midpoint.
+        if self.round {
+            self.round = false;
+            let mut rates = vec![self.rate];
+            rates.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.session_rate())));
+            if enough(&rates) {
+                let target = midpoint_t(rates, t, self.plain_median);
+                self.rate = (self.rate + RATE_GAIN * (target - self.rate)).clamp(-MAX_RATE, MAX_RATE);
+            }
         }
         let follow = self.off + self.rate * dt;
         let mut offs = vec![follow];
@@ -298,10 +313,10 @@ mod tests {
             let mid = t + 500;
             if ms % 500 == 0 || (!synced && ms % 25 == 0) {
                 // Each answers with its session and raw clocks at the round trip's midpoint.
-                b.sample(1, lb(t), lb(t + 1000), (la(mid) as i64 + oa) as u64, la(mid));
+                b.sample(1, lb(t), lb(t + 1000), (la(mid) as i64 + oa) as u64, la(mid), a.rate());
             }
             if ms % 500 == 0 {
-                a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid));
+                a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid), b.rate());
             }
             if !synced {
                 b.bootstrap(1);
@@ -340,10 +355,10 @@ mod tests {
             }
             let mid = t + 500;
             if ms % 500 == 0 || (!synced && ms % 25 == 0) {
-                b.sample(1, lb(t), lb(t + 1000), (la(mid) as i64 + oa) as u64, la(mid));
+                b.sample(1, lb(t), lb(t + 1000), (la(mid) as i64 + oa) as u64, la(mid), a.rate());
             }
             if ms % 500 == 0 {
-                a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid));
+                a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid), b.rate());
             }
             if !synced {
                 b.bootstrap(1);
@@ -367,9 +382,9 @@ mod tests {
             let peak = w[1..].iter().cloned().fold(0.0, f64::max);
             let settled = w.iter().rposition(|&g| g >= 5_000.0).map_or(0, |i| i + 1);
             // Measured: peaks 11 / 24 / 43 ms (skew x the newest sample's age, up to a ping interval,
-            // until a frequency is fitted), under 5 ms from second 8 / 12 / 12.
+            // until a frequency is fitted at 10 s), then under 5 ms within a few seconds.
             assert!(peak < 60_000.0, "skew {skew}: peak gap {peak} µs");
-            assert!(settled <= 14, "skew {skew}: under 5 ms only from second {settled}");
+            assert!(settled <= 18, "skew {skew}: under 5 ms only from second {settled}");
         }
     }
 
@@ -380,7 +395,7 @@ mod tests {
         for ms in 0..5_000u64 {
             let t = ms * 1000;
             if ms % 500 == 0 {
-                c.sample(2, t, t + 1000, t + 500 + 300_000, t + 500);
+                c.sample(2, t, t + 1000, t + 500 + 300_000, t + 500, 0.0);
             }
             let before = c.rc(t);
             c.tick(t, &[2]);
@@ -399,7 +414,7 @@ mod tests {
             let rtt = if i >= 30 { 41_000 } else { 1_000 };
             let mid_true = t1 + 500;
             let raw = (mid_true as f64 * 1.02) as u64 + 5_000_000;
-            p.sample(t1, t1 + rtt, raw, raw);
+            p.sample(t1, t1 + rtt, raw, raw, 0.0);
         }
         let r = p.rate.unwrap();
         assert!((r - 0.02).abs() < 0.001, "rate {r}");
@@ -412,7 +427,7 @@ mod tests {
         for i in 0..40u64 {
             let t1 = i * 500_000;
             let rtt = if i % 2 == 1 { 31_000 } else { 1_000 };
-            p.sample(t1, t1 + rtt, t1 + 500 + 7_000_000, t1 + 500);
+            p.sample(t1, t1 + rtt, t1 + 500 + 7_000_000, t1 + 500, 0.0);
         }
         let o = p.predict(20_000_000, 0.0).unwrap();
         assert!((o - 7_000_000.0).abs() < 200.0, "offset {o}");

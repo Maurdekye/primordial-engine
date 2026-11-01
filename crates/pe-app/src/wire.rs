@@ -17,7 +17,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use pe_session::session::{decode_msg, encode_msg, MemberId, Msg};
 
 const MAGIC: &[u8; 2] = b"PE";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 const HEADER: usize = 2 + 1 + 8 + 4 + 8 + 2;
 pub const SIG: usize = 64;
 /// Largest datagram we send (bytes, before IP/UDP headers).
@@ -29,9 +29,10 @@ pub enum Item {
     /// answer. Joins, batches and state transfer (joiners only) are not part of M1.
     Msg(Msg),
     /// Clock sync (design 10.4): my send time; the reply carries it back with the replier's session
-    /// time and its raw local clock (the frequency fit reads the latter: no correction moves it).
+    /// time, its raw local clock (the frequency ratio reads it: no correction moves it) and its applied
+    /// frequency correction (f64 bits).
     Ping(u64),
-    Pong(u64, u64, u64),
+    Pong(u64, u64, u64, u64),
     /// The session epoch in the sender's clock (the leader's).
     Start(u64),
     StartAck,
@@ -64,11 +65,12 @@ fn item_bytes(i: &Item, out: &mut Vec<u8>) {
             out.push(3);
             out.extend_from_slice(&t.to_le_bytes());
         }
-        Item::Pong(t, r, rc) => {
+        Item::Pong(t, r, raw, rate) => {
             out.push(4);
             out.extend_from_slice(&t.to_le_bytes());
             out.extend_from_slice(&r.to_le_bytes());
-            out.extend_from_slice(&rc.to_le_bytes());
+            out.extend_from_slice(&raw.to_le_bytes());
+            out.extend_from_slice(&rate.to_le_bytes());
         }
         Item::Start(e) => {
             out.push(5);
@@ -172,7 +174,7 @@ pub fn unpack(session: u64, buf: &[u8], key_of: impl Fn(MemberId) -> Option<Veri
                 }
             }
             3 => Item::Ping(u64_(&mut p)?),
-            4 => Item::Pong(u64_(&mut p)?, u64_(&mut p)?, u64_(&mut p)?),
+            4 => Item::Pong(u64_(&mut p)?, u64_(&mut p)?, u64_(&mut p)?, u64_(&mut p)?),
             5 => Item::Start(u64_(&mut p)?),
             6 => Item::StartAck,
             7 => Item::Ready,
