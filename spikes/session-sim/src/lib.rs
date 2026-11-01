@@ -635,6 +635,10 @@ fn flush_pack(r: &mut Replica, obj: u32) -> Option<Entry> {
 pub const ACK_FRAMES: [u64; 9] = [2, 2, 3, 4, 6, 8, 8, 16, 32];
 /// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
 pub const IDLE_ACK_FRAMES: u64 = 8;
+/// Part B, rule 5: a fed member acks every P frames (P <= 32; the spike uses 16, or its level's interval if longer), from the moment it is fed, whatever
+/// its level. By level alone it acked every 2 frames at level 0 until its controller stepped down, flooding a thin
+/// uplink (r18 capped n = 4, 8 kbit/s: about 62 acks a second offered in the first gesture's window).
+pub const FED_ACK_FRAMES: u64 = 16;
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
 /// or any finer level only after this much calm instead of 300 ms, and forgets L after
 /// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
@@ -1209,7 +1213,16 @@ impl Sim {
             let leaving = r.was_idle && !idle && !r.ack_grid_only;
             r.was_idle = idle;
             let base = (r.ack_every_us / r.dt_us).max(1);
-            let every = if idle { base.max(IDLE_ACK_FRAMES) } else { base };
+            let fed = self.net.fed.contains(&(w, pid));
+            let every = if fed {
+                // (spike: PE_FED_ACK_FRAMES overrides P, for measuring)
+                let p = std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(FED_ACK_FRAMES);
+                base.max(p)
+            } else if idle {
+                base.max(IDLE_ACK_FRAMES)
+            } else {
+                base
+            };
             let ack_due = leaving
                 || if self.net.batching {
                     new_frame && clock_frame % every == 0
