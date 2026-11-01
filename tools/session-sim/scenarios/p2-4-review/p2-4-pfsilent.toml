@@ -48,6 +48,7 @@ drop = true
 
 [[part]]
 world.1.fixes_off = ["PF1"]
+world.1.no_runs = true  # option 2: the fix-off control runs without runs, as the harness does
 report = [
     { kind = "check", case = "pfsilent", label = "pfsilent fixed=false", target = 1, members = [1, 2, 3, 5], honest = [1, 2, 3] },
     { kind = "view_changes", honest = [1, 2, 3], label = "pfsilent" },

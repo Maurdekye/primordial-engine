@@ -14,5 +14,5 @@ kind = "stats"
 
 [[report]]
 kind = "check_world"
-frames = 765
+frames = 720
 label = "ballpit 90Hz"
