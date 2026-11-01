@@ -1,0 +1,19 @@
+[m1 t=8001ms f=479] SEEN member 3 touch seq 236 version 1 (a092a422b94b04c5), stamped 479, at my conf 477, frame 479
+[m1 t=8004ms f=480] SEEN member 3 touch seq 236 version 2 (bc6c24918270c134), stamped 479, at my conf 478, frame 480
+[m1 t=8004ms f=480] [w1 m1 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 236 (a092a422b94b04c5 / bc6c24918270c134)
+[m1 t=8008ms f=480] membership decision: epoch 1, removed [3]
+[m1 t=33141ms f=1988] FINAL: member Some(3) touch seq 236: version 1 withdrawn, version 2 withdrawn
+[m2 t=8001ms f=479] SEEN member 3 touch seq 236 version 1 (a092a422b94b04c5), stamped 479, at my conf 477, frame 479
+[m2 t=8004ms f=480] SEEN member 3 touch seq 236 version 2 (bc6c24918270c134), stamped 479, at my conf 478, frame 480
+[m2 t=8004ms f=480] [w1 m2 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 236 (a092a422b94b04c5 / bc6c24918270c134)
+[m2 t=8010ms f=480] membership decision: epoch 1, removed [3]
+[m2 t=33141ms f=1988] FINAL: member Some(3) touch seq 236: version 1 withdrawn, version 2 withdrawn
+[m3 t=8000ms f=479] EQUIVOCATE (scripted split): my seq 236 at frame 479 (my conf 477): version A a092a422b94b04c5 to the others, version B bc6c24918270c134 to members {4}
+[m3 t=8005ms f=480] [w1 m3 f480 c478] EQUIVOCATION proof: member 3 signed two versions of seq 236 (a092a422b94b04c5 / bc6c24918270c134)
+[m3 t=8007ms f=480] SEEN member 3 touch seq 236 version 2 (a092a422b94b04c5), stamped 479, at my conf 478, frame 480
+[m3 t=8009ms f=480] membership decision: epoch 1, removed [3]
+[m4 t=8002ms f=480] SEEN member 3 touch seq 236 version 1 (bc6c24918270c134), stamped 479, at my conf 477, frame 480
+[m4 t=8003ms f=480] [w1 m4 f480 c477] EQUIVOCATION proof: member 3 signed two versions of seq 236 (bc6c24918270c134 / e4299082060c1e84)
+[m4 t=8007ms f=480] SEEN member 3 touch seq 236 version 2 (a092a422b94b04c5), stamped 479, at my conf 477, frame 480
+[m4 t=8011ms f=480] membership decision: epoch 1, removed [3]
+[m4 t=33140ms f=1988] FINAL: member Some(3) touch seq 236: version 1 withdrawn, version 2 withdrawn
