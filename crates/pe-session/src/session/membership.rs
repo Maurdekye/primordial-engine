@@ -2645,19 +2645,31 @@ impl WorldSim {
 
     /// Answer `Msg::FetchEntry` (review VCR-8): the entry with that id, if held, and (review VC3R-7) up
     /// to `back` of its predecessors down its prev links, as far as this replica holds them.
+    /// One run (option 2): the predecessors bottom up, the entry, and its author's entries above it
+    /// up to its cover.
     pub fn on_fetch_entry(&self, id: EntryId, back: u8) -> Vec<Msg> {
-        let mut out = Vec::new();
-        let mut next = Some(id);
-        while let Some(e) = next.and_then(|i| self.signed_entry(i)) {
-            next = (out.len() < back.min(15) as usize && e.seq > 1).then_some(e.prev);
-            out.push(Msg::Entry(e));
+        let Some(mut run) = self.run_of(id) else { return vec![] };
+        let mut below = Vec::new();
+        let mut e = run[0].entry.clone();
+        while below.len() < back.min(15) as usize && e.seq > 1 {
+            let Some(p) = self.entries.get(&e.prev) else { break };
+            e = p.clone();
+            below.push(SignedEntry { entry: e.clone(), sig: [0; 64] });
         }
-        out
+        below.reverse();
+        below.append(&mut run);
+        if below.len() > WorldSim::RUN_MAX {
+            return vec![];
+        }
+        if below.len() == 1 {
+            return vec![Msg::Entry(below.pop().expect("one"))];
+        }
+        vec![Msg::Run { lean: false, signed: true, entries: below }]
     }
 
-    /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version.
+    /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version, with its cover.
     pub fn on_fetch_value(&self, value: u64) -> Vec<Msg> {
-        self.vcm.proposal_ids.get(&value).and_then(|id| self.signed_entry(*id)).map(|e| vec![Msg::Entry(e)]).unwrap_or_default()
+        self.vcm.proposal_ids.get(&value).and_then(|id| self.relay(*id)).map(|m| vec![m]).unwrap_or_default()
     }
 
     /// Ask `holder` for entry `id` (and `back` of its predecessors). Review VC4R-4: asked again with

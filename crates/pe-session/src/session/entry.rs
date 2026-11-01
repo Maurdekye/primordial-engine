@@ -276,8 +276,10 @@ impl Entry {
 pub enum Msg {
     /// Any chain entry: a perturbation, an ack or a vote, with its author's signature (S3).
     Entry(SignedEntry),
-    /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
-    Fetch { author: MemberId, from: u32, to: u32 },
+    /// Ask for `author`'s entries `from..=to` (gap or conflict detection). `held` ([`HELD_BELOW`],
+    /// [`HELD_ABOVE`]): what the requester holds around the range, which lets the reply leave out what
+    /// it can rebuild (the R18 below-20 item, option 2 and the lean hole-fill reply).
+    Fetch { author: MemberId, from: u32, to: u32, held: u8 },
     /// Everything one member sends one peer in one tick, in one datagram (R18, viz-4).
     Batch(Vec<Msg>),
     /// View change: ask for the proposal entry carrying `value` (a member that saw a quorum of
@@ -295,15 +297,26 @@ pub enum Msg {
     FetchEntry { id: EntryId, back: u8 },
     /// Design 9.5: a joiner asks a member for its newest confirmed check-frame state.
     FetchState,
-    /// The R18 below-20 item, option 1 (@coordinator-opus, 2026-11-01): an author's own entry, live,
-    /// without the ids its receiver rebuilds from what it holds: `prev` (its entry at `(member, seq -
-    /// 1)`) and an ack's head ids (its entry at each `(q, s)`). They decode as `EntryId::NONE`. The
-    /// signature still covers the full entry, so a receiver whose ids differ (a fork) fails to verify
-    /// it and fetches the explicit form from the author ([`WorldSim::insert_lean`]).
-    Lean(SignedEntry),
+    /// The R18 below-20 item (@coordinator-opus, 2026-11-01): consecutive entries of one author,
+    /// each naming the one before it, signed once, on the top entry (option 2: the prev links
+    /// authenticate the rest; design 10.8). On the wire an entry's `prev` inside the run is left out
+    /// (the receiver links them), and with `lean` (option 1) so are the first entry's `prev` and every
+    /// ack's head ids, which the receiver rebuilds from what it holds. Only the top entry's signature
+    /// travels, and only if `signed`: an unsigned run is a hole-fill reply to a member that holds a
+    /// later entry of the author, which authenticates it ([`WorldSim::insert_run`]). In process the
+    /// sender keeps every entry's own signature (a fault fixture may split the run); decoded, the
+    /// others are zero.
+    Run { lean: bool, signed: bool, entries: Vec<SignedEntry> },
     /// The answer: a state transfer, which the joiner restores only after its checks (P22S-1).
     State(Box<StateTransfer>),
 }
+
+/// [`Msg::Fetch`]'s `held`: the requester holds the author's entry `from - 1`, so the reply may be
+/// lean (its first `prev` and its acks' heads rebuilt by the requester).
+pub const HELD_BELOW: u8 = 1;
+/// The requester holds (or holds waiting) a later entry of the author that names the top of the range
+/// through its prev links, so the reply needs no signature.
+pub const HELD_ABOVE: u8 = 2;
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -344,13 +357,13 @@ impl Wr {
         for x in a { self.u8(x.rel.tag()); self.u32(x.with); self.sig(&x.sig_with); self.sig(&x.sig_joiner) }
     }
     pub(super) fn entry(&mut self, e: &Entry) {
-        self.entry_opt(e, false)
+        self.entry_opt(e, false, false)
     }
-    /// `lean`: without the rebuilt ids ([`Msg::Lean`]).
-    pub(super) fn entry_opt(&mut self, e: &Entry, lean: bool) {
+    /// Without `prev`, or without an ack's head ids ([`Msg::Run`]).
+    pub(super) fn entry_opt(&mut self, e: &Entry, no_prev: bool, no_heads: bool) {
         self.u32(e.member);
         self.u32(e.seq);
-        if !lean {
+        if !no_prev {
             self.id(e.prev);
         }
         self.u64(e.stamp);
@@ -387,7 +400,7 @@ impl Wr {
                 self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads {
                     self.u32(*q); self.u32(*s);
-                    if !lean { self.id(*id) }
+                    if !no_heads { self.id(*id) }
                 }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.0.extend_from_slice(&h.0) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
@@ -472,8 +485,20 @@ impl Wr {
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e); self.0.extend_from_slice(&e.sig) }
-            Msg::Lean(e) => { self.u8(12); self.entry_opt(e, true); self.0.extend_from_slice(&e.sig) }
-            Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
+            Msg::Run { lean, signed, entries } => {
+                assert!(!entries.is_empty() && entries.len() <= 255, "a run holds 1 to 255 entries");
+                self.u8(12);
+                self.u8(*lean as u8 | (*signed as u8) << 1);
+                self.u8(entries.len() as u8);
+                for (i, e) in entries.iter().enumerate() {
+                    self.entry_opt(e, i > 0 || *lean, *lean);
+                }
+                if *signed {
+                    self.0.extend_from_slice(&entries.last().expect("non-empty").sig);
+                }
+            }
+            Msg::Fetch { author, from, to, held: 0 } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
+            Msg::Fetch { author, from, to, held } => { self.u8(13); self.u32(*author); self.u32(*from); self.u32(*to); self.u8(*held) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
             Msg::Join { member, attests, sig, expires } => {
@@ -579,12 +604,12 @@ impl<'a> Rd<'a> {
         Some(BodyState(s))
     }
     pub(super) fn entry(&mut self) -> Option<Entry> {
-        self.entry_opt(false)
+        self.entry_opt(false, false)
     }
-    pub(super) fn entry_opt(&mut self, lean: bool) -> Option<Entry> {
+    pub(super) fn entry_opt(&mut self, no_prev: bool, no_heads: bool) -> Option<Entry> {
         let member = self.u32()?;
         let seq = self.u32()?;
-        let prev = if lean { EntryId::NONE } else { self.id()? };
+        let prev = if no_prev { EntryId::NONE } else { self.id()? };
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
@@ -624,7 +649,7 @@ impl<'a> Rd<'a> {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
-                for _ in 0..n { heads.push((self.u32()?, self.u32()?, if lean { EntryId::NONE } else { self.id()? })) }
+                for _ in 0..n { heads.push((self.u32()?, self.u32()?, if no_heads { EntryId::NONE } else { self.id()? })) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, CheckHash(self.take(32)?.try_into().ok()?))) } else { None };
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
@@ -729,8 +754,33 @@ impl<'a> Rd<'a> {
     fn msg_in(&mut self, in_batch: bool) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(SignedEntry { entry: self.entry()?, sig: self.take(64)?.try_into().ok()? }),
-            12 => Msg::Lean(SignedEntry { entry: self.entry_opt(true)?, sig: self.take(64)?.try_into().ok()? }),
-            3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
+            12 => {
+                let flags = self.u8()?;
+                let (lean, signed) = (flags & 1 != 0, flags & 2 != 0);
+                if flags > 3 {
+                    return None;
+                }
+                let n = self.u8()? as usize;
+                if n == 0 {
+                    return None;
+                }
+                let mut entries = Vec::with_capacity(n);
+                for i in 0..n {
+                    entries.push(SignedEntry { entry: self.entry_opt(i > 0 || lean, lean)?, sig: [0; 64] });
+                }
+                if signed {
+                    entries.last_mut().expect("n > 0").sig = self.take(64)?.try_into().ok()?;
+                }
+                // Entries past the first are of the same author, one seq apart; their prev links are
+                // the receiver's to fill.
+                let (m, s0) = (entries[0].member, entries[0].seq);
+                if entries.iter().enumerate().any(|(i, e)| e.member != m || e.seq as u64 != s0 as u64 + i as u64) {
+                    return None;
+                }
+                Msg::Run { lean, signed, entries }
+            }
+            3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()?, held: 0 },
+            13 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()?, held: self.u8()? },
             4 if !in_batch => {
                 let n = self.u32()? as usize;
                 let mut v = Vec::with_capacity(n.min(256));

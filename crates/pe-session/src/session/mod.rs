@@ -125,14 +125,28 @@ struct Keyframe {
     t: Tables,
 }
 
-/// A lean entry waiting in [`WorldSim::insert_lean`]: its sender, the entry, since when (frame), and
-/// whether its explicit form has been asked for.
+/// A run waiting in [`WorldSim::insert_run`]: its sender, its entries (consecutive seqs of one
+/// author; ids left out on the wire are `EntryId::NONE` until rebuilt), whether its first entry's
+/// `prev` came on the wire, whether its acks' heads must be rebuilt, the top entry's signature if
+/// it came signed, since when it waits (frame), and whether its signed, explicit form has been asked
+/// for.
 #[derive(Clone, Debug)]
 pub struct LeanWait {
     pub from: MemberId,
-    pub se: SignedEntry,
+    pub first_prev: bool,
+    pub lean_heads: bool,
+    pub entries: Vec<Entry>,
+    pub sig: Option<Sig>,
     pub since: u64,
     pub asked: bool,
+}
+
+/// How a stored entry is authenticated (option 2): by its author's signature on it, or by the next
+/// entry of the run it arrived in, which names it (and so on up to a signature).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Auth {
+    Sig(Sig),
+    Next(EntryId),
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -568,7 +582,7 @@ pub struct WorldSim {
     /// Test fixture (review VC3R-6): author no ack before this member is admitted, as a joiner that
     /// starts from a state transfer rather than replaying the log would.
     pub quiet_until_member: bool,
-    wants: Vec<(MemberId, MemberId, u32, u32)>,
+    wants: Vec<(MemberId, MemberId, u32, u32, u8)>,
     pub conf: u64,
     /// My clock frame (my present), set by the harness each tick.
     pub now: u64,
@@ -607,8 +621,15 @@ pub struct WorldSim {
     pub events: Vec<String>,
     /// This replica's signing key and the members' public keys (S3).
     keys: KeyRing,
-    /// The author's signature of every entry held, for relaying it.
+    /// The author's signature of each entry held signed on itself, for relaying it (option 2: an
+    /// entry that came inside a run is covered by the next entry of the run instead: `run_next`).
     sigs: BTreeMap<EntryId, Sig>,
+    run_next: BTreeMap<EntryId, EntryId>,
+    /// The R18 below-20 item: option 1, own live entries lean (implicit ids) and fetch replies lean
+    /// when the requester holds the entry below; option 2, own live entries in runs signed once, and
+    /// hole-fill replies unsigned. Off: the explicit, signed-per-entry wire (measurement A/B).
+    pub lean_wire: bool,
+    pub run_wire: bool,
     /// The membership and view-change state (P2-3 S6b): read through [`Membership`], written by
     /// the view change.
     pub vcm: ViewChangeMembership,
@@ -906,6 +927,9 @@ impl WorldSim {
             events: Vec::new(),
             keys,
             sigs: BTreeMap::new(),
+            run_next: BTreeMap::new(),
+            lean_wire: true,
+            run_wire: true,
         }
     }
 
