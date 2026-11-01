@@ -60,6 +60,8 @@ for v in twosilent twosilent5 withheld colluders badproposer bridge join refwith
 # A member moves only its own hand, and touches or carries no one else's (design 8.4; P2-8 review, HO-1).
 run handowner handowner
 # P2-4 review round 2 (design 10.8): each repro also reports its run with the fix switched off.
+# futureack's fix-off part is the only guard left on VC-5's epoch rule, and slowref's on VC4R-3: since
+# trust survey #4, randsched's admin kick at GST ends the halt either leaves (review RA-1). Keep both.
 for v in fork9 jointiming bogusprecommit futureack; do run p2-4-$v $v; done
 # D80 admins and roles (design 10.8, 12.1): kicks in commit order, a kick across a partition, the last
 # admin, closing a session with no admin, the join rules.
