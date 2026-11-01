@@ -60,9 +60,10 @@ const CURRENT_SAMPLES: usize = 4;
 const RTT_CLAMP_MARGIN_US: u64 = 5_000;
 /// While a report stands above its round-trip bound (an episode), the reporter gets a probe ping
 /// this often (review H1). Each probe that returns gives a verdict: a queue if the lesser excess of
-/// it and the probe before, plus the margin, accounts for at least 3/4 of the lesser of the reports
+/// it and the probe before, plus the margin, accounts for at least 9/10 of the lesser of the reports
 /// they were sent against (and is more than the margin), else a clock's drift. At half, a 25 ms delay step let up
-/// to 50 ms of drift through in the mixed run (measured). A queue lifts every probe; jitter lifts one
+/// to 50 ms of drift through in the mixed run, and 3/4 up to 45 ms with a 25 ms step on the uplink
+/// (measured). A queue lifts every probe; jitter lifts one
 /// now and then, and a drifted report soon stands far above any jitter.
 /// * The report passes until the first verdict, and while the latest verdict is a queue. So the onset
 ///   of real congestion is not clamped: dipping the signal there made D56 remember a coarse level as
@@ -692,7 +693,7 @@ impl Node {
                     let draining = o.last.is_some_and(|(t0, _, r)| r > q + (crate::clock::MAX_RATE * t.saturating_sub(t0) as f64) as u64);
                     o.last = Some((t, excess, q));
                     o.decided = true;
-                    o.queue = (least > RTT_CLAMP_MARGIN_US && least + RTT_CLAMP_MARGIN_US >= report * 3 / 4) || (o.queue && draining);
+                    o.queue = (least > RTT_CLAMP_MARGIN_US && least + RTT_CLAMP_MARGIN_US >= report * 9 / 10) || (o.queue && draining);
                     if o.queue {
                         o.queue_until = recv_us + q + rtt_best.unwrap_or(0) + CURRENT_US;
                     }
