@@ -2132,6 +2132,8 @@ pub struct WorldSim {
     ckpt_sent: BTreeMap<MemberId, (u64, u64)>,
     /// Rule 4's floor test: the frame I first sent each of my checkpoint blocks to each fed member.
     ckpt_first_sent: BTreeMap<(MemberId, u64), u64>,
+    /// Part B at 3 players (S-1): per member, the seqs of its acks that carry an anchor (it was fed).
+    anchored_acks: BTreeMap<MemberId, BTreeSet<u32>>,
     /// The fed side (TLP-24): per member, the newest checkpoint of its chain I echo, its block and id. Kept
     /// across leaving and re-entering the feed.
     echo_last: BTreeMap<MemberId, (u64, EntryId)>,
@@ -2405,6 +2407,7 @@ impl WorldSim {
             fed_peers: BTreeMap::new(),
             ckpt_sent: BTreeMap::new(),
             ckpt_first_sent: BTreeMap::new(),
+            anchored_acks: BTreeMap::new(),
             echo_last: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
@@ -3036,6 +3039,9 @@ impl WorldSim {
                     }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
                     self.note_first_ref(m, e.seq, e.stamp, q, s, hid);
+                }
+                if fed.is_some() {
+                    self.anchored_acks.entry(m).or_default().insert(e.seq);
                 }
                 if m != self.me {
                     if let Some((f, hh)) = check {
