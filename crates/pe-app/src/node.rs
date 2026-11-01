@@ -61,13 +61,21 @@ const RTT_CLAMP_MARGIN_US: u64 = 5_000;
 /// While a report stands above its round-trip bound (an episode), the reporter gets a probe ping
 /// this often (review H1). Each probe that returns gives a verdict: a queue if the lesser excess of
 /// it and the probe before, plus the margin, accounts for at least 3/4 of the report it was sent
-/// against (and is more than the margin), else the report is a clock's drift and is clamped. (At
-/// half, a 25 ms delay step let up to 50 ms of drift through in the mixed run, measured.) A queue lifts every probe; jitter
-/// lifts one now and then, and a drifted report soon stands far above any jitter. Until the first
-/// verdict the report passes, so the onset of real congestion is not clamped: dipping the signal
-/// there made D56 remember a coarse level as the congested one (measured). A drift passes for about
-/// one probe's round trip instead of a fixed grace.
+/// against (and is more than the margin), else a clock's drift. At half, a 25 ms delay step let up
+/// to 50 ms of drift through in the mixed run (measured). A queue lifts every probe; jitter lifts one
+/// now and then, and a drifted report soon stands far above any jitter.
+/// * The report passes until the first verdict, and while the latest verdict is a queue. So the onset
+///   of real congestion is not clamped: dipping the signal there made D56 remember a coarse level as
+///   the congested one (measured). A drift passes for about one probe's round trip.
+/// * After a queue verdict it also passes for the report's own lag (the queue it reports, a round
+///   trip and the current filter): draining, a queue empties before the reports of it arrive.
+/// * Otherwise it is clamped to the bound.
 const PROBE_EVERY_US: u64 = 100_000;
+/// A probe rides on a datagram going to the reporter anyway; with none this long, it goes alone. Alone
+/// at 10 per second per reporter, the probes took a fifth of an 80 kbit/s uplink (measured).
+const PROBE_ALONE_US: u64 = 250_000;
+/// A report at or below this reads as calm whether clamped or not (R18's calm level): no episode.
+const PROBE_ABOVE_US: u64 = 10_000;
 /// With no probe back (lost) the episode is clamped after this long; a probe unanswered this long
 /// is forgotten.
 const RTT_CLAMP_GRACE_US: u64 = 500_000;
@@ -151,11 +159,15 @@ struct Over {
     last_probe: Option<u64>,
     /// Probes out: send time -> the report then.
     probes: BTreeMap<u64, u64>,
+    /// The report now.
+    report: u64,
     /// The last probe's round-trip excess.
     last_excess: Option<u64>,
-    /// A probe has come back; whether the latest verdict is a queue.
+    /// A probe has come back; whether the latest verdict is a queue, and until when the report passes
+    /// after the last queue verdict.
     decided: bool,
     queue: bool,
+    queue_until: u64,
 }
 
 /// R18: what this node measures on one member's datagrams to it.
@@ -168,13 +180,10 @@ struct RxLink {
     /// (receive time, one-way delay), oldest first.
     recent: std::collections::VecDeque<(u64, i64)>,
     q_us: Option<u64>,
-    /// The two clocks' drift since the estimates began, µs: the integral of `ClockSync::drift_rate`
-    /// up to `drift_at` (receive time). Delays are kept less it, so a frequency difference clock sync
-    /// knows of never reads as queueing; the clamp handles only the error of its estimate (review H1).
-    drift: f64,
-    drift_at: Option<u64>,
-    /// The sender's frequency was fitted: the estimates restarted then, since before it the whole
-    /// skew drifted into them unmeasured.
+    /// The sender's frequency is fitted. The estimates restart then: before it the whole skew drifted
+    /// into them unmeasured (9 % is 90 ms/s), and from it the consensus brings the two rate-corrected
+    /// clocks together (review H1). Correcting the delays by the fitted frequency difference instead
+    /// added drift: the fit's own error, which congestion biases (80 kbit/s queue 667 ms, measured).
     fitted: bool,
     /// The largest `q_us` since the estimates restarted.
     peak_us: u64,
@@ -190,30 +199,23 @@ impl RxLink {
         self.recent.clear();
         self.q_us = None;
         self.peak_us = 0;
-        self.drift = 0.0;
-        self.drift_at = None;
     }
 
-    /// `drift_rate`: the clocks' frequency difference, if known (`ClockSync::drift_rate`). True if
-    /// the estimates restarted (the sender's frequency was just fitted).
-    fn sample(&mut self, st: Stamp, recv_us: u64, drift_rate: Option<f64>) -> bool {
-        let mut restarted = false;
-        if let Some(e) = drift_rate {
-            if !self.fitted {
-                self.fitted = true;
-                self.restart();
-                restarted = true;
-            }
-            self.drift += e * recv_us.saturating_sub(self.drift_at.unwrap_or(recv_us)) as f64;
-            self.drift_at = Some(recv_us);
+    /// `fitted`: the sender's frequency is fitted (`ClockSync::has_rate`). True if the estimates
+    /// restarted (it was just fitted).
+    fn sample(&mut self, st: Stamp, recv_us: u64, fitted: bool) -> bool {
+        let restarted = fitted && !self.fitted;
+        if restarted {
+            self.fitted = true;
+            self.restart();
         }
         let ts = match self.last_ts {
             None => st.ts as i64,
             Some(l) => l + st.ts.wrapping_sub(l as u32) as i32 as i64,
         };
         self.last_ts = Some(self.last_ts.map_or(ts, |l| l.max(ts)));
-        // Offset by the unknown clock difference, which is constant less the drift, so it cancels in q.
-        let owd = recv_us as i64 - ts - self.drift.round() as i64;
+        // Offset by the unknown clock difference, which is constant, so it cancels in q.
+        let owd = recv_us as i64 - ts;
         match self.base.back_mut() {
             Some(b) if recv_us < b.0 + BASE_BUCKET_US => b.1 = b.1.min(owd),
             _ => {
@@ -633,8 +635,8 @@ impl Node {
                 Ok((sender, st, items)) if sender != self.me => {
                     // R18 measures on the rate-corrected clock, as the sender stamps (design 10.4).
                     let recv_rc = self.clock.rc(recv_us);
-                    let drift = self.clock.drift_rate(sender);
-                    if self.rx.entry(sender).or_default().sample(st, recv_rc, drift) {
+                    let fitted = self.clock.has_rate(sender);
+                    if self.rx.entry(sender).or_default().sample(st, recv_rc, fitted) {
                         self.clock.restart_queue(sender, recv_us);
                     }
                     if st.qrep != QREP_NONE {
@@ -673,7 +675,8 @@ impl Node {
                 self.clock.sample(sender, t, recv_us, r, raw, f64::from_bits(rate));
                 self.apply_clock();
                 // A probe's verdict on its episode (see `PROBE_EVERY_US`).
-                let best = self.clock.best_rtt_to(sender).unwrap_or(u64::MAX).saturating_add(self.back_queue(sender));
+                let rtt_best = self.clock.best_rtt_to(sender);
+                let best = rtt_best.unwrap_or(u64::MAX).saturating_add(self.back_queue(sender));
                 if let Some(o) = self.over.get_mut(&sender)
                     && let Some(q) = o.probes.remove(&t)
                 {
@@ -682,6 +685,9 @@ impl Node {
                     o.last_excess = Some(excess);
                     o.decided = true;
                     o.queue = least > RTT_CLAMP_MARGIN_US && least + RTT_CLAMP_MARGIN_US >= q * 3 / 4;
+                    if o.queue {
+                        o.queue_until = recv_us + q + rtt_best.unwrap_or(0) + CURRENT_US;
+                    }
                 }
             }
             Item::Pong(..) => {}
@@ -806,6 +812,19 @@ impl Node {
             let item = Item::Msg(o.msg);
             for to in o.to {
                 per.entry(to).or_default().push(item.clone());
+            }
+        }
+        // R18's clamp probes (see `PROBE_EVERY_US`).
+        let now = self.local_us();
+        for (&m, o) in &mut self.over {
+            let due = o.last_probe.is_none_or(|t| now >= t + PROBE_EVERY_US);
+            let alone = o.last_probe.is_none_or(|t| now >= t + PROBE_ALONE_US);
+            if due && (per.contains_key(&m) || alone) {
+                o.last_probe = Some(now);
+                o.probes.retain(|&t, _| t + RTT_CLAMP_GRACE_US > now);
+                o.probes.insert(now, o.report);
+                self.pings_out.insert((m, now));
+                per.entry(m).or_default().push(Item::Ping(now));
             }
         }
         for (to, items) in per {
@@ -957,19 +976,10 @@ impl Node {
         let mut v = None;
         for (m, q) in fresh {
             let q = match self.rtt_excess(m, now).map(|x| x + RTT_CLAMP_MARGIN_US) {
-                Some(bound) if q > bound => {
+                Some(bound) if q > bound.max(PROBE_ABOVE_US) => {
                     let o = self.over.entry(m).or_insert_with(|| Over { since: now, ..Over::default() });
-                    let probe = o.last_probe.is_none_or(|t| now >= t + PROBE_EVERY_US);
-                    if probe {
-                        o.last_probe = Some(now);
-                        o.probes.retain(|&t, _| t + RTT_CLAMP_GRACE_US > now);
-                        o.probes.insert(now, q);
-                    }
-                    let pass = o.queue || (!o.decided && now < o.since + RTT_CLAMP_GRACE_US);
-                    if probe {
-                        self.pings_out.insert((m, now));
-                        self.push_control(m, Item::Ping(now));
-                    }
+                    o.report = q;
+                    let pass = o.queue || now < o.queue_until || (!o.decided && now < o.since + RTT_CLAMP_GRACE_US);
                     if pass {
                         q
                     } else {
@@ -1359,7 +1369,7 @@ mod tests {
 
     /// A datagram sent at `send_us` (sender clock) arriving at `recv_us` (receiver clock).
     fn feed(r: &mut RxLink, seq: u16, send_us: u64, recv_us: u64) {
-        r.sample(Stamp { ts: send_us as u32, seq, qrep: QREP_NONE }, recv_us, None);
+        r.sample(Stamp { ts: send_us as u32, seq, qrep: QREP_NONE }, recv_us, false);
     }
 
     #[test]
@@ -1398,29 +1408,30 @@ mod tests {
     }
 
     #[test]
-    fn a_known_frequency_difference_is_not_queueing() {
+    fn the_estimates_restart_when_the_frequency_is_fitted() {
         let mut r = RxLink::default();
-        // The sender's clock runs 5 % slow against the receiver's, unknown for 10 s: the delay grows
+        // The sender's clock runs 5 % slow against the receiver's, unfitted for 10 s: the delay grows
         // 50 ms/s and reads as queue.
         let send = |t: u64| t * 95 / 100;
         for i in 0..600u64 {
             let t = i * 16_667;
-            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 20_000, None);
+            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 20_000, false);
         }
         assert!(r.q_us.unwrap() > 400_000);
-        // Then clock sync knows the difference: the estimates restart and the drift is taken out.
-        for i in 600..2400u64 {
+        // Fitted: the estimates restart, and the corrected clocks run together from then on.
+        let t0 = 600 * 16_667;
+        let send = |t: u64| send(t0) + (t - t0);
+        for i in 600..700u64 {
             let t = i * 16_667;
-            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 20_000, Some(0.05));
+            assert_eq!(r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 20_000, true), i == 600);
         }
-        assert!(r.q_us.unwrap() < 1_000, "{:?}", r.q_us);
+        assert_eq!(r.q_us, Some(0));
         // A real 60 ms queue still shows.
-        for i in 2400..2410u64 {
+        for i in 700..710u64 {
             let t = i * 16_667;
-            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 80_000, Some(0.05));
+            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 80_000, true);
         }
-        // (Less 5 %: the drift is integrated over receive time, which the queue delays too.)
-        assert!(r.q_us.unwrap().abs_diff(60_000) <= 3_000, "{:?}", r.q_us);
+        assert_eq!(r.q_us, Some(60_000));
     }
 
     #[test]
