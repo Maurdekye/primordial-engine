@@ -61,10 +61,10 @@ const RTT_CLAMP_MARGIN_US: u64 = 5_000;
 /// While a report stands above its round-trip bound (an episode), the reporter gets a probe ping
 /// this often (review H1). Each probe that returns gives a verdict: a queue if the lesser excess of
 /// it and the probe before, plus the margin, accounts for at least 9/10 of the lesser of the reports
-/// they were sent against (and is more than the margin), else a clock's drift. At half, a 25 ms delay step let up
-/// to 50 ms of drift through in the mixed run, and 3/4 up to 45 ms with a 25 ms step on the uplink
-/// (measured). A queue lifts every probe; jitter lifts one
-/// now and then, and a drifted report soon stands far above any jitter.
+/// they were sent against (and is more than the margin), else a clock's drift. A queue lifts every
+/// probe; jitter lifts one now and then, and a drifted report soon stands far above any jitter. At
+/// half, a 25 ms delay step let up to 50 ms of drift through in the mixed run, and 3/4 up to 45 ms
+/// with a 25 ms step on the uplink (measured).
 /// * The report passes until the first verdict, and while the latest verdict is a queue. So the onset
 ///   of real congestion is not clamped: dipping the signal there made D56 remember a coarse level as
 ///   the congested one (measured). A drift passes for about one probe's round trip.
@@ -78,6 +78,8 @@ const PROBE_EVERY_US: u64 = 100_000;
 const PROBE_ALONE_US: u64 = 250_000;
 /// A report at or below this reads as calm whether clamped or not (R18's calm level): no episode.
 const PROBE_ABOVE_US: u64 = 10_000;
+/// An episode ends once its report has stood at or below the bound this long.
+const EPISODE_GAP_US: u64 = 1_000_000;
 /// With no probe back (lost) the episode is clamped after this long; a probe unanswered this long
 /// is forgotten.
 const RTT_CLAMP_GRACE_US: u64 = 500_000;
@@ -161,8 +163,9 @@ struct Over {
     last_probe: Option<u64>,
     /// Probes out: send time -> the report then.
     probes: BTreeMap<u64, u64>,
-    /// The report now.
+    /// The report now, and since when it has stood at or below its bound.
     report: u64,
+    below: Option<u64>,
     /// The last probe's send time, round-trip excess and the report it was sent against.
     last: Option<(u64, u64, u64)>,
     /// A probe has come back; whether the latest verdict is a queue, and until when the report passes
@@ -988,6 +991,7 @@ impl Node {
                 Some(bound) if q > bound.max(PROBE_ABOVE_US) => {
                     let o = self.over.entry(m).or_insert_with(|| Over { since: now, ..Over::default() });
                     o.report = q;
+                    o.below = None;
                     let pass = o.queue || now < o.queue_until || (!o.decided && now < o.since + RTT_CLAMP_GRACE_US);
                     if pass {
                         q
@@ -999,7 +1003,15 @@ impl Node {
                     }
                 }
                 _ => {
-                    self.over.remove(&m);
+                    // An episode ends after a second below its bound, keeping its verdict meanwhile: a
+                    // stall lifts the round trips over a drifted report for a moment, and a fresh
+                    // episode passed it until its first verdict (a 270 ms signal in skew4, inferred).
+                    if let Some(o) = self.over.get_mut(&m) {
+                        let below = *o.below.get_or_insert(now);
+                        if now >= below + EPISODE_GAP_US {
+                            self.over.remove(&m);
+                        }
+                    }
                     q
                 }
             };
