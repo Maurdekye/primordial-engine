@@ -1,5 +1,5 @@
-1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 50329 clock rate ppm 15
-2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 50318 clock rate ppm 21
-3 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 50408 clock rate ppm 18
-4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 50343 clock rate ppm 15
-5 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 50366 clock rate ppm 12
+1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 50329) clock rate ppm 15
+2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 50318) clock rate ppm 21
+3 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 50408) clock rate ppm 18
+4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 50343) clock rate ppm 15
+5 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 50366) clock rate ppm 12
