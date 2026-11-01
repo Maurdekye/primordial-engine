@@ -15,7 +15,10 @@
 //! * `kickwar`: two admins kick each other at the same frame; commit order removes one.
 //! * `kickpartition`: an admin's kick during a partition waits it out, then holds.
 //! * `lastadmin`: the only admin's release is refused; handing the role on, then releasing, works.
-//! * `adminclose`: the only admin falls silent; removing it closes the session.
+//! * `adminclose`: the only admin falls silent; removing it closes the session, and every member left
+//!   is removed (V3).
+//! * `kickadmin` (V1, V2): a kick-only role cannot kick an admin or a roles-holder, and kicks a guest;
+//!   once the only Admin falls silent, a roles-holder keeps the session open.
 //! * `joinrules`: the join matrix: a friend of an admin as Guest, a stranger refused, an owner's
 //!   confidant as Admin, an owner by row 0.
 
@@ -483,14 +486,70 @@ pub fn adminclose() {
         println!("  {}", roles_line(&sim, m));
     }
     let closed: Vec<Option<u64>> = honest.iter().map(|&m| sim.replica(m, 1).sim.vcm.closed_at).collect();
-    let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]);
+    let removed: Vec<Vec<MemberId>> = honest.iter().map(|&m| sim.replica(m, 1).sim.closed_members.clone()).collect();
+    let ok = closed[0].is_some() && closed.iter().all(|c| *c == closed[0]) && removed.iter().all(|r| r == &[2, 3]);
     println!(
-        "RESULT adminclose: the only admin (1) silent from 3 s; session closed at frame {:?} at m2, {:?} at m3 -> {}",
+        "RESULT adminclose: the only admin (1) silent from 3 s; session closed at frame {:?} at m2, {:?} at m3; members the close removed {:?} at m2, {:?} at m3 -> {}",
         closed[0],
         closed[1],
-        if ok { "CLOSED, the same frame everywhere" } else { "FAIL" }
+        removed[0],
+        removed[1],
+        if ok { "CLOSED, the same frame everywhere, every member left removed" } else { "FAIL" }
     );
     verdict(&sim, &honest, "adminclose (the only admin goes silent at t=3 s)", stopped);
+}
+
+/// V1 and V2 (user 08:31Z; @coordinator-opus's call 09:24Z on the last admin). Member 2's role holds
+/// only the kick permission and member 3's only the roles permission, so 3 counts as an admin; 4 is a
+/// guest. 2 kicks 1 (Admin) and 3: both refused on receipt, so neither is frozen for it; 2 kicks guest
+/// 4: applied. The only Admin, 1, falls silent at 4 s. Removing it leaves the session open, because 3
+/// counts as an admin. 3 cannot take the roles permission from its own role while it is the last admin;
+/// it makes itself Admin, and then can.
+pub fn kickadmin() {
+    const MOD: RoleId = GUEST + 1;
+    const MGR: RoleId = GUEST + 2;
+    let ids = [1, 2, 3, 4];
+    let mut ps = peers_of(&ids, |m| match m {
+        1 => plan(&[(60, touch(10, 6.0))]),
+        2 => plan(&[(120, Action::Kick { target: 1 }), (140, Action::Kick { target: 3 }), (160, Action::Kick { target: 4 }), (700, touch(33, 3.0))]),
+        3 => plan(&[
+            (600, Action::DefineRole { role: MGR, perms: perm::KICK }),
+            (660, Action::SetRole { member: 3, role: ADMIN }),
+            (720, Action::DefineRole { role: MGR, perms: perm::KICK }),
+        ]),
+        _ => BTreeMap::new(),
+    });
+    guests(&mut ps, &[1]);
+    each_sim(&mut ps, |s| {
+        s.vcm.role_defs.insert(MOD, perm::KICK);
+        s.vcm.role_defs.insert(MGR, perm::ROLES);
+        s.vcm.roles.insert(2, MOD);
+        s.vcm.roles.insert(3, MGR);
+    });
+    let mut net = Net::new(link(30, 10, 0), 7);
+    net.filter = Some(Box::new(|t, _w, from, to, _m| if (from == 1 || to == 1) && t >= 4_000_000 { Fate::Drop } else { Fate::Deliver }));
+    let mut sim = Sim::new(net, ps, 16_000_000);
+    let stopped = run_to_end(&mut sim, |_| {});
+    let honest = [2, 3];
+    vc_report(&sim, &honest, "kickadmin");
+    for &m in &honest {
+        println!("RESULT kickadmin: m{m}: {}", outcomes(&sim, m));
+        println!("  {}", roles_line(&sim, m));
+    }
+    let kick_votes = |x: MemberId| ids.iter().any(|&m| sim.replica(m, 1).sim.all_entries().iter().any(|e| matches!(e.payload, Payload::Vote { target, kick, .. } if kick != EntryId::NONE && target == x)));
+    let (frozen1, frozen3) = (kick_votes(1), kick_votes(3));
+    let r2 = &sim.replica(2, 1).sim;
+    let left: Vec<MemberId> = r2.vcm.members.iter().copied().collect();
+    let open = honest.iter().all(|&m| sim.replica(m, 1).sim.vcm.closed_at.is_none());
+    let same = honest.iter().all(|&m| sim.replica(m, 1).sim.vcm.roles == r2.vcm.roles && sim.replica(m, 1).sim.vcm.role_defs == r2.vcm.role_defs);
+    let ok = !frozen1 && !frozen3 && left == [2, 3] && open && same && r2.vcm.roles.get(&3) == Some(&ADMIN) && r2.vcm.role_defs.get(&MGR) == Some(&perm::KICK);
+    println!(
+        "RESULT kickadmin: kick votes against 1: {frozen1}, against 3: {frozen3}; members left {left:?}; open {open}; 3's role {:?}, role {MGR} = {:#x} -> {}",
+        r2.vcm.roles.get(&3),
+        r2.vcm.role_defs.get(&MGR).copied().unwrap_or(0),
+        if ok { "ADMINS SAFE FROM A KICK-ONLY ROLE, AND A ROLES-HOLDER KEEPS THE SESSION OPEN" } else { "FAIL" }
+    );
+    verdict(&sim, &honest, "kickadmin (a kick-only role kicks admin 1, roles-holder 3 and guest 4; then admin 1 goes silent at t=4 s)", stopped);
 }
 
 pub fn joinrules() {

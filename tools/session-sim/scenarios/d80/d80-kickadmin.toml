@@ -1,0 +1,60 @@
+description = """
+V1 and V2 (user 08:31Z; design 12.4): member 2's role (2) holds only the kick permission and member \
+3's role (3) only the roles permission, so 3 counts as an admin; 4 is a guest. 2 kicks 1 (Admin) and \
+3: both refused on receipt, so neither is frozen; 2 kicks guest 4: applied. The only Admin, 1, falls \
+silent at 4 s. Removing it leaves the session open, because 3 counts as an admin. 3 cannot take the \
+roles permission from its own role while it is the last admin; it makes itself Admin, and then can \
+(session-sim p24r.rs `kickadmin`)."""
+include = ["../common/review.toml"]
+end_ms = 16000
+
+[world.1]
+members = [1, 2, 3, 4]
+guests = { role = 1, admins = [1] }
+role_defs = [[2, 1], [3, 2]]        # role 2: kick only; role 3: roles only
+roles = [[2, 2], [3, 3]]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
+2 = [
+    { at = 120, kick = { target = 1 } },
+    { at = 140, kick = { target = 3 } },
+    { at = 160, kick = { target = 4 } },
+    { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+3 = [
+    { at = 600, define_role = { role = 3, perms = 1 } },
+    { at = 660, set_role = { member = 3, role = 0 } },
+    { at = 720, define_role = { role = 3, perms = 1 } },
+]
+
+[[fault]]
+involves = 1
+after_ms = 4000
+drop = true
+
+[[report]]
+kind = "view_changes"
+honest = [2, 3]
+label = "kickadmin"
+
+[[report]]
+kind = "admin"
+honest = [2, 3]
+label = "kickadmin"
+outcomes = true
+roles = true
+
+[[report]]
+kind = "check"
+case = "kickadmin"
+label = "kickadmin"
+honest = [2, 3]
+members = [1, 3]
+target = 3
+role = 3
+
+[[report]]
+kind = "verdict"
+honest = [2, 3]
+label = "kickadmin (a kick-only role kicks admin 1, roles-holder 3 and guest 4; then admin 1 goes silent at t=4 s)"

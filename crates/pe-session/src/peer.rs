@@ -71,6 +71,9 @@ pub enum Event {
     Confirmed { conf: u64 },
     /// A membership decision: the epoch reached and the members removed.
     Epoch { epoch: u32, removed: Vec<MemberId> },
+    /// V3 (user 08:31Z): no admin is left, so the session closed at frame `at`: every member listed was
+    /// removed, and nothing stamped at or after `at` acts.
+    Closed { at: u64, removed: Vec<MemberId> },
     Paused { frame: u64 },
     Resumed { frame: u64 },
     /// A canonical check hash differed from another member's: divergence. `total` counts them.
@@ -156,6 +159,7 @@ pub struct SessionCore {
     mine: BTreeMap<EntryId, Option<(u64, Outcome)>>,
     last_conf: u64,
     last_epoch_log: usize,
+    told_closed: bool,
     paused: bool,
     last_checks_bad: u64,
     /// Review P23-3: donors asked for a state ([`SessionCore::request_state`]) and not answered yet.
@@ -204,6 +208,7 @@ impl SessionCore {
             mine: BTreeMap::new(),
             last_conf: 0,
             last_epoch_log: 0,
+            told_closed: false,
             paused: false,
             last_checks_bad: 0,
             state_asked: BTreeSet::new(),
@@ -621,6 +626,10 @@ impl SessionCore {
         if s.conf != self.last_conf {
             self.last_conf = s.conf;
             self.events.push(Event::Confirmed { conf: s.conf });
+        }
+        if let (Some(at), false) = (s.vcm.closed_at, self.told_closed) {
+            self.told_closed = true;
+            self.events.push(Event::Closed { at, removed: s.closed_members.clone() });
         }
         for (epoch, _, _, removed) in &s.vcm.vc_log[self.last_epoch_log..] {
             self.events.push(Event::Epoch { epoch: *epoch, removed: removed.clone() });
