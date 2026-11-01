@@ -216,6 +216,8 @@ pub struct LateAcks {
 
 /// The late-acks hint's window, and its round-trip median's (design 10.8).
 pub const LATE_WINDOW_US: u64 = 10_000_000;
+/// The window the late-acks hint's round trip is the largest sample of (review IB-1).
+pub const RTT_MAX_WINDOW_US: u64 = 2_000_000;
 /// Fewer eligible acks than this in the window flag nobody.
 pub const LATE_MIN_ACKS: u32 = 10;
 /// The margin's fixed part, on top of PACK_MAX frames (an ack built up to PACK_MAX frames before it is sent).
@@ -746,11 +748,12 @@ impl SessionCore {
         }
     }
 
-    /// The largest round trip sampled toward `member` in the window: conservative, so a path that
-    /// just got slower exempts acks at once instead of after the median catches up. It can only
-    /// exempt an ack, never flag one.
-    fn window_rtt(&self, member: MemberId) -> Option<u64> {
-        self.ind.rtt.get(&member)?.iter().map(|&(_, r)| r).max()
+    /// The largest round trip sampled toward `member` over the last [`RTT_MAX_WINDOW_US`]:
+    /// conservative, so a path that just got slower exempts acks at once instead of after a median
+    /// catches up. It can only exempt an ack, never flag one. The short window makes a withholder
+    /// that slows its pongs to be exempted pay with a slow pong every 2 s (review IB-1).
+    fn window_rtt(&self, member: MemberId, now_us: u64) -> Option<u64> {
+        self.ind.rtt.get(&member)?.iter().filter(|&&(t, _)| t + RTT_MAX_WINDOW_US >= now_us).map(|&(_, r)| r).max()
     }
 
     /// Admin indicators: the latest time each of my own entries was handed to the link toward each
@@ -788,7 +791,7 @@ impl SessionCore {
         if !self.sim.is_member(x) || self.sim.voted_against_me(x) || self.sim.admitted_at(x).is_some_and(|b| horizon < b) {
             return;
         }
-        let Some(rtt) = self.window_rtt(x) else { return };
+        let Some(rtt) = self.window_rtt(x, now_us) else { return };
         let margin = PACK_MAX * self.dt_us + LATE_MARGIN_US;
         let half = rtt / 2 / self.dt_us.max(1);
         let me = self.sim.me;
@@ -821,6 +824,7 @@ impl SessionCore {
             .ind
             .acks
             .iter()
+            .filter(|&(&member, _)| self.sim.is_member(member))
             .map(|(&member, q)| {
                 let (mut late, mut eligible) = (0u32, 0u32);
                 for &(t, l) in q {
