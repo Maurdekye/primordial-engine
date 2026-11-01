@@ -31,3 +31,16 @@ grep RESULT "$O"/capped-step-64-16.log
 grep RESULT "$O"/capped-4members-shared64.log
 "$B" capped --kbps 256 --members 3 --slow 3 --slow-kbps 8 --end 20 > "$O"/capped-slow-member.log
 grep RESULT "$O"/capped-slow-member.log
+# The first gesture after a long idle (@coordinator-opus, 2026-11-01; 10.9 item 3): two gestures 40 s
+# apart (through the idle the controller does not step down into the level that congested, or finer),
+# and 310 s apart (D56's 5-minute ceiling has forgotten that level, so the second gesture probes from
+# level 0 again).
+# Spike only until pe-session's controller has the rule and its harness the --gap option.
+if [ "${1:-}" != --pe ]; then
+  for k in 32 16 12; do
+    "$B" capped --kbps $k --gap 40 --end 66 > "$O"/capped-${k}kbps-two-gestures.log
+    grep RESULT "$O"/capped-${k}kbps-two-gestures.log
+  done
+  "$B" capped --kbps 16 --gap 310 --end 335 > "$O"/capped-16kbps-after-5min.log
+  grep RESULT "$O"/capped-16kbps-after-5min.log
+fi

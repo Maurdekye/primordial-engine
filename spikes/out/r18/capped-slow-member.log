@@ -13,4 +13,4 @@ RESULT   batched+adaptive |  66.6 /  39.9 /  38.4 |  500 /  498 /  500 |  106 | 
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 323.0 / 118.8, m2 326.3 / 121.1, m3 415.1 / 49.0 (29 of 63 unconfirmed)
 RESULT     member 1's own hand against its target, over 156 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (57, 208)}
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [8185, 5100, 400, 400, 400, 5417] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2468, 10817, 400, 400, 400, 5417] ms

@@ -1044,6 +1044,8 @@ release build [V session-sim ballpit].
        gap detection for a new entry is as prompt as before.
      * A member whose sim lags judges from its lagging copy and stays busy longer. That costs only
        bandwidth.
+     * R18's controller reads the same idle state (10.9 item 3): while idle, D56's memory does not age
+       and calm does not lower into the remembered level.
      * Idle acks fall on frames that are multiples of 8, the coarsest level's grid, so they share
        datagrams with hand entries. The ack that leaves idle goes at once, off the grid. A check hash
        due at a check frame rides the first ack after it, at most 7 frames later.
@@ -2356,11 +2358,29 @@ and the engager's hand replayed after the gesture had ended.
        * L is forgotten after 30 s with no congestion [proposal: 5 s and 30 s, to tune by the 80 kbit/s
          run]. Any queue above 40 ms restarts that timer, whether or not it raises the level: at the
          coarsest level none can, and on-and-off cross-traffic there must not age L out (review D56-1).
+       * **Idle time does not count** (@coordinator-opus, 2026-11-01). While the member is idle (7.6),
+         the 30 s do not run, and calm does not lower into L or any finer level: idle calm stops at L + 1,
+         and a level already at L or finer stays where it is. Calm while idle says nothing about whether
+         the link can carry a gesture. The 5 s of calm needed to lower into L count only time with the
+         member active, so idle calm does not count at the next gesture's first frame either (decided,
+         @coordinator-opus, 2026-11-01). Before, L aged out between two gestures 40 s apart, and the
+         second one congested the link from level 0 again (below the table).
+       * Idle is 7.6's predicate, read every tick (decided, @coordinator-opus, 2026-11-01: the ceiling
+         bounds what it costs). A gesture's author stays busy throughout (a pending pack holds it), but an
+         observer counts as idle between packs: during a level-5 gesture at 16 kbit/s it turned busy 28
+         times, most for about a frame [V, instrumented run]. So an observer's L barely ages during a
+         coarse gesture, and it lowers into L only after 5 s of active calm, which a coarse gesture does
+         not give it, or once L is forgotten (by the 5-minute ceiling at the latest). Its level matters
+         only for its acks while busy; idle, it acks every 8 frames anyway.
+       * **A ceiling:** L is forgotten 5 minutes after the last congestion, however much of that time
+         was idle [proposal: 5 min], so a session of short gestures re-probes the finer levels
+         eventually.
        * Without the memory, a stream at twice the cap cycled about every 3 s: each 300 ms of calm
          lowered it back to level 0, and the queue reached 340-390 ms before the raises caught up [V
          pe-app r18-app].
        * pe-session builds it as @shader-lang's p2/r18-memory, and the spike mirrors it (p2/spike-d56).
-         The measured effect is under the table below.
+         The idle rule and the ceiling are built in the spike first (p2/spike-gesture2). The measured
+         effects are under the table below.
      * Each level thins the hand stream to one entry every 1/2/3/4/6/8 frames, and acks to one every
        2/2/3/4/6/8 frames. Both fall on the same frame ticks, so a hand entry and an ack share one
        datagram (review R3-9 added the two coarsest levels and the alignment).
@@ -2509,6 +2529,31 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73]:
   * pe-session collapses below 20 kbit/s with or without D73, so its runs did not show this. In a first
     experiment, encoding a pack's targets as deltas halved the stall at 16 kbit/s but did not bring the
     recovery back. Options are being measured for the user (@coordinator-opus, 2026-11-01).
+* **The first gesture after idle (p2/spike-gesture2).** The same sweep twice: 40 s apart, where D56's
+  30 s without congestion used to forget L, and 310 s apart, past the 5-minute ceiling. Batched + adaptive only
+  [V spikes/out/r18, the two-gestures and after-5min logs; "without the rule" is the same cell with the
+  rule taken out, not kept as a log]:
+
+  | Cap, gap | Second gesture: level at its start | Max queue | Stalled frames | Back to real time after it | Its hand entries' confirmation latency, mean (author / observer) |
+  |---|---|---|---|---|---|
+  | 32 kbit/s, 40 s | 5 (without the rule: 0) | 0 ms (191) | 0 / 0 (0 / 0) | at once (at once) | 19.0 / 11.4 frames (12.6 / 11.4) |
+  | 16 kbit/s, 40 s | 5 (0) | 0 ms (498) | 0 / 0 (438 / 440) | at once (6.7 s) | 19.0 / 11.4 frames (139 / 147) |
+  | 12 kbit/s, 40 s | 5 (0) | 0 ms (499) | 0 / 0 (1,052 / 1,061) | at once (never in the run) | 17.3 / 14.9 frames (255 / 276) |
+  | 16 kbit/s, 310 s | 0: the ceiling forgot L | 498 ms | 438 / 440 | 6.7 s | 140 / 148 frames |
+
+  * The first gesture plays out as in the single-gesture cells (back 7.3 s after it at 16 kbit/s, 13.6 s
+    at 12); only the second moves. The 310 s cell's second gesture plays out like the 40 s cell
+    without the rule, so the ceiling lapses as intended.
+  * Held at level 5, the second gesture is the coarsest stream. Below 20 kbit/s that keeps the session in
+    real time. Where the link had room it costs latency: at 32 kbit/s the author confirms the gesture's
+    entries 6.4 frames later on average.
+  * The single-gesture cells in the table changed only in the time the controller spends at each level
+    after the gesture: idle, it no longer steps back down into L.
+  * **Why the 5 s count only active time** (decided, @coordinator-opus, 2026-11-01, on the 12 kbit/s
+    cell): counted instead, the calm built up while idle lowered the level one step at the second
+    gesture's first frame, into L. That fit at 16 and 32 kbit/s (mean latency 15.0 and 15.4 frames at
+    the author), but at 12 kbit/s it queued 473 ms and took 2.6 s to recover [V, the rule with idle calm
+    counted, not kept as a log].
 * **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
   even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
   wire format]. Below the floor a two-member session stalls, because it cannot demote either member
@@ -6908,7 +6953,11 @@ entry says so.
   * within those, the level where congestion began is remembered, the highest such level while the
     memory lasts. Lowering into it or any finer level takes 5 s of calm, and it is forgotten after 30 s
     with no congestion (@coordinator-opus, 2026-10-31, from @shader-lang's 80 kbit/s measurement; the
-    onset rule as @shader-lang built it; 10.9) [proposal: 5 s and 30 s].
+    onset rule as @shader-lang built it; 10.9) [proposal: 5 s and 30 s];
+  * while the member is idle (7.6), the memory does not age and calm does not lower into that level or a
+    finer one; it is forgotten 5 minutes after the last congestion regardless (@coordinator-opus,
+    2026-11-01; 10.9) [proposal: 5 min]. The 5 s of calm count only time with the member active, and idle
+    is 7.6's per-tick predicate (decided, @coordinator-opus, 2026-11-01).
 
   Production (pe-app) measures the queue as a LEDBAT-style one-way queueing delay (10.9, item 3) [V pe-app
   r18-app]. These defaults kept a 32-64 kbit/s cap
