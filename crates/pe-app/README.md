@@ -82,21 +82,25 @@ measures that queue and feeds it (`set_link`) every tick.
     buffer would.
 * **Feed:** the largest report from any member. A report is held up to 5 s; with none left, the core
   gets no signal (`set_link(None)`), which holds the level and is never read as calm.
-  * **Clock drift** (design 10.4, review H1). A receiver keeps its delays less the drift clock sync
-    knows of: the integral of its own session frequency less the sender's (r − s_j), restarting the
-    estimates when the sender's frequency is first fitted (before it, the whole skew drifts in). The
-    estimates also restart at frame 0. What is left is the error of the fitted frequencies.
-  * **The round-trip clamp** handles that error. A report's bound is the reporter's round-trip queueing
-    + 5 ms: the least of its last 4 round trips over the best since frame 0, less the queue this node
-    measures on that member's datagrams (the way back). The round trip is on one clock, so no
-    frequency error fakes it, and a real uplink queue delays the pings too. Unanswered pings do not count.
-    * While a report stands above its bound, the reporter gets a probe ping every 100 ms. Each probe
-      that returns gives a verdict: a queue if the lesser excess of it and the probe before (less the
-      way back), plus 5 ms, accounts for at least 3/4 of the report it was sent against. Otherwise the
-      report is a clock's drift and is clamped to the bound.
-    * Until the first verdict the report passes (at most 0.5 s if the probes are lost). So a drift
-      passes for about one probe round trip, and the onset of real congestion is not clamped. Dipping
-      the signal at an onset made D56 remember a coarse level as the congested one (measured).
+  * **Clock drift** (design 10.4, review H1). The stamps are on the rate-corrected clock, so the drift
+    left is what the frequencies have not caught up with yet. The estimates restart at frame 0 and when
+    the sender's frequency is first fitted (before it the whole skew drifts in: 9 % is 90 ms/s).
+  * **The round-trip clamp** handles the rest. A report's bound is the reporter's round-trip queueing
+    + 5 ms. That queueing is the least of the last 4 round trips over the best since the estimates
+    restarted, less the queue this node measures on that member's datagrams (the way back; its peak
+    until the frequency is fitted). The round trip is on one clock, so no frequency error fakes it, and
+    a real uplink queue delays the pings too. Unanswered pings do not count.
+    * While a report above 10 ms stands above its bound, the reporter gets a probe every 100 ms. It
+      rides on a datagram going there anyway, or goes alone after 250 ms (alone, the probes took a
+      fifth of an 80 kbit/s uplink). A returning probe reads as a queue when the lesser excess of it
+      and the probe before (less the way back), plus 5 ms, is at least 9/10 of the lesser of the
+      reports they were sent against. Otherwise the report is a clock's drift.
+    * The report passes until the first verdict (at most 0.5 s if the probes are lost), and while the
+      latest verdict is a queue. After a queue verdict it also passes for the report's own lag, and
+      while the reports fall faster than any clock drifts (15 %/s): a draining queue. Otherwise it is
+      clamped to the round trip's reading. So a congestion onset or drain is not clamped (dipping the
+      signal there made D56 remember a coarse level, measured), and a drift passes for about one probe
+      round trip. An episode outlives a second below its bound, keeping its verdict.
     * Clamped ticks are counted (`link.clamped_ticks`).
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
 * `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
@@ -117,13 +121,14 @@ measures that queue and feeds it (`set_link`) every tick.
 
 ## Evidence (`spikes/out/m1/`)
 
-All measured. The current build adds continuous clock sync (`clock-sync/`, p2/app 4634137); the
+All measured. The current build adds continuous clock sync and R18's handling of clock drift
+(`clock-sync/`, p2/app 00250f7); the
 `*-rebase` set is the build before it (main 0d792e8 with P2-3's pe-session, the held hand target and
 the 10.3 session id); the `*-store` set is older (pe-session at p2/session f634185, with pe-physics).
 
 | Run | Result |
 |---|---|
-| `clock-sync/` | Continuous clock sync (design 10.4): a 2-minute Windows + WSL session with R18 on is ALL EQUAL with all four members and no membership decision; 80 kbit/s R18 better than before; a member 9 % slow and a lying member handled; with two colluders and a slow pair the fault-tolerant midpoint keeps all seven, a plain median removes the slow pair. See its README |
+| `clock-sync/` | Continuous clock sync (design 10.4) and R18 under drift (review H1). 2-minute Windows + WSL sessions with R18 on: ALL EQUAL, no membership decision, every member at level 0 throughout with the impairments present from the start, and with 2 native + 1 WSL member. With scripted delay steps at 2-3 s, the WSL member whose uplink gets one is above level 0 for 21-31 % of the run (the first ~40 s; see its README), the others 76-100 %. 80 kbit/s R18 as before (d835a94 run alongside); a member 9 % slow at level 0 throughout; a lying member handled; with two colluders and a slow pair the fault-tolerant midpoint keeps all seven, a plain median removes the slow pair |
 | `wsl-clock-skew/` | The problem: the WSL2 VM's clock runs 2-9 % slow against Windows; synced once at the start, Windows + WSL sessions broke (215 empty view changes in 2 minutes, an honest member removed with R18 on) |
 | `mixed-windows-wsl-rebase/` | Members 1–2 on Windows, 3–4 native Linux in WSL; loss on members 2 and 3; member 4 drops out at 15 s and is removed about 3 s later. Members 1–3 identical over 1800 frames, replay-equal, 0 failed checks |
 | `loopback-windows-rebase/`, `tests-windows-rebase.log` | Windows loopback (`m1-loopback.sh`): ALL EQUAL. pe-session, pe-mcp and pe-app tests: 94 pass |
@@ -178,8 +183,8 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
     resulting drift on 6 and 7.
   * R18 with a path-delay step on the way back while clocks drift: the drift drains the step out of
     this node's estimate of the way back, so the round trip shows it as queue on the way out, and a
-    drifting report passes up to it. In the 2-minute Windows + WSL run, where the scripted 25-30 ms
-    delays start at 2-3 s, this is what remains (see the evidence).
+    drifting report passes up to it. In the 2-minute Windows + WSL runs, where the scripted 25-30 ms
+    delays start at 2-3 s, this is what remains, before the frequencies are fitted (see the evidence).
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
   only protection.
 * Windows Firewall: inbound UDP from WSL needs a rule on the WSL adapter. This PC's rule covers one exe
