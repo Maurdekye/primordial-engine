@@ -1,0 +1,31 @@
+description = """
+Admin indicators (design 10.8): a thin sweeper. Every link out of member 2 is capped at 8 kbit/s \
+(up-k8). As the judged member, 2's acks wait in its own uplink queue, built long before they arrive; \
+the stamp rule (review LA-5) exempts them, so admin 1 never flags 2 late. As an author, 2's slow \
+entries delay 3's references to them, which the clock-free test never reads: admin 1 judges 3 only \
+on 1's own entries, and never flags it."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+2 = [{ at = 90, every = 6, count = 60, touch = { obj = 12, impulse = [0.0, 1.0, 0.0] } }]
+
+[net]
+seed = 7
+link = { delay_ms = 30, jitter_ms = 10 }
+caps = [{ from = 2, to = 1, kbps = 8 }, { from = 2, to = 3, kbps = 8 }]
+
+[[report]]
+kind = "indicators"
+at = 1
+label = "ind-thinup m1"
+honest = [2, 3]
+may_not_reference = [2, 3]
+
+[[report]]
+kind = "indicators"
+at = 3
+label = "ind-thinup m3"
+honest = [1, 2]
+may_not_reference = [1, 2]
