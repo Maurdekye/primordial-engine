@@ -633,12 +633,12 @@ impl Sim {
             }
             r.core.ack_on_frames = self.net.batching;
             // Admin indicators (design 10.8): round-trip samples, as clock sync's pings would give.
-            if now % 250_000 == 0 {
+            if now.is_multiple_of(250_000) {
                 for m in r.sim.audience() {
-                    if m != pid {
-                        if let Some(rtt) = self.net.ping_rtt_us(pid, m) {
-                            r.core.rtt_sample(m, rtt, now);
-                        }
+                    if m != pid
+                        && let Some(rtt) = self.net.ping_rtt_us(pid, m)
+                    {
+                        r.core.rtt_sample(m, rtt, now);
                     }
                 }
             }
