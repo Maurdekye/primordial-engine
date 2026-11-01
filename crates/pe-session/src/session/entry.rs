@@ -213,7 +213,9 @@ pub enum Payload {
     /// target's chain for the cut, never to approve it. The view change commits it in order with
     /// every other membership change. Like every admin entry it stays pending across epochs until a
     /// decision applies or refuses it; `epoch` is the first epoch whose change may include it.
-    Kick { epoch: u32, target: MemberId },
+    /// `rejoin` (12.4 kick options, user 2026-11-01): what the kick records for the target's key:
+    /// nothing (a plain kick), a rejoin role or a ban for this session, or a perma-ban for the world.
+    Kick { epoch: u32, target: MemberId, rejoin: Rejoin },
     /// Give `member` the role `role`, for the view change that ends `epoch` (ROLES permission).
     /// Refused if it would leave the session without an admin.
     SetRole { epoch: u32, member: MemberId, role: RoleId },
@@ -225,6 +227,25 @@ pub enum Payload {
     /// A view change commits it in commit order, and it applies if it is valid against the book
     /// the entries before it leave, so every replica holds the same owners after each decision.
     Ownership { epoch: u32, cert: Cert },
+    /// 12.4 bans: ban identity key `key`, which no member holds (a present player is banned by a kick
+    /// with a ban option), or (`on` = false) lift its ban. `perma` = false: this session's ban list (BAN
+    /// permission; a lift also clears the key's rejoin role). `perma` = true: the world's perma-bans (an
+    /// owner's key). An admin entry like a kick: the view change commits it in commit order.
+    Ban { epoch: u32, key: Key, on: bool, perma: bool },
+}
+
+/// What a kick leaves in the world's ACL for its target's identity key (12.4 kick options).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rejoin {
+    /// A plain kick: the player may rejoin as the join rules say.
+    Free,
+    /// Kick and remove Admin: when the key rejoins with a role that counts as an admin, it gets this
+    /// role instead.
+    Role(RoleId),
+    /// Kick and ban, for this session (BAN permission).
+    Ban,
+    /// Kick and perma-ban, for the world (an owner's key).
+    PermaBan,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -361,7 +382,15 @@ impl Wr {
                 self.u8(if *kick == EntryId::NONE { 8 } else { 15 }); self.u32(*epoch); self.u32(*target); self.u32(*seq); self.u32(frozen.0); self.id(frozen.1);
                 if *kick != EntryId::NONE { self.id(*kick) }
             }
-            Payload::Kick { epoch, target } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
+            // A plain kick keeps tag 17 (and so its id); a kick with an option is tag 22.
+            Payload::Kick { epoch, target, rejoin: Rejoin::Free } => { self.u8(17); self.u32(*epoch); self.u32(*target) }
+            Payload::Kick { epoch, target, rejoin } => {
+                self.u8(22); self.u32(*epoch); self.u32(*target);
+                match rejoin { Rejoin::Role(r) => { self.u8(1); self.u32(*r as u32) } Rejoin::PermaBan => self.u8(3), _ => self.u8(2) }
+            }
+            Payload::Ban { epoch, key, on, perma } => {
+                self.u8(23); self.u32(*epoch); self.0.extend_from_slice(&key.0); self.u8(*on as u8 | (*perma as u8) << 1)
+            }
             Payload::SetRole { epoch, member, role } => { self.u8(18); self.u32(*epoch); self.u32(*member); self.u32(*role as u32) }
             Payload::DefineRole { epoch, role, perms } => { self.u8(19); self.u32(*epoch); self.u32(*role as u32); self.u64(*perms) }
             Payload::Ownership { epoch, cert } => {
@@ -586,7 +615,26 @@ impl<'a> Rd<'a> {
                 let kick = if tag == 15 { self.id()? } else { EntryId::NONE };
                 Payload::Vote { epoch, target, seq, frozen, kick }
             }
-            17 => Payload::Kick { epoch: self.u32()?, target: self.u32()? },
+            17 => Payload::Kick { epoch: self.u32()?, target: self.u32()?, rejoin: Rejoin::Free },
+            22 => {
+                let (epoch, target) = (self.u32()?, self.u32()?);
+                let rejoin = match self.u8()? {
+                    1 => Rejoin::Role(self.role()?),
+                    2 => Rejoin::Ban,
+                    3 => Rejoin::PermaBan,
+                    _ => return None,
+                };
+                Payload::Kick { epoch, target, rejoin }
+            }
+            23 => {
+                let epoch = self.u32()?;
+                let key = Key(self.take(32)?.try_into().ok()?);
+                let f = self.u8()?;
+                if f > 3 {
+                    return None;
+                }
+                Payload::Ban { epoch, key, on: f & 1 != 0, perma: f & 2 != 0 }
+            }
             18 => Payload::SetRole { epoch: self.u32()?, member: self.u32()?, role: self.role()? },
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
             // Review OWNY-3: a certificate claiming more than MAX_CERT_BYTES is never read.
@@ -715,6 +763,7 @@ pub fn is_protocol(p: &Payload) -> bool {
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
             | Payload::Ownership { .. }
+            | Payload::Ban { .. }
     )
 }
 
