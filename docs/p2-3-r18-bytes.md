@@ -112,7 +112,8 @@ what-if 3 = the earlier byte charge):
   - Four members sharing 64 kbit/s are back in real time 944 ms after the gesture (before: never).
   - 16 kbit/s recovers in the longer runs: 37.5 s after the gesture in the two-gesture run, against
     never. The 310 s cell's second gesture plays out with no stall.
-  - Regression: the slow member on 8 kbit/s is demoted about 0.5 s later (cut seq 25 -> 42). Its
+  - Known cost (@coordinator-opus, 2026-11-01; its cause is looked at with option 2, since 2-3-player
+    sessions keep slow-member demotion): the slow member on 8 kbit/s is demoted about 0.5 s later (cut seq 25 -> 42). Its
     smaller entries keep it within the window longer, so the others stall 112 frames instead of 94
     and are back 553 ms after the gesture instead of 57.
 - Option 1 beats today's form at every cap from 18 kbit/s up. At 16 and below it still collapses.
@@ -121,7 +122,8 @@ what-if 3 = the earlier byte charge):
   The real codec, with only its explicit entries charged as if lean, reproduces what-if 3 exactly (936 /
   14.9 s, 590 / 8.9 s, 473 / 6.9 s). So the waits behind holes cost nothing measurable; the explicit
   repairs are the whole difference. At 18 kbit/s, 159 lean entries waited a mean of 437 frames for holes.
-- A proposal, not built: a hole-fill fetch could carry a bit "I hold (author, from - 1)", and the reply
-  could then go lean. That is condition (a)'s case of a receiver that does hold the predecessor. It fits
-  option 2's fetch bit ("I hold a later entry").
+- Decided, to be built with option 2 (@coordinator-opus, 2026-11-01): a hole-fill fetch carries a bit
+  "I hold (author, from - 1)", and its reply goes lean. That is condition (a)'s case of a receiver that
+  does hold the predecessor, and the same bit as option 2's fetch rule. 16 kbit/s is then measured
+  against the what-if.
 
