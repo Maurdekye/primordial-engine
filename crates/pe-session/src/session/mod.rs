@@ -503,6 +503,10 @@ pub struct WorldSim {
     hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// The genesis members (epoch 0), from which every later epoch's members follow.
     genesis: Vec<MemberId>,
+    /// V3 (user 08:31Z): the members the close removed, every one left; everyone is told (the
+    /// `SESSION CLOSED` event) and no further change is made to the world. The spike keeps its member
+    /// list for its own bookkeeping and records the removal here; pe-session empties the list.
+    pub closed_members: Vec<MemberId>,
     /// Test fixture: review fixes switched off (see [`fix`]).
     pub fixes_off: u64,
     /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
@@ -823,6 +827,7 @@ impl WorldSim {
             hidden: None,
             join_reqs: BTreeMap::new(),
             genesis: members.to_vec(),
+            closed_members: Vec::new(),
             fixes_off: 0,
             entry_backoff: BTreeMap::new(),
             ref_seen: BTreeMap::new(),

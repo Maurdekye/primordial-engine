@@ -294,6 +294,12 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                     r.sim.vcm.roles.insert(m, if g.admins.contains(&m) { ADMIN } else { g.role });
                 }
             }
+            for &(role, perms) in &w.role_defs {
+                r.sim.vcm.role_defs.insert(role, perms);
+            }
+            for &(m, role) in &w.roles {
+                r.sim.vcm.roles.insert(m, role);
+            }
             if !w.owners.is_empty() {
                 r.sim.vcm.owners = w.owners.iter().copied().collect();
             }
