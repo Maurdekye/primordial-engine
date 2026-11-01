@@ -56,7 +56,7 @@ const FAST_SLEW: f64 = 0.12;
 const SLOW_SLEW: f64 = 0.01;
 const NEAR_US: f64 = 5_000.0;
 /// The frequency correction never exceeds this (a clock off by more is broken, not drifting).
-const MAX_RATE: f64 = 0.15;
+pub const MAX_RATE: f64 = 0.15;
 /// Each round (a new sample from any member) moves the correction this share of the way to the
 /// round's selection: gradual, so neither the session clock nor the rate-corrected clock jumps.
 const RATE_GAIN: f64 = 0.25;
