@@ -1845,6 +1845,9 @@ pub struct WorldSim {
     /// Review VC8R-1: every signed prevote held for a value, any version, linked or not, as `pc_held`
     /// is for precommits. Only proven members are counted from it (`prevoters`).
     pv_held: BTreeMap<(u32, u32, u64), BTreeSet<MemberId>>,
+    /// 7.6 reduction 2: the newest stamp of any entry held other than acks, void or not. The member is
+    /// idle while it is below `conf` (`idle`).
+    busy_stamp: u64,
     /// Decided changes, one per epoch boundary: (change, round, precommit signatures).
     decided: Vec<(Change, u32, Vec<(MemberId, u64)>)>,
     /// Decisions: (epoch reached, my clock frame when I decided, round, members removed).
@@ -2075,6 +2078,7 @@ impl WorldSim {
             later_proposals: BTreeMap::new(),
             pc_held: BTreeMap::new(),
             pv_held: BTreeMap::new(),
+            busy_stamp: 0,
             decided: Vec::new(),
             vc_log: Vec::new(),
             withhold_vc: false,
@@ -2433,6 +2437,9 @@ impl WorldSim {
         let id = e.id();
         if self.entries.contains_key(&id) || (!self.known.contains(&e.member) && e.member != LOGIC) {
             return vec![];
+        }
+        if !matches!(e.payload, Payload::Ack { .. }) {
+            self.busy_stamp = self.busy_stamp.max(e.stamp);
         }
         // Review PF-1: every signed precommit for a value, any version, linked into its author's chain
         // or not (a proven member's counts from here, `precommitters`).
@@ -5862,6 +5869,13 @@ impl WorldSim {
 
     pub fn caught_up(&self) -> bool {
         self.dirty_from.is_none()
+    }
+
+    /// 7.6 reduction 2: "nothing unconfirmed", judged from this member's own copy. Every entry it holds,
+    /// other than acks, is stamped below `conf`, so at or before its last confirmed frame. Acks are left
+    /// out, or each ack would keep every member busy.
+    pub fn idle(&self) -> bool {
+        self.busy_stamp < self.conf
     }
 
     /// Entries this member holds whose effective frame is confirmed (R14 relays wait for this).
