@@ -721,13 +721,15 @@ impl Node {
             let Some(addr) = self.session.addr_of(to) else { continue };
             let link = self.links.get(&to).copied().unwrap_or(self.default_link);
             // The send time is stamped as the datagram is built, just before it is handed to the
-            // network (the scripted cap and delay stand for the network).
-            let now = self.clock.rc(self.local_us());
+            // network (the scripted cap and delay stand for the network). The stamp is on the
+            // rate-corrected clock (design 10.4); the scripted cap and delay run on local time.
+            let now = self.local_us();
+            let ts = self.clock.rc(now);
             let qrep = self.rx.get(&to).and_then(|r| r.q_us).map_or(QREP_NONE, |q| (q / 1000).min(QREP_NONE as u64 - 1) as u16);
             let mut seq = self.out_seq.get(&to).copied().unwrap_or(0);
             let ds = wire::pack(self.session.session, self.me, &items, &self.key, || {
                 seq = seq.wrapping_add(1);
-                Stamp { ts: now as u32, seq, qrep }
+                Stamp { ts: ts as u32, seq, qrep }
             });
             self.out_seq.insert(to, seq);
             for d in ds {
@@ -863,7 +865,7 @@ impl Node {
             .filter(|(_, r)| now < r.1 + REPORT_HOLD_US)
             .map(|(&m, r)| {
                 let q = r.0 as u64 * 1000;
-                match self.clock.rtt_excess(m, now) {
+                match self.rtt_excess(m, now) {
                     Some(x) if q > x + RTT_CLAMP_MARGIN_US => {
                         clamped = true;
                         x + RTT_CLAMP_MARGIN_US
@@ -882,6 +884,18 @@ impl Node {
         }
         if self.link_signal {
             self.core.set_link(v);
+        }
+    }
+
+    /// The queueing on the round trip to member `m` now: the latest pong's excess over the best, or,
+    /// while pongs are late, the age of the oldest unanswered ping over the best (a lower bound).
+    fn rtt_excess(&self, m: u32, now: u64) -> Option<u64> {
+        let fresh = self.clock.rtt_excess(m, now);
+        let best = self.clock.best_rtt_us();
+        let waiting = self.pings_out.iter().filter(|p| p.0 == m).map(|p| now.saturating_sub(p.1)).max().filter(|&a| a > SYNC_EVERY_US && best < u64::MAX).map(|a| a - best.min(a));
+        match (fresh, waiting) {
+            (None, None) => None,
+            (f, w) => Some(f.unwrap_or(0).max(w.unwrap_or(0))),
         }
     }
 
@@ -1089,7 +1103,7 @@ impl Node {
                 s.frame, s.now, s.conf, s.membership().members(), s.stats.rollbacks, t.datagrams_sent, t.datagrams_dropped_by_fault, t.datagrams_dropped_by_cap, t.datagrams_received, t.rejected, s.stats.bad_sigs,
                 self.core.level, self.signal_us.map(|v| v / 1000), if self.link_signal { "" } else { " (not fed)" },
                 self.offset_us, self.clock.rate() * 1e6,
-                s.membership().members().iter().filter(|&&m| m != self.me).map(|&m| (m, self.clock.rtt_excess(m, local).map(|x| x / 1000))).collect::<Vec<_>>()
+                s.membership().members().iter().filter(|&&m| m != self.me).map(|&m| (m, self.rtt_excess(m, local).map(|x| x / 1000))).collect::<Vec<_>>()
             );
             self.note(line);
         }
