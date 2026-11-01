@@ -145,6 +145,16 @@ pub struct Net {
     pub trace: Vec<SendRec>,
 }
 
+/// Peers joined while set send no runs (option 2): every entry signed on itself, as on the explicit
+/// wire. For fix-off controls whose bug only the explicit form reaches (fetch replies and pe-app stay
+/// explicit, so the fix still matters there).
+static NO_RUNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// See [`NO_RUNS`].
+pub fn set_no_runs(on: bool) {
+    NO_RUNS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn has_lean(m: &Msg) -> bool {
     match m {
         Msg::Run { .. } => true,
@@ -543,7 +553,7 @@ impl Peer {
         // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
         core.sim.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
         // A/B for the option 2 triage: PE_RUNS=0 sends no runs (every entry signed on itself).
-        core.sim.run_wire = std::env::var("PE_RUNS").map_or(true, |v| v != "0");
+        core.sim.run_wire = !NO_RUNS.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("PE_RUNS").map_or(true, |v| v != "0");
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;

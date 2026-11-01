@@ -1140,7 +1140,10 @@ pub fn voidfork() {
 pub fn slowcapper() {
     let (_, capper, obs, joiner) = PREVOTEFORK;
     for fixed in RUNS {
+        // Option 2: the fix-off control runs without runs, the form whose path the fix guards.
+        set_no_runs(!fixed);
         let (sim, stopped) = prevotefork_sim(if fixed { 0 } else { fix::VC7R2 }, 1_500_000, 5_000_000, u64::MAX);
+        set_no_runs(false);
         let honest = [1, 2, 3];
         let remaining = [capper, obs, 9, joiner];
         let voted = sim.replica(obs, 1).sim.all_entries().iter().any(|e| e.member == obs && matches!(e.payload, Payload::Vote { target, .. } if target == capper));
@@ -1318,7 +1321,10 @@ pub fn plainfork() {
 pub fn pfsilent() {
     let (_, capper, obs, joiner) = PREVOTEFORK;
     for fixed in RUNS {
+        // Option 2: the fix-off control runs without runs, the form whose path the fix guards.
+        set_no_runs(!fixed);
         let (sim, stopped) = prevotefork_sim(if fixed { 0 } else { fix::PF1 }, 0, 2_500_000, 1_000_000);
+        set_no_runs(false);
         let honest = [1, 2, 3];
         let remaining = [capper, obs, joiner];
         let epochs = [1, 2, 3, joiner].map(|m| format!("m{m} {}", sim.replica(m, 1).sim.vcm.epoch)).join(", ");
