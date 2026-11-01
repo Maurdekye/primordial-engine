@@ -214,6 +214,32 @@ impl WorldSim {
         self.uplink_breach(j, x)
     }
 
+    /// Revision 22: what a fed member checks of a change, from what it holds (view-change entries by value, its clock,
+    /// the decided changes). Every removal needs its own evidence: its own vote (silence) or a proof it holds. A join or
+    /// any admin entry gets its nil (it can't check join rules without the log; a kick needs the kicker's chain
+    /// segment, not built), so removals are proposed on their own. The boundary is checked against its own decided
+    /// boundaries only (condition 3); the change's cut isn't checked (under revision 21 a Part B removal is cut at the
+    /// final vouched prefix, whatever the value says).
+    pub(super) fn fed_change_valid(&self, c: &super::Change) -> Option<bool> {
+        let last = self.decided.last().map_or(0, |d| d.0.boundary);
+        if c.epoch != self.epoch || c.boundary < last || !c.add.is_empty() || !c.admin.is_empty() {
+            return Some(false);
+        }
+        for r in &c.remove {
+            let mine = self.votes.get(&r.member).is_some_and(|v| v.contains_key(&self.me));
+            let proof = self.proofs.contains_key(&r.member) || self.liars.contains_key(&r.member);
+            if !mine && !proof {
+                return Some(false);
+            }
+        }
+        for (x, _) in &c.excluded {
+            if !self.proofs.contains_key(x) {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
     /// Rule 4's floor test, the uplink half (D) (revision 22): the bytes of fed member j's own datagrams that reached
     /// me directly over the last X frames, against my share of the floor, floor / (n − 1) (D-1). Only a fed j is
     /// judged (D-2; `floor_breach` is reached only for one); a fed voter doesn't judge (its downlink carries only echo
