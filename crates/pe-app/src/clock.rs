@@ -34,13 +34,17 @@ use std::collections::{BTreeMap, VecDeque};
 const WINDOW_US: u64 = 30_000_000;
 /// A fit takes the shortest round trip in each bucket of this length.
 const BUCKET_US: u64 = 2_000_000;
-/// A frequency is fitted once the buckets span at least 10 s (a change of path delay shifts the
-/// measured offset; over a short span that would read as a frequency).
-const MIN_SPAN_US: u64 = 10_000_000;
+/// A frequency is fitted once the buckets span at least 6 s (Theil-Sen over pairs at least 3 s apart:
+/// a change of path delay shifts the measured offset, and over a short span that would read as a
+/// frequency).
+const MIN_SPAN_US: u64 = 6_000_000;
+const MIN_PAIR_US: u64 = 3_000_000;
 /// A round trip counts toward the RTT excess (R18's clamp) while it is this recent.
 const RTT_FRESH_US: u64 = 2_000_000;
-/// The offset is predicted from the best samples of the last 3 buckets, carried forward at the rate.
+/// The offset is predicted from the best samples of the last 3 buckets, carried forward at the rate;
+/// before a peer has a rate, from its newest sample within this of the best round trip.
 const OFFSET_BUCKETS: usize = 3;
+const NEAR_RTT_US: u64 = 2_000;
 /// The residual correction beyond the frequency, per µs of local time: 12 % while more than `NEAR_US`
 /// off (enough to follow a 9 % drift before a rate is fitted; 2 ms per 60 Hz frame), then 1 %.
 const FAST_SLEW: f64 = 0.12;
@@ -56,6 +60,9 @@ pub struct PeerClock {
     samples: VecDeque<(u64, i64, i64, u64)>,
     /// The fitted frequency of the peer's raw clock against this local clock, minus 1.
     rate: Option<f64>,
+    /// Session offsets sampled before this local time are void (members still bootstrapping); raw
+    /// offsets stay valid, since no correction moves a raw clock.
+    session_from: u64,
 }
 
 impl PeerClock {
@@ -69,12 +76,12 @@ impl PeerClock {
         self.rate = self.fit_rate();
     }
 
-    /// The best (shortest round trip) sample of each bucket, oldest first.
+    /// The best (shortest round trip; the newest on a tie) sample of each bucket, oldest first.
     fn best(&self) -> Vec<(u64, i64, i64, u64)> {
         let mut buckets: BTreeMap<u64, (u64, i64, i64, u64)> = BTreeMap::new();
         for &s in &self.samples {
             let b = buckets.entry(s.0 / BUCKET_US).or_insert(s);
-            if s.3 < b.3 {
+            if s.3 <= b.3 {
                 *b = s;
             }
         }
@@ -82,7 +89,7 @@ impl PeerClock {
     }
 
     /// The slope of the raw-clock offset over the window (Theil-Sen: the median of the slopes between
-    /// bucket pairs at least 4 s apart, robust to a few buckets displaced by a path change). It is the
+    /// bucket pairs at least 3 s apart, robust to a few buckets displaced by a path change). It is the
     /// ratio of the two oscillators, constant, so the whole window sharpens it.
     fn fit_rate(&self) -> Option<f64> {
         let good = self.best();
@@ -93,7 +100,7 @@ impl PeerClock {
         let mut slopes = Vec::new();
         for (i, a) in good.iter().enumerate() {
             for b in &good[i + 1..] {
-                if b.0 - a.0 >= 4_000_000 {
+                if b.0 - a.0 >= MIN_PAIR_US {
                     slopes.push((b.2 - a.2) as f64 / (b.0 - a.0) as f64);
                 }
             }
@@ -110,13 +117,26 @@ impl PeerClock {
 
     /// The peer's session offset predicted at local time `local`: the best samples of the last few
     /// buckets, each carried forward at `rate` (the session frequency every member runs at), averaged.
+    /// Until this peer has a fitted frequency, only the newest bucket counts: an older one would carry
+    /// the drift since (review M2).
     fn predict(&self, local: u64, rate: f64) -> Option<f64> {
-        let best = self.best();
+        if self.rate.is_none() {
+            // No frequency yet: the newest valid sample whose round trip is near the best.
+            let best = self.samples.iter().filter(|s| s.0 >= self.session_from).map(|s| s.3).min()?;
+            let s = self.samples.iter().rev().find(|s| s.0 >= self.session_from && s.3 <= best + NEAR_RTT_US)?;
+            return Some(s.1 as f64 + rate * (local as f64 - s.0 as f64));
+        }
+        let best: Vec<_> = self.best().into_iter().filter(|s| s.0 >= self.session_from).collect();
         let recent = &best[best.len().saturating_sub(OFFSET_BUCKETS)..];
         if recent.is_empty() {
             return None;
         }
         Some(recent.iter().map(|s| s.1 as f64 + rate * (local as f64 - s.0 as f64)).sum::<f64>() / recent.len() as f64)
+    }
+
+    /// The shortest round trip to this peer in the window.
+    pub fn best_rtt_us(&self) -> Option<u64> {
+        self.best_rtt()
     }
 
     fn best_rtt(&self) -> Option<u64> {
@@ -127,13 +147,18 @@ impl PeerClock {
 /// The fault-tolerant midpoint (drop the t lowest and t highest, t = floor((n - 1) / 3); the midpoint
 /// of the rest's extremes), or with `plain` the median (the midpoint of the middle two for an even
 /// count): the contrast design 10.4 asks the evidence to run.
-pub fn midpoint(mut v: Vec<f64>, plain: bool) -> f64 {
+pub fn midpoint(v: Vec<f64>, plain: bool) -> f64 {
+    let t = (v.len() - 1) / 3;
+    midpoint_t(v, t, plain)
+}
+
+/// The fault-tolerant midpoint with `t` given (from the membership); `v` holds at least 2t + 1 values.
+fn midpoint_t(mut v: Vec<f64>, t: usize, plain: bool) -> f64 {
     v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
     if plain {
         return (v[(n - 1) / 2] + v[n / 2]) / 2.0;
     }
-    let t = (n - 1) / 3;
     (v[t] + v[n - 1 - t]) / 2.0
 }
 
@@ -164,14 +189,19 @@ impl ClockSync {
     /// Before the session: take the offset from `leader`'s best round trip at once.
     pub fn bootstrap(&mut self, leader: u32) -> Option<i64> {
         let p = self.peers.get(&leader)?;
-        let s = p.samples.iter().min_by_key(|s| s.3)?;
+        // The best round trip; the newest on a tie (an older sample carries the drift since).
+        let s = p.samples.iter().rev().min_by_key(|s| s.3)?;
         self.off = s.1 as f64;
         Some(self.off.round() as i64)
     }
 
-    /// From frame 0 nobody jumps: forget the samples taken while members were still bootstrapping.
-    pub fn restart_fits(&mut self) {
-        self.peers.clear();
+    /// From frame 0 nobody jumps: the session offsets sampled while members were still bootstrapping
+    /// are void from `local` on. Their raw-clock samples stay: no bootstrap moves a raw clock, so the
+    /// frequencies keep the samples gathered since the start (review M2).
+    pub fn restart_fits(&mut self, local: u64) {
+        for p in self.peers.values_mut() {
+            p.session_from = local;
+        }
     }
 
     /// Advance to local time `local` toward the members' fault-tolerant midpoint (`members` are the
@@ -181,14 +211,20 @@ impl ClockSync {
         let dt = self.last.map_or(0.0, |t| (local as f64 - t as f64).max(0.0));
         self.last = Some(local);
         self.rc += (1.0 + self.rate) * dt;
+        // t comes from the membership, not from the values present: with fewer than 2t + 1 values a
+        // liar could move the midpoint, so nothing moves until enough members are sampled (review L2).
+        let t = members.len() / 3;
+        let enough = |v: &Vec<f64>| v.len() > 2 * t;
         // The frequency: the midpoint of the members' raw clocks against this one (its own: 0).
         let mut rates = vec![0.0];
         rates.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.rate)));
-        self.rate = midpoint(rates, self.plain_median).clamp(-MAX_RATE, MAX_RATE);
+        if enough(&rates) {
+            self.rate = midpoint_t(rates, t, self.plain_median).clamp(-MAX_RATE, MAX_RATE);
+        }
         let follow = self.off + self.rate * dt;
         let mut offs = vec![follow];
         offs.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.predict(local, self.rate))));
-        let target = midpoint(offs, self.plain_median);
+        let target = if enough(&offs) { midpoint_t(offs, t, self.plain_median) } else { follow };
         let err = target - follow;
         let k = if err.abs() > NEAR_US { FAST_SLEW } else { SLOW_SLEW };
         self.off = follow + err.clamp(-k * dt, k * dt);
@@ -203,6 +239,11 @@ impl ClockSync {
 
     pub fn rate(&self) -> f64 {
         self.rate
+    }
+
+    /// The shortest round trip to `peer` in the window.
+    pub fn best_rtt_to(&self, peer: u32) -> Option<u64> {
+        self.peers.get(&peer)?.best_rtt_us()
     }
 
     /// The queueing on the round trip to `peer` now (see `PeerClock::rtt_excess`).
@@ -251,15 +292,15 @@ mod tests {
             let t = ms * 1000;
             let synced = ms >= 1000;
             if ms == 1000 {
-                a.restart_fits();
-                b.restart_fits();
+                a.restart_fits(la(t));
+                b.restart_fits(lb(t));
             }
             let mid = t + 500;
-            if (synced && ms % 500 == 0) || (!synced && ms % 25 == 0) {
+            if ms % 500 == 0 || (!synced && ms % 25 == 0) {
                 // Each answers with its session and raw clocks at the round trip's midpoint.
                 b.sample(1, lb(t), lb(t + 1000), (la(mid) as i64 + oa) as u64, la(mid));
             }
-            if synced && ms % 500 == 0 {
+            if ms % 500 == 0 {
                 a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid));
             }
             if !synced {
@@ -279,6 +320,57 @@ mod tests {
             }
         }
         assert!(worst < 2_000.0, "session clocks {worst} µs apart after convergence");
+    }
+
+    /// Two members, the second's clock running `skew` slow, synced as the node does (pings every 500
+    /// ms from the start, a bootstrap burst to member 1, frame 0 at 1 s). The worst gap between their
+    /// session clocks in each second (review M2's probe).
+    fn gap_by_second(skew: f64) -> Vec<f64> {
+        let (mut a, mut b) = (ClockSync::default(), ClockSync::default());
+        let la = |t: u64| t;
+        let lb = |t: u64| (t as f64 * (1.0 - skew)) as u64 + 2_000_000;
+        let (mut oa, mut ob) = (0i64, 0i64);
+        let mut worst = vec![0f64; 40];
+        for ms in 0..40_000u64 {
+            let t = ms * 1000;
+            let synced = ms >= 1000;
+            if ms == 1000 {
+                a.restart_fits(la(t));
+                b.restart_fits(lb(t));
+            }
+            let mid = t + 500;
+            if ms % 500 == 0 || (!synced && ms % 25 == 0) {
+                b.sample(1, lb(t), lb(t + 1000), (la(mid) as i64 + oa) as u64, la(mid));
+            }
+            if ms % 500 == 0 {
+                a.sample(2, la(t), la(t + 1000), (lb(mid) as i64 + ob) as u64, lb(mid));
+            }
+            if !synced {
+                b.bootstrap(1);
+            }
+            oa = a.tick(la(t), if synced { &[2] } else { &[] });
+            ob = b.tick(lb(t), if synced { &[1] } else { &[] });
+            let gap = ((la(t) as i64 + oa) - (lb(t) as i64 + ob)).abs() as f64;
+            let w = &mut worst[(ms / 1000) as usize];
+            *w = w.max(gap);
+        }
+        worst
+    }
+
+    #[test]
+    fn the_start_up_gap_stays_small_at_up_to_9_percent_skew() {
+        for skew in [0.023, 0.05, 0.09] {
+            let w = gap_by_second(skew);
+            if std::env::var("CLOCK_PROBE").is_ok() {
+                eprintln!("skew {skew}: {:?}", w.iter().map(|g| (g / 1000.0).round() as i64).collect::<Vec<_>>());
+            }
+            let peak = w[1..].iter().cloned().fold(0.0, f64::max);
+            let settled = w.iter().rposition(|&g| g >= 5_000.0).map_or(0, |i| i + 1);
+            // Measured: peaks 11 / 24 / 43 ms (skew x the newest sample's age, up to a ping interval,
+            // until a frequency is fitted), under 5 ms from second 8 / 12 / 12.
+            assert!(peak < 60_000.0, "skew {skew}: peak gap {peak} µs");
+            assert!(settled <= 14, "skew {skew}: under 5 ms only from second {settled}");
+        }
     }
 
     #[test]
