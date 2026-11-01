@@ -1,7 +1,8 @@
 description = """
-P2-4 review round 4, VC3R-2: capchurn without the climbing acks. From 2 s, while it is a member, 9 \
-signs a capped precommit for no proposal in every epoch it enters. Part 1 runs with VC3R-2's fix \
-switched off (round 3's stale-cap resets and strikes), part 2 as shipped: 9 voted out, no reset."""
+P2-4 review round 4, VC3R-2: from 2 s, 9 signs a capped precommit for no proposal in every epoch. \
+Part 1 runs with VC3R-2's fix switched off (round 3's stale-cap resets and strikes). As shipped, \
+since trust survey #4, the cap no longer gets 9 voted out: no reset, and confirmation is held \
+until admin 1 kicks 9 at 6 s, which ends it."""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
@@ -26,12 +27,18 @@ to = [1, 2, 3]
 world.1.fixes_off = ["VC3R2"]
 report = [
     { kind = "line", text = "  with round 3's stale-cap resets and strikes: 9 removed at {removed_s@1:9}, after {resets@1} resets" },
-    { kind = "before_fix", honest = [1, 2, 3], label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch)", fix = "VC3R-2's fix" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch; admin 1 kicks 9 at 6 s)", fix = "VC3R-2's fix" },
 ]
 
 [[part]]
+# Trust survey #4: admin 1 kicks 9 at 6 s (listed first, as the spike steps it first).
+byzantine = [
+    { kind = "admin_kick", member = 1, target = 9, at_ms = 6000, honest = [1, 2, 3], to = [2, 3, 9] },
+    { kind = "precommit", member = 9, from_ms = 2000, value = 0xBAD0, ahead = 30, every_epoch = true, while_member_at = 1, to = [1, 2, 3] },
+]
 report = [
     { kind = "view_changes", honest = [1, 2, 3], label = "capstale" },
     { kind = "check", case = "capstale", label = "capstale", at = 1, target = 9, event = "for a value no quorum here prevoted", honest = [1, 2, 3] },
-    { kind = "verdict", honest = [1, 2, 3], label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch)" },
+    { kind = "check", case = "admin_kick", label = "capstale", honest = [1, 2, 3] },
+    { kind = "verdict", honest = [1, 2, 3], label = "capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch; admin 1 kicks 9 at 6 s)" },
 ]
