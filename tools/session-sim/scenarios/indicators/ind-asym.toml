@@ -1,0 +1,31 @@
+description = """
+Admin indicators (design 10.8): asymmetric links (fault-asymmetric's): 1 to 2 is 150 +- 30 ms, 2 to 1 \
+is 10 ms, everything 3 sends takes 80 ms, 2% loss everywhere. The clock-free test measures round trips \
+on one path, so no honest member is ever flagged late, from either end."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[net]
+seed = 33
+link = { delay_ms = 30, jitter_ms = 10, loss_pct = 2 }
+links = [
+    { from = 1, to = 2, delay_ms = 150, jitter_ms = 30, loss_pct = 2 },
+    { from = 2, to = 1, delay_ms = 10, loss_pct = 2 },
+    { from = 3, to = 1, delay_ms = 80, loss_pct = 2 },
+    { from = 3, to = 2, delay_ms = 80, loss_pct = 2 },
+]
+
+[[report]]
+kind = "indicators"
+at = 1
+label = "ind-asym m1"
+honest = [2, 3]
+
+[[report]]
+kind = "indicators"
+at = 2
+label = "ind-asym m2"
+honest = [1, 3]

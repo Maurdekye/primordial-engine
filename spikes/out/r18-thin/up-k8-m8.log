@@ -1,10 +1,10 @@
-PROVENANCE commit 028988499e6f, sources 9afb48ffdf3f6963, binary c42e8ca9ae738263
+PROVENANCE commit c067e337e553, sources f8abce3c686b2880, binary 2469cdc70c93d18a
 RESULT r18 capped: 500-ball pit, 8 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 1 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive | 145.7 / 139.9 / 139.9 / 139.9 / 139.9 / 139.9 / 139.9 / 139.9 |  497 /  471 /  472 /  472 /  471 /  471 /  472 /  472 |  390 | 1542 / 123 / 124 / 124 / 124 / 123 / 124 / 123 | 1662 / 242 / 243 / 242 / 242 / 242 / 242 / 242 | 10 (own entries moved: 0) |  6.0/s, 114 | never | m1 4bbb23325021003f / m2 60473e19672ebb30 / m3 60473e19672ebb30 / m4 60473e19672ebb30 / m5 60473e19672ebb30 / m6 60473e19672ebb30 / m7 60473e19672ebb30 / m8 60473e19672ebb30 replay 4bbb23325021003f DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 11.3 / 9.2 (24 of 36 unconfirmed), m2 243.0 / 147.0, m3 243.1 / 147.0, m4 243.1 / 147.0, m5 243.0 / 146.9, m6 243.0 / 146.9, m7 243.0 / 147.0, m8 243.0 / 147.0
-RESULT     mean confirmation lag per member from the gesture's start, frames: 824.7 / 30.2 / 30.3 / 30.3 / 30.3 / 30.2 / 30.3 / 30.3
+RESULT   batched+adaptive | 145.7 / 139.9 / 139.9 / 139.9 / 139.9 / 139.9 / 139.9 / 139.9 |  497 /  471 /  472 /  472 /  471 /  471 /  472 /  472 |  387 | 1542 / 138 / 138 / 138 / 138 / 138 / 138 / 138 | 1662 / 256 / 257 / 257 / 257 / 256 / 257 / 257 | 10 (own entries moved: 0) |  6.0/s, 114 | never | m1 4bbb23325021003f / m2 60473e19672ebb30 / m3 60473e19672ebb30 / m4 60473e19672ebb30 / m5 60473e19672ebb30 / m6 60473e19672ebb30 / m7 60473e19672ebb30 / m8 60473e19672ebb30 replay 4bbb23325021003f DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 11.3 / 9.2 (24 of 36 unconfirmed), m2 257.1 / 157.1, m3 257.1 / 157.1, m4 257.1 / 157.1, m5 257.1 / 157.1, m6 257.1 / 157.1, m7 257.1 / 157.1, m8 257.1 / 157.1
+RESULT     mean confirmation lag per member from the gesture's start, frames: 824.7 / 32.3 / 32.4 / 32.4 / 32.5 / 32.3 / 32.4 / 32.4
 RESULT     member 1's own hand against its target, over 132 gesture frames: mean 289.21 mm, max 861.69 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2235, 100, 100, 100, 100, 304, 1091, 1576, 24296] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2235, 100, 100, 100, 100, 305, 1040, 2392, 23530] ms

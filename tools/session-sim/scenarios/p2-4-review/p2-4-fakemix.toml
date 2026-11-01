@@ -1,8 +1,9 @@
 description = """
 P2-4 review round 6, VC5R-2: from 2 s, 8 alternates every 50 ms between acks naming a fake id at \
 its current seq of 1's chain and acks naming a stale real head (freeze_others), re-frozen at most \
-every 0, 1 or 2 s, so its verified reference keeps rising. Control (part 1): the fake for good. \
-A report of the spike's, not a fix-off repro."""
+every 0, 1 or 2 s, so its verified reference keeps rising. Control (part 1): the fake for good, \
+which holds confirmation until admin 1 kicks 8 at 6 s (trust survey #4). A report of the spike's, \
+not a fix-off repro."""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
@@ -21,9 +22,11 @@ members = [1, 2, 3, 4, 8]
 ]
 
 [[part]]
-byzantine = [{ kind = "fake_refs", member = 8, from_ms = 2000, of = 1, n = 0 }]
+# Trust survey #4: the pure fake holds confirmation until admin 1 kicks 8 at 6 s.
+byzantine = [{ kind = "admin_kick", member = 1, target = 8, at_ms = 6000, honest = [1, 2, 3, 4], to = [2, 3, 4, 8] }, { kind = "fake_refs", member = 8, from_ms = 2000, of = 1, n = 0 }]
 report = [
     { kind = "check", case = "fakemix", label = "fakemix mix=false stale-refresh=0us", at = 1, target = 8, event = "has referenced no more", honest = [1, 2, 3, 4] },
+    { kind = "check", case = "admin_kick", label = "fakemix", honest = [1, 2, 3, 4] },
     { kind = "verdict", honest = [1, 2, 3, 4], label = "fakemix mix=false" },
 ]
 

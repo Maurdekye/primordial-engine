@@ -1,0 +1,22 @@
+description = """
+Admin indicators (design 10.8): an ordinary session (30 +- 10 ms links, no faults). Ordinary jitter \
+names nobody and flags nobody, at any member."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[report]]
+kind = "indicators"
+at = 1
+label = "ind-quiet m1"
+honest = [2, 3]
+quiet = true
+
+[[report]]
+kind = "indicators"
+at = 3
+label = "ind-quiet m3"
+honest = [1, 2]
+quiet = true

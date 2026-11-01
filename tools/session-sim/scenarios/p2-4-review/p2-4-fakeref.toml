@@ -1,8 +1,9 @@
 description = """
 P2-4 review round 4, a check: 9 falls silent at 2 s, while from then on 8 (which takes no part in \
 view changes) claims in its acks 5 more of 9's entries than anyone holds. That spares 9 from the \
-silence vote while the others fetch, but the withholding rule removes it all the same: its own \
-references stop."""
+silence vote while the others fetch, but only for a silence limit from when it fell behind \
+(VC4R-3): then the silence vote removes it all the same. (Until trust survey #4 the withholding \
+rule removed it first.)"""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true

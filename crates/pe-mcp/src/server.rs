@@ -87,7 +87,7 @@ pub fn allowed(p: &Principal, tool: &str) -> bool {
 /// The scope each tool needs. Fails closed: a tool missing here needs `control`.
 pub fn scope_of(tool: &str) -> Scope {
     match tool {
-        "session_info" | "session_members" | "session_sync_status" | "world_get_state" | "world_get_object" | "world_hashes"
+        "session_info" | "session_members" | "session_sync_status" | "session_indicators" | "world_get_state" | "world_get_object" | "world_hashes"
         | "world_interaction_status" => Scope::Read,
         "world_propose_interaction" => Scope::Interact,
         _ => Scope::Control,
@@ -198,6 +198,12 @@ impl PeerServer {
     async fn session_sync_status(&self, ctx: RequestContext<RoleServer>) -> Result<Json<m::SyncStatus>, CallToolResult> {
         self.require(&ctx, "session_sync_status")?;
         self.run(|e| e.sync()).await
+    }
+
+    #[tool(name = "session_indicators", description = "Admin indicators for the driven member, if it holds the Kick permission (design 10.8): whom confirmation is waiting on and for how long (it says who, never why), and the late-acks timing hint per member. Hints for a kick, never proof; nothing acts on them.")]
+    async fn session_indicators(&self, ctx: RequestContext<RoleServer>) -> Result<Json<m::Indicators>, CallToolResult> {
+        self.require(&ctx, "session_indicators")?;
+        self.run(|e| e.indicators()).await
     }
 
     #[tool(name = "scenario_load", description = "Start a fresh simulated session (replacing the current one, tickets included): members, the member you drive, scene, link delay/jitter/loss, background touches by the other members, speculation window, seed. Same parameters and seed give the same run.")]

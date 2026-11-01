@@ -535,3 +535,26 @@ pub struct CheckReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_divergence: Option<Divergence>,
 }
+
+/// Admin indicators (design 10.8): hints for a kick, never proof. Only for a driven member that
+/// holds the Kick permission.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Indicators {
+    pub me: MemberId,
+    /// The present frame minus the confirmed frame.
+    pub lag_frames: u64,
+    pub lag_secs: f64,
+    /// Whom confirmation waits on (empty unless the lag has been at least a quarter of the
+    /// speculation window for 1 s). It says who, never why.
+    pub holding: Vec<String>,
+    /// The late-acks timing hint per member judged over the last 10 s: a hint, not proof.
+    pub late_acks: Vec<LateAcks>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct LateAcks {
+    pub member: MemberId,
+    pub late: u32,
+    pub eligible: u32,
+    pub flagged: bool,
+}

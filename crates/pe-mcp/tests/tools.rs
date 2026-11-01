@@ -7,7 +7,8 @@ use pe_mcp::model::Scope;
 use rmcp::model::{CallToolRequestParams, ReadResourceRequestParams};
 use serde_json::{json, Value};
 
-const READ_TOOLS: [&str; 7] = [
+const READ_TOOLS: [&str; 8] = [
+    "session_indicators",
     "session_info",
     "session_members",
     "session_sync_status",
@@ -31,7 +32,7 @@ async fn tools_list_follows_scopes() {
     let all = client(&e).await;
     let mut names: Vec<String> = all.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    assert_eq!(names.len(), 12, "{names:?}");
+    assert_eq!(names.len(), 13, "{names:?}");
     let read = client_as(&e, "reader", &[Scope::Read]).await;
     let mut r: Vec<String> = read.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
     r.sort();

@@ -1393,6 +1393,7 @@ fn main() {
             slow: get("--slow").map(|v| (v.parse().unwrap(), get("--slow-kbps").map_or(8, |k| k.parse().unwrap()))),
             step: get("--step-ms").map(|v| (v.parse().unwrap(), get("--step-kbps").map_or(16, |k| k.parse().unwrap()))),
             gap_s: get("--gap").map(|v| v.parse().unwrap()),
+            gestures: get("--gestures").map_or(2, |v| v.parse().unwrap()),
             by_kind: args.iter().any(|a| a == "--by-kind"),
             adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
         }),

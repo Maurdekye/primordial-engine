@@ -1,15 +1,24 @@
 description = """
-P2-4 review round 6, VC6R-4 (a halt): fakemix's pure fake (from 2 s, 8's acks name a fake id at its \
-current seq of 1's chain), but 8 also signs a no-op SetRole (itself as admin) every 2 s, so a \
-decision comes every 2 s. Fix off (VC6R4): every decision clears the timers that would catch 8, \
-it is never removed and confirmation halts. As shipped, 8 is removed. Part 1 runs with VC6R-4's \
-fix switched off, part 2 as shipped."""
+P2-4 review round 6, VC6R-4: fakemix's pure fake, but 8 also authors a no-op SetRole every 2 s, so \
+a decision comes every 2 s (a decision once reset the withholding timers that would catch 8). \
+Trust survey #4 retired the withholding rule: 8 holds confirmation through the decisions its \
+SetRoles force until admin 1 kicks it at 6 s, which ends it."""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
 
 [world.1]
 members = [1, 2, 3, 4, 8]
+
+# Trust survey #4: admin 1 kicks 8 at 6 s (listed first, as the spike steps it first: its no-op
+# SetRole also falls at 6 s).
+[[byzantine]]
+kind = "admin_kick"
+member = 1
+target = 8
+at_ms = 6000
+honest = [1, 2, 3, 4]
+to = [2, 3, 4, 8]
 
 [[byzantine]]
 kind = "fake_refs"
@@ -27,30 +36,29 @@ role = 0
 to = [1, 2, 3, 4]
 while_member_at = 1
 
-[[part]]
-world.1.fixes_off = ["VC6R4"]
-# The spike's 40 touches by 1 at frame 60 + 20k on objects 10 + k mod 3. This part halts (frame 230
-# at the end), so only k = 0..8 fire; the tool refuses an action its member never reaches, so this
-# part's plan stops there.
-world.1.plan.1 = [
-    { at = 60, every = 60, count = 3, touch = { obj = 10, impulse = [0.0, 1.0, 0.0] } },
-    { at = 80, every = 60, count = 3, touch = { obj = 11, impulse = [0.0, 1.0, 0.0] } },
-    { at = 100, every = 60, count = 3, touch = { obj = 12, impulse = [0.0, 1.0, 0.0] } },
-]
-report = [
-    { kind = "check", case = "fakeadmin", label = "fakeadmin fixed=false (no-op SetRole every 2 s)", at = 1, target = 8, honest = [1, 2, 3, 4] },
-    { kind = "verdict", honest = [1, 2, 3, 4], label = "fakeadmin fixed=false" },
-]
-
-[[part]]
 # The spike's 40 touches; the last (k = 39, frame 840) is past the end of the run (frame 833) and is
 # left out, as in p2-4-fakemix.
-world.1.plan.1 = [
+[world.1.plan]
+1 = [
     { at = 60, every = 60, count = 13, touch = { obj = 10, impulse = [0.0, 1.0, 0.0] } },
     { at = 80, every = 60, count = 13, touch = { obj = 11, impulse = [0.0, 1.0, 0.0] } },
     { at = 100, every = 60, count = 13, touch = { obj = 12, impulse = [0.0, 1.0, 0.0] } },
 ]
-report = [
-    { kind = "check", case = "fakeadmin", label = "fakeadmin fixed=true (no-op SetRole every 2 s)", at = 1, target = 8, honest = [1, 2, 3, 4] },
-    { kind = "verdict", honest = [1, 2, 3, 4], label = "fakeadmin fixed=true" },
-]
+[[report]]
+kind = "check"
+case = "fakeadmin"
+label = "fakeadmin (no-op SetRole every 2 s)"
+at = 1
+target = 8
+honest = [1, 2, 3, 4]
+
+[[report]]
+kind = "check"
+case = "admin_kick"
+label = "fakeadmin"
+honest = [1, 2, 3, 4]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4]
+label = "fakeadmin"
