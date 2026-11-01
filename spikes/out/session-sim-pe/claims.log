@@ -1,2 +1,2 @@
 RESULT claims (member 1 nudges every 29 frames, member 2 every frame; D72: only grabs claim, so no push is refused): {(1, "accepted"): 21, (2, "accepted"): 600}
-RESULT claims world 1: frames 0..750 digests m1=f9f5b195e72c3a76 m2=f9f5b195e72c3a76 | offline replay f9f5b195e72c3a76 | ALL EQUAL
+RESULT claims world 1: frames 0..750 digests m1=f27e253e707fde90 m2=f27e253e707fde90 | offline replay f27e253e707fde90 | ALL EQUAL

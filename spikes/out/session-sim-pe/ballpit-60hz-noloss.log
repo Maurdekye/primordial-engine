@@ -1,13 +1,14 @@
 RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 0%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 232 (6507 B/s payload, 9803 B/s wire est.), acks 224 (9880 B/s wire est.), all messages 20056 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 219 (6023 B/s payload, 9135 B/s wire est.), acks 212 (9242 B/s wire est.), all messages 19117 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1302 B/s wire est.), m2 7.8 acks/s (1302 B/s wire est.)
-  sweep-window traffic ack: 224 messages, 24512 B payload (9880 B/s wire est.)
-  sweep-window traffic entry/hand: 232 messages, 23816 B payload (9803 B/s wire est.)
-  sweep-window traffic fetch: 21 messages, 273 B payload (373 B/s wire est.)
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 272.1 re-simulated frames/s, re-sim 4.13 ms per rendered sim frame (909 ms over the window); step avg 0.567 ms; max depth 4
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1318 B/s wire est.), m2 7.8 acks/s (1318 B/s wire est.)
+  sweep-window traffic ack: 212 messages, 22800 B payload (9242 B/s wire est.)
+  sweep-window traffic entry/hand: 219 messages, 22045 B payload (9135 B/s wire est.)
+  sweep-window traffic fetch: 14 messages, 196 B payload (252 B/s wire est.)
+  sweep-window traffic run2+: 9 messages, 1318 B payload (488 B/s wire est.)
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.0 re-simulated frames/s, re-sim 3.46 ms per rendered sim frame (761 ms over the window); step avg 0.473 ms; max depth 4
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
-  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 521 frame 534
-  m2 world 1: rollbacks 222 max depth 4 resim frames 1022 (932.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 521 frame 533
-RESULT ballpit 60Hz world 1: frames 0..510 digests m1=86ff6329404eebcc m2=86ff6329404eebcc | offline replay 86ff6329404eebcc | ALL EQUAL
+  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 534
+  m2 world 1: rollbacks 222 max depth 4 resim frames 1024 (786.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 533
+RESULT ballpit 60Hz world 1: frames 0..480 digests m1=05a5ab3db67595ec m2=05a5ab3db67595ec | offline replay 05a5ab3db67595ec | ALL EQUAL

@@ -1,10 +1,10 @@
   9 removed: never, after 8 resets
-  lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch) with round 4's surviving slowness timers switched off (the behaviour before the fix): every replica equals the replay; m1 conf 868 of frame 953, m2 conf 869 of frame 953, m3 conf 868 of frame 953; at m1: members {1, 2, 3, 9}, evicted []
-RESULT lagchurn: m1 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 211 (t=3.62 s) round 0 removed []; epoch 2 at frame 307 (t=5.22 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
-RESULT lagchurn: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 211 (t=3.62 s) round 0 removed []; epoch 2 at frame 307 (t=5.22 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
-RESULT lagchurn: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 211 (t=3.62 s) round 0 removed []; epoch 2 at frame 307 (t=5.22 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
-RESULT lagchurn: 2 resets, 9 removed at 6.45 s (1 demotion vote at m1) -> DEMOTED; m1 conf 939 of frame 953, m2 conf 939 of frame 953, m3 conf 939 of frame 953
-  m1: conf 939 frame 953 members {1, 2, 3} evicted {9: (102, 269)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 66 bad 0
-  m2: conf 939 frame 953 members {1, 2, 3} evicted {9: (102, 269)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 66 bad 0
-  m3: conf 939 frame 953 members {1, 2, 3} evicted {9: (102, 269)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 66 bad 0
+  lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch) with round 4's surviving slowness timers switched off (the behaviour before the fix): every replica equals the replay; m1 conf 868 of frame 953, m2 conf 868 of frame 953, m3 conf 868 of frame 953; at m1: members {1, 2, 3, 9}, evicted []
+RESULT lagchurn: m1 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
+RESULT lagchurn: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
+RESULT lagchurn: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
+RESULT lagchurn: 2 resets, 9 removed at 6.45 s (1 demotion vote at m1) -> DEMOTED; m1 conf 941 of frame 953, m2 conf 941 of frame 953, m3 conf 941 of frame 953
+  m1: conf 941 frame 953 members {1, 2, 3} evicted {9: (102, 269)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 66 bad 0
+  m2: conf 941 frame 953 members {1, 2, 3} evicted {9: (102, 269)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 66 bad 0
+  m3: conf 941 frame 953 members {1, 2, 3} evicted {9: (102, 269)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 66 bad 0
 RESULT lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch): frames 0..952 honest m1=77cf2da8d6698b62 m2=77cf2da8d6698b62 m3=77cf2da8d6698b62 | offline replay 77cf2da8d6698b62 | ALL EQUAL, NO FALSE CHECKS ; checks ok 198 bad 0

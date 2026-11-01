@@ -1,5 +1,5 @@
 RESULT capchurn: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
-RESULT capchurn: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 365 (t=6.18 s) round 5 removed [9]
+RESULT capchurn: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
 RESULT capchurn: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
 RESULT capchurn: 0 resets -> NO RESET
 RESULT capchurn: m1 conf 820 of frame 833, m2 conf 820 of frame 833, m3 conf 820 of frame 833
