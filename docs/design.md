@@ -2990,7 +2990,10 @@ entries that the view change commits (10.8).
     the key next joins this session and the join rules would admit it with a role that counts as an admin
     (Admin, or a role holding the roles permission, V2), it joins with the rejoin role instead. A row that
     refuses it, or admits it with a role that doesn't count as an admin, applies unchanged. Row 0 is above
-    it: an owner kicked this way still rejoins as Admin, as the user accepted for kicked owners (22:51Z).
+    it: an owner kicked this way still rejoins as Admin, as the user accepted for kicked owners (22:51Z)
+    [V bans-rejoinrole: under Public as Admin, Admin 3 kicked with rejoin role 2 comes back as member 13
+    under key 3 with role 2 on every replica, the joiner's included; 1's grant of Admin to 13 lifts the
+    rejoin role; control, a plain kick: 13 rejoins as Admin].
   * The rejoin role must be a defined role that doesn't count as an admin when the kick is decided;
     otherwise the whole kick is refused, and the refusal notice offers a plain kick at once. It is checked
     again at the join (review BN-2): if the role has since been deleted or redefined to count as an
