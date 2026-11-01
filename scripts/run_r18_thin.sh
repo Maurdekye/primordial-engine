@@ -33,3 +33,11 @@ for k in 8 12 16 32; do
   for m in 2 4; do run gap3-up-k$k-m$m --kbps 256 --slow 1 --slow-kbps $k --members $m --gap 40 --gestures 3 --end 110; done
   for m in 3 4; do run gap3-down-k$k-m$m --kbps 256 --slow 3 --slow-kbps $k --members $m --gap 40 --gestures 3 --end 110; done
 done
+# Review PA2-1: the same, 15 s apart, in the four cells whose later gestures started at levels 6-8 before review
+# PA-2 (with 5 s per level while idle above level 5, a gesture 15 s after the one before still started at level 6).
+# Review PA2-2: one cell 30 s apart, where level 5 itself congests at the third gesture.
+run gap15-up-k12-m4 --kbps 256 --slow 1 --slow-kbps 12 --members 4 --gap 15 --gestures 3 --end 60
+run gap15-up-k8-m2 --kbps 256 --slow 1 --slow-kbps 8 --members 2 --gap 15 --gestures 3 --end 60
+run gap15-up-k16-m2 --kbps 256 --slow 1 --slow-kbps 16 --members 2 --gap 15 --gestures 3 --end 60
+run gap15-down-k8-m4 --kbps 256 --slow 3 --slow-kbps 8 --members 4 --gap 15 --gestures 3 --end 60
+run gap30-up-k8-m2 --kbps 256 --slow 1 --slow-kbps 8 --members 2 --gap 30 --gestures 3 --end 90
