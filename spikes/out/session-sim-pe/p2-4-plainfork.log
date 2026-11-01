@@ -7,12 +7,12 @@ RESULT plainfork: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, high
   m3: conf 102 frame 222 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
   m4: conf 102 frame 222 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
 RESULT plainfork fixed=false: frames 0..221 honest m2=5a2d384f92d4bdcb m3=5a2d384f92d4bdcb m4=5a2d384f92d4bdcb | offline replay 5a2d384f92d4bdcb | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
-REPRO plainfork fixed=true: f=1, P=4; 1 removed at 3.20 s; live at the end: true; m2 conf 818 of frame 833, m3 conf 818 of frame 833, m4 conf 818 of frame 833
+REPRO plainfork fixed=true: f=1, P=4; 1 removed at 4.57 s; live at the end: true; m2 conf 814 of frame 833, m3 conf 814 of frame 833, m4 conf 822 of frame 833
 RESULT plainfork fixed=true: -> THE FORKER IS REMOVED, CONFIRMATION GOES ON
-RESULT plainfork: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 176 (t=3.03 s) round 2 removed []; epoch 2 at frame 186 (t=3.20 s) round 0 removed [1]
-RESULT plainfork: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 174 (t=3.00 s) round 2 removed []; epoch 2 at frame 185 (t=3.18 s) round 0 removed [1]
-RESULT plainfork: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 176 (t=3.03 s) round 2 removed []; epoch 2 at frame 185 (t=3.18 s) round 0 removed [1]
-  m2: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 56 bad 0
-  m3: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 56 bad 0
-  m4: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 56 bad 0
-RESULT plainfork fixed=true: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 168 bad 0
+RESULT plainfork: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 206 (t=3.53 s) round 2 removed []; epoch 2 at frame 268 (t=4.57 s) round 2 removed [1]
+RESULT plainfork: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 205 (t=3.52 s) round 2 removed []; epoch 2 at frame 270 (t=4.60 s) round 2 removed [1]
+RESULT plainfork: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 203 (t=3.48 s) round 2 removed []; epoch 2 at frame 268 (t=4.57 s) round 2 removed [1]
+  m2: conf 814 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 53 bad 0
+  m3: conf 814 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 53 bad 0
+  m4: conf 822 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 54 bad 0
+RESULT plainfork fixed=true: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 160 bad 0

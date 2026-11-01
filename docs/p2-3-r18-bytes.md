@@ -179,3 +179,71 @@ form after 15 frames; a wait on a hole does not.** The measurements behind the r
 - The limit, stated plainly: condition (c)'s "well inside W/2" holds on a link that keeps up; under
   saturation no entry, lean or explicit, has a bound in frames. `lean_wait_max` is in the harness's
   `--by-kind` output and in ballpit's with `--loss`.
+
+## Option 2 as built: signed-once runs and the hole rule (p2/opt2) [V]
+
+The design delta (wire, authentication, the hole rule, controls, pe-app) is in
+`_teams/1827/opt2-design-delta.md`, for @design-reviewer; the suite triage is in `_teams/1827/opt2-triage.md`.
+In short: an author's consecutive entries travel as one `Msg::Run`, every prev after the first left out and
+only the top entry signed; a fetch states what the requester holds (`HELD_BELOW`, `HELD_ABOVE`), so a
+hole-fill answer goes lean and unsigned; a signed run past a hole asks everyone for the missing entries, the
+sender for the whole range from the author's verified prefix, and everyone for that range if it still waits
+after 15 frames (`fix::HOLE`).
+
+**The hole rule's cost** (single gesture, 30 s, stalled frames / back in real time after the gesture):
+
+| Rule for a signed run past a hole | 16 kbit/s | 12 kbit/s |
+|---|---|---|
+| the whole range from everyone, at once (option 1's) | 538 / 8.4 s | never |
+| missing from everyone, whole range from the sender, everyone after 15 frames (**as built**) | 442 / 6.4 s | 1,070 / 18.0 s |
+| missing from everyone, whole range from the sender, no fallback (unsafe: `holeforker`) | 474 / 6.8 s | 934 / 15.5 s |
+
+**R18 cells, option 2 against main** (batched + adaptive; stalled frames per member / back in real time
+after the gesture; main measured at b57ec86 in its own worktree and target dir, 2026-11-01):
+
+| Cell | Main (option 1) | Option 2 | Spike (`spikes/out/r18`) |
+|---|---|---|---|
+| 32, 48, 64, 256 kbit/s; 32 two gestures and after 5 min | 0 / at once | 0 / at once | 0 / at once |
+| 16 kbit/s | 1,527 / 1,541, never | 442 / 456, 6.4 s | at once |
+| 16, two gestures (40 s gap) | 2,651 / 2,665, 37.5 s | 442 / 456, 6.4 s | |
+| 16, second gesture after 310 s | 2,288 / 2,297, 37.5 s | 898 / 921, 6.4 s | |
+| 12 kbit/s | 1,530 / 1,539, never | 1,070 / 1,073, 18.0 s | 21.7 s |
+| 12, two gestures | 3,689 / 3,703, never | 1,385 / 1,385, 18.0 s | |
+| step 64 -> 16 | 1,497 / 1,512, never | 390 / 404, 6.3 s | 61 ms |
+| 8 kbit/s | 1,537 / 1,539, never (DIFFER) | 1,530 / 1,533, never (DIFFER) | never |
+| four members sharing 64 | 1,430 / 161 / 161 / 163, 1,197 ms | 1,423 / 160 / 160 / 160, 1,248 ms | at once |
+| slow member on 8 kbit/s (others at 256) | 163 / 166 / 940, 1,402 ms | 170 / 173 / 932, 1,654 ms | |
+
+- **Stale goldens corrected:** main's committed `capped-slow-member` and `capped-4members-shared64` logs date
+  from option 1's landing (1ec446d). Main as it stands measures 1,402 ms and 1,197 ms (the text above says 553
+  and 944 ms). The thin-link, anti-stall and indicators landings moved them; the r18-pe set was not rerun.
+  Every other main cell above equals its committed log.
+- **Costs:** the slow-member cell is back 252 ms later than main (with runs switched off, 1,453 ms: runs
+  account for about 200 ms of it [V, `PE_RUNS=0` A/B]), the shared uplink 51 ms later.
+- **8 kbit/s** still never recovers, and its end state DIFFERs between members as on main: the unconfirmed
+  tail of a run that never catches up. Unchanged by option 2.
+- Runs form about 4.6 times a second at 16 kbit/s; most of the gain is the lean, unsigned hole-fill answers.
+
+**Suite** (`run_session_sim.sh --pe`, strict-compared with cut points masked): every scenario ALL EQUAL,
+randsched ALL PASS. Six logs change a fact, all with no safety effect (triage class (c)): colluders (the two
+removals decided in two epochs instead of one), strikeframe (which fix-off timings end with {2, 3} or
+{2, 3, 9}; honest 1 is struck in all of them, so the control still shows the bug), r14-chain, -epoch and
+-reverse (the arrival line printed before the departures; every transfer Accepted), and aheadlink-cut (3
+catches up epoch 1 directly at 32.6 s instead of through a reset; never removed, worst lag 1,849 frames
+against 1,838). The tool's regress reproduces every log (the same `Net`); holeforker is pe only.
+
+**Evidence fixes found on the way** (c3d837c, c6e564f):
+- **Scripted faults saw no runs.** The harness's fault filters are written for `Msg::Entry`; a run of two or
+  more entries reached them as a batch, matched nothing and was delivered, so every relayed or hole-fill run
+  slipped past the fault. aheadlink-long and -cut lost their premise (3 never fell behind: worst lag 42
+  frames instead of 1,838), and badproposer, jointiming, prevotefork and slowcapper changed facts that the
+  triage had first put down to runs. `Net::send` now shows such a run to the filter entry by entry, as each
+  was its own message before option 2: one datagram, dropped if any entry is, else delayed by the longest
+  delay. Those four then keep their goldens' facts.
+- **The tool's controls:** world option `no_runs` mirrors the harness's `set_no_runs` on fork9, pfsilent and
+  slowadmin's fix-off parts.
+- **fault-capped-collapse** moves from 12 to 8 kbit/s: at 12 the run still pauses, but confirms to frame 304,
+  past the scenario's check of 250 (10 kbit/s: 260).
+- **Ballpit's check** moves from 8.5 s to 8.0 s of a 9 s run: with option 2, seed 17 ended with member 2
+  confirmed to frame 502 of the 510 checked (a 2 %-loss repair in flight), which the tool's UNCONFIRMED guard
+  flags. Measured end lag over seeds 17-19 and ends 9.0-9.5 s: 8-31 frames.

@@ -1,9 +1,4 @@
   t=0.00s m1: lag 0 frames (0.00 s); holding [] late acks flagged []
   t=3.50s m1: lag 93 frames (1.55 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged []
-  t=5.00s m1: lag 183 frames (3.05 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged [8 (20/38)]
-  t=5.25s m1: lag 198 frames (3.30 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged [8 (22/40)]
-  t=5.50s m1: lag 213 frames (3.55 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged [8 (24/42)]
-  t=5.75s m1: lag 228 frames (3.80 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged [8 (26/44)]
-  t=6.00s m1: lag 243 frames (4.05 s); holding [not referencing (8, 1), not referencing (8, 2), not referencing (8, 3)] late acks flagged [8 (27/45)]
-  t=6.25s m1: lag 6 frames (0.10 s); holding [] late acks flagged []
-RESULT ind-withhold: m1 asked 33 times; named {8}; not referencing {8}; late {8} -> OK
+  t=6.25s m1: lag 4 frames (0.07 s); holding [] late acks flagged []
+RESULT ind-withhold: m1 asked 33 times; named {8}; not referencing {8}; late {} -> OK

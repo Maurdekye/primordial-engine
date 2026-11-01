@@ -1,7 +1,7 @@
 REPRO pfsilent fixed=false (9 silent from 1 s): epochs at the end: m1 1, m2 1, m3 0, m5 1; live at the end (2, 3, 5): false; m1 conf 40 of frame 160, m2 conf 40 of frame 160, m3 conf 40 of frame 160
 RESULT pfsilent fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT pfsilent: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 70 (t=1.27 s) round 0 removed []
-RESULT pfsilent: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 69 (t=1.25 s) round 0 removed []
+RESULT pfsilent: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 70 (t=1.27 s) round 0 removed []
 RESULT pfsilent: m3 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 1) | no decision
   m1: conf 40 frame 160 members {1, 2, 3, 5, 9} evicted {} rollbacks 1 max depth 4 violations 0 equivocations 1 checks ok 8 bad 0
   m2: conf 40 frame 160 members {1, 2, 3, 5, 9} evicted {} rollbacks 2 max depth 4 violations 0 equivocations 1 checks ok 8 bad 0
@@ -9,10 +9,10 @@ RESULT pfsilent: m3 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highe
 RESULT pfsilent fixed=false: frames 0..159 honest m1=9e6fe240aec1818d m2=9e6fe240aec1818d m3=9e6fe240aec1818d | offline replay 9e6fe240aec1818d | ALL EQUAL, NO FALSE CHECKS ; checks ok 22 bad 0
 REPRO pfsilent fixed=true (9 silent from 1 s): epochs at the end: m1 2, m2 3, m3 3, m5 3; live at the end (2, 3, 5): true; m1 conf 40 of frame 160, m2 conf 586 of frame 593, m3 conf 586 of frame 593
 RESULT pfsilent fixed=true: -> EVERY MEMBER DECIDES ON THE FORKER'S PRECOMMIT, CONFIRMATION GOES ON
-RESULT pfsilent: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 70 (t=1.27 s) round 0 removed []; epoch 2 at frame 150 (t=2.60 s) round 2 removed [1]
-RESULT pfsilent: m2 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 68 (t=1.23 s) round 0 removed []; epoch 2 at frame 148 (t=2.57 s) round 2 removed [1]; epoch 3 at frame 261 (t=4.45 s) round 1 removed [9]
-RESULT pfsilent: m3 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 62 (t=1.13 s) round 0 removed []; epoch 2 at frame 150 (t=2.60 s) round 2 removed [1]; epoch 3 at frame 261 (t=4.45 s) round 1 removed [9]
-  m1: conf 40 frame 160 members {2, 3, 5, 9} evicted {1: (17, 66)} rollbacks 2 max depth 90 violations 0 equivocations 1 checks ok 8 bad 0
-  m2: conf 586 frame 593 members {2, 3, 5} evicted {1: (17, 66), 9: (7, 48)} rollbacks 3 max depth 88 violations 0 equivocations 1 checks ok 34 bad 0
-  m3: conf 586 frame 593 members {2, 3, 5} evicted {1: (17, 66), 9: (7, 48)} rollbacks 1 max depth 90 violations 0 equivocations 1 checks ok 34 bad 0
+RESULT pfsilent: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 70 (t=1.27 s) round 0 removed []; epoch 2 at frame 197 (t=3.38 s) round 2 removed [1]
+RESULT pfsilent: m2 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 70 (t=1.27 s) round 0 removed []; epoch 2 at frame 203 (t=3.48 s) round 2 removed [1]; epoch 3 at frame 260 (t=4.43 s) round 1 removed [9]
+RESULT pfsilent: m3 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 70 (t=1.27 s) round 0 removed []; epoch 2 at frame 197 (t=3.38 s) round 2 removed [1]; epoch 3 at frame 260 (t=4.43 s) round 1 removed [9]
+  m1: conf 40 frame 160 members {2, 3, 5, 9} evicted {1: (17, 66)} rollbacks 2 max depth 100 violations 0 equivocations 1 checks ok 8 bad 0
+  m2: conf 586 frame 593 members {2, 3, 5} evicted {1: (17, 66), 9: (7, 48)} rollbacks 3 max depth 100 violations 0 equivocations 1 checks ok 34 bad 0
+  m3: conf 586 frame 593 members {2, 3, 5} evicted {1: (17, 66), 9: (7, 48)} rollbacks 1 max depth 100 violations 0 equivocations 1 checks ok 34 bad 0
 RESULT pfsilent fixed=true: frames 0..159 honest m1=048818f62828b818 m2=048818f62828b818 m3=048818f62828b818 | offline replay 048818f62828b818 | ALL EQUAL, NO FALSE CHECKS ; checks ok 76 bad 0
