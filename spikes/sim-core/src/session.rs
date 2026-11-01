@@ -2928,6 +2928,21 @@ impl WorldSim {
             self.note_proposal(id);
         }
         let mut out = Vec::new();
+        // Revision 22: a fed member takes part in the view change outside its log. It holds votes, proposals,
+        // prevotes and precommits by value (each signed on itself, O2-1), as PF-1 holds precommits, since it can't
+        // place them in chain order without the log. A kick needs the kicker's chain segment (D73-1, not built): a
+        // fed member gives it its nil.
+        if self.fed.is_some() && member != self.me && self.members.contains(&member) {
+            let ep = match &self.entries[&id].payload {
+                Payload::Vote { epoch, .. } | Payload::Propose { epoch, .. } | Payload::Prevote { epoch, .. } | Payload::Precommit { epoch, .. } => Some(*epoch),
+                _ => None,
+            };
+            match ep {
+                Some(ep) if ep > self.epoch => self.vc_later.entry(ep).or_default().push(id),
+                Some(ep) if ep == self.epoch => self.record_vc(member, id, &mut out),
+                _ => {}
+            }
+        }
         self.extend_chain(member, &mut out);
         // An entry past a hole in its author's chain shows the hole: ask for it.
         let c = self.contiguous.get(&member).copied().unwrap_or(0);
@@ -4432,6 +4447,10 @@ impl WorldSim {
     }
 
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
+        // Revision 22: a fed member checks only what it can from what it holds.
+        if self.fed.is_some() {
+            return self.fed_change_valid(c);
+        }
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
         let timed = self.fixes_off & fix::VC3 != 0;
         if c.epoch != self.epoch || c.boundary < last || (timed && c.boundary > self.now + 2 * self.cfg.join_lead) {
