@@ -480,7 +480,7 @@ pub fn lagprecommit() {
 /// link heals; the run reports how far confirmation fell behind. The user accepted that cost
 /// (2026-11-01: it ends when the link heals or an admin kicks).
 pub fn aheadlink() {
-    aheadlink_for(5_000_000, false);
+    aheadlink_for(5_100_000, false);
 }
 
 /// `aheadlink` with the cut-off lasting 30 s and never healing within the run (@design-reviewer's
@@ -495,14 +495,14 @@ pub fn aheadlink_cut() {
 }
 
 fn aheadlink_for(cut_us: u64, lost: bool) {
-    let long = cut_us > 5_000_000;
+    let long = cut_us > 5_100_000;
     let ids = [1, 2, 3, 4];
     let ps = peers_of(&ids, |m| match m {
         2 => plan(&[(60, touch(10, 6.0)), (120, Action::DefineRole { role: GUEST, perms: 0 }), (600, touch(33, 3.0))]),
         _ => BTreeMap::new(),
     });
     let mut net = Net::new(link(30, 10, 0), 7);
-    // 3 hears only 4's own acks on time from 1.9 s for `cut_us` (5 s: to 6.9 s); everything else
+    // 3 hears only 4's own acks on time from 1.9 s for `cut_us` (here 5.1 s: to 7 s); everything else
     // reaches it 5 s late (or, `lost`, never).
     let late = move || if lost { Fate::Drop } else { Fate::Delay(5_000_000) };
     net.filter = Some(Box::new(move |t, _w, from, to, m| {
