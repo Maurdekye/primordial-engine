@@ -60,8 +60,9 @@ const CURRENT_SAMPLES: usize = 4;
 const RTT_CLAMP_MARGIN_US: u64 = 5_000;
 /// While a report stands above its round-trip bound (an episode), the reporter gets a probe ping
 /// this often (review H1). Each probe that returns gives a verdict: a queue if the lesser excess of
-/// it and the probe before shows at least half the report it was sent against (and more than the
-/// margin), else the report is a clock's drift and is clamped. A queue lifts every probe; jitter
+/// it and the probe before, plus the margin, accounts for at least 3/4 of the report it was sent
+/// against (and is more than the margin), else the report is a clock's drift and is clamped. (At
+/// half, a 25 ms delay step let up to 50 ms of drift through in the mixed run, measured.) A queue lifts every probe; jitter
 /// lifts one now and then, and a drifted report soon stands far above any jitter. Until the first
 /// verdict the report passes, so the onset of real congestion is not clamped: dipping the signal
 /// there made D56 remember a coarse level as the congested one (measured). A drift passes for about
@@ -650,7 +651,7 @@ impl Node {
                     let least = o.last_excess.map_or(excess, |l| l.min(excess));
                     o.last_excess = Some(excess);
                     o.decided = true;
-                    o.queue = least > RTT_CLAMP_MARGIN_US && least >= q / 2;
+                    o.queue = least > RTT_CLAMP_MARGIN_US && least + RTT_CLAMP_MARGIN_US >= q * 3 / 4;
                 }
             }
             Item::Pong(..) => {}
