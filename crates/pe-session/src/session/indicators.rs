@@ -98,11 +98,12 @@ impl WorldSim {
             s = s.min(first.saturating_sub(1));
         }
         let mut h = self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h);
-        if let (Some(hh), Some((at, b))) = (h, self.membership().join_cap(j)) {
-            if s > at && b.saturating_sub(1) < hh {
-                capped = true;
-                h = Some(hh.min(b.saturating_sub(1)));
-            }
+        if let (Some(hh), Some((at, b))) = (h, self.membership().join_cap(j))
+            && s > at
+            && b.saturating_sub(1) < hh
+        {
+            capped = true;
+            h = Some(hh.min(b.saturating_sub(1)));
         }
         match (h, self.membership().admitted(j)) {
             (Some(h), Some(b)) => Some(((h + 1).max(b), capped)),
@@ -184,7 +185,7 @@ impl WorldSim {
             // 4. Behind: j's newest applied ack declares no horizon at or past C.
             let hist = self.ack_hist.get(&j);
             let newest = hist.and_then(|a| a.iter().next_back()).map(|(_, h)| *h);
-            if newest.is_none_or(|h| h + 1 <= c) {
+            if newest.is_none_or(|h| h < c) {
                 out.push(Hold::Behind { of: j, frames: present.saturating_sub(newest.unwrap_or(0)) });
                 continue;
             }

@@ -409,10 +409,11 @@ impl SessionCore {
         match m {
             Msg::Entry(e) => {
                 // Admin indicators: an ack straight from its author, judged on arrival (late acks).
-                if e.member == from && from != self.sim.me {
-                    if let Payload::Ack { horizon, heads, .. } = &e.payload {
-                        self.judge_ack(from, e.stamp, *horizon, heads, now_us);
-                    }
+                if e.member == from
+                    && from != self.sim.me
+                    && let Payload::Ack { horizon, heads, .. } = &e.payload
+                {
+                    self.judge_ack(from, e.stamp, *horizon, heads, now_us);
                 }
                 // Proofs of equivocation come back with this member's vote: broadcast them.
                 for v in self.sim.insert(e) {
@@ -426,11 +427,11 @@ impl SessionCore {
             Msg::Fetch { author, from: a, to: b } => {
                 // Admin indicators: `from` lacks my chain from `a`, so it can't reference anything past
                 // the hole until it is repaired: that restarts the late-acks clock from `a` on.
-                if author == self.sim.me {
-                    if let Some(sent) = self.ind.sent.get_mut(&from) {
-                        for (_, v) in sent.range_mut(a..) {
-                            v.0 = v.0.max(now_us);
-                        }
+                if author == self.sim.me
+                    && let Some(sent) = self.ind.sent.get_mut(&from)
+                {
+                    for (_, v) in sent.range_mut(a..) {
+                        v.0 = v.0.max(now_us);
                     }
                 }
                 for r in self.sim.on_fetch(author, a, b) {
