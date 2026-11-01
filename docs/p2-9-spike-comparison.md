@@ -22,7 +22,7 @@ Tags: [V] verified by run on this tree; [I] inferred.
   - `regress`: 92 of 92 scenarios identical to the pe-session goldens, every one ALL EQUAL, with 0 false
     checks. This holds on Windows and on Linux (static musl in WSL2): `regress-windows.txt`,
     `regress-linux.txt`.
-  - `spike-only.txt` lists two pe-session harness scenarios the tool has no behaviour for yet:
+  - `spike-only.txt` (now `not-mirrored.txt`) lists two pe-session harness scenarios the tool has no behaviour for yet:
     grabrace (D72 grab races) and p2-3-statejoin (state transfer).
   - randsched stays in `not-scenarios.txt`. It reports `ALL PASS` on pe-session as on the spike [V].
 - **The pe-session harness suite** (`run_session_sim.sh --pe`) [V]: 88 logs and 31 tests, with Linux
@@ -201,7 +201,7 @@ tool's `regress` is 92 of 92 identical to the new goldens.
   181 against 180). @ballpit-viz made the same change in delta 4.
 - **A scenario's own fixture join signature is now forged.** It's a 64-bit value in TOML. pe-session
   pads it to 64 bytes, where it never verifies, which is what such a fixture means.
-- **pe-session-only scenarios:** grabrace and p2-3-statejoin. They are in `spike-only.txt` until the
+- **pe-session-only scenarios:** grabrace and p2-3-statejoin. They are in `spike-only.txt` (now `not-mirrored.txt`) until the
   tool has grab-race and state-transfer behaviours.
 
 ## Per scenario

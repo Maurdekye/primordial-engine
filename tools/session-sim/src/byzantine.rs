@@ -6,8 +6,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use pe_sim_core::session::*;
-use spike::{Fate, Sim, WorldId};
+use pe_session::session::*;
+use pe_session_harness::{Fate, Sim, WorldId};
 
 use crate::faults::Hook;
 use crate::report::{template, Vars};
@@ -867,7 +867,7 @@ fn author(sim: &mut Sim, member: MemberId, w: WorldId, p: Payload) -> SignedEntr
 /// P2-5: a forged arrival from the dishonest-majority world W (6, members 2 and 3), signed by both
 /// of W's members, into world `w` by member `by` (session-sim main.rs `forge_from_w`).
 fn forge_from_w(sim: &mut Sim, w: WorldId, by: MemberId, record: ObjRecord, chain: Vec<Hop>) -> SignedEntry {
-    let fake = id_of(pe_sim_core::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64));
+    let fake = id_of(pe_session::splitmix64(record.global ^ record.via.rotate_left(17) ^ ((w as u64) << 48) ^ chain.len() as u64));
     let deadline = sim.replica(by, w).sim.now + 600;
     let fact = fact_departed(6, fake, &record, w, deadline, chain_hash(&chain));
     let cert: Vec<(MemberId, Sig)> = [2u32, 3].iter().map(|&m| (m, test_fact_sig(m, 6, fact))).collect();
@@ -1093,5 +1093,5 @@ fn r14_forgeries(sim: &mut Sim, attacks: &[R14Attack], forged: &mut Vec<Forged>,
 
 /// A scenario file's 64-bit entry id (0 = none) as a 256-bit one: the spike's ids were 64-bit.
 fn id_of(x: u64) -> EntryId {
-    if x == 0 { EntryId::NONE } else { spike::fake_id(x) }
+    if x == 0 { EntryId::NONE } else { pe_session_harness::fake_id(x) }
 }
