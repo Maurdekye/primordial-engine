@@ -48,6 +48,20 @@ pub type EntryId = u64;
 /// and never take claims (review M3).
 pub const LOGIC: MemberId = 0;
 
+/// D73(a): the most targets one hand entry packs, the largest R18 hand stride. It also bounds how far a
+/// pack's stamp may lie behind its author's present (k - 1 frames).
+pub const PACK_MAX: u64 = 8;
+
+impl Payload {
+    /// The frames after its stamp that an entry also acts on: a hand pack's extra targets (D73(a)).
+    pub fn extra_frames(&self) -> u64 {
+        match self {
+            Payload::Hand { more, .. } => more.len() as u64,
+            _ => 0,
+        }
+    }
+}
+
 // ---- object state ------------------------------------------------------------------------------
 
 /// Exact bit pattern of a rigid body's sim state: position, rotation, linear and angular velocity.
@@ -150,9 +164,12 @@ pub enum Payload {
     /// once and never renews (review M3).
     Touch { obj: u32, impulse: [f32; 3], grab: bool },
     /// Kinematic hand target, in millimetres (quantized so every peer sees the same bits), to be
-    /// reached `span` frames after the stamp (1 normally; more when the author thins its entry
-    /// rate under congestion, R18). `active = false` parks the hand.
-    Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8 },
+    /// reached `span` frames after the stamp (1 normally). `active = false` parks the hand.
+    /// D73(a): `more` packs the targets of the frames after the stamp, one per frame (at most
+    /// [`PACK_MAX`] targets in all), so an author thinned by R18 to one entry every k frames still
+    /// gives every frame its own target: target j applies at stamp + j with a span of 1, the last
+    /// with `span`. Empty for an unpacked entry (wire tag 2; a pack is tag 21).
+    Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8, more: Vec<[i32; 3]> },
     /// R14, source world: carry `obj` out through the portal into escrow, bound for world `dest`.
     /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
     /// P2-5: `hop` is the certified hop that brought the object here, when this world does not
@@ -929,8 +946,13 @@ impl Wr {
             Payload::Touch { obj, impulse, grab } => {
                 self.u8(1); self.u32(*obj); for c in impulse { self.u32(c.to_bits()) } self.u8(*grab as u8);
             }
-            Payload::Hand { obj, target_mm, active, span } => {
-                self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
+            Payload::Hand { obj, target_mm, active, span, more } => {
+                self.u8(if more.is_empty() { 2 } else { 21 });
+                self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
+                if !more.is_empty() {
+                    self.u8(more.len() as u8);
+                    for t in more { for c in t { self.i32(*c) } }
+                }
             }
             Payload::Depart { obj, dest, deadline, hop } => {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
@@ -1121,7 +1143,21 @@ impl Rd<'_> {
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
-            2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0, span: self.u8()? },
+            t @ (2 | 21) => {
+                let (obj, target_mm, active, span) = (self.u32()?, [self.i32()?, self.i32()?, self.i32()?], self.u8()? != 0, self.u8()?);
+                let mut more = Vec::new();
+                if t == 21 {
+                    // D73(a): a pack holds 2..=PACK_MAX targets; anything else has no canonical encoding.
+                    let n = self.u8()? as u64;
+                    if n == 0 || n + 1 > PACK_MAX {
+                        return None;
+                    }
+                    for _ in 0..n {
+                        more.push([self.i32()?, self.i32()?, self.i32()?]);
+                    }
+                }
+                Payload::Hand { obj, target_mm, active, span, more }
+            }
             3 => {
                 let (obj, dest, deadline) = (self.u32()?, self.u32()?, self.u64()?);
                 let hop = if self.u8()? == 1 { Some(self.hop()?) } else { None };
@@ -2000,6 +2036,12 @@ pub struct WorldSim {
     my_seq: u32,
     /// Test fixture (review H5): publish horizons this many frames behind the present.
     pub horizon_lag: u64,
+    /// D73(a): this member's own hand poses waiting for their pack, by (frame, hand): applied at their
+    /// frames on this replica only (`step_frame`). Set by the harness.
+    pub own_pending: BTreeMap<(u64, u32), [i32; 3]>,
+    /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
+    /// it, so nothing it confirms can miss the pack.
+    pub hold_horizon_below: Option<u64>,
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
@@ -2165,6 +2207,8 @@ impl WorldSim {
             now: 0,
             my_seq: 0,
             horizon_lag: 0,
+            own_pending: BTreeMap::new(),
+            hold_horizon_below: None,
             lie_in_votes: false,
             my_last: 0,
             fetch_asked: BTreeMap::new(),
@@ -2344,16 +2388,22 @@ impl WorldSim {
         if old == new {
             return;
         }
+        // D73(a): a hand pack acts at every frame it covers.
+        let extra = e.payload.extra_frames();
         if let Some(o) = old {
-            if let Some(s) = self.at_frame.get_mut(&o) {
-                s.remove(&id);
+            for g in o..=o + extra {
+                if let Some(s) = self.at_frame.get_mut(&g) {
+                    s.remove(&id);
+                }
             }
             self.eff.remove(&id);
             self.mark_dirty(o);
         }
         if let Some(n) = new {
             self.eff.insert(id, n);
-            self.at_frame.entry(n).or_default().insert(id);
+            for g in n..=n + extra {
+                self.at_frame.entry(g).or_default().insert(id);
+            }
             self.mark_dirty(n);
         }
     }
@@ -2415,6 +2465,13 @@ impl WorldSim {
         self.publish(e)
     }
 
+    /// Author an entry at `stamp` (D73(a): a hand pack, stamped at its first frame, up to k - 1 frames
+    /// before the present; its author's horizon has stayed below it).
+    pub fn author_stamped(&mut self, payload: Payload, stamp: u64) -> Entry {
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        self.publish(e)
+    }
+
     /// Test fixture (review HO-1, round 2): author `payload` carrying a chosen object state.
     pub fn author_carrying(&mut self, payload: Payload, carried: (u32, BodyState)) -> Entry {
         let stamp = self.frame.max(self.now);
@@ -2454,7 +2511,11 @@ impl WorldSim {
             None
         };
         let stamp = self.frame.max(self.now);
-        let horizon = self.now.saturating_sub(1 + self.horizon_lag);
+        let mut horizon = self.now.saturating_sub(1 + self.horizon_lag);
+        // D73(a): below a pending pack's first frame until the pack is sent.
+        if let Some(p0) = self.hold_horizon_below {
+            horizon = horizon.min(p0.saturating_sub(1));
+        }
         let e = Entry {
             member: self.me,
             seq: self.my_seq + 1,
@@ -2601,7 +2662,8 @@ impl WorldSim {
                 let prev = self.ack_epoch_from.get(&m).and_then(|a| a.keys().next_back()).copied().unwrap_or(0);
                 let adm = if self.fixes_off & fix::VC3R6 == 0 { self.admitted_epoch.get(&m).copied().unwrap_or(0) } else { 0 };
                 let epoch_ok = self.fixes_off & fix::VC5 != 0 || (*epoch >= prev && (*epoch <= prev + 1 || *epoch <= adm));
-                e.stamp >= last_ack && horizon + self.cfg.horizon_slack >= e.stamp && epoch_ok
+                // D73(a): the room a pending hand pack needs (PACK_MAX - 1 frames more), for every member.
+                e.stamp >= last_ack && horizon + self.cfg.horizon_slack + PACK_MAX - 1 >= e.stamp && epoch_ok
             }
             // Review VC-4: a precommit's boundary caps its author's acks, so it must lie ahead of the
             // horizon the author has declared: a cap never takes back what its acks already confirmed.
@@ -2613,8 +2675,10 @@ impl WorldSim {
             }
             // Review VCR-9: an admin entry's stamp orders it (commit order), so it obeys its author's
             // horizon like any entry: no backdating past what its author has declared.
+            // D73(a): and within horizon_slack of its author's last ack stamp, so only packs get the
+            // wider window the ack lag allows.
             Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
-                max_h.is_none_or(|h| e.stamp > h)
+                max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack
             }
             Payload::Vote { .. }
             | Payload::Propose { .. }
@@ -2624,8 +2688,16 @@ impl WorldSim {
             | Payload::SetRole { .. }
             | Payload::DefineRole { .. }
             | Payload::Ownership { .. } => true,
-            // A member admitted by a view change acts from its boundary frame on (10.8).
-            _ => max_h.is_none_or(|h| e.stamp > h) && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b),
+            // A member admitted by a view change acts from its boundary frame on (10.8). D73(a): a
+            // perturbation's last frame (stamp + a pack's extra frames) lies within horizon_slack of its
+            // author's last ack stamp, and a pack holds at most PACK_MAX targets.
+            _ => {
+                let extra = e.payload.extra_frames();
+                max_h.is_none_or(|h| e.stamp > h)
+                    && e.stamp + extra + self.cfg.horizon_slack > last_ack
+                    && extra < PACK_MAX
+                    && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b)
+            }
         };
         if !valid {
             self.stats.entries_rejected_violation += 1;
@@ -4036,14 +4108,16 @@ impl WorldSim {
         for p in seg.iter().rev() {
             if let Payload::Ack { horizon, epoch, .. } = p.payload {
                 let epoch_ok = self.fixes_off & fix::VC5 != 0 || (epoch >= prev_epoch && (epoch <= prev_epoch + 1 || epoch <= adm));
-                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack >= p.stamp && epoch_ok {
+                if p.stamp >= last_ack && horizon + self.cfg.horizon_slack + PACK_MAX - 1 >= p.stamp && epoch_ok {
                     max_h = Some(max_h.map_or(horizon, |x| x.max(horizon)));
                     last_ack = p.stamp;
                     prev_epoch = prev_epoch.max(epoch);
                 }
             }
         }
-        Some(self.fixes_off & fix::VCR9 != 0 || max_h.is_none_or(|h| e.stamp > h))
+        // D73(a), review D73-1: the same bound as `validate`'s admin arm, so a listed admin entry stamped
+        // in the wider ack gap (more than horizon_slack before its author's last ack) is void on both paths.
+        Some(self.fixes_off & fix::VCR9 != 0 || (max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack))
     }
 
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
@@ -5363,6 +5437,31 @@ impl WorldSim {
     // ---- simulation ------------------------------------------------------------------------------
 
     /// Sorted (entry id, entry) for frame `f`: soonest-wins order with the per-frame tie rank.
+    /// Set hand `obj`'s target for this frame (a `Hand` entry's, or this member's own pending pose,
+    /// D73(a)): reached `span` frames on; `active = false` parks the hand.
+    fn hand_target(&mut self, obj: u32, target_mm: [i32; 3], active: bool, span: u8, hands_set: &mut BTreeSet<u32>) -> Outcome {
+        let Some(o) = self.live(obj) else { return Outcome::RejectedGone };
+        let p = if active {
+            pos(target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001)
+        } else {
+            Pos { x: 0.0, y: 1.5, z: 0.0 }
+        };
+        let dt = self.cfg.dt * span.max(1) as f32;
+        body_set_target_transform(&mut self.world, o.body, WorldTransform { p, q: QUAT_IDENTITY }, dt, true);
+        hands_set.insert(obj);
+        if active {
+            // The coast continues only a stream (@coordinator-opus, 2026-10-31; D52): a target that
+            // comes more than the previous one's span + `hand_predict` frames after it (a one-shot
+            // target, a gesture's start) is followed over its span, then held. The previous target was
+            // n + 1 frames ago.
+            let stream = self.t.hand_idle.get(&obj).is_some_and(|&(n, sp, _)| n + 1 <= sp as u64 + self.cfg.hand_predict);
+            self.t.hand_idle.insert(obj, (0, span, stream));
+        } else {
+            self.t.hand_idle.remove(&obj);
+        }
+        Outcome::Accepted
+    }
+
     fn frame_entries(&self, f: u64) -> Vec<(EntryId, Entry)> {
         let mut v: Vec<(EntryId, Entry)> = self
             .at_frame
@@ -5435,31 +5534,20 @@ impl WorldSim {
                 }
                 Outcome::Accepted
             }
-            Payload::Hand { obj, target_mm, active, span } => {
+            Payload::Hand { obj, target_mm, active, span, more } => {
                 // A member moves only its own hands; the author is the signed chain's member.
                 if self.hand_owners.get(obj) != Some(&e.member) {
                     return Outcome::RejectedNotOwner;
                 }
-                let Some(o) = self.live(*obj) else { return Outcome::RejectedGone };
-                let p = if *active {
-                    pos(target_mm[0] as f32 * 0.001, target_mm[1] as f32 * 0.001, target_mm[2] as f32 * 0.001)
-                } else {
-                    Pos { x: 0.0, y: 1.5, z: 0.0 }
+                // D73(a): a pack acts at every frame it covers, target j at its effective frame + j,
+                // each with a span of 1 but the last, which has the entry's.
+                let j = f - self.eff.get(&id).copied().unwrap_or(e.stamp);
+                let (t, sp) = match j {
+                    0 if more.is_empty() => (*target_mm, *span),
+                    0 => (*target_mm, 1),
+                    j => (more[j as usize - 1], if j as usize == more.len() { *span } else { 1 }),
                 };
-                let dt = self.cfg.dt * (*span).max(1) as f32;
-                body_set_target_transform(&mut self.world, o.body, WorldTransform { p, q: QUAT_IDENTITY }, dt, true);
-                hands_set.insert(*obj);
-                if *active {
-                    // The coast continues only a stream (@coordinator-opus, 2026-10-31; D52): an entry
-                    // that comes more than the previous entry's span + `hand_predict` frames after it
-                    // (a one-shot target, a gesture's start) is followed over its span, then held. The
-                    // previous entry was n + 1 frames ago.
-                    let stream = self.t.hand_idle.get(obj).is_some_and(|&(n, sp, _)| n + 1 <= sp as u64 + self.cfg.hand_predict);
-                    self.t.hand_idle.insert(*obj, (0, *span, stream));
-                } else {
-                    self.t.hand_idle.remove(obj);
-                }
-                Outcome::Accepted
+                self.hand_target(*obj, t, *active, sp, hands_set)
             }
             Payload::Depart { obj, dest, deadline, hop } => {
                 // Review HO-1: nobody carries another member's hand through a portal.
@@ -5711,8 +5799,18 @@ impl WorldSim {
         let mut carry = Vec::new();
         for (id, e) in self.frame_entries(f) {
             let o = self.apply(id, &e, f, &mut hands_set, &mut carry, record);
-            if record {
+            // A pack's outcome is its first frame's (D73(a)).
+            if record && self.eff.get(&id).is_none_or(|&s| s == f) {
                 self.outcomes.insert(id, (f, o));
+            }
+        }
+        // D73(a): this member's own poses not yet sent in a pack act at their frames here, so its hand
+        // follows its controller exactly. Only this replica has them; the pack, once sent, replaces
+        // them (a rollback to its first frame re-simulates with the same targets).
+        let own: Vec<(u32, [i32; 3])> = self.own_pending.range((f, 0)..=(f, u32::MAX)).map(|(&(_, o), &t)| (o, t)).collect();
+        for (obj, t) in own {
+            if !hands_set.contains(&obj) && self.hand_owners.get(&obj) == Some(&self.me) {
+                self.hand_target(obj, t, true, 1, &mut hands_set);
             }
         }
         // Hands without a target this frame: an active hand follows its last entry over the rest of
@@ -5914,9 +6012,10 @@ impl WorldSim {
 
     /// 7.6 reduction 2: "nothing unconfirmed", judged from this member's own copy. Every entry it holds,
     /// other than acks, is stamped below `conf`, so at or before its last confirmed frame. Acks are left
-    /// out, or each ack would keep every member busy.
+    /// out, or each ack would keep every member busy. D73(a) (@world-chunks, @coordinator-opus): nor is a
+    /// member idle while it holds an unsent pack, since the pack will be stamped at its first frame.
     pub fn idle(&self) -> bool {
-        self.busy_stamp < self.conf
+        self.busy_stamp < self.conf && self.hold_horizon_below.is_none()
     }
 
     /// Entries this member holds whose effective frame is confirmed (R14 relays wait for this).
@@ -6004,7 +6103,9 @@ impl WorldSim {
             self.by_author.insert((e.member, e.seq), id);
             self.entries.insert(id, e.clone());
             self.eff.insert(id, *eff);
-            self.at_frame.entry(*eff).or_default().insert(id);
+            for g in *eff..=*eff + e.payload.extra_frames() {
+                self.at_frame.entry(g).or_default().insert(id);
+            }
         }
         self.conf = u64::MAX / 2;
         while self.frame < frames {

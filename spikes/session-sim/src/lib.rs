@@ -375,6 +375,8 @@ pub struct Replica {
     /// Whether the uplink queue was above 40 ms at the last tick, to find where congestion begins.
     over: bool,
     hand_last: BTreeMap<u32, u64>,
+    /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
+    packs: BTreeMap<u32, Pack>,
     /// Time spent at each congestion level (ms), and the highest level reached.
     pub level_ms: [u64; 6],
     /// Remote state-carrying entries awaiting the acceptance check: (entry, author, obj).
@@ -459,6 +461,7 @@ impl Peer {
                 congested: None,
                 over: false,
                 hand_last: BTreeMap::new(),
+                packs: BTreeMap::new(),
                 level_ms: [0; 6],
                 pending_accept: Vec::new(),
             },
@@ -486,6 +489,27 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
 /// levels 4 and 5 for links of about 8-16 kbit/s, and aligns both to the same frame ticks, so a
 /// hand entry and an ack share one datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
+
+/// D73(a): a hand's poses not yet sent, for consecutive frames from `p0`, at stride `k`.
+struct Pack {
+    p0: u64,
+    k: u64,
+    targets: Vec<[i32; 3]>,
+}
+
+/// D73(a): send hand `obj`'s pending pack, if any: one entry stamped at its first frame holding a
+/// target per frame. Its poses stop being local-only; the pack replaces them (its insertion rolls this
+/// replica back to the first frame, which re-simulates with the same targets).
+fn flush_pack(r: &mut Replica, obj: u32) -> Option<Entry> {
+    let p = r.packs.remove(&obj)?;
+    for j in 0..p.targets.len() as u64 {
+        r.sim.own_pending.remove(&(p.p0 + j, obj));
+    }
+    r.sim.hold_horizon_below = r.packs.values().map(|p| p.p0).min();
+    let mut ts = p.targets.into_iter();
+    let target_mm = ts.next().expect("a pack holds a pose");
+    Some(r.sim.author_stamped(Payload::Hand { obj, target_mm, active: true, span: 1, more: ts.collect() }, p.p0))
+}
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
 /// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
 pub const IDLE_ACK_FRAMES: u64 = 8;
@@ -712,26 +736,51 @@ impl Sim {
                             if !ready && !matches!(a, Action::Hand { .. }) {
                                 continue;
                             }
-                            if let Action::Hand { obj, active: true, .. } = a {
+                            if let Action::Hand { obj, target_mm, active, ahead } = a {
                                 let k = if r.adapt { HAND_STRIDE[r.level] } else { 1 };
-                                // On frame ticks that are multiples of k, so the entry shares the
-                                // ack's datagram (review R3-9): the first such tick after the last
-                                // entry. Not held back to last + k at a level change, which left a
-                                // gap longer than both strides (4 -> 5: 258, then 272; the matrix's
-                                // M1, fixed in pe-session at 649a77f).
-                                if clock_frame % k != 0 || r.hand_last.get(&obj).is_some_and(|&l| clock_frame <= l) {
-                                    continue;
+                                // The frame this pose is for: the stamp an entry authored now would get.
+                                let s = r.sim.frame.max(r.sim.now) + ahead;
+                                let mut out = Vec::new();
+                                if !active {
+                                    out.extend(flush_pack(r, obj));
+                                    out.push(r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead));
+                                } else {
+                                    if r.hand_last.get(&obj).is_some_and(|&l| s <= l) {
+                                        continue;
+                                    }
+                                    r.hand_last.insert(obj, s);
+                                    if k == 1 {
+                                        out.extend(flush_pack(r, obj));
+                                        out.push(r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead));
+                                    } else {
+                                        // D73(a): under R18 thinning every frame keeps its own target. The
+                                        // pose moves this member's hand at once (`own_pending`) and goes out
+                                        // in a pack of the frames of one stride window, [m k, m k + k - 1],
+                                        // stamped at its first frame: one entry every k frames, the
+                                        // author's hand exact. A stride change or a gap sends it early.
+                                        if r.packs.get(&obj).is_some_and(|p| p.k != k || p.p0 + p.targets.len() as u64 != s) {
+                                            out.extend(flush_pack(r, obj));
+                                        }
+                                        let p = r.packs.entry(obj).or_insert(Pack { p0: s, k, targets: Vec::new() });
+                                        p.targets.push(target_mm);
+                                        let full = (s + 1) % k == 0 || p.targets.len() as u64 >= k;
+                                        r.sim.own_pending.insert((s, obj), target_mm);
+                                        r.sim.hold_horizon_below = r.packs.values().map(|p| p.p0).min();
+                                        if full {
+                                            out.extend(flush_pack(r, obj));
+                                        }
+                                    }
                                 }
-                                r.hand_last.insert(obj, clock_frame);
+                                for e in out {
+                                    broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+                                }
+                                continue;
                             }
-                            let span = if r.adapt { HAND_STRIDE[r.level] as u8 } else { 1 };
                             let e = match a {
                                 Action::Touch { obj, impulse, grab } => {
                                     r.sim.author(Payload::Touch { obj, impulse, grab }, Some(obj))
                                 }
-                                Action::Hand { obj, target_mm, active, ahead } => {
-                                    r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span }, ahead)
-                                }
+                                Action::Hand { .. } => unreachable!("hand poses are handled above"),
                                 Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
                                 Action::Owner { change, keys } => {
                                     let Some(cert) = r.sim.owner_cert(change, &keys) else { continue };
