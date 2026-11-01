@@ -55,6 +55,8 @@ mod store;
 mod transfer;
 mod replay;
 mod seam;
+mod indicators;
+pub use indicators::Hold;
 #[cfg(test)]
 mod ownership_tests;
 #[cfg(test)]
