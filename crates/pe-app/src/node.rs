@@ -896,14 +896,15 @@ impl Node {
         }
     }
 
-    /// The queueing on the round trip to member `m` now: the latest pong's excess over the best, or,
-    /// while pongs are late, the age of the oldest unanswered ping over the best (a lower bound). A
-    /// ping older than the latest answered one was lost, not late.
+    /// The queueing on the round trip to member `m` now: the larger of the latest pong's excess over
+    /// the best and the age of the oldest unanswered ping over the best (a lower bound that grows in
+    /// real time while a ping waits in a queue, so the clamp opens at a congestion onset instead of
+    /// up to a ping interval later). A ping older than the latest answered one was lost, not late.
     fn rtt_excess(&self, m: u32, now: u64) -> Option<u64> {
         let fresh = self.clock.rtt_excess(m, now);
         let best = self.clock.best_rtt_us();
         let after = self.answered.get(&m).copied().unwrap_or(0);
-        let waiting = self.pings_out.iter().filter(|p| p.0 == m && p.1 > after).map(|p| now.saturating_sub(p.1)).max().filter(|&a| a > SYNC_EVERY_US && best < u64::MAX).map(|a| a - best.min(a));
+        let waiting = self.pings_out.iter().filter(|p| p.0 == m && p.1 > after).map(|p| now.saturating_sub(p.1)).max().filter(|_| best < u64::MAX).map(|a| a - best.min(a));
         match (fresh, waiting) {
             (None, None) => None,
             (f, w) => Some(f.unwrap_or(0).max(w.unwrap_or(0))),
