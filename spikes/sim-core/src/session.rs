@@ -454,8 +454,27 @@ impl AdminRun {
             None => 0,
         }
     }
+    /// Whether `m` counts as an admin: its role holds the roles permission, so it can make itself Admin
+    /// (V2 = b, user 08:31Z). Admin holds every permission, so this includes it. The last-admin rules
+    /// count these members (@coordinator-opus's call, 09:24Z).
+    fn admin_like(&self, m: MemberId) -> bool {
+        self.perms(m) & perm::ROLES != 0
+    }
+    fn role_admin_like(&self, r: RoleId) -> bool {
+        r == ADMIN || self.defs.get(&r).is_some_and(|p| p & perm::ROLES != 0)
+    }
     fn has_admin(&self) -> bool {
-        self.members.iter().any(|m| self.roles.get(m) == Some(&ADMIN))
+        self.members.iter().any(|&m| self.admin_like(m))
+    }
+    /// Whether member `a` may kick `target` in this state: the kick permission, not itself, a member;
+    /// only a co-owner kicks an owner (Q27, user 22:49Z); kicking a member who counts as an admin needs
+    /// its own permission (V1, user 08:31Z). `apply` judges a kick by it in commit order, and a replica
+    /// receiving a kick by it against the current state, so a kick refused now freezes no one.
+    fn kick_allowed(&self, a: MemberId, target: MemberId) -> bool {
+        let p = self.perms(a);
+        let owner_safe = self.owners.contains(&key_of(target)) && !self.owners.contains(&key_of(a));
+        let admin_safe = self.admin_like(target) && p & perm::KICK_ADMIN == 0;
+        p & perm::KICK != 0 && target != a && self.members.contains(&target) && !owner_safe && !admin_safe
     }
     /// Whether admin entry `e` applies at this point of the sequence; if it does, apply it. A
     /// refused entry changes nothing.
@@ -467,9 +486,7 @@ impl AdminRun {
         let p = self.perms(a);
         match e.payload {
             Payload::Kick { target, .. } => {
-                // Q27 (user 22:49Z, kicks assumed alike): only a co-owner kicks an owner.
-                let owner_safe = self.owners.contains(&key_of(target)) && !self.owners.contains(&key_of(a));
-                if p & perm::KICK == 0 || target == a || !self.members.contains(&target) || owner_safe {
+                if !self.kick_allowed(a, target) {
                     return false;
                 }
                 self.members.remove(&target);
@@ -497,7 +514,16 @@ impl AdminRun {
                 if p & perm::ROLES == 0 || role == ADMIN {
                     return false;
                 }
-                self.defs.insert(role, perms);
+                let old = self.defs.insert(role, perms);
+                // A role holding the roles permission counts as an admin (V2 = b), so taking the
+                // permission from the last such role gives the last admin up too (user 22:11Z).
+                if !self.has_admin() {
+                    match old {
+                        Some(o) => self.defs.insert(role, o),
+                        None => self.defs.remove(&role),
+                    };
+                    return false;
+                }
                 true
             }
             // 12.5: valid against the book as the entries before it leave it. The outcome depends
@@ -526,10 +552,14 @@ pub const ADMIN: RoleId = 0;
 /// The permissions a role grants. The catalogue grows with the engine; these are the ones the
 /// membership protocol checks. Admin holds them all.
 pub mod perm {
-    /// Kick any member (D80: authorises the removal on its own).
+    /// Kick a member who does not count as an admin (D80: authorises the removal on its own).
     pub const KICK: u64 = 1 << 0;
-    /// Define roles and give them to members.
+    /// Define roles and give them to members. Holding it counts as being an admin, since it can grant
+    /// Admin (V2 = b, user 08:31Z).
     pub const ROLES: u64 = 1 << 1;
+    /// Kick a member who counts as an admin (V1, user 08:31Z): by default only Admin holds it, and a
+    /// session may give it to other roles.
+    pub const KICK_ADMIN: u64 = 1 << 2;
     pub const ALL: u64 = u64::MAX;
 }
 
@@ -1910,6 +1940,10 @@ pub struct WorldSim {
     /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
     /// it acts.
     pub closed_at: Option<u64>,
+    /// V3 (user 08:31Z): the members the close removed, every one left; everyone is told (the
+    /// `SESSION CLOSED` event) and no further change is made to the world. The spike keeps its member
+    /// list for its own bookkeeping and records the removal here; pe-session empties the list.
+    pub closed_members: Vec<MemberId>,
     /// Test fixture: review fixes switched off (see [`fix`]).
     pub fixes_off: u64,
     /// Test fixture (review VC-5): the epoch this member's acks declare, whatever epoch it is in.
@@ -2105,6 +2139,7 @@ impl WorldSim {
             own_held: BTreeSet::new(),
             admin_outcomes: BTreeMap::new(),
             closed_at: None,
+            closed_members: Vec::new(),
             fixes_off: 0,
             fake_ack_epoch: None,
             newer_since: BTreeMap::new(),
@@ -2861,7 +2896,7 @@ impl WorldSim {
             })
             .collect();
         for (id, author, t) in kicks {
-            if self.members.contains(&t) && self.members.contains(&author) && self.perms_of(author) & perm::KICK != 0 && !self.voted(t) && !self.withhold_vc {
+            if self.members.contains(&t) && self.members.contains(&author) && self.admin_run().kick_allowed(author, t) && !self.voted(t) && !self.withhold_vc {
                 if t == self.me {
                     out.extend(self.self_kick_vote(id));
                 } else {
@@ -3356,7 +3391,10 @@ impl WorldSim {
                 }
             }
             Payload::Kick { target, .. } => {
-                if self.admin_outcomes.contains_key(&id) || self.perms_of(m) & perm::KICK == 0 || target == m || !self.members.contains(&target) {
+                // V1: judged by the same rule as in commit order, against the current state, so a kick
+                // that would be refused (an admin by a kick-only role, an owner by a non-owner) freezes
+                // no one. It can be sent again once the state allows it.
+                if self.admin_outcomes.contains_key(&id) || !self.admin_run().kick_allowed(m, target) {
                     return;
                 }
                 self.admin_pending.insert(id);
@@ -3598,7 +3636,7 @@ impl WorldSim {
             run.members.remove(&r.member);
             run.roles.remove(&r.member);
         }
-        !run.has_admin() && !c.add_roles.contains(&ADMIN)
+        !run.has_admin() && !c.add_roles.iter().any(|&r| run.role_admin_like(r))
     }
 
     /// Keep the change a proposal entry carries, by value, if its author proposes its round in the
@@ -4762,7 +4800,10 @@ impl WorldSim {
         // frame from it on unconfirmed, so nothing confirmed is undone.
         if closes && self.closed_at.is_none() {
             self.closed_at = Some(c.boundary);
-            self.ev(format!("SESSION CLOSED (epoch {}): no admin is left; nothing stamped at or after frame {} acts", self.epoch, c.boundary));
+            // V3 (user 08:31Z): closing removes every other player, tells everyone, and allows no further
+            // change to the world; no longer grace period and no automatic handover.
+            self.closed_members = self.members.iter().copied().collect();
+            self.ev(format!("SESSION CLOSED (epoch {}): no admin is left; every member {:?} is removed, and nothing stamped at or after frame {} acts", self.epoch, self.closed_members, c.boundary));
             let late: Vec<EntryId> = self.entries.iter().filter(|(_, e)| e.stamp >= c.boundary && !is_protocol(&e.payload)).map(|(id, _)| *id).collect();
             for id in late {
                 self.set_eff(id);
