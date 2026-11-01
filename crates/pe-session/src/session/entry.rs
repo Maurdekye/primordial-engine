@@ -57,6 +57,24 @@ pub const LOGIC: MemberId = 0;
 pub const PACK_MAX: u64 = 8;
 
 impl Payload {
+    /// View-change and admin entries (review O2-1): always signed on themselves, never covered by a
+    /// later entry's signature in a run, so each can be held, relayed and judged on its own (Part B's
+    /// fed members hold them by value and signature, without the acks and perturbations around them).
+    pub fn signs_itself(&self) -> bool {
+        matches!(
+            self,
+            Payload::Vote { .. }
+                | Payload::Propose { .. }
+                | Payload::Prevote { .. }
+                | Payload::Precommit { .. }
+                | Payload::Kick { .. }
+                | Payload::SetRole { .. }
+                | Payload::DefineRole { .. }
+                | Payload::Ownership { .. }
+                | Payload::Ban { .. }
+        )
+    }
+
     /// The frames after its stamp that an entry also acts on: a hand pack's extra targets (D73(a)).
     pub fn extra_frames(&self) -> u64 {
         match self {
