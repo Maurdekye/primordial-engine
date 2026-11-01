@@ -1,0 +1,67 @@
+description = """
+Trust survey #4, the cost the user accepted: aheadlink's cut-off lasting 30 s (from 1.9 s), 3 \
+hearing only 4's own acks on time while everything else reaches it 5 s late. 3's own entries reach \
+everyone, so silence never fires, and its acks declare its present horizon, so demotion never \
+fires: nothing removes it, and confirmation trails the present by about 5-10 s until the cut-off \
+ends (or an admin kicks)."""
+include = ["../common/review.toml"]
+end_ms = 40000
+quiet_panics = true
+
+[world.1]
+members = [1, 2, 3, 4]
+
+[world.1.plan]
+2 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, define_role = { role = 1, perms = 0 } },
+    { at = 600, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } },
+]
+
+# 4's own acks, from 4, reach 3 on time; everything else to 3 reaches it 5 s late, from 1.9 s for 30 s.
+[[fault]]
+after_ms = 1900
+before_ms = 31900
+to = 3
+from = 4
+author = 4
+msg = "ack"
+deliver = true
+
+[[fault]]
+after_ms = 1900
+before_ms = 31900
+to = 3
+msg = "entry"
+delay_ms = 5000
+
+[[fault]]
+after_ms = 1900
+before_ms = 31900
+to = 3
+from = 4
+deliver = true
+
+[[fault]]
+after_ms = 1900
+before_ms = 31900
+to = 3
+delay_ms = 5000
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3, 4]
+label = "aheadlink-long"
+
+[[report]]
+kind = "check"
+case = "aheadlink_long"
+label = "aheadlink-long"
+at = 1
+target = 3
+members = [1, 2, 4]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3, 4]
+label = "aheadlink-long (3 hears only 4's acks for 30 s; the rest 5 s late)"

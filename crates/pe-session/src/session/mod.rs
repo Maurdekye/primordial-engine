@@ -186,8 +186,6 @@ pub struct Stats {
     pub view_changes: u64,
     pub resets: u64,
     pub max_round: u32,
-    /// Members this replica voted out for withholding references (P2-4).
-    pub withholders: u64,
     /// D80: kicks and role entries the decided changes applied, and those they refused.
     pub admin_applied: u64,
     pub admin_refused: u64,
@@ -427,8 +425,6 @@ struct Vc {
     precommit_timer: BTreeMap<u32, u64>,
     /// Review VC3R-2: value -> my present when its proposal by the round's proposer first reached me.
     seen_at: BTreeMap<u64, u64>,
-    /// Review VC4R-1: (round, value) -> every member a prevote for it is held from, in any version.
-    any_prevotes: BTreeMap<(u32, u64), BTreeSet<MemberId>>,
     /// Review VC4R-1: (round, member) -> the id of that member's first prevote this replica holds, so a
     /// precommitter can name the prevote ids of the polka it saw.
     prevote_id: BTreeMap<(u32, MemberId), EntryId>,
@@ -541,20 +537,9 @@ pub struct WorldSim {
     pub fixes_off: u64,
     /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
     entry_backoff: BTreeMap<(MemberId, EntryId), (u64, u64)>,
-    /// Review VC4R-3 (and the generator's RG-1): (claimant, author) -> (the highest seq of the author's
-    /// chain the claimant has referenced that I hold in the named version, and my present when that last
-    /// rose). A member faking a reference advances its raw reference but not this verified one, so the
-    /// withholding rule catches it; a real backlog clears once I fetch the entries, advancing it.
-    ref_seen: BTreeMap<(MemberId, MemberId), (u32, u64)>,
     /// Review VC4R-3: per member suspected silent or slow, my present when it first was, so the fetch
     /// exemption that spares it while I chase another member's claim about it is bounded in time.
     suspect_since: BTreeMap<MemberId, u64>,
-    /// Review VC3R-2: per member, its first capped precommit of this epoch: (round, value, my present
-    /// when I recorded it).
-    cap_seen: BTreeMap<MemberId, (u32, u64, u64)>,
-    /// Review VC4R-1: the prevote ids a member's capped precommit carried as its polka, and every id of
-    /// them asked for so far, so the justification is fetched once before the member is voted out.
-    cap_polka: BTreeMap<MemberId, Vec<EntryId>>,
     /// Review VC3R-6: the epoch each member entered the session in (genesis members: 0).
     admitted_epoch: BTreeMap<MemberId, u32>,
     /// Review VC3R-2: per member, until when I cast no suspicion vote against it, because decisions
@@ -668,11 +653,6 @@ pub struct ViewChangeMembership {
     join_caps: BTreeMap<MemberId, (u32, u64)>,
     /// Per member: the first seq of its chain whose ack declares each epoch after 0.
     ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
-    /// (referrer, author) -> my present frame when the referrer's acks last referenced more of that
-    /// author's chain (P2-4: a member that stops referencing a chain stalls everyone's confirmation).
-    ref_advanced: BTreeMap<(MemberId, MemberId), u64>,
-    /// The last frame withheld references were checked for.
-    withhold_checked: u64,
     /// Test fixture (D80 bridge): a faulty member that backs every vote another member casts,
     /// prevotes and precommits every proposal it sees, in every round, echoes the nil votes of
     /// rounds it holds no proposal for, never proposes, and never applies a decision, so it can
@@ -713,8 +693,6 @@ pub struct ViewChangeMembership {
     pub closed_at: Option<u64>,
     /// Test fixture (review VC-5): the epoch this member's acks declare, whatever epoch it is in.
     pub fake_ack_epoch: Option<u32>,
-    /// VC-5: per member, my present when its acks first declared an epoch newer than mine.
-    newer_since: BTreeMap<MemberId, u64>,
     /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
     adopting: bool,
     /// Review VCR-4: per member, the epochs reached by resets that overruled one of its votes or caps.
@@ -800,8 +778,6 @@ impl WorldSim {
                 withhold_vc: false,
                 byz_ally: false,
                 byz_no_precommit: false,
-                ref_advanced: BTreeMap::new(),
-                withhold_checked: 0,
                 followers: BTreeSet::new(),
                 join_requests: BTreeSet::new(),
                 admitted: BTreeMap::new(),
@@ -820,7 +796,6 @@ impl WorldSim {
                 admin_outcomes: BTreeMap::new(),
                 closed_at: None,
                 fake_ack_epoch: None,
-                newer_since: BTreeMap::new(),
                 adopting: false,
                 strikes: BTreeMap::new(),
                 entry_wants: Vec::new(),
@@ -872,10 +847,7 @@ impl WorldSim {
             closed_members: Vec::new(),
             fixes_off: 0,
             entry_backoff: BTreeMap::new(),
-            ref_seen: BTreeMap::new(),
             suspect_since: BTreeMap::new(),
-            cap_seen: BTreeMap::new(),
-            cap_polka: BTreeMap::new(),
             admitted_epoch: BTreeMap::new(),
             vote_hold: BTreeMap::new(),
             hold_n: BTreeMap::new(),
