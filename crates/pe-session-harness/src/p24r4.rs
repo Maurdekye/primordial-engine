@@ -1277,6 +1277,25 @@ pub fn voiddeep() {
 /// The others lock on the round-0 polka (theirs and f's). With the fix off (`VC8R1`), P cannot count
 /// f's prevote (it kept the other version), never sees that polka, and the locked members prevote nil
 /// on everything P proposes.
+/// Option 2's hole rule (the R18 below-20 item; @coordinator-opus 2026-11-01): plainfork's fork, where
+/// the sender asked first for the whole range below a hole is the forker itself. Without the rule's
+/// fallback (everyone asked after the hold) the other version never arrives and the session halts;
+/// with it, the forker is removed.
+pub fn holeforker() {
+    for fixed in RUNS {
+        let (sim, stopped, f, p, honest) = fork_segment_sim(Segment::Plain, if fixed { 0 } else { fix::HOLE });
+        let (gone, up) = (removed_at(&sim, honest[0], f).is_some(), live(&sim, &honest));
+        println!(
+            "REPRO holeforker fixed={fixed}: f={f}, P={p}; {f} removed at {}; live at the end: {up}; {}",
+            secs(removed_at(&sim, honest[0], f)),
+            confs(&sim, &honest)
+        );
+        repro_verdict("holeforker", fixed, if fixed { gone && up } else { !gone && !up }, "THE FORKER IS REMOVED, CONFIRMATION GOES ON", "HALTS WITHOUT THE HOLE RULE'S FALLBACK");
+        vc_report(&sim, &honest, "holeforker");
+        verdict(&sim, &honest, &format!("holeforker fixed={fixed}"), stopped);
+    }
+}
+
 pub fn plainfork() {
     for fixed in RUNS {
         let (sim, stopped, f, p, honest) = fork_segment_sim(Segment::Plain, if fixed { 0 } else { fix::VC8R1 });

@@ -118,6 +118,10 @@ pub mod fix {
     /// Review OWNY-2 (ownership, 12.5): a certificate built on a pending one's head is held and judged
     /// again after each decision, not dropped at receipt. (A high bit, clear of P2-4's next flags.)
     pub const OWNY2: u64 = 1 << 40;
+    /// Option 2's hole rule (the R18 below-20 item): a signed run still waiting on its author's entry
+    /// below after the hold asks everyone for the whole range, so a fork's other version arrives even
+    /// when the sender asked first is the forker. Off: only the sender is asked for the whole range.
+    pub const HOLE: u64 = 1 << 41;
 }
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).

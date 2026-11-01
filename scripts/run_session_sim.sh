@@ -84,6 +84,8 @@ for v in capfake fakeadmin adminwedge; do run p2-4-$v $v; done
 # P2-4 review rounds 7-8, fixed in round 8 (design 10.8): admin validity along the entry's own
 # ancestry, a capper's fetch budget at the slow-member allowance, and a forker's prevotes in polkas.
 for v in voidfork slowcapper voiddeep plainfork pfsilent; do run p2-4-$v $v; done
+# Option 2's hole rule (R18 below 20 kbit/s): the sender asked first is the forker (pe-session only).
+if [ $pe = yes ]; then run p2-4-holeforker holeforker; fi
 # The randomized Byzantine schedule generator (not a scenario file): a fixed seed range, checked
 # against the written invariants (spikes/out/session-sim/INVARIANTS.md). A larger run is separate.
 expect+=(randsched); "$B" randsched --seeds 12 > "$O/randsched.log" 2>&1; echo "== randsched"; grep "^RESULT" "$O/randsched.log"

@@ -343,6 +343,7 @@ impl WorldSim {
             sig,
             since: self.now,
             asked: false,
+            asked_all: false,
         };
         let (prev_missing, heads_missing) = self.lean_missing(&w);
         let wants_gap = m != self.me && self.known.contains(&m) && (prev_missing || sig.is_none());
@@ -368,14 +369,16 @@ impl WorldSim {
             self.lean_wait.remove(&oldest);
         }
         if wants_gap {
-            // A signed run past a hole asks everyone for the whole range from its author's verified
-            // prefix, held entries included, as option 1 does: the answers bring any other version of
-            // a held entry, the fork's proof (triage group L: plainfork, c2, adminfork, ...).
-            if sig.is_some() {
+            // The hole rule (option 2): the missing entries from everyone, and the whole range from the
+            // author's verified prefix, held entries included, from the sender. Answers to the whole
+            // range bring any other version of a held entry, a fork's proof (triage group L). A sender
+            // that is the forker, or that withholds the other version, cannot stop that: a run still
+            // waiting after LEAN_HOLD_FRAMES asks everyone for the whole range (resolve_lean), as
+            // option 1 did at once.
+            self.want_gap(m);
+            if sig.is_some() && m != self.me {
                 let c = self.contiguous.get(&m).copied().unwrap_or(0);
-                self.want_all(m, c + 1, s0 - 1);
-            } else {
-                self.want_gap(m);
+                self.want_from(from, m, c + 1, s0 - 1);
             }
         }
         self.resolve_lean()
@@ -403,7 +406,7 @@ impl WorldSim {
         let held = self.by_author.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
         let Some(end) = [waiting, held].into_iter().flatten().min() else { return };
         let mut bits = 0;
-        if self.lean_wire && below_verified && std::env::var("PE_LEANREP").map_or(true, |v| v != "0") {
+        if self.lean_wire && below_verified {
             bits |= HELD_BELOW;
         }
         if self.run_wire {
@@ -498,6 +501,20 @@ impl WorldSim {
             let (from, top) = (w.from, w.entries.last().expect("non-empty").seq);
             self.stats.lean_fallbacks += 1;
             self.want_from_held(from, k.0, k.1, top, 0);
+        }
+        // The hole rule's fallback: a run still waiting on its author's entry below after the hold
+        // asks everyone, once, for the whole range from the verified prefix.
+        let hole_rule = self.fixes_off & fix::HOLE == 0;
+        let stuck: Vec<(MemberId, u32)> = self
+            .lean_wait
+            .iter()
+            .filter(|(k, w)| hole_rule && !w.asked_all && k.0 != self.me && now >= w.since + Self::LEAN_HOLD_FRAMES && self.lean_missing(w).0)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stuck {
+            self.lean_wait.get_mut(&k).expect("listed").asked_all = true;
+            let c = self.contiguous.get(&k.0).copied().unwrap_or(0);
+            self.want_all(k.0, c + 1, k.1 - 1);
         }
         out
     }
