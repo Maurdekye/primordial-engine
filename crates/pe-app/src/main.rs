@@ -5,6 +5,7 @@
 //!             [--size S] [--window W] [--seed X] [--name NAME] --out DIR
 //!     Write DIR/session.json (ids, addresses, public keys) and DIR/member-<id>.key (secret keys).
 //! pe-app run --session FILE --key FILE --me N [--bind ADDR] [--faults FILE] [--crash-at-ms T] [--equivocate-at-ms T --equivocate-to M]
+//!            [--equivocate-split T:M,..] [--watch-member M]
 //!            [--touches-per-s R] [--hand-sweep] [--no-link-signal] [--out DIR] [-v] [--mcp-pipe] [--mcp-http] [--scopes ..] [--principal NAME]
 //!            [--clock-skew-ppm N] [--clock-lie M:MS[:PPM],..] [--clock-median] [-- CMD ARGS..]
 //!     Run one member until every frame of the session is confirmed (plus a short linger), then
@@ -164,7 +165,26 @@ async fn run(mut a: Args) -> Result<(), String> {
         (None, None) => None,
         _ => return Err("--equivocate-at-ms and --equivocate-to go together".into()),
     };
+    let equivocate_split = match a.take("--equivocate-split") {
+        Some(v) => {
+            let (t, ms) = v.split_once(':').ok_or("--equivocate-split: want T:M[,M..]")?;
+            let group: std::collections::BTreeSet<u32> = ms.split(',').map(|m| m.trim().parse::<u32>()).collect::<Result<_, _>>().map_err(|_| "--equivocate-split: bad member list")?;
+            if group.is_empty() || group.contains(&me) || group.iter().any(|m| !session.members.iter().any(|x| x.id == *m)) {
+                return Err("--equivocate-split: the group must be other members of the session".into());
+            }
+            Some((t.parse().map_err(|_| "--equivocate-split: bad time")?, group))
+        }
+        None => None,
+    };
+    let watch = match a.take("--watch-member") {
+        Some(m) => Some(m.parse::<u32>().map_err(|_| "--watch-member: not a member id")?),
+        None => None,
+    };
     let touches_per_s: u32 = a.num("--touches-per-s", 0)?;
+    // Review L2: the late equivocation forks this member's latest touch, so it needs touches.
+    if equivocate.is_some() && touches_per_s == 0 {
+        return Err("--equivocate-at-ms needs touches of this member's own to fork (--touches-per-s)".into());
+    }
     let hand_sweep = a.flag("--hand-sweep");
     if hand_sweep && session.scene != "ballpit" {
         return Err("--hand-sweep needs a ballpit session (init --scene ballpit)".into());
@@ -206,7 +226,7 @@ async fn run(mut a: Args) -> Result<(), String> {
 
     let socket = UdpSocket::bind(bind).map_err(|e| format!("bind {bind}: {e}"))?;
     let finished = Arc::new(AtomicBool::new(false));
-    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, equivocate, touches_per_s, hand_sweep, link_signal, clock_skew_ppm, clock_lie_us, clock_median, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
+    let opts = NodeOpts { me, session: session.clone(), key, socket, faults, crash_at_ms, equivocate, equivocate_split, watch, touches_per_s, hand_sweep, link_signal, clock_skew_ppm, clock_lie_us, clock_median, out_dir: out_dir.clone(), finished: finished.clone(), verbose };
     eprintln!("pe-app: member {me} of session {:016x} on {bind}; {} members, {} frames", session.session, session.members.len(), session.frames);
     let engine = EngineHandle::spawn_ticking(move || Engine::new(Box::new(Node::new(opts))), Duration::from_millis(1));
     let _hosted = if mcp_pipe || mcp_http {
