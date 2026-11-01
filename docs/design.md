@@ -3759,7 +3759,8 @@ numbers, and both are right about what they can check.
   counts in full: a player who mostly plays with one stranger reads "500 h, 480 h of it from one key".
   Cost: one more number per line and a per-key union at the viewer; two or more throwaway keys that
   split a fabricated claim evenly still pass, as any ring does.
-* **Hours are clipped to the join date** of the same tier: nothing before it counts.
+* **Hours are clipped to the join date** of the same tier and to the viewer's present: nothing before
+  the one or after the other counts.
 * It measures **presence with witnesses**, not activity: an idle player in a session accrues hours.
 
 **Join date.** The earliest start of a counted receipt that a second, distinct counted witness matches
