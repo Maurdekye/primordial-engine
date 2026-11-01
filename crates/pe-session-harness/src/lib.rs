@@ -147,16 +147,18 @@ pub struct Net {
 
 fn has_lean(m: &Msg) -> bool {
     match m {
-        Msg::Lean(_) => true,
+        Msg::Run { .. } => true,
         Msg::Batch(v) => v.iter().any(has_lean),
         _ => false,
     }
 }
 
-/// `m` with every lean entry as an explicit one (for fault filters and fixtures).
+/// `m` with every run's entries as explicit ones (for fault filters and fixtures; each entry in a run
+/// still holds its own signature in memory, the wire carries only the top one).
 pub fn as_explicit(m: &Msg) -> Msg {
     match m {
-        Msg::Lean(e) => Msg::Entry(e.clone()),
+        Msg::Run { entries, .. } if entries.len() == 1 => Msg::Entry(entries[0].clone()),
+        Msg::Run { entries, .. } => Msg::Batch(entries.iter().cloned().map(Msg::Entry).collect()),
         Msg::Batch(v) => Msg::Batch(v.iter().map(as_explicit).collect()),
         _ => m.clone(),
     }
@@ -172,14 +174,14 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
             };
             (bits & 1 != 0) as u64 * 32 + (bits & 2 != 0) as u64 * 32 * heads + (bits & 4 != 0) as u64 * 64
         }
-        // Already without its ids.
-        Msg::Lean(_) => (bits & 4 != 0) as u64 * 64,
+        // Already without its ids (lean) and signed once (option 2).
+        Msg::Run { signed, .. } => (bits & 4 != 0 && *signed) as u64 * 64,
         Msg::Batch(v) => {
             let chained = if bits & 8 != 0 && bits & 4 == 0 {
                 // Entries of an author followed later in the same batch by another of theirs.
                 v.iter()
                     .enumerate()
-                    .filter(|(i, x)| matches!(x, Msg::Entry(e) | Msg::Lean(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) | Msg::Lean(f) if f.member == e.member))))
+                    .filter(|(i, x)| matches!(x, Msg::Entry(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) if f.member == e.member))))
                     .count() as u64
                     * 64
             } else {
@@ -193,7 +195,8 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
 
 pub fn kind(m: &Msg) -> &'static str {
     match m {
-        Msg::Entry(e) | Msg::Lean(e) => match e.payload {
+        Msg::Run { entries, .. } => kind(&Msg::Entry(entries[0].clone())),
+        Msg::Entry(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
@@ -537,7 +540,7 @@ impl Peer {
         };
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, keys));
         // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
-        core.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
+        core.sim.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;
@@ -648,13 +651,19 @@ impl Sim {
         }
         for (to, w, from, m) in due {
             // A carried touch's id; a lean one's ids are not on the wire, so its author's id for it.
-            let accept = match &m {
-                Msg::Entry(e) => e.carried.map(|(obj, _)| (Some(e.id()), e.member, obj)),
-                Msg::Lean(e) => e.carried.map(|(obj, _)| {
-                    let ai = self.peer_index(e.member);
-                    (self.peers[ai].worlds.get(&w).and_then(|r| r.sim.id_at(e.member, e.seq)), e.member, obj)
-                }),
-                _ => None,
+            // In a run, an entry's id is its author's id for it (a lean one's ids are not on the wire).
+            let accept: Vec<(Option<EntryId>, MemberId, u32)> = match &m {
+                Msg::Entry(e) => e.carried.map(|(obj, _)| (Some(e.id()), e.member, obj)).into_iter().collect(),
+                Msg::Run { entries, .. } => entries
+                    .iter()
+                    .filter_map(|e| {
+                        e.carried.map(|(obj, _)| {
+                            let ai = self.peer_index(e.member);
+                            (self.peers[ai].worlds.get(&w).and_then(|r| r.sim.id_at(e.member, e.seq)), e.member, obj)
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
             };
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
@@ -662,8 +671,8 @@ impl Sim {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            if let Some((Some(id), member, obj)) = accept {
-                if member != to {
+            for (id, member, obj) in accept {
+                if let (Some(id), true) = (id, member != to) {
                     r.pending_accept.push((id, member, obj));
                 }
             }

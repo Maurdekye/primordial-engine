@@ -205,7 +205,7 @@ pub struct Stats {
     pub admin_refused: u64,
     /// Received entries dropped because their signature did not verify (S3).
     pub bad_sigs: u64,
-    /// Lean entries ([`Msg::Lean`]) received, and those this member could not rebuild and verify,
+    /// Lean entries ([`Msg::Run`] with its lean flag) received, and those this member could not rebuild and verify,
     /// whose explicit form it fetched from their author instead.
     pub lean_in: u64,
     pub lean_fallbacks: u64,
