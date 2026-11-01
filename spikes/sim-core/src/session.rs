@@ -2130,6 +2130,8 @@ pub struct WorldSim {
     fed_peers: BTreeMap<MemberId, Option<u64>>,
     /// TLP-23: per fed member, the newest of my checkpoint blocks I sent it and the frame I sent it at.
     ckpt_sent: BTreeMap<MemberId, (u64, u64)>,
+    /// Rule 4's floor test: the frame I first sent each of my checkpoint blocks to each fed member.
+    ckpt_first_sent: BTreeMap<(MemberId, u64), u64>,
     /// The fed side (TLP-24): per member, the newest checkpoint of its chain I echo, its block and id. Kept
     /// across leaving and re-entering the feed.
     echo_last: BTreeMap<MemberId, (u64, EntryId)>,
@@ -2402,6 +2404,7 @@ impl WorldSim {
             echo_pending: BTreeMap::new(),
             fed_peers: BTreeMap::new(),
             ckpt_sent: BTreeMap::new(),
+            ckpt_first_sent: BTreeMap::new(),
             echo_last: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
@@ -3050,7 +3053,11 @@ impl WorldSim {
                             self.fed_peers.entry(m).or_insert(None);
                         }
                         None => {
-                            self.fed_peers.remove(&m);
+                            if self.fed_peers.remove(&m).is_some() {
+                                // Off the feed: a later stay starts its checkpoint clocks afresh.
+                                self.ckpt_sent.remove(&m);
+                                self.ckpt_first_sent.retain(|&(f, _), _| f != m);
+                            }
                             self.echo_pending.remove(&m);
                         }
                     }
@@ -3149,7 +3156,10 @@ impl WorldSim {
     /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
     /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     fn recompute_conf(&mut self) {
-        if self.adopting {
+        // Part B, rule 5: a fed replica holds no log, so it confirms nothing and computes no window or verdict until
+        // it is back on the log. While fed, rule 3's deadline bound moved its conf over entries it never received,
+        // and on recovery every one of them stamped below that conf was taken for a horizon violation.
+        if self.adopting || self.fed.is_some() {
             return;
         }
         let mut c = u64::MAX;

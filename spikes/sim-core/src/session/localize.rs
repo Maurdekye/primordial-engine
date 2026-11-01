@@ -412,7 +412,35 @@ impl WorldSim {
             return Some(false);
         };
         let head = self.ack_head_hist.get(&(x, m)).and_then(|h| h.range(..=k).next_back()).map(|(_, &hh)| hh);
-        Some(head.is_some_and(|(h, hid)| h >= seq && self.by_author.get(&(m, h)) == Some(&hid)))
+        match head {
+            // A head of m's chain I don't hold yet: whether it is my version is unproven, so wait (fetching it).
+            // Taken for a lacker, it voided entries at a replica behind on m's chain that counted elsewhere
+            // (partbrand seed 11: a member back from the feed, and a distant one).
+            Some((h, _)) if h >= seq && !self.by_author.contains_key(&(m, h)) => None,
+            _ => Some(head.is_some_and(|(h, hid)| h >= seq && self.by_author.get(&(m, h)) == Some(&hid))),
+        }
+    }
+
+    /// Diagnostics: how much of `m`'s chain I hold contiguously, and the newest seq of it I hold at all.
+    pub fn held_of(&self, m: MemberId) -> (u32, u32) {
+        (self.contiguous.get(&m).copied().unwrap_or(0), self.by_author.range((m, 0)..=(m, u32::MAX)).next_back().map_or(0, |(&(_, s), _)| s))
+    }
+
+    /// Diagnostics: the earliest pending entry, its deadline and every other member's status for it.
+    pub fn debug_pending(&self) -> String {
+        let Some(&(stamp, id)) = self.pending.iter().next() else { return "no pending entry".to_string() };
+        let Some(e) = self.entries.get(&id) else { return format!("pending {stamp} not held") };
+        let Some(v) = self.windows.get(&(e.stamp / WINDOW)) else { return format!("m{} s{} stamp {}: window {} not computed", e.member, e.seq, e.stamp, e.stamp / WINDOW) };
+        let deadline = e.stamp + Self::deadline_offset(v, &self.cfg, e.member);
+        let newest: BTreeMap<MemberId, u64> =
+            self.members.iter().filter_map(|&x| { let es = self.echo_stable(x); self.ack_stamps.get(&x).and_then(|a| a.range(..=es).next_back()).map(|(_, &t)| (x, t)) }).collect();
+        let st: Vec<String> = self
+            .members
+            .iter()
+            .filter(|&&x| x != e.member)
+            .map(|&x| format!("m{x}:{:?}(newest {:?}, es {}, held {:?})", self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline), newest.get(&x), self.echo_stable(x), self.contiguous.get(&x)))
+            .collect();
+        format!("m{} s{} stamp {} deadline {}: {}", e.member, e.seq, e.stamp, deadline, st.join(" "))
     }
 
     /// Rule 1: e's verdict once its statuses decide it: Some(false) void at q proven lackers, Some(true)
