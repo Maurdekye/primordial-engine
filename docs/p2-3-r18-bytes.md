@@ -87,7 +87,9 @@ full entry. The rules as built:
   the acker. A head still missing after 15 frames also gets the explicit form asked for from the sender.
 - A failed verification fetches the explicit form from the sender, and everyone's version of seq - 1.
 - A waiting entry counts as hearing from its author (S6) and keeps the receiver busy (7.6's idle
-  predicate).
+  predicate reads the wait list; an unverified stamp is never noted, and any noted stamp is clamped
+  to a window ahead: review LN-2). At most 1,024 entries wait; past that, the longest wait goes
+  (review LN-3).
 - An ack naming a chain more than 32 entries past what the receiver has acked holding goes explicit
   (bridge). Fetch replies and relays stay explicit.
 
@@ -120,10 +122,53 @@ what-if 3 = the earlier byte charge):
 - **Why it falls short of what-if 3 below 24 kbit/s:** the what-if also charged fetch replies lean. Under
   option 1 they stay explicit (condition (a)), and recovery from a collapse is mostly repair traffic.
   The real codec, with only its explicit entries charged as if lean, reproduces what-if 3 exactly (936 /
-  14.9 s, 590 / 8.9 s, 473 / 6.9 s). So the waits behind holes cost nothing measurable; the explicit
-  repairs are the whole difference. At 18 kbit/s, 159 lean entries waited a mean of 437 frames for holes.
+  14.9 s, 590 / 8.9 s, 473 / 6.9 s). So the waits behind holes cost no recovery time; the explicit
+  repairs are the whole difference. At 18 kbit/s, 159 lean entries waited a mean of 437 frames for holes
+  (what that means for condition (c): next section).
 - Decided, to be built with option 2 (@coordinator-opus, 2026-11-01): a hole-fill fetch carries a bit
   "I hold (author, from - 1)", and its reply goes lean. That is condition (a)'s case of a receiver that
   does hold the predecessor, and the same bit as option 2's fetch rule. 16 kbit/s is then measured
   against the what-if.
 
+### Condition (c): how long a lean entry waits (review LN-1) [V]
+
+A lean entry past a hole waits until the hole is filled; an explicit one carries its `prev`, verifies,
+and takes effect at once. Review LN-1 asked that waits stay well inside W/2. Ruled (@coordinator-opus,
+accepted by @design-reviewer, 2026-11-01): **only a wait on a missing head falls back to the explicit
+form after 15 frames; a wait on a hole does not.** The measurements behind the ruling:
+
+- **On a link that keeps up, a wait lasts one refetch.** Ballpit (60 ms delay, 10 ms jitter, W = 120
+  frames), member 2:
+
+  | Loss | Lean waits: mean, max | Lean: rollbacks/s, resimulated frames/s, max depth | Explicit: same |
+  |---|---|---|---|
+  | 5 % | 4.9, 12 frames | 32.8, 216, 15 | 58.7, 289, 15 |
+  | 10 % | 5.5, 18 frames | 24.9, 195, 18 | 59.0, 331, 15 |
+
+  The longest wait, 18 frames, is well inside W/2 = 60. A fallback after 15 frames fires 3 times at
+  10 % loss and changes nothing useful.
+- **On a saturated uplink a wait has no bound in frames, and neither does an explicit entry.**
+  Capped, single gesture, 30 s, member 2 receiving (hand confirmation latency is the mean for m1 / m2):
+
+  | Cap | Mode | Stalled, back | Hand confirm latency, frames | Lean wait mean | Rollbacks, max depth, resim frames |
+  |---|---|---|---|---|---|
+  | 18 | explicit | 1,535, never | 450 / 330 | - | 35, 114, 837 |
+  | 18 | lean | 1,190, 18.9 s | 312 / 329 | 437 | 40, 113, 1,273 |
+  | 18 | lean + hole fallback at 15 frames | 1,525, never | 567 / 629 | 812 | 40, 113, 1,095 |
+  | 18 | lean + hole fallback at 60 frames | 1,262, 20.3 s | 439 / 474 | 562 | 39, 113, 1,119 |
+  | 20 | explicit | 1,462, 24.0 s | 505 / 582 | - | 39, 114, 806 |
+  | 20 | lean | 662, 10.8 s | 223 / 236 | 258 | 41, 116, 1,267 |
+  | 20 | lean + hole fallback at 15 frames | 894, 14.0 s | 344 / 374 | 488 | 41, 116, 1,161 |
+  | 20 | lean + hole fallback at 60 frames | 1,166, 18.4 s | 369 / 396 | 459 | 40, 113, 1,111 |
+  | 24 | explicit | 563, 8.5 s | 230 / 246 | - | 41, 115, 904 |
+  | 24 | lean | 200, 2.4 s | 116 / 122 | 151 | 35, 112, 500 |
+  | 24 | lean + hole fallback at 15 frames | 224, 2.9 s | 126 / 134 | 122 | 36, 112, 572 |
+
+  Explicit entries reach the receiver 330-580 frames late at 18-20 kbit/s, no sooner than the lean
+  wait, and the max rollback depth is about 113 frames in every mode. A fallback resends entries the
+  receiver holds, in the bigger form, on the full link; that delays everything, the hole included
+  (mean wait 437 -> 812 frames at 18 kbit/s), and 18 kbit/s no longer recovers. Lean resimulates more
+  frames at 18-20 kbit/s, but confirms sooner and is the only form that recovers at 18.
+- The limit, stated plainly: condition (c)'s "well inside W/2" holds on a link that keeps up; under
+  saturation no entry, lean or explicit, has a bound in frames. `lean_wait_max` is in the harness's
+  `--by-kind` output and in ballpit's with `--loss`.

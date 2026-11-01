@@ -63,7 +63,8 @@ fn a_lean_entry_past_a_hole_waits_for_it_then_asks_for_its_explicit_form() {
     b.resolve_lean();
     assert_eq!((b.id_at(1, 1), b.id_at(1, 2)), (Some(a1.id()), Some(a2.id())));
     // a3's predecessor is held, so it goes straight in. A 5th past a missing 4th waits for the hole
-    // only: the explicit form could not extend the chain past it either.
+    // only: the explicit form could not extend the chain past it either (review LN-1, ruled
+    // 2026-11-01: on a saturated link a fallback only adds bytes).
     b.insert_lean(1, lean(&a3));
     let a4 = a.author_ack();
     let a5 = a.author_ack();
@@ -74,6 +75,28 @@ fn a_lean_entry_past_a_hole_waits_for_it_then_asks_for_its_explicit_form() {
     b.insert(a4);
     b.resolve_lean();
     assert_eq!(b.id_at(1, 5), Some(a5.id()));
+}
+
+#[test]
+fn waiting_entries_keep_the_member_busy_without_their_stamps_and_the_longest_waits_go_first() {
+    let (mut a, mut b) = (sim(1), sim(2));
+    let _a1 = a.author_ack();
+    // A touch far in the future, past a hole: b is not idle while it waits (review LN-2); its
+    // unverified stamp is not noted (idle() reads the wait list instead).
+    let far = test_sign(W, Entry { member: 1, seq: 2, prev: EntryId::NONE, stamp: 1 << 40, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None });
+    assert!(b.idle());
+    b.insert_lean(1, far.clone());
+    assert!(!b.idle());
+    // Review LN-3: past the bound, the entry waiting longest is evicted, not the lowest key.
+    let mut c = sim(2);
+    let touch = |m: MemberId, seq: u32| test_sign(W, Entry { member: m, seq, prev: EntryId::NONE, stamp: 0, payload: Payload::Touch { obj: 1, impulse: [0.0; 3], grab: false }, carried: None });
+    for s in 0..1024u32 {
+        c.insert_lean(3, touch(3, 10 + s));
+        c.now += 1;
+    }
+    c.insert_lean(1, touch(1, 2));
+    assert!(!c.lean_waiting(3, 10));
+    assert!(c.lean_waiting(3, 11) && c.lean_waiting(1, 2));
 }
 
 #[test]

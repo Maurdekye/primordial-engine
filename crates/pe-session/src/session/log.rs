@@ -224,7 +224,9 @@ impl WorldSim {
     /// Design 7.6: track the latest stamp of a held entry other than an ack.
     fn note_held(&mut self, e: &Entry) {
         if !matches!(e.payload, Payload::Ack { .. }) {
-            self.busy_stamp = self.busy_stamp.max(Some(e.stamp));
+            // Review LN-2: a stamp far in the future (a signed entry's, valid or not) must not keep
+            // the member busy for good; nothing is busier than a window ahead.
+            self.busy_stamp = self.busy_stamp.max(Some(e.stamp.min(self.now + self.cfg.window)));
         }
     }
 
@@ -235,7 +237,9 @@ impl WorldSim {
     /// its own or anyone's, is stamped at or after `conf`, so it makes the member busy until `conf`
     /// passes it.
     pub fn idle(&self) -> bool {
-        self.busy_stamp.is_none_or(|s| s < self.conf) && self.hold_horizon_below.is_none()
+        // Review LN-2: lean entries waiting for an entry they name keep the member busy, as the
+        // explicit entries would once inserted, without their unverified stamps noted.
+        self.busy_stamp.is_none_or(|s| s < self.conf) && self.hold_horizon_below.is_none() && self.lean_wait.is_empty()
     }
 
     /// Store a received or fetched entry, once its signature verifies (S3; a bad one is dropped and
@@ -266,6 +270,11 @@ impl WorldSim {
         }
     }
     pub const LEAN_HEAD_SLACK: u32 = 32;
+
+    /// Whether a lean entry of `member` at `seq` is waiting for an entry it names.
+    pub fn lean_waiting(&self, member: MemberId, seq: u32) -> bool {
+        self.lean_wait.contains_key(&(member, seq))
+    }
 
     /// At most this many lean entries wait for entries they name.
     const LEAN_WAIT_MAX: usize = 1024;
@@ -305,13 +314,14 @@ impl WorldSim {
                 self.heard.insert(m, self.now);
             }
         }
-        // Design 7.6's idle predicate: a waiting entry keeps this member busy, as an explicit entry
-        // inserted past a hole does, so it does not thin its acks while entries are arriving.
-        self.note_held(&se.entry);
+        // Design 7.6's idle predicate counts waiting entries without trusting their stamps (`idle`,
+        // review LN-2).
         self.lean_wait.insert((m, seq), LeanWait { from, se, since: self.now, asked: false });
-        // Bounded: the oldest waiting entries go first (the hole fetch brings them back explicit).
+        // Bounded: the longest-waiting entries go first (review LN-3; the hole fetch brings them back
+        // explicit).
         while self.lean_wait.len() > Self::LEAN_WAIT_MAX {
-            self.lean_wait.pop_first();
+            let oldest = *self.lean_wait.iter().min_by_key(|(k, w)| (w.since, **k)).map(|(k, _)| k).expect("non-empty");
+            self.lean_wait.remove(&oldest);
         }
         vec![]
     }
@@ -328,7 +338,8 @@ impl WorldSim {
     }
 
     /// Lean entries whose missing entries have arrived since; and, for those still waiting past
-    /// [`Self::LEAN_HOLD_FRAMES`], a request for their explicit form. Called on every receipt and tick.
+    /// [`Self::LEAN_HOLD_FRAMES`] on a head, a request for their explicit form. Called on every
+    /// receipt and tick.
     pub fn resolve_lean(&mut self) -> Vec<SignedEntry> {
         let mut out = Vec::new();
         loop {
@@ -348,11 +359,14 @@ impl WorldSim {
                 let w = self.lean_wait.remove(&k).expect("listed");
                 self.stats.lean_waited += 1;
                 self.stats.lean_wait_frames += self.now.saturating_sub(w.since);
+                self.stats.lean_wait_max = self.stats.lean_wait_max.max(self.now.saturating_sub(w.since));
                 out.extend(self.insert_rebuilt(w.from, w.se));
             }
         }
         // Only for a head this member still lacks: a missing previous entry is already asked for, and
-        // the explicit form could not extend the chain past it either (extend_chain).
+        // the explicit form could not extend the chain past it either (extend_chain). Review LN-1
+        // (ruled 2026-11-01): no fallback for a hole; on a link that keeps up the wait is one refetch,
+        // and on a saturated one the explicit form only adds bytes (docs/p2-3-r18-bytes.md).
         let now = self.now;
         let late: Vec<(MemberId, u32)> = self
             .lean_wait
