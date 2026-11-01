@@ -11,7 +11,8 @@ than grep: msys grep aborts on input as large as `git log -p`.
   --ignore-identity  author and committer hits are reported but never fail (the commit email the
                      user accepted on 2026-10-31 11:49Z, which the published copy keeps).
   --blobs            also scan every blob reachable from the range, byte for byte, binary ones
-                     included (the diff scan reads text diffs only).
+                     included (the diff scan reads text diffs only), and every file and folder path.
+Term kinds: `fixed` anywhere, `word` as a whole word, `start` with no letter right before it.
 """
 
 import re
@@ -34,18 +35,23 @@ def read_terms(path, required):
         if not line or line.startswith("#"):
             continue
         kind, _, text = line.partition(" ")
-        if kind not in ("fixed", "word") or not text:
+        if kind not in ("fixed", "word", "start") or not text:
             print(f"publish_history: bad line in {path}: {line}")
             sys.exit(2)
         terms.append((kind, text))
     return terms
 
 
+# `word`: no letter, digit or _ on either side. `start`: no letter right before (publish_check.sh).
+BOUNDS = {"word": (r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])"), "start": (r"(?<![A-Za-z])", "")}
+
+
 def matcher(kind, text):
     if kind == "fixed":
         needle = text.casefold()
         return lambda s: needle in s.casefold()
-    pattern = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(text) + r"(?![A-Za-z0-9_])", re.IGNORECASE)
+    before, after = BOUNDS[kind]
+    pattern = re.compile(before + re.escape(text) + after, re.IGNORECASE)
     return lambda s: pattern.search(s) is not None
 
 
@@ -54,7 +60,8 @@ def bytes_matcher(kind, text):
     if kind == "fixed":
         needle = text.encode().lower()
         return lambda b: needle in b.lower()
-    pattern = re.compile(rb"(?<![A-Za-z0-9_])" + re.escape(text.encode()) + rb"(?![A-Za-z0-9_])", re.IGNORECASE)
+    before, after = BOUNDS[kind]
+    pattern = re.compile(before.encode() + re.escape(text.encode()) + after.encode(), re.IGNORECASE)
     return lambda b: pattern.search(b) is not None
 
 
@@ -67,12 +74,17 @@ def git(args):
 
 
 def scan_blobs(revs, terms):
-    """{term: [(path, binary)]} over every blob reachable from revs (each blob once, first path)."""
+    """{term: [(path, binary)]} over every blob reachable from revs (each blob once, first path), and
+    {term: [path]} over every file and folder path in their trees."""
     paths = {}
+    names = set()
     for line in git(["rev-list", "--objects", *revs]).split("\n"):
         sha, _, path = line.partition(" ")
         if sha and path:
             paths.setdefault(sha, path)
+            names.add(path)
+    name_match = {t: matcher(*t) for t in terms}
+    path_hits = {t: sorted(n for n in names if name_match[t](n)) for t in terms}
     match = {t: bytes_matcher(*t) for t in terms}
     hits = {t: [] for t in terms}
     p = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -94,7 +106,7 @@ def scan_blobs(revs, terms):
     if p.wait() != 0:
         print("publish_history: git cat-file failed")
         sys.exit(2)
-    return count, hits
+    return count, hits, path_hits
 
 
 def main():
@@ -155,7 +167,7 @@ def main():
                 if match[t](text):
                     added[t].append((sha, path, text))
 
-    nblobs, bhits = scan_blobs(revs, terms) if blobs else (0, {t: [] for t in terms})
+    nblobs, bhits, phits = scan_blobs(revs, terms) if blobs else (0, {t: [] for t in terms}, {t: [] for t in terms})
 
     print(f"publish_history: {commits} commits in {' '.join(revs)}" + (f", {nblobs} blobs" if blobs else ""))
     failed = 0
@@ -165,14 +177,14 @@ def main():
         shas = list(dict.fromkeys(c for c, _, _ in added[t]))
         fields = sorted({f for _, f in meta[t]})
         mshas = list(dict.fromkeys(c for c, _ in meta[t]))
-        n = len(added[t]) + len(counted) + len(bhits[t])
+        n = len(added[t]) + len(counted) + len(bhits[t]) + len(phits[t])
         tag = "FAIL" if t in failing and n else ("checked" if t in failing else "reported")
         listed = " ".join(c[:7] for c in shas[:8]) + (f" +{len(shas) - 8} more" if len(shas) > 8 else "")
         nbin = sum(1 for _, b in bhits[t] if b)
         print(f"  [{tag}] {kind} {text!r}: {len(added[t])} added line(s) in {len(shas)} commit(s)"
               + (f" ({listed})" if shas else "")
               + (f"; in the {'/'.join(fields)} of {len(mshas)} commit(s)" if mshas else "")
-              + (f"; in {len(bhits[t])} blob(s), {nbin} binary" if blobs else ""))
+              + (f"; in {len(bhits[t])} blob(s), {nbin} binary; in {len(phits[t])} path(s)" if blobs else ""))
         if t in failing:
             for c, p, line in added[t]:
                 print(f"    {c[:10]}:{p}: {line.strip()[:200]}")
@@ -180,6 +192,8 @@ def main():
                 print(f"    {c[:10]} ({f})")
             for p, b in bhits[t]:
                 print(f"    blob at {p}" + (" (binary)" if b else ""))
+            for p in phits[t]:
+                print(f"    path {p}")
             failed += n
     if ignore_identity:
         print("publish_history: author and committer hits are reported only (--ignore-identity)")

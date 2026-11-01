@@ -12,7 +12,9 @@
 # scripts/publish_terms.example to it and fill it in. Without a terms file, or with an empty one,
 # the check fails rather than passing.
 # Format, one term per line: `fixed <text>` matches the text anywhere; `word <text>` matches it as a
-# whole word only. Blank lines and lines starting with # are ignored.
+# whole word only; `start <text>` matches it where no letter comes right before it (at the start of a
+# word, or after a digit, _ or punctuation: `start ab` finds abc, X_ABC and ab-c, not cab). Blank
+# lines and lines starting with # are ignored.
 #
 # --history <range>... (git log revision arguments, e.g. `main` or `origin/main..main`): scans every
 # commit's added lines (git log -p) and its message, author and committer, with
@@ -47,12 +49,15 @@ while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in ''|'#'*) continue ;; esac
   kind=${line%% *} text=${line#* }
   case "$kind" in
-    fixed) w="" ;;
-    word) w="-w" ;;
+    fixed) how="-F" pat=$text ;;
+    word) how="-F -w" pat=$text ;;
+    start)
+      case "$text" in *[]\[\\^]*) echo "publish_check: a start term can't hold [ ] \\ or ^: $line"; exit 2 ;; esac
+      how="-E" pat="(^|[^A-Za-z])$(printf '%s' "$text" | sed 's/[.*+?(){}|$]/[&]/g')" ;;
     *) echo "publish_check: bad line in $terms: $line"; exit 2 ;;
   esac
   n=$((n + 1))
-  out=$(git grep -n -i -F $w -e "$text" "$ref" --); rc=$?
+  out=$(git grep -n -i $how -e "$pat" "$ref" --); rc=$?
   case $rc in
     0) printf '%s\n' "$out"; hits=$((hits + $(printf '%s\n' "$out" | wc -l))) ;;
     1) ;;
