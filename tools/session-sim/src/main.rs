@@ -94,6 +94,7 @@ fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, St
     ctx.silenced = actors.iter().filter_map(|a| a.silenced()).collect();
     ctx.wedge = actors.iter().find_map(|a| a.wedge_info());
     ctx.segment = actors.iter().find_map(|a| a.segment_info());
+    ctx.kick = actors.iter().find_map(|a| a.kick_info());
     if let (Some(t), false) = (ctx.panic_at_ms, has_verdict) {
         println!("RESULT {name}: PANIC at t={t} ms -> FAIL");
         return Ok(true);

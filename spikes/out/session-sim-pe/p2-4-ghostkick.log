@@ -1,10 +1,9 @@
-  ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist) with VCR-1's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 102 of frame 222, m2 conf 102 of frame 222, m3 conf 102 of frame 222; at m1: members {1, 2, 3, 9}, evicted []
-RESULT ghostkick: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
-RESULT ghostkick: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
-RESULT ghostkick: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
-RESULT ghostkick: m1 conf 582 of frame 593, m2 conf 582 of frame 593, m3 conf 582 of frame 593
-RESULT ghostkick: 9 removed at 3.17 s -> VOTED OUT
-  m1: conf 582 frame 593 members {1, 2, 3} evicted {9: (43, 173)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 44 bad 0
-  m2: conf 582 frame 593 members {1, 2, 3} evicted {9: (43, 173)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 44 bad 0
-  m3: conf 582 frame 593 members {1, 2, 3} evicted {9: (43, 173)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 44 bad 0
-RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist): frames 0..592 honest m1=a7a135c7741ed25e m2=a7a135c7741ed25e m3=a7a135c7741ed25e | offline replay a7a135c7741ed25e | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
+RESULT ghostkick: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
+RESULT ghostkick: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
+RESULT ghostkick: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 364 (t=6.17 s) round 5 removed [9]
+RESULT ghostkick: m1 conf 580 of frame 593, m2 conf 580 of frame 593, m3 conf 580 of frame 593
+RESULT ghostkick: worst confirmation lag when admin 1 kicks 9 at 6.00 s: 251 frames (window 120); 9 removed at 6.17 s; lag at the end 13 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
+  m1: conf 580 frame 593 members {1, 2, 3} evicted {9: (88, 349)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 40 bad 0
+  m2: conf 580 frame 593 members {1, 2, 3} evicted {9: (88, 349)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 40 bad 0
+  m3: conf 580 frame 593 members {1, 2, 3} evicted {9: (88, 349)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 40 bad 0
+RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist; admin 1 kicks 9 at 6 s): frames 0..592 honest m1=a7a135c7741ed25e m2=a7a135c7741ed25e m3=a7a135c7741ed25e | offline replay a7a135c7741ed25e | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0

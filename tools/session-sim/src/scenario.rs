@@ -710,6 +710,18 @@ pub enum Byzantine {
         carry_ms: u64,
         plant_ms: u64,
     },
+    /// Trust survey #4: not a cheater but an honest admin. At `at_ms`, `member` signs a kick of
+    /// `target` and sends it to `to` (session-sim p24r.rs `AdminKick`: signed directly, since a planned
+    /// action waits while the sim is paused). The worst confirmation lag among `honest` at that moment
+    /// is kept for the `admin_kick` check. List it before the cheater it kicks, as the spike steps it
+    /// first.
+    AdminKick {
+        member: u32,
+        target: u32,
+        at_ms: u64,
+        honest: Vec<u32>,
+        to: Vec<u32>,
+    },
     /// At `at_ms`, `member` votes against `target` for a kick `kick` that does not exist, with
     /// `target`'s head as it holds it as the frozen head; sent to `to`.
     GhostVote {

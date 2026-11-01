@@ -460,12 +460,6 @@ impl WorldSim {
             self.disputed.insert(id);
             // Another version of a proposal still names a value someone may decide (P2-4).
             self.note_proposal(id);
-            // Review VC4R-1: another version of a prevote may be the one a capped precommit counted.
-            if let Payload::Prevote { epoch, round, value } = e.payload {
-                if epoch == self.vcm.epoch && self.vcm.members.contains(&e.member) {
-                    self.vcm.vc.any_prevotes.entry((round, value)).or_default().insert(e.member);
-                }
-            }
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
             // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
@@ -632,10 +626,6 @@ impl WorldSim {
                     // word on q's chain in this epoch; later references never count toward stability.
                     if self.membership().voted_against(m, q) {
                         continue;
-                    }
-                    let newer = self.refs.get(&(m, q)).and_then(|r| r.keys().next_back()).is_none_or(|&old| s > old);
-                    if newer {
-                        self.vcm.ref_advanced.insert((m, q), self.now);
                     }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
                 }
