@@ -21,7 +21,7 @@ const MAX_EVENTS: usize = 50;
 struct Book {
     next: u64,
     /// ticket -> (entry id, last status reported to this principal)
-    tickets: BTreeMap<u64, (u64, Option<InteractionStatus>)>,
+    tickets: BTreeMap<u64, (EntryId, Option<InteractionStatus>)>,
     events_seen: usize,
 }
 
@@ -35,10 +35,15 @@ pub struct Engine {
     books: BTreeMap<String, Book>,
 }
 
-fn status_of(ticket: u64, entry: u64, s: EntryStatus) -> InteractionStatus {
+/// An entry id as tool output: its 32 bytes in hex.
+pub fn entry_hex(e: EntryId) -> String {
+    e.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn status_of(ticket: u64, entry: EntryId, s: EntryStatus) -> InteractionStatus {
     InteractionStatus {
         ticket,
-        entry: format!("{entry:016x}"),
+        entry: entry_hex(entry),
         stamp: s.stamp,
         state: s.state,
         reason: s.reason,
@@ -175,7 +180,7 @@ impl Engine {
         book.tickets.insert(ticket, (a.entry, None));
         Ok(Proposed {
             ticket,
-            entry: format!("{:016x}", a.entry),
+            entry: entry_hex(a.entry),
             stamp: a.stamp,
             seq: a.seq,
             note: "resolved when its frame is simulated; final once confirmed (world_interaction_status, world_step)".into(),
@@ -299,6 +304,33 @@ impl Engine {
         Ok(b.scenario().ok_or_else(|| ToolError::new(ErrorCode::NoScenarioControl, "this peer is live, not the simulator"))?.check())
     }
 
+    /// Why the session stopped, once a panic faulted it.
+    pub fn faulted(&self) -> Option<&str> {
+        self.faulted.as_deref()
+    }
+
+    /// Let a live backend do its housekeeping. A panic faults the session, as in `call`.
+    pub fn tick(&mut self) {
+        if self.faulted.is_some() {
+            return;
+        }
+        let Some(b) = self.backend.as_mut() else { return };
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| b.tick())) {
+            self.fault_with(panic);
+        }
+    }
+
+    fn fault_with(&mut self, panic: Box<dyn std::any::Any + Send>) -> String {
+        let msg = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".into());
+        self.backend = None;
+        self.faulted = Some(format!("internal error: {msg}"));
+        msg
+    }
+
     /// Test hook: what a panic inside the sim does.
     #[doc(hidden)]
     pub fn panic_for_test(&mut self) {
@@ -329,6 +361,32 @@ impl EngineHandle {
         EngineHandle { tx }
     }
 
+    /// Start the engine thread for a live backend: between jobs it calls `Engine::tick` at least every
+    /// `period`, so the peer keeps its network and clock going with or without MCP traffic.
+    pub fn spawn_ticking(init: impl FnOnce() -> Engine + Send + 'static, period: std::time::Duration) -> EngineHandle {
+        let (tx, rx) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("pe-engine".into())
+            .spawn(move || {
+                let mut engine = init();
+                let mut next = std::time::Instant::now();
+                loop {
+                    let wait = next.saturating_duration_since(std::time::Instant::now());
+                    match rx.recv_timeout(wait) {
+                        Ok(job) => job(&mut engine),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                    if std::time::Instant::now() >= next {
+                        engine.tick();
+                        next = std::time::Instant::now() + period;
+                    }
+                }
+            })
+            .expect("spawn engine thread");
+        EngineHandle { tx }
+    }
+
     /// Run `f` on the engine thread and return its result.
     pub async fn call<R: Send + 'static>(&self, f: impl FnOnce(&mut Engine) -> ToolResult<R> + Send + 'static) -> ToolResult<R> {
         let (rtx, rrx) = oneshot::channel();
@@ -336,13 +394,7 @@ impl EngineHandle {
             let r = match catch_unwind(AssertUnwindSafe(|| f(e))) {
                 Ok(r) => r,
                 Err(panic) => {
-                    let msg = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "panic".into());
-                    e.backend = None;
-                    e.faulted = Some(format!("internal error: {msg}"));
+                    let msg = e.fault_with(panic);
                     Err(ToolError::new(ErrorCode::Internal, format!("the engine panicked: {msg}; the session is now faulted")))
                 }
             };

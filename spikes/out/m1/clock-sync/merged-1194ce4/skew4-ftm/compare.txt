@@ -1,0 +1,7 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | ce6e54e7e51ad58f | equal | 1976 | [1, 2, 3, 4] | 21 | 198/0 | 3397/0 |
+| 2 | 1800 | ce6e54e7e51ad58f | equal | 1976 | [1, 2, 3, 4] | 20 | 198/0 | 2969/0 |
+| 3 | 1800 | ce6e54e7e51ad58f | equal | 1976 | [1, 2, 3, 4] | 22 | 198/0 | 3140/0 |
+| 4 | 1800 | ce6e54e7e51ad58f | equal | 1976 | [1, 2, 3, 4] | 0 | 198/0 | 3007/0 |
+ALL EQUAL

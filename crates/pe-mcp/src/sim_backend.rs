@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use pe_session_sim::{Action, Fate, Link, Net, Peer, Sim};
-use pe_sim_core::session::{
-    final_log, replay_sim_with, Msg, Outcome, Payload, SceneKind, SimConfig, WorldSim,
+use pe_session::session::{
+    final_log, replay_sim_like, Msg, SceneKind, SignedEntry, SimConfig, WorldSim,
 };
-use pe_sim_core::splitmix64;
+use pe_session::splitmix64;
 
 use crate::backend::*;
 use crate::model::*;
@@ -21,19 +21,7 @@ const DEFAULT_SEED: u64 = 0x5052_494D_4F52_4449;
 /// Background plans are generated this far ahead (10 minutes at 60 Hz).
 const PLAN_FRAMES: u64 = 36_000;
 
-fn kind_name(k: u8) -> &'static str {
-    match k {
-        0 => "box",
-        1 => "sphere",
-        2 => "capsule",
-        3 => "ball",
-        _ => "hand",
-    }
-}
-
-fn hex(h: u64) -> String {
-    format!("{h:016x}")
-}
+use crate::sim_view::{self, hex};
 
 pub struct SimSession {
     sim: Sim,
@@ -44,6 +32,8 @@ pub struct SimSession {
     /// Partition: member -> group. Shared with the network filter.
     partition: Rc<RefCell<BTreeMap<MemberId, usize>>>,
     faults: Vec<String>,
+    /// The agent's held hand target (D52 ruling (a)).
+    hold: sim_view::HandHold,
 }
 
 fn range<T: PartialOrd + Copy + std::fmt::Display>(field: &str, v: Option<T>, default: T, lo: T, hi: T) -> ToolResult<T> {
@@ -73,6 +63,7 @@ impl SimSession {
         let jitter = range("jitter_ms", p.jitter_ms, 0, 0, 500)?;
         let loss = range("loss_pct", p.loss_pct, 0, 0, 50)?;
         let rate = range("background_touches_per_s", p.background_touches_per_s, 0, 0, 30)?;
+        let grabs = p.background_grabs.unwrap_or(false);
         let window = range("window", p.window, 120, 30, 600)?;
         let seed = p.seed.unwrap_or(DEFAULT_SEED);
         let cfg = SimConfig { window, suspect_after: window * 3 / 2, seed, ..SimConfig::default() };
@@ -96,7 +87,7 @@ impl SimSession {
                     let obj = (r % objects) as u32;
                     let c = |k: u32| ((r >> (16 + 8 * k)) & 0xff) as f32 / 255.0;
                     let impulse = [4.0 * c(0) - 2.0, 4.0 * c(1), 4.0 * c(2) - 2.0];
-                    plan.entry(f).or_default().push(Action::Touch { obj, impulse, grab: false });
+                    plan.entry(f).or_default().push(Action::Touch { obj, impulse, grab: grabs });
                     f += period;
                 }
             }
@@ -118,9 +109,10 @@ impl SimSession {
             }
         }));
         let label = format!(
-            "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} touches/s; window {window}; seed {seed:x}"
+            "{scene_label}; {n} members, driving member {me}; links {delay} ms +-{jitter} ms, {loss}% loss; background {rate} {}/s; window {window}; seed {seed:x}",
+            if grabs { "grabs" } else { "touches" }
         );
-        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new() })
+        Ok(SimSession { sim, me, members, label, scene_label, partition, faults: Vec::new(), hold: Default::default() })
     }
 
     fn replica(&self) -> &WorldSim {
@@ -131,17 +123,21 @@ impl SimSession {
         self.sim.peers.iter().find(|p| p.id == m).expect("member")
     }
 
-    fn summary(&self, i: u32) -> Option<ObjectSummary> {
-        let s = self.replica();
-        let o = s.t.objs.get(i as usize).copied().flatten()?;
-        let st = s.obj_state(i)?;
-        let v = st.lin();
-        Some(ObjectSummary { object: i, kind: kind_name(o.kind).into(), position: st.pos_f64(), linear_velocity: [v.x, v.y, v.z] })
+    /// One millisecond of simulated time, then the held hand pose if one is due. It goes out with
+    /// the member's next tick (the harness drains the core's outbox there).
+    fn step_one_ms(&mut self) {
+        self.sim.step_ms();
+        self.sim.net.now_us += 1000;
+        self.tick_hold();
     }
 
-    fn claim(&self, obj: u32) -> Option<ClaimInfo> {
-        let s = self.replica();
-        s.t.claims.get(&obj).filter(|c| c.until > s.frame).map(|c| ClaimInfo { object: obj, member: c.member, until_frame: c.until })
+    fn tick_hold(&mut self) -> Option<SignedEntry> {
+        let me = self.me;
+        let peer = self.sim.peers.iter_mut().find(|p| p.id == me).expect("me");
+        if peer.crashed {
+            return None;
+        }
+        self.hold.tick(&mut peer.worlds.get_mut(&WORLD).expect("world").core)
     }
 
     fn check_member(&self, field: &str, m: Option<u32>) -> ToolResult<MemberId> {
@@ -185,46 +181,15 @@ impl DrivenPeer for SimSession {
         self.replica().conf
     }
     fn object_count(&self) -> u32 {
-        self.replica().t.objs.len() as u32
+        self.replica().obj_slots()
     }
 
     fn state(&self, offset: u32, limit: u32) -> WorldState {
-        let s = self.replica();
-        let count = s.t.objs.len() as u32;
-        let end = offset.saturating_add(limit).min(count);
-        let objects = (offset.min(count)..end).filter_map(|i| self.summary(i)).collect();
-        let claims = s.t.claims.keys().filter_map(|&o| self.claim(o)).collect();
-        WorldState {
-            frame: s.frame,
-            conf: s.conf,
-            state_hash: s.frame.checked_sub(1).and_then(|f| s.hashes.get(&f)).map(|&h| hex(h)),
-            object_count: count,
-            objects,
-            claims,
-            next_offset: (end < count).then_some(end),
-        }
+        sim_view::state(self.replica(), offset, limit)
     }
 
     fn object(&self, object: u32) -> ToolResult<ObjectState> {
-        let s = self.replica();
-        let unknown = || {
-            ToolError::new(ErrorCode::UnknownObject, format!("no live object {object}"))
-                .with_details(serde_json::json!({ "object_count": s.t.objs.len() }))
-        };
-        let o = s.t.objs.get(object as usize).copied().flatten().ok_or_else(unknown)?;
-        let st = s.obj_state(object).ok_or_else(unknown)?;
-        let (q, v, w) = (st.rot(), st.lin(), st.ang());
-        Ok(ObjectState {
-            object,
-            global_id: hex(o.global),
-            kind: kind_name(o.kind).into(),
-            position: st.pos_f64(),
-            rotation: [q.v.x, q.v.y, q.v.z, q.s],
-            linear_velocity: [v.x, v.y, v.z],
-            angular_velocity: [w.x, w.y, w.z],
-            state_hash: hex(st.hash()),
-            claim: self.claim(object),
-        })
+        sim_view::object(self.replica(), object)
     }
 
     fn propose(&mut self, i: Interaction) -> ToolResult<Authored> {
@@ -232,49 +197,29 @@ impl DrivenPeer for SimSession {
         if self.peer(me).crashed {
             return Err(ToolError::new(ErrorCode::PeerCrashed, format!("member {me} (the driven peer) has crashed")));
         }
-        let (object, is_hand) = match i {
-            Interaction::Touch { object, .. } => (object, false),
-            Interaction::Hand { object, .. } => (object, true),
-        };
-        {
-            let s = self.replica();
-            let o = s.t.objs.get(object as usize).copied().flatten().ok_or_else(|| {
-                ToolError::new(ErrorCode::UnknownObject, format!("no live object {object}"))
-                    .with_details(serde_json::json!({ "object_count": s.t.objs.len() }))
-            })?;
-            match (is_hand, o.kind == 4) {
-                (false, true) => return Err(ToolError::arg("action", format!("object {object} is a kinematic hand: use action \"hand\""))),
-                (true, false) => return Err(ToolError::arg("action", format!("object {object} is not a hand ({})", kind_name(o.kind)))),
-                _ => {}
-            }
-            // A hand is its member's alone (review of 358cfb7, finding 1). Every replica refuses
-            // another member's hand entry (RejectedNotOwner, design 8.4); this checks the same map
-            // before authoring, so the agent gets a clear error instead of a refused entry.
-            if is_hand {
-                let owner = s.hand_owners.get(&object).copied();
-                if owner != Some(self.me) {
-                    let mine = s.hand_owners.iter().find(|&(_, &m)| m == self.me).map(|(&h, _)| h);
-                    let (o, y) = (owner.map_or("no member".into(), |m| format!("member {m}")), mine.map_or("none".into(), |h| format!("object {h}")));
-                    return Err(ToolError::new(ErrorCode::NotOwner, format!("object {object} is {o}'s hand; yours is {y}"))
-                        .with_details(serde_json::json!({ "owner": owner, "yours": mine })));
+        sim_view::check_interaction(self.replica(), &i, me)?;
+        // A hand target is held: its first pose goes out at the next pose slot (at most one stride).
+        match i {
+            Interaction::Hand { object, target_mm, active: true } => {
+                self.hold.set(object, target_mm);
+                self.tick_hold();
+                let mut waited = 0;
+                while self.hold.first().is_none() && waited < sim_view::HOLD_WAIT_MS {
+                    self.step_one_ms();
+                    waited += 1;
                 }
+                let Some(e) = self.hold.first() else {
+                    self.hold.release();
+                    return Err(ToolError::new(ErrorCode::NotReady, "no pose slot for the hand within 1 s; step and retry"));
+                };
+                return Ok(Authored { entry: e.id(), stamp: e.stamp, seq: e.seq });
             }
-            if !s.caught_up() || s.frame < s.now {
-                return Err(ToolError::new(
-                    ErrorCode::NotReady,
-                    "the driven peer is paused at its speculation limit or behind its clock; step and retry",
-                )
-                .with_details(serde_json::json!({ "frame": s.frame, "now": s.now, "conf": s.conf, "window": s.cfg.window })));
-            }
+            Interaction::Hand { active: false, .. } => self.hold.release(),
+            Interaction::Touch { .. } => {}
         }
         let peer = self.sim.peers.iter_mut().find(|p| p.id == me).expect("me");
         let r = peer.worlds.get_mut(&WORLD).expect("world");
-        let e = match i {
-            Interaction::Touch { object, impulse, grab } => r.sim.author(Payload::Touch { obj: object, impulse, grab }, Some(object)),
-            Interaction::Hand { object, target_mm, active } => {
-                r.sim.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1, more: Vec::new() }, 0)
-            }
-        };
+        let e = sim_view::author(&mut r.sim, i);
         let to: Vec<MemberId> = r.sim.audience().into_iter().filter(|&m| m != me).collect();
         let msg = Msg::Entry(e.clone());
         for m in to {
@@ -283,54 +228,19 @@ impl DrivenPeer for SimSession {
         Ok(Authored { entry: e.id(), stamp: e.stamp, seq: e.seq })
     }
 
-    fn status(&self, entry: u64) -> Option<EntryStatus> {
-        let s = self.replica();
-        let e = s.entry(entry).filter(|e| e.member == self.me)?;
-        let is_final = e.stamp < s.conf;
-        let mut st = EntryStatus { stamp: e.stamp, state: InteractionState::Pending, reason: None, by_member: None, until_frame: None, is_final };
-        if s.void_ids().contains(&entry) {
-            st.state = InteractionState::Void;
-            return Some(st);
-        }
-        let Some(&(_, outcome)) = s.outcomes.get(&entry) else { return Some(st) };
-        let reject = |r: &str| (InteractionState::Rejected, Some(r.to_string()));
-        let ((state, reason), by, until) = match outcome {
-            Outcome::Accepted => ((InteractionState::Accepted, None), None, None),
-            Outcome::RejectedClaimed { by, until } => (reject("claimed"), Some(by), Some(until)),
-            Outcome::RejectedCooldown { until } => (reject("cooldown"), None, Some(until)),
-            Outcome::RejectedGone => (reject("gone"), None, None),
-            Outcome::RejectedPortalClosed => (reject("portal_closed"), None, None),
-            Outcome::RejectedDuplicate => (reject("duplicate"), None, None),
-            Outcome::RejectedNoProof => (reject("no_proof"), None, None),
-            Outcome::RejectedInvalid => (reject("invalid"), None, None),
-            Outcome::RejectedNoRoute => (reject("no_route"), None, None),
-            Outcome::RejectedLate => (reject("late"), None, None),
-            Outcome::RejectedLiveId => (reject("live_id"), None, None),
-            Outcome::RejectedDeadline => (reject("deadline"), None, None),
-            Outcome::RejectedNoProvenance => (reject("no_provenance"), None, None),
-            Outcome::RejectedFork => (reject("fork"), None, None),
-            Outcome::RejectedUnsettled => (reject("unsettled"), None, None),
-            Outcome::RejectedPolicy => (reject("policy"), None, None),
-            Outcome::RejectedNotOwner => (reject("not_owner"), None, None),
-        };
-        st.state = state;
-        st.reason = reason;
-        st.by_member = by;
-        st.until_frame = until;
-        Some(st)
+    fn status(&self, entry: EntryId) -> Option<EntryStatus> {
+        sim_view::status(self.replica(), entry, self.me)
     }
 
     fn advance_ms(&mut self, ms: u64) -> ToolResult<()> {
         for _ in 0..ms {
-            self.sim.step_ms();
-            self.sim.net.now_us += 1000;
+            self.step_one_ms();
         }
         Ok(())
     }
 
     fn counters(&self) -> Counters {
-        let st = &self.replica().stats;
-        Counters { rollbacks: st.rollbacks, resim_frames: st.resim_frames }
+        sim_view::counters(self.replica())
     }
 
     fn paused(&self) -> bool {
@@ -339,68 +249,19 @@ impl DrivenPeer for SimSession {
     }
 
     fn events_since(&self, n: usize) -> (Vec<String>, usize) {
-        let ev = &self.replica().events;
-        (ev.get(n..).unwrap_or_default().to_vec(), ev.len())
+        sim_view::events_since(self.replica(), n)
     }
 
     fn hashes(&self, from: u64, to: u64) -> Hashes {
-        let s = self.replica();
-        let fh = |(f, h): (&u64, &u64)| FrameHash { frame: *f, hash: hex(*h) };
-        Hashes {
-            conf: s.conf,
-            frames: s.hashes.range(from..to).map(fh).collect(),
-            checks: s.check_hashes.range(from..to).map(fh).collect(),
-        }
+        sim_view::hashes(self.replica(), from, to)
     }
 
     fn member_info(&self) -> Members {
-        let s = self.replica();
-        let ev = s.members_evicted();
-        Members {
-            me: self.me,
-            epoch: s.epoch,
-            members: self
-                .members
-                .iter()
-                .map(|&m| MemberInfo {
-                    member: m,
-                    me: m == self.me,
-                    evicted: ev.get(&m).map(|&(cut_seq, from_frame)| Eviction { cut_seq, from_frame }),
-                })
-                .collect(),
-            suspicions: s.stats.suspicions,
-            demotions: s.stats.demotions,
-            view_changes: s.stats.view_changes,
-            resets: s.stats.resets,
-            equivocations: s.stats.equivocations,
-            lying_votes: s.stats.lying_votes,
-            decisions: s
-                .vc_log
-                .iter()
-                .map(|(epoch, frame, round, removed)| Decision { epoch: *epoch, frame: *frame, round: *round, removed: removed.clone() })
-                .collect(),
-        }
+        sim_view::members(self.replica(), self.me, &self.members)
     }
 
     fn sync(&self) -> SyncStatus {
-        let s = self.replica();
-        SyncStatus {
-            frame: s.frame,
-            now: s.now,
-            conf: s.conf,
-            speculation: s.now.saturating_sub(s.conf),
-            window: s.cfg.window,
-            paused: s.frame < s.now,
-            caught_up: s.caught_up(),
-            checks_ok: s.stats.checks_ok,
-            checks_bad: s.stats.checks_bad,
-            latest_check: s.check_hashes.iter().next_back().map(|(f, h)| FrameHash { frame: *f, hash: hex(*h) }),
-            rollbacks: s.stats.rollbacks,
-            max_rollback_depth: s.stats.max_depth,
-            resim_frames: s.stats.resim_frames,
-            paused_frames: s.stats.paused_frames,
-            nonfinite: s.stats.nonfinite,
-        }
+        sim_view::sync(self.replica())
     }
 
     fn scenario(&mut self) -> Option<&mut dyn ScenarioControl> {
@@ -504,8 +365,8 @@ impl ScenarioControl for SimSession {
             }
         }
         let replicas_equal = first.is_none();
-        let members: Vec<MemberId> = rs.members.iter().copied().collect();
-        let replay = replay_sim_with(WORLD, reference.scene, rs.cfg, &members, &rs.peers_of, &final_log(rs), frames).hashes;
+        let members: Vec<MemberId> = rs.membership().members().iter().copied().collect();
+        let replay = replay_sim_like(rs, reference.scene, &members, &final_log(rs), frames).hashes;
         let replay_div = (0..frames).find(|f| replay.get(f) != rs.hashes.get(f));
         if let (Some(f), None) = (replay_div, &first) {
             first = Some(Divergence {

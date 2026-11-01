@@ -220,7 +220,9 @@ pub enum InteractionAction {
     Touch,
     /// An impulse that is a held grab: renews the claim.
     Grab,
-    /// Move one of the kinematic hands (ball-pit scenes) to `target_mm`.
+    /// Move one of the kinematic hands (ball-pit scenes) to `target_mm`. The target is held (sent
+    /// again at every pose slot, as a held controller would) until a new target or `active: false`.
+    /// The call waits for the next pose slot, so it may advance time by up to one stride.
     Hand,
 }
 
@@ -234,7 +236,7 @@ pub struct ProposeParams {
     /// hand: target position in millimetres, each within +-100000.
     #[serde(default)]
     pub target_mm: Option<[i64; 3]>,
-    /// hand: false parks the hand (default true).
+    /// hand: false releases the held target and parks the hand (default true).
     #[serde(default)]
     pub active: Option<bool>,
 }
@@ -452,6 +454,10 @@ pub struct LoadParams {
     /// Touches per second each other member makes on random objects, 0..=30 (default 0).
     #[serde(default)]
     pub background_touches_per_s: Option<u32>,
+    /// Background touches are grabs (default false). Only a grab claims its object, for 0.5 s, and
+    /// only a grab can be refused for a claim (design D72).
+    #[serde(default)]
+    pub background_grabs: Option<bool>,
     /// Speculation limit in frames, 30..=600 (default 120).
     #[serde(default)]
     pub window: Option<u64>,
