@@ -1,12 +1,12 @@
   first proposer 1; member 5 goes silent at t=3 s; 1 shows {2} a reset instead of the removal
   t=5958 ms: 1 proposes removing [5] to the others and a reset to {2}
-RESULT badproposer: m2 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} conf 882 frame 893 paused frames 107 lying votes found 0
-RESULT badproposer: m3 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} conf 882 frame 893 paused frames 107 lying votes found 0
-RESULT badproposer: m4 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} conf 882 frame 893 paused frames 107 lying votes found 0
-RESULT badproposer: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1, 5]
-RESULT badproposer: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1, 5]
-RESULT badproposer: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1, 5]
-  m2: conf 882 frame 893 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 61 bad 0
-  m3: conf 882 frame 893 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 61 bad 0
-  m4: conf 882 frame 893 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 61 bad 0
-RESULT badproposer (proposer 1 equivocates; member 5 silent from t=3 s): frames 0..892 honest m2=380f9111218cc6ac m3=380f9111218cc6ac m4=380f9111218cc6ac | offline replay 380f9111218cc6ac | ALL EQUAL, NO FALSE CHECKS ; checks ok 183 bad 0
+RESULT badproposer: m2 members {2, 3, 4} evicted {1: (56, 355), 5: (25, 167)} conf 876 frame 893 paused frames 117 lying votes found 0
+RESULT badproposer: m3 members {2, 3, 4} evicted {1: (56, 355), 5: (25, 167)} conf 876 frame 893 paused frames 119 lying votes found 0
+RESULT badproposer: m4 members {2, 3, 4} evicted {1: (56, 355), 5: (25, 167)} conf 876 frame 893 paused frames 121 lying votes found 0
+RESULT badproposer: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 394 (t=6.67 s) round 1 removed [1, 5]
+RESULT badproposer: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 396 (t=6.70 s) round 1 removed [1, 5]
+RESULT badproposer: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 398 (t=6.73 s) round 1 removed [1, 5]
+  m2: conf 876 frame 893 members {2, 3, 4} evicted {1: (56, 355), 5: (25, 167)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 59 bad 0
+  m3: conf 876 frame 893 members {2, 3, 4} evicted {1: (56, 355), 5: (25, 167)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 59 bad 0
+  m4: conf 876 frame 893 members {2, 3, 4} evicted {1: (56, 355), 5: (25, 167)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 60 bad 0
+RESULT badproposer (proposer 1 equivocates; member 5 silent from t=3 s): frames 0..892 honest m2=380f9111218cc6ac m3=380f9111218cc6ac m4=380f9111218cc6ac | offline replay 380f9111218cc6ac | ALL EQUAL, NO FALSE CHECKS ; checks ok 178 bad 0

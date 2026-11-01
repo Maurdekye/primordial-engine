@@ -25,6 +25,8 @@ pub struct Opts {
     /// With `gap_s`, how many gestures in all, each `gap_s` after the one before (default 2). A third shows
     /// where the controller rests after a second congestion in one D56 episode (review PA-2).
     pub gestures: u32,
+    /// Also print each member's offered bytes in the gesture window by message kind.
+    pub by_kind: bool,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
 }
@@ -264,6 +266,18 @@ pub fn capped(o: &Opts) {
             })
             .collect();
         println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
+        if o.by_kind {
+            // Where each member's offered bytes went during the gesture (kbit/s, messages/s, mean bytes).
+            for &m in &ids {
+                let mut v: Vec<(&str, (u64, u64))> = sim.net.kinds_from.iter().filter(|((f, _), _)| *f == m).map(|((_, k), c)| (*k, *c)).collect();
+                v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+                let parts: Vec<String> = v
+                    .iter()
+                    .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / secs, *n as f64 / secs, b / (*n).max(1)))
+                    .collect();
+                println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
+            }
+        }
         println!(
             "RESULT     mean confirmation lag per member from the gesture's start, frames: {}",
             join(lag_sum.iter().map(|s| format!("{:.1}", *s as f64 / lag_n.max(1) as f64)).collect())

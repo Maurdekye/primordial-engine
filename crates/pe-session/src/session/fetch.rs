@@ -43,6 +43,7 @@ impl WorldSim {
             };
             self.fetch_asked.insert((to, author), (from, now_ms, wait));
             out.push((to, Msg::Fetch { author, from, to: upto }));
+            self.stats.fetches_sent += 1;
         }
         let (values, ids) = self.vcm.take_fetch_wants();
         for (to, value) in values {

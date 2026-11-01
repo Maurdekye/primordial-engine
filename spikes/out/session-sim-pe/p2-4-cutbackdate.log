@@ -1,12 +1,12 @@
-  cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2286 ms: a replica hit an assertion or a panic; m1 conf 118 of frame 131, m2 conf 102 of frame 131, m3 conf 102 of frame 131; at m1: members {1, 2, 3}, evicted [9]
+  cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2464 ms: a replica hit an assertion or a panic; m1 conf 118 of frame 141, m2 conf 118 of frame 141, m3 conf 102 of frame 141; at m1: members {1, 2, 3}, evicted [9]
   fork at 9's seq 18, t=1935 ms; branch B 23 entries plus 10 extra acks
-RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (23, 122)} conf 460 frame 473 paused frames 0 lying votes found 0
-RESULT cutbackdate: m2 members {1, 2, 3} evicted {9: (23, 122)} conf 460 frame 473 paused frames 0 lying votes found 0
-RESULT cutbackdate: m3 members {1, 2, 3} evicted {9: (23, 122)} conf 460 frame 473 paused frames 0 lying votes found 0
-RESULT cutbackdate: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [9]
-RESULT cutbackdate: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 132 (t=2.30 s) round 0 removed [9]
-RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [9]
-  m1: conf 460 frame 473 members {1, 2, 3} evicted {9: (23, 122)} rollbacks 3 max depth 10 violations 1 equivocations 1 checks ok 36 bad 0
-  m2: conf 460 frame 473 members {1, 2, 3} evicted {9: (23, 122)} rollbacks 4 max depth 12 violations 1 equivocations 1 checks ok 36 bad 0
-  m3: conf 460 frame 473 members {1, 2, 3} evicted {9: (23, 122)} rollbacks 2 max depth 11 violations 2 equivocations 1 checks ok 36 bad 0
-RESULT cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold): frames 0..472 honest m1=bea6e8ea2506d79f m2=bea6e8ea2506d79f m3=bea6e8ea2506d79f | offline replay bea6e8ea2506d79f | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (25, 126)} conf 452 frame 473 paused frames 0 lying votes found 0
+RESULT cutbackdate: m2 members {1, 2, 3} evicted {9: (25, 126)} conf 452 frame 473 paused frames 0 lying votes found 0
+RESULT cutbackdate: m3 members {1, 2, 3} evicted {9: (25, 126)} conf 450 frame 473 paused frames 0 lying votes found 0
+RESULT cutbackdate: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 134 (t=2.33 s) round 0 removed [9]
+RESULT cutbackdate: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 137 (t=2.38 s) round 0 removed [9]
+RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 141 (t=2.45 s) round 0 removed [9]
+  m1: conf 452 frame 473 members {1, 2, 3} evicted {9: (25, 126)} rollbacks 3 max depth 14 violations 1 equivocations 1 checks ok 34 bad 0
+  m2: conf 452 frame 473 members {1, 2, 3} evicted {9: (25, 126)} rollbacks 4 max depth 17 violations 1 equivocations 1 checks ok 34 bad 0
+  m3: conf 450 frame 473 members {1, 2, 3} evicted {9: (25, 126)} rollbacks 2 max depth 21 violations 2 equivocations 1 checks ok 34 bad 0
+RESULT cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold): frames 0..472 honest m1=bea6e8ea2506d79f m2=bea6e8ea2506d79f m3=bea6e8ea2506d79f | offline replay bea6e8ea2506d79f | ALL EQUAL, NO FALSE CHECKS ; checks ok 102 bad 0
