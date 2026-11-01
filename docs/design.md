@@ -2108,7 +2108,7 @@ is fixed once the author's chain is contiguous up to it.
 | `twosilent` | members 5 and 6 of 6 silent from 3 s | both removed in one change at 6.07 s (round 0); paused 80 frames; all equal |
 | `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.03 s. (b): no decision, the three left pause safely (confirmed frame 158) |
 | `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed at 3.87 s, about 180 ms after its second signature, without 8; the confirmed touch stands; no pause |
-| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed: 9 at 3.85 s, 8 in a second change at 4.30 s (in one change at 3.73 s before idle thinning; the cause is not traced); no pause |
+| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed: 9 at 3.85 s, 8 in a second change at 4.30 s; no pause. Before idle thinning one change removed both at 3.73 s: the first proposal came 4 frames after 9's proof, once 8's forked vote was proven too. Now it comes 2 frames after, in the frame that proves 8 but before the proof [V events] |
 | `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
 | `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
 | `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.48 s |
@@ -2137,7 +2137,7 @@ is fixed once the author's chain is contiguous up to it.
 | `kickbackdate` | `kickwar`, with 2's kick backdated 30 frames | 2's kick is void; 2 removed at 2.27 s (before the VCR-9 fix: the backdated kick removed 1) |
 | `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.93 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224). Since idle thinning, 3 acks strictly on its grid, never on leaving idle (a fixture) |
 | `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.25 s for not keeping up; its votes against the members ahead, in epochs 0 and 1, remove none of them |
-| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in two (before the VC3R-2 fix, round 3's strikes voted 1 out in four of the five) |
+| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in two (before the VC3R-2 fix, round 3's strikes voted 1 out in four of the five; five before idle thinning) |
 | `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn | voted out at 5.42 s (climbing alone: 5.20 s; rotating alone is harmless, conf 688 of 713); before the VC3R-1 fix: never, stuck at frame 108 |
 | `fakeref` | 9 silent from 2 s; 8's acks claim 5 more of 9's entries than anyone holds | the withholding rule removes 9 at 5.25 s |
 | `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch | no reset; voted out at 3.15 s (round 3: three resets, then 2.52 s) |
