@@ -1088,6 +1088,10 @@ pub enum Report {
         conf_max: Option<u64>,
         conf_min: Option<u64>,
         members: Option<Vec<u32>>,
+        /// 12.4: these members hold these roles, as `[member, role]`.
+        roles: Option<Vec<(u32, u16)>>,
+        /// 12.4: exactly these rejoin roles, as `[test key, role]`.
+        rejoin_roles: Option<Vec<(u32, u16)>>,
         label: String,
     },
     /// One templated line (see report.rs).

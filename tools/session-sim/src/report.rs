@@ -435,7 +435,7 @@ impl Probe {
                     );
                 }
             }
-            Report::Expect { world, at, conf_max, conf_min, members, label } => {
+            Report::Expect { world, at, conf_max, conf_min, members, roles, rejoin_roles, label } => {
                 let r = &sim.replica(*at, *world).sim;
                 let mut bad = Vec::new();
                 if conf_max.is_some_and(|m| r.conf > m) {
@@ -449,8 +449,32 @@ impl Probe {
                         bad.push(format!("members not {want:?}"));
                     }
                 }
+                let mut extra = String::new();
+                if let Some(want) = roles {
+                    let have: Vec<(u32, Option<u16>)> = want.iter().map(|&(m, _)| (m, r.vcm.roles.get(&m).copied())).collect();
+                    extra += &format!(" roles {have:?}");
+                    if want.iter().zip(&have).any(|(w, h)| Some(w.1) != h.1) {
+                        bad.push(format!("roles not {want:?}"));
+                    }
+                }
+                if let Some(want) = rejoin_roles {
+                    for n in 0..256 {
+                        pe_sim_core::ownership::test_key(n);
+                    }
+                    let mut have: Vec<(u32, u16)> = r
+                        .vcm
+                        .bans
+                        .iter()
+                        .filter_map(|(k, x)| if let Restrict::Role(q) = x { Some((test_key_name(*k).unwrap_or(u32::MAX), *q)) } else { None })
+                        .collect();
+                    have.sort_unstable();
+                    extra += &format!(" rejoin roles {have:?}");
+                    if have != *want {
+                        bad.push(format!("rejoin roles not {want:?}"));
+                    }
+                }
                 println!(
-                    "RESULT {label}: m{at} world {world} conf {} members {:?} evicted {:?} -> {}",
+                    "RESULT {label}: m{at} world {world} conf {} members {:?} evicted {:?}{extra} -> {}",
                     r.conf,
                     r.vcm.members,
                     r.members_evicted(),
