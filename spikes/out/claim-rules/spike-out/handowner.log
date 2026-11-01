@@ -1,0 +1,8 @@
+  m1: member 2's hand entries for member 1's hand: 46, refused 46
+  m1: member 2's grab and carry of member 1's hand: [("carry", Some(RejectedNotOwner)), ("grab", Some(RejectedNotOwner))]; member 1's own touch of it: Some(Accepted)
+  m2: member 2's hand entries for member 1's hand: 46, refused 46
+  m2: member 2's grab and carry of member 1's hand: [("carry", Some(RejectedNotOwner)), ("grab", Some(RejectedNotOwner))]; member 1's own touch of it: Some(Accepted)
+RESULT handowner: member 2's entries for member 1's hand refused at every replica: true; frames 0..352 with them ded884c826e4a7ae, without them ded884c826e4a7ae -> SAME HISTORY
+OUTCOME handowner (member 2 also sends hand entries for member 1's hand) w1 m1 s130 push Accepted
+OUTCOME handowner (member 2 also sends hand entries for member 1's hand) w1 m2 s125 grab RejectedNotOwner
+RESULT handowner (member 2 also sends hand entries for member 1's hand) world 1: frames 0..352 digests m1=ded884c826e4a7ae m2=ded884c826e4a7ae | offline replay ded884c826e4a7ae | ALL EQUAL

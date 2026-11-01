@@ -8,12 +8,19 @@ are first-class users: every peer exposes an MCP server, so an agent can read th
 
 ## Status
 
-**Phase 2 of 6: the deterministic core and the session protocol. Milestone M1 has not been reached yet.**
+**Phase 2 of 6: the deterministic core and the session protocol. Milestone M1 is reached.**
 This is a research codebase, not a usable engine: there is no renderer, no VR and no game yet.
 
 M1 (design 23.2) is 2-4 desktop peers on a LAN, Windows and Linux mixed, running a physics sandbox.
 Interactions are confirmed by the other members, gaps are repaired, equivocation is detected, a member
-that drops out is removed by the view change, and an AI agent drives one peer over MCP.
+that drops out is removed by the view change, and an AI agent drives one peer over MCP. The runs that
+show it are in [spikes/out/m1](spikes/out/m1), and [The M1 demo](#the-m1-demo) below shows how to run it:
+- four peers across two machines, Windows and Linux
+  ([two-machine-windows-wsl-laptop](spikes/out/m1/two-machine-windows-wsl-laptop));
+- equivocation detected and the equivocator removed
+  ([late](spikes/out/m1/equivocation-loopback-windows),
+  [split](spikes/out/m1/equivocation-split-held-loopback-windows));
+- an AI agent driving a peer on `main` (aa2680b) ([agent-windows-main](spikes/out/m1/agent-windows-main)).
 
 What is on `main` now:
 

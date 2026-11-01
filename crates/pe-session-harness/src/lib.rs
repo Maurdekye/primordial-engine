@@ -129,6 +129,14 @@ pub struct Net {
     pub cap_dropped: u64,
     /// Wire bytes (payload + overhead) offered per sender, in the counting window.
     pub wire_from: BTreeMap<MemberId, u64>,
+    /// The same bytes by message kind (inside batches too), per sender: (messages, bytes). Batch
+    /// framing and the per-datagram overhead are their own kinds, so the kinds sum to `wire_from`.
+    pub kinds_from: BTreeMap<(MemberId, &'static str), (u64, u64)>,
+    /// Measurement only (the R18 below-20 item): bytes the shaper and the counters leave out of each
+    /// message, as if the wire omitted fields its receiver could rebuild. Bits: 1 an entry's prev id,
+    /// 2 an ack's head ids, 4 an entry's signature, 8 the signature of every entry in a batch but the
+    /// last of each author's (its prev chain covers the earlier ones). The datagram still carries them.
+    pub what_if: u8,
     /// R18 (viz-4): merge everything one member sends one peer in one tick into one datagram.
     pub batching: bool,
     outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
@@ -137,9 +145,55 @@ pub struct Net {
     pub trace: Vec<SendRec>,
 }
 
+fn has_lean(m: &Msg) -> bool {
+    match m {
+        Msg::Lean(_) => true,
+        Msg::Batch(v) => v.iter().any(has_lean),
+        _ => false,
+    }
+}
+
+/// `m` with every lean entry as an explicit one (for fault filters and fixtures).
+pub fn as_explicit(m: &Msg) -> Msg {
+    match m {
+        Msg::Lean(e) => Msg::Entry(e.clone()),
+        Msg::Batch(v) => Msg::Batch(v.iter().map(as_explicit).collect()),
+        _ => m.clone(),
+    }
+}
+
+/// See [`Net::what_if`].
+pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
+    match m {
+        Msg::Entry(e) => {
+            let heads = match &e.payload {
+                Payload::Ack { heads, .. } => heads.len() as u64,
+                _ => 0,
+            };
+            (bits & 1 != 0) as u64 * 32 + (bits & 2 != 0) as u64 * 32 * heads + (bits & 4 != 0) as u64 * 64
+        }
+        // Already without its ids.
+        Msg::Lean(_) => (bits & 4 != 0) as u64 * 64,
+        Msg::Batch(v) => {
+            let chained = if bits & 8 != 0 && bits & 4 == 0 {
+                // Entries of an author followed later in the same batch by another of theirs.
+                v.iter()
+                    .enumerate()
+                    .filter(|(i, x)| matches!(x, Msg::Entry(e) | Msg::Lean(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) | Msg::Lean(f) if f.member == e.member))))
+                    .count() as u64
+                    * 64
+            } else {
+                0
+            };
+            v.iter().map(|x| what_if_saving(bits, x)).sum::<u64>() + chained
+        }
+        _ => 0,
+    }
+}
+
 pub fn kind(m: &Msg) -> &'static str {
     match m {
-        Msg::Entry(e) => match e.payload {
+        Msg::Entry(e) | Msg::Lean(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
@@ -175,6 +229,8 @@ impl Net {
             shapers: BTreeMap::new(),
             cap_dropped: 0,
             wire_from: BTreeMap::new(),
+            kinds_from: BTreeMap::new(),
+            what_if: 0,
             // The test IO sends one datagram per message unless a run opts into R18's batching (the
             // scenario suite reproduces protocol situations under the spike's transport; R18 runs,
             // the capped faults and the matrix, opt in).
@@ -192,6 +248,7 @@ impl Net {
 
     pub fn send(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         let bytes = encode_msg(m);
+        let saved = what_if_saving(self.what_if, m);
         if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
             let c = self.sent.entry((world, kind(m))).or_default();
             c.0 += 1;
@@ -200,7 +257,16 @@ impl Net {
         let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
         let mut extra = 0;
         if let Some(f) = self.filter.as_mut() {
-            match f(self.now_us, world, from, to, m) {
+            // Scripted faults match entries by their content: a lean entry is shown to them as the
+            // entry it is (its ids are not on the wire, but a fault never reads them).
+            let explicit;
+            let seen = if has_lean(m) {
+                explicit = as_explicit(m);
+                &explicit
+            } else {
+                m
+            };
+            match f(self.now_us, world, from, to, seen) {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
@@ -211,10 +277,28 @@ impl Net {
             }
         }
         if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
-            *self.wire_from.entry(from).or_default() += bytes.len() as u64 + DATAGRAM_OVERHEAD;
+            *self.wire_from.entry(from).or_default() += bytes.len() as u64 - saved + DATAGRAM_OVERHEAD;
+            let mut count = |k: &'static str, n: u64| {
+                let c = self.kinds_from.entry((from, k)).or_default();
+                c.0 += 1;
+                c.1 += n;
+            };
+            count("(datagram overhead)", DATAGRAM_OVERHEAD);
+            match m {
+                Msg::Batch(v) => {
+                    let mut inner = 0;
+                    for x in v {
+                        let n = encode_msg(x).len() as u64;
+                        inner += n;
+                        count(kind(x), n - what_if_saving(self.what_if, x));
+                    }
+                    count("(batch framing)", bytes.len() as u64 - inner);
+                }
+                _ => count(kind(m), bytes.len() as u64 - saved),
+            }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
-        let depart = match self.shape(from, to, bytes.len() as u64) {
+        let depart = match self.shape(from, to, bytes.len() as u64 - saved) {
             Some(d) => d,
             None => {
                 self.dropped += 1;
@@ -452,6 +536,8 @@ impl Peer {
             None => KeyRing::test(self.id),
         };
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, keys));
+        // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
+        core.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;
@@ -561,17 +647,24 @@ impl Sim {
             due.extend(v.into_iter().map(|x| (to, w, from, x)));
         }
         for (to, w, from, m) in due {
+            // A carried touch's id; a lean one's ids are not on the wire, so its author's id for it.
+            let accept = match &m {
+                Msg::Entry(e) => e.carried.map(|(obj, _)| (Some(e.id()), e.member, obj)),
+                Msg::Lean(e) => e.carried.map(|(obj, _)| {
+                    let ai = self.peer_index(e.member);
+                    (self.peers[ai].worlds.get(&w).and_then(|r| r.sim.id_at(e.member, e.seq)), e.member, obj)
+                }),
+                _ => None,
+            };
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
             if peer.crashed {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            if let Msg::Entry(e) = &m {
-                if let Some((obj, _)) = e.carried {
-                    if e.member != to {
-                        r.pending_accept.push((e.id(), e.member, obj));
-                    }
+            if let Some((Some(id), member, obj)) = accept {
+                if member != to {
+                    r.pending_accept.push((id, member, obj));
                 }
             }
             r.core.receive(from, m, now);

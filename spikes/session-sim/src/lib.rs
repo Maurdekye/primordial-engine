@@ -122,6 +122,9 @@ pub struct Net {
     pub cap_dropped: u64,
     /// Wire bytes (payload + overhead) offered per sender, in the counting window.
     pub wire_from: BTreeMap<MemberId, u64>,
+    /// The same bytes by message kind (inside batches too), per sender: (messages, bytes). Batch
+    /// framing and the per-datagram overhead are their own kinds, so the kinds sum to `wire_from`.
+    pub kinds_from: BTreeMap<(MemberId, &'static str), (u64, u64)>,
     /// R18 (viz-4): merge everything one member sends one peer in one tick into one datagram.
     pub batching: bool,
     outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
@@ -167,6 +170,7 @@ impl Net {
             shapers: BTreeMap::new(),
             cap_dropped: 0,
             wire_from: BTreeMap::new(),
+            kinds_from: BTreeMap::new(),
             batching: false,
             outbox: BTreeMap::new(),
             tracing: false,
@@ -201,6 +205,24 @@ impl Net {
         }
         if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
             *self.wire_from.entry(from).or_default() += bytes.len() as u64 + DATAGRAM_OVERHEAD;
+            let mut count = |k: &'static str, n: u64| {
+                let c = self.kinds_from.entry((from, k)).or_default();
+                c.0 += 1;
+                c.1 += n;
+            };
+            count("(datagram overhead)", DATAGRAM_OVERHEAD);
+            match m {
+                Msg::Batch(v) => {
+                    let mut inner = 0;
+                    for x in v {
+                        let n = encode_msg(x).len() as u64;
+                        inner += n;
+                        count(kind(x), n);
+                    }
+                    count("(batch framing)", bytes.len() as u64 - inner);
+                }
+                _ => count(kind(m), bytes.len() as u64),
+            }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
         let depart = match self.shape(from, to, bytes.len() as u64) {
