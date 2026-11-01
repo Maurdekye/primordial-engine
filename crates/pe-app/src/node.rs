@@ -176,6 +176,8 @@ struct RxLink {
     /// The sender's frequency was fitted: the estimates restarted then, since before it the whole
     /// skew drifted into them unmeasured.
     fitted: bool,
+    /// The largest `q_us` since the estimates restarted.
+    peak_us: u64,
     last_seq: Option<u16>,
     received: u64,
     lost: u64,
@@ -187,6 +189,7 @@ impl RxLink {
         self.base.clear();
         self.recent.clear();
         self.q_us = None;
+        self.peak_us = 0;
         self.drift = 0.0;
         self.drift_at = None;
     }
@@ -231,6 +234,7 @@ impl RxLink {
         let base = self.base.iter().map(|b| b.1).min().unwrap_or(owd);
         let current = self.recent.iter().map(|r| r.1).min().unwrap_or(owd);
         self.q_us = Some((current - base).max(0) as u64);
+        self.peak_us = self.peak_us.max(self.q_us.unwrap_or(0));
         // Loss from sequence gaps; a reordered or duplicated datagram counts as neither.
         self.received += 1;
         match self.last_seq {
@@ -1003,9 +1007,12 @@ impl Node {
         Some(self.clock.rtt_excess(m, now)?.saturating_sub(self.back_queue(m)))
     }
 
-    /// The one-way queue this node measures on member `m`'s datagrams to it.
+    /// The one-way queue this node measures on member `m`'s datagrams to it. Until m's frequency is
+    /// fitted, its peak since the estimates restarted: the uncorrected drift can drain a delay step
+    /// out of the estimate within a second, and the round trip would then show the step as queue
+    /// on the way out (a 68 ms signal in the mixed run, measured).
     fn back_queue(&self, m: u32) -> u64 {
-        self.rx.get(&m).and_then(|r| r.q_us).unwrap_or(0)
+        self.rx.get(&m).map_or(0, |r| if r.fitted { r.q_us.unwrap_or(0) } else { r.peak_us.max(r.q_us.unwrap_or(0)) })
     }
 
     /// One hand pose per clock frame along a sweep across the pit; the core keeps only those due at
