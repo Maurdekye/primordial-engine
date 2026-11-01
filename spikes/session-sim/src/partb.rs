@@ -361,6 +361,28 @@ fn rejoin_run(early: bool) {
         worst[0].0, worst[0].1 as f64 / 1e6, worst[1].0, worst[1].1 as f64 / 1e6, worst[2].0, worst[2].1 as f64 / 1e6
     );
     println!("RESULT {label}: floor votes per member {:?}; members at m1 {:?}", others.iter().map(|&m| sim.replica(m, 1).sim.stats.floor_removals).collect::<Vec<_>>(), r1.members);
+    // Why the rejoined member left again, if it did: the first votes against it, at each other member.
+    if removed2.is_some() {
+        for &m in &others {
+            let r = &sim.replica(m, 1).sim;
+            if let Some(e) = r.events.iter().find(|e| e.contains(&format!("member {NEXT}")) && e.contains("vote to")) {
+                println!("  m{m}: {e}");
+            }
+        }
+        let rn = &sim.replica(NEXT, 1).sim;
+        println!(
+            "  {NEXT}'s own replica at the end: epoch {} frame {} conf {} now {} its chain held at m1 {:?} member {}; m1's epoch {} frame {}; {NEXT}'s view changes: {:?}",
+            rn.epoch,
+            rn.frame,
+            rn.conf,
+            rn.now,
+            r1.held_of(NEXT),
+            rn.members.contains(&NEXT),
+            r1.epoch,
+            r1.frame,
+            rn.events.iter().filter(|e| e.contains("VIEW CHANGE")).take(3).collect::<Vec<_>>()
+        );
+    }
     let finals: Vec<MemberId> = r1.members.iter().copied().collect();
     verdict(&sim, &finals, &label, panic_at);
 }
