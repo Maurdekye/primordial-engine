@@ -112,6 +112,77 @@ pub(crate) fn before_fix(label: &str, fix: &str, sim: &Sim, honest: &[MemberId],
     );
 }
 
+/// Trust survey #4 (user ruling, 2026-11-01): a live cheater that stalls confirmation is left to the
+/// admins, so a repro whose cheater holds the session has admin `admin` kick it at `at_us`. The kick is
+/// authored directly, not planned: a kick is a view-change entry, which a member signs while its sim is
+/// paused at the speculation limit, and a planned action waits for the sim to catch up.
+pub(crate) struct AdminKick {
+    pub admin: MemberId,
+    pub target: MemberId,
+    pub at_us: u64,
+    /// The worst honest confirmation lag (present minus confirmed frame) when the kick was signed.
+    lag_at: Option<u64>,
+}
+
+impl AdminKick {
+    pub(crate) fn new(admin: MemberId, target: MemberId, at_us: u64) -> Self {
+        AdminKick { admin, target, at_us, lag_at: None }
+    }
+
+    /// Call from the run's per-millisecond hook: signs and sends the kick once `at_us` is reached.
+    pub(crate) fn step(&mut self, sim: &mut Sim, honest: &[MemberId], to: &[MemberId]) {
+        if self.lag_at.is_some() || sim.net.now_us < self.at_us {
+            return;
+        }
+        self.lag_at = Some(lag(sim, honest));
+        let e = sim_mut(sim, self.admin).kick(self.target);
+        for &m in to {
+            if m != self.admin {
+                sim.net.send(1, self.admin, m, &Msg::Entry(e.clone()));
+            }
+        }
+    }
+
+    /// The verdict: confirmation was held (a lag of at least a speculation window when the kick was
+    /// signed), the kick removed the cheater everywhere, and the honest members confirm near their
+    /// present at the end.
+    pub(crate) fn report(&self, sim: &Sim, honest: &[MemberId], name: &str) {
+        let w = sim.replica(honest[0], 1).sim.cfg.window;
+        let lag_at = self.lag_at.unwrap_or(0);
+        let removed: Vec<Option<f64>> = honest
+            .iter()
+            .map(|&m| {
+                let rep = sim.replica(m, 1);
+                rep.sim.vc_log.iter().find(|d| d.3.contains(&self.target)).map(|d| sim_secs(rep, d.1))
+            })
+            .collect();
+        let gone = removed.iter().all(|r| r.is_some());
+        let end = lag(sim, honest);
+        let up = end < w;
+        let when = removed[0].map_or("never".to_string(), |t| format!("{t:.2} s"));
+        println!(
+            "RESULT {name}: worst confirmation lag when admin {} kicks {} at {:.2} s: {lag_at} frames (window {w}); {} removed at {when}; lag at the end {end} -> {}",
+            self.admin,
+            self.target,
+            self.at_us as f64 / 1e6,
+            self.target,
+            if lag_at >= w && gone && up { "HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT" } else { "FAIL" }
+        );
+    }
+}
+
+/// The worst confirmation lag among `honest`: present (clock frame) minus confirmed frame.
+pub(crate) fn lag(sim: &Sim, honest: &[MemberId]) -> u64 {
+    honest
+        .iter()
+        .map(|&m| {
+            let r = &sim.replica(m, 1).sim;
+            r.now.saturating_sub(r.conf)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 // ---- review repros ---------------------------------------------------------------------------------
 
 pub fn fork9() {
@@ -308,7 +379,12 @@ pub fn bogusprecommit() {
             }
             let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 9_000_000);
             let mut sent = false;
+            // Trust survey #4: part 2's cap holds confirmation until an admin kicks 9.
+            let mut kick = (part == 2 && fixed).then(|| AdminKick::new(1, 9, 6_000_000));
             let stopped = run_quiet(&mut sim, |sim| {
+                if let Some(k) = kick.as_mut() {
+                    k.step(sim, &[1, 2, 3], &ids);
+                }
                 if !sent && sim.net.now_us >= 2_000_000 {
                     let r9 = sim_mut(sim, 9);
                     let boundary = if part == 1 { 1 } else { r9.now + 30 };
@@ -328,6 +404,9 @@ pub fn bogusprecommit() {
             report(&sim, &honest, &format!("bogusprecommit-{part}"));
             vc_report(&sim, &honest, &format!("bogusprecommit-{part}"));
             println!("RESULT bogusprecommit-{part}: {}", confs(&sim, &honest));
+            if let Some(k) = &kick {
+                k.report(&sim, &honest, "bogusprecommit-2");
+            }
             verdict(&sim, &honest, &label, stopped);
         }
     }
@@ -343,7 +422,14 @@ pub fn futureack() {
             }
             let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 12_000_000);
             let mut set = false;
+            // Trust survey #4: part 2's acks (epoch 1, rising by one, so valid) no longer get 9 voted
+            // out; no reader counts them toward its confirmation, so 9 holds the session until admin 1
+            // kicks it. Part 1's acks are void (an epoch may rise by one at most), so 9 is demoted.
+            let mut kick = (part == 2 && fixed).then(|| AdminKick::new(1, 9, 6_000_000));
             let stopped = run_quiet(&mut sim, |sim| {
+                if let Some(k) = kick.as_mut() {
+                    k.step(sim, &[1, 2, 3], &ids);
+                }
                 if !set && sim.net.now_us >= 2_000_000 {
                     sim_mut(sim, 9).fake_ack_epoch = Some(if part == 1 { 999 } else { 1 });
                     set = true;
@@ -358,6 +444,9 @@ pub fn futureack() {
             report(&sim, &honest, &format!("futureack-{part}"));
             vc_report(&sim, &honest, &format!("futureack-{part}"));
             println!("RESULT futureack-{part}: {}", confs(&sim, &honest));
+            if let Some(k) = &kick {
+                k.report(&sim, &honest, "futureack-2");
+            }
             verdict(&sim, &honest, &label, stopped);
         }
     }

@@ -1,0 +1,11 @@
+pe-app: member 4 of session b48e1cbcaf8ae8fa on <this PC>:7124; 4 members, 1800 frames
+[m4 t=0ms f=0] session start received: epoch 2044321 (leader clock), my offset 39594 us, best rtt 2859 us
+[m4 t=0ms f=0] status: frame 0 now 0 conf 0 members {1, 2, 3, 4} rollbacks 0 | sent 17 faulted 0 recv 13 rejected {} unsigned 0 | sigs 0
+[m4 t=1996ms f=119] status: frame 119 now 119 conf 115 members {1, 2, 3, 4} rollbacks 1 | sent 200 faulted 0 recv 182 rejected {} unsigned 0 | sigs 230
+[m4 t=3998ms f=239] status: frame 239 now 239 conf 235 members {1, 2, 3, 4} rollbacks 10 | sent 424 faulted 0 recv 381 rejected {} unsigned 0 | sigs 472
+[m4 t=5999ms f=359] status: frame 359 now 359 conf 352 members {1, 2, 3, 4} rollbacks 18 | sent 652 faulted 0 recv 576 rejected {} unsigned 0 | sigs 712
+[m4 t=8000ms f=480] status: frame 480 now 480 conf 475 members {1, 2, 3, 4} rollbacks 25 | sent 882 faulted 0 recv 774 rejected {} unsigned 0 | sigs 955
+[m4 t=10000ms f=600] status: frame 600 now 600 conf 593 members {1, 2, 3, 4} rollbacks 31 | sent 1091 faulted 0 recv 956 rejected {} unsigned 0 | sigs 1197
+[m4 t=12002ms f=720] status: frame 720 now 720 conf 713 members {1, 2, 3, 4} rollbacks 38 | sent 1309 faulted 0 recv 1143 rejected {} unsigned 0 | sigs 1438
+[m4 t=14003ms f=840] status: frame 840 now 840 conf 835 members {1, 2, 3, 4} rollbacks 46 | sent 1529 faulted 0 recv 1334 rejected {} unsigned 0 | sigs 1680
+[m4] scripted drop-out at 15001 ms: exiting without a word
