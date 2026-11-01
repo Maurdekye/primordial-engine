@@ -1,0 +1,51 @@
+{
+  "session": "09288901084b087f",
+  "member": 2,
+  "frames": 1200,
+  "conf": 1201,
+  "digest": "8a68e0c089ea6707",
+  "replay_digest": "8a68e0c089ea6707",
+  "replay_equal": true,
+  "members_at_end": [
+    1,
+    2,
+    3
+  ],
+  "evicted": [
+    4
+  ],
+  "epoch": 1,
+  "rollbacks": 51,
+  "max_rollback_depth": 2,
+  "checks_ok": 82,
+  "checks_bad": 0,
+  "entries_authored": 54,
+  "clock_offset_us": 25415,
+  "best_rtt_us": 2025,
+  "traffic": {
+    "datagrams_sent": 1639,
+    "datagrams_dropped_by_fault": 205,
+    "datagrams_received": 1677,
+    "bytes_sent": 582517,
+    "rejected": {}
+  },
+  "events": [
+    "[m2 t=0ms f=0] session start received: epoch 1238970 (leader clock), my offset 25415 us, best rtt 2025 us",
+    "[m2 t=787ms f=47] status: frame 47 now 47 conf 43 members {1, 2, 3, 4} rollbacks 0 | sent 83 faulted 0 recv 82 rejected {} bad entry sigs 0",
+    "[m2 t=2000ms f=119] fault: links to all now 15% loss, 40 ms +-15 ms",
+    "[m2 t=2788ms f=167] status: frame 167 now 167 conf 160 members {1, 2, 3, 4} rollbacks 6 | sent 272 faulted 15 recv 285 rejected {} bad entry sigs 0",
+    "[m2 t=4789ms f=287] status: frame 287 now 287 conf 278 members {1, 2, 3, 4} rollbacks 12 | sent 466 faulted 52 recv 512 rejected {} bad entry sigs 0",
+    "[m2 t=6790ms f=407] status: frame 407 now 407 conf 354 members {1, 2, 3, 4} rollbacks 18 | sent 658 faulted 76 recv 697 rejected {} bad entry sigs 0",
+    "[m2 t=7917ms f=474] paused at frame 474 (speculation limit)",
+    "[m2 t=8791ms f=474] status: frame 474 now 527 conf 354 members {1, 2, 3, 4} rollbacks 21 | sent 850 faulted 103 recv 850 rejected {} bad entry sigs 0",
+    "[m2 t=9001ms f=474] fault: links to member 1 now 30% loss, 120 ms +-40 ms",
+    "[m2 t=9209ms f=474] membership decision: epoch 1, removed [4]",
+    "[m2 t=9223ms f=553] resumed at frame 553",
+    "[m2 t=10792ms f=647] status: frame 647 now 647 conf 637 members {1, 2, 3} rollbacks 27 | sent 991 faulted 138 recv 1007 rejected {} bad entry sigs 0",
+    "[m2 t=12793ms f=767] status: frame 767 now 767 conf 753 members {1, 2, 3} rollbacks 33 | sent 1115 faulted 179 recv 1167 rejected {} bad entry sigs 0",
+    "[m2 t=14000ms f=839] fault: links to all now 0% loss, 0 ms +-0 ms",
+    "[m2 t=14793ms f=887] status: frame 887 now 887 conf 883 members {1, 2, 3} rollbacks 39 | sent 1268 faulted 205 recv 1322 rejected {} bad entry sigs 0",
+    "[m2 t=16795ms f=1007] status: frame 1007 now 1007 conf 1002 members {1, 2, 3} rollbacks 45 | sent 1408 faulted 205 recv 1456 rejected {} bad entry sigs 0",
+    "[m2 t=18796ms f=1127] status: frame 1127 now 1127 conf 1122 members {1, 2, 3} rollbacks 51 | sent 1551 faulted 205 recv 1594 rejected {} bad entry sigs 0"
+  ]
+}

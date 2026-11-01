@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use spike::Sim;
+use pe_session_harness::Sim;
 
 use crate::scenario::{id, ActionSpec, Byzantine, Honest, Ids, Report, Scenario, When};
 use crate::setup::{end_us, fixes_off, hz, peer_order, rel};
@@ -576,7 +576,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.err("fork_info: no fork_branch behaviour".into());
                 }
             }
-            Report::Check { case, honest, sides, at, members, target, runs, event, expect, conf_min, from_ms, until_ms, role, .. } => {
+            Report::Check { case, label, honest, sides, at, members, target, runs, event, expect, conf_min, from_ms, until_ms, role, .. } => {
                 checks += 1;
                 honest.iter().for_each(|&m| v.member(1, m, "check honest"));
                 sides.iter().flatten().for_each(|&m| v.member(1, m, "check sides"));
@@ -616,9 +616,29 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
                     "adminwedge" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { member, .. } if Some(*member) == *target)),
                     "voidfork" | "plainfork" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkSegment { .. })),
-                    "voiddeep" => !honest.is_empty() && role.is_some() && s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkSegment { .. })),
-                    "pfsilent" => !honest.is_empty() && !members.is_empty() && target.is_some_and(|t| members.contains(&t)),
-                    "slowcapper" => !honest.is_empty() && !members.is_empty() && at.is_some() && target.is_some(),
+                    // The label's segment and fix mask must be the part's own (the report reads the
+                    // run's mask; the label only names it, as the spike prints it).
+                    "voiddeep" => {
+                        let off = s.world.get("1").map(|w| fixes_off(w).unwrap_or(u64::MAX));
+                        let seg = s.byzantine.iter().find_map(|b| match b {
+                            Byzantine::ForkSegment { segment, .. } => Some(segment.as_str()),
+                            _ => None,
+                        });
+                        let named = label.strip_prefix("voiddeep ").and_then(|l| l.split_once(" fixes_off=0x")).and_then(|(k, h)| Some((k, u64::from_str_radix(h, 16).ok()?)));
+                        let ok = matches!((named, seg), (Some(("void", h)), Some("void_role")) | (Some(("valid", h)), Some("valid_role")) if Some(h) == off);
+                        if !ok {
+                            v.err(format!("check voiddeep: label `{label}` must be `voiddeep void|valid fixes_off=0x<hex>` naming the part's fork_segment (void_role or valid_role) and its world 1 fixes_off ({})", off.map_or("none".into(), |o| format!("{o:#x}"))));
+                        }
+                        !honest.is_empty() && role.is_some() && seg.is_some()
+                    }
+                    // The forker is equivocate_prevote's member.
+                    "pfsilent" => !honest.is_empty() && !members.is_empty() && target.is_some_and(|t| members.contains(&t)) && s.byzantine.iter().any(|b| matches!(b, Byzantine::EquivocatePrevote { member, .. } if Some(*member) == *target)),
+                    // The observer is one the forked prevote reaches late, the capper one that holds it.
+                    "slowcapper" => {
+                        !honest.is_empty()
+                            && !members.is_empty()
+                            && s.byzantine.iter().any(|b| matches!(b, Byzantine::EquivocatePrevote { value_to, slow_to, .. } if at.is_some_and(|a| slow_to.contains(&a)) && target.is_some_and(|t| value_to.contains(&t))))
+                    }
                     // The silence start must be a fault rule's, so the two cannot drift apart.
                     "vcscale" => matches!(r, Report::Check { silent: Some(_), from_ms: Some(t), .. } if s.fault.iter().any(|f| f.drop && f.after_ms == Some(*t))),
                     _ => true,

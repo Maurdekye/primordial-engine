@@ -1,0 +1,31 @@
+pe-app: member 2 of session 246f069c105dbc06 on 172.19.32.1:7432; 4 members, 1800 frames
+[m2 t=0ms f=0] session start received: epoch 1226696 (leader clock), my offset 12187 us, best rtt 2042 us
+[m2 t=786ms f=47] status: frame 47 now 47 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 86 faulted 0 capped 0 recv 85 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms
+[m2 t=2001ms f=119] fault: links to all now 10% loss, 30 ms +-10 ms
+[m2 t=2786ms f=167] status: frame 167 now 167 conf 150 members {1, 2, 3, 4} rollbacks 6 | sent 258 faulted 8 capped 0 recv 263 rejected {} bad entry sigs 0 | R18 level 0 signal Some(33) ms
+[m2 t=4787ms f=287] status: frame 287 now 287 conf 256 members {1, 2, 3, 4} rollbacks 16 | sent 424 faulted 33 capped 0 recv 377 rejected {} bad entry sigs 0 | R18 level 0 signal Some(32) ms
+[m2 t=6787ms f=407] status: frame 407 now 407 conf 368 members {1, 2, 3, 4} rollbacks 27 | sent 602 faulted 53 capped 0 recv 493 rejected {} bad entry sigs 0 | R18 level 0 signal Some(30) ms
+[m2 t=8787ms f=527] status: frame 527 now 527 conf 472 members {1, 2, 3, 4} rollbacks 38 | sent 780 faulted 66 capped 0 recv 604 rejected {} bad entry sigs 0 | R18 level 0 signal Some(33) ms
+[m2 t=10788ms f=647] status: frame 647 now 647 conf 584 members {1, 2, 3, 4} rollbacks 49 | sent 955 faulted 83 capped 0 recv 718 rejected {} bad entry sigs 0 | R18 level 0 signal Some(31) ms
+[m2 t=12788ms f=767] status: frame 767 now 767 conf 696 members {1, 2, 3, 4} rollbacks 60 | sent 1126 faulted 102 capped 0 recv 831 rejected {} bad entry sigs 0 | R18 level 0 signal Some(34) ms
+[m2 t=14789ms f=887] status: frame 887 now 887 conf 808 members {1, 2, 3, 4} rollbacks 71 | sent 1303 faulted 120 capped 0 recv 947 rejected {} bad entry sigs 0 | R18 level 0 signal Some(36) ms
+[m2 t=16791ms f=1007] status: frame 1007 now 1007 conf 888 members {1, 2, 3, 4} rollbacks 81 | sent 1476 faulted 138 capped 0 recv 1059 rejected {} bad entry sigs 0 | R18 level 0 signal Some(37) ms
+[m2 t=16818ms f=1008] paused at frame 1008 (speculation limit)
+[m2 t=17715ms f=1008] membership decision: epoch 1, removed []
+[m2 t=18290ms f=1008] membership decision: epoch 2, removed []
+[m2 t=18557ms f=1008] membership decision: epoch 3, removed []
+[m2 t=18791ms f=1008] status: frame 1008 now 1127 conf 888 members {1, 2, 3, 4} rollbacks 85 | sent 1699 faulted 160 capped 0 recv 1181 rejected {} bad entry sigs 0 | R18 level 0 signal Some(38) ms
+[m2 t=18862ms f=1008] membership decision: epoch 4, removed []
+[m2 t=19125ms f=1008] membership decision: epoch 5, removed []
+[m2 t=19358ms f=1008] membership decision: epoch 6, removed [4]
+[m2 t=19374ms f=1162] resumed at frame 1162
+[m2 t=19441ms f=1166] membership decision: epoch 7, removed [3]
+[m2 t=20792ms f=1247] status: frame 1247 now 1247 conf 1232 members {1, 2} rollbacks 85 | sent 1845 faulted 183 capped 0 recv 1304 rejected {} bad entry sigs 0 | R18 level 5 signal Some(44) ms
+[m2 t=22793ms f=1367] status: frame 1367 now 1367 conf 1352 members {1, 2} rollbacks 85 | sent 1867 faulted 188 capped 0 recv 1354 rejected {} bad entry sigs 0 | R18 level 5 signal Some(50) ms
+[m2 t=24794ms f=1487] status: frame 1487 now 1487 conf 1472 members {1, 2} rollbacks 85 | sent 1892 faulted 189 capped 0 recv 1400 rejected {} bad entry sigs 0 | R18 level 5 signal Some(50) ms
+[m2 t=26795ms f=1607] status: frame 1607 now 1607 conf 1592 members {1, 2} rollbacks 85 | sent 1917 faulted 191 capped 0 recv 1442 rejected {} bad entry sigs 0 | R18 level 5 signal Some(66) ms
+[m2 t=28796ms f=1727] status: frame 1727 now 1727 conf 1712 members {1, 2} rollbacks 85 | sent 1942 faulted 193 capped 0 recv 1487 rejected {} bad entry sigs 0 | R18 level 5 signal Some(127) ms
+[m2 t=30213ms f=1808] DONE frames 0..1800: digest bed4ae7e30fd91f5 replay bed4ae7e30fd91f5 (EQUAL), conf 1800, members [1, 2]
+[m2 t=30798ms f=1847] status: frame 1847 now 1847 conf 1832 members {1, 2} rollbacks 85 | sent 1963 faulted 195 capped 0 recv 1527 rejected {} bad entry sigs 0 | R18 level 5 signal Some(127) ms
+[m2 t=32800ms f=1967] status: frame 1967 now 1967 conf 1952 members {1, 2} rollbacks 85 | sent 1986 faulted 196 capped 0 recv 1568 rejected {} bad entry sigs 0 | R18 level 5 signal Some(130) ms
+member 2: frames 0..1800 digest bed4ae7e30fd91f5 replay bed4ae7e30fd91f5 (EQUAL), conf 1800, members at end [1, 2], rollbacks 85, checks ok 117 bad 0

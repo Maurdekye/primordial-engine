@@ -30,7 +30,7 @@ use report::{Ctx, Probe};
 use scenario::{Report, Scenario};
 
 /// Load-time checks on one part, and the built simulator with its behaviours and reports.
-fn prepare(mut s: Scenario) -> Result<(Scenario, spike::Sim, Vec<Actor>, Vec<Probe>), String> {
+fn prepare(mut s: Scenario) -> Result<(Scenario, pe_session_harness::Sim, Vec<Actor>, Vec<Probe>), String> {
     for r in &s.fault {
         faults::validate(r)?;
     }

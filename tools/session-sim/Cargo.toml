@@ -11,9 +11,10 @@ name = "pe-session-sim"
 path = "src/main.rs"
 
 [dependencies]
-# P2-3: the protocol core is pe-session and the in-process simulator (Net, Sim, Peer) its harness. The
-# aliases keep the tool's paths (`pe_sim_core::`, `spike::`) as they were on the spike.
-pe-sim-core = { package = "pe-session", path = "../../crates/pe-session" }
-spike = { package = "pe-session-harness", path = "../../crates/pe-session-harness" }
+# P2-3: the protocol core is pe-session and the in-process simulator (Net, Sim, Peer) its harness.
+# The harness's library keeps its spike name (pe_session_sim, the tool's own); the tool calls it
+# pe_session_harness.
+pe-session = { path = "../../crates/pe-session" }
+pe_session_harness = { package = "pe-session-harness", path = "../../crates/pe-session-harness" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

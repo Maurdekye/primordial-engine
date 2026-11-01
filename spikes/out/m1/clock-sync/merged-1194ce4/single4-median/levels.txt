@@ -1,0 +1,4 @@
+1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 51716) clock rate ppm 4
+2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 51709) clock rate ppm 0
+3 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 1.0 clamped node steps 0 (controller ticks 51650) clock rate ppm -3
+4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped node steps 0 (controller ticks 51729) clock rate ppm -6
