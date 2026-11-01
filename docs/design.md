@@ -3700,6 +3700,140 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
 
 ---
 
+### 12.6 Profile statistics: witnessed join date and hours played (user 2026-11-01; proposal, nothing built)
+
+The user asked how to stop players spoofing account details such as join date and hours played
+(msg mac142474e81b). There is no authority to ask (decision 1) and a player is only an identity key
+(10.3). The rulings (msgs meaa1f3bd2dab, mf05f74388be9):
+* the stats are **display only**: no join rule, ban, role or game rule reads them;
+* **no log**: no public log, chain or timestamp service, and nothing mined or farmed on players'
+  computers; simple signing;
+* **two stats for now**: join date and hours played.
+
+So a profile stat is not a fact the network agrees on. It is a set of signed statements by other
+players, and **each viewer weighs them by who signed**. Two viewers can show the same player different
+numbers, and both are right about what they can check.
+
+**The witness receipt.** When two players share a session, each signs a short receipt for the other:
+"I, W, was in a session with S for these minutes".
+* **Body:** format version (1 B); the subject's user key (32 B); a session tag, BLAKE3(session id ‖
+  subject key) (32 B); the start, in UTC minutes (4 B); the duration in seconds (4 B). About 73 B.
+* **Signature:** the witness's device key (10.3) over a domain string and the body (64 B). The device
+  certificate, which ties it to the witness's user key, is sent once per witness, not per receipt.
+* **The interval comes from the membership log**, not from anyone's claim: it is the overlap of the
+  frames during which both S and W were members, which every replica of the session has identically
+  (10.8), converted to seconds at the session's tick rate. The start time is the witness's own clock
+  at that frame, rounded to the minute.
+* **When:** a witness signs at the end of each 15 minutes of overlap and when either of them leaves.
+  A later receipt from the same witness for the same session supersedes the earlier one (same start,
+  longer duration), so a crash loses at most 15 minutes and the subject keeps one per witness.
+* **Never in the session log.** Receipts go to the subject as control messages over the session's
+  transport. They take no part in confirmation, consensus or the simulation, so they cost the session
+  nothing and a witness that refuses to sign only withholds its own receipt.
+* **Who counts as a witness:** a player's device key. An AI agent's delegated key (12.3) doesn't
+  count, or one player with ten agents would be ten witnesses [proposal].
+* **Why one receipt per witness and not one roster co-signed by everyone:** players join and leave at
+  different times, so each pair's overlap differs; and a roster would show every member to anyone the
+  subject shows it to (see privacy, below).
+
+**Hours played.**
+* A viewer takes the receipts whose witnesses it counts (tiers, below), turns each into a UTC
+  interval, and adds up the **union** of those intervals. The union, not the sum: one witness's
+  receipt and another's for the same session count once, and a player in three worlds at once (22)
+  gets one hour per hour, not three. The total can't exceed the time since the join date.
+* It measures **presence with witnesses**, not activity: an idle player in a session accrues hours.
+
+**Join date.** The earliest start of a counted receipt that a second, distinct counted witness matches
+with a receipt of its own starting at most 7 days later, so that one witness with a wrong clock (or one dishonest
+friend) can't move it. With only one counted witness it shows with "(1 witness)".
+
+**What each stat proves, and what it doesn't.**
+* **Against the subject alone it holds:** a receipt needs the witness's private key, so a player can't
+  add hours or move its join date earlier by itself. It can hide receipts, which only makes it look
+  newer or less active.
+* **Against a colluding group it doesn't:** any set of keys can sign any receipts, with any dates and
+  durations. Proving "this existed by date D" needs a third party that recorded it by D; with no log,
+  the witnesses are that third party, so a stat is worth exactly as much as the viewer's trust in the
+  witnesses. That is accepted (no-log ruling), and it is why the display is relative to the viewer.
+* **Dates are the witnesses' clocks.** Honest witnesses with right clocks give right dates.
+
+**Tiers: how a viewer weighs witnesses.** Each counted receipt falls in the highest tier its witness
+reaches for this viewer:
+1. **You:** receipts the viewer itself signed (it keeps a copy of each receipt it issues).
+2. **Your friends:** witnesses with a mutual friendship with the viewer (21.5, 12.4).
+3. **Worlds you trust:** witnesses that are owner keys (12.5) of worlds the viewer has marked as
+   trusted. A world or community vouches by its owners taking part as witnesses; no extra mechanism.
+4. **Others:** any other valid witness, shown with the number of distinct witnesses.
+5. **Self-reported:** the totals the subject claims, when nothing in tiers 1-4 backs them.
+
+**The display** shows the tiers, not one score. For example:
+* "Joined Mar 2026 (your friends: since Jun 2026)"
+* "312 h witnessed by 41 people · 40 h with you or your friends · 12 h in worlds you trust"
+* a stranger with no overlap: "312 h witnessed by 41 people you don't know"
+* nothing verifiable: "Joined Mar 2026 · 312 h (self-reported)".
+
+A ring of 50 throwaway keys that witness one another reads as "by 50 people you don't know". Counting
+only witnesses with their own witnessed history (the "weight witnesses by history" idea) is left out of
+v1: a closed ring can give itself any history too, and it would mean fetching every witness's profile
+[proposal; open point 3].
+
+**How the claims travel with the player.**
+* The receipts live in the player's profile store on its own devices, synced across them as signed
+  records like the friend list (21.5). No one else stores them except as a viewer's cache.
+* Viewing a profile asks the player's peer directly, in a shared session or over a friend connection.
+  The peer sends a summary first (claimed totals, shown at once as self-reported), then the receipts and
+  the witnesses' device certificates. The viewer caches them by hash and later asks only for new ones.
+  Offline, a viewer shows its cached view with its date.
+* Lost devices with no copy lose the receipts. Witnesses keep the receipts they issued, so friends could
+  give back theirs; there is no other backup (no service) [proposal].
+* A new identity key is a new profile. Device keys can rotate under the same user key without losing
+  anything.
+
+**Costs.** [I] throughout: arithmetic from the formats above and published Ed25519 speeds (sign about
+20 µs, verify about 50 µs on one desktop core, roughly twice as fast batched), not measured here.
+
+| Cost | Per player | 8-player session | 100-player session |
+|---|---|---|---|
+| Signing | one receipt per co-member per 15 min | 7 receipts, 0.14 ms | 99 receipts, 2 ms |
+| Checking received receipts | one per co-member per 15 min | 0.35 ms | 5 ms |
+| Bandwidth | about 140 B per receipt, one each way per pair per 15 min | about 1 B/s each way | about 15 B/s each way |
+| Storage, per session played | one receipt per witness kept, at most 16 (the subject picks: friends and owners first) | 7 × 140 B ≈ 1 KB | 16 × 140 B ≈ 2.2 KB |
+
+* **A heavy profile** of 1000 sessions: about 1-2.2 MB of receipts, plus about 130 B per distinct
+  witness for its certificate.
+* **A viewer's first look** at that profile: the transfer (1-2.2 MB, once, then only new receipts) and
+  up to 16,000 signature checks, about 0.8 s on one core, off the frame thread. Tiers 1-3 are checked in
+  full and first (they are small). Tier 4 can be checked on a random sample of 256 receipts: one bad
+  signature rejects the whole profile as forged, and forging signatures gains nothing over a ring of
+  real keys anyway.
+* **Nothing is mined, no log is kept, and the session's simulation, log and confirmation are
+  untouched.**
+
+**Privacy (open point 1, for the user).** A receipt shows that its witness and its subject played
+together, and when, to anyone the subject shows it to, including people who weren't there. The witness
+is exposed as much as the subject. The session tag is per subject, so two players' receipts can't be
+matched to each other by tag; the witness keys and times still link them. Options, which combine:
+* **(a) The subject picks what to show.** Each receipt stands alone, so a player can show some
+  witnesses and hide others, per viewer or for everyone. Cost: hidden receipts don't count, so the stat
+  is lower; nothing else.
+* **(b) Show receipts to friends only.** Strangers get the summary only, which they see as
+  self-reported. Cost: strangers can check nothing.
+* **(c) The witness chooses whom it signs for:** everyone in the session, friends only, or no one.
+  Cost: fewer receipts for players who meet strangers.
+* **(d) Counts without keys** ("41 people witnessed this" with no names): with plain signatures a
+  viewer can't check a signature without the signer's key, so a keyless count is self-reported.
+  Making it checkable needs ring or group signatures or private set intersection, which is more than
+  simple signing; not proposed.
+
+Proposed default: (a) and (c), with witnesses signing for everyone in the session and subjects showing
+receipts to everyone; a player can narrow either. The user decides.
+
+**Open points.**
+1. Privacy, above.
+2. Agents as witnesses: excluded here; the user may want them counted as a separate tier.
+3. Weighting witnesses by their own history: left out of v1, for the reason above.
+4. The 15-minute receipt period and the 16 kept witnesses per session are starting values.
+
 ## 13. Live game logic in Rust (R7, 100%-Rust clarification)
 
 ### 13.1 Pipeline
