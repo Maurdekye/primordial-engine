@@ -1,4 +1,4 @@
-member 1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 14.0 clamped ticks 60976 of 69649 clock rate ppm -40772.74668935939
-member 2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 37.0 clamped ticks 56787 of 68925 clock rate ppm -43283.02631097885
-member 3 level share % [79.2, 16.2, 0.5, 4.2, 0.0, 0.0] max signal ms 62.0 clamped ticks 100505 of 107325 clock rate ppm 15696.053250513594
-member 4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 13.0 clamped ticks 92282 of 107408 clock rate ppm 15217.239090560077
+member 1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 14.0 clamped node steps 60976 (controller ticks 69649) clock rate ppm -40772.74668935939
+member 2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 37.0 clamped node steps 56787 (controller ticks 68925) clock rate ppm -43283.02631097885
+member 3 level share % [79.2, 16.2, 0.5, 4.2, 0.0, 0.0] max signal ms 62.0 clamped node steps 100505 (controller ticks 107325) clock rate ppm 15696.053250513594
+member 4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 13.0 clamped node steps 92282 (controller ticks 107408) clock rate ppm 15217.239090560077
