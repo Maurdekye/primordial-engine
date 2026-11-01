@@ -38,7 +38,9 @@ use box3d_rust::world::World;
 
 use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_WORDS};
 
+mod feed;
 mod localize;
+pub use feed::FeedBody;
 pub use localize::{WindowVals, WINDOW};
 use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
@@ -896,6 +898,9 @@ pub enum Msg {
     /// (review VC3R-7) up to `back` of its predecessors down its prev links, so the reply is exactly
     /// that branch of a forked chain.
     FetchEntry { id: EntryId, back: u8 },
+    /// Thin links Part B, rule 5: the state feed to a fed member, from its feeder. The bodies' states
+    /// after `frame`, quantized (`FeedBody`). Never logged.
+    Feed { frame: u64, bodies: Vec<FeedBody> },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -914,6 +919,7 @@ impl Wr {
     fn u32(&mut self, v: u32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn u64(&mut self, v: u64) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
+    fn i16(&mut self, v: i16) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
     fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
     fn hop(&mut self, h: &Hop) {
@@ -1084,6 +1090,15 @@ impl Wr {
             }
             Msg::FetchEntry { id, back: 0 } => { self.u8(8); self.u64(*id) }
             Msg::FetchEntry { id, back } => { self.u8(9); self.u64(*id); self.u8(*back) }
+            Msg::Feed { frame, bodies } => {
+                self.u8(10); self.u64(*frame); self.u32(bodies.len() as u32);
+                for b in bodies {
+                    self.u32(b.obj);
+                    for &x in &b.pos { self.i32(x) }
+                    for &x in &b.rot { self.i16(x) }
+                    for &x in &b.lin { self.i16(x) }
+                }
+            }
         }
     }
 }
@@ -1099,6 +1114,7 @@ impl Rd<'_> {
     fn u32(&mut self) -> Option<u32> { Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     fn u64(&mut self) -> Option<u64> { Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?)) }
     fn i32(&mut self) -> Option<i32> { Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
+    fn i16(&mut self) -> Option<i16> { Some(i16::from_le_bytes(self.take(2)?.try_into().ok()?)) }
     fn f32(&mut self) -> Option<f32> { Some(f32::from_bits(self.u32()?)) }
     fn cert(&mut self) -> Option<Vec<(MemberId, u64)>> {
         let n = self.u32()? as usize;
@@ -1315,6 +1331,19 @@ impl Rd<'_> {
             }
             8 => Msg::FetchEntry { id: self.u64()?, back: 0 },
             9 => Msg::FetchEntry { id: self.u64()?, back: self.u8()? },
+            10 => {
+                let frame = self.u64()?;
+                let n = self.u32()? as usize;
+                let mut bodies = Vec::with_capacity(n.min(256));
+                for _ in 0..n {
+                    let obj = self.u32()?;
+                    let pos = [self.i32()?, self.i32()?, self.i32()?];
+                    let rot = [self.i16()?, self.i16()?, self.i16()?, self.i16()?];
+                    let lin = [self.i16()?, self.i16()?, self.i16()?];
+                    bodies.push(FeedBody { obj, pos, rot, lin });
+                }
+                Msg::Feed { frame, bodies }
+            }
             _ => return None,
         })
     }
@@ -1956,6 +1985,8 @@ pub struct WorldSim {
     /// Part B, section 3: each window's values, once final, and each settled window's data.
     windows: BTreeMap<u64, WindowVals>,
     window_data_cache: BTreeMap<u64, localize::WindowData>,
+    /// Part B, rule 5: this replica is on the state feed (set by the harness, never logged).
+    fed: Option<feed::Fed>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
@@ -2216,6 +2247,7 @@ impl WorldSim {
             win_seqs: BTreeMap::new(),
             windows: BTreeMap::new(),
             window_data_cache: BTreeMap::new(),
+            fed: None,
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
@@ -2584,7 +2616,8 @@ impl WorldSim {
                 }
             }
         }
-        let check = if self.dirty_from.is_none() {
+        // Part B, rule 5: a fed replica's state is its view, not the log's, so it signs no check hash.
+        let check = if self.dirty_from.is_none() && self.fed.is_none() {
             self.check_hashes.range(..self.conf.min(self.frame)).next_back().map(|(f, h)| (*f, *h))
         } else {
             None
@@ -3072,7 +3105,8 @@ impl WorldSim {
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<Entry> {
-        if !self.members.contains(&self.me) || self.closed_at.is_some() {
+        // Part B, rule 5: a fed replica receives no entries, so it has no evidence about anyone.
+        if !self.members.contains(&self.me) || self.closed_at.is_some() || self.fed.is_some() {
             return vec![];
         }
         let mut out = Vec::new();
@@ -5729,6 +5763,10 @@ impl WorldSim {
                 st.write(&mut self.world, o.body);
             }
         }
+        // Part B, rule 5: a fed replica writes the feed's states for this frame into its own view.
+        if self.fed.is_some() {
+            self.write_anchors(f);
+        }
         // Expire claims; their holders enter a short cooldown on that object.
         let next = f + 1;
         let expired: Vec<(u32, MemberId)> = self.t.claims.iter().filter(|(_, c)| c.until <= next).map(|(o, c)| (*o, c.member)).collect();
@@ -5809,7 +5847,8 @@ impl WorldSim {
         self.trim_ring();
         let mut n = 0;
         while self.frame < target {
-            if self.frame >= self.conf + self.cfg.window {
+            // Part B, rule 5: a fed replica can't confirm (it holds no log), and doesn't stall at its own W.
+            if self.frame >= self.conf + self.cfg.window && self.fed.is_none() {
                 self.stats.paused_frames += 1;
                 break;
             }

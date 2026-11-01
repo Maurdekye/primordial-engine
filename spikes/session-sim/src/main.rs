@@ -1396,6 +1396,7 @@ fn main() {
             gap_s: get("--gap").map(|v| v.parse().unwrap()),
             gestures: get("--gestures").map_or(2, |v| v.parse().unwrap()),
             by_kind: args.iter().any(|a| a == "--by-kind"),
+            localize: args.iter().any(|a| a == "--localize"),
             adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
         }),
         Some("ackfork") => review2::ackfork(),
