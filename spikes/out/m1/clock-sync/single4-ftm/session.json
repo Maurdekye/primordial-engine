@@ -1,6 +1,6 @@
 {
-  "session": 1126990731350235319,
-  "nonce": "c09e67d1ea229c4ce70b0b9878a590fb8dbb1ef8d5c67389ffbb7c81671eeb76",
+  "session": 4683072154392744205,
+  "nonce": "ead95ca76a166cb5bc0300fab70ab267552ea141f2fec5fdd61bbb5c0164eed6",
   "name": "m1",
   "scene": "pile",
   "size": 4,
@@ -10,23 +10,23 @@
   "members": [
     {
       "id": 1,
-      "addr": "127.0.0.1:7521",
-      "key": "99419b5880ea875b9cf156b690f12f32f1aaa975609a58839b8fef087ef99c16"
+      "addr": "127.0.0.1:7561",
+      "key": "439ceeaf52eefcb85f37714aa0b79560e019132912ccef56fd7df74899960793"
     },
     {
       "id": 2,
-      "addr": "127.0.0.1:7522",
-      "key": "97ad20c9c9fd1a9e94b32a1bfaf3231b9352b5731b6206d2535653464014e4d0"
+      "addr": "127.0.0.1:7562",
+      "key": "52cb2422164502ff59a1ea9be7599eaf71112d660ab67fc612d55078144fb6d0"
     },
     {
       "id": 3,
-      "addr": "127.0.0.1:7523",
-      "key": "fbe48d623666cb26fcc3653798ca3013bee3737bffcb5aebf1140722d30e328c"
+      "addr": "127.0.0.1:7563",
+      "key": "45eba9a449db71025f7984a8ef7de6b9e08735837e142004e9d6459923fb5c1d"
     },
     {
       "id": 4,
-      "addr": "127.0.0.1:7524",
-      "key": "3d401bfef0e2a992515195e6cdc2a69a420862db21f78e1cbf98386a2c4cec38"
+      "addr": "127.0.0.1:7564",
+      "key": "63c53286a85e075de46c054d4ca672a3c27aaf35581253097bbc8e9c688d2959"
     }
   ]
 }

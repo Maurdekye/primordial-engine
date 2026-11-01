@@ -1,0 +1,4 @@
+1 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 52335 clock rate ppm 7
+2 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 52364 clock rate ppm 3
+3 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 52266 clock rate ppm -1
+4 level share % [100.0, 0.0, 0.0, 0.0, 0.0, 0.0] max signal ms 0.0 clamped ticks 0 of 52277 clock rate ppm 4
