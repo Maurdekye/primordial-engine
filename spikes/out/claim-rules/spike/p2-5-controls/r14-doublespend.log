@@ -1,0 +1,42 @@
+  setup t=5000 ms: member 1 departs A:52 (B's local 76) from B back to A, hop in carried: true
+RESULT   forged by m2 in world 1: RESIDUAL: W's majority double-spends A:52 (now in B) into A, citing its genuine hop in -> Some(Accepted)
+  carrier: t=2766ms depart authored in world 1 at frame 160
+  carrier: t=2969ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 141
+  carrier: t=3229ms arrival confirmed in world 2 (frame 141, accepted=true); verdict authored in world 1 at frame 187 (its sim there at frame 187)
+  carrier: t=3383ms verdict confirmed in world 1; transfer 2270252997585100461 resolved
+  carrier: t=3450ms commit certified in world 1; hop relayed into world 2 at frame 165
+  carrier: phase Done accepted Some(true)
+  carrier: depart entry final outcome at A frame 160: Accepted
+  carrier: t=5009ms relaying transfer 6575199493622156466 from world 2, as a member of both worlds
+  carrier: t=5231ms depart confirmed in world 2 (frame 242); arrive authored in world 1 at frame 307
+  carrier: t=5425ms arrival confirmed in world 1 (frame 307, accepted=false); verdict authored in world 2 at frame 263 (its sim there at frame 263)
+  carrier: t=5575ms verdict confirmed in world 2; transfer 6575199493622156466 resolved
+  carrier: phase Done accepted Some(false)
+  relayer m2: t=1768ms depart authored in world 1 at frame 100
+  relayer m2: t=1984ms depart confirmed in world 1 (frame 100); arrive authored in world 6 at frame 112
+  relayer m2: t=2199ms arrival confirmed in world 6 (frame 112, accepted=true); verdict authored in world 1 at frame 125 (its sim there at frame 125)
+  relayer m2: t=2331ms verdict confirmed in world 1; transfer 8412437379442115937 resolved
+  relayer m2: t=2381ms commit certified in world 1; hop relayed into world 6 at frame 136
+  relayer m2: phase Done accepted Some(true)
+  relayer m3: t=3494ms depart authored in world 6 at frame 203
+  relayer m3: t=3703ms depart confirmed in world 6 (frame 203); arrive authored in world 2 at frame 177
+  relayer m3: t=4076ms arrival confirmed in world 2 (frame 177, accepted=true); verdict authored in world 6 at frame 237 (its sim there at frame 237)
+  relayer m3: t=4253ms verdict confirmed in world 6; transfer 16515642465273294346 resolved
+  relayer m3: t=4265ms commit certified in world 6; hop relayed into world 2 at frame 205
+  relayer m3: phase Done accepted Some(true)
+  m1 world A: object 40 live copies 0; escrow ["T2270252997585100461:Committed", "T8412437379442115937:Committed"]; arrivals ["T6575199493622156466:Rejected { frame: 307, until: 894 }", "T7149133257556835599:Accepted { obj: 108, frame: 269 }"]
+  m2 world A: object 40 live copies 0; escrow ["T2270252997585100461:Committed", "T8412437379442115937:Committed"]; arrivals ["T6575199493622156466:Rejected { frame: 307, until: 894 }", "T7149133257556835599:Accepted { obj: 108, frame: 269 }"]
+  m1 world B: object 40 live copies 1; escrow ["T6575199493622156466:Returned"]; arrivals ["T2270252997585100461:Accepted { obj: 75, frame: 141 }", "T16515642465273294346:Accepted { obj: 76, frame: 177 }"]
+  m3 world B: object 40 live copies 1; escrow ["T6575199493622156466:Returned"]; arrivals ["T2270252997585100461:Accepted { obj: 75, frame: 141 }", "T16515642465273294346:Accepted { obj: 76, frame: 177 }"]
+RESULT r14 doublespend: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
+RESULT r14 doublespend: dishonest-majority W (provenance on): A:52 A 1 B 1 pending 0 (W 0); A:53 A 1 B 0 pending 0 (W 0); A:54 A 1 B 0 pending 0 (W 0); A:55 A 1 B 0 pending 0 (W 0); W:500 A 0 B 0 pending 0 (W 0) -> NOT CONSERVED in the honest worlds
+RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 8412437379442115937 (transfers 7149133257556835599 and 16515642465273294346); verifies for a third party: true
+  m2 world 6: rollbacks 2 max depth 4 resim frames 11 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
+  m3 world 6: rollbacks 1 max depth 3 resim frames 3 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 524 frame 533
+  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (3.4 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 534
+  m2 world 1: rollbacks 15 max depth 4 resim frames 69 (8.7 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 526 frame 533
+  m1 world 2: rollbacks 3 max depth 3 resim frames 9 (1.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (1.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 434 frame 442
+RESULT r14 doublespend A world 1: frames 0..500 digests m1=9c5766e882c0ac7a m2=9c5766e882c0ac7a | offline replay 9c5766e882c0ac7a | ALL EQUAL
+RESULT r14 doublespend B world 2: frames 0..400 digests m1=11d7482f19afd1fb m3=11d7482f19afd1fb | offline replay 11d7482f19afd1fb | ALL EQUAL
+RESULT r14 doublespend W world 6: frames 0..480 digests m2=9dc4c7377b133a57 m3=9dc4c7377b133a57 | offline replay 9dc4c7377b133a57 | ALL EQUAL
