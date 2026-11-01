@@ -99,7 +99,10 @@ drifting clock is fine):
    member's secret key).
 2. Copy `session.json` to every machine, and each `member-<id>.key` only to the machine that runs that
    member. Allow inbound UDP on the members' ports (on Windows, for `pe-app.exe`; from WSL2, on the WSL
-   adapter).
+   adapter). A member binds its session address by default. A WSL2 member reached from *another* PC, in
+   WSL2's default NAT mode, can't bind its LAN address: run it with `--bind 0.0.0.0:PORT` and forward
+   the port on its host, or use mirrored networking. The recorded mixed runs kept WSL2 on the same PC
+   as the Windows members.
 3. Start every member, in any order. The session begins once all are up.
    ```bash
    pe-app run --session session.json --key member-2.key --me 2 --touches-per-s 3 --out out -v
@@ -111,12 +114,13 @@ drifting clock is fine):
    folder and run `pe-app compare <folder>`.
 
 **An AI agent drives a peer.** `--mcp-pipe` attaches pe-mcp to that member and launches the harness
-after `--` with a fresh token. The harness reaches the peer through `pe-mcp bridge`:
+after `--` with a fresh token. The harness reaches the peer through `pe-mcp bridge`. Run this from the
+repository root (the paths are relative):
 
 ```bash
 echo '{"mcpServers": {"pe": {"type": "stdio", "command": "target/release/pe-mcp", "args": ["bridge"],
   "env": {"PE_MCP_PIPE": "${PE_MCP_PIPE}", "PE_MCP_TOKEN": "${PE_MCP_TOKEN}"}}}}' > cfg.json
-pe-app run --session session.json --key member-1.key --me 1 --out out -v   --mcp-pipe -- claude -p "$(cat spikes/out/m1/agent-windows-rebase/agent-scenario.md)" --mcp-config cfg.json
+pe-app run --session session.json --key member-1.key --me 1 --out out -v --mcp-pipe -- claude -p "$(cat spikes/out/m1/agent-windows-rebase/agent-scenario.md)" --mcp-config cfg.json
 ```
 
 The scenario file is the one the recorded agent run used: find your hand, move and hold it, watch the
