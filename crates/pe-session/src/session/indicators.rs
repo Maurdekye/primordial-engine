@@ -217,6 +217,11 @@ impl WorldSim {
         out
     }
 
+    /// Whether `x` is a current member (only members' acks are judged for late acks).
+    pub fn is_member(&self, x: MemberId) -> bool {
+        self.membership().members().contains(&x) && !self.membership().removed().contains_key(&x)
+    }
+
     /// Whether `x` voted against this replica (its references to this chain are frozen, so the
     /// late-acks hint leaves it out, review LA-4).
     pub fn voted_against_me(&self, x: MemberId) -> bool {
