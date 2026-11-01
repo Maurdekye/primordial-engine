@@ -1,18 +1,18 @@
-REPRO plainfork fixed=false: f=1, P=4; 1 removed at never; live at the end: false; m2 conf 110 of frame 230, m3 conf 110 of frame 230, m4 conf 108 of frame 228
+REPRO plainfork fixed=false: f=1, P=4; 1 removed at never; live at the end: false; m2 conf 100 of frame 220, m3 conf 100 of frame 220, m4 conf 100 of frame 220
 RESULT plainfork fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT plainfork: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT plainfork: m3 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT plainfork: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
-  m2: conf 110 frame 230 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
-  m3: conf 110 frame 230 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
-  m4: conf 108 frame 228 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 12 bad 0
-RESULT plainfork fixed=false: frames 0..227 honest m2=03e31880a76af28c m3=03e31880a76af28c m4=03e31880a76af28c | offline replay 03e31880a76af28c | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
-REPRO plainfork fixed=true: f=1, P=4; 1 removed at 2.88 s; live at the end: true; m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+  m2: conf 100 frame 220 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 12 bad 0
+  m3: conf 100 frame 220 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 12 bad 0
+  m4: conf 100 frame 220 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
+RESULT plainfork fixed=false: frames 0..219 honest m2=13b4ee7811064ae0 m3=13b4ee7811064ae0 m4=13b4ee7811064ae0 | offline replay 13b4ee7811064ae0 | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
+REPRO plainfork fixed=true: f=1, P=4; 1 removed at 2.88 s; live at the end: true; m2 conf 818 of frame 833, m3 conf 820 of frame 833, m4 conf 818 of frame 833
 RESULT plainfork fixed=true: -> THE FORKER IS REMOVED, CONFIRMATION GOES ON
 RESULT plainfork: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 161 (t=2.78 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
-RESULT plainfork: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 160 (t=2.77 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
-RESULT plainfork: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 160 (t=2.77 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
-  m2: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 58 bad 0
-  m3: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 58 bad 0
-  m4: conf 826 frame 833 members {2, 3, 4} evicted {1: (57, 112)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 58 bad 0
-RESULT plainfork fixed=true: frames 0..832 honest m2=f940b4223c23bda9 m3=f940b4223c23bda9 m4=f940b4223c23bda9 | offline replay f940b4223c23bda9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
+RESULT plainfork: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 161 (t=2.78 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
+RESULT plainfork: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 161 (t=2.78 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
+  m2: conf 818 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 56 bad 0
+  m3: conf 820 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 56 bad 0
+  m4: conf 818 frame 833 members {2, 3, 4} evicted {1: (22, 108)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 56 bad 0
+RESULT plainfork fixed=true: frames 0..832 honest m2=f940b4223c23bda9 m3=f940b4223c23bda9 m4=f940b4223c23bda9 | offline replay f940b4223c23bda9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 168 bad 0

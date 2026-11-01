@@ -1,6 +1,9 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 32 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 10 s
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   per message      |  76.1 /  30.3 |  500 /    0 |  131 | 293 / 313 | 413 / 416 | 0 (own entries moved: 0) | 34.4/s,  33 | never | m1 81f28b3d632ae3bd / m2 849a750d798350cc replay 81f28b3d632ae3bd DIFFER
-RESULT   batched          |  65.2 /  30.5 |  500 /    0 |   61 | 270 / 289 | 390 / 393 | 0 (own entries moved: 0) | 38.8/s,  33 | never | m1 718954e03927be72 / m2 6c123d752be3ab60 replay 718954e03927be72 DIFFER
-RESULT   batched+adaptive |  29.3 /  29.8 |   82 /    0 |    0 |   0 /   0 |  15 /  15 | 0 (own entries moved: 0) | 24.6/s,   7 | 0 ms | m1 f03f1a7c1fdb44e6 / m2 f03f1a7c1fdb44e6 replay f03f1a7c1fdb44e6 EQUAL
+RESULT   per message      |  76.3 /  30.4 |  500 /    0 |  133 | 293 / 315 | 413 / 417 | 0 (own entries moved: 0) | 35.0/s,  33 | never | m1 9200ce14cc029ffc / m2 257a342493e55ae5 replay 9200ce14cc029ffc DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 39.0 / 15.4 (161 of 222 unconfirmed), m2 40.8 / 16.2 (166 of 222 unconfirmed)
+RESULT   batched          |  65.2 /  30.5 |  500 /    0 |   61 | 270 / 290 | 390 / 393 | 0 (own entries moved: 0) | 38.8/s,  33 | never | m1 718954e03927be72 / m2 6c123d752be3ab60 replay 718954e03927be72 DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 39.3 / 14.1 (138 of 222 unconfirmed), m2 38.4 / 14.3 (142 of 222 unconfirmed)
+RESULT   batched+adaptive |  29.3 /  29.8 |   82 /    0 |    0 |   0 /   0 |  19 /  19 | 0 (own entries moved: 0) | 24.6/s,   8 | 0 ms | m1 f03f1a7c1fdb44e6 / m2 f03f1a7c1fdb44e6 replay f03f1a7c1fdb44e6 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 15.3 / 10.5, m2 15.4 / 9.5
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2968, 100, 100, 1654, 5080, 0] ms
