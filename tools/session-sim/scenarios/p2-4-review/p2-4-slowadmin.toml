@@ -36,6 +36,7 @@ delay_ms = 2500
 
 [[part]]
 world.1.fixes_off = ["VCR8"]
+world.1.no_runs = true  # option 2: the fix-off control runs without runs, as the harness does
 report = [
     { kind = "before_fix", honest = [1, 2, 3, 4, 6], label = "slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first)", fix = "VCR-8's fix" },
 ]
