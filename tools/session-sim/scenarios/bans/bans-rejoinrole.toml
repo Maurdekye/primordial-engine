@@ -1,0 +1,93 @@
+description = """
+12.4 Kick and remove Admin, end to end. A world under the default join rules (Public as Admin) with \
+a defined role 2 that holds no permissions. Members 1, 2 and 3 are Admins. 1 kicks 3 with the \
+remove-Admin option and rejoin role 2: applied, and the session records key 3 with rejoin role 2. At \
+3 s, 3 comes back as member 13, still signing with key 3: the join rules would admit it as Admin, so \
+it joins with role 2 instead, decided by the change's run and held by every replica's decided state. \
+At 5 s, 1 makes 13 an Admin: the explicit grant lifts the rejoin role. A first part cuts the run at \
+4.5 s, before the grant; a control part kicks 3 without the option, and 13 rejoins as Admin."""
+include = ["../common/review.toml"]
+end_ms = 7000
+
+[world.1]
+members = [1, 2, 3]
+joiners = [13]
+keys = [[13, 3]]
+role_defs = [[2, 0]]
+
+[world.1.plan]
+1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, kick = { target = 3, remove_admin = 2 } },
+    { at = 300, set_role = { member = 13, role = 0 } },
+]
+2 = [{ at = 200, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+3 = []
+
+[[join]]
+at_ms = 3000
+member = 13
+to = [1, 2]
+
+[[report]]
+kind = "admin"
+honest = [1, 2]
+label = "bans-rejoinrole"
+outcomes = true
+roles = true
+bans = true
+
+[[report]]
+kind = "expect"
+at = 1
+members = [1, 2, 13]
+roles = [[13, 0]]
+rejoin_roles = []
+label = "bans-rejoinrole: 1's grant made 13 Admin and lifted key 3's rejoin role"
+
+[[report]]
+kind = "expect"
+at = 2
+members = [1, 2, 13]
+roles = [[13, 0]]
+rejoin_roles = []
+label = "bans-rejoinrole: member 2 agrees"
+
+[[report]]
+kind = "check_world"
+frames = 360
+label = "bans-rejoinrole"
+skip_evicted_at = 1
+
+# Cut at 4.5 s, before 1's grant (frame 300): 13 is in with rejoin role 2, not Admin.
+[[part]]
+end_ms = 4500
+world.1.plan.1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, kick = { target = 3, remove_admin = 2 } },
+]
+world.1.plan.2 = [{ at = 200, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+report = [
+    { kind = "admin", honest = [1, 2], label = "bans-rejoinrole at 4.5 s", outcomes = true, roles = true, bans = true },
+    { kind = "expect", at = 1, members = [1, 2, 13], roles = [[13, 2]], rejoin_roles = [[3, 2]], label = "bans-rejoinrole at 4.5 s: 13 (key 3) rejoined with role 2, not Admin" },
+    { kind = "expect", at = 2, members = [1, 2, 13], roles = [[13, 2]], rejoin_roles = [[3, 2]], label = "bans-rejoinrole at 4.5 s: member 2 agrees" },
+    { kind = "expect", at = 13, members = [1, 2, 13], roles = [[13, 2]], rejoin_roles = [[3, 2]], label = "bans-rejoinrole at 4.5 s: the rejoined member's own replica agrees (it follows from frame 0)" },
+    { kind = "check_world", frames = 240, label = "bans-rejoinrole at 4.5 s", skip_evicted_at = 1 },
+]
+
+[[part]]
+
+# Control: a plain kick of 3; 13 (key 3) rejoins as Admin under the same rules.
+[[part]]
+end_ms = 4500
+world.1.plan.1 = [
+    { at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } },
+    { at = 120, kick = { target = 3 } },
+]
+world.1.plan.2 = [{ at = 200, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+report = [
+    { kind = "admin", honest = [1, 2], label = "bans-rejoinrole control (plain kick)", outcomes = true, roles = true, bans = true },
+    { kind = "expect", at = 1, members = [1, 2, 13], roles = [[13, 0]], rejoin_roles = [], label = "bans-rejoinrole control (plain kick): 13 (key 3) rejoined as Admin" },
+    { kind = "expect", at = 2, members = [1, 2, 13], roles = [[13, 0]], rejoin_roles = [], label = "bans-rejoinrole control (plain kick): member 2 agrees" },
+    { kind = "check_world", frames = 240, label = "bans-rejoinrole control (plain kick)", skip_evicted_at = 1 },
+]

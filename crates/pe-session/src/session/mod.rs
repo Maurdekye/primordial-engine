@@ -57,6 +57,8 @@ mod replay;
 mod seam;
 #[cfg(test)]
 mod ownership_tests;
+#[cfg(test)]
+mod bans_tests;
 
 pub use entry::*;
 pub use membership::*;
@@ -668,6 +670,12 @@ pub struct ViewChangeMembership {
     /// World ownership (12.5): the world's ownership chain. Governance, like roles: changed only by
     /// the certificates decided view changes commit, never rewound by a rollback.
     pub book: Option<Book>,
+    /// 12.4: this session's bans and rejoin roles, by identity key; never written into the world.
+    /// Governance, like roles: changed only by decided admin entries, never rewound by a rollback,
+    /// outside the check hash.
+    pub bans: BTreeMap<Key, Restrict>,
+    /// 12.4: the world's perma-bans (its ACL), by identity key; governance like `bans`.
+    pub perma_bans: BTreeSet<Key>,
     /// This epoch's admin entries from members allowed to make them, as held.
     admin_pending: BTreeSet<EntryId>,
     /// Review OWNY-2: ownership entries not pending only because a parent certificate is not in the
@@ -780,6 +788,8 @@ impl WorldSim {
                 join_attests: BTreeMap::new(),
                 owners: BTreeSet::new(),
                 book: None,
+                bans: BTreeMap::new(),
+                perma_bans: BTreeSet::new(),
                 admin_pending: BTreeSet::new(),
                 own_held: BTreeSet::new(),
                 admin_outcomes: BTreeMap::new(),
@@ -893,7 +903,7 @@ mod d73_review {
         let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
         let a = Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Ack { horizon: 12, heads: vec![], check: None, epoch: 0 }, carried: None };
         let sa = test_sign(1, a);
-        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3 }, carried: None };
+        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3, rejoin: Rejoin::Free }, carried: None };
         let sk = test_sign(1, k);
         let kid = sk.id();
         s.insert(sa);
