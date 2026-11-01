@@ -1226,13 +1226,14 @@ fn r14_chain_epoch() {
 
 // ---- ball pit ------------------------------------------------------------------------------------
 
-fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
+fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32) {
     let dt = 1.0 / hz as f32;
     let cfg = SimConfig { dt, window: 2 * hz, ..cfg60() };
     let scene = SceneKind::BallPit { balls: 500, hands: 2 };
     let f = |s: f64| (s * hz as f64).round() as u64; // seconds -> frames
     let sweep = |member: MemberId| ballpit_sweep(hz, member, ahead);
-    let ids = [1, 2];
+    // `--members N` (default 2): members 3.. own no hand and only follow, for 7.6's per-member traffic.
+    let ids: Vec<MemberId> = (1..=members.max(2)).collect();
     let peers: Vec<Peer> = ids
         .iter()
         .map(|&id| {
@@ -1503,6 +1504,7 @@ fn main() {
             get("--ahead").map_or(0, |v| v.parse().unwrap()),
             get("--hands").map_or(1, |v| v.parse().unwrap()),
             get("--loss").map_or(2, |v| v.parse().unwrap()),
+            get("--members").map_or(2, |v| v.parse().unwrap()),
         ),
         Some("capped") => r18::capped(&r18::Opts {
             kbps: get("--kbps").map_or(64, |v| v.parse().unwrap()),

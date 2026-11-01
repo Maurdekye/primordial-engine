@@ -184,11 +184,20 @@ impl WorldSim {
                 }
             }
         }
-        let check = if self.dirty_from.is_none() {
+        let mut check = if self.dirty_from.is_none() {
             self.check_hashes.range(..self.conf.min(self.frame)).next_back().map(|(f, h)| (*f, *h))
         } else {
             None
         };
+        // 7.6 reduction 1: a check hash goes in an ack only when it changes. Confirmed check hashes are
+        // final, so a repeat says nothing new (every chain entry reaches every member by repair).
+        if let Some((f, _)) = check {
+            if self.last_check_sent == Some(f) {
+                check = None;
+            } else {
+                self.last_check_sent = Some(f);
+            }
+        }
         let stamp = self.frame.max(self.now);
         let mut horizon = self.now.saturating_sub(1 + self.horizon_lag);
         // D73(a): below a pending pack's first frame until the pack is sent.

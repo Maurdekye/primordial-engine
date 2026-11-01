@@ -1,10 +1,10 @@
-RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
-RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
-RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
-RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-  m1: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 48 bad 0
-  m2: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
-  m3: conf 705 frame 713 members {1, 2, 3} evicted {8: (147, 297)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 48 bad 0
-RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=57b0dfb8cf34d524 m2=57b0dfb8cf34d524 m3=57b0dfb8cf34d524 | offline replay 57b0dfb8cf34d524 | ALL EQUAL, NO FALSE CHECKS ; checks ok 144 bad 0
+RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (45, 327)} conf 697 frame 713 paused frames 108 lying votes found 0
+RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (45, 327)} conf 697 frame 713 paused frames 108 lying votes found 0
+RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (45, 327)} conf 697 frame 713 paused frames 108 lying votes found 0
+RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 338 (t=5.73 s) round 0 removed [8]
+RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 338 (t=5.73 s) round 0 removed [8]
+RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 338 (t=5.73 s) round 0 removed [8]
+  m1: conf 697 frame 713 members {1, 2, 3} evicted {8: (45, 327)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 45 bad 0
+  m2: conf 697 frame 713 members {1, 2, 3} evicted {8: (45, 327)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 45 bad 0
+  m3: conf 697 frame 713 members {1, 2, 3} evicted {8: (45, 327)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 45 bad 0
+RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=57b0dfb8cf34d524 m2=57b0dfb8cf34d524 m3=57b0dfb8cf34d524 | offline replay 57b0dfb8cf34d524 | ALL EQUAL, NO FALSE CHECKS ; checks ok 135 bad 0

@@ -273,6 +273,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
                 r.throttle_us = rc.throttle_ms.map(|x| x * 1000);
                 r.throttle_from_us = rc.throttle_from_ms * 1000;
                 r.adapt = rc.adapt;
+                if rc.ack_grid_only {
+                    r.ack_grid_only = true;
+                }
                 if let Some(ms) = rc.ack_every_ms {
                     r.ack_every_us = ms * 1000;
                 }

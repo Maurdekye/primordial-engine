@@ -18,6 +18,7 @@ joiners = [5]
 
 [world.1.member.3]
 ack_every_ms = 1500
+ack_grid_only = true                # strictly every 1.5 s: idle thinning's ack on leaving idle would refresh its horizon (7.6)
 
 [world.1.member.9]
 withhold_vc = true

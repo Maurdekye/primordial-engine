@@ -556,6 +556,8 @@ pub struct WorldSim {
     /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
     /// it, so nothing it confirms can miss the pack.
     pub hold_horizon_below: Option<u64>,
+    /// 7.6 reduction 1: the check frame this member's last ack carried.
+    last_check_sent: Option<u64>,
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
@@ -851,6 +853,7 @@ impl WorldSim {
             horizon_lag: 0,
             own_pending: BTreeMap::new(),
             hold_horizon_below: None,
+            last_check_sent: None,
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
