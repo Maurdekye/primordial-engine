@@ -1,10 +1,10 @@
-//! Build the spike simulator (`spike::Sim`) from a scenario.
+//! Build the spike simulator (`pe_session_harness::Sim`) from a scenario.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use pe_sim_core::ownership::{test_key, Cert, Change, SignRule};
-use pe_sim_core::session::{fix, JoinRule, JoinRules, QuorumRule, Rejoin, Rel, SceneKind, SimConfig, Target, ADMIN};
-use spike::{ballpit_sweep, Action, Cap, Link, Net, Peer, Sim};
+use pe_session::ownership::{test_key, Cert, Change, SignRule};
+use pe_session::session::{fix, JoinRule, JoinRules, QuorumRule, Rejoin, Rel, SceneKind, SimConfig, Target, ADMIN};
+use pe_session_harness::{ballpit_sweep, Action, Cap, Link, Net, Peer, Sim};
 
 use crate::scenario::{id, ActionSpec, OwnerSpec, CapCfg, LinkCfg, Scenario, SceneCfg, WorldCfg};
 
