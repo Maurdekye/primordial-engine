@@ -2313,6 +2313,10 @@ exclusion and its fork proof stay as they are, and there is no fork-proof indica
       cheater withholding references, and equally an honest member with a one-way inbound cut, which
       can't reference what it can't hear (Limits, accepted cost); the indicator can't tell them apart,
       and says so.
+    * **Not heard (j):** when every member but j and this replica is not referencing j, the common cause
+      is j's outbound link (or this replica's view of the others), not all of them withholding at once, so
+      it is shown as j not heard rather than naming every other member. With one other member (a 3-player
+      session) the two readings can't be told apart, and both are shown.
     * **This replica (network):** this replica doesn't hold j's chain contiguously up to r, so its own copy
       is what waits. It names nobody else.
     * **Membership change:** the bound comes from a join cap, an ack from a newer epoch, or a removed
