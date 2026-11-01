@@ -52,7 +52,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `bans/` | 3 | session bans, perma-bans and kick options (design 12.4): `bans-rejoinrole`, Kick and remove Admin end to end: the kicked Admin rejoins under its key with the rejoin role instead of Admin, an explicit grant lifts it, and a plain-kick control rejoins as Admin; `bans-session`, a session in which an Admin kicks and bans, an Admin who isn't an owner can't perma-ban, an owner perma-bans, and every banned key is refused under Public rules, including one back under a new member id; `bans-next`, the world's next session, started from the perma-bans the first wrote: the session bans are gone, the perma-bans hold until an owner lifts one |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
-| `spike-only.txt` | - | committed logs not mirrored as scenario files yet (see below) |
+| `not-mirrored.txt` | - | committed logs not mirrored as scenario files yet (see below) |
 | `not-scenarios.txt` | - | committed logs of the spike's property tests (`randsched`), never scenarios (see below) |
 | `pe-pending.txt` | - | scenario files whose behaviour pe-session does not have yet; skipped and reported (empty now) |
 
@@ -62,10 +62,11 @@ logs are identical to the committed ones. The `faults/` logs are new in P2-9, bl
 All of them are identical on Windows and on Linux (WSL2): `spikes/out/session-sim-pe/regress-windows.txt`,
 `regress-linux.txt`.
 
-A committed log without a scenario file yet is listed in `scenarios/spike-only.txt`: a full
-`regress` lists it as spike-only instead of failing on it as an orphan. The list only shrinks: a
-listed name that has a scenario file, or no committed log, is an error. It is empty now: every
-committed log has its scenario file. (`handowner` was held for a while: the spike's check covered
+A committed log without a scenario file yet is listed in `scenarios/not-mirrored.txt`: a full
+`regress` lists it as not mirrored instead of failing on it as an orphan. The list only shrinks: a
+listed name that has a scenario file, or no committed log, is an error. Every spike log has its
+scenario file; it lists grabrace and p2-3-statejoin, pe-session harness scenarios the tool has no
+behaviour for yet. (`handowner` was held for a while: the spike's check covered
 6 frames past the lowest confirmed one, which `check_world` flags as UNCONFIRMED. P2-4's round 4
 fixed the spike.)
 
