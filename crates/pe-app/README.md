@@ -21,7 +21,7 @@ pe-app init --members 4 --host 127.0.0.1 [--base-port 7101] [--frames 1800] [--s
 pe-app init --addrs 192.168.0.10:7101,192.168.0.11:7101,... --out DIR        # members on several machines
 pe-app run --session DIR/session.json --key DIR/member-1.key --me 1 [--out OUT] [-v]
            [--faults FILE] [--crash-at-ms T] [--equivocate-at-ms T --equivocate-to M] [--equivocate-split T:M,..]
-           [--watch-member M] [--touches-per-s R] [--bind ADDR]
+           [--watch-member M] [--trace-frames A:B] [--touches-per-s R] [--bind ADDR]
            [--mcp-pipe|--mcp-http [--scopes read,interact,control] [--principal NAME] -- HARNESS ARGS...]
            [--clock-skew-ppm N] [--clock-lie M:MS,...] [--clock-median]       # clock-sync test runs
 pe-app compare OUT
@@ -72,10 +72,19 @@ pe-app relay --listen ADDR --to ADDR [--for-s N]                             # t
   sends version A as usual but keeps it from the listed members, and sends them version B (the
   opposite impulse) instead. They learn of A only from the proof (the member's next entry names A).
   `--watch-member M` logs M's touches at first sight (id, stamp, this replica's conf then) and, at the
-  end, whether each version of a forked seq counts. pe-session's rule (review NEW-2, `reconcile`):
-  after a proof, the member's entries from the disputed seq on are withdrawn unless held identically
-  by every member; after the view change, exactly the cut. So a late version 2 of a stable entry is
-  withdrawn and version 1 counts, and a split touch is withdrawn in both versions.
+  end, whether each version of a forked seq counts and where the removed member's chain was cut.
+  pe-session's rule (review NEW-2, `reconcile`): after a proof, the member's entries from the disputed
+  seq on are withdrawn unless held identically by every member; after the view change, exactly the
+  cut. The cut is the deepest point of the member's chain that all but t of the voters' frozen heads
+  extend (`robust_cut`; a head is the stretch of that chain the voter had validated when it froze), so
+  the version on the branch most voters had validated survives, or neither. Measured on loopback: a
+  late version 2 of a stable entry is withdrawn and version 1 counts; a split settled within one frame
+  withdrew both versions; a split held for 8 frames kept version A, the one 2 of the 3 voters held
+  (`spikes/out/m1/equivocation-split-held-loopback-windows`).
+  `--trace-frames A:B` (at most 200 frames) logs every change to those frames' state hashes (`TRACE`:
+  the first computation and each re-simulation, with the rollback and object 0's velocity) and the
+  final hashes at the end (`TRACE FINAL`): what a replica simulated while it held a disputed entry,
+  and what it settled on.
 * **Relay** (test tooling): `relay` forwards every datagram that arrives at `--listen` to `--to`. A
   member in WSL2's default NAT mode can't be reached from another machine; with `--bind 0.0.0.0:PORT`
   in WSL and a relay on its host at the session address, it can (pe-app checks signatures, not source
@@ -134,10 +143,13 @@ measures that queue and feeds it (`set_link`) every tick.
 
 * `m1-loopback.sh EXE OUT [PORT]`: the M1 scenario on one machine. Four members, loss and delay on
   members 2 and 3 (worse on 2→1 from 9 s to 14 s), and member 4 dropping out at 6 s. Then `compare`.
-* `m1-equivocate.sh EXE OUT [PORT] [late|split]`: M1's equivocation on one machine. Four members; at 8 s
-  member 3 equivocates (late: a second version of a sent touch to member 1; split: version A to members
-  1 and 2, B to member 4, before anyone confirms it). Every member holds the proof, member 3 is removed,
-  and members 1, 2 and 4 compare equal.
+* `m1-equivocate.sh EXE OUT [PORT] [late|split|split-held]`: M1's equivocation on one machine. Four
+  members; at 8 s member 3 equivocates (late: a second version of a sent touch to member 1; split:
+  version A to members 1 and 2, B to member 4, before anyone confirms it). On loopback the split's proof
+  reaches every member within the frame, before its next simulation, so no member simulates its
+  version; split-held delays the links between the groups by 120 ms around it, so each group simulates
+  its own version for 8 frames and rolls back when the proof lands. Every member holds the proof,
+  member 3 is removed, and members 1, 2 and 4 compare equal. Every member traces frames 474-500.
 * `linux.sh`: from Windows, copies HEAD into WSL and, there, does a native glibc build and runs the tests
   and `m1-loopback.sh`.
 * `r18-capped.sh EXE OUT CAP_KBPS [on|off] [PORT] [FRAMES]`: three members in a 500-ball pit, member 1
