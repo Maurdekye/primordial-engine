@@ -408,7 +408,12 @@ impl Probe {
                     }
                     if *bans {
                         let r = &sim.replica(m, 1).sim;
-                        println!("  m{m}: session bans {:?} perma-bans {:?}", r.vcm.bans, r.perma_bans());
+                        let (ban, role): (Vec<&Key>, Vec<(&Key, &RoleId)>) = (
+                            r.vcm.bans.iter().filter(|(_, x)| **x == Restrict::Ban).map(|(k, _)| k).collect(),
+                            r.vcm.bans.iter().filter_map(|(k, x)| if let Restrict::Role(q) = x { Some((k, q)) } else { None }).collect(),
+                        );
+                        let role: Vec<String> = role.iter().map(|(k, q)| format!("{} -> role {q}", key_names([*k]))).collect();
+                        println!("  m{m}: session bans {}, rejoin roles [{}], perma-bans {}", key_names(ban), role.join(", "), key_names(r.perma_bans()));
                     }
                 }
             }
@@ -1259,6 +1264,11 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
 
 /// Keys as the scenario names them (test identities, by number), sorted by number.
 fn key_names<'a>(ks: impl IntoIterator<Item = &'a Key>) -> String {
+    // Name every low test identity, including keys no certificate on this thread has derived yet
+    // (members' identity keys in ban lists, 12.4).
+    for n in 0..256 {
+        pe_sim_core::ownership::test_key(n);
+    }
     let mut known: Vec<u32> = Vec::new();
     let mut other: Vec<String> = Vec::new();
     for k in ks {
