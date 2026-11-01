@@ -19,6 +19,23 @@ pub(super) fn judged(p: &Payload) -> bool {
     matches!(p, Payload::Touch { .. } | Payload::Hand { .. })
 }
 
+/// F2: one epoch's membership, as rule 1 judges that epoch's entries (revision 21 (a): a removed member's entries
+/// with the members and quorum of the epoch it was last a member of).
+#[derive(Clone, Debug)]
+pub(super) struct Ctx {
+    pub epoch: u32,
+    pub members: Vec<MemberId>,
+    pub q: usize,
+}
+
+impl Ctx {
+    /// The rank, among the others' references sorted newest first, that echo-stability and vouching read: q − 2
+    /// (q − 1 others), and at 3 players both others (S-3).
+    fn rank(&self) -> usize {
+        if self.members.len() == 3 { 1 } else { self.q.saturating_sub(2) }
+    }
+}
+
 /// Section 3: windows are aligned blocks of this many frames; window k's values come from window k − 2.
 pub const WINDOW: u64 = 300;
 /// L_m is the minimum over the last 2 minutes: windows k − 25 to k − 2.
@@ -120,11 +137,58 @@ impl WorldSim {
         quorum(QuorumRule::Bft, self.members.len()).1
     }
 
+    /// F2: the epoch of `m`'s entry `seq`, by its chain: the epoch of m's latest ack at or before it (an ack's epoch
+    /// rises by at most one, VC-5). Every replica holding the chain reads the same whenever the decision reached it;
+    /// by frame it could differ, since conf can pass a removal's boundary before the decision.
+    pub(super) fn entry_epoch(&self, m: MemberId, seq: u32) -> u32 {
+        let base = self.admitted_epoch.get(&m).copied().unwrap_or(0);
+        self.ack_epoch_from.get(&m).and_then(|a| a.iter().filter(|&(_, &s)| s <= seq).map(|(&ep, _)| ep).max()).map_or(base, |ep| ep.max(base))
+    }
+
+    /// F2: epoch `epoch`'s members and quorum. The current epoch's from the live membership.
+    pub(super) fn ctx(&self, epoch: u32) -> Option<Ctx> {
+        let members: Vec<MemberId> = if epoch == self.epoch { self.members.iter().copied().collect() } else { self.members_at(epoch)? };
+        let q = quorum(QuorumRule::Bft, members.len()).1;
+        Some(Ctx { epoch, members, q })
+    }
+
+    /// F2: the last of `y`'s acks that counts toward removed member `x`'s chain: y's acks from x's last epoch
+    /// (revision 21 (a): no ack from an epoch x isn't a member of counts). u32::MAX for a current member.
+    pub(super) fn ref_cap(&self, y: MemberId, x: MemberId) -> u32 {
+        match self.removed_in.get(&x) {
+            Some(e) => self.ack_epoch_from.get(&y).and_then(|a| a.get(e)).map_or(u32::MAX, |&s| s.saturating_sub(1)),
+            None => u32::MAX,
+        }
+    }
+
+    /// F2: `voter`'s vote against `target` in `epoch`: (the vote's seq, its frozen head's seq). The current epoch's
+    /// from the recorded votes; an earlier one's from the chains (the recorded votes end with their epoch).
+    pub(super) fn vote_on(&self, voter: MemberId, target: MemberId, epoch: u32) -> Option<(u32, u32)> {
+        if epoch == self.epoch && self.members.contains(&target) {
+            let rec = self.votes.get(&target)?.get(&voter)?;
+            return Some((self.entries.get(&rec.id)?.seq, rec.frozen.0));
+        }
+        self.vote_hist.get(&(target, voter))?.iter().find(|r| r.0 == epoch).map(|r| (r.1, r.2))
+    }
+
     /// The newest seq of `x`'s chain that `y`'s acks have referenced in the version I hold, at or below my
     /// own held head (as `stable_seq` matches references, review VC5R-2). 0 if none.
     /// A fed member's echo (rule 1, TLP-15) counts here as its references: `echo_refs`.
     fn matched_ref(&self, y: MemberId, x: MemberId) -> u32 {
         let held = self.contiguous.get(&x).copied().unwrap_or(0);
+        // F2: toward a removed member's chain, only y's acks from x's last epoch count (by ack seq, which `refs`
+        // doesn't keep).
+        if self.removed_in.contains_key(&x) {
+            let cap = self.ref_cap(y, x);
+            let mine = |s: u32, hid: EntryId| s <= held && self.by_author.get(&(x, s)) == Some(&hid);
+            let r = self.ack_head_hist.get(&(y, x)).and_then(|h| h.range(..=cap).rev().find(|(_, v)| mine(v.0, v.1))).map_or(0, |(_, v)| v.0);
+            let e = self
+                .echo_refs
+                .get(&(y, x))
+                .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| *aseq <= cap && mine(**s, *hid)))
+                .map_or(0, |(s, _)| *s);
+            return r.max(e);
+        }
         let r = self
             .refs
             .get(&(y, x))
@@ -143,6 +207,8 @@ impl WorldSim {
     /// vote's frozen head (R3-1). These references, and only these, count for coverage, holder status and the cut.
     fn evidence_ref(&self, y: MemberId, x: MemberId, es_y: u32) -> u32 {
         let held = self.contiguous.get(&x).copied().unwrap_or(0);
+        // F2: toward a removed member's chain, y's acks from x's last epoch only.
+        let es_y = es_y.min(self.ref_cap(y, x));
         let mine = |s: u32, hid: EntryId| s <= held && self.by_author.get(&(x, s)) == Some(&hid);
         let r = self
             .ack_head_hist
@@ -155,8 +221,10 @@ impl WorldSim {
             .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| *aseq <= es_y && mine(**s, *hid)))
             .map_or(0, |(s, _)| *s);
         let v = r.max(e);
-        match self.votes.get(&x).and_then(|vs| vs.get(&y)) {
-            Some(rec) => v.min(rec.frozen.0),
+        // A removed member's voters by their chains, in its last epoch (F2).
+        let ep = self.removed_in.get(&x).map_or(self.epoch, |&e| e - 1);
+        match self.vote_on(y, x, ep) {
+            Some((_, f)) => v.min(f),
             None => v,
         }
     }
@@ -169,6 +237,20 @@ impl WorldSim {
         v.sort_unstable_by(|a, b| b.cmp(a));
         let i = if self.members.len() == 3 { 1 } else { q - 2 };
         v.get(i).copied().unwrap_or(0)
+    }
+
+    /// F2: x's vouched prefix with `ctx`'s members and quorum (a removed member's with its last epoch's).
+    pub(super) fn vouched_in(&self, x: MemberId, es: &BTreeMap<MemberId, u32>, ctx: &Ctx) -> u32 {
+        let mut v: Vec<u32> = ctx.members.iter().filter(|&&y| y != x).map(|&y| self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0))).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(ctx.rank()).copied().unwrap_or(0)
+    }
+
+    /// F2: x's echo-stable prefix with `ctx`'s members and quorum.
+    pub(super) fn echo_stable_in(&self, x: MemberId, ctx: &Ctx) -> u32 {
+        let mut v: Vec<u32> = ctx.members.iter().filter(|&&y| y != x).map(|&y| self.matched_ref(y, x)).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(ctx.rank()).copied().unwrap_or(0)
     }
 
     /// Rule 1 (TLP-9): the echo-stable prefix of `x`'s chain. Its acks up to this seq have been referenced
@@ -471,18 +553,22 @@ impl WorldSim {
     /// lacker, None while unproven. It comes from x's latest echo-stable ack stamped at or before the
     /// deadline, proven latest by an echo-stable ack stamped after it; x holds the entry if that ack's head of
     /// m's chain reaches `seq` in the version I hold. `newest` is the stamp of x's newest echo-stable ack.
-    fn status(&self, x: MemberId, newest: Option<u64>, m: MemberId, seq: u32, deadline: u64) -> Option<bool> {
+    fn status(&self, x: MemberId, newest: Option<u64>, m: MemberId, seq: u32, deadline: u64, epoch: u32) -> Option<bool> {
         if newest? <= deadline {
             return None;
         }
-        let Some((_, &k)) = self.ack_by_stamp.get(&x).and_then(|a| a.range(..=deadline).next_back()) else {
+        // F2: a removed member's acks count up to its cut.
+        let own_cap = if self.members.contains(&x) { u32::MAX } else { self.evicted.get(&x).map_or(u32::MAX, |c| c.0) };
+        let Some((_, &k)) = self.ack_by_stamp.get(&x).and_then(|a| a.range(..=deadline).rev().find(|(_, s)| **s <= own_cap)) else {
             return Some(false);
         };
+        // F2: toward a removed member's chain, only x's acks from its last epoch count.
+        let k = k.min(self.ref_cap(x, m));
         // Revision 21 (a): once x has voted against m, earlier in its chain than this ack, its vote's frozen head of
         // m's chain is its last word for holder status too (R3-1 covered stability only). Ordered by x's chain, so
-        // every replica reads it alike.
-        if let Some(rec) = self.votes.get(&m).and_then(|v| v.get(&x)) {
-            if self.entries.get(&rec.id).is_some_and(|v| v.seq < k) && seq > rec.frozen.0 {
+        // every replica reads it alike. The vote of the entry's own epoch (F2).
+        if let Some((vseq, frozen)) = self.vote_on(x, m, epoch) {
+            if vseq < k && seq > frozen {
                 return Some(false);
             }
         }
@@ -513,7 +599,7 @@ impl WorldSim {
             .members
             .iter()
             .filter(|&&x| x != e.member)
-            .map(|&x| format!("m{x}:{:?}(newest {:?}, es {}, held {:?})", self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline), newest.get(&x), self.echo_stable(x), self.contiguous.get(&x)))
+            .map(|&x| format!("m{x}:{:?}(newest {:?}, es {}, held {:?})", self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline, self.epoch), newest.get(&x), self.echo_stable(x), self.contiguous.get(&x)))
             .collect();
         format!("m{} s{} stamp {} deadline {}: {}", e.member, e.seq, e.stamp, deadline, st.join(" "))
     }
@@ -521,14 +607,15 @@ impl WorldSim {
     /// Rule 1: e's verdict once its statuses decide it: Some(false) void at q proven lackers, Some(true)
     /// counting at n − q + 1 proven holders (the author holds its own). None while undecided, or while the
     /// deadline's window isn't final.
-    fn verdict_of(&self, e: &Entry, newest: &BTreeMap<MemberId, u64>, vouch: &BTreeMap<MemberId, u32>) -> Option<bool> {
+    fn verdict_of(&self, e: &Entry, ctx: &Ctx, newest: &BTreeMap<MemberId, u64>, vouch: &BTreeMap<MemberId, u32>) -> Option<bool> {
         let v = self.windows.get(&(e.stamp / WINDOW))?;
         let deadline = e.stamp + Self::deadline_offset(v, &self.cfg, e.member);
-        let q = self.quorum_q();
-        let n = self.members.len();
+        // F2: with the members and quorum of the entry's own epoch.
+        let q = ctx.q;
+        let n = ctx.members.len();
         let (mut holders, mut lackers) = (1, 0);
-        for &x in self.members.iter().filter(|&&x| x != e.member) {
-            match self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline) {
+        for &x in ctx.members.iter().filter(|&&x| x != e.member) {
+            match self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline, ctx.epoch) {
                 Some(true) => holders += 1,
                 Some(false) => lackers += 1,
                 None => {}
@@ -541,6 +628,32 @@ impl WorldSim {
             Some(true)
         } else {
             None
+        }
+    }
+
+    /// F2, revision 21 (a): apply each Part B removal's cut once final: every remaining member of the removed
+    /// member's last epoch has an echo-stable ack of the new epoch, so the evidence-grade references to its chain are
+    /// fixed. The cut is its vouched prefix with that epoch's members and quorum; entries past it are void (none of
+    /// them counted: coverage).
+    pub(super) fn finalize_cuts(&mut self) {
+        let xs: Vec<MemberId> = self.pb_pending.iter().copied().collect();
+        for x in xs {
+            let Some(&e_new) = self.removed_in.get(&x) else { continue };
+            let Some(old) = self.ctx(e_new - 1) else { continue };
+            let survivors: Vec<MemberId> = old.members.iter().copied().filter(|&m| m != x && self.members.contains(&m)).collect();
+            let fin = survivors.iter().all(|&m| self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).is_some_and(|&s| self.echo_stable(m) >= s));
+            if !fin {
+                continue;
+            }
+            let es: BTreeMap<MemberId, u32> = survivors.iter().map(|&m| (m, self.echo_stable(m))).collect();
+            let cut = self.vouched_in(x, &es, &old);
+            let cid = if cut == 0 { 0 } else { self.by_author.get(&(x, cut)).copied().unwrap_or(0) };
+            self.pb_pending.remove(&x);
+            self.frozen.insert(x, cut);
+            self.cut_ids.insert(x, cid);
+            self.evicted.insert(x, (cut, 0));
+            self.ev(format!("revision 21 (a): member {x}'s removal is final; its chain is cut at its vouched prefix, seq {cut}"));
+            self.adopt_cut(x);
         }
     }
 
@@ -558,24 +671,57 @@ impl WorldSim {
             })
             .collect();
         let horizon = newest.values().copied().max().unwrap_or(0);
+        // F2: a removed member whose cut is final: its last ack within the cut is proven its latest (revision 21 (a)).
+        let mut newest = newest;
+        for &x in self.evicted.keys() {
+            if self.cut_done.contains(&x) {
+                newest.insert(x, u64::MAX);
+            }
+        }
         // Revision 21: every member's echo-stable seq, then every member's vouched prefix.
         let es: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.echo_stable(x))).collect();
-        let vouch: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.vouched(x, &es))).collect();
+        let mut vouch: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.vouched(x, &es))).collect();
+        let mut ctxs: BTreeMap<u32, Option<Ctx>> = BTreeMap::new();
         let pend: Vec<(u64, EntryId)> = self.pending.iter().copied().collect();
         for (stamp, id) in pend {
             let Some(e) = self.entries.get(&id).cloned() else {
                 self.pending.remove(&(stamp, id));
                 continue;
             };
-            // From a member removed since: its cut decides instead (P2-4: its entries up to the cut count, the
-            // rest are disputed). Spike simplification: rule 1 doesn't judge across a membership change.
+            // F2: judged with the members and quorum of the entry's own epoch, by its author's chain. One of an
+            // epoch I haven't reached waits (its members aren't known to me yet).
+            let ep = self.entry_epoch(e.member, e.seq);
+            if ep > self.epoch {
+                continue;
+            }
+            if !ctxs.contains_key(&ep) {
+                let c = self.ctx(ep);
+                ctxs.insert(ep, c);
+            }
+            let Some(ctx) = ctxs[&ep].clone() else { continue };
             if !self.members.contains(&e.member) {
+                // A removed member's entry (revision 21 (a)): judged as any, vouched with its last epoch's members.
+                // A non-member that was never one isn't validated.
+                if !self.evicted.contains_key(&e.member) {
+                    self.pending.remove(&(stamp, id));
+                    continue;
+                }
+                if !vouch.contains_key(&e.member) {
+                    let v = self.vouched_in(e.member, &es, &ctx);
+                    vouch.insert(e.member, v);
+                }
+            }
+            // An epoch of 2 members (or Part B off) keeps D54: rule 1 voids nothing there.
+            if !self.cfg.localize || ctx.members.len() < 3 {
                 self.pending.remove(&(stamp, id));
+                self.verdicts.insert(id, !self.is_void(id));
                 continue;
             }
             // At 3 players: an entry in a D54 window counts (D54 voids nothing; it waits for stability), one in a
-            // fed window is judged by rule 1, and one whose window's mode isn't known yet waits.
-            if self.fed_mode_capable() {
+            // fed window is judged by rule 1, and one whose window's mode isn't known yet waits. Spike: a window's
+            // mode is read for the current epoch only; an older 3-member epoch's pending entries are judged by
+            // rule 1.
+            if ctx.members.len() == 3 && ep == self.epoch {
                 match self.window_mode(stamp / WINDOW) {
                     None => continue,
                     Some(false) => {
@@ -592,7 +738,7 @@ impl WorldSim {
             } else if stamp >= horizon {
                 None
             } else {
-                self.verdict_of(&e, &newest, &vouch)
+                self.verdict_of(&e, &ctx, &newest, &vouch)
             };
             let Some(counts) = decided else { continue };
             self.pending.remove(&(stamp, id));
@@ -612,15 +758,29 @@ impl WorldSim {
     /// A member counts only if its acks reference no more of j's chain than I hold. Otherwise it may hold
     /// entries of j that I don't, which could count; I fetch them and wait.
     pub(super) fn deadline_bound(&self, j: MemberId) -> Option<u64> {
-        let q = self.quorum_q();
+        let ctx = self.ctx(self.epoch)?;
+        self.deadline_bound_in(j, &ctx)
+    }
+
+    /// F2: rule 3's bound for entries of `j` judged with `ctx`'s members and quorum. A removed member counts once its
+    /// cut is final (its last ack within the cut is its latest, so it lacks anything later), and not before.
+    pub(super) fn deadline_bound_in(&self, j: MemberId, ctx: &Ctx) -> Option<u64> {
+        let q = ctx.q;
         let held = self.contiguous.get(&j).copied().unwrap_or(0);
-        let mut t: Vec<u64> = self
+        let mut t: Vec<u64> = ctx
             .members
             .iter()
             .filter(|&&x| x != j)
             .filter_map(|&x| {
-                let es = self.echo_stable(x);
-                let head = self.ack_head_hist.get(&(x, j)).and_then(|h| h.range(..=es).next_back()).map(|(_, &hh)| hh);
+                let (es, last) = if self.members.contains(&x) {
+                    (self.echo_stable(x), None)
+                } else if self.cut_done.contains(&x) {
+                    (self.evicted.get(&x).map_or(0, |c| c.0), Some(u64::MAX))
+                } else {
+                    return None;
+                };
+                let cap = es.min(self.ref_cap(x, j));
+                let head = self.ack_head_hist.get(&(x, j)).and_then(|h| h.range(..=cap).next_back()).map(|(_, &hh)| hh);
                 // Skipped, not counted, if I can't place its head of j's chain: beyond my held prefix, or (revision
                 // 21, RV20-2) another version at a position I hold. Counted as a lacker, it let a version I don't
                 // hold be vouched with a stamp below a frame this bound confirmed.
@@ -628,6 +788,9 @@ impl WorldSim {
                     if h > held || (h > 0 && self.by_author.get(&(j, h)) != Some(&hid)) {
                         return None;
                     }
+                }
+                if last.is_some() {
+                    return last;
                 }
                 self.ack_stamps.get(&x).and_then(|a| a.range(..=es).next_back()).map(|(_, &st)| st)
             })

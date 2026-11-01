@@ -2199,6 +2199,12 @@ pub struct WorldSim {
     join_caps: BTreeMap<MemberId, (u32, u64)>,
     /// Per member: the first seq of its chain whose ack declares each epoch after 0.
     ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
+    /// F2 (revision 21 (a)): each removed member's first epoch as a non-member.
+    removed_in: BTreeMap<MemberId, u32>,
+    /// F2: removed members whose Part B cut isn't final yet (`finalize_cuts`).
+    pb_pending: BTreeSet<MemberId>,
+    /// F2: every validated vote by (target, voter): (its epoch, its seq, its frozen head's seq), the first per epoch.
+    vote_hist: BTreeMap<(MemberId, MemberId), Vec<(u32, u32, u32)>>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
     hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// Test fixture (D80 bridge): a faulty member that backs every vote another member casts,
@@ -2438,6 +2444,9 @@ impl WorldSim {
             admitted: BTreeMap::new(),
             join_caps: BTreeMap::new(),
             ack_epoch_from: BTreeMap::new(),
+            removed_in: BTreeMap::new(),
+            pb_pending: BTreeSet::new(),
+            vote_hist: BTreeMap::new(),
             genesis: members.to_vec(),
             roles: members.iter().map(|&m| (m, ADMIN)).collect(),
             role_defs: BTreeMap::new(),
@@ -2659,6 +2668,28 @@ impl WorldSim {
         let old = self.eff.get(&id).copied();
         if old == new {
             return;
+        }
+        // Diagnostics: the entry whose change of effect is about to break the confirmed-frame invariant.
+        if old.is_some_and(|o| o < self.conf) || new.is_some_and(|n| n < self.conf) {
+            let e = &self.entries[&id];
+            eprintln!(
+                "DIRTY at m{} (conf {}, frame {}): m{} s{} stamp {} {:?}: eff {:?} -> {:?}; violation {} disputed {} late_void {} verdict {:?} pending {} evicted {:?}",
+                self.me,
+                self.conf,
+                self.frame,
+                e.member,
+                e.seq,
+                e.stamp,
+                std::mem::discriminant(&e.payload),
+                old,
+                new,
+                self.violations.contains(&id),
+                self.disputed.contains(&id),
+                self.late_void.contains(&id),
+                self.verdicts.get(&id),
+                self.pending.contains(&(e.stamp, id)),
+                self.evicted.get(&e.member)
+            );
         }
         // D73(a): a hand pack acts at every frame it covers.
         let extra = e.payload.extra_frames();
@@ -3012,6 +3043,15 @@ impl WorldSim {
             self.set_eff(id);
             return;
         }
+        // F2: votes by their chains, so an ended epoch's votes stay readable (`vote_on`).
+        if let Payload::Vote { epoch, target, frozen, .. } = e.payload {
+            if target != m {
+                let v = self.vote_hist.entry((target, m)).or_default();
+                if !v.iter().any(|r| r.0 == epoch) {
+                    v.push((epoch, e.seq, frozen.0));
+                }
+            }
+        }
         match e.payload {
             Payload::Ack { horizon, heads, check, epoch, fed } => {
                 if epoch > 0 {
@@ -3178,6 +3218,10 @@ impl WorldSim {
         if self.adopting || self.fed.is_some() {
             return;
         }
+        // F2, revision 21 (a): a Part B removal's cut, once final.
+        if !self.pb_pending.is_empty() {
+            self.finalize_cuts();
+        }
         // Thin links Part B, rule 1: decide the verdicts whose statuses are known.
         if self.localized() || self.fed_mode_capable() {
             // Windows 0 and 1 need no data (Q = Q_max). They must exist before the loop below: rule 3's
@@ -3189,11 +3233,17 @@ impl WorldSim {
             }
             self.decide_verdicts();
         }
-        let c = if self.fed_mode_capable() {
+        // F2: at 3 players, or with conf in an earlier epoch, frames confirm by their epoch's rules (`walk_windows`).
+        let n = self.members.len();
+        let walk = self.cfg.localize && n >= 3 && (n == 3 || self.epoch_at(self.conf) < self.epoch);
+        let c = if walk {
             // Part B at 3 players (step 2): fed windows close by rule 3, the others by D54.
             let c_b = self.conf_candidate(true);
             let c_d = self.conf_candidate(false);
-            self.walk_windows(c_b, c_d)
+            // F2: and every judged entry below conf has its verdict, whichever rules its frames confirm by (an entry of
+            // an older epoch can be stamped in a D54 window of mine).
+            let first = self.pending.iter().next().map(|&(s, _)| s);
+            self.walk_windows(c_b, c_d).map(|c| first.map_or(c, |s| c.min(s)))
         } else {
             let localized = self.localized();
             self.conf_candidate(localized)
@@ -3211,11 +3261,27 @@ impl WorldSim {
         let mut f = self.conf;
         loop {
             let k = f / WINDOW;
-            let end = (k + 1) * WINDOW;
-            let limit = match self.window_mode(k) {
-                None => return Some(f),
-                Some(true) => c_b,
-                Some(false) => c_d,
+            // F2: segments end at a window's end or at the boundary of the change that ends their epoch. An epoch of
+            // 4 or more members confirms by rule 3, one of 3 by its windows' modes (an older one by both rules), one
+            // of 2 by D54.
+            let e = self.epoch_at(f);
+            let mut end = (k + 1) * WINDOW;
+            if let Some(d) = self.decided.get(e as usize) {
+                end = end.min(d.0.boundary);
+            }
+            let n_e = if e == self.epoch { self.members.len() } else { self.members_at(e).map_or(0, |m| m.len()) };
+            let limit = if n_e >= 4 {
+                c_b
+            } else if n_e == 3 && e == self.epoch {
+                match self.window_mode(k) {
+                    None => return Some(f),
+                    Some(true) => c_b,
+                    Some(false) => c_d,
+                }
+            } else if n_e == 3 {
+                c_b.zip(c_d).map(|(a, b)| a.min(b))
+            } else {
+                c_d
             };
             let Some(limit) = limit else { return Some(f) };
             if limit < end {
@@ -3241,7 +3307,18 @@ impl WorldSim {
             // Part B, rule 3: or the frames for which anything j could still author would be past its
             // deadline at q members.
             if localized {
-                if let Some(hb) = self.deadline_bound(j) {
+                let mut hb = self.deadline_bound(j);
+                // F2: while j's echo-stable prefix hasn't reached its first ack of my epoch, it may still author
+                // entries of its older epoch, judged with that epoch's members and quorum: the bound must hold there
+                // too (an older epoch of 3 or fewer members gives none: D54 windows void nothing).
+                let ej = self.entry_epoch(j, s);
+                if ej < self.epoch {
+                    hb = match self.ctx(ej) {
+                        Some(old) if old.members.len() >= 4 => hb.zip(self.deadline_bound_in(j, &old)).map(|(a, b)| a.min(b)),
+                        _ => None,
+                    };
+                }
+                if let Some(hb) = hb {
                     h = Some(h.map_or(hb, |x| x.max(hb)));
                 }
             }
@@ -3263,6 +3340,16 @@ impl WorldSim {
         // holds of that prefix cover: an entry stamped at or before a declared horizon must come
         // before that ack in the chain (8.2).
         for (&x, &(cut, _)) in &self.evicted {
+            // F2, revision 21 (a): a removal whose cut isn't final: what of x isn't vouched yet may still be. Bound by
+            // x's echo-stable horizon, or rule 3's bound, with its last epoch's members and quorum.
+            if self.pb_pending.contains(&x) {
+                let old = self.removed_in.get(&x).and_then(|&e| self.ctx(e - 1));
+                let es = old.as_ref().map_or(0, |o| self.echo_stable_in(x, o));
+                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=es).next_back()).map_or(0, |(_, h)| h + 1);
+                let hb = old.as_ref().and_then(|o| self.deadline_bound_in(x, o)).map_or(0, |b| b + 1);
+                c = c.min(h.max(hb));
+                continue;
+            }
             let held = self.contiguous.get(&x).copied().unwrap_or(0);
             let right = self.cut_ids.get(&x).is_none_or(|&cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
             if held < cut || !right {
@@ -3287,6 +3374,20 @@ impl WorldSim {
         if localized && c != u64::MAX {
             if let Some(&(s, _)) = self.pending.iter().next() {
                 c = c.min(s);
+            }
+            // So does a judged entry I hold but haven't validated yet, behind a hole in its author's chain: it acts
+            // already and has no verdict. The rejoin cell: rule 3's bound passed one (member 3's touch, stamped 243,
+            // behind a hole), and its verdict later voided it below conf.
+            let authors: Vec<MemberId> = self.members.iter().chain(self.evicted.keys()).copied().collect();
+            for j in authors {
+                let held = self.contiguous.get(&j).copied().unwrap_or(0);
+                for (_, id) in self.by_author.range((j, held.saturating_add(1))..=(j, u32::MAX)) {
+                    if let Some(e) = self.entries.get(id) {
+                        if localize::judged(&e.payload) && !self.verdicts.contains_key(id) {
+                            c = c.min(e.stamp);
+                        }
+                    }
+                }
             }
         }
         if localized && c != u64::MAX {
@@ -4816,9 +4917,19 @@ impl WorldSim {
                 self.stats.admin_refused += 1;
             }
         }
+        // F2, revision 21 (a): removing from a Part B epoch, the cut is the final vouched prefix (`finalize_cuts`);
+        // until then the removed chain keeps linking and nothing of it past its vouched prefix counts.
+        let pb_old = self.cfg.localize && self.members.len() >= 4;
         for r in &c.remove {
             self.members.remove(&r.member);
             self.roles.remove(&r.member);
+            self.removed_in.insert(r.member, self.epoch + 1);
+            if pb_old {
+                self.frozen.insert(r.member, u32::MAX);
+                self.evicted.insert(r.member, (u32::MAX, 0));
+                self.pb_pending.insert(r.member);
+                continue;
+            }
             self.frozen.insert(r.member, r.cut.0);
             self.cut_ids.insert(r.member, r.cut.1);
             self.evicted.insert(r.member, (r.cut.0, 0));
