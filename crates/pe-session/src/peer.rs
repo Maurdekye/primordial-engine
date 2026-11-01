@@ -356,7 +356,7 @@ impl SessionCore {
         match m {
             Msg::Entry(_) | Msg::Run { .. } => {
                 let mut v = match m {
-                    Msg::Run { lean, signed, entries } => self.sim.insert_run(from, lean, signed, entries),
+                    Msg::Run { lean, heads, signed, entries } => self.sim.insert_run(from, lean, heads, signed, entries),
                     Msg::Entry(e) => self.sim.insert(e),
                     _ => unreachable!(),
                 };
@@ -701,7 +701,7 @@ impl SessionCore {
             for (a, b, lean) in runs {
                 let class = if q[a..=b].iter().any(|x| x.1 == Class::Control) { Class::Control } else { Class::Live };
                 let entries: Vec<SignedEntry> = q[a..=b].iter().map(|x| x.0.clone()).collect();
-                let msg = if entries.len() == 1 && !lean { Msg::Entry(entries.into_iter().next().expect("one")) } else { Msg::Run { lean, signed: true, entries } };
+                let msg = if entries.len() == 1 && !lean { Msg::Entry(entries.into_iter().next().expect("one")) } else { Msg::Run { lean, heads: lean, signed: true, entries } };
                 self.out.push(Out { to: to.clone(), class, msg });
             }
         }

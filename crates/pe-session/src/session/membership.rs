@@ -2664,7 +2664,7 @@ impl WorldSim {
         if below.len() == 1 {
             return vec![Msg::Entry(below.pop().expect("one"))];
         }
-        vec![Msg::Run { lean: false, signed: true, entries: below }]
+        vec![Msg::Run { lean: false, heads: false, signed: true, entries: below }]
     }
 
     /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version, with its cover.
