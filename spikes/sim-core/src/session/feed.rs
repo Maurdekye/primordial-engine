@@ -291,7 +291,7 @@ impl WorldSim {
     pub(super) fn retry_echoes(&mut self) {
         let fs: Vec<MemberId> = self.echo_pending.keys().copied().collect();
         for f in fs {
-            let (echo, digest) = self.echo_pending[&f].clone();
+            let (echo, digest, aseq) = self.echo_pending[&f].clone();
             let mut triples: Vec<(MemberId, u64, u32, EntryId)> = Vec::with_capacity(echo.len());
             let (mut wait, mut differ) = (false, false);
             for &(x, b) in &echo {
@@ -319,7 +319,7 @@ impl WorldSim {
                 if self.votes.get(&x).is_some_and(|v| v.contains_key(&f)) {
                     continue;
                 }
-                self.echo_refs.entry((f, x)).or_default().insert(s, id);
+                self.echo_refs.entry((f, x)).or_default().insert(s, (id, aseq));
             }
         }
     }

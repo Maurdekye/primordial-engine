@@ -133,9 +133,41 @@ impl WorldSim {
         let e = self
             .echo_refs
             .get(&(y, x))
-            .and_then(|r| r.range(..=held).rev().find(|(s, hid)| self.by_author.get(&(x, **s)) == Some(*hid)))
+            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, _))| self.by_author.get(&(x, **s)) == Some(hid)))
             .map_or(0, |(s, _)| *s);
         r.max(e)
+    }
+
+    /// Revision 21 (RV20-1): the newest seq of x's chain that y references in an echo-stable ack of y (`es_y` is y's
+    /// echo-stable seq), in the version I hold, y's fed echo included likewise. A vote of y against x caps it at the
+    /// vote's frozen head (R3-1). These references, and only these, count for coverage, holder status and the cut.
+    fn evidence_ref(&self, y: MemberId, x: MemberId, es_y: u32) -> u32 {
+        let held = self.contiguous.get(&x).copied().unwrap_or(0);
+        let mine = |s: u32, hid: EntryId| s <= held && self.by_author.get(&(x, s)) == Some(&hid);
+        let r = self
+            .ack_head_hist
+            .get(&(y, x))
+            .and_then(|h| h.range(..=es_y).rev().find(|(_, v)| mine(v.0, v.1)))
+            .map_or(0, |(_, v)| v.0);
+        let e = self
+            .echo_refs
+            .get(&(y, x))
+            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| *aseq <= es_y && mine(**s, *hid)))
+            .map_or(0, |(s, _)| *s);
+        let v = r.max(e);
+        match self.votes.get(&x).and_then(|vs| vs.get(&y)) {
+            Some(rec) => v.min(rec.frozen.0),
+            None => v,
+        }
+    }
+
+    /// Revision 21: x's vouched prefix, the newest seq q − 1 others reference in their echo-stable acks (x being the
+    /// q-th, as for echo-stability). `es` holds every member's echo-stable seq.
+    pub(super) fn vouched(&self, x: MemberId, es: &BTreeMap<MemberId, u32>) -> u32 {
+        let q = self.quorum_q();
+        let mut v: Vec<u32> = self.members.iter().filter(|&&y| y != x).map(|&y| self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0))).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(q - 2).copied().unwrap_or(0)
     }
 
     /// Rule 1 (TLP-9): the echo-stable prefix of `x`'s chain. Its acks up to this seq have been referenced
@@ -478,7 +510,7 @@ impl WorldSim {
     /// Rule 1: e's verdict once its statuses decide it: Some(false) void at q proven lackers, Some(true)
     /// counting at n − q + 1 proven holders (the author holds its own). None while undecided, or while the
     /// deadline's window isn't final.
-    fn verdict_of(&self, e: &Entry, newest: &BTreeMap<MemberId, u64>) -> Option<bool> {
+    fn verdict_of(&self, e: &Entry, newest: &BTreeMap<MemberId, u64>, vouch: &BTreeMap<MemberId, u32>) -> Option<bool> {
         let v = self.windows.get(&(e.stamp / WINDOW))?;
         let deadline = e.stamp + Self::deadline_offset(v, &self.cfg, e.member);
         let q = self.quorum_q();
@@ -493,7 +525,8 @@ impl WorldSim {
         }
         if lackers >= q {
             Some(false)
-        } else if holders + q > n {
+        } else if holders + q > n && vouch.get(&e.member).is_some_and(|&v| v >= e.seq) {
+            // Revision 21, (b): and its author's vouched prefix covers it, on my line, so two versions never both count.
             Some(true)
         } else {
             None
@@ -514,6 +547,9 @@ impl WorldSim {
             })
             .collect();
         let horizon = newest.values().copied().max().unwrap_or(0);
+        // Revision 21: every member's echo-stable seq, then every member's vouched prefix.
+        let es: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.echo_stable(x))).collect();
+        let vouch: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.vouched(x, &es))).collect();
         let pend: Vec<(u64, EntryId)> = self.pending.iter().copied().collect();
         for (stamp, id) in pend {
             let Some(e) = self.entries.get(&id).cloned() else {
@@ -532,7 +568,7 @@ impl WorldSim {
             } else if stamp >= horizon {
                 None
             } else {
-                self.verdict_of(&e, &newest)
+                self.verdict_of(&e, &newest, &vouch)
             };
             let Some(counts) = decided else { continue };
             self.pending.remove(&(stamp, id));

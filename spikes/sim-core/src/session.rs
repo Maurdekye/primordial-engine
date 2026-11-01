@@ -2122,9 +2122,9 @@ pub struct WorldSim {
     ckpt_by_block: BTreeMap<(MemberId, u64), (u32, EntryId, u64)>,
     /// Part B, rule 1's echo: the checkpoints a fed member's echo credits as its references, once its digest
     /// matched my version. Read only by echo-stability (`matched_ref`): never holders, D54 stability or votes.
-    echo_refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, EntryId>>,
+    echo_refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (EntryId, u32)>>,
     /// A fed member's newest echo not yet checked (I don't hold every checkpoint it names yet).
-    echo_pending: BTreeMap<MemberId, (Vec<(MemberId, u64)>, u64)>,
+    echo_pending: BTreeMap<MemberId, (Vec<(MemberId, u64)>, u64, u32)>,
     /// Members my log shows on the feed (their newest ack carries an anchor), with the block of their echo
     /// of my chain (TLP-23).
     fed_peers: BTreeMap<MemberId, Option<u64>>,
@@ -3051,7 +3051,7 @@ impl WorldSim {
                     match fed {
                         Some(fa) if !fa.echo.is_empty() => {
                             self.fed_peers.insert(m, fa.echo.iter().find(|&&(x, _)| x == self.me).map(|&(_, b)| b));
-                            self.echo_pending.insert(m, (fa.echo, fa.digest));
+                            self.echo_pending.insert(m, (fa.echo, fa.digest, e.seq));
                             self.retry_echoes();
                         }
                         // The same echo as m's previous ack.
