@@ -272,7 +272,7 @@ impl DrivenPeer for SimSession {
         let e = match i {
             Interaction::Touch { object, impulse, grab } => r.sim.author(Payload::Touch { obj: object, impulse, grab }, Some(object)),
             Interaction::Hand { object, target_mm, active } => {
-                r.sim.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1 }, 0)
+                r.sim.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1, more: Vec::new() }, 0)
             }
         };
         let to: Vec<MemberId> = r.sim.audience().into_iter().filter(|&m| m != me).collect();
