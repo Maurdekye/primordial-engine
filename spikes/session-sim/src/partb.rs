@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use pe_session_sim::*;
 use pe_sim_core::session::*;
 
+use crate::p24r::sim_mut;
 use crate::review2::{link, plan, run_to_end, touch};
 
 const SCENE: SceneKind = SceneKind::Pile { side: 8, layers: 2 };
@@ -203,4 +204,140 @@ pub fn late() {
             verdict(&sim, &ids, &label, panic_at);
         }
     }
+}
+
+/// RV16-2 (rule 4's exception, plan item 7). Member 3 is fed on an 8 kbit/s link, which falls to 0.5 kbit/s (under
+/// the floors) from 5 s to 25 s, then recovers to 64 kbit/s. The others vote it out like a disconnection: no
+/// timely echo of their chains for X frames. The removed player follows at once as a spectator under its next id
+/// (a new member, 10.8), and its client asks to join only once its link has stayed above both floors for 10 s.
+/// `early` is the control: it asks 1 s after the removal, still under the floor.
+pub fn rejoin() {
+    for early in [false, true] {
+        rejoin_run(early);
+    }
+}
+
+fn rejoin_run(early: bool) {
+    const NEXT: MemberId = 103;
+    // The bandwidth floor at 4 players (plan, rule 4: about 2.5 kbit/s each way).
+    const FLOOR_BPS: u64 = 2_500;
+    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
+    let others: [MemberId; 3] = [1, 2, 4];
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| plan(&(120..2700).step_by(if m == 3 { 60 } else { 30 }).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let mut ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut p = Peer::new(NEXT, 0);
+    p.join(1, &ids, SCENE, cfg, 100_000, BTreeMap::new());
+    {
+        let r = p.worlds.get_mut(&1).unwrap();
+        r.adapt = true;
+        r.sim.quiet_until_member = true;
+    }
+    ps.push(p);
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 31);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    let mut sim = Sim::new(net, ps, 50_000_000);
+    sim.feed = true;
+    // Player 3's link, both directions, to every peer, under either id.
+    let set_link = |s: &mut Sim, bps: u64| {
+        for &x in &others {
+            for a in [3, NEXT] {
+                for pair in [(a, x), (x, a)] {
+                    s.net.caps.insert(pair, Cap { rate_bps: bps, burst_bytes: 4000, max_queue_us: 500_000 });
+                }
+            }
+        }
+    };
+    set_link(&mut sim, 8_000);
+    let (mut removed, mut above, mut asked, mut admitted, mut removed2): (Option<u64>, Option<u64>, Option<u64>, Option<u64>, Option<u64>) = (None, None, None, None, None);
+    let mut why: Option<String> = None;
+    let mut fed3 = 0u64;
+    // The others' paused frames when 3 is removed and when its next id is admitted, and their worst confirmation lag
+    // in each phase (frames, time).
+    let mut paused_at: [Vec<u64>; 2] = [Vec::new(), Vec::new()];
+    let mut worst = [(0u64, 0u64); 3];
+    let panic_at = run_to_end(&mut sim, |s| {
+        let now = s.net.now_us;
+        if now == 5_000_000 {
+            set_link(s, 500);
+        }
+        if now == 25_000_000 {
+            set_link(s, 64_000);
+        }
+        if s.is_fed(1, 3) {
+            fed3 += 1;
+        }
+        let (has3, has_next) = {
+            let r1 = &s.replica(1, 1).sim;
+            (r1.members.contains(&3), r1.members.contains(&NEXT))
+        };
+        let phase = if removed.is_none() { 0 } else if admitted.is_none() { 1 } else { 2 };
+        let lag = others.iter().map(|&m| { let r = &s.replica(m, 1).sim; r.now.saturating_sub(r.conf) }).max().unwrap_or(0);
+        if lag > worst[phase].0 {
+            worst[phase] = (lag, now);
+        }
+        if removed.is_none() && !has3 {
+            removed = Some(now);
+            why = s.replica(1, 1).sim.events.iter().find(|e| e.contains("member 3") && e.contains("vote to")).cloned();
+            paused_at[0] = others.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect();
+            // The removed player follows at once as a spectator, under its next id (a new member, 10.8).
+            let i3 = s.peers.iter().position(|p| p.id == 3).unwrap();
+            s.peers[i3].crashed = true;
+            for &m in &others {
+                sim_mut(s, m).follow(NEXT);
+            }
+        }
+        // Its client measures its link (the spike reads the caps) against both floors.
+        let up = s.net.caps.get(&(NEXT, 1)).is_none_or(|c| c.rate_bps >= FLOOR_BPS) && s.net.caps.get(&(1, NEXT)).is_none_or(|c| c.rate_bps >= FLOOR_BPS);
+        above = if up { Some(above.unwrap_or(now)) } else { None };
+        if let (Some(t0), None) = (removed, asked) {
+            let due = if early { now >= t0 + 1_000_000 } else { above.is_some_and(|a| now >= a + 10_000_000) };
+            if due {
+                for &m in &others {
+                    s.net.send(1, NEXT, m, &join_msg(session_id(1, &ids), NEXT, vec![], u64::MAX));
+                }
+                asked = Some(now);
+            }
+        }
+        if admitted.is_none() && has_next {
+            admitted = Some(now);
+            paused_at[1] = others.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect();
+        }
+        if admitted.is_some() && removed2.is_none() && !has_next {
+            removed2 = Some(now);
+        }
+    });
+    let label = format!("rejoin ({})", if early { "control: asks 1 s after the removal, under the floor" } else { "asks after 10 s above both floors" });
+    let secs = |t: Option<u64>| t.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6));
+    let r1 = &sim.replica(1, 1).sim;
+    let paused_end: Vec<u64> = others.iter().map(|&m| sim.replica(m, 1).sim.stats.paused_frames).collect();
+    println!(
+        "RESULT {label}: 3 fed {} ms; removed at {} ({}); spectator {} at once; join asked at {}; admitted at {}; removed again at {}",
+        fed3,
+        secs(removed),
+        why.as_deref().map_or("no vote seen at m1".to_string(), |e| e.split("] ").nth(1).unwrap_or(e).to_string()),
+        NEXT,
+        secs(asked),
+        secs(admitted),
+        secs(removed2)
+    );
+    println!(
+        "RESULT {label}: the others' paused frames: to the removal {:?}, removal to admission {:?}, after admission {:?}; worst lag (frames at s) before the removal {} at {:.2}, until admission {} at {:.2}, after {} at {:.2}",
+        paused_at[0],
+        paused_at[0].iter().zip(&paused_at[1]).map(|(a, b)| b.saturating_sub(*a)).collect::<Vec<_>>(),
+        paused_at[1].iter().zip(&paused_end).map(|(a, b)| b.saturating_sub(*a)).collect::<Vec<_>>(),
+        worst[0].0, worst[0].1 as f64 / 1e6, worst[1].0, worst[1].1 as f64 / 1e6, worst[2].0, worst[2].1 as f64 / 1e6
+    );
+    println!("RESULT {label}: floor votes per member {:?}; members at m1 {:?}", others.iter().map(|&m| sim.replica(m, 1).sim.stats.floor_removals).collect::<Vec<_>>(), r1.members);
+    let finals: Vec<MemberId> = r1.members.iter().copied().collect();
+    verdict(&sim, &finals, &label, panic_at);
 }

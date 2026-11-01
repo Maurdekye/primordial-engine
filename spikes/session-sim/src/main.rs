@@ -1423,6 +1423,7 @@ fn main() {
         Some("handowner") => handowner(),
         Some("stale") => partb::stale(),
         Some("late") => partb::late(),
+        Some("rejoin") => partb::rejoin(),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
         Some("bogusprecommit") => p24r::bogusprecommit(),

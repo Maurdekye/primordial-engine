@@ -1790,6 +1790,8 @@ pub struct Stats {
     /// those that didn't (production asks for the full signed heads, 7.6).
     pub echoes_matched: u64,
     pub echo_mismatches: u64,
+    /// Thin links Part B, rule 4's exception: fed members this replica voted out below the floors.
+    pub floor_removals: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -3444,7 +3446,10 @@ impl WorldSim {
             // Thin links Part B, rule 4: no demotion for a slow link in sessions of 4 or more; its late actions
             // are void instead (rule 1). Silence is still removed.
             let slow = !self.localized() && self.now >= since + self.cfg.suspect_after;
-            if !silent && !slow {
+            // Part B, rule 4's exception (TLP-25, TLP-29): a fed member that can't carry even the echo is treated
+            // like a disconnection.
+            let floor = if self.localized() { self.floor_breach(j) } else { None };
+            if !silent && !slow && floor.is_none() {
                 self.suspect_since.remove(&j);
                 continue;
             }
@@ -3476,6 +3481,9 @@ impl WorldSim {
             if silent {
                 self.stats.suspicions += 1;
                 self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
+            } else if let Some((lag, x)) = floor {
+                self.stats.floor_removals += 1;
+                self.ev(format!("member {j} is fed and its echo of my chain has trailed my checkpoints for {lag} frames (X = {x}): below the floors; vote to remove it"));
             } else {
                 self.stats.demotions += 1;
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
