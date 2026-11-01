@@ -724,6 +724,8 @@ impl Node {
                     self.pongs += 1;
                 }
                 self.clock.sample(sender, t, recv_us, r, raw, f64::from_bits(rate));
+                // Admin indicators (design 10.8): the late-acks hint's round trips.
+                self.core.rtt_sample(sender, recv_us.saturating_sub(t), local);
                 self.apply_clock();
                 // A probe's verdict on its episode (see `PROBE_EVERY_US`).
                 let rtt_best = self.clock.best_rtt_to(sender);
@@ -1440,6 +1442,13 @@ impl Node {
                 s.membership().members().iter().filter(|&&m| m != self.me).map(|&m| (m, self.clock.rtt_excess(m, local).map(|x| x / 1000), self.back_queue(m) / 1000)).collect::<Vec<_>>()
             );
             self.note(line);
+            // Admin indicators (design 10.8), while this member holds Kick and one names someone.
+            if let Some(i) = sim_view::indicators(&self.core, self.me, local) {
+                let late: Vec<String> = i.late_acks.iter().filter(|l| l.flagged).map(|l| format!("{} ({}/{})", l.member, l.late, l.eligible)).collect();
+                if !i.holding.is_empty() || !late.is_empty() {
+                    self.note(format!("admin: lag {} frames; holding the session: {:?}; late acks (a timing hint, not proof): {:?}", i.lag_frames, i.holding, late));
+                }
+            }
         }
     }
 }
@@ -1561,6 +1570,9 @@ impl DrivenPeer for Node {
     }
     fn sync(&self) -> SyncStatus {
         sim_view::sync(&self.core.sim)
+    }
+    fn indicators(&self) -> Option<Indicators> {
+        sim_view::indicators(&self.core, self.me, self.local_us())
     }
     fn scenario(&mut self) -> Option<&mut dyn ScenarioControl> {
         None

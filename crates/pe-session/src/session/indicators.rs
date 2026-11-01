@@ -33,6 +33,24 @@ pub enum Hold {
     NotHeard { of: MemberId, frames: u64 },
 }
 
+impl Hold {
+    /// A plain-text line for an admin's display (pe-mcp, pe-app): who, never why.
+    pub fn describe(&self) -> String {
+        match *self {
+            Hold::Adopting => "membership change: adopting a decision".into(),
+            Hold::Membership { of } => format!("membership change around member {of}; waits for the view change"),
+            Hold::Voted { voter, of } => format!("member {voter} voted against member {of}; waits for the view change"),
+            Hold::NoAckYet { of } => format!("member {of} is behind: no ack yet"),
+            Hold::ReplicaGap { of } => format!("this replica: a gap in member {of}'s chain"),
+            Hold::Behind { of, frames } => format!("member {of} is behind by {frames} frames"),
+            Hold::NotReferencing { by, of, frames } => {
+                format!("member {by} is not referencing member {of}'s chain ({frames} frames): withholding, or a one-way cut; the indicator can't tell")
+            }
+            Hold::NotHeard { of, frames } => format!("member {of} is not heard by the others ({frames} frames)"),
+        }
+    }
+}
+
 impl WorldSim {
     /// [`WorldSim::stable_seq`] without its side effects: no fetch requests and no `stable_hi`
     /// update (review IND-6). Same value: `stable_hi` only ever holds a value `stable_seq` returned.
@@ -243,5 +261,80 @@ impl WorldSim {
     /// The id of this replica's own entry `seq`, if it holds it.
     pub fn own_id(&self, seq: u32) -> Option<EntryId> {
         self.by_author.get(&(self.me, seq)).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::peer::SessionCore;
+
+    fn cores(n: u32) -> Vec<SessionCore> {
+        let ids: Vec<MemberId> = (1..=n).collect();
+        let scene = SceneKind::Pile { side: 2, layers: 2 };
+        ids.iter().map(|&m| SessionCore::new(WorldSim::new(1, m, &ids, scene, SimConfig::default(), KeyRing::test(m)))).collect()
+    }
+
+    /// Run `cs` back to back with no loss for `ms` milliseconds; `drop_from` stops delivering a
+    /// member's messages from `cut_ms` on.
+    fn run(cs: &mut [SessionCore], ms: u64, cut: Option<(MemberId, u64)>) {
+        for c in cs.iter_mut() {
+            c.start(0);
+        }
+        for t in 0..ms {
+            let now = t * 1000;
+            for c in cs.iter_mut() {
+                c.tick(now);
+            }
+            let outs: Vec<(MemberId, Vec<crate::peer::Out>)> = cs.iter_mut().map(|c| (c.me(), c.outbox())).collect();
+            for (src, os) in outs {
+                if cut.is_some_and(|(m, at)| m == src && t >= at) {
+                    continue;
+                }
+                for o in os {
+                    for &d in &o.to {
+                        cs[(d - 1) as usize].receive(src, o.msg.clone(), now);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The read-only twin returns what `stable_seq` returns, for every member at every replica,
+    /// in a healthy run and with a member silenced (review IND-6). (It takes `&self`, so it can't
+    /// queue a fetch or raise `stable_hi`.)
+    #[test]
+    fn the_read_only_twin_matches_stable_seq() {
+        for cut in [None, Some((3, 1500))] {
+            let mut cs = cores(4);
+            run(&mut cs, 2500, cut);
+            for c in cs.iter_mut() {
+                for m in 1..=4 {
+                    let ro = c.sim.stable_seq_ro(m);
+                    assert_eq!(ro, c.sim.stable_seq(m), "member {m} at {}", c.me());
+                }
+            }
+        }
+    }
+
+    /// Only a member holding Kick gets the indicators; a silenced member is named once the lag has
+    /// lasted (design 10.8).
+    #[test]
+    fn admins_only_and_a_silent_member_is_named() {
+        let mut cs = cores(4);
+        for c in cs.iter_mut() {
+            c.sim.vcm.role_defs.insert(1, 0);
+            c.sim.vcm.roles.insert(2, 1);
+        }
+        run(&mut cs, 1000, None);
+        assert!(cs[0].indicators(2, 1_000_000).is_none(), "a guest gets nothing");
+        let i = cs[0].indicators(1, 1_000_000).expect("an admin");
+        assert!(i.holding.is_empty(), "nothing lags yet: {i:?}");
+        // Member 4 falls silent at 1 s (before suspect_after removes it at 3 s).
+        let mut cs = cores(4);
+        run(&mut cs, 2800, Some((4, 1000)));
+        let i = cs[0].indicators(1, 2_800_000).expect("an admin");
+        assert!(i.holding.iter().any(|h| matches!(h, Hold::Behind { of: 4, .. })), "4 named behind: {i:?}");
+        assert!(!i.holding.iter().any(|h| matches!(h, Hold::NotReferencing { by, .. } if *by != 4)), "no one else accused: {i:?}");
     }
 }
