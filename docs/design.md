@@ -2340,15 +2340,16 @@ and the engager's hand replayed after the gesture had ended.
          the 30 s do not run, and calm does not lower into L or any finer level: idle calm stops at L + 1,
          and a level already at L or finer stays where it is. Calm while idle says nothing about whether
          the link can carry a gesture. The 5 s of calm needed to lower into L count only time with the
-         member active, so idle calm does not count at the next gesture's first frame either [proposal].
-         Before, L aged out between two gestures 40 s apart, and the second one congested the link from
-         level 0 again (below the table).
-       * Idle is 7.6's predicate, read every tick. A gesture's author stays busy throughout (a pending
-         pack holds it), but an observer counts as idle between packs: during a level-5 gesture at 16
-         kbit/s it turned busy 28 times, most for about a frame [V, instrumented run]. So an observer's L
-         barely ages during a coarse gesture, and it lowers into L only after 5 s of active calm, which a
-         coarse gesture does not give it, or once L is forgotten (by the 5-minute ceiling at the latest).
-         Its level matters only for its acks while busy; idle, it acks every 8 frames anyway.
+         member active, so idle calm does not count at the next gesture's first frame either (decided,
+         @coordinator-opus, 2026-11-01). Before, L aged out between two gestures 40 s apart, and the
+         second one congested the link from level 0 again (below the table).
+       * Idle is 7.6's predicate, read every tick (decided, @coordinator-opus, 2026-11-01: the ceiling
+         bounds what it costs). A gesture's author stays busy throughout (a pending pack holds it), but an
+         observer counts as idle between packs: during a level-5 gesture at 16 kbit/s it turned busy 28
+         times, most for about a frame [V, instrumented run]. So an observer's L barely ages during a
+         coarse gesture, and it lowers into L only after 5 s of active calm, which a coarse gesture does
+         not give it, or once L is forgotten (by the 5-minute ceiling at the latest). Its level matters
+         only for its acks while busy; idle, it acks every 8 frames anyway.
        * **A ceiling:** L is forgotten 5 minutes after the last congestion, however much of that time
          was idle [proposal: 5 min], so a session of short gestures re-probes the finer levels
          eventually.
@@ -2526,10 +2527,11 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73]:
     entries 6.4 frames later on average.
   * The single-gesture cells in the table changed only in the time the controller spends at each level
     after the gesture: idle, it no longer steps back down into L.
-  * **Why the 5 s count only active time** [proposal]: counted instead, the calm built up while idle
-    lowered the level one step at the second gesture's first frame, into L. That fit
-    at 16 and 32 kbit/s (mean latency 15.0 and 15.4 frames at the author), but at 12 kbit/s it queued
-    473 ms and took 2.6 s to recover [V, the rule with idle calm counted, not kept as a log].
+  * **Why the 5 s count only active time** (decided, @coordinator-opus, 2026-11-01, on the 12 kbit/s
+    cell): counted instead, the calm built up while idle lowered the level one step at the second
+    gesture's first frame, into L. That fit at 16 and 32 kbit/s (mean latency 15.0 and 15.4 frames at
+    the author), but at 12 kbit/s it queued 473 ms and took 2.6 s to recover [V, the rule with idle calm
+    counted, not kept as a log].
 * **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
   even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
   wire format]. Below the floor a two-member session stalls, because it cannot demote either member
@@ -6935,7 +6937,8 @@ entry says so.
     onset rule as @shader-lang built it; 10.9) [proposal: 5 s and 30 s];
   * while the member is idle (7.6), the memory does not age and calm does not lower into that level or a
     finer one; it is forgotten 5 minutes after the last congestion regardless (@coordinator-opus,
-    2026-11-01; 10.9) [proposal: 5 min, and the 5 s of calm counting only time with the member active].
+    2026-11-01; 10.9) [proposal: 5 min]. The 5 s of calm count only time with the member active, and idle
+    is 7.6's per-tick predicate (decided, @coordinator-opus, 2026-11-01).
 
   Production (pe-app) measures the queue as a LEDBAT-style one-way queueing delay (10.9, item 3) [V pe-app
   r18-app]. These defaults kept a 32-64 kbit/s cap
