@@ -72,6 +72,14 @@ impl Payload {
                 | Payload::DefineRole { .. }
                 | Payload::Ownership { .. }
                 | Payload::Ban { .. }
+                // R14's transfer records and the portal: rare, and shown outside their author's chain
+                // (relays into another world, saves, provenance), so also standalone (review O2-1 question).
+                | Payload::Depart { .. }
+                | Payload::Arrive { .. }
+                | Payload::Verdict { .. }
+                | Payload::Attest { .. }
+                | Payload::Provenance { .. }
+                | Payload::Portal { .. }
         )
     }
 
