@@ -613,7 +613,7 @@ impl Sim {
                 for a in r.plan.remove(&clock_frame).unwrap_or_default() {
                     let p = match a {
                         Action::Touch { obj, impulse, grab } => Payload::Touch { obj, impulse, grab },
-                        Action::Hand { obj, target_mm, active, .. } => Payload::Hand { obj, target_mm, active, span: 1 },
+                        Action::Hand { obj, target_mm, active, .. } => Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() },
                         Action::Portal { open } => Payload::Portal { open },
                         Action::Backdated { obj, impulse, back } => {
                             if r.core.ready() {
@@ -661,7 +661,7 @@ impl Sim {
                             let e = r.core.sim.author_ahead(p, ahead);
                             r.core.sent(e);
                         }
-                        Ok(_) | Err(AuthorError::NotReady | AuthorError::Stride) => {}
+                        Ok(_) | Err(AuthorError::NotReady | AuthorError::Stride | AuthorError::Pending) => {}
                     }
                 }
             }

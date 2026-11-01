@@ -33,6 +33,8 @@ use crate::session::{EntryId, MemberId, Msg, Outcome, Payload, SignedEntry, Tran
 /// tick's hand pose shares the ack's datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
+pub const IDLE_ACK_FRAMES: u64 = 8;
 /// R18's thresholds (design 10.9): raise above 40 ms at most every 100 ms; lower after 300 ms below
 /// 10 ms.
 const RAISE_US: u64 = 40_000;
@@ -71,6 +73,9 @@ pub enum Event {
     Confirmed { conf: u64 },
     /// A membership decision: the epoch reached and the members removed.
     Epoch { epoch: u32, removed: Vec<MemberId> },
+    /// V3 (user 08:31Z): no admin is left, so the session closed at frame `at`: every member listed was
+    /// removed, and nothing stamped at or after `at` acts.
+    Closed { at: u64, removed: Vec<MemberId> },
     Paused { frame: u64 },
     Resumed { frame: u64 },
     /// A canonical check hash differed from another member's: divergence. `total` counts them.
@@ -88,8 +93,18 @@ pub enum AuthorError {
     NotReady,
     /// A hand that is not this member's (8.4).
     NotOwner,
-    /// A hand pose that is not due at this congestion level (R18): the next one is.
+    /// A second pose for a hand in a frame that already has one.
     Stride,
+    /// Accepted, nothing to send yet: under R18 thinning the pose waits in this member's pending
+    /// pack (D73(a)) and already moves its hand here; it goes out with the pack.
+    Pending,
+}
+
+/// D73(a): a hand's poses not yet sent, for consecutive frames from `p0`, at stride `k`.
+struct Pack {
+    p0: u64,
+    k: u64,
+    targets: Vec<[i32; 3]>,
 }
 
 struct TickState {
@@ -117,6 +132,11 @@ pub struct SessionCore {
     /// Acks on frame ticks (a multiple of the ack interval) rather than by timer: for an IO that
     /// batches a tick's messages into one datagram (R18, viz-4). On by default.
     pub ack_on_frames: bool,
+    /// 7.6 reduction 2: whether the member was idle at its last ack decision.
+    was_idle: bool,
+    /// Test fixture (review VCR-12 under 7.6 reduction 2): ack only on the member's own interval, never
+    /// at once on leaving idle, so a member set to ack rarely keeps a stale horizon.
+    pub ack_grid_only: bool,
     last_frame_seen: u64,
     /// R18: adapt the hand-pose stride and ack interval to the uplink queue delay. On by default.
     pub adapt: bool,
@@ -129,12 +149,23 @@ pub struct SessionCore {
     /// congestion. [proposal: 5 s and 30 s, tuned by the 80 kbit/s run.]
     pub recall_calm_us: u64,
     pub forget_us: u64,
+    /// The memory's ceiling: forgotten this long after the last congestion, idle or not, so a
+    /// session of short gestures re-probes finer levels eventually [proposal: 5 min].
+    pub ceiling_us: u64,
+    /// When the uplink was last congested (any queue above 40 ms keeps the memory: review D56-1).
+    congested_t: u64,
+    /// The last tick at which this member was idle (design 7.6): calm before it does not count
+    /// toward lowering into the remembered level, and idle time does not age the memory
+    /// (@coordinator-opus, 2026-11-01; the spike at main 867495a).
+    idle_at: u64,
     /// The highest level at which congestion began (the signal crossed 40 ms upward), if remembered.
     pub congested_at: Option<usize>,
     over: bool,
     quiet_us: u64,
     last_adapt_us: Option<u64>,
     hand_last: BTreeMap<u32, u64>,
+    /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
+    packs: BTreeMap<u32, Pack>,
     /// Ticks spent at each congestion level.
     pub level_ms: [u64; 6],
     tick: Option<TickState>,
@@ -144,6 +175,7 @@ pub struct SessionCore {
     mine: BTreeMap<EntryId, Option<(u64, Outcome)>>,
     last_conf: u64,
     last_epoch_log: usize,
+    told_closed: bool,
     paused: bool,
     last_checks_bad: u64,
     /// Review P23-3: donors asked for a state ([`SessionCore::request_state`]) and not answered yet.
@@ -171,6 +203,8 @@ impl SessionCore {
             // Saturating: hz = 0 (dt = inf) must reach a validator rather than overflow in a debug build.
             ack_every_us: dt_us.saturating_mul(2),
             ack_on_frames: true,
+            was_idle: false,
+            ack_grid_only: false,
             last_frame_seen: u64::MAX,
             adapt: true,
             level: 0,
@@ -179,11 +213,15 @@ impl SessionCore {
             queue_delay_us: None,
             recall_calm_us: 5_000_000,
             forget_us: 30_000_000,
+            ceiling_us: 300_000_000,
+            congested_t: 0,
+            idle_at: 0,
             congested_at: None,
             over: false,
             quiet_us: 0,
             last_adapt_us: None,
             hand_last: BTreeMap::new(),
+            packs: BTreeMap::new(),
             level_ms: [0; 6],
             tick: None,
             out: Vec::new(),
@@ -191,6 +229,7 @@ impl SessionCore {
             mine: BTreeMap::new(),
             last_conf: 0,
             last_epoch_log: 0,
+            told_closed: false,
             paused: false,
             last_checks_bad: 0,
             state_asked: BTreeSet::new(),
@@ -218,6 +257,12 @@ impl SessionCore {
     /// Clock sync: session time = local time + `offset_us`.
     pub fn set_offset(&mut self, offset_us: i64) {
         self.offset_us = offset_us;
+    }
+
+    /// Idle (design 7.6, reduction 2): nothing but acks is unconfirmed in this member's own copy.
+    /// R18's congested-level memory (D56) and idle thinning gate on it.
+    pub fn idle(&self) -> bool {
+        self.sim.idle()
     }
 
     /// R18: the uplink queue delay the IO measured (the longest towards any member), µs, or `None`
@@ -386,14 +431,22 @@ impl SessionCore {
             self.level = self.level.min(HAND_STRIDE.len() - 1);
             let dt = self.last_adapt_us.map_or(0, |t| now_us.saturating_sub(t));
             self.last_adapt_us = Some(now_us);
+            // Design 7.6's idle state: idle calm says nothing about whether the link can carry a
+            // gesture (@coordinator-opus, 2026-11-01).
+            let idle_now = self.sim.idle();
             match self.queue_delay_us {
                 Some(b) if b > RAISE_US => {
                     // D56: remember the level at which congestion began, not the levels the
-                    // controller climbs through while the queue drains.
-                    if !self.over {
-                        self.over = true;
-                        self.congested_at = self.congested_at.max(Some(self.level));
-                    }
+                    // controller climbs through while the queue drains. Any congestion keeps the
+                    // memory, raise or not (review D56-1).
+                    let onset = !self.over;
+                    self.over = true;
+                    self.congested_at = match self.congested_at {
+                        Some(l) if onset => Some(l.max(self.level)),
+                        Some(l) => Some(l),
+                        None => Some(self.level),
+                    };
+                    self.congested_t = now_us;
                     self.quiet_us = 0;
                     self.calm_since = 0;
                     if now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
@@ -403,9 +456,9 @@ impl SessionCore {
                 }
                 Some(b) => {
                     self.over = false;
-                    self.quiet_us += dt;
-                    if self.quiet_us >= self.forget_us {
-                        self.congested_at = None;
+                    // Idle time does not age the memory.
+                    if !idle_now {
+                        self.quiet_us += dt;
                     }
                     if b < CALM_US {
                         if self.calm_since == 0 {
@@ -418,10 +471,23 @@ impl SessionCore {
                 // No signal: hold. Not calm, and the forget timer stops.
                 None => self.calm_since = 0,
             }
+            if self.congested_at.is_some() && (self.quiet_us >= self.forget_us || now_us >= self.congested_t + self.ceiling_us) {
+                self.congested_at = None;
+            }
+            if idle_now {
+                self.idle_at = now_us;
+            }
             if self.level > 0 && self.calm_since > 0 {
+                // Lowering into the remembered level or a finer one takes the longer calm with the
+                // member active throughout: calm while idle never lowers into L (idle calm stops at
+                // L + 1), nor counts once the member is active again. Lowering above L is unchanged.
                 let into = self.level - 1;
-                let calm = if self.congested_at.is_some_and(|c| into <= c) { self.recall_calm_us } else { LOWER_AFTER_US };
-                if now_us >= self.calm_since + calm && now_us >= self.level_t + LOWER_AFTER_US {
+                let (calm, from) = if self.congested_at.is_some_and(|c| into <= c) {
+                    (self.recall_calm_us, self.calm_since.max(self.idle_at))
+                } else {
+                    (LOWER_AFTER_US, self.calm_since)
+                };
+                if now_us >= from + calm && now_us >= self.level_t + LOWER_AFTER_US {
                     self.level = into;
                     self.level_t = now_us;
                     self.calm_since = now_us;
@@ -452,12 +518,19 @@ impl SessionCore {
     /// fetch requests.
     pub fn end_tick(&mut self, now_us: u64) {
         let Some(t) = self.tick.take() else { return };
-        let ack_due = if self.ack_on_frames {
-            let every = (self.ack_every_us / self.dt_us).max(1);
-            t.new_frame && t.clock_frame % every == 0
-        } else {
-            now_us >= self.next_ack_us
-        };
+        // 7.6 reduction 2 (spike 562b2fb): an idle member acks every IDLE_ACK_FRAMES frames at any R18
+        // level, the longer of the two intervals; the ack that leaves idle goes at once, off the grid.
+        let idle = self.sim.idle();
+        let leaving = self.was_idle && !idle && !self.ack_grid_only;
+        self.was_idle = idle;
+        let base = (self.ack_every_us / self.dt_us).max(1);
+        let every = if idle { base.max(IDLE_ACK_FRAMES) } else { base };
+        let ack_due = leaving
+            || if self.ack_on_frames {
+                t.new_frame && t.clock_frame % every == 0
+            } else {
+                now_us >= self.next_ack_us
+            };
         let send = |s: &mut Self, v: Vec<SignedEntry>, class| {
             for e in v {
                 s.send_to_all(&t.audience, class, Msg::Entry(e));
@@ -465,7 +538,7 @@ impl SessionCore {
         };
         // Test fixture (review VC3R-6): a joiner that starts from a state transfer acks only once admitted.
         if ack_due && !(self.sim.quiet_until_member && !self.sim.membership().members().contains(&self.sim.me)) {
-            self.next_ack_us = now_us + self.ack_every_us;
+            self.next_ack_us = now_us + every * self.dt_us;
             let a = self.sim.author_ack();
             send(self, vec![a], Class::Live);
         }
@@ -500,18 +573,39 @@ impl SessionCore {
                     return Err(AuthorError::NotOwner);
                 }
                 let k = if self.adapt { HAND_STRIDE[self.level.min(HAND_STRIDE.len() - 1)] } else { 1 };
-                if active {
-                    let f = self.tick.as_ref().map_or(self.sim.now, |t| t.clock_frame);
-                    // Poses fall on frames aligned to the stride, which spaces them k apart within a
-                    // level. At a level change the next aligned frame is taken even if it is closer
-                    // than k to the last pose: waiting for last + k too left gaps (14 frames at the
-                    // 4 -> 5 switch) longer than a hand's span plus its coast (shader-reviewer M1).
-                    if f % k != 0 || self.hand_last.get(&obj).is_some_and(|&l| f <= l) {
+                // The frame this pose is for: the stamp an entry authored now would get.
+                let s = self.sim.frame.max(self.sim.now) + ahead;
+                if !active {
+                    self.flush_pack(obj);
+                    self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead)
+                } else {
+                    if self.hand_last.get(&obj).is_some_and(|&l| s <= l) {
                         return Err(AuthorError::Stride);
                     }
-                    self.hand_last.insert(obj, f);
+                    self.hand_last.insert(obj, s);
+                    if k == 1 {
+                        self.flush_pack(obj);
+                        self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead)
+                    } else {
+                        // D73(a): under R18 thinning every frame keeps its own target. The pose moves
+                        // this member's hand at once (`own_pending`), and goes out in a pack of the
+                        // frames of one stride window, [m k, m k + k - 1], stamped at its first frame:
+                        // one entry every k frames, the author's hand exact. A stride change or a gap
+                        // sends the pack early.
+                        if self.packs.get(&obj).is_some_and(|p| p.k != k || p.p0 + p.targets.len() as u64 != s) {
+                            self.flush_pack(obj);
+                        }
+                        let p = self.packs.entry(obj).or_insert(Pack { p0: s, k, targets: Vec::new() });
+                        p.targets.push(target_mm);
+                        let full = (s + 1) % k == 0 || p.targets.len() as u64 >= k;
+                        self.sim.own_pending.insert((s, obj), target_mm);
+                        self.sim.hold_horizon_below = self.packs.values().map(|p| p.p0).min();
+                        if !full {
+                            return Err(AuthorError::Pending);
+                        }
+                        return Ok(self.flush_pack(obj).expect("a pack with a pose"));
+                    }
                 }
-                self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: k as u8 }, ahead)
             }
             p => {
                 if !self.ready() {
@@ -527,6 +621,21 @@ impl SessionCore {
             }
         };
         Ok(self.sent(e))
+    }
+
+    /// D73(a): send hand `obj`'s pending pack, if any: one entry stamped at its first frame holding a
+    /// target per frame. Its poses stop being local-only; the pack replaces them (its insertion rolls
+    /// this replica back to the first frame, which re-simulates with the same targets).
+    fn flush_pack(&mut self, obj: u32) -> Option<SignedEntry> {
+        let p = self.packs.remove(&obj)?;
+        for j in 0..p.targets.len() as u64 {
+            self.sim.own_pending.remove(&(p.p0 + j, obj));
+        }
+        self.sim.hold_horizon_below = self.packs.values().map(|p| p.p0).min();
+        let mut ts = p.targets.into_iter();
+        let target_mm = ts.next().expect("a pack holds a pose");
+        let e = self.sim.author_stamped(Payload::Hand { obj, target_mm, active: true, span: 1, more: ts.collect() }, p.p0);
+        Some(self.sent(e))
     }
 
     /// Broadcast an entry this member authored on the sim directly (scenario fixtures: backdated
@@ -572,6 +681,10 @@ impl SessionCore {
         if s.conf != self.last_conf {
             self.last_conf = s.conf;
             self.events.push(Event::Confirmed { conf: s.conf });
+        }
+        if let (Some(at), false) = (s.vcm.closed_at, self.told_closed) {
+            self.told_closed = true;
+            self.events.push(Event::Closed { at, removed: s.closed_members.clone() });
         }
         for (epoch, _, _, removed) in &s.vcm.vc_log[self.last_epoch_log..] {
             self.events.push(Event::Epoch { epoch: *epoch, removed: removed.clone() });
@@ -642,7 +755,7 @@ mod tests {
         a.tick(0);
         let mine = *a.sim.hand_owners.iter().find(|(_, m)| **m == 1).unwrap().0;
         let theirs = *a.sim.hand_owners.iter().find(|(_, m)| **m == 2).unwrap().0;
-        let hand = |obj| Payload::Hand { obj, target_mm: [0, 500, 0], active: true, span: 1 };
+        let hand = |obj| Payload::Hand { obj, target_mm: [0, 500, 0], active: true, span: 1, more: Vec::new() };
         assert_eq!(a.author(hand(theirs), 0).unwrap_err(), AuthorError::NotOwner);
         assert!(a.author(hand(mine), 0).is_ok());
         // One pose per frame at level 0: a second one in the same frame waits for the next.

@@ -52,6 +52,20 @@ impl std::fmt::Debug for EntryId {
 /// and never take claims (review M3).
 pub const LOGIC: MemberId = 0;
 
+/// D73(a): the most targets one hand entry packs, the largest R18 hand stride (`peer::HAND_STRIDE`).
+/// It also bounds how far a pack's stamp may lie behind its author's present (k - 1 frames).
+pub const PACK_MAX: u64 = 8;
+
+impl Payload {
+    /// The frames after its stamp that an entry also acts on: a hand pack's extra targets (D73(a)).
+    pub fn extra_frames(&self) -> u64 {
+        match self {
+            Payload::Hand { more, .. } => more.len() as u64,
+            _ => 0,
+        }
+    }
+}
+
 // ---- object state ------------------------------------------------------------------------------
 
 /// Exact bit pattern of a rigid body's sim state: position, rotation, linear and angular velocity.
@@ -139,9 +153,12 @@ pub enum Payload {
     /// once and never renews (review M3).
     Touch { obj: u32, impulse: [f32; 3], grab: bool },
     /// Kinematic hand target, in millimetres (quantized so every peer sees the same bits), to be
-    /// reached `span` frames after the stamp (1 normally; more when the author thins its entry
-    /// rate under congestion, R18). `active = false` parks the hand.
-    Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8 },
+    /// reached `span` frames after the stamp (1 normally). `active = false` parks the hand.
+    /// D73(a): `more` packs the targets of the frames after the stamp, one per frame (at most
+    /// [`PACK_MAX`] targets in all), so an author thinned by R18 to one entry every k frames still
+    /// gives every frame its own target: target j applies at stamp + j with a span of 1, the last
+    /// with `span`. Empty for an unpacked entry (wire tag 2; a pack is tag 21).
+    Hand { obj: u32, target_mm: [i32; 3], active: bool, span: u8, more: Vec<[i32; 3]> },
     /// R14, source world: carry `obj` out through the portal into escrow, bound for world `dest`.
     /// The transfer's id is derived from this entry's id (review NEW-5), never chosen.
     /// P2-5: `hop` is the certified hop that brought the object here, when this world does not
@@ -308,8 +325,13 @@ impl Wr {
             Payload::Touch { obj, impulse, grab } => {
                 self.u8(1); self.u32(*obj); for c in impulse { self.u32(c.to_bits()) } self.u8(*grab as u8);
             }
-            Payload::Hand { obj, target_mm, active, span } => {
-                self.u8(2); self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
+            Payload::Hand { obj, target_mm, active, span, more } => {
+                self.u8(if more.is_empty() { 2 } else { 21 });
+                self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
+                if !more.is_empty() {
+                    self.u8(more.len() as u8);
+                    for t in more { for c in t { self.i32(*c) } }
+                }
             }
             Payload::Depart { obj, dest, deadline, hop } => {
                 self.u8(3); self.u32(*obj); self.u32(*dest); self.u64(*deadline);
@@ -518,7 +540,21 @@ impl<'a> Rd<'a> {
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
-            2 => Payload::Hand { obj: self.u32()?, target_mm: [self.i32()?, self.i32()?, self.i32()?], active: self.u8()? != 0, span: self.u8()? },
+            t @ (2 | 21) => {
+                let (obj, target_mm, active, span) = (self.u32()?, [self.i32()?, self.i32()?, self.i32()?], self.u8()? != 0, self.u8()?);
+                let mut more = Vec::new();
+                if t == 21 {
+                    // D73(a): a pack holds 2..=PACK_MAX targets; anything else has no canonical encoding.
+                    let n = self.u8()? as u64;
+                    if n == 0 || n + 1 > PACK_MAX {
+                        return None;
+                    }
+                    for _ in 0..n {
+                        more.push([self.i32()?, self.i32()?, self.i32()?]);
+                    }
+                }
+                Payload::Hand { obj, target_mm, active, span, more }
+            }
             3 => {
                 let (obj, dest, deadline) = (self.u32()?, self.u32()?, self.u64()?);
                 let hop = if self.u8()? == 1 { Some(self.hop()?) } else { None };

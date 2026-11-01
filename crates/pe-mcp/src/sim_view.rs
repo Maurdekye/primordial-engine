@@ -129,7 +129,7 @@ impl HandHold {
     /// Send the held pose if one is due at this frame (call it every tick); returns it.
     pub fn tick(&mut self, core: &mut SessionCore) -> Option<SignedEntry> {
         let (obj, target_mm) = self.target?;
-        let e = core.author(Payload::Hand { obj, target_mm, active: true, span: 1 }, 0).ok()?;
+        let e = core.author(Payload::Hand { obj, target_mm, active: true, span: 1, more: Vec::new() }, 0).ok()?;
         self.first.get_or_insert_with(|| e.clone());
         Some(e)
     }
@@ -146,7 +146,7 @@ pub const HOLD_WAIT_MS: u64 = 1000;
 pub fn author(s: &mut WorldSim, i: Interaction) -> SignedEntry {
     match i {
         Interaction::Touch { object, impulse, grab } => s.author(Payload::Touch { obj: object, impulse, grab }, Some(object)),
-        Interaction::Hand { object, target_mm, active } => s.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1 }, 0),
+        Interaction::Hand { object, target_mm, active } => s.author_ahead(Payload::Hand { obj: object, target_mm, active, span: 1, more: Vec::new() }, 0),
     }
 }
 

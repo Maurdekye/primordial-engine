@@ -53,13 +53,15 @@ pub struct CooldownRow {
     pub until: u64,
 }
 
-/// An active hand: frames since its last entry, and that entry's span (R18: its target is reached
-/// over `span` frames; then dead reckoning, `SimConfig::hand_predict`).
+/// An active hand: frames since its last target, that target's span (its target is reached over
+/// `span` frames), and whether it continues a stream (1) or not (0): only a stream coasts past its
+/// span (dead reckoning, D52, `SimConfig::hand_predict`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct HandIdle {
     pub frames: u64,
     pub span: u64,
+    pub stream: u64,
 }
 
 impl Component for ObjRow {
@@ -102,7 +104,11 @@ impl Component for HandIdle {
     const ID: ComponentId = component_ids::HAND_IDLE;
     const NAME: &'static str = "pe-session.HandIdle";
     fn fields() -> Vec<FieldDesc> {
-        vec![FieldDesc::new("frames", FieldKind::U64, offset_of!(HandIdle, frames), 1), FieldDesc::new("span", FieldKind::U64, offset_of!(HandIdle, span), 1)]
+        vec![
+            FieldDesc::new("frames", FieldKind::U64, offset_of!(HandIdle, frames), 1),
+            FieldDesc::new("span", FieldKind::U64, offset_of!(HandIdle, span), 1),
+            FieldDesc::new("stream", FieldKind::U64, offset_of!(HandIdle, stream), 1),
+        ]
     }
 }
 

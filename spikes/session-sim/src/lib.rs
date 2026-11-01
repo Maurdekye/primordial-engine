@@ -356,20 +356,33 @@ pub struct Replica {
     pub plan: BTreeMap<u64, Vec<Action>>,
     next_ack_us: u64,
     pub ack_every_us: u64,
+    /// 7.6 reduction 2: whether the member was idle at its last ack decision.
+    was_idle: bool,
+    /// Test fixture (review VCR-12 under 7.6 reduction 2): ack only on the member's own interval, never
+    /// at once on leaving idle, so a member set to ack rarely keeps a stale horizon.
+    pub ack_grid_only: bool,
     last_frame_seen: u64,
     /// R18: adapt the hand-entry rate and ack interval to this member's uplink queue.
     pub adapt: bool,
     pub level: usize,
     level_t: u64,
     calm_since: u64,
+    /// The controller's last tick (us) at which the member was idle (7.6 reduction 2): calm before it does
+    /// not count toward lowering into D56's remembered level.
+    idle_at: u64,
     /// D56: the level at which congestion began (the highest such level while the memory lasts), and
     /// when the uplink was last congested. The controller lowers into that level or any finer one only
-    /// after a longer calm (`CONGESTED_REENTRY_US`), and forgets it after `CONGESTED_MEMORY_US` with no
-    /// congestion.
+    /// after a longer calm (`CONGESTED_REENTRY_US`), and forgets it after `CONGESTED_MEMORY_US` of
+    /// non-idle time with no congestion (`quiet_us`), or `CONGESTED_CEILING_US` after the last congestion.
     congested: Option<(usize, u64)>,
+    /// Non-idle time with no congestion since the uplink was last congested (us): idle time does not age
+    /// D56's memory (@coordinator-opus, 2026-11-01).
+    quiet_us: u64,
     /// Whether the uplink queue was above 40 ms at the last tick, to find where congestion begins.
     over: bool,
     hand_last: BTreeMap<u32, u64>,
+    /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
+    packs: BTreeMap<u32, Pack>,
     /// Time spent at each congestion level (ms), and the highest level reached.
     pub level_ms: [u64; 6],
     /// Remote state-carrying entries awaiting the acceptance check: (entry, author, obj).
@@ -444,14 +457,19 @@ impl Peer {
                 // Saturating: a scenario with hz = 0 (dt = inf, so dt_us = u64::MAX) must reach the
                 // tool's validator, which refuses it, instead of overflowing here in a debug build.
                 ack_every_us: dt_us.saturating_mul(2),
+                was_idle: false,
+                ack_grid_only: false,
                 last_frame_seen: u64::MAX,
                 adapt: false,
                 level: 0,
                 level_t: 0,
                 calm_since: 0,
+                idle_at: 0,
                 congested: None,
+                quiet_us: 0,
                 over: false,
                 hand_last: BTreeMap::new(),
+                packs: BTreeMap::new(),
                 level_ms: [0; 6],
                 pending_accept: Vec::new(),
             },
@@ -479,13 +497,39 @@ fn flatten(m: Msg, out: &mut Vec<Msg>) {
 /// levels 4 and 5 for links of about 8-16 kbit/s, and aligns both to the same frame ticks, so a
 /// hand entry and an ack share one datagram.
 pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
+
+/// D73(a): a hand's poses not yet sent, for consecutive frames from `p0`, at stride `k`.
+struct Pack {
+    p0: u64,
+    k: u64,
+    targets: Vec<[i32; 3]>,
+}
+
+/// D73(a): send hand `obj`'s pending pack, if any: one entry stamped at its first frame holding a
+/// target per frame. Its poses stop being local-only; the pack replaces them (its insertion rolls this
+/// replica back to the first frame, which re-simulates with the same targets).
+fn flush_pack(r: &mut Replica, obj: u32) -> Option<Entry> {
+    let p = r.packs.remove(&obj)?;
+    for j in 0..p.targets.len() as u64 {
+        r.sim.own_pending.remove(&(p.p0 + j, obj));
+    }
+    r.sim.hold_horizon_below = r.packs.values().map(|p| p.p0).min();
+    let mut ts = p.targets.into_iter();
+    let target_mm = ts.next().expect("a pack holds a pose");
+    Some(r.sim.author_stamped(Payload::Hand { obj, target_mm, active: true, span: 1, more: ts.collect() }, p.p0))
+}
 pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
+pub const IDLE_ACK_FRAMES: u64 = 8;
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
 /// or any finer level only after this much calm instead of 300 ms, and forgets L after
 /// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
 /// cap cycled about every 3 s.
 pub const CONGESTED_REENTRY_US: u64 = 5_000_000;
 pub const CONGESTED_MEMORY_US: u64 = 30_000_000;
+/// The memory's ceiling: forgotten this long after the last congestion, idle or not, so a session of
+/// short gestures re-probes finer levels eventually (@coordinator-opus, 2026-11-01) [proposal: 5 min].
+pub const CONGESTED_CEILING_US: u64 = 300_000_000;
 
 impl Sim {
     pub fn new(net: Net, mut peers: Vec<Peer>, end_us: u64) -> Self {
@@ -636,10 +680,13 @@ impl Sim {
                 // delay, 10.9). Up fast, down slowly, and slower still into the level where congestion
                 // began or a finer one.
                 let b = members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
+                // 7.6 reduction 2's idle state: idle calm says nothing about whether the link can carry a
+                // gesture (@coordinator-opus, 2026-11-01).
+                let idle_now = r.sim.idle();
                 if b > 40_000 {
                     // D56: remember the level at which congestion began, not the levels climbed through
                     // while the queue drains. Any congestion keeps the memory, raise or not (review
-                    // D56-1): it is forgotten only after 30 s with none.
+                    // D56-1): it is forgotten only after 30 s of non-idle time with none.
                     let onset = !r.over;
                     r.over = true;
                     let l = match r.congested {
@@ -648,14 +695,18 @@ impl Sim {
                         None => r.level,
                     };
                     r.congested = Some((l, now));
+                    r.quiet_us = 0;
                     if now >= r.level_t + 100_000 && r.level < HAND_STRIDE.len() - 1 {
                         r.level += 1;
                         r.level_t = now;
                     }
                 } else {
                     r.over = false;
+                    if !idle_now {
+                        r.quiet_us += 1000;
+                    }
                 }
-                if r.congested.is_some_and(|(_, t)| now >= t + CONGESTED_MEMORY_US) {
+                if r.congested.is_some_and(|(_, t)| r.quiet_us >= CONGESTED_MEMORY_US || now >= t + CONGESTED_CEILING_US) {
                     r.congested = None;
                 }
                 if b < 10_000 {
@@ -665,12 +716,19 @@ impl Sim {
                 } else {
                     r.calm_since = 0;
                 }
-                let calm_needed = if r.level > 0 && r.congested.is_some_and(|(l, _)| r.level - 1 <= l) {
-                    CONGESTED_REENTRY_US
+                if idle_now {
+                    r.idle_at = now;
+                }
+                // Lowering into the remembered level or a finer one takes 5 s of calm with the member
+                // active throughout: calm while idle never lowers into L (idle calm stops at L + 1), and
+                // does not count once the member is active again, not even at the next gesture's first
+                // frame. Lowering above that is unchanged.
+                let (calm_needed, calm_from) = if r.level > 0 && r.congested.is_some_and(|(l, _)| r.level - 1 <= l) {
+                    (CONGESTED_REENTRY_US, r.calm_since.max(r.idle_at))
                 } else {
-                    300_000
+                    (300_000, r.calm_since)
                 };
-                if r.level > 0 && r.calm_since > 0 && now >= r.calm_since + calm_needed && now >= r.level_t + 300_000 {
+                if r.level > 0 && r.calm_since > 0 && now >= calm_from + calm_needed && now >= r.level_t + 300_000 {
                     r.level -= 1;
                     r.level_t = now;
                     r.calm_since = now;
@@ -703,26 +761,51 @@ impl Sim {
                             if !ready && !matches!(a, Action::Hand { .. }) {
                                 continue;
                             }
-                            if let Action::Hand { obj, active: true, .. } = a {
+                            if let Action::Hand { obj, target_mm, active, ahead } = a {
                                 let k = if r.adapt { HAND_STRIDE[r.level] } else { 1 };
-                                // On frame ticks that are multiples of k, so the entry shares the
-                                // ack's datagram (review R3-9): the first such tick after the last
-                                // entry. Not held back to last + k at a level change, which left a
-                                // gap longer than both strides (4 -> 5: 258, then 272; the matrix's
-                                // M1, fixed in pe-session at 649a77f).
-                                if clock_frame % k != 0 || r.hand_last.get(&obj).is_some_and(|&l| clock_frame <= l) {
-                                    continue;
+                                // The frame this pose is for: the stamp an entry authored now would get.
+                                let s = r.sim.frame.max(r.sim.now) + ahead;
+                                let mut out = Vec::new();
+                                if !active {
+                                    out.extend(flush_pack(r, obj));
+                                    out.push(r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead));
+                                } else {
+                                    if r.hand_last.get(&obj).is_some_and(|&l| s <= l) {
+                                        continue;
+                                    }
+                                    r.hand_last.insert(obj, s);
+                                    if k == 1 {
+                                        out.extend(flush_pack(r, obj));
+                                        out.push(r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: 1, more: Vec::new() }, ahead));
+                                    } else {
+                                        // D73(a): under R18 thinning every frame keeps its own target. The
+                                        // pose moves this member's hand at once (`own_pending`) and goes out
+                                        // in a pack of the frames of one stride window, [m k, m k + k - 1],
+                                        // stamped at its first frame: one entry every k frames, the
+                                        // author's hand exact. A stride change or a gap sends it early.
+                                        if r.packs.get(&obj).is_some_and(|p| p.k != k || p.p0 + p.targets.len() as u64 != s) {
+                                            out.extend(flush_pack(r, obj));
+                                        }
+                                        let p = r.packs.entry(obj).or_insert(Pack { p0: s, k, targets: Vec::new() });
+                                        p.targets.push(target_mm);
+                                        let full = (s + 1) % k == 0 || p.targets.len() as u64 >= k;
+                                        r.sim.own_pending.insert((s, obj), target_mm);
+                                        r.sim.hold_horizon_below = r.packs.values().map(|p| p.p0).min();
+                                        if full {
+                                            out.extend(flush_pack(r, obj));
+                                        }
+                                    }
                                 }
-                                r.hand_last.insert(obj, clock_frame);
+                                for e in out {
+                                    broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+                                }
+                                continue;
                             }
-                            let span = if r.adapt { HAND_STRIDE[r.level] as u8 } else { 1 };
                             let e = match a {
                                 Action::Touch { obj, impulse, grab } => {
                                     r.sim.author(Payload::Touch { obj, impulse, grab }, Some(obj))
                                 }
-                                Action::Hand { obj, target_mm, active, ahead } => {
-                                    r.sim.author_ahead(Payload::Hand { obj, target_mm, active, span }, ahead)
-                                }
+                                Action::Hand { .. } => unreachable!("hand poses are handled above"),
                                 Action::Portal { open } => r.sim.author(Payload::Portal { open }, None),
                                 Action::Owner { change, keys } => {
                                     let Some(cert) = r.sim.owner_cert(change, &keys) else { continue };
@@ -762,15 +845,22 @@ impl Sim {
                 }
             }
             let r = self.peers[pi].worlds.get_mut(&w).unwrap();
-            // With batching, acks ride in the same datagram as the frame's entries (R18, viz-4).
-            let ack_due = if self.net.batching {
-                let every = (r.ack_every_us / r.dt_us).max(1);
-                new_frame && clock_frame % every == 0
-            } else {
-                now >= r.next_ack_us
-            };
+            // With batching, acks ride in the same datagram as the frame's entries (R18, viz-4). An idle
+            // member (7.6 reduction 2) acks every IDLE_ACK_FRAMES frames at any level, the longer of the
+            // two intervals; the ack that leaves idle goes at once, off the grid.
+            let idle = r.sim.idle();
+            let leaving = r.was_idle && !idle && !r.ack_grid_only;
+            r.was_idle = idle;
+            let base = (r.ack_every_us / r.dt_us).max(1);
+            let every = if idle { base.max(IDLE_ACK_FRAMES) } else { base };
+            let ack_due = leaving
+                || if self.net.batching {
+                    new_frame && clock_frame % every == 0
+                } else {
+                    now >= r.next_ack_us
+                };
             if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
-                r.next_ack_us = now + r.ack_every_us;
+                r.next_ack_us = now + every * r.dt_us;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
             }

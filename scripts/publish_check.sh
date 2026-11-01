@@ -2,7 +2,8 @@
 # Publication check: greps every file of a commit (default HEAD) for terms that must not be
 # published, case-insensitively, prints each hit and exits 1 if there is any (2 on an error).
 # usage: scripts/publish_check.sh [--ref <ref>]          the tree of <ref> (default HEAD)
-#        scripts/publish_check.sh --history <range>...    the history over <range> (see below)
+#        scripts/publish_check.sh --history [--ignore-identity] [--blobs] <range>...
+#                                                          the history over <range> (see below)
 # Run it before every push, on the ref being pushed. It reads the committed tree, so an uncommitted
 # local fix doesn't hide a hit that is still committed.
 #
@@ -11,14 +12,18 @@
 # scripts/publish_terms.example to it and fill it in. Without a terms file, or with an empty one,
 # the check fails rather than passing.
 # Format, one term per line: `fixed <text>` matches the text anywhere; `word <text>` matches it as a
-# whole word only. Blank lines and lines starting with # are ignored.
+# whole word only; `start <text>` matches it where no letter comes right before it (at the start of a
+# word, or after a digit, _ or punctuation: `start ab` finds abc, X_ABC and ab-c, not cab). Blank
+# lines and lines starting with # are ignored.
 #
 # --history <range>... (git log revision arguments, e.g. `main` or `origin/main..main`): scans every
 # commit's added lines (git log -p) and its message, author and committer, with
 # scripts/publish_history.py. It reports the hits per term. It fails only on the terms of a second
 # list, scripts/publish_history_terms.local or PE_PUBLISH_HISTORY_TERMS (same format, gitignored),
 # which is empty when the file is missing: the history the user ruled to keep (2026-10-31 11:49Z) is
-# reported, not failed.
+# reported, not failed. --ignore-identity never fails on author or committer fields (the accepted
+# commit email); --blobs also scans every blob, binary ones included. scripts/publish_clean.sh
+# makes the cleaned copy that is published (user ruling 2026-11-01 06:55Z) and checks it this way.
 set -u
 cd "$(dirname "$0")/.."
 terms=${PE_PUBLISH_TERMS:-scripts/publish_terms.local}
@@ -44,12 +49,15 @@ while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in ''|'#'*) continue ;; esac
   kind=${line%% *} text=${line#* }
   case "$kind" in
-    fixed) w="" ;;
-    word) w="-w" ;;
+    fixed) how="-F" pat=$text ;;
+    word) how="-F -w" pat=$text ;;
+    start)
+      case "$text" in *[]\[\\^]*) echo "publish_check: a start term can't hold [ ] \\ or ^: $line"; exit 2 ;; esac
+      how="-E" pat="(^|[^A-Za-z])$(printf '%s' "$text" | sed 's/[.*+?(){}|$]/[&]/g')" ;;
     *) echo "publish_check: bad line in $terms: $line"; exit 2 ;;
   esac
   n=$((n + 1))
-  out=$(git grep -n -i -F $w -e "$text" "$ref" --); rc=$?
+  out=$(git grep -n -i $how -e "$pat" "$ref" --); rc=$?
   case $rc in
     0) printf '%s\n' "$out"; hits=$((hits + $(printf '%s\n' "$out" | wc -l))) ;;
     1) ;;

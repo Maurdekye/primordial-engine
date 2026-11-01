@@ -1193,6 +1193,22 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
         "RESULT   before the sweep (settled pit, 1.0-1.9 s): avg {:.1} balls changed per frame",
         base_changed as f64 / base_frames.max(1) as f64
     );
+    // The idle session's acks (design 7.6, reduction 2): each member's acks stamped in that second, from
+    // member 1's copy of the log, with the wire estimate used above.
+    let all = sim.replica(1, 1).sim.all_entries();
+    let idle_secs = (b1 - b0) as f64 / 1e6;
+    let idle: Vec<String> = ids
+        .iter()
+        .map(|&m| {
+            let acks: Vec<&Entry> = all
+                .iter()
+                .filter(|e| e.member == m && matches!(e.payload, Payload::Ack { .. }) && (f(1.0)..f(1.9)).contains(&e.stamp))
+                .collect();
+            let b: u64 = acks.iter().map(|e| encode_msg(&Msg::Entry((*e).clone())).len() as u64 + 52).sum();
+            format!("m{m} {:.1} acks/s ({:.0} B/s wire est.)", acks.len() as f64 / idle_secs, b as f64 / idle_secs)
+        })
+        .collect();
+    println!("RESULT   acks before the sweep (1.0-1.9 s, one direction): {}", idle.join(", "));
     for ((_, k), (n, b)) in sim.net.sent.iter() {
         println!("  sweep-window traffic {k}: {n} messages, {b} B payload ({:.0} B/s wire est.)", wire(*n, *b));
     }
@@ -1376,6 +1392,7 @@ fn main() {
             end_s: get("--end").map_or(10, |v| v.parse().unwrap()),
             slow: get("--slow").map(|v| (v.parse().unwrap(), get("--slow-kbps").map_or(8, |k| k.parse().unwrap()))),
             step: get("--step-ms").map(|v| (v.parse().unwrap(), get("--step-kbps").map_or(16, |k| k.parse().unwrap()))),
+            gap_s: get("--gap").map(|v| v.parse().unwrap()),
         }),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),
@@ -1401,6 +1418,7 @@ fn main() {
         Some("kickpartition") => p24r::kickpartition(),
         Some("lastadmin") => p24r::lastadmin(),
         Some("adminclose") => p24r::adminclose(),
+        Some("kickadmin") => p24r::kickadmin(),
         Some("ghostkick") => p24r3::ghostkick(),
         Some("selfkickhead") => p24r3::selfkickhead(),
         Some("ackgap") => p24r3::ackgap(),

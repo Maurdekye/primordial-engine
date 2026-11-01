@@ -1,7 +1,9 @@
 description = """
 P2-4 review round 3, VCR-5: fork9, with everything 3 sends 1 and 2 in the 1.5 s after the fork \
 arriving that late (and 9 not relaying B to them), so they find the fork late, and the cut lies \
-over 16 entries past what 3 holds of A. 9 stays alive 1.6 s. Part 1 runs with VCR-5's fix \
+over 16 entries past what 3 holds of A. 9 stays alive 1.6 s. 1 and 2 ack once a second, so few \
+acks name A's entries (with acks every few frames, 3 fetched nearly all of A from the versions \
+the acks name before the cut, and the run with the fix off passed). Part 1 runs with VCR-5's fix \
 switched off, part 2 as shipped."""
 include = ["../common/review.toml"]
 end_ms = 8900
@@ -13,6 +15,12 @@ members = [1, 2, 3, 9]
 [world.1.plan]
 9 = [{ at = 120, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }]
 1 = [{ at = 60, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[world.1.member.1]
+ack_every_ms = 1000
+
+[world.1.member.2]
+ack_every_ms = 1000
 
 [[fault]]
 from = 3
@@ -32,7 +40,7 @@ detect_ms = 1500
 # Round 4's fetch by id (VC3R-7) would fetch the branch as well.
 world.1.fixes_off = ["VCR5", "VC3R7"]
 report = [
-    { kind = "before_fix", honest = [1, 2, 3], label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)", fix = "VCR-5's fix" },
+    { kind = "before_fix", honest = [1, 2, 3], label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)", fix = "VCR-5's fix" },
 ]
 
 [[part]]
@@ -40,5 +48,5 @@ report = [
     { kind = "fork_info" },
     { kind = "membership", honest = [1, 2, 3], label = "deepfork" },
     { kind = "view_changes", honest = [1, 2, 3], label = "deepfork" },
-    { kind = "verdict", honest = [1, 2, 3], label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)" },
+    { kind = "verdict", honest = [1, 2, 3], label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)" },
 ]

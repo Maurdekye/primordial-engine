@@ -588,6 +588,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "kickpartition" => members.len() == 2 && target.is_some(),
                     "lastadmin" => !honest.is_empty(),
                     "adminclose" => honest.len() == 2,
+                    "kickadmin" => members.len() == 2 && target.is_some() && role.is_some() && !honest.is_empty(),
                     "joinrules" => members.len() == 4,
                     "selfkickhead" | "capchurn" | "removed" => at.is_some() && target.is_some(),
                     "joinattests" | "lagprecommit" => at.is_some() && target.is_some() && !honest.is_empty(),

@@ -113,6 +113,12 @@ pub struct WorldCfg {
     /// D80: define role `role` with no permissions and give it to every member and joiner, except
     /// `admins`, who keep ADMIN (the spike's `guests`).
     pub guests: Option<GuestsCfg>,
+    /// D80 / V1-V2: roles defined at genesis, as `[role, perms]` pairs (after `guests`).
+    #[serde(default)]
+    pub role_defs: Vec<(u16, u64)>,
+    /// D80 / V1-V2: members' roles at genesis, as `[member, role]` pairs (after `guests`).
+    #[serde(default)]
+    pub roles: Vec<(u32, u16)>,
     /// D80: the world's owners.
     #[serde(default)]
     pub owners: Vec<u32>,
@@ -243,6 +249,10 @@ pub struct ReplicaCfg {
     pub adapt: bool,
     /// Ack every this many ms (default: the world's).
     pub ack_every_ms: Option<u64>,
+    /// Test fixture (7.6 reduction 2, review VCR-12): ack only on the member's own interval, never at
+    /// once on leaving idle (session-sim p24r3.rs `lagprecommit`).
+    #[serde(default)]
+    pub ack_grid_only: bool,
     /// Byzantine: casts no view-change entry (session.rs `withhold_vc`).
     #[serde(default)]
     pub withhold_vc: bool,

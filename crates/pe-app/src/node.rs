@@ -284,9 +284,11 @@ pub struct LinkSummary {
     pub max_signal_ms: f64,
     pub max_true_queue_ms: f64,
     pub hand_entries: u64,
-    /// Ticks at which the round-trip clamp lowered the fed signal (design 10.4).
-    #[serde(default)]
-    pub clamped_ticks: u64,
+    /// Node steps (about one per millisecond, from the session start received) in which the
+    /// round-trip clamp lowered the fed signal (design 10.4). Not the controller's ticks of
+    /// `level_ticks` (review L3).
+    #[serde(default, alias = "clamped_ticks")]
+    pub clamped_steps: u64,
     /// Per member: (datagrams received from it, datagrams lost on its way to me).
     pub rx: BTreeMap<u32, (u64, u64)>,
 }
@@ -409,7 +411,7 @@ pub struct Node {
     signal_us: Option<u64>,
     signal_held: bool,
     max_signal_us: u64,
-    clamped_ticks: u64,
+    clamped_steps: u64,
     /// Per reporter: its report's episode above the round-trip bound, if one is open.
     over: BTreeMap<u32, Over>,
     max_true_queue_us: u64,
@@ -550,7 +552,7 @@ impl Node {
             signal_us: None,
             signal_held: false,
             max_signal_us: 0,
-            clamped_ticks: 0,
+            clamped_steps: 0,
             over: BTreeMap::new(),
             max_true_queue_us: 0,
             hand,
@@ -1018,7 +1020,7 @@ impl Node {
             v = v.max(Some(q));
         }
         if clamped {
-            self.clamped_ticks += 1;
+            self.clamped_steps += 1;
         }
         self.signal_us = v;
         self.signal_held = v.is_none() && !self.reports.is_empty();
@@ -1061,7 +1063,7 @@ impl Node {
         let x = -0.9 + 1.8 * (1.0 - (2.0 * u - 1.0).abs());
         let z = 0.6 * (std::f64::consts::TAU * 1.5 * u).sin();
         let target_mm = [(x * 1000.0).round() as i32, 200, (z * 1000.0).round() as i32];
-        if self.core.author(Payload::Hand { obj, target_mm, active: true, span: 1 }, 0).is_ok() {
+        if self.core.author(Payload::Hand { obj, target_mm, active: true, span: 1, more: Vec::new() }, 0).is_ok() {
             self.hand_entries += 1;
             self.authored += 1;
         }
@@ -1111,6 +1113,8 @@ impl Node {
         for e in self.core.events() {
             match e {
                 Event::Epoch { epoch, removed } => self.note(format!("membership decision: epoch {epoch}, removed {removed:?}")),
+                // V3: no admin left, so the session closed (nothing stamped from `at` acts).
+                Event::Closed { at, removed } => self.note(format!("session closed at frame {at}: removed {removed:?}")),
                 Event::Paused { frame } => self.note(format!("paused at frame {frame} (speculation limit)")),
                 Event::Resumed { frame } => self.note(format!("resumed at frame {frame}")),
                 Event::CheckFailed { total } => self.note(format!("CHECK HASH MISMATCH (total {total})")),
@@ -1181,7 +1185,7 @@ impl Node {
                 max_signal_ms: self.max_signal_us as f64 / 1000.0,
                 max_true_queue_ms: self.max_true_queue_us as f64 / 1000.0,
                 hand_entries: self.hand_entries,
-                clamped_ticks: self.clamped_ticks,
+                clamped_steps: self.clamped_steps,
                 rx: self.rx.iter().map(|(&m, r)| (m, (r.received, r.lost))).collect(),
             },
             events: self.log.clone(),
@@ -1337,12 +1341,14 @@ impl DrivenPeer for Node {
         }
         let payload = match i {
             Interaction::Touch { object, impulse, grab } => Payload::Touch { obj: object, impulse, grab },
-            Interaction::Hand { object, target_mm, active } => Payload::Hand { obj: object, target_mm, active, span: 1 },
+            Interaction::Hand { object, target_mm, active } => Payload::Hand { obj: object, target_mm, active, span: 1, more: Vec::new() },
         };
         let e = self.core.author(payload, 0).map_err(|e| match e {
             AuthorError::NotReady => ToolError::new(ErrorCode::NotReady, "the peer is behind its clock or paused; step and retry"),
             AuthorError::NotOwner => ToolError::new(ErrorCode::NotOwner, "not your hand"),
             AuthorError::Stride => ToolError::new(ErrorCode::NotReady, "a pose for this hand was already sent this frame; step and retry"),
+            // Only an active hand pose waits in a pack (D73(a)), and those go through the hold above.
+            AuthorError::Pending => ToolError::new(ErrorCode::NotReady, "the pose waits in its hand's pack; step and retry"),
         })?;
         self.authored += 1;
         self.flush_out();

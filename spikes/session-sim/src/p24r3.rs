@@ -260,9 +260,14 @@ pub fn deepfork() {
     for fixed in RUNS {
         // Round 4's fetch by id (VC3R-7) would fetch the branch as well.
         let off = if fixed { 0 } else { fix::VCR5 | fix::VC3R7 };
-        let (sim, stopped, info) = fork_run(off, 1_600_000, false, 1_500_000);
+        // 1 and 2 ack once a second. A member fetches the version an ack's head names when it holds
+        // another (conflict detection), so with 1 and 2 acking every few frames 3 had fetched nearly all
+        // of A, one entry per ack, before the cut: its walk lacked only a few entries, and from round 6
+        // the run with the fix off passed anyway. Acks a second apart name few of A's entries, so over
+        // 16 entries below the cut are left for the walk to fetch.
+        let (sim, stopped, info) = fork_run(off, 1_600_000, false, 1_500_000, 1_000_000);
         let honest = [1, 2, 3];
-        let label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)";
+        let label = "deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A)";
         if !fixed {
             before_fix(label, "VCR-5's fix", &sim, &honest, stopped);
             continue;
@@ -277,7 +282,7 @@ pub fn deepfork() {
 pub fn cutbackdate() {
     for fixed in RUNS {
         let off = if fixed { 0 } else { fix::VCR6 };
-        let (sim, stopped, info) = fork_run(off, 700_000, true, 0);
+        let (sim, stopped, info) = fork_run(off, 700_000, true, 0, 0);
         let honest = [1, 2, 3];
         let label = "cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold)";
         if !fixed {
@@ -443,6 +448,9 @@ pub fn lagprecommit() {
             let r = p.worlds.get_mut(&1).unwrap();
             if p.id == 3 {
                 r.ack_every_us = 1_500_000;
+                // Strictly once every 1.5 s: idle thinning's ack on leaving idle would refresh its
+                // horizon as the join begins (7.6 reduction 2), and the repro needs it stale.
+                r.ack_grid_only = true;
             }
             if p.id == 9 {
                 r.sim.withhold_vc = true;

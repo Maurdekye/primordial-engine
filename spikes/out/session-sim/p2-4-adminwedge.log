@@ -1,22 +1,22 @@
-REPRO adminwedge fixed=false: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2213000) us; 9 removed at never; live at the end: false; m1 conf 112 of frame 232, m2 conf 112 of frame 232, m3 conf 112 of frame 232, m4 conf 112 of frame 232
+REPRO adminwedge fixed=false: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2212000) us; 9 removed at never; live at the end: false; m1 conf 110 of frame 230, m2 conf 110 of frame 230, m3 conf 110 of frame 230, m4 conf 110 of frame 230
 RESULT adminwedge fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT adminwedge: m1 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
 RESULT adminwedge: m2 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
 RESULT adminwedge: m3 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
 RESULT adminwedge: m4 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
-  m1: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 16 bad 0
-  m2: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
-  m3: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
-  m4: conf 112 frame 232 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
-RESULT adminwedge fixed=false: frames 0..231 honest m1=3bddd79e08819a3c m2=3bddd79e08819a3c m3=3bddd79e08819a3c m4=3bddd79e08819a3c | offline replay 3bddd79e08819a3c | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
-REPRO adminwedge fixed=true: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2213000) us; 9 removed at 4.00 s; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+  m1: conf 110 frame 230 members {1, 2, 3, 4, 9} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 16 bad 0
+  m2: conf 110 frame 230 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
+  m3: conf 110 frame 230 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
+  m4: conf 110 frame 230 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
+RESULT adminwedge fixed=false: frames 0..229 honest m1=fe11f9d2f244ead9 m2=fe11f9d2f244ead9 m3=fe11f9d2f244ead9 m4=fe11f9d2f244ead9 | offline replay fe11f9d2f244ead9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
+REPRO adminwedge fixed=true: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2212000) us; 9 removed at 3.93 s; live at the end: true; m1 conf 822 of frame 833, m2 conf 822 of frame 833, m3 conf 822 of frame 833, m4 conf 822 of frame 833
 RESULT adminwedge fixed=true: -> REMOVED, CONFIRMATION GOES ON
-RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 206 (t=3.53 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 204 (t=3.50 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 204 (t=3.50 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 198 (t=3.40 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 79 bad 0
-  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
-  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
-  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {9: (64, 124)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 200 (t=3.43 s) round 0 removed []; epoch 2 at frame 230 (t=3.93 s) round 1 removed [9]
+RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 200 (t=3.43 s) round 0 removed []; epoch 2 at frame 230 (t=3.93 s) round 1 removed [9]
+RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 199 (t=3.42 s) round 0 removed []; epoch 2 at frame 230 (t=3.93 s) round 1 removed [9]
+RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 197 (t=3.38 s) round 0 removed []; epoch 2 at frame 230 (t=3.93 s) round 1 removed [9]
+  m1: conf 822 frame 833 members {1, 2, 3, 4} evicted {9: (28, 126)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 79 bad 0
+  m2: conf 822 frame 833 members {1, 2, 3, 4} evicted {9: (28, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+  m3: conf 822 frame 833 members {1, 2, 3, 4} evicted {9: (28, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+  m4: conf 822 frame 833 members {1, 2, 3, 4} evicted {9: (28, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
 RESULT adminwedge fixed=true: frames 0..832 honest m1=99d8231bd919ca9a m2=99d8231bd919ca9a m3=99d8231bd919ca9a m4=99d8231bd919ca9a | offline replay 99d8231bd919ca9a | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
