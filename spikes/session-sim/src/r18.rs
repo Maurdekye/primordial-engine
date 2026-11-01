@@ -29,6 +29,8 @@ pub struct Opts {
     pub by_kind: bool,
     /// Thin links Part B on (sessions of 4 or more): localized verdicts and the state feed.
     pub localize: bool,
+    /// The slow member's link recovers at this many ms (its caps are lifted).
+    pub slow_until_ms: Option<u64>,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
 }
@@ -148,6 +150,11 @@ pub fn capped(o: &Opts) {
             if let Some((ms, sk)) = o.step {
                 if sim.net.now_us == ms * 1000 {
                     sim.net.default_cap = Some(Cap { rate_bps: sk * 1000 / div, burst_bytes: 4000 / div, max_queue_us: 500_000 });
+                }
+            }
+            if let (Some(ms), Some((sm, _))) = (o.slow_until_ms, o.slow) {
+                if sim.net.now_us == ms * 1000 {
+                    sim.net.caps.retain(|&(a, b), _| a != sm && b != sm);
                 }
             }
             sim.step_ms();
