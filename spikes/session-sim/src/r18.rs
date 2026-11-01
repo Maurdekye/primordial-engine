@@ -40,6 +40,19 @@ pub fn capped(o: &Opts) {
         println!("RESULT r18 capped: at t = {ms} ms every cap drops to {sk} kbit/s");
     }
     println!("RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state");
+    // Member 1's targets by frame (its hand poses are stamped at their clock frame), for its own-hand
+    // error: a kinematic hand reaches its frame's target within the frame, so after frame f it should be
+    // at target(f) (D73(a) makes this exact even when R18 thins the stream).
+    let plan1 = crate::history::sweep(hz, 500);
+    let target: BTreeMap<u64, [f64; 3]> = plan1
+        .iter()
+        .filter_map(|(&f, v)| {
+            v.iter().find_map(|a| match a {
+                Action::Hand { target_mm, active: true, .. } => Some((f, target_mm.map(|c| c as f64 * 0.001))),
+                _ => None,
+            })
+        })
+        .collect();
     for (label, batching, adapt) in [("per message", false, false), ("batched", true, false), ("batched+adaptive", true, true)] {
         let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, ..SimConfig::default() };
         let scene = SceneKind::BallPit { balls: 500, hands: 2 };
@@ -48,7 +61,7 @@ pub fn capped(o: &Opts) {
             .iter()
             .map(|&id| {
                 let mut p = Peer::new(id, [1000i64, -1000, 400, -400][(id as usize - 1) % 4]);
-                let pl = if id == 1 { crate::history::sweep(hz, 500) } else { BTreeMap::new() };
+                let pl = if id == 1 { plan1.clone() } else { BTreeMap::new() };
                 p.join(1, &ids, scene, cfg, 100_000, pl);
                 p.worlds.get_mut(&1).unwrap().adapt = adapt;
                 p
@@ -75,6 +88,8 @@ pub fn capped(o: &Opts) {
         // confirmation latency below.
         let mut conf_at: Vec<Vec<u64>> = vec![Vec::new(); n];
         let mut back: Option<u64> = None;
+        // Member 1's own hand against its target, the first time each sweep frame is simulated (mm).
+        let mut own_err: BTreeMap<u64, f64> = BTreeMap::new();
         let (mut rb0, mut rb1) = (0u64, 0u64);
         while sim.net.now_us <= sim.end_us {
             if let Some((ms, sk)) = o.step {
@@ -105,6 +120,15 @@ pub fn capped(o: &Opts) {
                     conf_at[i].push(now);
                 }
                 all_lag_ok &= l < 20 || !live.contains(&m);
+            }
+            {
+                let r1 = &sim.replica(1, 1).sim;
+                let g = r1.frame.saturating_sub(1);
+                if let (Some(t), Some(st)) = (target.get(&g), r1.obj_state(500)) {
+                    let q = st.pos();
+                    let d = [q.x as f64 - t[0], q.y as f64 - t[1], q.z as f64 - t[2]];
+                    own_err.entry(g).or_insert_with(|| (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() * 1000.0);
+                }
             }
             if now == w0 {
                 rb0 = sim.replica(2, 1).sim.stats.rollbacks;
@@ -164,6 +188,12 @@ pub fn capped(o: &Opts) {
             })
             .collect();
         println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
+        println!(
+            "RESULT     member 1's own hand against its target, over {} gesture frames: mean {:.2} mm, max {:.2} mm",
+            own_err.len(),
+            own_err.values().sum::<f64>() / own_err.len().max(1) as f64,
+            own_err.values().cloned().fold(0.0, f64::max)
+        );
         let ev = sim.replica(1, 1).sim.members_evicted().clone();
         if !ev.is_empty() {
             println!("RESULT     removed from the session (cut, from frame): {ev:?}");
