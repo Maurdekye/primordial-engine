@@ -49,6 +49,7 @@ the diff. `--jobs` defaults to 1 (machine-load rule).
 | `d80/` | 6 | the D80 admin layer: kickwar, kickpartition, lastadmin, adminclose (V3: the close removes everyone), joinrules, kickadmin (V1-V2) |
 | `p2-4-review/` | 39 | P2-4's review repros, each run with its fix switched off and then as shipped: fork9, jointiming, bogusprecommit, futureack (round 2); ghostkick, selfkickhead, ackgap, latejoin, capchurn, deepfork, cutbackdate, joinattests, slowadmin, kickbackdate, lagprecommit (round 3); strikeframe, aheadshield, capstale, lagchurn, votechurn, adminvoid, joinsquat, joinskip (round 4); joinwedge, slowref, prevotefork (round 5, and round 7's PF-1 control); adminfork (round 6); capfake, fakeadmin, adminwedge (round 7, each a halt with its fix off); voidfork, slowcapper (round 7, fixed in round 8); voiddeep, plainfork, pfsilent (round 8); the reports fakemix (round 6); the checks aheadlink and fakeref; and the control onesided (VC-1) |
 | `ownership/` | 1 | world ownership (design 12.5, consent-only): forged and rogue certificates and removals under rule A refused, a backup key acting as its owner, a second sale in one frame stale and never committed, an owner made by a certificate safe from a non-owner admin's kick, every replica equal to the reference built from the decided changes. On pe-session its outcomes are the spike's, line for line (digests and key names aside) |
+| `bans/` | 3 | session bans, perma-bans and kick options (design 12.4): `bans-rejoinrole`, Kick and remove Admin end to end: the kicked Admin rejoins under its key with the rejoin role instead of Admin, an explicit grant lifts it, and a plain-kick control rejoins as Admin; `bans-session`, a session in which an Admin kicks and bans, an Admin who isn't an owner can't perma-ban, an owner perma-bans, and every banned key is refused under Public rules, including one back under a new member id; `bans-next`, the world's next session, started from the perma-bans the first wrote: the session bans are gone, the perma-bans hold until an owner lifts one |
 | `faults/` | 7 | fault kinds the phase-1 set did not use: partition with heal, partition with eviction (and the minority side), asymmetric links, one capped link, every link capped without and with the R18 controller, crash and recovery |
 | `common/` | - | includes only (not run) |
 | `not-mirrored.txt` | - | committed logs not mirrored as scenario files yet (see below) |
@@ -148,6 +149,8 @@ roles = [[2, 2], [3, 3]]            # members' roles at genesis, [member, role] 
 owners = [7]
 join_rules = { rules = [{ target = "admin", rel = "friend", role = 1 }], fallback = 1 }
 ownership = { keys = [10], rule = "all", nonce = 1 }   # world ownership genesis (12.5); rule all, any or k
+keys = [[13, 3]]                    # 12.4: member 13 signs with identity 3's key (a player back under a new id)
+perma_bans = [4, 5]                 # 12.4: the world's saved perma-bans the session starts from (test keys)
 
 [world.1.plan]                      # actions per member; within a frame, in file order
 1 = [
@@ -163,6 +166,9 @@ ownership = { keys = [10], rule = "all", nonce = 1 }   # world ownership genesis
     { at = 240, set_role = { member = 2, role = 0 } },
     { at = 125, define_role = { role = 1, perms = 0 } },
     { at = 60, owner = { change = "add", key = 20, signers = [10] } },       # an ownership certificate
+    { at = 130, kick = { target = 3, ban = true } },                         # 12.4 kick options: ban,
+    { at = 140, ban = { key = 6, perma = true } },                           #   perma or remove_admin = role;
+    { at = 150, ban = { key = 6, on = false, perma = true } },               #   a ban or unban of a key
 ]
 3 = []                              # an empty plan clears an included one
 
@@ -345,7 +351,7 @@ book the admin entries before it leave; one that can't apply when received is ne
 Reports print after the run, in file order, in the spike's formats:
 
 - `check_world`: replicas of `world` against each other and an offline replay of the final log, over `frames`. Options: `skip`, and `skip_evicted_at`. It prints `UNCONFIRMED` (a failure) if `frames` passes the lowest confirmed frame of the checked replicas.
-- `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`. It prints OK or FAIL.
+- `expect`: a condition on one replica: `conf_max`, `conf_min` and/or the exact `members`, and (12.4) `roles = [[member, role]]` those members hold and the exact `rejoin_roles = [[test key, role]]`. It prints OK or FAIL.
 - `verdict`: honest members against an offline replay, plus the false-check count and any panic. As in the spike, it checks up to the lowest simulated frame, speculative frames included.
 - `ownership`: each replica's owner view (owners, rule, heads, DISPUTED, recovery keys) and outcomes against an offline reference: a fresh book from the genesis certificate with the certificates of the first replica's decided changes applied in order; every decided certificate with its epoch and boundary, applied or refused; every certificate never committed, with the reason against the book as decided before its stamp; each fork proof, checked as a third party holding only the chain prefix would check it; and with `at = [f, ...]`, the reference's view after the decisions with boundaries up to f.
 
@@ -355,7 +361,8 @@ Reports print after the run, in file order, in the spike's formats:
 - `view_changes`: every decision of each member: epoch, frame, round, removed.
 - `admitted`: each member's admissions and `joiner`'s touches.
 - `admin`: per member, the admin entries' outcomes (`outcomes = true`) and/or its members, roles,
-  admins and close frame (`roles = true`).
+  admins and close frame (`roles = true`), and/or its session bans, rejoin roles and perma-bans, by
+  test key number (`bans = true`, 12.4).
 - `confs`: each member's confirmed and simulated frame on one line.
 - `before_fix`: the line a run with its fix switched off ends with (`label`, `fix`).
 - `fork_info`: where `fork_branch` forked and how long branch B is.

@@ -2170,6 +2170,20 @@ is fixed once the author's chain is contiguous up to it.
       session stays open. 3 cannot drop the roles permission from its own role; it makes itself Admin,
       and then can. With the receipt check as before (a manual run), both refused kicks froze their
       targets].
+    * **Bans and kick options** (12.4, user 2026-11-01, msgs m7c37f5485e6f and m5c4b84d186a8). `Kick`
+      gains a rejoin field: none (a plain kick, its wire form unchanged), a rejoin role, a session ban, or a
+      perma-ban. A new admin entry, `Ban { epoch, key, on, perma }`, bans a key no member holds, or
+      (on = false) lifts a ban (a session unban also clears a rejoin role). The admin run holds the
+      session's bans and rejoin roles and the world's perma-bans beside roles and the ownership book, and
+      `join_role` checks them after row 0. A session ban needs the Ban permission, a perma-ban an owner's
+      key, each with the kick's permissions when it kicks; a kick with a rejoin role needs that role
+      defined and not counting as an admin [V bans-session: Admin 2 kicks and session-bans 3, session-bans
+      absent key 6, and its perma-ban of key 7 is refused (not an owner); owner 1 perma-bans key 5 and
+      kicks and perma-bans 4. At 4.5 s, 3 back as member 13 under key 3, and 14 (key 4), 5 and 6 are all
+      refused under Public-as-guest rules. Control without the bans: all four admitted. bans-next, the
+      world's next session from perma-bans {4, 5}: 3 and 6 admitted, 4 and 5 refused; owner 1's
+      perma-unban of 5 admits 5's open request; Admin 2's perma-unban of 4 is refused. The writing of
+      perma-bans into `acl/` (16.10) is not built: a scenario starts from a given list (`perma_bans`)].
     * A close records every member left as removed (`closed_members`) and says so in its event; nothing
       stamped at or after its boundary acts [V adminclose: closed at frame 432 everywhere, members 2 and
       3 removed]. The port into pe-session (P2-3) is to empty the member list and tell the players.
@@ -2809,6 +2823,9 @@ NAT ties in through 10.5: discovery yields candidate addresses, and members brok
   the ACL (10.8; review H3).
 * **Every peer validates** every interaction and commit against the ACL state *as of that frame*. A
   non-authorized action is rejected identically everywhere, with a machine-readable reason.
+* **Perma-bans:** the ACL also holds the world's perma-bans, by identity key (12.4). Owners make and lift
+  them by admin entries that a view change commits, and the owner's client writes them into `acl/`
+  (16.10). A session's ordinary bans are never written here.
 * **Optional threshold ownership:** k-of-n owners must sign ACL changes. This removes the single-root-key
   concern (D10). Who the owners are is now the world's ownership chain (12.5).
 
@@ -2889,6 +2906,128 @@ entries that the view change commits (10.8).
   * An owner always joins as Admin: **row 0** of every join rule list, fixed and not removable (22:48Z).
   * An owner may give up Admin; only a co-owner demotes or kicks an owner (Q27, 22:49Z and 22:51Z). An
     owner demoted or kicked that way can rejoin as Admin through row 0.
+* **Bans** (user, 2026-11-01 11:00Z, msg m7c37f5485e6f: "yes bans"; the trust principle of 10:22Z: admins
+  evict cheaters by kicks and bans; the two kinds, msg m5c4b84d186a8). A kick alone keeps no one out: the
+  kicked player rejoins at once as a new member (10.8), and under Public as Admin. There are two kinds of
+  ban [proposal; V pe-session `session/bans_tests.rs`, scenarios `bans/bans-session` and `bans/bans-next`]:
+  * **A session ban** keeps a player out of this session. Any Admin may make one (user: "Any Admin"). It is
+    never saved with the world and is gone when the session ends (user: "bans are not saved with the world
+    automatically, they only count for the current session").
+  * **A perma-ban** keeps a player out of every later session of the world, until it is lifted. Only a
+    world owner may make one (user: "a separate "perma-ban" can be made with anyone who has world-saving
+    ownership, which do save"). It is saved in the world's ACL (12.2).
+  * **Both name an identity key.** Each is the 32-byte Ed25519 key that signs a player's join request, the
+    key 12.5 compares with the owners, read from logged, signed state (OWNP-2). A ban names that key and
+    nothing else: a player's relationships (friendships, confidant marks, invite tickets) are all signed by
+    it, so there is no second identity to name.
+  * **One key, one member** (review BN-3): a join by a key that a current member holds is refused, so a
+    player is in a session once, whatever its devices. A ban reaches every key delegated from the banned
+    key: a device key it certifies (10.3), and agent and panel keys (12.3). Every key is judged as the
+    identity key it is delegated from, for one key, one member as for bans, so a device or agent key can't
+    make a present player a second member either. A peer that crashes and rejoins at once (10.8) is refused
+    until its old member is removed (`suspect_after`, about 3 s); its client keeps the request open and
+    retries until then. pe-session has one key per member, the identity key itself, and no delegated keys
+    yet [V code].
+  * **Checked at the join, after row 0 and before the other rows**: the perma-bans, then the session's bans.
+    A joiner whose key either lists is refused, whatever the rows say. Row 0 stays on top (22:48Z): an
+    owner always joins. So neither kind of ban may name a current owner's key, and a kick of an owner with
+    a ban option is refused too, even a co-owner's. Co-owners who want to keep an owner out first remove
+    that owner from the ownership chain (12.5, O1), then ban the key.
+  * **Who may ban:**
+    * A session ban or its lifting needs a new permission in the catalogue, Ban. Admin holds it, like
+      every permission, and a session may give it to other roles.
+    * A perma-ban or its lifting needs the author's key to be a world owner's, as the entries before it
+      in the change leave the owners (12.5). It needs no role permission: it is a world owner's power, not
+      a session role's. An Admin who isn't an owner can't make one.
+    * So an owner who has given up Admin can still perma-ban an absent key, but can't kick and perma-ban a
+      present player without the kick permissions (review PB-2).
+  * **A ban implies a kick.** Banning a present player is a kick with a ban option, in one entry, so it
+    needs what that kick needs (Kick, and Kick admins if the player counts as an admin, V1) as well as the
+    ban's own right. A ban entry on its own names a key that no member holds: a player who has left, whom
+    the UI offers from the session's recent players. A ban entry naming a member's key is refused (kick
+    and ban instead), so a banned key is never a member's.
+  * **Decided like a kick.** Kicks with an option, bans and unbans of both kinds are admin entries (D80):
+    signed by the author, pending until a view change commits them in commit order with the other admin
+    entries, and judged against the state the entries before them leave. A replica judges one it receives
+    against its current state and drops it if it would be refused (V13-1). The change judges its joins
+    after its admin entries, so a ban and a join by its key in one change refuse the join.
+  * **Lifting.** The two lists are separate, and so are their unbans:
+    * a session unban (Ban permission) takes the key off the session's list and clears its rejoin role
+      (below);
+    * a perma-unban (an owner) takes the key off the world's list.
+    * A key on both lists stays out until both are lifted. A perma-ban of a key with a session ban, or a
+      session ban of a perma-banned key, adds the other entry; neither replaces the other.
+  * **Persistence.** Both lists are governance, like roles and the ownership book: a rollback never rewinds
+    them, the check hash doesn't cover them, and agreement on each decision covers them.
+    * **Session bans and rejoin roles** live in the session only. The session never writes them into the
+      world, and the world's next session starts without them.
+    * **Perma-bans** are the world's ACL (`acl/`). The owner's client writes a decided perma-ban or
+      perma-unban into `acl/` as an owner-signed commit (16.10) at once, without waiting for an autosave,
+      so the world's next session starts with it, and loading a backup never rewinds it (16.10, ruling
+      2026-10-31 09:35Z) [proposal]. If the owner leaves before writing, the decided entry is session
+      state, listed for the owners like the session's edits (16.10), and any owner's client writes it,
+      since the session's decision certificate and the owner's signature on the entry prove it [I].
+    * **Writes follow decision order, not write order** (review PB-1). Different owners can write a
+      perma-ban and a later perma-unban of one key at different times. So each write carries its session
+      id and its decision position (the deciding change's epoch, and the entry's place in that change's
+      admin list). Per key, `acl/` keeps the latest write by position, and an earlier-positioned write
+      never replaces a later one. Writes from different sessions are ordered by the world's history: a
+      session that started from a head holding another session's write for the key comes after it.
+    * **A decided perma-ban never lapses** (review PB-2). With no owner left in the session to write it,
+      the author's client keeps it as a pending write, with the session's decision certificate, and commits
+      it at its next chance, under the same ordering.
+  * **A joiner's copy** (review BN-1). A 9.5 state transfer covers world state only: its check hash
+    doesn't cover governance, so no donor can hand a joiner either list. The joiner derives both, as it
+    derives roles, join rules and the ownership book: from the session's starting governance (the world
+    head's `acl/` and governance fields, in an owner-signed commit, 16.10) and the admin entries of every
+    decided change since genesis, each change verified by its epoch certificate from the genesis members
+    (`epoch_cert_ok`), with the listed entries fetched by id (VCR-8). Session bans come from those entries
+    alone. P23-8 relies on the same: a joiner holds the decided changes up to its check frame. The cost
+    grows with the session's decisions; a quorum-signed digest of governance at check frames would bound
+    it. This is the same for all governance, not only bans, and is not built for any of it [I;
+    cross-cutting, docketed by @coordinator-opus].
+  * **Merges** (D87 q2; review BN-4): when two copies of a world merge, their perma-ban lists merge against
+    the common ancestor, key by key, like the rest of the merge. A key that only one copy changed since
+    the ancestor takes that copy's entry, so a deliberate perma-unban on one side survives. A key both
+    copies changed differently stays banned. So a merge never lets back in a player whom both copies acted
+    on and either kept out [proposal]. Session bans never reach a world, so they never merge.
+  * **At most 4,096 keys on each list** (128 KiB); a ban past that is refused, and the UI asks for an unban
+    first [proposal].
+  * **What a ban stops.** Keys cost nothing to make. Under Public join rules a banned player comes back at
+    once under a new key, so there a ban stops only casual cheaters. A ban sticks under the rules that need
+    a relationship (Invite only, Friends only, Friends+, a home world): a new key holds no friendships,
+    confidant marks or tickets, and the banned key's own are useless, since the key itself is refused. A
+    persistent identity that costs something to replace is not part of the design.
+* **Kick options** (same ruling: "no automatic demotions, optional when kicking"). A kick never demotes on
+  its own. The kick action offers **Kick**, **Kick and remove Admin**, **Kick and ban**, and, for an owner,
+  **Kick and perma-ban** [proposal; V `bans_tests.rs`, `bans/bans-session`].
+  * **Kick and remove Admin** records the kicked player's key in the session with a **rejoin role**. When
+    the key next joins this session and the join rules would admit it with a role that counts as an admin
+    (Admin, or a role holding the roles permission, V2), it joins with the rejoin role instead. A row that
+    refuses it, or admits it with a role that doesn't count as an admin, applies unchanged. Row 0 is above
+    it: an owner kicked this way still rejoins as Admin, as the user accepted for kicked owners (22:51Z)
+    [V bans-rejoinrole: under Public as Admin, Admin 3 kicked with rejoin role 2 comes back as member 13
+    under key 3 with role 2 on every replica, the joiner's included; 1's grant of Admin to 13 lifts the
+    rejoin role; control, a plain kick: 13 rejoins as Admin].
+  * The rejoin role must be a defined role that doesn't count as an admin when the kick is decided;
+    otherwise the whole kick is refused, and the refusal notice offers a plain kick at once. It is checked
+    again at the join (review BN-2): if the role has since been deleted or redefined to count as an
+    admin, the join is refused, which keeps the kick's intent. The engine never creates a role for it:
+    roles are only defined by hand or come with a preset world template (user, 2026-11-01, msg
+    mabfa0670b915). So "Kick and remove Admin" offers the world's existing roles that don't count as an
+    admin to rejoin with. A world with none (the default, where Admin is the only role, 22:15Z) offers no
+    such option, and the dialog says a role without Admin must first be defined, or come from a template
+    [proposal].
+  * The rejoin role lasts until it is lifted: by a session unban, or by an admin later giving the rejoined
+    player a role that counts as an admin (a grant naming the player overrides it; redefining a role is
+    not a promotion). Like a session ban, it lives in the session only, so the next session doesn't keep
+    it [proposal: the user ruled that ordinary bans count only for the current session; a rejoin role is
+    an ordinary Admin's choice too].
+* **Agents** may request kicks, bans and unbans, like the other session admin actions:
+  `session.request_kick {member, option}` (option: none, remove_admin, ban or perma_ban),
+  `session.request_ban {key, perma}` and `session.request_unban {key, perma}`. Each request waits in its
+  owner's approval layer (Gnosarium UX section 15, item 11), and `acl.view` lists both lists and the
+  rejoin roles [proposal].
 * **Join rules** (22:37Z; a matrix since 22:47Z, extended at 22:51Z): after row 0, an ordered list of
   rows "if the joiner [relation] [target], then [action]", then a fallback.
   * Relations: is; is friends with; is a confidant of; has an invite ticket from; is a named player.
@@ -2906,7 +3045,8 @@ entries that the view change commits (10.8).
   * Discovery advertises a session's access level, so a stranger is not offered a session it cannot join
     (D9, D35) [I].
   * Not in the user's list, so not part of the model: a per-player role outside a row, and "blocked by"
-    rows [proposal].
+    rows [proposal]. The ban lists and rejoin roles (above) are not rows, and they apply whatever the rows
+    say.
 
 ### 12.5 World ownership (user rulings 22:37Z-22:54Z; consent only, OT = (a), 2026-10-31 08:31Z; forks and locks, 12:52Z; spike `ownership.rs`)
 
@@ -4192,7 +4332,7 @@ tools also exists as an MCP tool, with structured input and output.
 | Logic | `logic.read`, `logic.write` (draft workspace), `logic.check` (rustc `--error-format=json` diagnostics), `logic.test_in_fork`, `scm.commit`, `scm.status`, `scm.rebase`, `scm.seat_status` |
 | Shaders | `shader.validate` (naga spans), `shader.commit`, `shader.preview_in_fork` (render-only) |
 | Assets | `asset.import`, `asset.get`, `asset.list`, `prefab.save` |
-| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`). Session admin actions (kicks, roles, join rules; 12.4) likewise: an agent may request one, and the request waits in its owner's approval layer [proposal, Gnosarium UX section 15, item 11] |
+| Admin | **Not MCP tools.** `acl.grant`, `acl.revoke`, owner changes and `agent.delegate` exist only as human actions in the engine-owned approval layer (12.3). Agents may read ACL state (`acl.view`). Session admin actions (kicks, bans and perma-bans, roles, join rules; 12.4) likewise: an agent may request one (`session.request_kick`, `session.request_ban`, `session.request_unban`), and the request waits in its owner's approval layer [proposal, Gnosarium UX section 15, item 11] |
 | Panels and hubs (R13) | `panel.connect` (private session only); `panel.send` (private session: any of its connections; inbox session: its own); `panel.inbox` (private session: owner-forwarded items only); `panel.close`; `panel.requests.*` (decider session only); `hub.contacts`; `hub.send` (first contact needs owner approval); `hub.inbox` (private session: owner-forwarded items only) (21.6, 21.7) |
 | Worlds and portals (R14) | `worlds.list`, `worlds.join`, `worlds.leave`, `worlds.set_presence` (owner-confirmed), `portal.*`, `transfer.request`, `transfer.status`. Every tool takes an explicit `world` (22.9) |
 | Panel turn, voice and context (21.5, 21.11-21.13) | `panel.turn.sender` (the verified sender, its standing as owner, guest or confidant, and `input: voice`); `panel.speak {text}`; resource `primordial://panel/context` (the turn's spatial context; a live subscription only with the live-feed permission); `annotation.list`, `annotation.get`, resource `primordial://panel/annotations` |
