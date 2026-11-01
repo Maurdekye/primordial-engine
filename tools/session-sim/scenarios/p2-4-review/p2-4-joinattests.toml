@@ -1,8 +1,9 @@
 description = """
 P2-4 review round 3, VCR-7: friends-only join rules (a friend of an admin joins as guest, role 1); \
 every member is an admin. At 2 s joiner 5, a friend of admin 1, asks to join and shows the \
-friendship to 1 and 2 only; 9 backs everything and prevotes but never precommits. Part 1 runs \
-with VCR-7's fix switched off, part 2 as shipped."""
+friendship to 1 and 2 only; 9 backs everything and prevotes but never precommits. Part 1 runs with \
+VCR-7's fix switched off, part 2 as shipped. Since trust survey #4, 9 (which never applies the \
+decision) holds confirmation until admin 1 kicks it at 6 s."""
 include = ["../common/review.toml"]
 end_ms = 10000
 quiet_panics = true
@@ -38,9 +39,13 @@ report = [
 ]
 
 [[part]]
+# Trust survey #4: 9 never precommits nor applies the decision, so its chain stops counting and
+# confirmation is held until admin 1 kicks it at 6 s.
+byzantine = [{ kind = "admin_kick", member = 1, target = 9, at_ms = 6000, honest = [1, 2, 3, 5], to = [2, 3, 5, 9] }]
 report = [
     { kind = "view_changes", honest = [1, 2, 3], label = "joinattests" },
     { kind = "admin", honest = [1, 2, 3], label = "joinattests", roles = true },
     { kind = "check", case = "joinattests", label = "joinattests", at = 3, target = 5, role = 1, honest = [1, 2, 3] },
+    { kind = "check", case = "admin_kick", label = "joinattests", honest = [1, 2, 3, 5] },
     { kind = "verdict", honest = [1, 2, 3, 5], label = "joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits)" },
 ]

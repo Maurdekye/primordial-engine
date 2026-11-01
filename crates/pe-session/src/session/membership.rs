@@ -18,7 +18,8 @@ pub mod fix {
     pub const VC3: u64 = 1 << 1;
     /// VC-4: a precommit's boundary must lie just ahead of its author's horizon; stale caps reset.
     pub const VC4: u64 = 1 << 2;
-    /// VC-5: an ack's epoch rises by at most one; an epoch newer than mine left unbacked is voted out.
+    /// VC-5: an ack's epoch rises by at most one. (An epoch newer than mine left unbacked was also voted
+    /// out until trust survey #4.)
     pub const VC5: u64 = 1 << 3;
     /// Round 3, VCR-1: a reset answers a kick vote that names no held, pending kick of its target.
     pub const VCR1: u64 = 1 << 4;
@@ -27,8 +28,8 @@ pub mod fix {
     pub const VCR2: u64 = 1 << 5;
     /// VCR-3: a member acks as soon as it enters a new epoch, so its acks never skip one.
     pub const VCR3: u64 = 1 << 6;
-    /// VCR-4: newer-epoch timers survive decisions. (Round 3 also counted resets against the members
-    /// whose votes and caps they overruled; that part is now `VC3R2`'s.)
+    /// VCR-4: round 3 counted resets against the members whose votes and caps they overruled; that part
+    /// is now `VC3R2`'s. (Its newer-epoch timers went with VC-5's vote, trust survey #4.)
     pub const VCR4: u64 = 1 << 7;
     /// VCR-5: a cut's branch is fetched from its highest missing stretch down.
     pub const VCR5: u64 = 1 << 8;
@@ -45,11 +46,11 @@ pub mod fix {
     pub const VCR12: u64 = 1 << 13;
     /// HO-1, round 2: a touch carries the touched object's state only.
     pub const HO1: u64 = 1 << 14;
-    /// Round 4, VC3R-1: the newer-epoch timer runs whatever other members' acks show. Round 3 paused
-    /// it while this replica looked behind, which a climbing member could keep true for good.
-    pub const VC3R1: u64 = 1 << 15;
-    /// VC3R-2: no strikes. A stale cap, or a kick vote whose kick nobody delivers, gets its author
-    /// voted out instead of answered by a reset, and a reset waits briefly for votes to gather.
+    // Bit 15 was VC3R-1 (the newer-epoch timer's round-3 pause), retired with VC-5's vote (trust
+    // survey #4).
+    /// VC3R-2: no strikes. A stale cap, or a kick vote whose kick nobody delivers, is not answered by a
+    /// reset (round 3), and a reset waits briefly for votes to gather. Trust survey #4: neither gets its
+    /// author voted out any more either; it holds confirmation until an admin kicks it.
     pub const VC3R2: u64 = 1 << 16;
     /// VC3R-3: a change lists only admin entries this replica has validated and found not void.
     pub const VC3R3: u64 = 1 << 17;
@@ -67,22 +68,21 @@ pub mod fix {
     /// from a request the validator happens to hold.
     pub const VC4R2: u64 = 1 << 22;
     /// VC4R-3: a member's claim to hold more of a chain than this replica does spares that chain's
-    /// author for a silence limit at most, after which an undelivered claim gets its maker voted out.
+    /// author for a silence limit at most, and a reference counts toward stability only once the entry
+    /// it names is held in that version.
     pub const VC4R3: u64 = 1 << 23;
-    /// VC4R-1: the cap rule counts a prevote in any version this replica holds.
-    pub const VC4R1: u64 = 1 << 24;
+    // Bit 24 was VC4R-1 (the cap rule's polka counted in any version), retired with that rule (trust
+    // survey #4: a cap's author is no longer voted out).
     /// VC4R-4: entry fetches by id are retried with backoff instead of asked once.
     pub const VC4R4: u64 = 1 << 25;
-    /// VC4R-5: a vote whose frozen head nobody delivers stops holding resets back, and its voter is
-    /// voted out.
+    /// VC4R-5: a vote whose frozen head nobody delivers stops holding resets back. (Its voter was also
+    /// voted out until trust survey #4.)
     pub const VC4R5: u64 = 1 << 26;
     /// VC4R-6: a join request's signature names the session and an expiry.
     pub const VC4R6: u64 = 1 << 27;
     /// Round 5, VC3R-3's low: a listed admin entry must be stable here (every member holds that version).
     pub const VC3R3S: u64 = 1 << 28;
-    /// Round 7, VC6R-1: a capper whose polka names prevotes nobody delivers within a further half window
-    /// is voted out, instead of the fetch being retried for good.
-    pub const VC6R1: u64 = 1 << 29;
+    // Bit 29 was VC6R-1 (the cap rule's fetch budget), retired with that rule (trust survey #4).
     /// VC6R-3: a listed admin entry's validity is a pure function of the entry and its ancestry (held,
     /// its author's chain validated up to it, not voided). Canonical and undisputed are the proposer's
     /// choice only, so a fork arriving later cannot invalidate a value a quorum locked on.
@@ -100,10 +100,8 @@ pub mod fix {
     /// linked: a horizon-void version held as a duplicate was valid here and void where it was linked.
     /// Pure only with `RECUT` on (review VC8R-2): the replay reads the ack-epoch history.
     pub const VC7R1: u64 = 1 << 33;
-    /// VC7R-2: evidence an honest member must deliver gets the slow-member allowance (`suspect_after`)
-    /// before its author is voted out: a cap's polka (VC6R-1) and a vote's frozen head (VC4R-5). The
-    /// cap's polka also counts every prevote the precommit named that is held, linked or not.
-    pub const VC7R2: u64 = 1 << 34;
+    // Bit 34 was VC7R-2 (the cap and frozen-head fetch budgets before their authors were voted out),
+    // retired with those rules (trust survey #4).
     /// Round 8 (found while building `slowcapper`): a cut that re-points a removed member's chain
     /// re-validates the cut branch from a clean chain state, the ack-epoch history included. Without it
     /// the history of the abandoned branch made every re-validated early ack fail VC-5's epoch rule, so
@@ -781,10 +779,9 @@ impl WorldSim {
             }
             Payload::Prevote { round, value, .. } => {
                 self.vcm.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
-                self.vcm.vc.any_prevotes.entry((round, value)).or_default().insert(m);
                 self.vcm.vc.prevote_id.entry((round, m)).or_insert(id);
             }
-            Payload::Precommit { epoch, round, value, boundary, ref polka, sig } => {
+            Payload::Precommit { epoch, round, value, boundary, sig, .. } => {
                 // S3c: a precommit counts only with a valid signature over its fact, which the
                 // epoch certificate then carries.
                 if !self.keys.public.fact_ok(m, self.world_id, vc_fact(epoch, round, value), &sig) {
@@ -797,10 +794,6 @@ impl WorldSim {
                     // Keep the first precommit's seq and the smallest boundary (review VC-10).
                     let c = self.vcm.join_caps.entry(m).or_insert((e.seq, boundary));
                     c.1 = c.1.min(boundary);
-                    self.cap_seen.entry(m).or_insert((round, value, self.now));
-                    // Review VC4R-1: keep the polka ids it named, so the next cap check fetches and
-                    // counts them (in any version) before voting it out.
-                    self.cap_polka.entry(m).or_insert_with(|| polka.clone());
                 }
             }
             Payload::Kick { target, rejoin, .. } => {
@@ -1218,43 +1211,6 @@ impl WorldSim {
     /// The members a change excludes from its quorums.
     pub(super) fn excluded_of(&self, v: u64) -> Option<BTreeSet<MemberId>> {
         self.vcm.vc.changes.get(&v).map(|c| c.excluded.iter().map(|(m, _)| *m).collect())
-    }
-
-    /// Whether a quorum (counted as the change `v` defines it) sent `v` in `round` of `votes`.
-    /// Review VC4R-1: whether prevotes for `v` in `round`, in any version held, come from a quorum: the
-    /// test of a cap's justification, which an equivocated prevote must not defeat. (Locks and decisions
-    /// still use `quorum_for`, one version per member.)
-    pub(super) fn polka_any(&self, round: u32, v: u64) -> bool {
-        let Some(xs) = self.excluded_of(v) else { return false };
-        let (base, _, q) = self.base(&xs);
-        self.vcm.vc.any_prevotes.get(&(round, v)).is_some_and(|ms| ms.iter().filter(|m| base.contains(m)).count() >= q)
-    }
-
-    /// Whether capper `m`'s polka for `v` in `round` holds here: the prevotes recorded for it in any
-    /// version, and (review VC7R-2) every prevote the cap's precommit named that is held, linked into its
-    /// author's chain or not. A fetched prevote sitting past a gap in its author's chain counted for
-    /// nothing, so the capper was voted out at once.
-    pub(super) fn cap_polka_holds(&self, m: MemberId, round: u32, v: u64) -> bool {
-        if self.fixes_off & fix::VC7R2 != 0 {
-            return self.polka_any(round, v);
-        }
-        let Some(xs) = self.excluded_of(v) else { return false };
-        let (base, _, q) = self.base(&xs);
-        let mut ms: BTreeSet<MemberId> = self.vcm.vc.any_prevotes.get(&(round, v)).cloned().unwrap_or_default();
-        for id in self.cap_polka.get(&m).into_iter().flatten() {
-            if let Some(e) = self.entries.get(id) {
-                if matches!(e.payload, Payload::Prevote { epoch, round: r, value } if epoch == self.vcm.epoch && r == round && value == v) {
-                    ms.insert(e.member);
-                }
-            }
-        }
-        ms.iter().filter(|x| base.contains(x)).count() >= q
-    }
-
-    pub(super) fn quorum_for(&self, votes: &BTreeMap<u32, BTreeMap<MemberId, u64>>, round: u32, v: u64) -> bool {
-        let Some(xs) = self.excluded_of(v) else { return false };
-        let (base, _, q) = self.base(&xs);
-        votes.get(&round).is_some_and(|r| r.iter().filter(|&(m, &x)| x == v && base.contains(m)).count() >= q)
     }
 
     /// The members whose precommit for `v` in `round` counts toward deciding it: those recorded in
@@ -2263,7 +2219,6 @@ impl WorldSim {
             }
         }
         if self.fixes_off & fix::VCR4 != 0 {
-            self.vcm.newer_since.clear();
         }
         // Review VCR-4: a reset overrules every vote and cap of its epoch: count each against its author,
         // so a member that forces one each epoch is voted out (`STRIKES_OUT`). Votes against a member
@@ -2288,44 +2243,24 @@ impl WorldSim {
                 }
             }
         }
-        // Review VC-9: references to and from a new member count from its admission.
-        let now = self.now;
-        let all: Vec<MemberId> = self.vcm.members.iter().copied().chain(c.add.iter().copied()).collect();
-        for &j in &c.add {
-            for &k in &all {
-                if k != j {
-                    self.vcm.ref_advanced.insert((k, j), now);
-                    self.vcm.ref_advanced.insert((j, k), now);
-                }
-            }
-        }
         self.vcm.join_caps.clear();
-        self.cap_seen.clear();
-        self.cap_polka.clear();
         if self.fixes_off & fix::VC6R4 == 0 {
             // Review VC6R-4: reset only the timers a cleared vote made stale (this decision clears every
-            // vote, below). A voter froze its target's chain, so its reference to that chain stood still
-            // (`ref_seen`), and the targets of my own votes looked silent or slow to me
-            // (`suspect_since`); new members count from admission. Round 6 cleared every timer at every
-            // decision, so a member that forces decisions (a no-op admin entry every 2 s) kept its own
-            // timers from ever ripening.
+            // vote, below): the targets of my own votes looked silent or slow to me (`suspect_since`);
+            // new members count from admission. Round 6 cleared every timer at every decision, so a
+            // member that forces decisions (a no-op admin entry every 2 s) kept a crashed member's
+            // silence spare-window from ever ripening.
             for (y, vs) in &self.vcm.votes {
-                for v in vs.keys() {
-                    self.ref_seen.remove(&(*v, *y));
-                    if *v == self.me {
-                        self.suspect_since.remove(y);
-                    }
+                if vs.contains_key(&self.me) {
+                    self.suspect_since.remove(y);
                 }
             }
             for &j in &c.add {
-                self.ref_seen.retain(|&(k, a), _| k != j && a != j);
                 self.suspect_since.remove(&j);
             }
         } else {
-            // Review VC5R-4 (round 6): the verified-reference timers and the silence spare-window are
-            // per-epoch; a decision clears them so a stale entry does not vote a member out in the new
-            // epoch.
-            self.ref_seen.clear();
+            // Review VC5R-4 (round 6): the silence spare-window is per-epoch; a decision clears it so a
+            // stale entry does not vote a member out in the new epoch.
             self.suspect_since.clear();
         }
         for &j in &c.add {
