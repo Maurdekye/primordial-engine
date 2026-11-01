@@ -123,7 +123,7 @@ pub fn ackfork() {
                 seq: forged.0 + 1,
                 prev: forged.1,
                 stamp: now,
-                payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None, epoch: 0 },
+                payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None, epoch: 0, fed: None },
                 carried: None, link: 0,
             };
             e.link = ckpt_link_for(forged_ck, e.stamp);
