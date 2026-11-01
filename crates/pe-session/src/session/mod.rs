@@ -459,6 +459,9 @@ pub struct WorldSim {
     // ---- log (round 2: chains, stability, chain-local verdicts)
     known: BTreeSet<MemberId>,
     entries: BTreeMap<EntryId, Entry>,
+    /// The newest stamp of any entry held other than an ack (design 7.6's idle predicate): void
+    /// ones, fork versions, own and protocol entries included; raised at insert, as the spike's.
+    busy_stamp: Option<u64>,
     /// The version of each (member, seq) this member holds and references: the first one seen.
     by_author: BTreeMap<(MemberId, u32), EntryId>,
     /// Per author: the verified contiguous prefix (hash-linked) held.
@@ -553,6 +556,8 @@ pub struct WorldSim {
     /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
     /// it, so nothing it confirms can miss the pack.
     pub hold_horizon_below: Option<u64>,
+    /// 7.6 reduction 1: the check frame this member's last ack carried.
+    last_check_sent: Option<u64>,
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
@@ -809,6 +814,7 @@ impl WorldSim {
             attested: BTreeSet::new(),
             known: members.iter().copied().chain([me]).collect(),
             entries: BTreeMap::new(),
+            busy_stamp: None,
             by_author: BTreeMap::new(),
             contiguous: BTreeMap::new(),
             violations: BTreeSet::new(),
@@ -847,6 +853,7 @@ impl WorldSim {
             horizon_lag: 0,
             own_pending: BTreeMap::new(),
             hold_horizon_below: None,
+            last_check_sent: None,
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
