@@ -2205,6 +2205,10 @@ pub struct WorldSim {
     pb_pending: BTreeSet<MemberId>,
     /// Diagnostics: the last second of my present traced (PE_CONF_TRACE).
     dbg_conf_at: u64,
+    /// Rule 4 (D): bytes reaching me directly from each member, by my present's frame (`note_rx`).
+    rx_bytes: BTreeMap<MemberId, BTreeMap<u64, u64>>,
+    /// Rule 4 (D): when I first saw each fed member's ack say it is fed (cleared when it leaves the feed).
+    fed_seen: BTreeMap<MemberId, u64>,
     /// F2: every validated vote by (target, voter): (its epoch, its seq, its frozen head's seq), the first per epoch.
     vote_hist: BTreeMap<(MemberId, MemberId), Vec<(u32, u32, u32)>>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
@@ -2449,6 +2453,8 @@ impl WorldSim {
             removed_in: BTreeMap::new(),
             pb_pending: BTreeSet::new(),
             dbg_conf_at: u64::MAX,
+            rx_bytes: BTreeMap::new(),
+            fed_seen: BTreeMap::new(),
             vote_hist: BTreeMap::new(),
             genesis: members.to_vec(),
             roles: members.iter().map(|&m| (m, ADMIN)).collect(),
@@ -3103,14 +3109,19 @@ impl WorldSim {
                     match fed {
                         Some(fa) if !fa.echo.is_empty() => {
                             self.fed_peers.insert(m, fa.echo.iter().find(|&&(x, _)| x == self.me).map(|&(_, b)| b));
+                            let now = self.now;
+                            self.fed_seen.entry(m).or_insert(now);
                             self.echo_pending.insert(m, (fa.echo, fa.digest, e.seq));
                             self.retry_echoes();
                         }
                         // The same echo as m's previous ack.
                         Some(_) => {
                             self.fed_peers.entry(m).or_insert(None);
+                            let now = self.now;
+                            self.fed_seen.entry(m).or_insert(now);
                         }
                         None => {
+                            self.fed_seen.remove(&m);
                             if self.fed_peers.remove(&m).is_some() {
                                 // Off the feed: a later stay starts its checkpoint clocks afresh.
                                 self.ckpt_sent.remove(&m);
@@ -3677,9 +3688,9 @@ impl WorldSim {
             if silent {
                 self.stats.suspicions += 1;
                 self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
-            } else if let Some((lag, x)) = floor {
+            } else if let Some(why) = floor {
                 self.stats.floor_removals += 1;
-                self.ev(format!("member {j} is fed and its echo of my chain has trailed my checkpoints for {lag} frames (X = {x}): below the floors; vote to remove it"));
+                self.ev(format!("member {j} is fed and {why}: below the floors; vote to remove it"));
             } else {
                 self.stats.demotions += 1;
                 self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
