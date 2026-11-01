@@ -667,6 +667,16 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     v.member(*world, *author, "entries author");
                 }
             }
+            Report::Indicators { world, at, every_ms, named, honest, .. } => {
+                checks += 1;
+                if *every_ms == 0 {
+                    v.err("indicators: every_ms must be at least 1".into());
+                }
+                if v.world(*world, "indicators") {
+                    v.member(*world, *at, "indicators at");
+                    named.iter().chain(honest).for_each(|&m| v.member(*world, m, "indicators member"));
+                }
+            }
             Report::Evicted { world, at, .. } | Report::Outcomes { world, at, .. } | Report::Expect { world, at, .. } => {
                 if v.world(*world, "report") {
                     v.member(*world, *at, "report at");

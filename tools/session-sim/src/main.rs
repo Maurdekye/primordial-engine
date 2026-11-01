@@ -53,6 +53,7 @@ fn run_part(s: Scenario, name: &str, kept: &mut report::Kept) -> Result<bool, St
     for a in &actors {
         a.configure(&mut sim)?;
     }
+    sim.net.ping_filter = faults::ping_filter(&s.fault);
     sim.net.filter = faults::filter(s.fault.clone(), actors.iter().filter_map(|a| a.hook()).collect());
     let mut ctx = Ctx::default();
     for t in &s.intro {

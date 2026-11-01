@@ -264,6 +264,10 @@ impl DrivenPeer for SimSession {
         sim_view::sync(self.replica())
     }
 
+    fn indicators(&self) -> Option<Indicators> {
+        sim_view::indicators(&self.sim.replica(self.me, WORLD).core, self.me, self.sim.net.now_us)
+    }
+
     fn scenario(&mut self) -> Option<&mut dyn ScenarioControl> {
         Some(self)
     }

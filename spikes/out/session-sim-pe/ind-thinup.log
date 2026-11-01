@@ -1,0 +1,8 @@
+  t=0.00s m1: lag 0 frames (0.00 s); holding [] late acks flagged []
+  t=3.75s m1: lag 102 frames (1.70 s); holding [behind (2)] late acks flagged []
+  t=6.25s m1: lag 7 frames (0.12 s); holding [] late acks flagged []
+RESULT ind-thinup m1: m1 asked 33 times; named {2}; not referencing {}; late {} -> OK
+  t=0.00s m3: lag 0 frames (0.00 s); holding [] late acks flagged []
+  t=3.75s m3: lag 102 frames (1.70 s); holding [behind (2)] late acks flagged []
+  t=6.25s m3: lag 7 frames (0.12 s); holding [] late acks flagged []
+RESULT ind-thinup m3: m3 asked 33 times; named {2}; not referencing {}; late {} -> OK
