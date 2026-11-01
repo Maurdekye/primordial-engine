@@ -642,7 +642,7 @@ impl Node {
                 self.clock.sample(sender, t, recv_us, r, raw, f64::from_bits(rate));
                 self.apply_clock();
                 // A probe's verdict on its episode (see `PROBE_EVERY_US`).
-                let best = self.clock.best_rtt_to(sender).unwrap_or(u64::MAX);
+                let best = self.clock.best_rtt_to(sender).unwrap_or(u64::MAX).saturating_add(self.back_queue(sender));
                 if let Some(o) = self.over.get_mut(&sender)
                     && let Some(q) = o.probes.remove(&t)
                 {
@@ -966,12 +966,19 @@ impl Node {
         }
     }
 
-    /// The queueing on the round trip to member `m` now: the least excess of its last few round
-    /// trips over the best to m (review M1). Unanswered pings do not count: a lost one read as up to
-    /// a ping interval of excess and opened the clamp (review H1), and the clamp's grace already lets
-    /// a congestion onset through until the round trips show it.
+    /// The queueing on the way to member `m` now, as the round trips show it: the least excess of
+    /// the last few round trips over the best to m (review M1), less the queue this node measures on
+    /// m's datagrams to it (the way back). A delay step or queue on the way back otherwise lifted the
+    /// bound for the 30 s window (25 ms in the mixed run). A clock's drift lifts only one of the two
+    /// one-way estimates (the other's base follows it down), so the way back is clean whenever this
+    /// way's report is the drifted one. Unanswered pings do not count (review H1).
     fn rtt_excess(&self, m: u32, now: u64) -> Option<u64> {
-        self.clock.rtt_excess(m, now)
+        Some(self.clock.rtt_excess(m, now)?.saturating_sub(self.back_queue(m)))
+    }
+
+    /// The one-way queue this node measures on member `m`'s datagrams to it.
+    fn back_queue(&self, m: u32) -> u64 {
+        self.rx.get(&m).and_then(|r| r.q_us).unwrap_or(0)
     }
 
     /// One hand pose per clock frame along a sweep across the pit; the core keeps only those due at
