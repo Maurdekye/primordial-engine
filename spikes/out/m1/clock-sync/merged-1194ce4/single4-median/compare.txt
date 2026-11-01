@@ -1,0 +1,7 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 5400 | e2e4ae06c2e734a3 | equal | 5576 | [1, 2, 3, 4] | 0 | 558/0 | 9829/0 |
+| 2 | 5400 | e2e4ae06c2e734a3 | equal | 5576 | [1, 2, 3, 4] | 0 | 558/0 | 8750/0 |
+| 3 | 5400 | e2e4ae06c2e734a3 | equal | 5576 | [1, 2, 3, 4] | 0 | 558/0 | 8928/0 |
+| 4 | 5400 | e2e4ae06c2e734a3 | equal | 5576 | [1, 2, 3, 4] | 0 | 558/0 | 9108/0 |
+ALL EQUAL

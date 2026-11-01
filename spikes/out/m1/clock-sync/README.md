@@ -76,6 +76,27 @@ from 3 s (session time). Level shares are of the controller's ticks; "clamped" c
 | `loopback-windows/`, `tests-windows.log` | `m1-loopback.sh` ALL EQUAL; pe-session + pe-mcp + pe-app tests: 181 pass |
 | `linux-wsl.log` | WSL2 native glibc: build, pe-app and pe-mcp tests, `m1-loopback.sh` ALL EQUAL |
 
+## On the merged tree (`merged-1194ce4/`)
+
+p2/app merged main 3df5347 at 4cd886f: D73's hand packs, V1-V3, design 7.6's ack reductions and D56's
+first-gesture idle gate in pe-session. Re-measured at 1194ce4 (the same code):
+
+| Run | Result |
+|---|---|
+| `mixed-nostep/` (Windows + WSL, impairments from the start) | Every member at level 0 for 100 % (largest signal 11 / 23 / 35 / 30 ms); ALL EQUAL, 0 decisions, 0 pauses |
+| `three-2win-1wsl/` (impairments from the start) | All three at level 0 for 100 %; ALL EQUAL, 0 decisions. The Windows members' corrections stay within -2.1 to +1.3 % |
+| `skew4-ftm/`, `single4-ftm/`, `single4-median/` | ALL EQUAL; every member at level 0 throughout (member 4 of skew4: largest signal 13 ms) |
+| `cap80-1/`, `cap80-2/` | ALL EQUAL. Real queue mean 24.9 / 21.8 ms, max 404 / 341 ms; lag max 28 / 28 frames; 0 cap drops. The level mix moves to level 3 (52 %), with 489 / 487 rollbacks: D73's packs (a pack's insertion rolls the author's replica back to its first frame) and the ack reductions |
+| `mixed-steps/` (with the steps) | ALL EQUAL, 0 decisions. Members 1-2 at level 0 for 100 %; member 3 for 42 %, member 4 for 75 % |
+| `loopback-windows/`, `tests-windows.log`, `linux-wsl.log` | ALL EQUAL; pe-session + pe-mcp + pe-app tests 188 pass; WSL native build, tests and loopback ALL EQUAL |
+
+* **D56's idle gate holds a raise in an idle session.** These runs touch only (3 a second, no hands),
+  so the members are idle most of the time, and idle calm never lowers into the remembered level (main
+  6669e5a, as the spike). Member 3's pre-fit episode (above) then lasts the rest of the run, at level 1-2.
+  Member 4 rose once, at 92 s, to a single 50 ms value during a WSL hiccup (its own estimates of members
+  1 and 2's datagrams rose 15 to 38 ms in the same second: a real delay), and stayed at level 1 to the
+  end. Without the steps no member rose.
+
 `args.txt` in each fault run lists every member's switches and `decisions.txt` counts membership
 decisions and pauses; `levels.txt` has the level shares. The status lines in the run logs show, every
 2 s, each member's offset, frequency correction, and per peer the clamp's round-trip excess and way back.
