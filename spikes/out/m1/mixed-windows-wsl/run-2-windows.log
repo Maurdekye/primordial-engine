@@ -1,0 +1,29 @@
+pe-app: member 2 of session d84438f34db05926 on 172.19.32.1:7402; 4 members, 1800 frames
+[m2 t=0ms f=0] session start received: epoch 3335246 (leader clock), my offset 9105 us, best rtt 2166 us
+[m2 t=0ms f=0] status: frame 0 now 0 conf 0 members {1, 2, 3, 4} rollbacks 0 | sent 24 faulted 0 recv 13 rejected {} bad entry sigs 0
+[m2 t=1002ms f=60] status: frame 60 now 60 conf 56 members {1, 2, 3, 4} rollbacks 0 | sent 114 faulted 0 recv 104 rejected {} bad entry sigs 0
+[m2 t=2000ms f=119] fault: links to all now 10% loss, 30 ms +-10 ms
+[m2 t=3003ms f=180] status: frame 180 now 180 conf 170 members {1, 2, 3, 4} rollbacks 5 | sent 291 faulted 12 recv 292 rejected {} bad entry sigs 0
+[m2 t=5005ms f=300] status: frame 300 now 300 conf 278 members {1, 2, 3, 4} rollbacks 17 | sent 488 faulted 41 recv 494 rejected {} bad entry sigs 0
+[m2 t=7007ms f=420] status: frame 420 now 420 conf 388 members {1, 2, 3, 4} rollbacks 27 | sent 681 faulted 55 recv 696 rejected {} bad entry sigs 0
+[m2 t=9008ms f=540] status: frame 540 now 540 conf 500 members {1, 2, 3, 4} rollbacks 39 | sent 864 faulted 71 recv 892 rejected {} bad entry sigs 0
+[m2 t=11010ms f=660] status: frame 660 now 660 conf 618 members {1, 2, 3, 4} rollbacks 51 | sent 1061 faulted 91 recv 1114 rejected {} bad entry sigs 0
+[m2 t=13011ms f=780] status: frame 780 now 780 conf 738 members {1, 2, 3, 4} rollbacks 63 | sent 1239 faulted 112 recv 1322 rejected {} bad entry sigs 0
+[m2 t=15013ms f=900] status: frame 900 now 900 conf 859 members {1, 2, 3, 4} rollbacks 75 | sent 1438 faulted 132 recv 1532 rejected {} bad entry sigs 0
+[m2 t=16950ms f=1016] paused at frame 1016 (speculation limit)
+[m2 t=17013ms f=1016] status: frame 1016 now 1020 conf 896 members {1, 2, 3, 4} rollbacks 83 | sent 1635 faulted 152 recv 1699 rejected {} bad entry sigs 0
+[m2 t=18766ms f=1016] membership decision: epoch 1, removed [4]
+[m2 t=18771ms f=1126] resumed at frame 1126
+[m2 t=19015ms f=1140] status: frame 1140 now 1140 conf 1100 members {1, 2, 3} rollbacks 86 | sent 1816 faulted 176 recv 1842 rejected {} bad entry sigs 0
+[m2 t=21016ms f=1260] status: frame 1260 now 1260 conf 1220 members {1, 2, 3} rollbacks 92 | sent 1951 faulted 192 recv 1993 rejected {} bad entry sigs 0
+[m2 t=23016ms f=1380] status: frame 1380 now 1380 conf 1336 members {1, 2, 3} rollbacks 98 | sent 2089 faulted 203 recv 2136 rejected {} bad entry sigs 0
+[m2 t=25018ms f=1501] status: frame 1501 now 1501 conf 1460 members {1, 2, 3} rollbacks 104 | sent 2225 faulted 214 recv 2278 rejected {} bad entry sigs 0
+[m2 t=27019ms f=1621] status: frame 1621 now 1621 conf 1578 members {1, 2, 3} rollbacks 110 | sent 2359 faulted 220 recv 2418 rejected {} bad entry sigs 0
+[m2 t=29021ms f=1741] status: frame 1741 now 1741 conf 1701 members {1, 2, 3} rollbacks 116 | sent 2500 faulted 237 recv 2566 rejected {} bad entry sigs 0
+[m2 t=30930ms f=1849] DONE frames 0..1800: digest 104451cdf57015c4 replay 104451cdf57015c4 (EQUAL), conf 1807, members [1, 2, 3]
+[m2 t=30930ms f=1849] slow step: 104 ms (receive 0 ms, tick 0 ms, send 104 ms)
+[m2 t=31022ms f=1861] status: frame 1861 now 1861 conf 1809 members {1, 2, 3} rollbacks 117 | sent 2618 faulted 251 recv 2694 rejected {} bad entry sigs 0
+[m2 t=32169ms f=1929] paused at frame 1929 (speculation limit)
+[m2 t=32318ms f=1939] resumed at frame 1939
+[m2 t=33023ms f=1981] status: frame 1981 now 1981 conf 1940 members {1, 2, 3} rollbacks 117 | sent 2739 faulted 261 recv 2780 rejected {} bad entry sigs 0
+member 2: frames 0..1800 digest 104451cdf57015c4 replay 104451cdf57015c4 (EQUAL), conf 1807, members at end [1, 2, 3], rollbacks 117, checks ok 141 bad 0

@@ -1,0 +1,6 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | 44efa169271d5b36 | equal | 1801 | [1, 2, 3] | 126 | 141/0 | 3151/0 |
+| 2 | 1800 | 44efa169271d5b36 | equal | 1803 | [1, 2, 3] | 48 | 142/0 | 2658/255 |
+| 3 | 1800 | 44efa169271d5b36 | equal | 1801 | [1, 2, 3] | 91 | 142/0 | 2820/127 |
+ALL EQUAL

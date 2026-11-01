@@ -1,0 +1,5 @@
+code: 813400a
+windows: b69fa542c32e353f1019e6a84ac036f5742f7dc4184222c41e53ca70ffe012f7
+wsl: f4c83e837bdc08f5e8f39490bf2e29aeb025ee5c9ac4fe6a29fd2ebac1e3df71 Linux 6.6.87.2-microsoft-standard-WSL2 x86_64 
+laptop: 813400a 2be3a9b1c4c8c9dda6fe522fb55d16f2344982ee0c02ff3a23b2fa3a8753d95d MINGW64_NT-10.0-26200 3.6.3-7674c51e.x86_64 x86_64 
+members: 1-2 this PC (Windows), 3 this PC (WSL2, via relay), 4 the laptop (Windows), over Tailscale; all bind 0.0.0.0:PORT (a socket bound to this PC's own Tailscale address missed local traffic to it)

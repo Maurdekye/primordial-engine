@@ -1,0 +1,32 @@
+{
+  "session": 9342365346641070589,
+  "nonce": "b4b8a46a2cfb1997e0d6b3b58e3928ebc7a71f4db33281078984390ddd9184b8",
+  "name": "m1",
+  "scene": "pile",
+  "size": 4,
+  "frames": 7200,
+  "window": 120,
+  "seed": 5787769067516609609,
+  "members": [
+    {
+      "id": 1,
+      "addr": "172.19.32.1:7571",
+      "key": "f870511bba83fe13e40f62b995691d9b24b2358303b545678f676be6bbb4bf6b"
+    },
+    {
+      "id": 2,
+      "addr": "172.19.32.1:7572",
+      "key": "2d8b74913214b8c4878896527afae2ac2ac0e1d83ecde6f242f218a0a5a3441d"
+    },
+    {
+      "id": 3,
+      "addr": "172.19.40.73:7573",
+      "key": "7cbb376c016a4fef82a61de150f832a3cb5577325911191ffbf48eff16d86b1e"
+    },
+    {
+      "id": 4,
+      "addr": "172.19.40.73:7574",
+      "key": "ffe8c4dec4f2c39471065fba7c6cc9ddecd7041cbebde2eafcf5f8874c71d660"
+    }
+  ]
+}

@@ -1,0 +1,452 @@
+RESULT ties: same-frame conflicts on one object at 150 frames, winners per member {1: 41, 2: 50, 3: 59}
+OUTCOME ties w1 m1 s21 push RejectedClaimed { by: 3, until: 70 }
+OUTCOME ties w1 m1 s42 push RejectedClaimed { by: 3, until: 110 }
+OUTCOME ties w1 m1 s62 push RejectedClaimed { by: 3, until: 150 }
+OUTCOME ties w1 m1 s83 push RejectedClaimed { by: 2, until: 190 }
+OUTCOME ties w1 m1 s104 push RejectedClaimed { by: 3, until: 230 }
+OUTCOME ties w1 m1 s124 push RejectedClaimed { by: 3, until: 270 }
+OUTCOME ties w1 m1 s145 push RejectedClaimed { by: 2, until: 310 }
+OUTCOME ties w1 m1 s165 push RejectedClaimed { by: 2, until: 350 }
+OUTCOME ties w1 m1 s186 push RejectedClaimed { by: 2, until: 390 }
+OUTCOME ties w1 m1 s207 push RejectedClaimed { by: 3, until: 430 }
+OUTCOME ties w1 m1 s227 push RejectedClaimed { by: 2, until: 470 }
+OUTCOME ties w1 m1 s248 push Accepted
+OUTCOME ties w1 m1 s268 push RejectedClaimed { by: 2, until: 550 }
+OUTCOME ties w1 m1 s289 push RejectedClaimed { by: 3, until: 590 }
+OUTCOME ties w1 m1 s310 push Accepted
+OUTCOME ties w1 m1 s330 push RejectedClaimed { by: 2, until: 670 }
+OUTCOME ties w1 m1 s351 push RejectedClaimed { by: 3, until: 710 }
+OUTCOME ties w1 m1 s371 push RejectedClaimed { by: 2, until: 750 }
+OUTCOME ties w1 m1 s392 push RejectedClaimed { by: 3, until: 790 }
+OUTCOME ties w1 m1 s413 push RejectedClaimed { by: 3, until: 830 }
+OUTCOME ties w1 m1 s433 push RejectedClaimed { by: 3, until: 870 }
+OUTCOME ties w1 m1 s454 push Accepted
+OUTCOME ties w1 m1 s474 push RejectedClaimed { by: 3, until: 950 }
+OUTCOME ties w1 m1 s495 push RejectedClaimed { by: 3, until: 990 }
+OUTCOME ties w1 m1 s516 push RejectedClaimed { by: 3, until: 1030 }
+OUTCOME ties w1 m1 s536 push Accepted
+OUTCOME ties w1 m1 s557 push RejectedClaimed { by: 3, until: 1110 }
+OUTCOME ties w1 m1 s578 push RejectedClaimed { by: 3, until: 1150 }
+OUTCOME ties w1 m1 s598 push Accepted
+OUTCOME ties w1 m1 s619 push RejectedClaimed { by: 3, until: 1230 }
+OUTCOME ties w1 m1 s639 push Accepted
+OUTCOME ties w1 m1 s660 push Accepted
+OUTCOME ties w1 m1 s681 push RejectedClaimed { by: 3, until: 1350 }
+OUTCOME ties w1 m1 s701 push RejectedClaimed { by: 3, until: 1390 }
+OUTCOME ties w1 m1 s722 push RejectedClaimed { by: 2, until: 1430 }
+OUTCOME ties w1 m1 s742 push RejectedClaimed { by: 2, until: 1470 }
+OUTCOME ties w1 m1 s763 push RejectedClaimed { by: 3, until: 1510 }
+OUTCOME ties w1 m1 s784 push RejectedClaimed { by: 2, until: 1550 }
+OUTCOME ties w1 m1 s804 push RejectedClaimed { by: 3, until: 1590 }
+OUTCOME ties w1 m1 s825 push Accepted
+OUTCOME ties w1 m1 s845 push RejectedClaimed { by: 3, until: 1670 }
+OUTCOME ties w1 m1 s866 push RejectedClaimed { by: 3, until: 1710 }
+OUTCOME ties w1 m1 s887 push RejectedClaimed { by: 2, until: 1750 }
+OUTCOME ties w1 m1 s907 push RejectedClaimed { by: 3, until: 1790 }
+OUTCOME ties w1 m1 s928 push RejectedClaimed { by: 3, until: 1830 }
+OUTCOME ties w1 m1 s948 push RejectedClaimed { by: 3, until: 1870 }
+OUTCOME ties w1 m1 s969 push RejectedClaimed { by: 2, until: 1910 }
+OUTCOME ties w1 m1 s990 push RejectedClaimed { by: 2, until: 1950 }
+OUTCOME ties w1 m1 s1010 push Accepted
+OUTCOME ties w1 m1 s1031 push Accepted
+OUTCOME ties w1 m1 s1052 push Accepted
+OUTCOME ties w1 m1 s1072 push Accepted
+OUTCOME ties w1 m1 s1093 push Accepted
+OUTCOME ties w1 m1 s1113 push RejectedClaimed { by: 2, until: 2190 }
+OUTCOME ties w1 m1 s1134 push Accepted
+OUTCOME ties w1 m1 s1155 push Accepted
+OUTCOME ties w1 m1 s1175 push Accepted
+OUTCOME ties w1 m1 s1196 push RejectedClaimed { by: 3, until: 2350 }
+OUTCOME ties w1 m1 s1216 push RejectedClaimed { by: 3, until: 2390 }
+OUTCOME ties w1 m1 s1237 push RejectedClaimed { by: 2, until: 2430 }
+OUTCOME ties w1 m1 s1258 push RejectedClaimed { by: 3, until: 2470 }
+OUTCOME ties w1 m1 s1278 push Accepted
+OUTCOME ties w1 m1 s1299 push RejectedClaimed { by: 2, until: 2550 }
+OUTCOME ties w1 m1 s1319 push Accepted
+OUTCOME ties w1 m1 s1340 push Accepted
+OUTCOME ties w1 m1 s1361 push RejectedClaimed { by: 2, until: 2670 }
+OUTCOME ties w1 m1 s1381 push RejectedClaimed { by: 2, until: 2710 }
+OUTCOME ties w1 m1 s1402 push Accepted
+OUTCOME ties w1 m1 s1422 push RejectedClaimed { by: 2, until: 2790 }
+OUTCOME ties w1 m1 s1443 push Accepted
+OUTCOME ties w1 m1 s1464 push RejectedClaimed { by: 2, until: 2870 }
+OUTCOME ties w1 m1 s1484 push RejectedClaimed { by: 2, until: 2910 }
+OUTCOME ties w1 m1 s1505 push RejectedClaimed { by: 3, until: 2950 }
+OUTCOME ties w1 m1 s1526 push Accepted
+OUTCOME ties w1 m1 s1546 push RejectedClaimed { by: 3, until: 3030 }
+OUTCOME ties w1 m1 s1567 push Accepted
+OUTCOME ties w1 m1 s1587 push RejectedClaimed { by: 2, until: 3110 }
+OUTCOME ties w1 m1 s1608 push RejectedClaimed { by: 2, until: 3150 }
+OUTCOME ties w1 m1 s1629 push Accepted
+OUTCOME ties w1 m1 s1649 push RejectedClaimed { by: 3, until: 3230 }
+OUTCOME ties w1 m1 s1670 push RejectedClaimed { by: 2, until: 3270 }
+OUTCOME ties w1 m1 s1690 push RejectedClaimed { by: 2, until: 3310 }
+OUTCOME ties w1 m1 s1711 push RejectedClaimed { by: 3, until: 3350 }
+OUTCOME ties w1 m1 s1732 push Accepted
+OUTCOME ties w1 m1 s1752 push RejectedClaimed { by: 2, until: 3430 }
+OUTCOME ties w1 m1 s1773 push Accepted
+OUTCOME ties w1 m1 s1793 push RejectedClaimed { by: 3, until: 3510 }
+OUTCOME ties w1 m1 s1814 push RejectedClaimed { by: 3, until: 3550 }
+OUTCOME ties w1 m1 s1835 push RejectedClaimed { by: 2, until: 3590 }
+OUTCOME ties w1 m1 s1855 push RejectedClaimed { by: 2, until: 3630 }
+OUTCOME ties w1 m1 s1876 push RejectedClaimed { by: 3, until: 3670 }
+OUTCOME ties w1 m1 s1896 push RejectedClaimed { by: 3, until: 3710 }
+OUTCOME ties w1 m1 s1917 push RejectedClaimed { by: 2, until: 3750 }
+OUTCOME ties w1 m1 s1938 push Accepted
+OUTCOME ties w1 m1 s1958 push RejectedClaimed { by: 2, until: 3830 }
+OUTCOME ties w1 m1 s1979 push RejectedClaimed { by: 3, until: 3870 }
+OUTCOME ties w1 m1 s1999 push RejectedClaimed { by: 3, until: 3910 }
+OUTCOME ties w1 m1 s2020 push RejectedClaimed { by: 2, until: 3950 }
+OUTCOME ties w1 m1 s2041 push RejectedClaimed { by: 3, until: 3990 }
+OUTCOME ties w1 m1 s2061 push Accepted
+OUTCOME ties w1 m1 s2082 push Accepted
+OUTCOME ties w1 m1 s2103 push RejectedClaimed { by: 2, until: 4110 }
+OUTCOME ties w1 m1 s2123 push RejectedClaimed { by: 2, until: 4150 }
+OUTCOME ties w1 m1 s2144 push RejectedClaimed { by: 3, until: 4190 }
+OUTCOME ties w1 m1 s2164 push Accepted
+OUTCOME ties w1 m1 s2185 push Accepted
+OUTCOME ties w1 m1 s2206 push Accepted
+OUTCOME ties w1 m1 s2226 push RejectedClaimed { by: 2, until: 4350 }
+OUTCOME ties w1 m1 s2247 push RejectedClaimed { by: 3, until: 4390 }
+OUTCOME ties w1 m1 s2267 push RejectedClaimed { by: 2, until: 4430 }
+OUTCOME ties w1 m1 s2288 push RejectedClaimed { by: 3, until: 4470 }
+OUTCOME ties w1 m1 s2309 push RejectedClaimed { by: 3, until: 4510 }
+OUTCOME ties w1 m1 s2329 push RejectedClaimed { by: 2, until: 4550 }
+OUTCOME ties w1 m1 s2350 push RejectedClaimed { by: 2, until: 4590 }
+OUTCOME ties w1 m1 s2370 push RejectedClaimed { by: 3, until: 4630 }
+OUTCOME ties w1 m1 s2391 push Accepted
+OUTCOME ties w1 m1 s2412 push RejectedClaimed { by: 3, until: 4710 }
+OUTCOME ties w1 m1 s2432 push RejectedClaimed { by: 2, until: 4750 }
+OUTCOME ties w1 m1 s2453 push Accepted
+OUTCOME ties w1 m1 s2473 push RejectedClaimed { by: 3, until: 4830 }
+OUTCOME ties w1 m1 s2494 push Accepted
+OUTCOME ties w1 m1 s2515 push RejectedClaimed { by: 2, until: 4910 }
+OUTCOME ties w1 m1 s2535 push RejectedClaimed { by: 3, until: 4950 }
+OUTCOME ties w1 m1 s2556 push RejectedClaimed { by: 2, until: 4990 }
+OUTCOME ties w1 m1 s2577 push Accepted
+OUTCOME ties w1 m1 s2597 push RejectedClaimed { by: 2, until: 5070 }
+OUTCOME ties w1 m1 s2618 push RejectedClaimed { by: 3, until: 5110 }
+OUTCOME ties w1 m1 s2638 push RejectedClaimed { by: 3, until: 5150 }
+OUTCOME ties w1 m1 s2659 push RejectedClaimed { by: 2, until: 5190 }
+OUTCOME ties w1 m1 s2680 push RejectedClaimed { by: 3, until: 5230 }
+OUTCOME ties w1 m1 s2700 push RejectedClaimed { by: 3, until: 5270 }
+OUTCOME ties w1 m1 s2721 push Accepted
+OUTCOME ties w1 m1 s2741 push RejectedClaimed { by: 3, until: 5350 }
+OUTCOME ties w1 m1 s2762 push RejectedClaimed { by: 3, until: 5390 }
+OUTCOME ties w1 m1 s2783 push RejectedClaimed { by: 2, until: 5430 }
+OUTCOME ties w1 m1 s2803 push Accepted
+OUTCOME ties w1 m1 s2824 push RejectedClaimed { by: 2, until: 5510 }
+OUTCOME ties w1 m1 s2844 push RejectedClaimed { by: 2, until: 5550 }
+OUTCOME ties w1 m1 s2865 push RejectedClaimed { by: 3, until: 5590 }
+OUTCOME ties w1 m1 s2886 push Accepted
+OUTCOME ties w1 m1 s2906 push RejectedClaimed { by: 3, until: 5670 }
+OUTCOME ties w1 m1 s2927 push RejectedClaimed { by: 2, until: 5710 }
+OUTCOME ties w1 m1 s2947 push RejectedClaimed { by: 3, until: 5750 }
+OUTCOME ties w1 m1 s2968 push Accepted
+OUTCOME ties w1 m1 s2989 push Accepted
+OUTCOME ties w1 m1 s3009 push RejectedClaimed { by: 2, until: 5870 }
+OUTCOME ties w1 m1 s3030 push RejectedClaimed { by: 2, until: 5910 }
+OUTCOME ties w1 m1 s3051 push RejectedClaimed { by: 2, until: 5950 }
+OUTCOME ties w1 m1 s3071 push RejectedClaimed { by: 3, until: 5990 }
+OUTCOME ties w1 m1 s3092 push RejectedClaimed { by: 3, until: 6030 }
+OUTCOME ties w1 m2 s21 push RejectedClaimed { by: 3, until: 70 }
+OUTCOME ties w1 m2 s42 push RejectedClaimed { by: 3, until: 110 }
+OUTCOME ties w1 m2 s62 push RejectedClaimed { by: 3, until: 150 }
+OUTCOME ties w1 m2 s83 push Accepted
+OUTCOME ties w1 m2 s104 push RejectedClaimed { by: 3, until: 230 }
+OUTCOME ties w1 m2 s124 push RejectedClaimed { by: 3, until: 270 }
+OUTCOME ties w1 m2 s145 push Accepted
+OUTCOME ties w1 m2 s165 push Accepted
+OUTCOME ties w1 m2 s186 push Accepted
+OUTCOME ties w1 m2 s207 push RejectedClaimed { by: 3, until: 430 }
+OUTCOME ties w1 m2 s227 push Accepted
+OUTCOME ties w1 m2 s248 push RejectedClaimed { by: 1, until: 510 }
+OUTCOME ties w1 m2 s268 push Accepted
+OUTCOME ties w1 m2 s289 push RejectedClaimed { by: 3, until: 590 }
+OUTCOME ties w1 m2 s310 push RejectedClaimed { by: 1, until: 630 }
+OUTCOME ties w1 m2 s330 push Accepted
+OUTCOME ties w1 m2 s351 push RejectedClaimed { by: 3, until: 710 }
+OUTCOME ties w1 m2 s371 push Accepted
+OUTCOME ties w1 m2 s392 push RejectedClaimed { by: 3, until: 790 }
+OUTCOME ties w1 m2 s413 push RejectedClaimed { by: 3, until: 830 }
+OUTCOME ties w1 m2 s433 push RejectedClaimed { by: 3, until: 870 }
+OUTCOME ties w1 m2 s454 push RejectedClaimed { by: 1, until: 910 }
+OUTCOME ties w1 m2 s474 push RejectedClaimed { by: 3, until: 950 }
+OUTCOME ties w1 m2 s495 push RejectedClaimed { by: 3, until: 990 }
+OUTCOME ties w1 m2 s516 push RejectedClaimed { by: 3, until: 1030 }
+OUTCOME ties w1 m2 s536 push RejectedClaimed { by: 1, until: 1070 }
+OUTCOME ties w1 m2 s557 push RejectedClaimed { by: 3, until: 1110 }
+OUTCOME ties w1 m2 s578 push RejectedClaimed { by: 3, until: 1150 }
+OUTCOME ties w1 m2 s598 push RejectedClaimed { by: 1, until: 1190 }
+OUTCOME ties w1 m2 s619 push RejectedClaimed { by: 3, until: 1230 }
+OUTCOME ties w1 m2 s639 push RejectedClaimed { by: 1, until: 1270 }
+OUTCOME ties w1 m2 s660 push RejectedClaimed { by: 1, until: 1310 }
+OUTCOME ties w1 m2 s681 push RejectedClaimed { by: 3, until: 1350 }
+OUTCOME ties w1 m2 s701 push RejectedClaimed { by: 3, until: 1390 }
+OUTCOME ties w1 m2 s722 push Accepted
+OUTCOME ties w1 m2 s742 push Accepted
+OUTCOME ties w1 m2 s763 push RejectedClaimed { by: 3, until: 1510 }
+OUTCOME ties w1 m2 s784 push Accepted
+OUTCOME ties w1 m2 s804 push RejectedClaimed { by: 3, until: 1590 }
+OUTCOME ties w1 m2 s825 push RejectedClaimed { by: 1, until: 1630 }
+OUTCOME ties w1 m2 s845 push RejectedClaimed { by: 3, until: 1670 }
+OUTCOME ties w1 m2 s866 push RejectedClaimed { by: 3, until: 1710 }
+OUTCOME ties w1 m2 s887 push Accepted
+OUTCOME ties w1 m2 s907 push RejectedClaimed { by: 3, until: 1790 }
+OUTCOME ties w1 m2 s928 push RejectedClaimed { by: 3, until: 1830 }
+OUTCOME ties w1 m2 s948 push RejectedClaimed { by: 3, until: 1870 }
+OUTCOME ties w1 m2 s969 push Accepted
+OUTCOME ties w1 m2 s990 push Accepted
+OUTCOME ties w1 m2 s1010 push RejectedClaimed { by: 1, until: 1990 }
+OUTCOME ties w1 m2 s1031 push RejectedClaimed { by: 1, until: 2030 }
+OUTCOME ties w1 m2 s1052 push RejectedClaimed { by: 1, until: 2070 }
+OUTCOME ties w1 m2 s1072 push RejectedClaimed { by: 1, until: 2110 }
+OUTCOME ties w1 m2 s1093 push RejectedClaimed { by: 1, until: 2150 }
+OUTCOME ties w1 m2 s1113 push Accepted
+OUTCOME ties w1 m2 s1134 push RejectedClaimed { by: 1, until: 2230 }
+OUTCOME ties w1 m2 s1155 push RejectedClaimed { by: 1, until: 2270 }
+OUTCOME ties w1 m2 s1175 push RejectedClaimed { by: 1, until: 2310 }
+OUTCOME ties w1 m2 s1196 push RejectedClaimed { by: 3, until: 2350 }
+OUTCOME ties w1 m2 s1216 push RejectedClaimed { by: 3, until: 2390 }
+OUTCOME ties w1 m2 s1237 push Accepted
+OUTCOME ties w1 m2 s1258 push RejectedClaimed { by: 3, until: 2470 }
+OUTCOME ties w1 m2 s1278 push RejectedClaimed { by: 1, until: 2510 }
+OUTCOME ties w1 m2 s1299 push Accepted
+OUTCOME ties w1 m2 s1319 push RejectedClaimed { by: 1, until: 2590 }
+OUTCOME ties w1 m2 s1340 push RejectedClaimed { by: 1, until: 2630 }
+OUTCOME ties w1 m2 s1361 push Accepted
+OUTCOME ties w1 m2 s1381 push Accepted
+OUTCOME ties w1 m2 s1402 push RejectedClaimed { by: 1, until: 2750 }
+OUTCOME ties w1 m2 s1422 push Accepted
+OUTCOME ties w1 m2 s1443 push RejectedClaimed { by: 1, until: 2830 }
+OUTCOME ties w1 m2 s1464 push Accepted
+OUTCOME ties w1 m2 s1484 push Accepted
+OUTCOME ties w1 m2 s1505 push RejectedClaimed { by: 3, until: 2950 }
+OUTCOME ties w1 m2 s1525 push RejectedClaimed { by: 1, until: 2990 }
+OUTCOME ties w1 m2 s1546 push RejectedClaimed { by: 3, until: 3030 }
+OUTCOME ties w1 m2 s1567 push RejectedClaimed { by: 1, until: 3070 }
+OUTCOME ties w1 m2 s1587 push Accepted
+OUTCOME ties w1 m2 s1608 push Accepted
+OUTCOME ties w1 m2 s1629 push RejectedClaimed { by: 1, until: 3190 }
+OUTCOME ties w1 m2 s1649 push RejectedClaimed { by: 3, until: 3230 }
+OUTCOME ties w1 m2 s1670 push Accepted
+OUTCOME ties w1 m2 s1690 push Accepted
+OUTCOME ties w1 m2 s1711 push RejectedClaimed { by: 3, until: 3350 }
+OUTCOME ties w1 m2 s1732 push RejectedClaimed { by: 1, until: 3390 }
+OUTCOME ties w1 m2 s1752 push Accepted
+OUTCOME ties w1 m2 s1773 push RejectedClaimed { by: 1, until: 3470 }
+OUTCOME ties w1 m2 s1793 push RejectedClaimed { by: 3, until: 3510 }
+OUTCOME ties w1 m2 s1814 push RejectedClaimed { by: 3, until: 3550 }
+OUTCOME ties w1 m2 s1835 push Accepted
+OUTCOME ties w1 m2 s1855 push Accepted
+OUTCOME ties w1 m2 s1876 push RejectedClaimed { by: 3, until: 3670 }
+OUTCOME ties w1 m2 s1896 push RejectedClaimed { by: 3, until: 3710 }
+OUTCOME ties w1 m2 s1917 push Accepted
+OUTCOME ties w1 m2 s1938 push RejectedClaimed { by: 1, until: 3790 }
+OUTCOME ties w1 m2 s1958 push Accepted
+OUTCOME ties w1 m2 s1979 push RejectedClaimed { by: 3, until: 3870 }
+OUTCOME ties w1 m2 s1999 push RejectedClaimed { by: 3, until: 3910 }
+OUTCOME ties w1 m2 s2020 push Accepted
+OUTCOME ties w1 m2 s2041 push RejectedClaimed { by: 3, until: 3990 }
+OUTCOME ties w1 m2 s2061 push RejectedClaimed { by: 1, until: 4030 }
+OUTCOME ties w1 m2 s2082 push RejectedClaimed { by: 1, until: 4070 }
+OUTCOME ties w1 m2 s2103 push Accepted
+OUTCOME ties w1 m2 s2123 push Accepted
+OUTCOME ties w1 m2 s2144 push RejectedClaimed { by: 3, until: 4190 }
+OUTCOME ties w1 m2 s2164 push RejectedClaimed { by: 1, until: 4230 }
+OUTCOME ties w1 m2 s2185 push RejectedClaimed { by: 1, until: 4270 }
+OUTCOME ties w1 m2 s2206 push RejectedClaimed { by: 1, until: 4310 }
+OUTCOME ties w1 m2 s2226 push Accepted
+OUTCOME ties w1 m2 s2247 push RejectedClaimed { by: 3, until: 4390 }
+OUTCOME ties w1 m2 s2267 push Accepted
+OUTCOME ties w1 m2 s2288 push RejectedClaimed { by: 3, until: 4470 }
+OUTCOME ties w1 m2 s2309 push RejectedClaimed { by: 3, until: 4510 }
+OUTCOME ties w1 m2 s2329 push Accepted
+OUTCOME ties w1 m2 s2350 push Accepted
+OUTCOME ties w1 m2 s2370 push RejectedClaimed { by: 3, until: 4630 }
+OUTCOME ties w1 m2 s2391 push RejectedClaimed { by: 1, until: 4670 }
+OUTCOME ties w1 m2 s2412 push RejectedClaimed { by: 3, until: 4710 }
+OUTCOME ties w1 m2 s2432 push Accepted
+OUTCOME ties w1 m2 s2453 push RejectedClaimed { by: 1, until: 4790 }
+OUTCOME ties w1 m2 s2473 push RejectedClaimed { by: 3, until: 4830 }
+OUTCOME ties w1 m2 s2494 push RejectedClaimed { by: 1, until: 4870 }
+OUTCOME ties w1 m2 s2515 push Accepted
+OUTCOME ties w1 m2 s2535 push RejectedClaimed { by: 3, until: 4950 }
+OUTCOME ties w1 m2 s2556 push Accepted
+OUTCOME ties w1 m2 s2577 push RejectedClaimed { by: 1, until: 5030 }
+OUTCOME ties w1 m2 s2597 push Accepted
+OUTCOME ties w1 m2 s2618 push RejectedClaimed { by: 3, until: 5110 }
+OUTCOME ties w1 m2 s2638 push RejectedClaimed { by: 3, until: 5150 }
+OUTCOME ties w1 m2 s2659 push Accepted
+OUTCOME ties w1 m2 s2680 push RejectedClaimed { by: 3, until: 5230 }
+OUTCOME ties w1 m2 s2700 push RejectedClaimed { by: 3, until: 5270 }
+OUTCOME ties w1 m2 s2721 push RejectedClaimed { by: 1, until: 5310 }
+OUTCOME ties w1 m2 s2741 push RejectedClaimed { by: 3, until: 5350 }
+OUTCOME ties w1 m2 s2762 push RejectedClaimed { by: 3, until: 5390 }
+OUTCOME ties w1 m2 s2783 push Accepted
+OUTCOME ties w1 m2 s2803 push RejectedClaimed { by: 1, until: 5470 }
+OUTCOME ties w1 m2 s2824 push Accepted
+OUTCOME ties w1 m2 s2844 push Accepted
+OUTCOME ties w1 m2 s2865 push RejectedClaimed { by: 3, until: 5590 }
+OUTCOME ties w1 m2 s2886 push RejectedClaimed { by: 1, until: 5630 }
+OUTCOME ties w1 m2 s2906 push RejectedClaimed { by: 3, until: 5670 }
+OUTCOME ties w1 m2 s2927 push Accepted
+OUTCOME ties w1 m2 s2947 push RejectedClaimed { by: 3, until: 5750 }
+OUTCOME ties w1 m2 s2968 push RejectedClaimed { by: 1, until: 5790 }
+OUTCOME ties w1 m2 s2989 push RejectedClaimed { by: 1, until: 5830 }
+OUTCOME ties w1 m2 s3009 push Accepted
+OUTCOME ties w1 m2 s3030 push Accepted
+OUTCOME ties w1 m2 s3051 push Accepted
+OUTCOME ties w1 m2 s3071 push RejectedClaimed { by: 3, until: 5990 }
+OUTCOME ties w1 m2 s3092 push RejectedClaimed { by: 3, until: 6030 }
+OUTCOME ties w1 m3 s21 push Accepted
+OUTCOME ties w1 m3 s42 push Accepted
+OUTCOME ties w1 m3 s62 push Accepted
+OUTCOME ties w1 m3 s83 push RejectedClaimed { by: 2, until: 190 }
+OUTCOME ties w1 m3 s104 push Accepted
+OUTCOME ties w1 m3 s124 push Accepted
+OUTCOME ties w1 m3 s145 push RejectedClaimed { by: 2, until: 310 }
+OUTCOME ties w1 m3 s165 push RejectedClaimed { by: 2, until: 350 }
+OUTCOME ties w1 m3 s186 push RejectedClaimed { by: 2, until: 390 }
+OUTCOME ties w1 m3 s207 push Accepted
+OUTCOME ties w1 m3 s227 push RejectedClaimed { by: 2, until: 470 }
+OUTCOME ties w1 m3 s248 push RejectedClaimed { by: 1, until: 510 }
+OUTCOME ties w1 m3 s268 push RejectedClaimed { by: 2, until: 550 }
+OUTCOME ties w1 m3 s289 push Accepted
+OUTCOME ties w1 m3 s310 push RejectedClaimed { by: 1, until: 630 }
+OUTCOME ties w1 m3 s330 push RejectedClaimed { by: 2, until: 670 }
+OUTCOME ties w1 m3 s351 push Accepted
+OUTCOME ties w1 m3 s371 push RejectedClaimed { by: 2, until: 750 }
+OUTCOME ties w1 m3 s392 push Accepted
+OUTCOME ties w1 m3 s413 push Accepted
+OUTCOME ties w1 m3 s433 push Accepted
+OUTCOME ties w1 m3 s454 push RejectedClaimed { by: 1, until: 910 }
+OUTCOME ties w1 m3 s474 push Accepted
+OUTCOME ties w1 m3 s495 push Accepted
+OUTCOME ties w1 m3 s516 push Accepted
+OUTCOME ties w1 m3 s536 push RejectedClaimed { by: 1, until: 1070 }
+OUTCOME ties w1 m3 s557 push Accepted
+OUTCOME ties w1 m3 s578 push Accepted
+OUTCOME ties w1 m3 s598 push RejectedClaimed { by: 1, until: 1190 }
+OUTCOME ties w1 m3 s619 push Accepted
+OUTCOME ties w1 m3 s639 push RejectedClaimed { by: 1, until: 1270 }
+OUTCOME ties w1 m3 s660 push RejectedClaimed { by: 1, until: 1310 }
+OUTCOME ties w1 m3 s681 push Accepted
+OUTCOME ties w1 m3 s701 push Accepted
+OUTCOME ties w1 m3 s722 push RejectedClaimed { by: 2, until: 1430 }
+OUTCOME ties w1 m3 s742 push RejectedClaimed { by: 2, until: 1470 }
+OUTCOME ties w1 m3 s763 push Accepted
+OUTCOME ties w1 m3 s784 push RejectedClaimed { by: 2, until: 1550 }
+OUTCOME ties w1 m3 s804 push Accepted
+OUTCOME ties w1 m3 s825 push RejectedClaimed { by: 1, until: 1630 }
+OUTCOME ties w1 m3 s845 push Accepted
+OUTCOME ties w1 m3 s866 push Accepted
+OUTCOME ties w1 m3 s887 push RejectedClaimed { by: 2, until: 1750 }
+OUTCOME ties w1 m3 s907 push Accepted
+OUTCOME ties w1 m3 s928 push Accepted
+OUTCOME ties w1 m3 s948 push Accepted
+OUTCOME ties w1 m3 s969 push RejectedClaimed { by: 2, until: 1910 }
+OUTCOME ties w1 m3 s990 push RejectedClaimed { by: 2, until: 1950 }
+OUTCOME ties w1 m3 s1010 push RejectedClaimed { by: 1, until: 1990 }
+OUTCOME ties w1 m3 s1031 push RejectedClaimed { by: 1, until: 2030 }
+OUTCOME ties w1 m3 s1052 push RejectedClaimed { by: 1, until: 2070 }
+OUTCOME ties w1 m3 s1072 push RejectedClaimed { by: 1, until: 2110 }
+OUTCOME ties w1 m3 s1093 push RejectedClaimed { by: 1, until: 2150 }
+OUTCOME ties w1 m3 s1113 push RejectedClaimed { by: 2, until: 2190 }
+OUTCOME ties w1 m3 s1134 push RejectedClaimed { by: 1, until: 2230 }
+OUTCOME ties w1 m3 s1155 push RejectedClaimed { by: 1, until: 2270 }
+OUTCOME ties w1 m3 s1175 push RejectedClaimed { by: 1, until: 2310 }
+OUTCOME ties w1 m3 s1196 push Accepted
+OUTCOME ties w1 m3 s1216 push Accepted
+OUTCOME ties w1 m3 s1237 push RejectedClaimed { by: 2, until: 2430 }
+OUTCOME ties w1 m3 s1258 push Accepted
+OUTCOME ties w1 m3 s1278 push RejectedClaimed { by: 1, until: 2510 }
+OUTCOME ties w1 m3 s1299 push RejectedClaimed { by: 2, until: 2550 }
+OUTCOME ties w1 m3 s1319 push RejectedClaimed { by: 1, until: 2590 }
+OUTCOME ties w1 m3 s1340 push RejectedClaimed { by: 1, until: 2630 }
+OUTCOME ties w1 m3 s1361 push RejectedClaimed { by: 2, until: 2670 }
+OUTCOME ties w1 m3 s1381 push RejectedClaimed { by: 2, until: 2710 }
+OUTCOME ties w1 m3 s1402 push RejectedClaimed { by: 1, until: 2750 }
+OUTCOME ties w1 m3 s1422 push RejectedClaimed { by: 2, until: 2790 }
+OUTCOME ties w1 m3 s1443 push RejectedClaimed { by: 1, until: 2830 }
+OUTCOME ties w1 m3 s1464 push RejectedClaimed { by: 2, until: 2870 }
+OUTCOME ties w1 m3 s1484 push RejectedClaimed { by: 2, until: 2910 }
+OUTCOME ties w1 m3 s1505 push Accepted
+OUTCOME ties w1 m3 s1525 push RejectedClaimed { by: 1, until: 2990 }
+OUTCOME ties w1 m3 s1546 push Accepted
+OUTCOME ties w1 m3 s1567 push RejectedClaimed { by: 1, until: 3070 }
+OUTCOME ties w1 m3 s1587 push RejectedClaimed { by: 2, until: 3110 }
+OUTCOME ties w1 m3 s1608 push RejectedClaimed { by: 2, until: 3150 }
+OUTCOME ties w1 m3 s1629 push RejectedClaimed { by: 1, until: 3190 }
+OUTCOME ties w1 m3 s1649 push Accepted
+OUTCOME ties w1 m3 s1670 push RejectedClaimed { by: 2, until: 3270 }
+OUTCOME ties w1 m3 s1690 push RejectedClaimed { by: 2, until: 3310 }
+OUTCOME ties w1 m3 s1711 push Accepted
+OUTCOME ties w1 m3 s1732 push RejectedClaimed { by: 1, until: 3390 }
+OUTCOME ties w1 m3 s1752 push RejectedClaimed { by: 2, until: 3430 }
+OUTCOME ties w1 m3 s1773 push RejectedClaimed { by: 1, until: 3470 }
+OUTCOME ties w1 m3 s1793 push Accepted
+OUTCOME ties w1 m3 s1814 push Accepted
+OUTCOME ties w1 m3 s1835 push RejectedClaimed { by: 2, until: 3590 }
+OUTCOME ties w1 m3 s1855 push RejectedClaimed { by: 2, until: 3630 }
+OUTCOME ties w1 m3 s1876 push Accepted
+OUTCOME ties w1 m3 s1896 push Accepted
+OUTCOME ties w1 m3 s1917 push RejectedClaimed { by: 2, until: 3750 }
+OUTCOME ties w1 m3 s1938 push RejectedClaimed { by: 1, until: 3790 }
+OUTCOME ties w1 m3 s1958 push RejectedClaimed { by: 2, until: 3830 }
+OUTCOME ties w1 m3 s1979 push Accepted
+OUTCOME ties w1 m3 s1999 push Accepted
+OUTCOME ties w1 m3 s2020 push RejectedClaimed { by: 2, until: 3950 }
+OUTCOME ties w1 m3 s2041 push Accepted
+OUTCOME ties w1 m3 s2061 push RejectedClaimed { by: 1, until: 4030 }
+OUTCOME ties w1 m3 s2082 push RejectedClaimed { by: 1, until: 4070 }
+OUTCOME ties w1 m3 s2103 push RejectedClaimed { by: 2, until: 4110 }
+OUTCOME ties w1 m3 s2123 push RejectedClaimed { by: 2, until: 4150 }
+OUTCOME ties w1 m3 s2144 push Accepted
+OUTCOME ties w1 m3 s2164 push RejectedClaimed { by: 1, until: 4230 }
+OUTCOME ties w1 m3 s2185 push RejectedClaimed { by: 1, until: 4270 }
+OUTCOME ties w1 m3 s2206 push RejectedClaimed { by: 1, until: 4310 }
+OUTCOME ties w1 m3 s2226 push RejectedClaimed { by: 2, until: 4350 }
+OUTCOME ties w1 m3 s2247 push Accepted
+OUTCOME ties w1 m3 s2267 push RejectedClaimed { by: 2, until: 4430 }
+OUTCOME ties w1 m3 s2288 push Accepted
+OUTCOME ties w1 m3 s2309 push Accepted
+OUTCOME ties w1 m3 s2329 push RejectedClaimed { by: 2, until: 4550 }
+OUTCOME ties w1 m3 s2350 push RejectedClaimed { by: 2, until: 4590 }
+OUTCOME ties w1 m3 s2370 push Accepted
+OUTCOME ties w1 m3 s2391 push RejectedClaimed { by: 1, until: 4670 }
+OUTCOME ties w1 m3 s2412 push Accepted
+OUTCOME ties w1 m3 s2432 push RejectedClaimed { by: 2, until: 4750 }
+OUTCOME ties w1 m3 s2453 push RejectedClaimed { by: 1, until: 4790 }
+OUTCOME ties w1 m3 s2473 push Accepted
+OUTCOME ties w1 m3 s2494 push RejectedClaimed { by: 1, until: 4870 }
+OUTCOME ties w1 m3 s2515 push RejectedClaimed { by: 2, until: 4910 }
+OUTCOME ties w1 m3 s2535 push Accepted
+OUTCOME ties w1 m3 s2556 push RejectedClaimed { by: 2, until: 4990 }
+OUTCOME ties w1 m3 s2577 push RejectedClaimed { by: 1, until: 5030 }
+OUTCOME ties w1 m3 s2597 push RejectedClaimed { by: 2, until: 5070 }
+OUTCOME ties w1 m3 s2618 push Accepted
+OUTCOME ties w1 m3 s2638 push Accepted
+OUTCOME ties w1 m3 s2659 push RejectedClaimed { by: 2, until: 5190 }
+OUTCOME ties w1 m3 s2680 push Accepted
+OUTCOME ties w1 m3 s2700 push Accepted
+OUTCOME ties w1 m3 s2721 push RejectedClaimed { by: 1, until: 5310 }
+OUTCOME ties w1 m3 s2741 push Accepted
+OUTCOME ties w1 m3 s2762 push Accepted
+OUTCOME ties w1 m3 s2783 push RejectedClaimed { by: 2, until: 5430 }
+OUTCOME ties w1 m3 s2803 push RejectedClaimed { by: 1, until: 5470 }
+OUTCOME ties w1 m3 s2824 push RejectedClaimed { by: 2, until: 5510 }
+OUTCOME ties w1 m3 s2844 push RejectedClaimed { by: 2, until: 5550 }
+OUTCOME ties w1 m3 s2865 push Accepted
+OUTCOME ties w1 m3 s2886 push RejectedClaimed { by: 1, until: 5630 }
+OUTCOME ties w1 m3 s2906 push Accepted
+OUTCOME ties w1 m3 s2927 push RejectedClaimed { by: 2, until: 5710 }
+OUTCOME ties w1 m3 s2947 push Accepted
+OUTCOME ties w1 m3 s2968 push RejectedClaimed { by: 1, until: 5790 }
+OUTCOME ties w1 m3 s2989 push RejectedClaimed { by: 1, until: 5830 }
+OUTCOME ties w1 m3 s3009 push RejectedClaimed { by: 2, until: 5870 }
+OUTCOME ties w1 m3 s3030 push RejectedClaimed { by: 2, until: 5910 }
+OUTCOME ties w1 m3 s3051 push RejectedClaimed { by: 2, until: 5950 }
+OUTCOME ties w1 m3 s3071 push Accepted
+OUTCOME ties w1 m3 s3092 push Accepted
+RESULT ties world 1: frames 0..6000 digests m1=bf9a1dede91fe191 m2=bf9a1dede91fe191 m3=bf9a1dede91fe191 | offline replay bf9a1dede91fe191 | ALL EQUAL
