@@ -282,9 +282,13 @@ impl Net {
 
     /// Send now, or queue for this tick's batch to that peer.
     pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
-        // Thin links Part B, rule 5: no entries to a member on the state feed.
-        if matches!(m, Msg::Entry(_)) && self.fed.contains(&(world, to)) {
-            return;
+        // Thin links Part B, rule 5: no entries to a member on the state feed, but the view change's (revision 21:
+        // a fed member votes and takes part in the decision; they are few and small).
+        if let Msg::Entry(e) = m {
+            let view_change = matches!(e.payload, Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } | Payload::Kick { .. });
+            if self.fed.contains(&(world, to)) && !view_change {
+                return;
+            }
         }
         if self.batching {
             self.outbox.entry((world, from, to)).or_default().push(m.clone());

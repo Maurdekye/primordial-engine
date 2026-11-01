@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{echo_digest, entry_id, BodyState, EntryId, FedAck, MemberId, Msg, WorldSim};
+use super::{echo_digest, entry_id, BodyState, Entry, EntryId, FedAck, MemberId, Msg, WorldSim};
 
 /// One body in a feed packet, quantized: position in 0.1 mm, orientation as a unit quaternion scaled to
 /// i16, linear velocity in cm/s. 30 bytes on the wire with its object id. Angular velocity isn't sent: the
@@ -61,6 +61,10 @@ pub struct Fed {
     pub since: u64,
     /// The digest of the echo my last ack carried (0: none yet on this stay).
     pub echoed: u64,
+    /// Revision 21 (RV20-3): when each member's checkpoints last reached me (my present), and my downlink delay
+    /// measured on the feed (frames from a packet's frame to my present when it arrived).
+    pub ckpt_heard: BTreeMap<MemberId, u64>,
+    pub delay_frames: u64,
 }
 
 impl WorldSim {
@@ -76,7 +80,8 @@ impl WorldSim {
         match (on, self.fed.is_some()) {
             (true, false) => {
                 self.ev(format!("feed: member {} goes on the state feed at frame {}", self.me, self.frame));
-                self.fed = Some(Fed { anchors: BTreeMap::new(), since: self.frame, echoed: 0 });
+                let heard: BTreeMap<MemberId, u64> = self.members.iter().map(|&m| (m, self.now)).collect();
+                self.fed = Some(Fed { anchors: BTreeMap::new(), since: self.frame, echoed: 0, ckpt_heard: heard, delay_frames: 0 });
                 // TLP-24: each chain's echo starts at the newest checkpoint my own last references cover (I held
                 // that log), unless I echo a newer one already (a re-entry).
                 let others: Vec<MemberId> = self.members.iter().copied().filter(|&x| x != self.me).collect();
@@ -115,6 +120,11 @@ impl WorldSim {
     /// re-simulation, if it lies within what this replica simulated (older ones are dropped).
     pub fn on_feed(&mut self, frame: u64, bodies: Vec<FeedBody>) {
         let Some(since) = self.fed.as_ref().map(|f| f.since) else { return };
+        // My downlink delay, from this packet (revision 21: F's silence threshold allows for it).
+        let now = self.now;
+        if let Some(f) = self.fed.as_mut() {
+            f.delay_frames = now.saturating_sub(frame);
+        }
         if frame < since || frame < self.conf {
             return;
         }
@@ -223,6 +233,10 @@ impl WorldSim {
         if self.fed.is_none() || from != member || member == self.me {
             return;
         }
+        let now = self.now;
+        if let Some(f) = self.fed.as_mut() {
+            f.ckpt_heard.insert(member, now);
+        }
         let mut cur = self.echo_last.get(&member).copied();
         let mut it = list.into_iter().peekable();
         if after != cur.map(|(b, _)| b) {
@@ -322,6 +336,35 @@ impl WorldSim {
                 self.echo_refs.entry((f, x)).or_default().insert(s, (id, aseq));
             }
         }
+    }
+
+    /// Revision 21 (RV20-3): a fed replica's votes, on evidence it can check without a log. Here silence: a member
+    /// whose checkpoints haven't reached me for suspect_after plus one checkpoint period plus my own downlink delay
+    /// (so a thin F doesn't suspect healthy members as a matter of course). Its vote alone removes no one: a removal
+    /// needs q votes. Its frozen head is its last word, as for any voter.
+    pub(super) fn fed_suspects(&mut self) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if !self.members.contains(&self.me) || self.closed_at.is_some() || self.members.len() < 3 || self.withhold_vc {
+            return out;
+        }
+        let Some(f) = self.fed.as_ref() else { return out };
+        let limit = self.cfg.suspect_after + super::CKPT_FRAMES + f.delay_frames;
+        let silent: Vec<(MemberId, u64)> = f
+            .ckpt_heard
+            .iter()
+            .filter(|(m, _)| **m != self.me && self.members.contains(m))
+            .filter(|(_, t)| self.now >= **t + limit)
+            .map(|(m, t)| (*m, self.now - *t))
+            .collect();
+        for (j, quiet) in silent {
+            if self.voted(j) {
+                continue;
+            }
+            self.stats.suspicions += 1;
+            self.ev(format!("fed: member {j}'s checkpoints haven't reached me for {quiet} frames (limit {limit}): presumed crashed; vote to remove it"));
+            out.extend(self.freeze_and_vote(j, 0, 0));
+        }
+        out
     }
 
     /// Write this frame's feed states, after the world step (like carried states).
