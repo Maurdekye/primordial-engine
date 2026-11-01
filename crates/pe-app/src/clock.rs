@@ -57,9 +57,11 @@ const MAX_RATE: f64 = 0.15;
 /// Each round (a new sample from any member) moves the correction this share of the way to the
 /// round's selection: gradual, so neither the session clock nor the rate-corrected clock jumps.
 const RATE_GAIN: f64 = 0.25;
-/// A weak pull per round toward the fault-tolerant midpoint of the raw clocks (the frequency the
-/// members' oscillators actually run at): consensus alone fixes only the members' agreement, and the
-/// common frequency then wandered by up to 7.5 % on a Windows + WSL run (measured).
+/// A weak pull per round toward the median of the raw clocks (the frequency the members'
+/// oscillators actually run at): consensus alone fixes only the members' agreement, and the common
+/// frequency then wandered by up to 7.5 % on a Windows + WSL run (measured). The median, not the
+/// trimmed midpoint: at n <= 3 that is the midrange, and one VM 9 % slow would pull everyone 4.5 %
+/// (review AN-1); for a weak pull the median is as bounded by honest values.
 const RATE_ANCHOR: f64 = 0.02;
 
 /// One peer's clocks against this member's local clock.
@@ -239,7 +241,7 @@ impl ClockSync {
             raw.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.rate)));
             if enough(&rates) {
                 let target = midpoint_t(rates, t, self.plain_median);
-                let anchor = if enough(&raw) { midpoint_t(raw, t, self.plain_median) } else { self.rate };
+                let anchor = if enough(&raw) { midpoint_t(raw, t, true) } else { self.rate };
                 self.rate = (self.rate + RATE_GAIN * (target - self.rate) + RATE_ANCHOR * (anchor - self.rate)).clamp(-MAX_RATE, MAX_RATE);
             }
         }
