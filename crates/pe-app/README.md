@@ -72,6 +72,10 @@ measures that queue and feeds it (`set_link`) every tick.
     buffer would.
 * **Feed:** the largest report from any member. A report is held up to 5 s; with none left, the core
   gets no signal (`set_link(None)`), which holds the level and is never read as calm.
+  * Each report is capped at the reporter's round-trip excess + 5 ms (design 10.4's fallback): the
+    latest ping's round trip over the best in 30 s, or while pongs are late the age of the oldest
+    unanswered ping. The round trip is on one clock, so a clock-frequency error cannot fake queueing;
+    a real uplink queue delays the pings too. Clamped ticks are counted (`link.clamped_ticks`).
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
 * `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
 * **Test tooling:** scripted faults take `rate_kbps` (a token bucket with a 4 kB burst), `queue_ms`
