@@ -2387,6 +2387,14 @@ and the engager's hand replayed after the gesture had ended.
          member active, so idle calm does not count at the next gesture's first frame either (decided,
          @coordinator-opus, 2026-11-01). Before, L aged out between two gestures 40 s apart, and the
          second one congested the link from level 0 again (below the table).
+         * **Except above the coarsest packed level** (review PA-2; decided, @coordinator-opus,
+           2026-11-01 12:05Z). There, calm while idle counts toward the 5 s too, so an idle member rests at
+           level 5 at most, and its next gesture starts packed. If level 5 congests, the climb rule moves it
+           up within 100-300 ms.
+         * Held at levels 6-8 instead, after a second congestion in one D56 episode, a third gesture started
+           there without packs, and the author's hand trailed 217-757 mm during it. Once it was a fine-link
+           sweeper's, after its thin watcher had been demoted. The three-gesture cells are under the table
+           below.
        * Idle is 7.6's predicate, read every tick (decided, @coordinator-opus, 2026-11-01: the ceiling
          bounds what it costs). A gesture's author stays busy throughout (a pending pack holds it), but an
          observer counts as idle between packs: during a level-5 gesture at 16 kbit/s it turned busy 28
@@ -2599,7 +2607,8 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     effects stay with its own player (@item:primordial-engine/localize-congestion-to-the-thin-link-player-othe).
     * **The cells:** one member on its own slow link both ways, the others at 256 kbit/s; member 1 sweeps;
       batched + adaptive; each against main's D73 as built.
-    * **Evidence** [V spikes/out/r18-thin, 43 cells, Windows and Linux identical]. Each log records its
+    * **Evidence** [V spikes/out/r18-thin, 59 cells with review PA-2's three-gesture ones, Windows and Linux
+      identical]. Each log records its
       commit, its source and binary hashes, and the linked encoder's size for a fixed stride-8 pack: 68 bytes
       on the wire with deltas, 130 without.
 
@@ -2615,7 +2624,7 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     * **Four members sharing one 64 kbit/s uplink:** 1,408 stalled frames (the member making the gesture,
       then demoted) and 156 for the others → 0.
     * **The others' confirmation lag** is a mean of 14-19 frames wherever nothing stalls (14 uncapped), and
-      22-48 where stalls remain.
+      22-45 where stalls remain (22-48 before review PA-2, below).
     * **Second gestures,** 40 s later at 16 and 32 kbit/s, never stall. On main they stalled 2,427 frames in
       those cells.
       * They start at level 5, except the 2-player 16 kbit/s thin sweeper's, which starts at level 1 (the first
@@ -2633,11 +2642,9 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     * **Known costs:**
       * **The thin player's own hand** trails while it is thinned: a mean of 0-373 mm, up to 862 mm. It is
         exact at 32 kbit/s with up to 4 players. D73 is relaxed on its side only, as the user's goal allows.
-      * **After a second congestion in one D56 episode,** the controller can rest at the drain level while
-        idle. In the 2-player 16 kbit/s thin-sweeper cell it spent 17.4 s at level 6, nearly all of it idle
-        after the second gesture [V]. So a third gesture there would start without packs, its hand trailing,
-        until D56 forgets the level [I; no cell has a third gesture]. The others aren't affected: level 6 sends
-        less than level 5.
+      * **After a second congestion in one D56 episode** v3cap left an idle member at levels 6-8, so its next
+        gesture started without packs. Review PA-2's three-gesture cells measured it, and an idle member now
+        rests at level 5 at most (D56, item 3, and the table below).
       * **A player whose own link is fine:** in the thin-watcher cells the sweeper's link is fast, yet its
         hand trails 0-338 mm on average at 24-32 kbit/s (exact at 32 with up to 4 players), and up to 373 mm
         at 8-16 kbit/s.
@@ -2661,6 +2668,26 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         order didn't weigh (@coordinator-opus, 2026-11-01).
       * Variants v2-v7 were first compared on Windows builds that linked a stale sim-core without delta
         packs, from a target dir shared with another worktree. Those comparisons were void, and were redone.
+      * **Then review PA-2: an idle member rests at level 5 at most** (p2/thin-link fb12cb4; @coordinator-opus,
+        2026-11-01). Three gestures, 40 s apart, in the 16 cells with a thin sweeper (2 and 4 players) or a thin
+        watcher (3 and 4) at 8-32 kbit/s, under v3cap and under the rule as landed [V spikes/out/r18-thin,
+        gap3-*; v3cap from the same build with the rule switched off, not kept as logs]:
+
+        | Cell | Third gesture under v3cap: level, author's hand mean (max), others' latency | As landed |
+        |---|---|---|
+        | 4 players, thin sweeper, 12 kbit/s | level 8, 757 mm (1,507), 42 frames | level 5, exact, 19.4 frames |
+        | 2 players, thin sweeper, 8 kbit/s | level 7, 430 mm (1,052), 19.7 frames | level 5, exact, 15.5 frames |
+        | 2 players, thin sweeper, 16 kbit/s | level 6, 217 mm (982), 19.0 frames | level 5, exact, 15.5 frames |
+        | 4 players, thin watcher, 8 kbit/s (the fine-link sweeper's hand; the watcher is demoted) | level 6, 217 mm (982), 19.4-19.5 frames | level 5, exact, 19.4-19.5 frames |
+
+        * A fifth cell (4 players, thin sweeper at 8 kbit/s, which is demoted) changed only in the others'
+          latency during the later gestures: 25-33 frames, now 12.
+        * The other 11 cells are byte-identical under both rules. The others' stalls are identical in every
+          cell, and every end state is equal.
+        * Over the 43 single- and two-gesture cells, nothing changed but the controller's level times and the
+          others' lag where stalls remain, which fell in 3 cells (12 kbit/s with 4 players 44 → 34 frames, 8
+          kbit/s with 2 players 48 → 45, with 4 players 42 → 34). The likely cause [I]: v3cap idled at levels
+          7-8, where acks go every 16-32 frames.
 * **Thin links, Part A (p2/thin-link)** then moved every adaptive cell in the table below 64 kbit/s
   [V spikes/out/r18]:
   * **Below 20 kbit/s the recovery is back.**
