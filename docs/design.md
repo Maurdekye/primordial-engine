@@ -6225,6 +6225,10 @@ Rules for every package:
   VC4R-6, two halting the session) is fixed in round 5, with the reviewer's `joinwedge` and `slowref`
   repros and a randomized Byzantine schedule generator (`randsched`) that checks the written invariants
   (`spikes/out/session-sim/INVARIANTS.md`) on every run; it found one further hole (RG-1), now fixed.
+  Widened before M1 (widen/randsched, 2026-11-01): with each fix off, it finds VC4R-1, VC4R-2, VC-5,
+  VCR-12, VC3R-1 and RG-1 by itself; for each, the first failing seed is between 1 and 39 [V]. It also
+  checks a sixth invariant, S6: no honest member votes against an honest member that is timely and keeps
+  up (INVARIANTS.md has the definition, the shapes and the seed counts).
   Review round 5 (changes requested: VC4R-1's stronger fix, VC5R-2, an L1 lag bound) is answered in
   round 6, with the reviewer's `prevotefork` and `fakemix` repros; VC5R-1 is reopened as VC6R-3 below.
   Round 6's review bounded the polka ids a precommit carries (VC6R-2, honest code panicked above 64 in a
