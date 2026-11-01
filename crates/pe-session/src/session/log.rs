@@ -368,7 +368,15 @@ impl WorldSim {
             self.lean_wait.remove(&oldest);
         }
         if wants_gap {
-            self.want_gap(m);
+            // A signed run past a hole asks everyone for the whole range from its author's verified
+            // prefix, held entries included, as option 1 does: the answers bring any other version of
+            // a held entry, the fork's proof (triage group L: plainfork, c2, adminfork, ...).
+            if sig.is_some() {
+                let c = self.contiguous.get(&m).copied().unwrap_or(0);
+                self.want_all(m, c + 1, s0 - 1);
+            } else {
+                self.want_gap(m);
+            }
         }
         self.resolve_lean()
     }
