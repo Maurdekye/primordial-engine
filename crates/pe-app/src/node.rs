@@ -191,12 +191,15 @@ impl RxLink {
         self.drift_at = None;
     }
 
-    /// `drift_rate`: the clocks' frequency difference, if known (`ClockSync::drift_rate`).
-    fn sample(&mut self, st: Stamp, recv_us: u64, drift_rate: Option<f64>) {
+    /// `drift_rate`: the clocks' frequency difference, if known (`ClockSync::drift_rate`). True if
+    /// the estimates restarted (the sender's frequency was just fitted).
+    fn sample(&mut self, st: Stamp, recv_us: u64, drift_rate: Option<f64>) -> bool {
+        let mut restarted = false;
         if let Some(e) = drift_rate {
             if !self.fitted {
                 self.fitted = true;
                 self.restart();
+                restarted = true;
             }
             self.drift += e * recv_us.saturating_sub(self.drift_at.unwrap_or(recv_us)) as f64;
             self.drift_at = Some(recv_us);
@@ -240,6 +243,7 @@ impl RxLink {
             }
             None => self.last_seq = Some(st.seq),
         }
+        restarted
     }
 }
 
@@ -626,7 +630,9 @@ impl Node {
                     // R18 measures on the rate-corrected clock, as the sender stamps (design 10.4).
                     let recv_rc = self.clock.rc(recv_us);
                     let drift = self.clock.drift_rate(sender);
-                    self.rx.entry(sender).or_default().sample(st, recv_rc, drift);
+                    if self.rx.entry(sender).or_default().sample(st, recv_rc, drift) {
+                        self.clock.restart_queue(sender, recv_us);
+                    }
                     if st.qrep != QREP_NONE {
                         self.reports.insert(sender, (st.qrep, recv_us));
                     }
