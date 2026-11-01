@@ -57,6 +57,10 @@ const MAX_RATE: f64 = 0.15;
 /// Each round (a new sample from any member) moves the correction this share of the way to the
 /// round's selection: gradual, so neither the session clock nor the rate-corrected clock jumps.
 const RATE_GAIN: f64 = 0.25;
+/// A weak pull per round toward the fault-tolerant midpoint of the raw clocks (the frequency the
+/// members' oscillators actually run at): consensus alone fixes only the members' agreement, and the
+/// common frequency then wandered by up to 7.5 % on a Windows + WSL run (measured).
+const RATE_ANCHOR: f64 = 0.02;
 
 /// One peer's clocks against this member's local clock.
 #[derive(Default)]
@@ -231,9 +235,12 @@ impl ClockSync {
             self.round = false;
             let mut rates = vec![self.rate];
             rates.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.session_rate())));
+            let mut raw = vec![0.0];
+            raw.extend(members.iter().filter_map(|m| self.peers.get(m).and_then(|p| p.rate)));
             if enough(&rates) {
                 let target = midpoint_t(rates, t, self.plain_median);
-                self.rate = (self.rate + RATE_GAIN * (target - self.rate)).clamp(-MAX_RATE, MAX_RATE);
+                let anchor = if enough(&raw) { midpoint_t(raw, t, self.plain_median) } else { self.rate };
+                self.rate = (self.rate + RATE_GAIN * (target - self.rate) + RATE_ANCHOR * (anchor - self.rate)).clamp(-MAX_RATE, MAX_RATE);
             }
         }
         let follow = self.off + self.rate * dt;

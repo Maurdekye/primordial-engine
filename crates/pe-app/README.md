@@ -32,9 +32,13 @@ pe-app compare OUT
 * **Clocks stay in sync** (design 10.4). Every member pings every live member every 500 ms from its
   start (a pong carries the replier's session time and its raw local clock), taking the best round
   trip of each 2 s bucket in the last 30 s.
-  * Its frequency is the fault-tolerant midpoint of the members' raw clock frequencies: the slope of
-    each peer's raw clock against its own, its own 0 included. Raw clocks are constant ratios, so
-    nobody's correction feeds back into another's; samples from before frame 0 count.
+  * Its frequency is selected again at every round (each sample; 10.4 item 5). A pong also carries the
+    replier's applied correction r_j; with ρ_j, the fitted ratio of the peer's raw clock to its own
+    (constant, no correction moves it; samples from the node's start count), (1 + ρ_j)(1 + r_j) − 1 is
+    the peer's session frequency in its own raw units, exactly. It moves its correction a quarter of
+    the way to the fault-tolerant midpoint of those values, its own included, so honest frequencies
+    converge as the offsets do. (Fitting slopes of the peers' corrected clocks instead lags and
+    oscillated: ±80 ms with a 20 s period in the unit test.)
   * From frame 0 its offset runs at that frequency and slews (at most 12 % of the elapsed time while
     more than 5 ms off, then 1 %) toward the fault-tolerant midpoint of the predicted offsets, its own
     included: drop the t lowest and highest (t = ⌊(n − 1)/3⌋ from the membership, and nothing moves
@@ -75,9 +79,10 @@ measures that queue and feeds it (`set_link`) every tick.
     buffer would.
 * **Feed:** the largest report from any member. A report is held up to 5 s; with none left, the core
   gets no signal (`set_link(None)`), which holds the level and is never read as calm.
-  * Each report is capped at the reporter's round-trip excess + 5 ms (design 10.4's fallback): the
-    latest ping's round trip over the best in 30 s, or while pongs are late the age of the oldest
-    unanswered ping. The round trip is on one clock, so a clock-frequency error cannot fake queueing;
+  * Each report is capped at the reporter's round-trip excess + 5 ms (design 10.4's fallback) once it
+    has stood above that bound for 1.5 s: the latest ping's round trip over the best to that member
+    in 30 s, or while a ping is unanswered its age. The grace lets a congestion onset through before
+    the round trip catches up; a frequency error drifts slowly and persists. The round trip is on one clock, so a clock-frequency error cannot fake queueing;
     a real uplink queue delays the pings too. Clamped ticks are counted (`link.clamped_ticks`).
 * **Loss** is counted from `seq` gaps (summary `link.rx`), not fed.
 * `--no-link-signal` leaves the controller unfed (the level stays 0), for comparison.
@@ -148,14 +153,12 @@ R18 (`spikes/out/r18-app/`, Windows and native Linux in WSL, measured): see desi
   the core drops entries it already holds.
 * Clock sync assumes fewer than a third of the members lie about their clocks (10.8's bound); the
   bootstrap before frame 0 trusts the leader.
-  * Start-up: until a peer's frequency is fitted (raw-clock samples spanning 6 s, gathered from the
-    node's start), offsets are predicted from the newest sample, so two clocks skewed by s differ by
-    up to s x 500 ms: 11 / 24 / 43 ms at 2.3 / 5 / 9 %, under 5 ms from about 8 / 12 / 12 s (unit test,
-    two members).
-  * Two-faced liars: the frequency is chosen once from raw clocks, so honest members can keep
-    different frequencies (the 7-member collusion run: 0 against +2.63 %). Only the offsets iterate
-    and converge; the slew takes up the difference while it stays under 12 %, and at a difference
-    above the 1 % slew the pair's offset error sits near the 5 ms edge.
+  * Start-up: until a peer's frequency is fitted (raw-clock samples spanning 10 s, gathered from the
+    node's start), offsets are carried from the newest sample at no frequency, so two clocks skewed by
+    s differ by up to s x 500 ms: 11 / 24 / 43 ms at 2.3 / 5 / 9 %, under 5 ms from about second 12-13
+    (unit test, two members).
+  * Two-faced liars: with fewer than a third lying, the honest frequencies and offsets converge (the
+    7-member collusion run ends with every member at the same session frequency).
   * A lost ping counts as in flight until a later ping is answered (up to a ping interval), which can
     only loosen R18's round-trip clamp.
 * Keys: a member's secret key is a plain hex file, owner-only on Unix. On Windows its folder's ACL is the
