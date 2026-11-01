@@ -9,7 +9,7 @@ RESULT   perturbation source (hand target per frame + acks): hand entries 275 (8
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
 RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1302 B/s wire est.), m2 7.8 acks/s (1302 B/s wire est.)
-RESULT   member 2 during the sweep: 43.7 rollbacks/s, 223.0 re-simulated frames/s, re-sim 2.56 ms per rendered sim frame (564 ms over the window); step avg 0.409 ms; max depth 14
+RESULT   member 2 during the sweep: 43.7 rollbacks/s, 223.0 re-simulated frames/s, re-sim 2.72 ms per rendered sim frame (599 ms over the window); step avg 0.432 ms; max depth 14
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=86ff6329404eebcc m2=86ff6329404eebcc | offline replay 86ff6329404eebcc | ALL EQUAL
 == ballpit-60hz-2hands: identical
@@ -18,7 +18,7 @@ RESULT   perturbation source (hand target per frame + acks): hand entries 548 (1
 RESULT   naive state streaming measured on member 1: avg 378 balls changed per frame; exact state 1544655 B/s, quantized ~26 B/ball 591197 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
 RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1302 B/s wire est.), m2 7.8 acks/s (1302 B/s wire est.)
-RESULT   member 2 during the sweep: 54.6 rollbacks/s, 259.6 re-simulated frames/s, re-sim 3.94 ms per rendered sim frame (867 ms over the window); step avg 0.567 ms; max depth 12
+RESULT   member 2 during the sweep: 54.6 rollbacks/s, 259.6 re-simulated frames/s, re-sim 4.08 ms per rendered sim frame (897 ms over the window); step avg 0.601 ms; max depth 12
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 453223a7a525165a m2 453223a7a525165a -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=1ec49eba28f507d6 m2=1ec49eba28f507d6 | offline replay 1ec49eba28f507d6 | ALL EQUAL
 == ballpit-60hz-ahead4: identical
@@ -27,7 +27,7 @@ RESULT   perturbation source (hand target per frame + acks): hand entries 275 (8
 RESULT   naive state streaming measured on member 1: avg 285 balls changed per frame; exact state 1166995 B/s, quantized ~26 B/ball 446798 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
 RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1302 B/s wire est.), m2 7.8 acks/s (1302 B/s wire est.)
-RESULT   member 2 during the sweep: 2.7 rollbacks/s, 24.3 re-simulated frames/s, re-sim 0.32 ms per rendered sim frame (70 ms over the window); step avg 0.367 ms; max depth 10
+RESULT   member 2 during the sweep: 2.7 rollbacks/s, 24.3 re-simulated frames/s, re-sim 0.37 ms per rendered sim frame (81 ms over the window); step avg 0.437 ms; max depth 10
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=03f2dd329f453bf0 m2=03f2dd329f453bf0 | offline replay 03f2dd329f453bf0 | ALL EQUAL
 == ballpit-60hz-noloss: identical
@@ -36,7 +36,7 @@ RESULT   perturbation source (hand target per frame + acks): hand entries 232 (6
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
 RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1302 B/s wire est.), m2 7.8 acks/s (1302 B/s wire est.)
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 272.1 re-simulated frames/s, re-sim 3.14 ms per rendered sim frame (690 ms over the window); step avg 0.432 ms; max depth 4
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 272.1 re-simulated frames/s, re-sim 3.16 ms per rendered sim frame (694 ms over the window); step avg 0.429 ms; max depth 4
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=86ff6329404eebcc m2=86ff6329404eebcc | offline replay 86ff6329404eebcc | ALL EQUAL
 == ballpit-90hz: identical
@@ -45,7 +45,7 @@ RESULT   perturbation source (hand target per frame + acks): hand entries 442 (1
 RESULT   naive state streaming measured on member 1: avg 284 balls changed per frame; exact state 1734546 B/s, quantized ~26 B/ball 664097 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
 RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 11.1 acks/s (1867 B/s wire est.), m2 11.1 acks/s (1867 B/s wire est.)
-RESULT   member 2 during the sweep: 55.5 rollbacks/s, 427.6 re-simulated frames/s, re-sim 3.47 ms per rendered sim frame (1143 ms over the window); step avg 0.432 ms; max depth 23
+RESULT   member 2 during the sweep: 55.5 rollbacks/s, 427.6 re-simulated frames/s, re-sim 3.47 ms per rendered sim frame (1141 ms over the window); step avg 0.428 ms; max depth 23
 RESULT   end state at frame 799 (all 500 balls, both hands, all tables): m1 c88afef9ef0b12bd m2 c88afef9ef0b12bd -> IDENTICAL
 RESULT ballpit 90Hz world 1: frames 0..765 digests m1=1488a9f7622a3878 m2=1488a9f7622a3878 | offline replay 1488a9f7622a3878 | ALL EQUAL
 == c1: identical
@@ -525,9 +525,9 @@ RESULT twosilent5-bft: m2 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets
 RESULT twosilent5-bft: m3 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets 0, highest round 0) | no decision
 RESULT twosilent5-bft (members 4 and 5 of 5 silent from t=3 s): frames 0..276 honest m1=436bf76179e97d59 m2=436bf76179e97d59 m3=436bf76179e97d59 | offline replay 436bf76179e97d59 | ALL EQUAL, NO FALSE CHECKS ; checks ok 66 bad 0
 == p2-4-vcscale-256: identical
-RESULT vcscale n=256 silent=2 heads=false: 254 of 254 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {254}; m1 decisions [(1, 220, 0, [255, 256])]; conf 0 | no panic | wall 284.7 s
+RESULT vcscale n=256 silent=2 heads=false: 254 of 254 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {254}; m1 decisions [(1, 220, 0, [255, 256])]; conf 0 | no panic | wall 312.4 s
 == p2-4-vcscale-64: identical
-RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.78; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 361 | no panic | wall 127.6 s
+RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.78; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 361 | no panic | wall 125.0 s
 == p2-4-voiddeep: identical
 RESULT voiddeep void fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT voiddeep: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
@@ -732,8 +732,8 @@ RESULT state-frame world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112b
 == ties: identical
 RESULT ties: same-frame conflicts on one object at 150 frames, winners per member {1: 150, 2: 150, 3: 150}
 RESULT ties world 1: frames 0..6000 digests m1=8b2b520ff4809299 m2=8b2b520ff4809299 m3=8b2b520ff4809299 | offline replay 8b2b520ff4809299 | ALL EQUAL
-== grabrace: spike-only (not mirrored as a scenario file yet; see spike-only.txt)
-== p2-3-statejoin: spike-only (not mirrored as a scenario file yet; see spike-only.txt)
+== grabrace: not mirrored (no scenario file yet; see not-mirrored.txt)
+== p2-3-statejoin: not mirrored (no scenario file yet; see not-mirrored.txt)
 == randsched: not a scenario (a spike property test, run and checked by the spike suite; see not-scenarios.txt)
-SUMMARY: 99 scenarios, 99 identical to the committed logs; 2 committed logs spike-only, not mirrored yet; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (402 s)
+SUMMARY: 99 scenarios, 99 identical to the committed logs; 2 committed logs not mirrored yet; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (431 s)
 exit 0
