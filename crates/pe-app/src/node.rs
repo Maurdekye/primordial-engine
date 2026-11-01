@@ -54,22 +54,23 @@ const BASE_BUCKETS: usize = 12;
 /// The current delay is the minimum over the last 100 ms or the last 4 samples, whichever spans more.
 const CURRENT_US: u64 = 100_000;
 const CURRENT_SAMPLES: usize = 4;
-/// A report counts at most this much above the reporter's round-trip excess (design 10.4's clamp: a
-/// clock-frequency error cannot fake queueing beyond what the round trip, on one clock, shows). Below
-/// R18's 10 ms calm level, so a clamped signal can still read as calm.
+/// A report standing this much above the reporter's round-trip queueing opens an episode of R18's
+/// clamp (design 10.4: a clock-frequency error cannot fake queueing beyond what the round trip, on one
+/// clock, shows); a probe's excess must also pass it to read as a queue.
 const RTT_CLAMP_MARGIN_US: u64 = 5_000;
 /// While a report stands above its round-trip bound (an episode), the reporter gets a probe ping
 /// this often (review H1). Each probe that returns gives a verdict: a queue if the lesser excess of
-/// it and the probe before, plus the margin, accounts for at least 3/4 of the report it was sent
-/// against (and is more than the margin), else a clock's drift. At half, a 25 ms delay step let up
+/// it and the probe before, plus the margin, accounts for at least 3/4 of the lesser of the reports
+/// they were sent against (and is more than the margin), else a clock's drift. At half, a 25 ms delay step let up
 /// to 50 ms of drift through in the mixed run (measured). A queue lifts every probe; jitter lifts one
 /// now and then, and a drifted report soon stands far above any jitter.
 /// * The report passes until the first verdict, and while the latest verdict is a queue. So the onset
 ///   of real congestion is not clamped: dipping the signal there made D56 remember a coarse level as
 ///   the congested one (measured). A drift passes for about one probe's round trip.
 /// * After a queue verdict it also passes for the report's own lag (the queue it reports, a round
-///   trip and the current filter): draining, a queue empties before the reports of it arrive.
-/// * Otherwise it is clamped to the bound.
+///   trip and the current filter): draining, a queue empties before the reports of it arrive. And a
+///   queue's verdict stands while the reports fall faster than any clock drifts (15 %).
+/// * Otherwise it is clamped to the round trip's reading (the bound less the margin).
 const PROBE_EVERY_US: u64 = 100_000;
 /// A probe rides on a datagram going to the reporter anyway; with none this long, it goes alone. Alone
 /// at 10 per second per reporter, the probes took a fifth of an 80 kbit/s uplink (measured).
@@ -161,8 +162,8 @@ struct Over {
     probes: BTreeMap<u64, u64>,
     /// The report now.
     report: u64,
-    /// The last probe's round-trip excess.
-    last_excess: Option<u64>,
+    /// The last probe's send time, round-trip excess and the report it was sent against.
+    last: Option<(u64, u64, u64)>,
     /// A probe has come back; whether the latest verdict is a queue, and until when the report passes
     /// after the last queue verdict.
     decided: bool,
@@ -681,10 +682,17 @@ impl Node {
                     && let Some(q) = o.probes.remove(&t)
                 {
                     let excess = recv_us.saturating_sub(t).saturating_sub(best);
-                    let least = o.last_excess.map_or(excess, |l| l.min(excess));
-                    o.last_excess = Some(excess);
+                    // The lesser of two probes' excess against the lesser of their reports: while a
+                    // queue grows, each probe sees more than the report before (a later report
+                    // against an earlier probe read a 360 ms queue as drift, measured).
+                    let (least, report) = o.last.map_or((excess, q), |(_, e, r)| (e.min(excess), r.min(q)));
+                    // A report falling faster than any clock's drift can move it is a queue draining
+                    // (its reports lag it): a queue's verdict stands (a clamp there dipped the signal
+                    // and D56 remembered level 5, measured).
+                    let draining = o.last.is_some_and(|(t0, _, r)| r > q + (crate::clock::MAX_RATE * t.saturating_sub(t0) as f64) as u64);
+                    o.last = Some((t, excess, q));
                     o.decided = true;
-                    o.queue = least > RTT_CLAMP_MARGIN_US && least + RTT_CLAMP_MARGIN_US >= q * 3 / 4;
+                    o.queue = (least > RTT_CLAMP_MARGIN_US && least + RTT_CLAMP_MARGIN_US >= report * 3 / 4) || (o.queue && draining);
                     if o.queue {
                         o.queue_until = recv_us + q + rtt_best.unwrap_or(0) + CURRENT_US;
                     }
@@ -983,8 +991,10 @@ impl Node {
                     if pass {
                         q
                     } else {
+                        // To the round trip's own reading: with the margin on top, 10 ms of jitter
+                        // never let a clamped signal read as calm (review H1 (b), measured).
                         clamped = true;
-                        bound
+                        bound - RTT_CLAMP_MARGIN_US
                     }
                 }
                 _ => {
