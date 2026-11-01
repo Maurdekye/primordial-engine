@@ -1847,10 +1847,10 @@ is fixed once the author's chain is contiguous up to it.
     before a horizon its author declared is void, never applied below the confirmed frame (review VCR-6)
     [V fork9: 9 forks; 1 and 2 hold the branch with its touch, 3 a longer one without. Before the fix 3
     confirmed past the touch and then had to roll back below its confirmed frame; now all three equal
-    the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch; before the
-    fix 3 never got it all and stopped at frame 116. V cutbackdate: the cut's branch holds a touch
-    backdated 90 frames; before the fix 3 applied it below its confirmed frame and hit the rollback
-    assertion at 2.29 s]. They are validated from a clean chain state, the ack-epoch history included
+    the replay. V deepfork: the cut lies over 16 entries past what 3 holds of the branch, and 1 and 2 ack
+    once a second, so few acks name those entries; before the fix 3 never got them all and stopped at
+    frame 235. V cutbackdate: the cut's branch holds a touch backdated 90 frames; before the fix 3
+    applied it below its confirmed frame and hit the rollback assertion at 2.29 s]. They are validated from a clean chain state, the ack-epoch history included
     (round 8, found while building `slowcapper`). The abandoned branch's history made every early ack
     fail VC-5's epoch rule, so a replica that switched voided the removed member's acks while one that
     had held the cut's branch kept them [V prevotefork: 28 such voids at the two replicas that switched,
@@ -2208,7 +2208,7 @@ is fixed once the author's chain is contiguous up to it.
 | `ackgap` | 3 acks once a second; two decisions 0.25 s apart fall between two of its acks | both decided, 3 stays (before the VCR-3 fix: its later acks void, and 3 voted out as too slow) |
 | `latejoin` | 5 catches up on two decisions at once, then joins at epoch 3 | admitted at 3.10 s and stays (before the VCR-3 fix: voted out after joining) |
 | `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | no reset; 9 voted out at 3.15 s (round 3: three resets, then 2.52 s; before the VCR-4 fix: 87 resets, 9 never removed) |
-| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late, so the cut lies over 16 entries past what 3 holds | 9 removed at 3.57 s; 3 fetches the branch by id, 16 entries per request; all equal (before the VCR-5 fix, through round 5, the replicas did not all equal the replay; since round 6 the run with the fix off no longer shows it, an open follow-up) |
+| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second, so the cut lies over 16 entries past what 3 holds and few acks name them | 9 removed at 3.58 s; 3 fetches the branch by id, 16 entries per request; all equal (before the VCR-5 fix: 3 never gets the whole cut branch and stops at frame 235). The once-a-second acks are new: a member fetches the version an ack's head names, so with acks every few frames 3 had nearly all of the branch before the cut, and from round 6 the run with the fix off passed |
 | `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.28 s) |
 | `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits | 5 joins as Guest; 9 is removed later for not referencing 5's chain (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
 | `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.68 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.25 s) |
