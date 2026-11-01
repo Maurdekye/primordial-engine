@@ -1,47 +1,52 @@
-# pe-session-sim regress on p2/v1v3 at 81faaab (V1-V3 + V3-1), Windows 11 x64, rustc 1.99.0, release, --jobs 2, 2026-11-01
-regress: 99 scenarios from E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\tools\session-sim\scenarios, logs to target/v13/tool2f, expected E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\spikes/out/session-sim-pe
+# pe-session-sim regress on p2/acks at cfa21f1 (7.6 reductions 1 and 2), Windows 11 x64, rustc 1.99.0, release, --jobs 2, 2026-11-01
+regress: 99 scenarios from E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\tools\session-sim\scenarios, logs to target/acks/Ctool, expected E:\Libraries\Desktop\Primordial Engine\.worktrees\p2-3\spikes/out/session-sim-pe
 == backdate: identical
 RESULT backdate part 1 world 1: frames 0..600 digests m1=12ce1c5a8d60fa74 m2=12ce1c5a8d60fa74 m3=12ce1c5a8d60fa74 | offline replay 12ce1c5a8d60fa74 | ALL EQUAL
-RESULT backdate part 2: removed from the session (cut, from frame): {3: (102, 1)}
+RESULT backdate part 2: removed from the session (cut, from frame): {3: (80, 1)}
 RESULT backdate part 2 world 1: frames 0..600 digests m1=8bfbfe55a7af5f85 m2=8bfbfe55a7af5f85 | offline replay 8bfbfe55a7af5f85 | ALL EQUAL
 == ballpit-60hz: identical
 RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 286 (10393 B/s payload, 14456 B/s wire est.), acks 259 (18399 B/s wire est.), all messages 33406 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 280 (10175 B/s payload, 14153 B/s wire est.), acks 258 (15716 B/s wire est.), all messages 30633 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 291.8 re-simulated frames/s, re-sim 2.71 ms per rendered sim frame (595 ms over the window); step avg 0.328 ms; max depth 13
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1800 B/s wire est.), m2 7.8 acks/s (1800 B/s wire est.)
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 282.0 re-simulated frames/s, re-sim 2.44 ms per rendered sim frame (537 ms over the window); step avg 0.317 ms; max depth 12
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=86ff6329404eebcc m2=86ff6329404eebcc | offline replay 86ff6329404eebcc | ALL EQUAL
 == ballpit-60hz-2hands: identical
 RESULT ballpit 60 Hz, 2 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 520 (18896 B/s payload, 26284 B/s wire est.), acks 255 (18115 B/s wire est.), all messages 45358 B/s wire est. (both directions)
-RESULT   naive state streaming measured on member 1: avg 380 balls changed per frame; exact state 1555709 B/s, quantized ~26 B/ball 595424 B/s (one direction, payload only)
+RESULT   perturbation source (hand target per frame + acks): hand entries 548 (19914 B/s payload, 27699 B/s wire est.), acks 255 (15514 B/s wire est.), all messages 44350 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 381 balls changed per frame; exact state 1556973 B/s, quantized ~26 B/ball 595907 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 276.8 re-simulated frames/s, re-sim 3.21 ms per rendered sim frame (707 ms over the window); step avg 0.446 ms; max depth 12
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1800 B/s wire est.), m2 7.8 acks/s (1800 B/s wire est.)
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 280.1 re-simulated frames/s, re-sim 3.05 ms per rendered sim frame (671 ms over the window); step avg 0.414 ms; max depth 12
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 453223a7a525165a m2 453223a7a525165a -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=1ec49eba28f507d6 m2=1ec49eba28f507d6 | offline replay 1ec49eba28f507d6 | ALL EQUAL
 == ballpit-60hz-ahead4: identical
 RESULT ballpit 60 Hz, 1 hand(s), input delay 4 frames, loss 2%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 286 (10393 B/s payload, 14456 B/s wire est.), acks 259 (18399 B/s wire est.), all messages 33406 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 280 (10175 B/s payload, 14153 B/s wire est.), acks 258 (15716 B/s wire est.), all messages 30633 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 285 balls changed per frame; exact state 1166995 B/s, quantized ~26 B/ball 446798 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 2.2 rollbacks/s, 18.6 re-simulated frames/s, re-sim 0.18 ms per rendered sim frame (40 ms over the window); step avg 0.244 ms; max depth 9
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1800 B/s wire est.), m2 7.8 acks/s (1800 B/s wire est.)
+RESULT   member 2 during the sweep: 1.1 rollbacks/s, 8.7 re-simulated frames/s, re-sim 0.06 ms per rendered sim frame (14 ms over the window); step avg 0.216 ms; max depth 8
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=03f2dd329f453bf0 m2=03f2dd329f453bf0 | offline replay 03f2dd329f453bf0 | ALL EQUAL
 == ballpit-60hz-noloss: identical
 RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 0%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 228 (8285 B/s payload, 11525 B/s wire est.), acks 219 (15557 B/s wire est.), all messages 27277 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 232 (8431 B/s payload, 11727 B/s wire est.), acks 224 (13639 B/s wire est.), all messages 25739 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.8 re-simulated frames/s, re-sim 2.60 ms per rendered sim frame (572 ms over the window); step avg 0.336 ms; max depth 4
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1800 B/s wire est.), m2 7.8 acks/s (1800 B/s wire est.)
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 272.1 re-simulated frames/s, re-sim 2.31 ms per rendered sim frame (508 ms over the window); step avg 0.309 ms; max depth 4
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=86ff6329404eebcc m2=86ff6329404eebcc | offline replay 86ff6329404eebcc | ALL EQUAL
 == ballpit-90hz: identical
 RESULT ballpit 90 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 329 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 450 (16352 B/s payload, 22746 B/s wire est.), acks 396 (28131 B/s wire est.), all messages 51943 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 447 (16243 B/s payload, 22594 B/s wire est.), acks 389 (23645 B/s wire est.), all messages 47198 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 284 balls changed per frame; exact state 1734546 B/s, quantized ~26 B/ball 664097 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   member 2 during the sweep: 88.3 rollbacks/s, 614.8 re-simulated frames/s, re-sim 3.87 ms per rendered sim frame (1272 ms over the window); step avg 0.334 ms; max depth 21
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 11.1 acks/s (2578 B/s wire est.), m2 11.1 acks/s (2578 B/s wire est.)
+RESULT   member 2 during the sweep: 88.5 rollbacks/s, 610.4 re-simulated frames/s, re-sim 3.51 ms per rendered sim frame (1154 ms over the window); step avg 0.310 ms; max depth 23
 RESULT   end state at frame 799 (all 500 balls, both hands, all tables): m1 c88afef9ef0b12bd m2 c88afef9ef0b12bd -> IDENTICAL
 RESULT ballpit 90Hz world 1: frames 0..765 digests m1=1488a9f7622a3878 m2=1488a9f7622a3878 | offline replay 1488a9f7622a3878 | ALL EQUAL
 == c1: identical
@@ -52,31 +57,31 @@ RESULT c2 before (phase-1 rule): repair a<-x' Err(Duplicate), b<-x Err(Duplicate
 RESULT c2 after (honest members 1,2) world 1: frames 0..450 digests m1=2fa71ec4a6e717a8 m2=2fa71ec4a6e717a8 | offline replay 2fa71ec4a6e717a8 | ALL EQUAL
 == claims: identical
 RESULT claims (member 1 nudges every 29 frames, member 2 every frame; D72: only grabs claim, so no push is refused): {(1, "accepted"): 21, (2, "accepted"): 600}
-RESULT claims world 1: frames 0..750 digests m1=6b093312da4780a6 m2=6b093312da4780a6 | offline replay 6b093312da4780a6 | ALL EQUAL
+RESULT claims world 1: frames 0..750 digests m1=f9f5b195e72c3a76 m2=f9f5b195e72c3a76 | offline replay f9f5b195e72c3a76 | ALL EQUAL
 == d80-adminclose: identical
-RESULT adminclose: m2 epoch 1 members {} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 383 (t=6.48 s) round 1 removed [1]
-RESULT adminclose: m3 epoch 1 members {} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 385 (t=6.52 s) round 1 removed [1]
+RESULT adminclose: m2 epoch 1 members {} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 382 (t=6.47 s) round 1 removed [1]
+RESULT adminclose: m3 epoch 1 members {} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1]
 RESULT adminclose: the only admin (1) silent from 3 s; session closed at frame Some(438) at m2, Some(438) at m3; members the close removed [2, 3] at m2, [2, 3] at m3 -> CLOSED, the same frame everywhere, every member left removed
-RESULT adminclose (the only admin goes silent at t=3 s): frames 0..496 honest m2=d49a217baba9dacc m3=d49a217baba9dacc | offline replay d49a217baba9dacc | ALL EQUAL, NO FALSE CHECKS ; checks ok 24 bad 0
+RESULT adminclose (the only admin goes silent at t=3 s): frames 0..495 honest m2=ed33069dc529ef20 m3=ed33069dc529ef20 | offline replay ed33069dc529ef20 | ALL EQUAL, NO FALSE CHECKS ; checks ok 24 bad 0
 == d80-joinrules: identical
 RESULT joinrules: m1 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []; epoch 2 at frame 148 (t=2.57 s) round 1 removed []
-RESULT joinrules: m2 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 149 (t=2.58 s) round 1 removed []
-RESULT joinrules: m4 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 150 (t=2.60 s) round 1 removed []
-RESULT joinrules: m6 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 121 (t=2.12 s) round 0 removed []; epoch 2 at frame 148 (t=2.57 s) round 1 removed []
-RESULT joinrules: m7 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 1 removed []
+RESULT joinrules: m2 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 148 (t=2.57 s) round 1 removed []
+RESULT joinrules: m4 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 148 (t=2.57 s) round 1 removed []
+RESULT joinrules: m6 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 150 (t=2.60 s) round 1 removed []
+RESULT joinrules: m7 epoch 2 members {1, 2, 4, 6, 7} view changes 2 (resets 0, highest round 7) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 150 (t=2.60 s) round 1 removed []
 RESULT joinrules: admitted [1, 2, 4, 6, 7], roles {1: 0, 2: 1, 4: 1, 6: 0, 7: 0} -> friend of an admin as Guest, owner's confidant as Admin, owner by row 0, stranger refused
 RESULT joinrules (friends-of-admins as Guest, owners' confidants as Admin, row 0): frames 0..592 honest m1=a7a135c7741ed25e m2=a7a135c7741ed25e m4=a7a135c7741ed25e m6=a7a135c7741ed25e m7=a7a135c7741ed25e | offline replay a7a135c7741ed25e | ALL EQUAL, NO FALSE CHECKS ; checks ok 400 bad 0
 == d80-kickadmin: identical
-RESULT kickadmin: m2 epoch 5 members {2, 3} view changes 5 (resets 0, highest round 1) | epoch 1 at frame 170 (t=2.93 s) round 0 removed [4]; epoch 2 at frame 442 (t=7.47 s) round 1 removed [1]; epoch 3 at frame 606 (t=10.20 s) round 0 removed []; epoch 4 at frame 667 (t=11.22 s) round 0 removed []; epoch 5 at frame 726 (t=12.20 s) round 0 removed []
-RESULT kickadmin: m3 epoch 5 members {2, 3} view changes 5 (resets 0, highest round 1) | epoch 1 at frame 170 (t=2.93 s) round 0 removed [4]; epoch 2 at frame 444 (t=7.50 s) round 1 removed [1]; epoch 3 at frame 608 (t=10.23 s) round 0 removed []; epoch 4 at frame 664 (t=11.17 s) round 0 removed []; epoch 5 at frame 728 (t=12.23 s) round 0 removed []
+RESULT kickadmin: m2 epoch 5 members {2, 3} view changes 5 (resets 0, highest round 1) | epoch 1 at frame 170 (t=2.93 s) round 0 removed [4]; epoch 2 at frame 443 (t=7.48 s) round 1 removed [1]; epoch 3 at frame 606 (t=10.20 s) round 0 removed []; epoch 4 at frame 666 (t=11.20 s) round 0 removed []; epoch 5 at frame 726 (t=12.20 s) round 0 removed []
+RESULT kickadmin: m3 epoch 5 members {2, 3} view changes 5 (resets 0, highest round 1) | epoch 1 at frame 170 (t=2.93 s) round 0 removed [4]; epoch 2 at frame 445 (t=7.52 s) round 1 removed [1]; epoch 3 at frame 608 (t=10.23 s) round 0 removed []; epoch 4 at frame 664 (t=11.17 s) round 0 removed []; epoch 5 at frame 728 (t=12.23 s) round 0 removed []
 RESULT kickadmin: m2: 2 kicks 4 @160: applied; 3 defines role 3 = 0x1 @600: refused; 3 gives 3 role 0 @660: applied; 3 defines role 3 = 0x1 @720: applied
 RESULT kickadmin: m3: 2 kicks 4 @160: applied; 3 defines role 3 = 0x1 @600: refused; 3 gives 3 role 0 @660: applied; 3 defines role 3 = 0x1 @720: applied
 RESULT kickadmin: kick votes against 1: false, against 3: false; members left [2, 3]; open true; 3's role Some(0), role 3 = 0x1 -> ADMINS SAFE FROM A KICK-ONLY ROLE, AND A ROLES-HOLDER KEEPS THE SESSION OPEN
-RESULT kickadmin (a kick-only role kicks admin 1, roles-holder 3 and guest 4; then admin 1 goes silent at t=4 s): frames 0..952 honest m2=77cf2da8d6698b62 m3=77cf2da8d6698b62 | offline replay 77cf2da8d6698b62 | ALL EQUAL, NO FALSE CHECKS ; checks ok 82 bad 0
+RESULT kickadmin (a kick-only role kicks admin 1, roles-holder 3 and guest 4; then admin 1 goes silent at t=4 s): frames 0..952 honest m2=77cf2da8d6698b62 m3=77cf2da8d6698b62 | offline replay 77cf2da8d6698b62 | ALL EQUAL, NO FALSE CHECKS ; checks ok 78 bad 0
 == d80-kickpartition: identical
-RESULT kickpartition: m1 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 413 (t=6.98 s) round 1 removed [3]
-RESULT kickpartition: m2 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 413 (t=6.98 s) round 1 removed [3]
-RESULT kickpartition: m4 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 413 (t=6.98 s) round 1 removed [3]
+RESULT kickpartition: m1 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 402 (t=6.80 s) round 1 removed [3]
+RESULT kickpartition: m2 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 402 (t=6.80 s) round 1 removed [3]
+RESULT kickpartition: m4 epoch 1 members {1, 2, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 402 (t=6.80 s) round 1 removed [3]
 RESULT kickpartition: m1: 1 kicks 3 @180: applied
 RESULT kickpartition: m2: 1 kicks 3 @180: applied
 RESULT kickpartition: m4: 1 kicks 3 @180: applied
@@ -90,53 +95,53 @@ RESULT kickwar: m1: 1 kicks 2 @120: applied; 2 kicks 1 @120: refused
 RESULT kickwar: m3: 1 kicks 2 @120: applied; 2 kicks 1 @120: refused
 RESULT kickwar: m4: 1 kicks 2 @120: applied; 2 kicks 1 @120: refused
 RESULT kickwar: members left [1, 3, 4]: exactly one of the two admins removed: true
-RESULT kickwar (admins 1 and 2 kick each other at frame 120): frames 0..472 honest m1=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 m4=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT kickwar (admins 1 and 2 kick each other at frame 120): frames 0..472 honest m1=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 m4=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 102 bad 0
 == d80-lastadmin: identical
 RESULT lastadmin: m1 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 248 (t=4.23 s) round 0 removed []
 RESULT lastadmin: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 248 (t=4.23 s) round 0 removed []
-RESULT lastadmin: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 249 (t=4.25 s) round 0 removed []
+RESULT lastadmin: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 248 (t=4.23 s) round 0 removed []
 RESULT lastadmin: m1: 1 gives 1 role 1 @120: refused; 1 gives 2 role 0 @240: applied; 1 gives 1 role 1 @241: applied
 RESULT lastadmin: m2: 1 gives 1 role 1 @120: refused; 1 gives 2 role 0 @240: applied; 1 gives 1 role 1 @241: applied
 RESULT lastadmin: m3: 1 gives 1 role 1 @120: refused; 1 gives 2 role 0 @240: applied; 1 gives 1 role 1 @241: applied
 RESULT lastadmin: admins at the end [[2], [2], [2]] -> the release was refused, the hand-over held
-RESULT lastadmin (the only admin releases its role, then hands it to 2 and releases): frames 0..472 honest m1=98a3a1cb9af6ab72 m2=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 96 bad 0
+RESULT lastadmin (the only admin releases its role, then hands it to 2 and releases): frames 0..472 honest m1=98a3a1cb9af6ab72 m2=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 90 bad 0
 == diverged: identical
-RESULT diverged acceptance, uncontended checks: 23/25 equal at that instant and 25/25 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
-RESULT diverged acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 32/35 equal to the author's copy at that instant, 33/35 equal to the author's final history
+RESULT diverged acceptance, uncontended checks: 37/39 equal at that instant and 39/39 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 13
+RESULT diverged acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 48/52 equal to the author's copy at that instant, 50/52 equal to the author's final history
 RESULT diverged world 1: frames 0..700 digests m1=5a41fa765af787d0 m2=5a41fa765af787d0 m3=5a41fa765af787d0 | offline replay 5a41fa765af787d0 | ALL EQUAL
 == fault-asymmetric: identical
-RESULT fault-asymmetric acceptance, uncontended checks: 32/32 equal at that instant and 32/32 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 13
-RESULT fault-asymmetric acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 41/45 equal to the author's copy at that instant, 41/45 equal to the author's final history
-RESULT fault-asymmetric world 1: frames 0..550 digests m1=491baff8a583ad90 m2=491baff8a583ad90 m3=491baff8a583ad90 | offline replay 491baff8a583ad90 | ALL EQUAL
+RESULT fault-asymmetric acceptance, uncontended checks: 36/36 equal at that instant and 36/36 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 13
+RESULT fault-asymmetric acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 45/49 equal to the author's copy at that instant, 46/49 equal to the author's final history
+RESULT fault-asymmetric world 1: frames 0..550 digests m1=80c9bc7483735812 m2=80c9bc7483735812 m3=80c9bc7483735812 | offline replay 80c9bc7483735812 | ALL EQUAL
 == fault-capped: identical
-RESULT fault-capped world 1: frames 0..530 digests m1=5c9f92083e573e4b m2=5c9f92083e573e4b m3=5c9f92083e573e4b | offline replay 5c9f92083e573e4b | ALL EQUAL
+RESULT fault-capped world 1: frames 0..530 digests m1=1c62875e7aa837f9 m2=1c62875e7aa837f9 m3=1c62875e7aa837f9 | offline replay 1c62875e7aa837f9 | ALL EQUAL
 == fault-capped-collapse: identical
-RESULT fault-capped-collapse (stall): m1 world 1 conf 101 members {1, 2, 3} evicted {} -> OK
+RESULT fault-capped-collapse (stall): m1 world 1 conf 205 members {1, 2, 3} evicted {} -> OK
 RESULT fault-capped-collapse (confirmed prefix) world 1: frames 0..95 digests m1=8d7b445bb89698f3 m2=8d7b445bb89698f3 m3=8d7b445bb89698f3 | offline replay 8d7b445bb89698f3 | ALL EQUAL
 == fault-capped-r18: identical
-RESULT fault-capped-r18 (keeps confirming): m1 world 1 conf 584 members {1, 2, 3} evicted {} -> OK
-RESULT fault-capped-r18 world 1: frames 0..500 digests m1=6e1dc1f9ef0234b5 m2=6e1dc1f9ef0234b5 m3=6e1dc1f9ef0234b5 | offline replay 6e1dc1f9ef0234b5 | ALL EQUAL
+RESULT fault-capped-r18 (keeps confirming): m1 world 1 conf 576 members {1, 2, 3} evicted {} -> OK
+RESULT fault-capped-r18 world 1: frames 0..500 digests m1=e784c5c2a8bd6b27 m2=e784c5c2a8bd6b27 m3=e784c5c2a8bd6b27 | offline replay e784c5c2a8bd6b27 | ALL EQUAL
 == fault-crash-recover: identical
-RESULT fault-crash-recover: m1 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
-RESULT fault-crash-recover: m2 members {1, 2, 3} evicted {} conf 587 frame 594 paused frames 0 lying votes found 0
-RESULT fault-crash-recover: m3 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m1 members {1, 2, 3} evicted {} conf 576 frame 593 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m2 members {1, 2, 3} evicted {} conf 576 frame 594 paused frames 0 lying votes found 0
+RESULT fault-crash-recover: m3 members {1, 2, 3} evicted {} conf 576 frame 593 paused frames 0 lying votes found 0
 RESULT fault-crash-recover world 1: frames 0..550 digests m1=11222a61adae1584 m2=11222a61adae1584 m3=11222a61adae1584 | offline replay 11222a61adae1584 | ALL EQUAL
 == fault-partition-evict: identical
-RESULT fault-partition-evict: m1 members {1, 2} evicted {3: (56, 112)} conf 705 frame 713 paused frames 72 lying votes found 0
-RESULT fault-partition-evict: m2 members {1, 2} evicted {3: (56, 112)} conf 707 frame 714 paused frames 74 lying votes found 0
-RESULT fault-partition-evict (minority member 3): m3 world 1 conf 108 members {1, 2, 3} evicted {} -> OK
-RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=72d33d2da21c359a m2=72d33d2da21c359a | offline replay 72d33d2da21c359a | ALL EQUAL, NO FALSE CHECKS ; checks ok 48 bad 0
+RESULT fault-partition-evict: m1 members {1, 2} evicted {3: (20, 106)} conf 697 frame 713 paused frames 76 lying votes found 0
+RESULT fault-partition-evict: m2 members {1, 2} evicted {3: (20, 106)} conf 697 frame 714 paused frames 78 lying votes found 0
+RESULT fault-partition-evict (minority member 3): m3 world 1 conf 98 members {1, 2, 3} evicted {} -> OK
+RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=72d33d2da21c359a m2=72d33d2da21c359a | offline replay 72d33d2da21c359a | ALL EQUAL, NO FALSE CHECKS ; checks ok 46 bad 0
 == fault-partition-heal: identical
-RESULT fault-partition-heal: m1 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
-RESULT fault-partition-heal: m2 members {1, 2, 3} evicted {} conf 585 frame 594 paused frames 0 lying votes found 0
-RESULT fault-partition-heal: m3 members {1, 2, 3} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT fault-partition-heal: m1 members {1, 2, 3} evicted {} conf 574 frame 593 paused frames 0 lying votes found 0
+RESULT fault-partition-heal: m2 members {1, 2, 3} evicted {} conf 576 frame 594 paused frames 0 lying votes found 0
+RESULT fault-partition-heal: m3 members {1, 2, 3} evicted {} conf 574 frame 593 paused frames 0 lying votes found 0
 RESULT fault-partition-heal world 1: frames 0..550 digests m1=233096b3f5e2fb88 m2=233096b3f5e2fb88 m3=233096b3f5e2fb88 | offline replay 233096b3f5e2fb88 | ALL EQUAL
 == handowner: identical
-RESULT handowner: member 2's entries for member 1's hand refused at every replica: true; frames 0..346 with them ef604e7769fe7370, without them ef604e7769fe7370 -> SAME HISTORY
-RESULT handowner (member 2 also sends hand entries for member 1's hand) world 1: frames 0..346 digests m1=ef604e7769fe7370 m2=ef604e7769fe7370 | offline replay ef604e7769fe7370 | ALL EQUAL
+RESULT handowner: member 2's entries for member 1's hand refused at every replica: true; frames 0..336 with them 92302cef2872cd82, without them 92302cef2872cd82 -> SAME HISTORY
+RESULT handowner (member 2 also sends hand entries for member 1's hand) world 1: frames 0..336 digests m1=92302cef2872cd82 m2=92302cef2872cd82 | offline replay 92302cef2872cd82 | ALL EQUAL
 == loss: identical
-RESULT loss acceptance, uncontended checks: 31/31 equal at that instant and 31/31 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 14
-RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 41/45 equal to the author's copy at that instant, 42/45 equal to the author's final history
+RESULT loss acceptance, uncontended checks: 25/25 equal at that instant and 25/25 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 23
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 41/48 equal to the author's copy at that instant, 43/48 equal to the author's final history
 RESULT loss world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112baf49e9c4b m3=a97112baf49e9c4b | offline replay a97112baf49e9c4b | ALL EQUAL
 == ownership: identical
 RESULT ownership world 1: offline reference owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] | ALL EQUAL
@@ -148,100 +153,100 @@ RESULT ownership world 1: frames 0..380 digests m1=7a9b7251083c64ea m2=7a9b72510
 RESULT ackgap: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
 RESULT ackgap: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
 RESULT ackgap: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 144 (t=2.50 s) round 0 removed []
-RESULT ackgap: m1 conf 477 of frame 533, m2 conf 477 of frame 533, m3 conf 479 of frame 533
-RESULT ackgap (3 acks once a second; two decisions fall between two of its acks): frames 0..532 honest m1=a271eaa0ec68bcc7 m2=a271eaa0ec68bcc7 m3=a271eaa0ec68bcc7 | offline replay a271eaa0ec68bcc7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 58 bad 0
+RESULT ackgap: m1 conf 497 of frame 533, m2 conf 497 of frame 533, m3 conf 502 of frame 533
+RESULT ackgap (3 acks once a second; two decisions fall between two of its acks): frames 0..532 honest m1=a271eaa0ec68bcc7 m2=a271eaa0ec68bcc7 m3=a271eaa0ec68bcc7 | offline replay a271eaa0ec68bcc7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 82 bad 0
 == p2-4-adminfork: identical
-RESULT adminfork: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 3) | epoch 1 at frame 240 (t=4.10 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
-RESULT adminfork: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 3) | epoch 1 at frame 241 (t=4.12 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
-RESULT adminfork: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
-RESULT adminfork fixed=false: frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
-RESULT adminfork: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 3) | epoch 1 at frame 240 (t=4.10 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
-RESULT adminfork: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 3) | epoch 1 at frame 241 (t=4.12 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
-RESULT adminfork: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 267 (t=4.55 s) round 1 removed [9]
-RESULT adminfork fixed=true: frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT adminfork: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 276 (t=4.70 s) round 2 removed []; epoch 2 at frame 304 (t=5.17 s) round 1 removed [9]
+RESULT adminfork: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 276 (t=4.70 s) round 2 removed []; epoch 2 at frame 304 (t=5.17 s) round 1 removed [9]
+RESULT adminfork: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 276 (t=4.70 s) round 2 removed []; epoch 2 at frame 305 (t=5.18 s) round 1 removed [9]
+RESULT adminfork fixed=false: frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
+RESULT adminfork: m1 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 276 (t=4.70 s) round 2 removed []; epoch 2 at frame 304 (t=5.17 s) round 1 removed [9]
+RESULT adminfork: m2 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 276 (t=4.70 s) round 2 removed []; epoch 2 at frame 304 (t=5.17 s) round 1 removed [9]
+RESULT adminfork: m3 epoch 2 members {1, 2, 3} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 276 (t=4.70 s) round 2 removed []; epoch 2 at frame 305 (t=5.18 s) round 1 removed [9]
+RESULT adminfork fixed=true: frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
 == p2-4-adminvoid: identical
-RESULT adminvoid: 3's role at m1 Some(0) -> THE VOID ENTRY IS NOT APPLIED; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593
-RESULT adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
+RESULT adminvoid: 3's role at m1 Some(0) -> THE VOID ENTRY IS NOT APPLIED; m1 conf 578 of frame 593, m2 conf 578 of frame 593, m3 conf 578 of frame 593
+RESULT adminvoid (at 2 s, 9 signs a backdated, horizon-void SetRole demoting 3, and proposes a change that lists it): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 171 bad 0
 == p2-4-adminwedge: identical
 RESULT adminwedge fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT adminwedge: m1 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
 RESULT adminwedge: m2 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
 RESULT adminwedge: m3 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
 RESULT adminwedge: m4 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, highest round 21) | no decision
-RESULT adminwedge fixed=false: frames 0..231 honest m1=fcc610c088a8d16e m2=fcc610c088a8d16e m3=fcc610c088a8d16e m4=fcc610c088a8d16e | offline replay fcc610c088a8d16e | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
+RESULT adminwedge fixed=false: frames 0..227 honest m1=19d05dd5d7cba657 m2=19d05dd5d7cba657 m3=19d05dd5d7cba657 m4=19d05dd5d7cba657 | offline replay 19d05dd5d7cba657 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
 RESULT adminwedge fixed=true: -> REMOVED, CONFIRMATION GOES ON
-RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 206 (t=3.53 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 204 (t=3.50 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 204 (t=3.50 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
-RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 198 (t=3.40 s) round 0 removed []; epoch 2 at frame 234 (t=4.00 s) round 1 removed [9]
+RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 199 (t=3.42 s) round 0 removed []; epoch 2 at frame 229 (t=3.92 s) round 1 removed [9]
+RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 199 (t=3.42 s) round 0 removed []; epoch 2 at frame 229 (t=3.92 s) round 1 removed [9]
+RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 199 (t=3.42 s) round 0 removed []; epoch 2 at frame 229 (t=3.92 s) round 1 removed [9]
+RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 197 (t=3.38 s) round 0 removed []; epoch 2 at frame 229 (t=3.92 s) round 1 removed [9]
 RESULT adminwedge fixed=true: frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 m4=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
 == p2-4-aheadlink: identical
-RESULT aheadlink: m1 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []; epoch 2 at frame 309 (t=5.25 s) round 0 removed [3]
-RESULT aheadlink: m2 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []; epoch 2 at frame 309 (t=5.25 s) round 0 removed [3]
+RESULT aheadlink: m1 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed [3]
+RESULT aheadlink: m2 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed [3]
 RESULT aheadlink: m3 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 428 (t=7.23 s) round 0 removed []; epoch 2 at frame 608 (t=10.23 s) round 0 removed [3]
-RESULT aheadlink: m4 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []; epoch 2 at frame 309 (t=5.25 s) round 0 removed [3]
-RESULT aheadlink: 3's votes against the members ahead, by (epoch, target): [(0, 4), (1, 4), (1, 2), (0, 2), (0, 1), (1, 1)]; members {1, 2, 4} -> CAST, AND THE MEMBERS AHEAD ARE KEPT
-RESULT aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up): frames 0..424 honest m1=4411c006ce1c93db m2=4411c006ce1c93db m3=4411c006ce1c93db m4=4411c006ce1c93db | offline replay 4411c006ce1c93db | ALL EQUAL, NO FALSE CHECKS ; checks ok 165 bad 0
+RESULT aheadlink: m4 epoch 2 members {1, 2, 4} view changes 2 (resets 0, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed [3]
+RESULT aheadlink: 3's votes against the members ahead, by (epoch, target): [(1, 2), (0, 4), (0, 2), (1, 4), (1, 1), (0, 1)]; members {1, 2, 4} -> CAST, AND THE MEMBERS AHEAD ARE KEPT
+RESULT aheadlink (3 hears only 4's acks for 5 s while the others decide an epoch; it is removed for not keeping up): frames 0..424 honest m1=4411c006ce1c93db m2=4411c006ce1c93db m3=4411c006ce1c93db m4=4411c006ce1c93db | offline replay 4411c006ce1c93db | ALL EQUAL, NO FALSE CHECKS ; checks ok 164 bad 0
 == p2-4-aheadshield: identical
-RESULT aheadshield climb=true rotate=false: 9 removed at 5.17 s; m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 705 of frame 713 -> VOTED OUT
-RESULT aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: false): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
-RESULT aheadshield climb=false rotate=true: 9 removed at never; m1 conf 699 of frame 713, m2 conf 699 of frame 713, m3 conf 701 of frame 713 -> HARMLESS
-RESULT aheadshield (from 2 s, 9's acks claim epoch 1: false; 9 sends each of its entries to one honest member only, in turn: true): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 214 bad 0
-RESULT aheadshield climb=true rotate=true: 9 removed at 5.30 s; m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 705 of frame 713 -> VOTED OUT
-RESULT aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: true): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
+RESULT aheadshield climb=true rotate=false: 9 removed at 5.23 s; m1 conf 698 of frame 713, m2 conf 698 of frame 713, m3 conf 698 of frame 713 -> VOTED OUT
+RESULT aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: false): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0
+RESULT aheadshield climb=false rotate=true: 9 removed at never; m1 conf 684 of frame 713, m2 conf 686 of frame 713, m3 conf 676 of frame 713 -> HARMLESS
+RESULT aheadshield (from 2 s, 9's acks claim epoch 1: false; 9 sends each of its entries to one honest member only, in turn: true): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 206 bad 0
+RESULT aheadshield climb=true rotate=true: 9 removed at 5.45 s; m1 conf 698 of frame 713, m2 conf 698 of frame 713, m3 conf 698 of frame 713 -> VOTED OUT
+RESULT aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: true): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0
 == p2-4-badproposer: identical
-RESULT badproposer: m2 members {2, 3, 4} evicted {1: (181, 359), 5: (86, 173)} conf 887 frame 893 paused frames 100 lying votes found 0
-RESULT badproposer: m3 members {2, 3, 4} evicted {1: (181, 359), 5: (86, 173)} conf 887 frame 893 paused frames 100 lying votes found 0
-RESULT badproposer: m4 members {2, 3, 4} evicted {1: (181, 359), 5: (86, 173)} conf 887 frame 893 paused frames 100 lying votes found 0
-RESULT badproposer: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 389 (t=6.58 s) round 1 removed [1, 5]
-RESULT badproposer: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 389 (t=6.58 s) round 1 removed [1, 5]
-RESULT badproposer: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 389 (t=6.58 s) round 1 removed [1, 5]
-RESULT badproposer (proposer 1 equivocates; member 5 silent from t=3 s): frames 0..892 honest m2=380f9111218cc6ac m3=380f9111218cc6ac m4=380f9111218cc6ac | offline replay 380f9111218cc6ac | ALL EQUAL, NO FALSE CHECKS ; checks ok 186 bad 0
+RESULT badproposer: m2 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} conf 882 frame 893 paused frames 107 lying votes found 0
+RESULT badproposer: m3 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} conf 882 frame 893 paused frames 107 lying votes found 0
+RESULT badproposer: m4 members {2, 3, 4} evicted {1: (55, 353), 5: (25, 167)} conf 882 frame 893 paused frames 107 lying votes found 0
+RESULT badproposer: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1, 5]
+RESULT badproposer: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1, 5]
+RESULT badproposer: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 384 (t=6.50 s) round 1 removed [1, 5]
+RESULT badproposer (proposer 1 equivocates; member 5 silent from t=3 s): frames 0..892 honest m2=380f9111218cc6ac m3=380f9111218cc6ac m4=380f9111218cc6ac | offline replay 380f9111218cc6ac | ALL EQUAL, NO FALSE CHECKS ; checks ok 183 bad 0
 == p2-4-bogusprecommit: identical
-RESULT bogusprecommit-1: m1 members {1, 2, 3, 9} evicted {} conf 526 frame 533 paused frames 0 lying votes found 0
-RESULT bogusprecommit-1: m2 members {1, 2, 3, 9} evicted {} conf 526 frame 533 paused frames 0 lying votes found 0
-RESULT bogusprecommit-1: m3 members {1, 2, 3, 9} evicted {} conf 526 frame 533 paused frames 0 lying votes found 0
+RESULT bogusprecommit-1: m1 members {1, 2, 3, 9} evicted {} conf 520 frame 533 paused frames 0 lying votes found 0
+RESULT bogusprecommit-1: m2 members {1, 2, 3, 9} evicted {} conf 520 frame 533 paused frames 0 lying votes found 0
+RESULT bogusprecommit-1: m3 members {1, 2, 3, 9} evicted {} conf 520 frame 533 paused frames 0 lying votes found 0
 RESULT bogusprecommit-1: m1 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 0) | no decision
 RESULT bogusprecommit-1: m2 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 0) | no decision
 RESULT bogusprecommit-1: m3 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 0) | no decision
-RESULT bogusprecommit-1: m1 conf 526 of frame 533, m2 conf 526 of frame 533, m3 conf 526 of frame 533
+RESULT bogusprecommit-1: m1 conf 520 of frame 533, m2 conf 520 of frame 533, m3 conf 520 of frame 533
 RESULT bogusprecommit part 1 (9 signs a precommit with boundary 1): frames 0..532 honest m1=2344577f4dd43521 m2=2344577f4dd43521 m3=2344577f4dd43521 | offline replay 2344577f4dd43521 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
-RESULT bogusprecommit-2: m1 members {1, 2, 3} evicted {9: (91, 173)} conf 526 frame 533 paused frames 0 lying votes found 0
-RESULT bogusprecommit-2: m2 members {1, 2, 3} evicted {9: (91, 173)} conf 526 frame 533 paused frames 0 lying votes found 0
-RESULT bogusprecommit-2: m3 members {1, 2, 3} evicted {9: (91, 173)} conf 526 frame 533 paused frames 0 lying votes found 0
+RESULT bogusprecommit-2: m1 members {1, 2, 3} evicted {9: (41, 172)} conf 521 frame 533 paused frames 0 lying votes found 0
+RESULT bogusprecommit-2: m2 members {1, 2, 3} evicted {9: (41, 172)} conf 521 frame 533 paused frames 0 lying votes found 0
+RESULT bogusprecommit-2: m3 members {1, 2, 3} evicted {9: (41, 172)} conf 521 frame 533 paused frames 0 lying votes found 0
 RESULT bogusprecommit-2: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT bogusprecommit-2: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT bogusprecommit-2: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
-RESULT bogusprecommit-2: m1 conf 526 of frame 533, m2 conf 526 of frame 533, m3 conf 526 of frame 533
+RESULT bogusprecommit-2: m1 conf 521 of frame 533, m2 conf 521 of frame 533, m3 conf 521 of frame 533
 RESULT bogusprecommit part 2 (9 signs a precommit with boundary just ahead of its horizon): frames 0..532 honest m1=2344577f4dd43521 m2=2344577f4dd43521 m3=2344577f4dd43521 | offline replay 2344577f4dd43521 | ALL EQUAL, NO FALSE CHECKS ; checks ok 123 bad 0
 == p2-4-bridge: identical
-RESULT bridge-majority: m1 members {1, 2} evicted {3: (85, 171), 4: (85, 171), 8: (289, 567)} conf 1187 frame 1193 paused frames 309 lying votes found 0
-RESULT bridge-majority: m2 members {1, 2} evicted {3: (85, 171), 4: (85, 171), 8: (289, 567)} conf 1189 frame 1193 paused frames 311 lying votes found 0
-RESULT bridge-majority: m3 members {3, 4} evicted {1: (86, 171), 2: (85, 171), 8: (333, 656)} conf 1187 frame 1193 paused frames 402 lying votes found 0
-RESULT bridge-majority: m4 members {3, 4} evicted {1: (86, 171), 2: (85, 171), 8: (333, 656)} conf 1189 frame 1193 paused frames 399 lying votes found 0
-RESULT bridge-majority: m1 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 365 (t=6.18 s) round 0 removed [3, 4]; epoch 2 at frame 598 (t=10.07 s) round 1 removed [8]
-RESULT bridge-majority: m2 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 365 (t=6.18 s) round 0 removed [3, 4]; epoch 2 at frame 600 (t=10.10 s) round 1 removed [8]
-RESULT bridge-majority: m3 epoch 2 members {3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 462 (t=7.80 s) round 2 removed [1, 2]; epoch 2 at frame 691 (t=11.62 s) round 1 removed [8]
-RESULT bridge-majority: m4 epoch 2 members {3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 461 (t=7.78 s) round 2 removed [1, 2]; epoch 2 at frame 688 (t=11.57 s) round 1 removed [8]
-RESULT bridge-majority: member lists after the partition healed: m1 {1, 2}, m3 {3, 4} -> FORKED (two sessions)
-RESULT bridge-majority side {1,2}: frames 0..1192 honest m1=0c386c4bc5bf43ed m2=0c386c4bc5bf43ed | offline replay 0c386c4bc5bf43ed | ALL EQUAL, NO FALSE CHECKS ; checks ok 92 bad 0
-RESULT bridge-majority side {3,4}: frames 0..1192 honest m3=0c386c4bc5bf43ed m4=0c386c4bc5bf43ed | offline replay 0c386c4bc5bf43ed | ALL EQUAL, NO FALSE CHECKS ; checks ok 86 bad 0
-RESULT bridge-bft: m1 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 523 lying votes found 0
-RESULT bridge-bft: m2 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 523 lying votes found 0
-RESULT bridge-bft: m3 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 524 lying votes found 0
-RESULT bridge-bft: m4 members {1, 2, 3, 4, 8} evicted {} conf 1187 frame 1193 paused frames 524 lying votes found 0
-RESULT bridge-bft: m1 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 810 (t=13.60 s) round 1 removed []
-RESULT bridge-bft: m2 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 810 (t=13.60 s) round 1 removed []
-RESULT bridge-bft: m3 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 810 (t=13.60 s) round 1 removed []
-RESULT bridge-bft: m4 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 810 (t=13.60 s) round 1 removed []
+RESULT bridge-majority: m1 members {1, 2, 8} evicted {3: (229, 690), 4: (25, 166)} conf 1178 frame 1193 paused frames 516 lying votes found 0
+RESULT bridge-majority: m2 members {1, 2, 8} evicted {3: (229, 690), 4: (25, 166)} conf 1178 frame 1193 paused frames 516 lying votes found 0
+RESULT bridge-majority: m3 members {3, 4} evicted {1: (27, 166), 2: (25, 166), 8: (208, 656)} conf 1183 frame 1193 paused frames 413 lying votes found 0
+RESULT bridge-majority: m4 members {3, 4} evicted {1: (27, 166), 2: (25, 166), 8: (208, 656)} conf 1180 frame 1193 paused frames 411 lying votes found 0
+RESULT bridge-majority: m1 epoch 3 members {1, 2, 8} view changes 3 (resets 1, highest round 2) | epoch 1 at frame 359 (t=6.08 s) round 0 removed [4]; epoch 2 at frame 784 (t=13.17 s) round 2 removed []; epoch 3 at frame 793 (t=13.32 s) round 0 removed [3]
+RESULT bridge-majority: m2 epoch 3 members {1, 2, 8} view changes 3 (resets 1, highest round 2) | epoch 1 at frame 359 (t=6.08 s) round 0 removed [4]; epoch 2 at frame 784 (t=13.17 s) round 2 removed []; epoch 3 at frame 793 (t=13.32 s) round 0 removed [3]
+RESULT bridge-majority: m3 epoch 2 members {3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 456 (t=7.70 s) round 2 removed [1, 2]; epoch 2 at frame 690 (t=11.60 s) round 1 removed [8]
+RESULT bridge-majority: m4 epoch 2 members {3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 456 (t=7.70 s) round 2 removed [1, 2]; epoch 2 at frame 688 (t=11.57 s) round 1 removed [8]
+RESULT bridge-majority: member lists after the partition healed: m1 {1, 2, 8}, m3 {3, 4} -> FORKED (two sessions)
+RESULT bridge-majority side {1,2}: frames 0..1192 honest m1=0c386c4bc5bf43ed m2=0c386c4bc5bf43ed | offline replay 0c386c4bc5bf43ed | ALL EQUAL, NO FALSE CHECKS ; checks ok 104 bad 0
+RESULT bridge-majority side {3,4}: frames 0..1192 honest m3=0c386c4bc5bf43ed m4=0c386c4bc5bf43ed | offline replay 0c386c4bc5bf43ed | ALL EQUAL, NO FALSE CHECKS ; checks ok 84 bad 0
+RESULT bridge-bft: m1 members {1, 2, 3, 4, 8} evicted {} conf 1176 frame 1193 paused frames 516 lying votes found 0
+RESULT bridge-bft: m2 members {1, 2, 3, 4, 8} evicted {} conf 1176 frame 1193 paused frames 515 lying votes found 0
+RESULT bridge-bft: m3 members {1, 2, 3, 4, 8} evicted {} conf 1176 frame 1193 paused frames 516 lying votes found 0
+RESULT bridge-bft: m4 members {1, 2, 3, 4, 8} evicted {} conf 1176 frame 1193 paused frames 516 lying votes found 0
+RESULT bridge-bft: m1 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 791 (t=13.28 s) round 1 removed []
+RESULT bridge-bft: m2 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 791 (t=13.28 s) round 1 removed []
+RESULT bridge-bft: m3 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 791 (t=13.28 s) round 1 removed []
+RESULT bridge-bft: m4 epoch 1 members {1, 2, 3, 4, 8} view changes 1 (resets 1, highest round 1) | epoch 1 at frame 791 (t=13.28 s) round 1 removed []
 RESULT bridge-bft: member lists after the partition healed: m1 {1, 2, 3, 4, 8}, m3 {1, 2, 3, 4, 8} -> ONE SESSION
-RESULT bridge-bft (partition {1,2} | {3,4} 3-12 s, faulty 8 backs both sides): frames 0..1192 honest m1=0c386c4bc5bf43ed m2=0c386c4bc5bf43ed m3=0c386c4bc5bf43ed m4=0c386c4bc5bf43ed | offline replay 0c386c4bc5bf43ed | ALL EQUAL, NO FALSE CHECKS ; checks ok 333 bad 0
+RESULT bridge-bft (partition {1,2} | {3,4} 3-12 s, faulty 8 backs both sides): frames 0..1192 honest m1=0c386c4bc5bf43ed m2=0c386c4bc5bf43ed m3=0c386c4bc5bf43ed m4=0c386c4bc5bf43ed | offline replay 0c386c4bc5bf43ed | ALL EQUAL, NO FALSE CHECKS ; checks ok 304 bad 0
 == p2-4-capchurn: identical
 RESULT capchurn: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT capchurn: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT capchurn: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT capchurn: 0 resets, 9 removed at 3.17 s -> VOTED OUT
-RESULT capchurn: m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+RESULT capchurn: m1 conf 820 of frame 833, m2 conf 820 of frame 833, m3 conf 820 of frame 833
 RESULT capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one): frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
 == p2-4-capfake: identical
 RESULT capfake fixed=false: -> HALTS, AS BEFORE THE FIX
@@ -252,134 +257,134 @@ RESULT capfake fixed=true: frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf11
 RESULT capstale: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT capstale: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT capstale: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
-RESULT capstale: 0 resets, 9 removed at 3.17 s (1 cap vote at m1) -> VOTED OUT, NO RESET; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+RESULT capstale: 0 resets, 9 removed at 3.17 s (1 cap vote at m1) -> VOTED OUT, NO RESET; m1 conf 822 of frame 833, m2 conf 820 of frame 833, m3 conf 820 of frame 833
 RESULT capstale (from 2 s, 9 signs a capped precommit for no proposal in every epoch): frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 183 bad 0
 == p2-4-colluders: identical
-RESULT colluders: m1 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
-RESULT colluders: m2 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
-RESULT colluders: m3 members {1, 2, 3} evicted {8: (105, 210), 9: (103, 206)} conf 467 frame 473 paused frames 0 lying votes found 1
-RESULT colluders: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [8, 9]
-RESULT colluders: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [8, 9]
-RESULT colluders: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 219 (t=3.75 s) round 0 removed [8, 9]
-RESULT colluders (two of five: 9 equivocates on a confirmed touch; 8 forks its vote): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 m3=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT colluders: m1 members {1, 2, 3} evicted {8: (31, 211), 9: (33, 212)} conf 458 frame 473 paused frames 0 lying votes found 1
+RESULT colluders: m2 members {1, 2, 3} evicted {8: (31, 211), 9: (33, 212)} conf 458 frame 473 paused frames 0 lying votes found 1
+RESULT colluders: m3 members {1, 2, 3} evicted {8: (31, 211), 9: (33, 212)} conf 458 frame 473 paused frames 0 lying votes found 1
+RESULT colluders: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 225 (t=3.85 s) round 0 removed [8, 9]
+RESULT colluders: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 226 (t=3.87 s) round 0 removed [8, 9]
+RESULT colluders: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 226 (t=3.87 s) round 0 removed [8, 9]
+RESULT colluders (two of five: 9 equivocates on a confirmed touch; 8 forks its vote): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 m3=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 134 bad 0
 == p2-4-cutbackdate: identical
-RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (60, 118)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT cutbackdate: m2 members {1, 2, 3} evicted {9: (60, 118)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT cutbackdate: m3 members {1, 2, 3} evicted {9: (60, 118)} conf 467 frame 473 paused frames 0 lying votes found 0
+RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (23, 122)} conf 460 frame 473 paused frames 0 lying votes found 0
+RESULT cutbackdate: m2 members {1, 2, 3} evicted {9: (23, 122)} conf 460 frame 473 paused frames 0 lying votes found 0
+RESULT cutbackdate: m3 members {1, 2, 3} evicted {9: (23, 122)} conf 460 frame 473 paused frames 0 lying votes found 0
 RESULT cutbackdate: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [9]
 RESULT cutbackdate: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 132 (t=2.30 s) round 0 removed [9]
-RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [9]
-RESULT cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold): frames 0..472 honest m1=23649eef9412c066 m2=23649eef9412c066 m3=23649eef9412c066 | offline replay 23649eef9412c066 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT cutbackdate: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [9]
+RESULT cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold): frames 0..472 honest m1=bea6e8ea2506d79f m2=bea6e8ea2506d79f m3=bea6e8ea2506d79f | offline replay bea6e8ea2506d79f | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
 == p2-4-deepfork: identical
-RESULT deepfork: m1 members {1, 2, 3} evicted {9: (99, 197)} conf 520 frame 527 paused frames 0 lying votes found 0
-RESULT deepfork: m2 members {1, 2, 3} evicted {9: (99, 197)} conf 520 frame 527 paused frames 0 lying votes found 0
-RESULT deepfork: m3 members {1, 2, 3} evicted {9: (99, 197)} conf 520 frame 527 paused frames 0 lying votes found 0
+RESULT deepfork: m1 members {1, 2, 3} evicted {9: (60, 199)} conf 509 frame 527 paused frames 0 lying votes found 0
+RESULT deepfork: m2 members {1, 2, 3} evicted {9: (60, 199)} conf 509 frame 527 paused frames 0 lying votes found 0
+RESULT deepfork: m3 members {1, 2, 3} evicted {9: (60, 199)} conf 509 frame 527 paused frames 0 lying votes found 0
 RESULT deepfork: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 208 (t=3.57 s) round 0 removed [9]
 RESULT deepfork: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed [9]
 RESULT deepfork: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed [9]
-RESULT deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A): frames 0..526 honest m1=29e739c7df89af32 m2=29e739c7df89af32 m3=29e739c7df89af32 | offline replay 29e739c7df89af32 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late: they find the fork late, and the cut lies over 16 entries past what 3 holds of A): frames 0..526 honest m1=29e739c7df89af32 m2=29e739c7df89af32 m3=29e739c7df89af32 | offline replay 29e739c7df89af32 | ALL EQUAL, NO FALSE CHECKS ; checks ok 102 bad 0
 == p2-4-fakeadmin: identical
 RESULT fakeadmin fixed=false: -> HALTS, AS BEFORE THE FIX
-RESULT fakeadmin fixed=false: frames 0..229 honest m1=65c4a8d2a2f00988 m2=65c4a8d2a2f00988 m3=65c4a8d2a2f00988 m4=65c4a8d2a2f00988 | offline replay 65c4a8d2a2f00988 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
+RESULT fakeadmin fixed=false: frames 0..225 honest m1=0b53ea112cff7bd7 m2=0b53ea112cff7bd7 m3=0b53ea112cff7bd7 m4=0b53ea112cff7bd7 | offline replay 0b53ea112cff7bd7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
 RESULT fakeadmin fixed=true: -> VOTED OUT, CONFIRMATION GOES ON
 RESULT fakeadmin fixed=true: frames 0..832 honest m1=386390999ee7dbf7 m2=386390999ee7dbf7 m3=386390999ee7dbf7 m4=386390999ee7dbf7 | offline replay 386390999ee7dbf7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
 == p2-4-fakemix: identical
 RESULT fakemix mix=false: frames 0..832 honest m1=386390999ee7dbf7 m2=386390999ee7dbf7 m3=386390999ee7dbf7 m4=386390999ee7dbf7 | offline replay 386390999ee7dbf7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
 RESULT fakemix mix=true: frames 0..832 honest m1=b5828fa1a5b879b9 m2=b5828fa1a5b879b9 m3=b5828fa1a5b879b9 m4=b5828fa1a5b879b9 | offline replay b5828fa1a5b879b9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 448 bad 0
 RESULT fakemix mix=true: frames 0..832 honest m1=b5828fa1a5b879b9 m2=b5828fa1a5b879b9 m3=b5828fa1a5b879b9 m4=b5828fa1a5b879b9 | offline replay b5828fa1a5b879b9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 284 bad 0
-RESULT fakemix mix=true: frames 0..828 honest m1=b2ec444b86502f7a m2=b2ec444b86502f7a m3=b2ec444b86502f7a m4=b2ec444b86502f7a | offline replay b2ec444b86502f7a | ALL EQUAL, NO FALSE CHECKS ; checks ok 204 bad 0
+RESULT fakemix mix=true: frames 0..828 honest m1=9a8d84b5356519d7 m2=9a8d84b5356519d7 m3=9a8d84b5356519d7 m4=9a8d84b5356519d7 | offline replay 9a8d84b5356519d7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 204 bad 0
 == p2-4-fakeref: identical
-RESULT fakeref: m1 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8, 9]
-RESULT fakeref: m2 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8, 9]
+RESULT fakeref: m1 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
+RESULT fakeref: m2 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
 RESULT fakeref: m3 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
-RESULT fakeref: m4 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8, 9]
+RESULT fakeref: m4 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
 RESULT fakeref: m5 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
-RESULT fakeref: 9 removed at 5.23 s (1 withholding vote at m1) -> VOTED OUT; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833, m5 conf 826 of frame 833
+RESULT fakeref: 9 removed at 5.25 s (1 withholding vote at m1) -> VOTED OUT; m1 conf 822 of frame 833, m2 conf 822 of frame 833, m3 conf 822 of frame 833, m4 conf 822 of frame 833, m5 conf 822 of frame 833
 RESULT fakeref (9 falls silent at 2 s; from then on 8's acks claim 5 more of 9's entries than anyone holds): frames 0..832 honest m1=ccc6168b2083108b m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b m5=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 500 bad 0
 == p2-4-fork9: identical
-RESULT fork9: m1 members {1, 2, 3} evicted {9: (63, 124)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT fork9: m2 members {1, 2, 3} evicted {9: (63, 124)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT fork9: m3 members {1, 2, 3} evicted {9: (63, 124)} conf 467 frame 473 paused frames 0 lying votes found 0
+RESULT fork9: m1 members {1, 2, 3} evicted {9: (23, 124)} conf 454 frame 473 paused frames 0 lying votes found 0
+RESULT fork9: m2 members {1, 2, 3} evicted {9: (23, 124)} conf 462 frame 473 paused frames 0 lying votes found 0
+RESULT fork9: m3 members {1, 2, 3} evicted {9: (23, 124)} conf 454 frame 473 paused frames 0 lying votes found 0
 RESULT fork9: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 133 (t=2.32 s) round 0 removed [9]
 RESULT fork9: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 135 (t=2.35 s) round 0 removed [9]
 RESULT fork9: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 134 (t=2.33 s) round 0 removed [9]
-RESULT fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3): frames 0..472 honest m1=bea6e8ea2506d79f m2=bea6e8ea2506d79f m3=bea6e8ea2506d79f | offline replay bea6e8ea2506d79f | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3): frames 0..472 honest m1=bea6e8ea2506d79f m2=bea6e8ea2506d79f m3=bea6e8ea2506d79f | offline replay bea6e8ea2506d79f | ALL EQUAL, NO FALSE CHECKS ; checks ok 106 bad 0
 == p2-4-futureack: identical
-RESULT futureack-1: m1 members {1, 2, 3} evicted {9: (147, 112)} conf 705 frame 713 paused frames 80 lying votes found 0
-RESULT futureack-1: m2 members {1, 2, 3} evicted {9: (147, 112)} conf 705 frame 713 paused frames 80 lying votes found 0
-RESULT futureack-1: m3 members {1, 2, 3} evicted {9: (147, 112)} conf 705 frame 713 paused frames 80 lying votes found 0
+RESULT futureack-1: m1 members {1, 2, 3} evicted {9: (41, 110)} conf 698 frame 713 paused frames 86 lying votes found 0
+RESULT futureack-1: m2 members {1, 2, 3} evicted {9: (41, 110)} conf 698 frame 713 paused frames 86 lying votes found 0
+RESULT futureack-1: m3 members {1, 2, 3} evicted {9: (41, 110)} conf 698 frame 713 paused frames 86 lying votes found 0
 RESULT futureack-1: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
 RESULT futureack-1: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
 RESULT futureack-1: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
-RESULT futureack-1: m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 705 of frame 713
-RESULT futureack part 1 (from t=2 s 9's acks claim epoch 999): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
-RESULT futureack-2: m1 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
-RESULT futureack-2: m2 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
-RESULT futureack-2: m3 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
-RESULT futureack-2: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 304 (t=5.17 s) round 0 removed [9]
-RESULT futureack-2: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 304 (t=5.17 s) round 0 removed [9]
-RESULT futureack-2: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 304 (t=5.17 s) round 0 removed [9]
-RESULT futureack-2: m1 conf 705 of frame 713, m2 conf 705 of frame 713, m3 conf 705 of frame 713
-RESULT futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
+RESULT futureack-1: m1 conf 698 of frame 713, m2 conf 698 of frame 713, m3 conf 698 of frame 713
+RESULT futureack part 1 (from t=2 s 9's acks claim epoch 999): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0
+RESULT futureack-2: m1 members {1, 2, 3} evicted {9: (41, 295)} conf 698 frame 713 paused frames 78 lying votes found 0
+RESULT futureack-2: m2 members {1, 2, 3} evicted {9: (41, 295)} conf 698 frame 713 paused frames 78 lying votes found 0
+RESULT futureack-2: m3 members {1, 2, 3} evicted {9: (41, 295)} conf 698 frame 713 paused frames 78 lying votes found 0
+RESULT futureack-2: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
+RESULT futureack-2: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
+RESULT futureack-2: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
+RESULT futureack-2: m1 conf 698 of frame 713, m2 conf 698 of frame 713, m3 conf 698 of frame 713
+RESULT futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0
 == p2-4-ghostkick: identical
 RESULT ghostkick: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT ghostkick: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
 RESULT ghostkick: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 2) | epoch 1 at frame 184 (t=3.17 s) round 2 removed [9]
-RESULT ghostkick: m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593
+RESULT ghostkick: m1 conf 580 of frame 593, m2 conf 580 of frame 593, m3 conf 580 of frame 593
 RESULT ghostkick: 9 removed at 3.17 s -> VOTED OUT
 RESULT ghostkick (9 votes against 2 at t=2 s, naming a kick that does not exist): frames 0..592 honest m1=a7a135c7741ed25e m2=a7a135c7741ed25e m3=a7a135c7741ed25e | offline replay a7a135c7741ed25e | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
 == p2-4-join: identical
-RESULT join: m1 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
-RESULT join: m2 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
-RESULT join: m3 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
-RESULT join: m4 members {1, 2, 3, 4} evicted {} conf 587 frame 593 paused frames 0 lying votes found 0
+RESULT join: m1 members {1, 2, 3, 4} evicted {} conf 583 frame 593 paused frames 0 lying votes found 0
+RESULT join: m2 members {1, 2, 3, 4} evicted {} conf 583 frame 593 paused frames 0 lying votes found 0
+RESULT join: m3 members {1, 2, 3, 4} evicted {} conf 583 frame 593 paused frames 0 lying votes found 0
+RESULT join: m4 members {1, 2, 3, 4} evicted {} conf 583 frame 593 paused frames 0 lying votes found 0
 RESULT join: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
-RESULT join: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 119 (t=2.08 s) round 0 removed []
+RESULT join: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
 RESULT join: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
 RESULT join: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
 RESULT join (member 4 asks to join at t=2 s and touches an object at frame 420): frames 0..592 honest m1=254e9b114f9cbb8e m2=254e9b114f9cbb8e m3=254e9b114f9cbb8e m4=254e9b114f9cbb8e | offline replay 254e9b114f9cbb8e | ALL EQUAL, NO FALSE CHECKS ; checks ok 240 bad 0
 == p2-4-joinattests: identical
-RESULT joinattests: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 393 (t=6.65 s) round 1 removed [9]
-RESULT joinattests: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 393 (t=6.65 s) round 1 removed [9]
-RESULT joinattests: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 392 (t=6.63 s) round 1 removed [9]
-RESULT joinattests: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593
-RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 m5=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 200 bad 0
+RESULT joinattests: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 391 (t=6.62 s) round 1 removed [9]
+RESULT joinattests: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 392 (t=6.63 s) round 1 removed [9]
+RESULT joinattests: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 1, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 335 (t=5.68 s) round 1 removed []; epoch 3 at frame 391 (t=6.62 s) round 1 removed [9]
+RESULT joinattests: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 575 of frame 593, m2 conf 575 of frame 593, m3 conf 575 of frame 593
+RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 m5=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 191 bad 0
 == p2-4-joinskip: identical
-RESULT joinskip: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 181 (t=3.12 s) round 0 removed []
+RESULT joinskip: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
 RESULT joinskip: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
 RESULT joinskip: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
-RESULT joinskip: m5 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 176 (t=3.03 s) round 0 removed []; epoch 2 at frame 176 (t=3.03 s) round 0 removed []; epoch 3 at frame 183 (t=3.15 s) round 0 removed []
-RESULT joinskip: members at m1 {1, 2, 3, 5} -> 5 STAYS; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 587 of frame 593
+RESULT joinskip: m5 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 176 (t=3.03 s) round 0 removed []; epoch 2 at frame 176 (t=3.03 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
+RESULT joinskip: members at m1 {1, 2, 3, 5} -> 5 STAYS; m1 conf 580 of frame 593, m2 conf 580 of frame 593, m3 conf 580 of frame 593, m5 conf 580 of frame 593
 RESULT joinskip (two decisions, then 5 joins at epoch 2 and authors no ack before it is admitted): frames 0..592 honest m1=5d0d072ac40de0a5 m2=5d0d072ac40de0a5 m3=5d0d072ac40de0a5 m5=5d0d072ac40de0a5 | offline replay 5d0d072ac40de0a5 | ALL EQUAL, NO FALSE CHECKS ; checks ok 225 bad 0
 == p2-4-joinsquat: identical
 RESULT joinsquat: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
 RESULT joinsquat: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
 RESULT joinsquat: m3 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
-RESULT joinsquat: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 587 of frame 593
-RESULT joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 m5=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 320 bad 0
+RESULT joinsquat: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 578 of frame 593, m2 conf 578 of frame 593, m3 conf 578 of frame 593, m5 conf 578 of frame 593
+RESULT joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 m5=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 304 bad 0
 == p2-4-jointiming: identical
-RESULT jointiming: m1 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m2 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m3 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m4 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
-RESULT jointiming: m5 members {1, 2, 3, 4, 5} evicted {} conf 705 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m1 members {1, 2, 3, 4, 5} evicted {} conf 701 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m2 members {1, 2, 3, 4, 5} evicted {} conf 701 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m3 members {1, 2, 3, 4, 5} evicted {} conf 701 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m4 members {1, 2, 3, 4, 5} evicted {} conf 701 frame 713 paused frames 0 lying votes found 0
+RESULT jointiming: m5 members {1, 2, 3, 4, 5} evicted {} conf 701 frame 713 paused frames 0 lying votes found 0
 RESULT jointiming: m1 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []
 RESULT jointiming: m2 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []
 RESULT jointiming: m3 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []
 RESULT jointiming: m4 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []
 RESULT jointiming: m5 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []
-RESULT jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary): frames 0..712 honest m1=4de26a1088fdbd9d m2=4de26a1088fdbd9d m3=4de26a1088fdbd9d m4=4de26a1088fdbd9d m5=4de26a1088fdbd9d | offline replay 4de26a1088fdbd9d | ALL EQUAL, NO FALSE CHECKS ; checks ok 456 bad 0
+RESULT jointiming (5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary): frames 0..712 honest m1=4de26a1088fdbd9d m2=4de26a1088fdbd9d m3=4de26a1088fdbd9d m4=4de26a1088fdbd9d m5=4de26a1088fdbd9d | offline replay 4de26a1088fdbd9d | ALL EQUAL, NO FALSE CHECKS ; checks ok 452 bad 0
 == p2-4-joinwedge: identical
-RESULT joinwedge: m1 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
+RESULT joinwedge: m1 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
 RESULT joinwedge: m2 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
 RESULT joinwedge: m3 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
-RESULT joinwedge reach3=false: 5 admitted true, 9 removed at 5.62 s -> ADMITTED; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
-RESULT joinwedge (request reaches 3: false; 9 crashes after its first prevote): frames 0..832 honest m1=cedafde947618aa4 m2=cedafde947618aa4 m3=cedafde947618aa4 m5=cedafde947618aa4 | offline replay cedafde947618aa4 | ALL EQUAL, NO FALSE CHECKS ; checks ok 292 bad 0
+RESULT joinwedge reach3=false: 5 admitted true, 9 removed at 5.62 s -> ADMITTED; m1 conf 817 of frame 833, m2 conf 817 of frame 833, m3 conf 817 of frame 833
+RESULT joinwedge (request reaches 3: false; 9 crashes after its first prevote): frames 0..832 honest m1=cedafde947618aa4 m2=cedafde947618aa4 m3=cedafde947618aa4 m5=cedafde947618aa4 | offline replay cedafde947618aa4 | ALL EQUAL, NO FALSE CHECKS ; checks ok 280 bad 0
 RESULT joinwedge: m1 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
-RESULT joinwedge: m2 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
+RESULT joinwedge: m2 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
 RESULT joinwedge: m3 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 331 (t=5.62 s) round 1 removed [9]
-RESULT joinwedge reach3=true: 5 admitted true, 9 removed at 5.62 s -> ADMITTED; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
-RESULT joinwedge (request reaches 3: true; 9 crashes after its first prevote): frames 0..832 honest m1=cedafde947618aa4 m2=cedafde947618aa4 m3=cedafde947618aa4 m5=cedafde947618aa4 | offline replay cedafde947618aa4 | ALL EQUAL, NO FALSE CHECKS ; checks ok 292 bad 0
+RESULT joinwedge reach3=true: 5 admitted true, 9 removed at 5.62 s -> ADMITTED; m1 conf 817 of frame 833, m2 conf 817 of frame 833, m3 conf 817 of frame 833
+RESULT joinwedge (request reaches 3: true; 9 crashes after its first prevote): frames 0..832 honest m1=cedafde947618aa4 m2=cedafde947618aa4 m3=cedafde947618aa4 m5=cedafde947618aa4 | offline replay cedafde947618aa4 | ALL EQUAL, NO FALSE CHECKS ; checks ok 280 bad 0
 == p2-4-kickbackdate: identical
 RESULT kickbackdate: m1 epoch 1 members {1, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [2]
 RESULT kickbackdate: m3 epoch 1 members {1, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [2]
@@ -388,238 +393,238 @@ RESULT kickbackdate: m1: 1 kicks 2 @120: applied
 RESULT kickbackdate: m3: 1 kicks 2 @120: applied
 RESULT kickbackdate: m4: 1 kicks 2 @120: applied
 RESULT kickbackdate: members left [1, 3, 4] -> THE BACKDATED KICK IS VOID: 2 removed
-RESULT kickbackdate (admins 1 and 2 kick each other at frame 120; 2 backdates its kick 30 frames to come first): frames 0..472 honest m1=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 m4=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 108 bad 0
+RESULT kickbackdate (admins 1 and 2 kick each other at frame 120; 2 backdates its kick 30 frames to come first): frames 0..472 honest m1=98a3a1cb9af6ab72 m3=98a3a1cb9af6ab72 m4=98a3a1cb9af6ab72 | offline replay 98a3a1cb9af6ab72 | ALL EQUAL, NO FALSE CHECKS ; checks ok 104 bad 0
 == p2-4-lagchurn: identical
-RESULT lagchurn: m1 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 213 (t=3.65 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed []; epoch 3 at frame 383 (t=6.48 s) round 1 removed [9]
-RESULT lagchurn: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed []; epoch 3 at frame 383 (t=6.48 s) round 1 removed [9]
-RESULT lagchurn: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 212 (t=3.63 s) round 0 removed []; epoch 2 at frame 308 (t=5.23 s) round 0 removed []; epoch 3 at frame 383 (t=6.48 s) round 1 removed [9]
-RESULT lagchurn: 2 resets, 9 removed at 6.48 s (1 demotion vote at m1) -> DEMOTED; m1 conf 946 of frame 953, m2 conf 946 of frame 953, m3 conf 948 of frame 953
+RESULT lagchurn: m1 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 211 (t=3.62 s) round 0 removed []; epoch 2 at frame 307 (t=5.22 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
+RESULT lagchurn: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 211 (t=3.62 s) round 0 removed []; epoch 2 at frame 307 (t=5.22 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
+RESULT lagchurn: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 2, highest round 1) | epoch 1 at frame 211 (t=3.62 s) round 0 removed []; epoch 2 at frame 307 (t=5.22 s) round 0 removed []; epoch 3 at frame 381 (t=6.45 s) round 1 removed [9]
+RESULT lagchurn: 2 resets, 9 removed at 6.45 s (1 demotion vote at m1) -> DEMOTED; m1 conf 943 of frame 953, m2 conf 943 of frame 953, m3 conf 943 of frame 953
 RESULT lagchurn (from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch): frames 0..952 honest m1=77cf2da8d6698b62 m2=77cf2da8d6698b62 m3=77cf2da8d6698b62 | offline replay 77cf2da8d6698b62 | ALL EQUAL, NO FALSE CHECKS ; checks ok 198 bad 0
 == p2-4-lagprecommit: identical
 RESULT lagprecommit: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
 RESULT lagprecommit: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
 RESULT lagprecommit: m3 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
 RESULT lagprecommit: m5 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 171 (t=2.95 s) round 0 removed []
-RESULT lagprecommit: joiner admitted true -> JOINED; m1 conf 536 of frame 593, m2 conf 536 of frame 593, m3 conf 539 of frame 593, m5 conf 536 of frame 593
+RESULT lagprecommit: joiner admitted true -> JOINED; m1 conf 526 of frame 593, m2 conf 526 of frame 593, m3 conf 534 of frame 593, m5 conf 526 of frame 593
 RESULT lagprecommit (3 acks once every 1.5 s; 9 casts no view-change vote, so the join needs 3's precommit): frames 0..592 honest m1=a512039063d53ea1 m2=a512039063d53ea1 m3=a512039063d53ea1 m5=a512039063d53ea1 | offline replay a512039063d53ea1 | ALL EQUAL, NO FALSE CHECKS ; checks ok 109 bad 0
 == p2-4-latejoin: identical
 RESULT latejoin: m1 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
 RESULT latejoin: m2 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
 RESULT latejoin: m3 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 104 (t=1.83 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
-RESULT latejoin: m5 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 176 (t=3.03 s) round 0 removed []; epoch 2 at frame 176 (t=3.03 s) round 0 removed []; epoch 3 at frame 183 (t=3.15 s) round 0 removed []
-RESULT latejoin: m1 conf 587 of frame 593, m2 conf 587 of frame 593, m3 conf 587 of frame 593, m5 conf 587 of frame 593
+RESULT latejoin: m5 epoch 3 members {1, 2, 3, 5} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 176 (t=3.03 s) round 0 removed []; epoch 2 at frame 176 (t=3.03 s) round 0 removed []; epoch 3 at frame 180 (t=3.10 s) round 0 removed []
+RESULT latejoin: m1 conf 580 of frame 593, m2 conf 580 of frame 593, m3 conf 580 of frame 593, m5 conf 580 of frame 593
 RESULT latejoin (two decisions, then 5 catches up on both at once and joins at epoch 2): frames 0..592 honest m1=5d0d072ac40de0a5 m2=5d0d072ac40de0a5 m3=5d0d072ac40de0a5 m5=5d0d072ac40de0a5 | offline replay 5d0d072ac40de0a5 | ALL EQUAL, NO FALSE CHECKS ; checks ok 228 bad 0
 == p2-4-onesided (control: failures expected): identical
-RESULT onesided: m1 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 179 (t=3.08 s) round 1 removed [7, 8, 9]; epoch 2 at frame 331 (t=5.62 s) round 0 removed [3]
-RESULT onesided: m2 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 180 (t=3.10 s) round 1 removed [7, 8, 9]; epoch 2 at frame 333 (t=5.65 s) round 0 removed [3]
-RESULT onesided: m3 epoch 1 members {3, 7, 8, 9} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 446 (t=7.53 s) round 5 removed [1, 2]
+RESULT onesided: m1 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 179 (t=3.08 s) round 1 removed [7, 8, 9]; epoch 2 at frame 330 (t=5.60 s) round 0 removed [3]
+RESULT onesided: m2 epoch 2 members {1, 2} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 180 (t=3.10 s) round 1 removed [7, 8, 9]; epoch 2 at frame 332 (t=5.63 s) round 0 removed [3]
+RESULT onesided: m3 epoch 1 members {3, 7, 8, 9} view changes 1 (resets 0, highest round 5) | epoch 1 at frame 447 (t=7.55 s) round 5 removed [1, 2]
 RESULT onesided (control: 3 of 6 collude, above t(6) = 1): epoch 1 removed Some([7, 8, 9]) at m1, Some([1, 2]) at m3 -> two different epoch-1 decisions: the session forked
 == p2-4-pfsilent: identical
 RESULT pfsilent fixed=false: -> HALTS, AS BEFORE THE FIX
-RESULT pfsilent: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 65 (t=1.18 s) round 0 removed []
-RESULT pfsilent: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 65 (t=1.18 s) round 0 removed []
+RESULT pfsilent: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []
+RESULT pfsilent: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []
 RESULT pfsilent: m3 epoch 0 members {1, 2, 3, 9} view changes 0 (resets 0, highest round 1) | no decision
-RESULT pfsilent fixed=false: frames 0..167 honest m1=1343b3c32effd2de m2=1343b3c32effd2de m3=1343b3c32effd2de | offline replay 1343b3c32effd2de | ALL EQUAL, NO FALSE CHECKS ; checks ok 22 bad 0
+RESULT pfsilent fixed=false: frames 0..159 honest m1=9e6fe240aec1818d m2=9e6fe240aec1818d m3=9e6fe240aec1818d | offline replay 9e6fe240aec1818d | ALL EQUAL, NO FALSE CHECKS ; checks ok 22 bad 0
 RESULT pfsilent fixed=true: -> EVERY MEMBER DECIDES ON THE FORKER'S PRECOMMIT, CONFIRMATION GOES ON
-RESULT pfsilent: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 65 (t=1.18 s) round 0 removed []; epoch 2 at frame 130 (t=2.27 s) round 2 removed [1]
-RESULT pfsilent: m2 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 65 (t=1.18 s) round 0 removed []; epoch 2 at frame 130 (t=2.27 s) round 2 removed [1]; epoch 3 at frame 266 (t=4.53 s) round 1 removed [9]
-RESULT pfsilent: m3 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 63 (t=1.15 s) round 0 removed []; epoch 2 at frame 130 (t=2.27 s) round 2 removed [1]; epoch 3 at frame 266 (t=4.53 s) round 1 removed [9]
-RESULT pfsilent fixed=true: frames 0..169 honest m1=54dc0ec3056f8403 m2=54dc0ec3056f8403 m3=54dc0ec3056f8403 | offline replay 54dc0ec3056f8403 | ALL EQUAL, NO FALSE CHECKS ; checks ok 76 bad 0
+RESULT pfsilent: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]
+RESULT pfsilent: m2 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]; epoch 3 at frame 260 (t=4.43 s) round 1 removed [9]
+RESULT pfsilent: m3 epoch 3 members {2, 3, 5} view changes 3 (resets 0, highest round 2) | epoch 1 at frame 62 (t=1.13 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]; epoch 3 at frame 260 (t=4.43 s) round 1 removed [9]
+RESULT pfsilent fixed=true: frames 0..159 honest m1=9e6fe240aec1818d m2=9e6fe240aec1818d m3=9e6fe240aec1818d | offline replay 9e6fe240aec1818d | ALL EQUAL, NO FALSE CHECKS ; checks ok 76 bad 0
 == p2-4-plainfork: identical
 RESULT plainfork fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT plainfork: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT plainfork: m3 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT plainfork: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
-RESULT plainfork fixed=false: frames 0..227 honest m2=19d05dd5d7cba657 m3=19d05dd5d7cba657 m4=19d05dd5d7cba657 | offline replay 19d05dd5d7cba657 | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
+RESULT plainfork fixed=false: frames 0..221 honest m2=5a2d384f92d4bdcb m3=5a2d384f92d4bdcb m4=5a2d384f92d4bdcb | offline replay 5a2d384f92d4bdcb | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
 RESULT plainfork fixed=true: -> THE FORKER IS REMOVED, CONFIRMATION GOES ON
-RESULT plainfork: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 161 (t=2.78 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
+RESULT plainfork: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 160 (t=2.77 s) round 2 removed []; epoch 2 at frame 166 (t=2.87 s) round 0 removed [1]
 RESULT plainfork: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 160 (t=2.77 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
-RESULT plainfork: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 160 (t=2.77 s) round 2 removed []; epoch 2 at frame 167 (t=2.88 s) round 0 removed [1]
-RESULT plainfork fixed=true: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
+RESULT plainfork: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 1, highest round 2) | epoch 1 at frame 160 (t=2.77 s) round 2 removed []; epoch 2 at frame 166 (t=2.87 s) round 0 removed [1]
+RESULT plainfork fixed=true: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 168 bad 0
 == p2-4-prevotefork: identical
-RESULT prevotefork: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 65 (t=1.18 s) round 0 removed []; epoch 2 at frame 130 (t=2.27 s) round 2 removed [1]
-RESULT prevotefork: m2 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 65 (t=1.18 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]
-RESULT prevotefork: m3 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 63 (t=1.15 s) round 0 removed []; epoch 2 at frame 130 (t=2.27 s) round 2 removed [1]
+RESULT prevotefork: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 63 (t=1.15 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]
+RESULT prevotefork: m2 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 64 (t=1.17 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]
+RESULT prevotefork: m3 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 62 (t=1.13 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 2 removed [1]
 RESULT prevotefork: m3 votes to remove capper 2: false; 2 kept: true; epochs at the end: m1 2, m2 2, m3 2, m9 2, m5 2; confirmation live at the end (2, 3, 9, 5): true -> THE CAP IS JUSTIFIED BY THE FETCHED PREVOTE, AND CONFIRMATION GOES ON
-RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..172 honest m1=6475e6d75f935cff m2=6475e6d75f935cff m3=6475e6d75f935cff | offline replay 6475e6d75f935cff | ALL EQUAL, NO FALSE CHECKS ; checks ok 114 bad 0
+RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..167 honest m1=1343b3c32effd2de m2=1343b3c32effd2de m3=1343b3c32effd2de | offline replay 1343b3c32effd2de | ALL EQUAL, NO FALSE CHECKS ; checks ok 114 bad 0
 == p2-4-refwithhold: identical
-RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
-RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
-RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (147, 297)} conf 705 frame 713 paused frames 78 lying votes found 0
-RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]
-RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=57b0dfb8cf34d524 m2=57b0dfb8cf34d524 m3=57b0dfb8cf34d524 | offline replay 57b0dfb8cf34d524 | ALL EQUAL, NO FALSE CHECKS ; checks ok 144 bad 0
+RESULT refwithhold: m1 members {1, 2, 3} evicted {8: (45, 327)} conf 697 frame 713 paused frames 108 lying votes found 0
+RESULT refwithhold: m2 members {1, 2, 3} evicted {8: (45, 327)} conf 697 frame 713 paused frames 108 lying votes found 0
+RESULT refwithhold: m3 members {1, 2, 3} evicted {8: (45, 327)} conf 697 frame 713 paused frames 108 lying votes found 0
+RESULT refwithhold: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 338 (t=5.73 s) round 0 removed [8]
+RESULT refwithhold: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 338 (t=5.73 s) round 0 removed [8]
+RESULT refwithhold: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 338 (t=5.73 s) round 0 removed [8]
+RESULT refwithhold (8 stops referencing others' chains at t=2 s): frames 0..712 honest m1=57b0dfb8cf34d524 m2=57b0dfb8cf34d524 m3=57b0dfb8cf34d524 | offline replay 57b0dfb8cf34d524 | ALL EQUAL, NO FALSE CHECKS ; checks ok 135 bad 0
 == p2-4-selfkickhead: identical
 RESULT selfkickhead: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [4]
 RESULT selfkickhead: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [4]
 RESULT selfkickhead: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [4]
 RESULT selfkickhead: 4 removed at 2.28 s -> KICKED
-RESULT selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 132 bad 0
+RESULT selfkickhead (admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
 == p2-4-slowadmin: identical
-RESULT slowadmin: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 127 (t=2.22 s) round 0 removed []
-RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []
+RESULT slowadmin: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 215 (t=3.68 s) round 0 removed []
 RESULT slowadmin: role definitions m1 {1: 0}, m2 {1: 0}, m3 {1: 0}, m4 {1: 0}, m6 {1: 0}
 RESULT slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first): frames 0..532 honest m1=2344577f4dd43521 m2=2344577f4dd43521 m3=2344577f4dd43521 m4=2344577f4dd43521 m6=2344577f4dd43521 | offline replay 2344577f4dd43521 | ALL EQUAL, NO FALSE CHECKS ; checks ok 288 bad 0
 == p2-4-slowcapper: identical
-RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]
-RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 316 (t=5.37 s) round 0 removed []
-RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 316 (t=5.37 s) round 0 removed []
+RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]
+RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 155 (t=2.68 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 318 (t=5.40 s) round 0 removed []
+RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 318 (t=5.40 s) round 0 removed []
 RESULT slowcapper fixed=false: -> 3 VOTES AGAINST THE HONEST CAPPER, AS BEFORE THE FIX
-RESULT slowcapper fixed=false: frames 0..172 honest m1=6475e6d75f935cff m2=6475e6d75f935cff m3=6475e6d75f935cff | offline replay 6475e6d75f935cff | ALL EQUAL, NO FALSE CHECKS ; checks ok 84 bad 0
-RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 223 (t=3.82 s) round 2 removed [1]
-RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
-RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 223 (t=3.82 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
+RESULT slowcapper fixed=false: frames 0..167 honest m1=1343b3c32effd2de m2=1343b3c32effd2de m3=1343b3c32effd2de | offline replay 1343b3c32effd2de | ALL EQUAL, NO FALSE CHECKS ; checks ok 85 bad 0
+RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]
+RESULT slowcapper: m2 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
+RESULT slowcapper: m3 epoch 4 members {2, 3, 5, 9} view changes 4 (resets 2, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 221 (t=3.78 s) round 2 removed [1]; epoch 3 at frame 278 (t=4.73 s) round 1 removed []; epoch 4 at frame 317 (t=5.38 s) round 0 removed []
 RESULT slowcapper fixed=true: -> THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON
-RESULT slowcapper fixed=true: frames 0..172 honest m1=6475e6d75f935cff m2=6475e6d75f935cff m3=6475e6d75f935cff | offline replay 6475e6d75f935cff | ALL EQUAL, NO FALSE CHECKS ; checks ok 84 bad 0
+RESULT slowcapper fixed=true: frames 0..167 honest m1=1343b3c32effd2de m2=1343b3c32effd2de m3=1343b3c32effd2de | offline replay 1343b3c32effd2de | ALL EQUAL, NO FALSE CHECKS ; checks ok 84 bad 0
 == p2-4-slowref: identical
-RESULT slowref: m1 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]; epoch 2 at frame 439 (t=7.42 s) round 1 removed [9]
-RESULT slowref: m2 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 439 (t=7.42 s) round 1 removed [9]
-RESULT slowref: m3 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 439 (t=7.42 s) round 1 removed [9]
-RESULT slowref: m4 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 439 (t=7.42 s) round 1 removed [9]
-RESULT slowref: m5 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 439 (t=7.42 s) round 1 removed [9]
-RESULT slowref: 9 removed at 7.42 s -> DEMOTED; m1 conf 946 of frame 953, m2 conf 946 of frame 953, m3 conf 946 of frame 953, m4 conf 946 of frame 953, m5 conf 946 of frame 953
+RESULT slowref: m1 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]; epoch 2 at frame 436 (t=7.37 s) round 1 removed [9]
+RESULT slowref: m2 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
+RESULT slowref: m3 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
+RESULT slowref: m4 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
+RESULT slowref: m5 epoch 2 members {1, 2, 3, 4, 5} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8]; epoch 2 at frame 437 (t=7.38 s) round 1 removed [9]
+RESULT slowref: 9 removed at 7.37 s -> DEMOTED; m1 conf 942 of frame 953, m2 conf 942 of frame 953, m3 conf 942 of frame 953, m4 conf 942 of frame 953, m5 conf 942 of frame 953
 RESULT slowref (9 stays connected but grows slower while 8's acks claim 5 more of 9's entries than anyone holds): frames 0..952 honest m1=13bee6fd238bf792 m2=13bee6fd238bf792 m3=13bee6fd238bf792 m4=13bee6fd238bf792 m5=13bee6fd238bf792 | offline replay 13bee6fd238bf792 | ALL EQUAL, NO FALSE CHECKS ; checks ok 575 bad 0
 == p2-4-strikeframe: identical
-RESULT strikeframe silent 3.05 s, 300 ms late: at m2 members {1, 2, 3}, resets 1, 9 removed at 10.52 s -> 1 KEPT
-RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 303 bad 0
-RESULT strikeframe silent 3.05 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
-RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 347 bad 0
+RESULT strikeframe silent 3.05 s, 300 ms late: at m2 members {1, 2, 3}, resets 2, 9 removed at 15.43 s -> 1 KEPT
+RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 300 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 262 bad 0
+RESULT strikeframe silent 3.05 s, 1000 ms late: at m2 members {1, 2, 3}, resets 2, 9 removed at 15.73 s -> 1 KEPT
+RESULT strikeframe (9 silent 3.05 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 249 bad 0
 RESULT strikeframe silent 3.02 s, 600 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
-RESULT strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 353 bad 0
-RESULT strikeframe silent 3.08 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
-RESULT strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 340 bad 0
-RESULT strikeframe silent 2.98 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 3, 9 removed at never -> 1 KEPT
-RESULT strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 351 bad 0
+RESULT strikeframe (9 silent 3.02 s in each of 4 windows; its last entries before each reach 2 and 3 600 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 273 bad 0
+RESULT strikeframe silent 3.08 s, 1000 ms late: at m2 members {1, 2, 3}, resets 1, 9 removed at 10.43 s -> 1 KEPT
+RESULT strikeframe (9 silent 3.08 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 279 bad 0
+RESULT strikeframe silent 2.98 s, 1000 ms late: at m2 members {1, 2, 3, 9}, resets 4, 9 removed at never -> 1 KEPT
+RESULT strikeframe (9 silent 2.98 s in each of 4 windows; its last entries before each reach 2 and 3 1000 ms late): frames 0..1552 honest m1=33d14f4ee965afb7 m2=33d14f4ee965afb7 m3=33d14f4ee965afb7 | offline replay 33d14f4ee965afb7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 269 bad 0
 RESULT strikeframe: 1 kept in 5 of 5 timings -> OK
 == p2-4-twosilent: identical
-RESULT twosilent: m1 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} conf 887 frame 893 paused frames 74 lying votes found 0
-RESULT twosilent: m2 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} conf 887 frame 893 paused frames 75 lying votes found 0
-RESULT twosilent: m3 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} conf 887 frame 893 paused frames 75 lying votes found 0
-RESULT twosilent: m4 members {1, 2, 3, 4} evicted {5: (86, 173), 6: (86, 173)} conf 887 frame 893 paused frames 74 lying votes found 0
-RESULT twosilent: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 363 (t=6.15 s) round 0 removed [5, 6]
-RESULT twosilent: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 364 (t=6.17 s) round 0 removed [5, 6]
-RESULT twosilent: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 364 (t=6.17 s) round 0 removed [5, 6]
-RESULT twosilent: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 363 (t=6.15 s) round 0 removed [5, 6]
-RESULT twosilent (members 5 and 6 of 6 silent from t=3 s): frames 0..892 honest m1=1a29645c5d14e858 m2=1a29645c5d14e858 m3=1a29645c5d14e858 m4=1a29645c5d14e858 | offline replay 1a29645c5d14e858 | ALL EQUAL, NO FALSE CHECKS ; checks ok 360 bad 0
+RESULT twosilent: m1 members {1, 2, 3, 4} evicted {5: (25, 166), 6: (25, 166)} conf 874 frame 893 paused frames 82 lying votes found 0
+RESULT twosilent: m2 members {1, 2, 3, 4} evicted {5: (25, 166), 6: (25, 166)} conf 874 frame 893 paused frames 82 lying votes found 0
+RESULT twosilent: m3 members {1, 2, 3, 4} evicted {5: (25, 166), 6: (25, 166)} conf 874 frame 893 paused frames 82 lying votes found 0
+RESULT twosilent: m4 members {1, 2, 3, 4} evicted {5: (25, 166), 6: (25, 166)} conf 874 frame 893 paused frames 82 lying votes found 0
+RESULT twosilent: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 358 (t=6.07 s) round 0 removed [5, 6]
+RESULT twosilent: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 358 (t=6.07 s) round 0 removed [5, 6]
+RESULT twosilent: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 358 (t=6.07 s) round 0 removed [5, 6]
+RESULT twosilent: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 358 (t=6.07 s) round 0 removed [5, 6]
+RESULT twosilent (members 5 and 6 of 6 silent from t=3 s): frames 0..892 honest m1=1a29645c5d14e858 m2=1a29645c5d14e858 m3=1a29645c5d14e858 m4=1a29645c5d14e858 | offline replay 1a29645c5d14e858 | ALL EQUAL, NO FALSE CHECKS ; checks ok 346 bad 0
 == p2-4-twosilent5: identical
-RESULT twosilent5-majority: m1 members {1, 2, 3} evicted {4: (86, 173), 5: (86, 173)} conf 887 frame 893 paused frames 74 lying votes found 0
-RESULT twosilent5-majority: m2 members {1, 2, 3} evicted {4: (86, 173), 5: (86, 173)} conf 887 frame 893 paused frames 75 lying votes found 0
-RESULT twosilent5-majority: m3 members {1, 2, 3} evicted {4: (86, 173), 5: (86, 173)} conf 887 frame 893 paused frames 74 lying votes found 0
-RESULT twosilent5-majority: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 363 (t=6.15 s) round 0 removed [4, 5]
-RESULT twosilent5-majority: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 364 (t=6.17 s) round 0 removed [4, 5]
-RESULT twosilent5-majority: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 363 (t=6.15 s) round 0 removed [4, 5]
-RESULT twosilent5-majority (members 4 and 5 of 5 silent from t=3 s): frames 0..892 honest m1=1a29645c5d14e858 m2=1a29645c5d14e858 m3=1a29645c5d14e858 | offline replay 1a29645c5d14e858 | ALL EQUAL, NO FALSE CHECKS ; checks ok 192 bad 0
-RESULT twosilent5-bft: m1 members {1, 2, 3, 4, 5} evicted {} conf 169 frame 289 paused frames 604 lying votes found 0
-RESULT twosilent5-bft: m2 members {1, 2, 3, 4, 5} evicted {} conf 169 frame 289 paused frames 604 lying votes found 0
-RESULT twosilent5-bft: m3 members {1, 2, 3, 4, 5} evicted {} conf 169 frame 289 paused frames 604 lying votes found 0
+RESULT twosilent5-majority: m1 members {1, 2, 3} evicted {4: (25, 166), 5: (25, 167)} conf 876 frame 893 paused frames 80 lying votes found 0
+RESULT twosilent5-majority: m2 members {1, 2, 3} evicted {4: (25, 166), 5: (25, 167)} conf 876 frame 893 paused frames 80 lying votes found 0
+RESULT twosilent5-majority: m3 members {1, 2, 3} evicted {4: (25, 166), 5: (25, 167)} conf 876 frame 893 paused frames 80 lying votes found 0
+RESULT twosilent5-majority: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 357 (t=6.05 s) round 0 removed [4, 5]
+RESULT twosilent5-majority: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 357 (t=6.05 s) round 0 removed [4, 5]
+RESULT twosilent5-majority: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 357 (t=6.05 s) round 0 removed [4, 5]
+RESULT twosilent5-majority (members 4 and 5 of 5 silent from t=3 s): frames 0..892 honest m1=1a29645c5d14e858 m2=1a29645c5d14e858 m3=1a29645c5d14e858 | offline replay 1a29645c5d14e858 | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
+RESULT twosilent5-bft: m1 members {1, 2, 3, 4, 5} evicted {} conf 157 frame 277 paused frames 616 lying votes found 0
+RESULT twosilent5-bft: m2 members {1, 2, 3, 4, 5} evicted {} conf 157 frame 277 paused frames 616 lying votes found 0
+RESULT twosilent5-bft: m3 members {1, 2, 3, 4, 5} evicted {} conf 157 frame 277 paused frames 616 lying votes found 0
 RESULT twosilent5-bft: m1 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets 0, highest round 0) | no decision
 RESULT twosilent5-bft: m2 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets 0, highest round 0) | no decision
 RESULT twosilent5-bft: m3 epoch 0 members {1, 2, 3, 4, 5} view changes 0 (resets 0, highest round 0) | no decision
-RESULT twosilent5-bft (members 4 and 5 of 5 silent from t=3 s): frames 0..288 honest m1=7b12ddfdf57c988e m2=7b12ddfdf57c988e m3=7b12ddfdf57c988e | offline replay 7b12ddfdf57c988e | ALL EQUAL, NO FALSE CHECKS ; checks ok 72 bad 0
+RESULT twosilent5-bft (members 4 and 5 of 5 silent from t=3 s): frames 0..276 honest m1=436bf76179e97d59 m2=436bf76179e97d59 m3=436bf76179e97d59 | offline replay 436bf76179e97d59 | ALL EQUAL, NO FALSE CHECKS ; checks ok 66 bad 0
 == p2-4-vcscale-256: identical
-RESULT vcscale n=256 silent=2 heads=false: 254 of 254 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {254}; m1 decisions [(1, 220, 0, [255, 256])]; conf 0 | no panic | wall 148.7 s
+RESULT vcscale n=256 silent=2 heads=false: 254 of 254 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {254}; m1 decisions [(1, 220, 0, [255, 256])]; conf 0 | no panic | wall 233.1 s
 == p2-4-vcscale-64: identical
-RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.77; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 360 | no panic | wall 183.6 s
+RESULT vcscale n=64 silent=2 heads=true: 62 of 62 live members decided the removal; seconds after the silence began: min 2.77 median 2.77 max 2.78; undecided 0; member counts after {62}; m1 decisions [(1, 220, 0, [63, 64])]; conf 361 | no panic | wall 181.4 s
 == p2-4-voiddeep: identical
 RESULT voiddeep void fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT voiddeep: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT voiddeep: m3 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT voiddeep: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
-RESULT voiddeep void fixes_off=0x200000000: frames 0..227 honest m2=19d05dd5d7cba657 m3=19d05dd5d7cba657 m4=19d05dd5d7cba657 | offline replay 19d05dd5d7cba657 | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
+RESULT voiddeep void fixes_off=0x200000000: frames 0..221 honest m2=5a2d384f92d4bdcb m3=5a2d384f92d4bdcb m4=5a2d384f92d4bdcb | offline replay 5a2d384f92d4bdcb | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
 RESULT voiddeep void fixed=true: -> THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON
-RESULT voiddeep: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
-RESULT voiddeep: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
-RESULT voiddeep: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
+RESULT voiddeep: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 130 (t=2.27 s) round 1 removed [1]
+RESULT voiddeep: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 130 (t=2.27 s) round 1 removed [1]
+RESULT voiddeep: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 130 (t=2.27 s) round 1 removed [1]
 RESULT voiddeep void fixes_off=0x0: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
 RESULT voiddeep valid fixed=true: -> THE LISTING, VALID ON ITS OWN ANCESTRY, IS DECIDED EVERYWHERE
-RESULT voiddeep: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 164 (t=2.83 s) round 0 removed [1]
-RESULT voiddeep: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 164 (t=2.83 s) round 0 removed [1]
-RESULT voiddeep: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 163 (t=2.82 s) round 0 removed [1]
-RESULT voiddeep valid fixes_off=0x0: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
+RESULT voiddeep: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 165 (t=2.85 s) round 0 removed [1]
+RESULT voiddeep: m3 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 165 (t=2.85 s) round 0 removed [1]
+RESULT voiddeep: m4 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 158 (t=2.73 s) round 2 removed []; epoch 2 at frame 165 (t=2.85 s) round 0 removed [1]
+RESULT voiddeep valid fixes_off=0x0: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 168 bad 0
 == p2-4-voidfork: identical
 RESULT voidfork fixed=false: -> HALTS, AS BEFORE THE FIX
 RESULT voidfork: m2 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT voidfork: m3 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
 RESULT voidfork: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highest round 11) | no decision
-RESULT voidfork fixed=false: frames 0..227 honest m2=19d05dd5d7cba657 m3=19d05dd5d7cba657 m4=19d05dd5d7cba657 | offline replay 19d05dd5d7cba657 | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
+RESULT voidfork fixed=false: frames 0..221 honest m2=5a2d384f92d4bdcb m3=5a2d384f92d4bdcb m4=5a2d384f92d4bdcb | offline replay 5a2d384f92d4bdcb | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
 RESULT voidfork fixed=true: -> THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON
 RESULT voidfork: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
 RESULT voidfork: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
 RESULT voidfork: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 129 (t=2.25 s) round 1 removed [1]
 RESULT voidfork fixed=true: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 180 bad 0
 == p2-4-votechurn: identical
-RESULT votechurn: m1 epoch 21 members {1, 2, 3} view changes 21 (resets 20, highest round 1) | epoch 1 at frame 134 (t=2.33 s) round 0 removed []; epoch 2 at frame 152 (t=2.63 s) round 0 removed []; epoch 3 at frame 170 (t=2.93 s) round 0 removed []; epoch 4 at frame 189 (t=3.25 s) round 0 removed []; epoch 5 at frame 222 (t=3.80 s) round 1 removed []; epoch 6 at frame 243 (t=4.15 s) round 0 removed []; epoch 7 at frame 275 (t=4.68 s) round 1 removed []; epoch 8 at frame 293 (t=4.98 s) round 0 removed []; epoch 9 at frame 311 (t=5.28 s) round 0 removed []; epoch 10 at frame 331 (t=5.62 s) round 0 removed []; epoch 11 at frame 363 (t=6.15 s) round 1 removed []; epoch 12 at frame 381 (t=6.45 s) round 0 removed []; epoch 13 at frame 413 (t=6.98 s) round 1 removed []; epoch 14 at frame 433 (t=7.32 s) round 0 removed []; epoch 15 at frame 451 (t=7.62 s) round 0 removed []; epoch 16 at frame 471 (t=7.95 s) round 0 removed []; epoch 17 at frame 509 (t=8.58 s) round 1 removed []; epoch 18 at frame 527 (t=8.88 s) round 0 removed []; epoch 19 at frame 559 (t=9.42 s) round 1 removed []; epoch 20 at frame 592 (t=9.97 s) round 1 removed []; epoch 21 at frame 610 (t=10.27 s) round 0 removed [9]
-RESULT votechurn: m2 epoch 21 members {1, 2, 3} view changes 21 (resets 20, highest round 1) | epoch 1 at frame 134 (t=2.33 s) round 0 removed []; epoch 2 at frame 152 (t=2.63 s) round 0 removed []; epoch 3 at frame 170 (t=2.93 s) round 0 removed []; epoch 4 at frame 189 (t=3.25 s) round 0 removed []; epoch 5 at frame 222 (t=3.80 s) round 1 removed []; epoch 6 at frame 243 (t=4.15 s) round 0 removed []; epoch 7 at frame 275 (t=4.68 s) round 1 removed []; epoch 8 at frame 293 (t=4.98 s) round 0 removed []; epoch 9 at frame 311 (t=5.28 s) round 0 removed []; epoch 10 at frame 331 (t=5.62 s) round 0 removed []; epoch 11 at frame 363 (t=6.15 s) round 1 removed []; epoch 12 at frame 381 (t=6.45 s) round 0 removed []; epoch 13 at frame 413 (t=6.98 s) round 1 removed []; epoch 14 at frame 433 (t=7.32 s) round 0 removed []; epoch 15 at frame 450 (t=7.60 s) round 0 removed []; epoch 16 at frame 471 (t=7.95 s) round 0 removed []; epoch 17 at frame 509 (t=8.58 s) round 1 removed []; epoch 18 at frame 527 (t=8.88 s) round 0 removed []; epoch 19 at frame 559 (t=9.42 s) round 1 removed []; epoch 20 at frame 592 (t=9.97 s) round 1 removed []; epoch 21 at frame 610 (t=10.27 s) round 0 removed [9]
-RESULT votechurn: m3 epoch 21 members {1, 2, 3} view changes 21 (resets 20, highest round 1) | epoch 1 at frame 134 (t=2.33 s) round 0 removed []; epoch 2 at frame 152 (t=2.63 s) round 0 removed []; epoch 3 at frame 169 (t=2.92 s) round 0 removed []; epoch 4 at frame 190 (t=3.27 s) round 0 removed []; epoch 5 at frame 222 (t=3.80 s) round 1 removed []; epoch 6 at frame 243 (t=4.15 s) round 0 removed []; epoch 7 at frame 275 (t=4.68 s) round 1 removed []; epoch 8 at frame 293 (t=4.98 s) round 0 removed []; epoch 9 at frame 311 (t=5.28 s) round 0 removed []; epoch 10 at frame 331 (t=5.62 s) round 0 removed []; epoch 11 at frame 363 (t=6.15 s) round 1 removed []; epoch 12 at frame 381 (t=6.45 s) round 0 removed []; epoch 13 at frame 413 (t=6.98 s) round 1 removed []; epoch 14 at frame 433 (t=7.32 s) round 0 removed []; epoch 15 at frame 451 (t=7.62 s) round 0 removed []; epoch 16 at frame 471 (t=7.95 s) round 0 removed []; epoch 17 at frame 509 (t=8.58 s) round 1 removed []; epoch 18 at frame 527 (t=8.88 s) round 0 removed []; epoch 19 at frame 559 (t=9.42 s) round 1 removed []; epoch 20 at frame 592 (t=9.97 s) round 1 removed []; epoch 21 at frame 611 (t=10.28 s) round 0 removed [9]
-RESULT votechurn: 20 resets in the 8 s of churn (2.5 per s); m1's confirmation lag in frames, median/max: 7/8 before, 16/40 during, 7/8 after; 9 kicked at 10.27 s, 0 resets after -> THE KICK ENDS IT
-RESULT votechurn: m1 conf 946 of frame 953, m2 conf 946 of frame 953, m3 conf 946 of frame 953
-RESULT votechurn (2-10 s: 9 votes against 2, whom everyone hears, in every epoch; admin 1 kicks 9 at 10 s): frames 0..952 honest m1=4cc0246559b145a7 m2=4cc0246559b145a7 m3=4cc0246559b145a7 | offline replay 4cc0246559b145a7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 244 bad 0
+RESULT votechurn: m1 epoch 21 members {1, 2, 3} view changes 21 (resets 20, highest round 1) | epoch 1 at frame 133 (t=2.32 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 0 removed []; epoch 3 at frame 169 (t=2.92 s) round 0 removed []; epoch 4 at frame 189 (t=3.25 s) round 0 removed []; epoch 5 at frame 221 (t=3.78 s) round 1 removed []; epoch 6 at frame 241 (t=4.12 s) round 0 removed []; epoch 7 at frame 273 (t=4.65 s) round 1 removed []; epoch 8 at frame 291 (t=4.95 s) round 0 removed []; epoch 9 at frame 309 (t=5.25 s) round 0 removed []; epoch 10 at frame 329 (t=5.58 s) round 0 removed []; epoch 11 at frame 361 (t=6.12 s) round 1 removed []; epoch 12 at frame 379 (t=6.42 s) round 0 removed []; epoch 13 at frame 411 (t=6.95 s) round 1 removed []; epoch 14 at frame 432 (t=7.30 s) round 0 removed []; epoch 15 at frame 450 (t=7.60 s) round 0 removed []; epoch 16 at frame 470 (t=7.93 s) round 0 removed []; epoch 17 at frame 508 (t=8.57 s) round 1 removed []; epoch 18 at frame 526 (t=8.87 s) round 0 removed []; epoch 19 at frame 559 (t=9.42 s) round 1 removed []; epoch 20 at frame 591 (t=9.95 s) round 1 removed []; epoch 21 at frame 611 (t=10.28 s) round 0 removed [9]
+RESULT votechurn: m2 epoch 21 members {1, 2, 3} view changes 21 (resets 20, highest round 1) | epoch 1 at frame 133 (t=2.32 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 0 removed []; epoch 3 at frame 169 (t=2.92 s) round 0 removed []; epoch 4 at frame 189 (t=3.25 s) round 0 removed []; epoch 5 at frame 221 (t=3.78 s) round 1 removed []; epoch 6 at frame 241 (t=4.12 s) round 0 removed []; epoch 7 at frame 273 (t=4.65 s) round 1 removed []; epoch 8 at frame 291 (t=4.95 s) round 0 removed []; epoch 9 at frame 309 (t=5.25 s) round 0 removed []; epoch 10 at frame 329 (t=5.58 s) round 0 removed []; epoch 11 at frame 361 (t=6.12 s) round 1 removed []; epoch 12 at frame 379 (t=6.42 s) round 0 removed []; epoch 13 at frame 411 (t=6.95 s) round 1 removed []; epoch 14 at frame 432 (t=7.30 s) round 0 removed []; epoch 15 at frame 450 (t=7.60 s) round 0 removed []; epoch 16 at frame 470 (t=7.93 s) round 0 removed []; epoch 17 at frame 508 (t=8.57 s) round 1 removed []; epoch 18 at frame 526 (t=8.87 s) round 0 removed []; epoch 19 at frame 559 (t=9.42 s) round 1 removed []; epoch 20 at frame 591 (t=9.95 s) round 1 removed []; epoch 21 at frame 610 (t=10.27 s) round 0 removed [9]
+RESULT votechurn: m3 epoch 21 members {1, 2, 3} view changes 21 (resets 20, highest round 1) | epoch 1 at frame 133 (t=2.32 s) round 0 removed []; epoch 2 at frame 151 (t=2.62 s) round 0 removed []; epoch 3 at frame 169 (t=2.92 s) round 0 removed []; epoch 4 at frame 189 (t=3.25 s) round 0 removed []; epoch 5 at frame 221 (t=3.78 s) round 1 removed []; epoch 6 at frame 241 (t=4.12 s) round 0 removed []; epoch 7 at frame 273 (t=4.65 s) round 1 removed []; epoch 8 at frame 291 (t=4.95 s) round 0 removed []; epoch 9 at frame 309 (t=5.25 s) round 0 removed []; epoch 10 at frame 329 (t=5.58 s) round 0 removed []; epoch 11 at frame 361 (t=6.12 s) round 1 removed []; epoch 12 at frame 379 (t=6.42 s) round 0 removed []; epoch 13 at frame 411 (t=6.95 s) round 1 removed []; epoch 14 at frame 432 (t=7.30 s) round 0 removed []; epoch 15 at frame 450 (t=7.60 s) round 0 removed []; epoch 16 at frame 470 (t=7.93 s) round 0 removed []; epoch 17 at frame 508 (t=8.57 s) round 1 removed []; epoch 18 at frame 526 (t=8.87 s) round 0 removed []; epoch 19 at frame 559 (t=9.42 s) round 1 removed []; epoch 20 at frame 591 (t=9.95 s) round 1 removed []; epoch 21 at frame 611 (t=10.28 s) round 0 removed [9]
+RESULT votechurn: 20 resets in the 8 s of churn (2.5 per s); m1's confirmation lag in frames, median/max: 13/17 before, 16/37 during, 15/19 after; 9 kicked at 10.28 s, 0 resets after -> THE KICK ENDS IT
+RESULT votechurn: m1 conf 938 of frame 953, m2 conf 936 of frame 953, m3 conf 936 of frame 953
+RESULT votechurn (2-10 s: 9 votes against 2, whom everyone hears, in every epoch; admin 1 kicks 9 at 10 s): frames 0..952 honest m1=4cc0246559b145a7 m2=4cc0246559b145a7 m3=4cc0246559b145a7 | offline replay 4cc0246559b145a7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 246 bad 0
 == p2-4-withheld: identical
-RESULT withheld: m1 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT withheld: m2 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT withheld: m3 members {1, 2, 3, 8} evicted {9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 0
-RESULT withheld: m1 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [9]
-RESULT withheld: m2 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 219 (t=3.75 s) round 0 removed [9]
-RESULT withheld: m3 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 218 (t=3.73 s) round 0 removed [9]
-RESULT withheld (9 equivocates on a confirmed touch; 8 casts no view-change entry): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 m3=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 165 bad 0
+RESULT withheld: m1 members {1, 2, 3, 8} evicted {9: (33, 212)} conf 457 frame 473 paused frames 0 lying votes found 0
+RESULT withheld: m2 members {1, 2, 3, 8} evicted {9: (33, 212)} conf 457 frame 473 paused frames 0 lying votes found 0
+RESULT withheld: m3 members {1, 2, 3, 8} evicted {9: (33, 212)} conf 457 frame 473 paused frames 0 lying votes found 0
+RESULT withheld: m1 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 226 (t=3.87 s) round 0 removed [9]
+RESULT withheld: m2 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 226 (t=3.87 s) round 0 removed [9]
+RESULT withheld: m3 epoch 1 members {1, 2, 3, 8} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 226 (t=3.87 s) round 0 removed [9]
+RESULT withheld (9 equivocates on a confirmed touch; 8 casts no view-change entry): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 m3=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 156 bad 0
 == r14-abort: identical
 RESULT r14 abort: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 abort A world 1: frames 0..500 digests m1=37ab2dd63d56e551 m2=37ab2dd63d56e551 | offline replay 37ab2dd63d56e551 | ALL EQUAL
+RESULT r14 abort A world 1: frames 0..500 digests m1=aa44907f349904f7 m2=aa44907f349904f7 | offline replay aa44907f349904f7 | ALL EQUAL
 RESULT r14 abort B world 2: frames 0..400 digests m1=324c61a8d8bf6a83 m3=324c61a8d8bf6a83 | offline replay 324c61a8d8bf6a83 | ALL EQUAL
 == r14-abort-reverse: identical
 RESULT r14 abort (reverse order): object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 abort A world 1: frames 0..500 digests m1=d7156c047ad02055 m2=d7156c047ad02055 | offline replay d7156c047ad02055 | ALL EQUAL
+RESULT r14 abort A world 1: frames 0..500 digests m1=aa44907f349904f7 m2=aa44907f349904f7 | offline replay aa44907f349904f7 | ALL EQUAL
 RESULT r14 abort B world 2: frames 0..400 digests m1=324c61a8d8bf6a83 m3=324c61a8d8bf6a83 | offline replay 324c61a8d8bf6a83 | ALL EQUAL
 == r14-chain: identical
-RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
 RESULT r14 chain: departure of local 40 from A to world 2 (hop in carried: false) -> Some(Accepted)
-RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
+RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
 RESULT r14 chain: departure of local 75 from B to world 3 (hop in carried: true) -> Some(Accepted)
+RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
 RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
 RESULT r14 chain: departure of local 48 from C to world 1 (hop in carried: true) -> Some(Accepted)
 RESULT r14 chain: A:40 live copies A 1 (Some("here, chain 2 hops, settled false")), B 0 (Some("left for 3")), C 0 (Some("left for 1")) ; pending escrows 0 -> CONSERVED (back in A, nothing in limbo)
-RESULT r14 chain A world 1: frames 0..500 digests m1=9c30cc7b077a4664 m2=9c30cc7b077a4664 | offline replay 9c30cc7b077a4664 | ALL EQUAL
-RESULT r14 chain B world 2: frames 0..400 digests m1=361d54daca618c95 m3=361d54daca618c95 | offline replay 361d54daca618c95 | ALL EQUAL
-RESULT r14 chain C world 3: frames 0..480 digests m1=b18d30ebd109ec47 m4=b18d30ebd109ec47 | offline replay b18d30ebd109ec47 | ALL EQUAL
+RESULT r14 chain A world 1: frames 0..500 digests m1=fa7e7e3c534f06ab m2=fa7e7e3c534f06ab | offline replay fa7e7e3c534f06ab | ALL EQUAL
+RESULT r14 chain B world 2: frames 0..400 digests m1=8acc7b44849ed136 m3=8acc7b44849ed136 | offline replay 8acc7b44849ed136 | ALL EQUAL
+RESULT r14 chain C world 3: frames 0..480 digests m1=d3532228e2932022 m4=d3532228e2932022 | offline replay d3532228e2932022 | ALL EQUAL
 == r14-chain-epoch: identical
-RESULT r14 chain-epoch: A at m2: epoch 1 members {1, 2} decisions [(1, 250, 0, [5])]
-RESULT r14 chain-epoch: hop 1->2 relayed into B: signed by epoch 1 at frame 333, carrying 1 epoch certificate(s)
+RESULT r14 chain-epoch: A at m2: epoch 1 members {1, 2} decisions [(1, 245, 0, [5])]
+RESULT r14 chain-epoch: hop 1->2 relayed into B: signed by epoch 1 at frame 327, carrying 1 epoch certificate(s)
 RESULT r14 chain-epoch: arrival into B with chain [] -> Some(Accepted)
 RESULT r14 chain-epoch: arrival into C with chain [1->2 (epoch 1, 1 certs)] -> Some(Accepted)
-RESULT r14 chain-epoch: hop 2->3 relayed into C: signed by epoch 0 at frame 423, carrying 0 epoch certificate(s)
+RESULT r14 chain-epoch: hop 2->3 relayed into C: signed by epoch 0 at frame 424, carrying 0 epoch certificate(s)
 RESULT r14 chain-epoch: A:40 live copies A 0, B 0, C 1 ; pending escrows 0 -> CONSERVED (in C, nothing in limbo)
-RESULT r14 chain-epoch A world 1: frames 0..600 digests m1=384008f036931189 m2=384008f036931189 | offline replay 384008f036931189 | ALL EQUAL
-RESULT r14 chain-epoch B world 2: frames 0..500 digests m1=d92d363b8256bfb2 m3=d92d363b8256bfb2 | offline replay d92d363b8256bfb2 | ALL EQUAL
-RESULT r14 chain-epoch C world 3: frames 0..600 digests m1=c349b1d105ebe10c m4=c349b1d105ebe10c | offline replay c349b1d105ebe10c | ALL EQUAL
+RESULT r14 chain-epoch A world 1: frames 0..600 digests m1=d4507030da4b3ac0 m2=d4507030da4b3ac0 | offline replay d4507030da4b3ac0 | ALL EQUAL
+RESULT r14 chain-epoch B world 2: frames 0..500 digests m1=6aa512ef4cc54394 m3=6aa512ef4cc54394 | offline replay 6aa512ef4cc54394 | ALL EQUAL
+RESULT r14 chain-epoch C world 3: frames 0..600 digests m1=ad87fd26c54b03fc m4=ad87fd26c54b03fc | offline replay ad87fd26c54b03fc | ALL EQUAL
 == r14-chain-reverse: identical
-RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
 RESULT r14 chain: departure of local 40 from A to world 2 (hop in carried: false) -> Some(Accepted)
-RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
+RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
 RESULT r14 chain: departure of local 75 from B to world 3 (hop in carried: true) -> Some(Accepted)
+RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
 RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
 RESULT r14 chain: departure of local 48 from C to world 1 (hop in carried: true) -> Some(Accepted)
 RESULT r14 chain (reverse order): A:40 live copies A 1 (Some("here, chain 2 hops, settled false")), B 0 (Some("left for 3")), C 0 (Some("left for 1")) ; pending escrows 0 -> CONSERVED (back in A, nothing in limbo)
-RESULT r14 chain A world 1: frames 0..500 digests m1=e0e5c515726faaba m2=e0e5c515726faaba | offline replay e0e5c515726faaba | ALL EQUAL
-RESULT r14 chain B world 2: frames 0..400 digests m1=c844438dceaedd3d m3=c844438dceaedd3d | offline replay c844438dceaedd3d | ALL EQUAL
-RESULT r14 chain C world 3: frames 0..480 digests m1=3eff8e27d294cdb4 m4=3eff8e27d294cdb4 | offline replay 3eff8e27d294cdb4 | ALL EQUAL
+RESULT r14 chain A world 1: frames 0..500 digests m1=fa7e7e3c534f06ab m2=fa7e7e3c534f06ab | offline replay fa7e7e3c534f06ab | ALL EQUAL
+RESULT r14 chain B world 2: frames 0..400 digests m1=8acc7b44849ed136 m3=8acc7b44849ed136 | offline replay 8acc7b44849ed136 | ALL EQUAL
+RESULT r14 chain C world 3: frames 0..480 digests m1=d3532228e2932022 m4=d3532228e2932022 | offline replay d3532228e2932022 | ALL EQUAL
 == r14-crash: identical
-RESULT r14 crash: world 1 at m2: members {2, 4} evicted {1: (94, 163)} conf 526 frame 533 paused frames 88
-RESULT r14 crash: world 2 at m3: members {3, 4} evicted {1: (68, 134)} conf 434 frame 442 paused frames 77
+RESULT r14 crash: world 1 at m2: members {2, 4} evicted {1: (58, 163)} conf 514 frame 533 paused frames 82
+RESULT r14 crash: world 2 at m3: members {3, 4} evicted {1: (21, 130)} conf 425 frame 442 paused frames 85
 RESULT r14 crash: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 crash A world 1: frames 0..500 digests m2=a05441028920e245 m4=a05441028920e245 | offline replay a05441028920e245 | ALL EQUAL
-RESULT r14 crash B world 2: frames 0..400 digests m3=2cf7b58f96715c2e m4=2cf7b58f96715c2e | offline replay 2cf7b58f96715c2e | ALL EQUAL
+RESULT r14 crash A world 1: frames 0..500 digests m2=d72b2b92dc0c68df m4=d72b2b92dc0c68df | offline replay d72b2b92dc0c68df | ALL EQUAL
+RESULT r14 crash B world 2: frames 0..400 digests m3=05ab5e5ffcd6b069 m4=05ab5e5ffcd6b069 | offline replay 05ab5e5ffcd6b069 | ALL EQUAL
 == r14-doublespend (control: failures expected): identical
 RESULT   forged by m2 in world 1: RESIDUAL: W's majority double-spends A:52 (now in B) into A, citing its genuine hop in -> Some(Accepted)
 RESULT r14 doublespend: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
 RESULT r14 doublespend: dishonest-majority W (provenance on): A:52 A 1 B 1 pending 0 (W 0); A:53 A 1 B 0 pending 0 (W 0); A:54 A 1 B 0 pending 0 (W 0); A:55 A 1 B 0 pending 0 (W 0); W:500 A 0 B 0 pending 0 (W 0) -> NOT CONSERVED in the honest worlds
-RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 13736040643559055130 (transfers 13709227417056693514 and 18254832600444804714); verifies for a third party: true
-RESULT r14 doublespend A world 1: frames 0..500 digests m1=608d7fbedcc291b5 m2=608d7fbedcc291b5 | offline replay 608d7fbedcc291b5 | ALL EQUAL
-RESULT r14 doublespend B world 2: frames 0..400 digests m1=10172f62e0963aff m3=10172f62e0963aff | offline replay 10172f62e0963aff | ALL EQUAL
-RESULT r14 doublespend W world 6: frames 0..480 digests m2=2776c44202f9226f m3=2776c44202f9226f | offline replay 2776c44202f9226f | ALL EQUAL
+RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 2367915161791316339 (transfers 13816223028924348135 and 9098096296109685322); verifies for a third party: true
+RESULT r14 doublespend A world 1: frames 0..500 digests m1=4cd37b3db9fc7395 m2=4cd37b3db9fc7395 | offline replay 4cd37b3db9fc7395 | ALL EQUAL
+RESULT r14 doublespend B world 2: frames 0..400 digests m1=e7606de994fa3720 m3=e7606de994fa3720 | offline replay e7606de994fa3720 | ALL EQUAL
+RESULT r14 doublespend W world 6: frames 0..480 digests m2=cb510d5a69cd92be m3=cb510d5a69cd92be | offline replay cb510d5a69cd92be | ALL EQUAL
 == r14-forge: identical
 RESULT   forged by m2 in world 1: member 2 departs A's object 50 to D, a world it controls alone -> Some(RejectedNoRoute)
 RESULT   forged by m2 in world 1: member 2 departs A's object 51 to unknown world 999 -> Some(RejectedNoRoute)
@@ -640,10 +645,10 @@ RESULT   forged by m2 in world 1: W's majority resurrects A:52 into A, where it 
 RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
 RESULT r14 forge: A's objects 50 and 51 live in A 1 and 1, object 50 in D 0; copies of A:40 in B 1 -> CONSERVED
 RESULT r14 forge: dishonest-majority W (provenance on): A:52 A 1 B 0 pending 0 (W 0); A:53 A 1 B 0 pending 0 (W 0); A:54 A 1 B 0 pending 0 (W 0); A:55 A 1 B 0 pending 0 (W 1); W:500 A 0 B 0 pending 0 (W 0) -> CONSERVED in the honest worlds
-RESULT r14 forge: world 2 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 13736040643559055130 (transfers 10258330915478024980 and 10929371115056039220); verifies for a third party: true
-RESULT r14 forge A world 1: frames 0..500 digests m1=812e8aac52e995dd m2=812e8aac52e995dd | offline replay 812e8aac52e995dd | ALL EQUAL
-RESULT r14 forge B world 2: frames 0..400 digests m1=3b9f84a418502ca4 m3=3b9f84a418502ca4 | offline replay 3b9f84a418502ca4 | ALL EQUAL
-RESULT r14 forge W world 6: frames 0..480 digests m2=40fd7cec259b17dc m3=40fd7cec259b17dc | offline replay 40fd7cec259b17dc | ALL EQUAL
+RESULT r14 forge: world 2 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 2367915161791316339 (transfers 10567761766053902674 and 14628430701398908443); verifies for a third party: true
+RESULT r14 forge A world 1: frames 0..500 digests m1=04403817369c8b26 m2=04403817369c8b26 | offline replay 04403817369c8b26 | ALL EQUAL
+RESULT r14 forge B world 2: frames 0..400 digests m1=7f03cb9030760706 m3=7f03cb9030760706 | offline replay 7f03cb9030760706 | ALL EQUAL
+RESULT r14 forge W world 6: frames 0..480 digests m2=0dd5e95a3a125f67 m3=0dd5e95a3a125f67 | offline replay 0dd5e95a3a125f67 | ALL EQUAL
 == r14-forge-no-provenance (control: failures expected): identical
 RESULT   forged by m2 in world 1: member 2 departs A's object 50 to D, a world it controls alone -> Some(RejectedNoRoute)
 RESULT   forged by m2 in world 1: member 2 departs A's object 51 to unknown world 999 -> Some(RejectedNoRoute)
@@ -664,66 +669,66 @@ RESULT   forged by m2 in world 1: W's majority resurrects A:52 into A, where it 
 RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
 RESULT r14 forge: A's objects 50 and 51 live in A 1 and 1, object 50 in D 0; copies of A:40 in B 1 -> CONSERVED
 RESULT r14 forge: dishonest-majority W (CONTROL, provenance off): A:52 A 1 B 1 pending 0 (W 0); A:53 A 1 B 1 pending 0 (W 0); A:54 A 1 B 1 pending 0 (W 0); A:55 A 1 B 1 pending 0 (W 1); W:500 A 0 B 1 pending 0 (W 0) -> NOT CONSERVED in the honest worlds
-RESULT r14 forge A world 1: frames 0..500 digests m1=d28b5f871cd5f54a m2=d28b5f871cd5f54a | offline replay d28b5f871cd5f54a | ALL EQUAL
-RESULT r14 forge B world 2: frames 0..400 digests m1=d447f192470c5284 m3=d447f192470c5284 | offline replay d447f192470c5284 | ALL EQUAL
-RESULT r14 forge W world 6: frames 0..480 digests m2=f6b2c70bc109b1ec m3=f6b2c70bc109b1ec | offline replay f6b2c70bc109b1ec | ALL EQUAL
+RESULT r14 forge A world 1: frames 0..500 digests m1=0792e9b6e28973d5 m2=0792e9b6e28973d5 | offline replay 0792e9b6e28973d5 | ALL EQUAL
+RESULT r14 forge B world 2: frames 0..400 digests m1=b5977060fe1271b3 m3=b5977060fe1271b3 | offline replay b5977060fe1271b3 | ALL EQUAL
+RESULT r14 forge W world 6: frames 0..480 digests m2=3340ed67fdd9aadc m3=3340ed67fdd9aadc | offline replay 3340ed67fdd9aadc | ALL EQUAL
 == r14-late: identical
 RESULT r14 late: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 late A world 1: frames 0..500 digests m1=2b66dd45fd4a760c m2=2b66dd45fd4a760c | offline replay 2b66dd45fd4a760c | ALL EQUAL
-RESULT r14 late B world 2: frames 0..400 digests m1=87c9120e4f068349 m3=87c9120e4f068349 | offline replay 87c9120e4f068349 | ALL EQUAL
+RESULT r14 late A world 1: frames 0..500 digests m1=33c3f15a5ee2bb9f m2=33c3f15a5ee2bb9f | offline replay 33c3f15a5ee2bb9f | ALL EQUAL
+RESULT r14 late B world 2: frames 0..400 digests m1=485c186ae5a24947 m3=485c186ae5a24947 | offline replay 485c186ae5a24947 | ALL EQUAL
 == r14-ok: identical
 RESULT r14 ok: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 ok A world 1: frames 0..500 digests m1=f8f87608710f67e5 m2=f8f87608710f67e5 | offline replay f8f87608710f67e5 | ALL EQUAL
-RESULT r14 ok B world 2: frames 0..400 digests m1=b890f13a0e9a8dbd m3=b890f13a0e9a8dbd | offline replay b890f13a0e9a8dbd | ALL EQUAL
-RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.9 after (member 1 not throttled from t=3 s)
+RESULT r14 ok A world 1: frames 0..500 digests m1=e52d160bff456085 m2=e52d160bff456085 | offline replay e52d160bff456085 | ALL EQUAL
+RESULT r14 ok B world 2: frames 0..400 digests m1=99359661fef8cdf3 m3=99359661fef8cdf3 | offline replay 99359661fef8cdf3 | ALL EQUAL
+RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 11.5 before t=3 s, 13.6 after (member 1 not throttled from t=3 s)
 RESULT r14 ok: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
-RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 10.2, max 15 over 12 check frames; member 2 avg 10.7, max 19 over 12 check frames
+RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 19.2, max 24 over 12 check frames; member 2 avg 19.7, max 24 over 12 check frames
 == r14-ok-reverse: identical
 RESULT r14 ok (reverse order): object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 ok A world 1: frames 0..500 digests m1=f8f87608710f67e5 m2=f8f87608710f67e5 | offline replay f8f87608710f67e5 | ALL EQUAL
-RESULT r14 ok B world 2: frames 0..400 digests m1=b890f13a0e9a8dbd m3=b890f13a0e9a8dbd | offline replay b890f13a0e9a8dbd | ALL EQUAL
-RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.9 after (member 1 not throttled from t=3 s)
+RESULT r14 ok A world 1: frames 0..500 digests m1=e52d160bff456085 m2=e52d160bff456085 | offline replay e52d160bff456085 | ALL EQUAL
+RESULT r14 ok B world 2: frames 0..400 digests m1=99359661fef8cdf3 m3=99359661fef8cdf3 | offline replay 99359661fef8cdf3 | ALL EQUAL
+RESULT r14 ok: member 2's confirmation lag in A (present - confirmed, frames): avg 11.5 before t=3 s, 13.6 after (member 1 not throttled from t=3 s)
 RESULT r14 ok: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
-RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 10.2, max 15 over 12 check frames; member 2 avg 10.7, max 19 over 12 check frames
+RESULT r14 ok: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 19.2, max 24 over 12 check frames; member 2 avg 19.7, max 24 over 12 check frames
 == r14-reject: identical
 RESULT r14 reject: object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 reject A world 1: frames 0..500 digests m1=ed34788fd0bc60c7 m2=ed34788fd0bc60c7 | offline replay ed34788fd0bc60c7 | ALL EQUAL
-RESULT r14 reject B world 2: frames 0..400 digests m1=6bffab92fb83dd0e m3=6bffab92fb83dd0e | offline replay 6bffab92fb83dd0e | ALL EQUAL
+RESULT r14 reject A world 1: frames 0..500 digests m1=b00b9ff76f90d175 m2=b00b9ff76f90d175 | offline replay b00b9ff76f90d175 | ALL EQUAL
+RESULT r14 reject B world 2: frames 0..400 digests m1=869cf6072b3bed69 m3=869cf6072b3bed69 | offline replay 869cf6072b3bed69 | ALL EQUAL
 == r14-reject-reverse: identical
 RESULT r14 reject (reverse order): object 40 live in A 1, in B 0, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 reject A world 1: frames 0..500 digests m1=ed34788fd0bc60c7 m2=ed34788fd0bc60c7 | offline replay ed34788fd0bc60c7 | ALL EQUAL
-RESULT r14 reject B world 2: frames 0..400 digests m1=6bffab92fb83dd0e m3=6bffab92fb83dd0e | offline replay 6bffab92fb83dd0e | ALL EQUAL
+RESULT r14 reject A world 1: frames 0..500 digests m1=b00b9ff76f90d175 m2=b00b9ff76f90d175 | offline replay b00b9ff76f90d175 | ALL EQUAL
+RESULT r14 reject B world 2: frames 0..400 digests m1=869cf6072b3bed69 m3=869cf6072b3bed69 | offline replay 869cf6072b3bed69 | ALL EQUAL
 == r14-throttle: identical
 RESULT r14 throttle: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-RESULT r14 throttle A world 1: frames 0..500 digests m1=f8f87608710f67e5 m2=f8f87608710f67e5 | offline replay f8f87608710f67e5 | ALL EQUAL
-RESULT r14 throttle B world 2: frames 0..400 digests m1=b890f13a0e9a8dbd m3=b890f13a0e9a8dbd | offline replay b890f13a0e9a8dbd | ALL EQUAL
-RESULT r14 throttle: member 2's confirmation lag in A (present - confirmed, frames): avg 8.5 before t=3 s, 8.9 after (member 1 throttled to one burst per 250 ms from t=3 s)
+RESULT r14 throttle A world 1: frames 0..500 digests m1=e52d160bff456085 m2=e52d160bff456085 | offline replay e52d160bff456085 | ALL EQUAL
+RESULT r14 throttle B world 2: frames 0..400 digests m1=99359661fef8cdf3 m3=99359661fef8cdf3 | offline replay 99359661fef8cdf3 | ALL EQUAL
+RESULT r14 throttle: member 2's confirmation lag in A (present - confirmed, frames): avg 11.5 before t=3 s, 13.6 after (member 1 throttled to one burst per 250 ms from t=3 s)
 RESULT r14 throttle: member 1's touch in A after t=3 s: stamp 260, outcome at member 2 Some(Accepted)
-RESULT r14 throttle: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 10.3, max 15 over 12 check frames; member 2 avg 10.7, max 19 over 12 check frames
+RESULT r14 throttle: check hashes in A from frame 180 (frames from check frame to the first ack carrying it): member 1 avg 19.2, max 24 over 12 check frames; member 2 avg 19.7, max 24 over 12 check frames
 == review2-ackfork: identical
 RESULT ackfork (9 shows member 2 a different chain): frames 0..472 honest m1=80be12dd97816931 m2=80be12dd97816931 | offline replay 80be12dd97816931 | ALL EQUAL, NO FALSE CHECKS ; checks ok 32 bad 0
 == review2-evict: identical
-RESULT evict (late entry, then an eviction): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 162 bad 0
+RESULT evict (late entry, then an eviction): frames 0..592 honest m1=9015afd81b841054 m2=9015afd81b841054 m3=9015afd81b841054 | offline replay 9015afd81b841054 | ALL EQUAL, NO FALSE CHECKS ; checks ok 156 bad 0
 == review2-lateequiv: identical
-RESULT lateequiv (second version of a confirmed entry): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 46 bad 0
+RESULT lateequiv (second version of a confirmed entry): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 44 bad 0
 == review2-outage: identical
-RESULT outage (honest members, 6.5 s one-way ack outage): frames 0..712 honest m1=e8140b58acd8ab00 m2=e8140b58acd8ab00 m3=e8140b58acd8ab00 | offline replay e8140b58acd8ab00 | ALL EQUAL, NO FALSE CHECKS ; checks ok 138 bad 0
+RESULT outage (honest members, 6.5 s one-way ack outage): frames 0..712 honest m1=e8140b58acd8ab00 m2=e8140b58acd8ab00 m3=e8140b58acd8ab00 | offline replay e8140b58acd8ab00 | ALL EQUAL, NO FALSE CHECKS ; checks ok 140 bad 0
 == review3-badvote: identical
-RESULT badvote: m1 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
-RESULT badvote: m2 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 467 frame 473 paused frames 0 lying votes found 1
+RESULT badvote: m1 members {1, 2} evicted {8: (32, 213), 9: (33, 212)} conf 465 frame 473 paused frames 0 lying votes found 1
+RESULT badvote: m2 members {1, 2} evicted {8: (32, 213), 9: (33, 212)} conf 459 frame 473 paused frames 0 lying votes found 1
 RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0
 == review3-crashstall: identical
-RESULT crashstall: m1 members {1, 2} evicted {3: (86, 173)} conf 887 frame 893 paused frames 72 lying votes found 0
-RESULT crashstall: m2 members {1, 2} evicted {3: (86, 173)} conf 887 frame 893 paused frames 74 lying votes found 0
-RESULT crashstall: member 3 silent from t=3 s; at t=15 s m1 conf 887 (frame 893), member 3 still a member: false
+RESULT crashstall: m1 members {1, 2} evicted {3: (25, 172)} conf 880 frame 893 paused frames 76 lying votes found 0
+RESULT crashstall: m2 members {1, 2} evicted {3: (25, 172)} conf 880 frame 893 paused frames 78 lying votes found 0
+RESULT crashstall: member 3 silent from t=3 s; at t=15 s m1 conf 880 (frame 893), member 3 still a member: false
 RESULT crashstall (member 3 silent from t=3 s): frames 0..892 honest m1=1a29645c5d14e858 m2=1a29645c5d14e858 | offline replay 1a29645c5d14e858 | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
 == review3-liar: identical
-RESULT liar: m1 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 469 frame 473 paused frames 0 lying votes found 1
-RESULT liar: m2 members {1, 2} evicted {8: (105, 210), 9: (104, 208)} conf 469 frame 473 paused frames 0 lying votes found 1
-RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0
+RESULT liar: m1 members {1, 2} evicted {8: (36, 219), 9: (33, 212)} conf 463 frame 473 paused frames 0 lying votes found 1
+RESULT liar: m2 members {1, 2} evicted {8: (36, 219), 9: (33, 212)} conf 463 frame 473 paused frames 0 lying votes found 1
+RESULT liar (9 equivocates on a confirmed touch; 8 votes with a forged head): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 62 bad 0
 == state-frame: identical
-RESULT state-frame acceptance, uncontended checks: 22/22 equal at that instant and 22/22 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 10
-RESULT state-frame acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 31/32 equal to the author's copy at that instant, 30/32 equal to the author's final history
+RESULT state-frame acceptance, uncontended checks: 36/36 equal at that instant and 36/36 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 14
+RESULT state-frame acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 48/50 equal to the author's copy at that instant, 48/50 equal to the author's final history
 RESULT state-frame world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112baf49e9c4b m3=a97112baf49e9c4b | offline replay a97112baf49e9c4b | ALL EQUAL
 == ties: identical
 RESULT ties: same-frame conflicts on one object at 150 frames, winners per member {1: 150, 2: 150, 3: 150}
@@ -731,4 +736,4 @@ RESULT ties world 1: frames 0..6000 digests m1=8b2b520ff4809299 m2=8b2b520ff4809
 == grabrace: spike-only (not mirrored as a scenario file yet; see spike-only.txt)
 == p2-3-statejoin: spike-only (not mirrored as a scenario file yet; see spike-only.txt)
 == randsched: not a scenario (a spike property test, run and checked by the spike suite; see not-scenarios.txt)
-SUMMARY: 99 scenarios, 99 identical to the committed logs; 2 committed logs spike-only, not mirrored yet; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (298 s)
+SUMMARY: 99 scenarios, 99 identical to the committed logs; 2 committed logs spike-only, not mirrored yet; every scenario ALL EQUAL, no panic, 0 false checks, 0 non-finite states (315 s)
