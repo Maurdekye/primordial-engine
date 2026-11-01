@@ -222,6 +222,7 @@ pub enum InteractionAction {
     Grab,
     /// Move one of the kinematic hands (ball-pit scenes) to `target_mm`. The target is held (sent
     /// again at every pose slot, as a held controller would) until a new target or `active: false`.
+    /// The call waits for the next pose slot, so it may advance time by up to one stride.
     Hand,
 }
 
