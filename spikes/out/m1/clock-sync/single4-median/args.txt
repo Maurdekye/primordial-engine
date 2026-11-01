@@ -1,0 +1,4 @@
+member 1:  --clock-median
+member 2:  --clock-median
+member 3:  --clock-median
+member 4: --clock-lie 1:0:50000 --clock-median

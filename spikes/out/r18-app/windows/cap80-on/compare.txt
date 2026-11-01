@@ -1,0 +1,6 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | b2000e7a05b76329 | equal | 1800 | [1, 2, 3] | 0 | 120/0 | 1405/0 |
+| 2 | 1800 | b2000e7a05b76329 | equal | 1802 | [1, 2, 3] | 627 | 120/0 | 1880/0 |
+| 3 | 1800 | b2000e7a05b76329 | equal | 1800 | [1, 2, 3] | 626 | 120/0 | 1881/0 |
+ALL EQUAL

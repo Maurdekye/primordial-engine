@@ -1,9 +1,10 @@
 # pe-mcp
 
 The engine's MCP server (design 17): the phase-2 test and driver interface (design 23.4, P2-8). An agent
-drives **one peer** of a session. In phase 2 that peer is one member of the in-process session simulator
-(`spikes/session-sim`), with the other members running scripted plans over simulated links. P2-3's
-`pe-session` replaces it behind the `DrivenPeer` trait (`src/backend.rs`), with no change to the tools.
+drives **one peer** of a session. That peer is either one member of the in-process scenario harness
+(`crates/pe-session-harness`), with the other members running scripted plans over simulated links, or a
+live `pe-app` peer over UDP. Both run P2-3's `pe-session` core behind the `DrivenPeer` trait
+(`src/backend.rs`), with the same tools. Entry ids are 32 bytes, 64 hex digits.
 
 Built on `rmcp` 3.8.0 (the official Rust SDK). The full tool schemas, as the server advertises them, are in
 [`schema/tools.json`](schema/tools.json). A test keeps that file current; regenerate it with
@@ -79,20 +80,20 @@ clock is real time and there is no scenario to control.
 
 Design 17.2 writes names with dots (`world.get_state`). The tools use underscores, because the Anthropic API
 accepts only `[a-zA-Z0-9_-]` in tool names. Frames are 60 Hz sim frames. `conf` is exclusive: every frame
-below it is confirmed and can never be rolled back. Hashes are 16 hex digits.
+below it is confirmed and can never be rolled back. Frame state hashes are 16 hex digits; check hashes (BLAKE3) are 64.
 
 | Tool | Does | Errors besides `invalid_argument`, `forbidden` and `session_faulted` |
 |---|---|---|
 | `session_info` | Principal, scopes, the member you drive, members, scene, clock, frame, `conf`; `faulted` if the session stopped | none |
 | `world_get_state` | Frame, `conf`, state hash, a page of objects (`offset`, `limit` ≤ 256, `next_offset`), the claims in force | none |
 | `world_get_object` | One object: global id, kind, position, rotation, velocities, exact-state hash, claim | `unknown_object` |
-| `world_propose_interaction` | Authors an interaction as your member through the player path: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. `touch` or `grab` with `impulse` (magnitude ≤ 100 N·s), or `hand` with `target_mm` (ball-pit scenes; only your own member's hand). Returns a `ticket` | `unknown_object`, `not_owner` (another member's hand), `rate_limited` (64 unresolved), `not_ready` (paused at the speculation limit; step and retry), `peer_crashed` |
+| `world_propose_interaction` | Authors an interaction as your member through the player path: stamped with the present frame, ordered soonest-wins, rolled back when earlier entries arrive. `touch` or `grab` with `impulse` (magnitude ≤ 100 N·s), or `hand` with `target_mm` (ball-pit scenes; only your own member's hand), held there (re-sent at every pose slot) until a new target or `active: false`; the call waits for the next pose slot, so it may advance time by up to one stride (simulated in the simulator, real time on a live peer, where it blocks the engine thread). Returns a `ticket` | `unknown_object`, `not_owner` (another member's hand), `rate_limited` (64 unresolved), `not_ready` (paused at the speculation limit; step and retry), `peer_crashed` |
 | `world_interaction_status` | `pending`, `accepted`, `rejected` (with `reason`: `claimed` plus `by_member` and `until_frame`, `cooldown`, `gone`, …) or `void`. `final` once the stamp is confirmed; until then a rollback can still change it | `unknown_ticket` (tickets belong to their principal) |
 | `world_step` | Advances virtual time by `ms` (1..=10000) or `frames` (1..=600, exact). Reports frame, `conf`, rollbacks, re-simulated frames, `paused`, your interactions whose state changed, and protocol events (at most 50) | none |
 | `world_hashes` | State hash after each frame in `[from, to)` (≤ 600 frames), and the check hashes compared with other members | none |
 | `session_members` | Members with evictions (`cut_seq`, `from_frame`), epoch, vote counters | none |
 | `session_sync_status` | Frame, clock, `conf`, speculation and its window, `paused`, `caught_up`, check hashes matched and mismatched, rollback counters | none |
-| `scenario_load` | Starts a fresh session (tickets are cleared): `members` 2..=8, `me`, `scene` (`pile` with `size` 1..=8, or `ballpit` with 1..=500 balls), `delay_ms`, `jitter_ms`, `loss_pct`, `background_touches_per_s`, `window`, `seed`. The same parameters and seed give the same run. A failed load leaves the session as it was. It also clears `session_faulted` | `no_scenario_control` (live peer) |
+| `scenario_load` | Starts a fresh session (tickets are cleared): `members` 2..=8, `me`, `scene` (`pile` with `size` 1..=8, or `ballpit` with 1..=500 balls), `delay_ms`, `jitter_ms`, `loss_pct`, `background_touches_per_s`, `background_grabs` (background touches are grabs: only a grab claims, design D72), `window`, `seed`. The same parameters and seed give the same run. A failed load leaves the session as it was. It also clears `session_faulted` | `no_scenario_control` (live peer) |
 | `scenario_fault` | `crash` a member (permanent); set a `link` (`from`, `to`, delay, jitter, loss, `one_way`); `partition` into `groups`; `heal` | `no_scenario_control` |
 | `scenario_check` | The oracle, over the frames every live member has confirmed: every live member's hashes against the driven peer's, and the driven peer's against an offline replay of its final log. Reports `first_divergence` | `no_scenario_control` |
 

@@ -1,0 +1,18 @@
+pe-app: member 4 of session ef2f15546ab27203 on 127.0.0.1:7314; 4 members, 12000 frames
+[m4 t=0ms f=0] session start received: epoch 1156089 (leader clock), my offset -113408 us, best rtt 2042 us
+[m4 t=730ms f=43] status: frame 43 now 43 conf 41 members {1, 2, 3, 4} rollbacks 0 | sent 84 faulted 0 recv 79 rejected {} unsigned 0 | sigs 88
+[m4 t=2731ms f=163] status: frame 163 now 163 conf 160 members {1, 2, 3, 4} rollbacks 0 | sent 270 faulted 0 recv 259 rejected {} unsigned 0 | sigs 331
+[m4 t=4732ms f=283] status: frame 283 now 283 conf 280 members {1, 2, 3, 4} rollbacks 0 | sent 456 faulted 0 recv 443 rejected {} unsigned 0 | sigs 577
+[m4 t=6734ms f=404] status: frame 404 now 404 conf 400 members {1, 2, 3, 4} rollbacks 0 | sent 645 faulted 0 recv 625 rejected {} unsigned 0 | sigs 823
+[m4 t=8734ms f=524] status: frame 524 now 524 conf 520 members {1, 2, 3, 4} rollbacks 0 | sent 831 faulted 0 recv 808 rejected {} unsigned 0 | sigs 1068
+[m4 t=10734ms f=644] status: frame 644 now 644 conf 641 members {1, 2, 3, 4} rollbacks 0 | sent 1017 faulted 0 recv 993 rejected {} unsigned 0 | sigs 1315
+[m4 t=12736ms f=764] status: frame 764 now 764 conf 760 members {1, 2, 3, 4} rollbacks 0 | sent 1206 faulted 0 recv 1175 rejected {} unsigned 0 | sigs 1560
+[m4 t=14736ms f=884] status: frame 884 now 884 conf 880 members {1, 2, 3, 4} rollbacks 0 | sent 1392 faulted 0 recv 1358 rejected {} unsigned 0 | sigs 1805
+[m4 t=16738ms f=1004] status: frame 1004 now 1004 conf 1001 members {1, 2, 3, 4} rollbacks 0 | sent 1581 faulted 0 recv 1540 rejected {} unsigned 0 | sigs 2052
+[m4 t=18739ms f=1124] status: frame 1124 now 1124 conf 1121 members {1, 2, 3, 4} rollbacks 0 | sent 1764 faulted 0 recv 1723 rejected {} unsigned 0 | sigs 2298
+[m4 t=20740ms f=1244] status: frame 1244 now 1244 conf 1241 members {1, 2, 3, 4} rollbacks 0 | sent 1953 faulted 0 recv 1906 rejected {} unsigned 0 | sigs 2544
+[m4 t=22742ms f=1364] status: frame 1364 now 1364 conf 1360 members {1, 2, 3, 4} rollbacks 0 | sent 2139 faulted 0 recv 2089 rejected {} unsigned 0 | sigs 2789
+[m4 t=24742ms f=1484] status: frame 1484 now 1484 conf 1481 members {1, 2, 3, 4} rollbacks 0 | sent 2322 faulted 0 recv 2272 rejected {} unsigned 0 | sigs 3035
+[m4 t=26743ms f=1604] status: frame 1604 now 1604 conf 1601 members {1, 2, 3, 4} rollbacks 0 | sent 2508 faulted 0 recv 2455 rejected {} unsigned 0 | sigs 3280
+[m4 t=28743ms f=1724] status: frame 1724 now 1724 conf 1721 members {1, 2, 3, 4} rollbacks 0 | sent 2697 faulted 0 recv 2639 rejected {} unsigned 0 | sigs 3527
+[m4] scripted drop-out at 30000 ms: exiting without a word
