@@ -144,7 +144,7 @@ pub fn kind(m: &Msg) -> &'static str {
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
             Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } => "vote",
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } => "admin",
+            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } | Payload::Ban { .. } => "admin",
             Payload::Attest { .. } => "attest",
             Payload::Provenance { .. } => "provenance",
             _ => "entry/transfer",
@@ -323,6 +323,10 @@ pub enum Action {
     Kick { target: MemberId },
     SetRole { member: MemberId, role: RoleId },
     DefineRole { role: RoleId, perms: u64 },
+    /// 12.4: kick with an option (remove Admin, ban, perma-ban); ban or unban test identity `key`'s
+    /// key, for the session or (`perma`) the world.
+    KickWith { target: MemberId, rejoin: Rejoin },
+    Ban { key: u32, on: bool, perma: bool },
     /// World ownership: publish a certificate for `change` on this replica's ownership head, signed
     /// by test identities `keys`.
     Owner { change: OwnChange, keys: Vec<u32> },
@@ -388,6 +392,9 @@ pub struct Peer {
     pub routes: BTreeMap<WorldId, BTreeSet<WorldId>>,
     /// A crashed peer neither receives, ticks nor sends (reviews R3-2, R3-7).
     pub crashed: bool,
+    /// Per world: members that sign with another test identity's key ([`KeyRing::test_with`]); set
+    /// before [`Peer::join`].
+    pub identities: BTreeMap<WorldId, BTreeMap<MemberId, u32>>,
 }
 
 /// Result of one acceptance check (user ruling 09:31Z): after the receiver re-simulated to its
@@ -418,7 +425,7 @@ pub struct Sim {
 
 impl Peer {
     pub fn new(id: MemberId, skew_us: i64) -> Self {
-        Peer { id, skew_us, worlds: BTreeMap::new(), jobs: Vec::new(), routes: BTreeMap::new(), crashed: false }
+        Peer { id, skew_us, worlds: BTreeMap::new(), jobs: Vec::new(), routes: BTreeMap::new(), crashed: false, identities: BTreeMap::new() }
     }
 
     /// R14: world `w` trades objects with the worlds `to` (its genesis route list).
@@ -440,7 +447,11 @@ impl Peer {
             Ok("never") => cfg.compact = CompactPolicy::Never,
             _ => {}
         }
-        let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)));
+        let keys = match self.identities.get(&world) {
+            Some(ids) => KeyRing::test_with(self.id, ids),
+            None => KeyRing::test(self.id),
+        };
+        let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, keys));
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;
@@ -622,7 +633,9 @@ impl Sim {
                             }
                             continue;
                         }
-                        Action::Kick { target } => Payload::Kick { epoch: 0, target },
+                        Action::Kick { target } => Payload::Kick { epoch: 0, target, rejoin: Rejoin::Free },
+                        Action::KickWith { target, rejoin } => Payload::Kick { epoch: 0, target, rejoin },
+                        Action::Ban { key, on, perma } => Payload::Ban { epoch: 0, key: pe_session::ownership::test_key(key), on, perma },
                         Action::SetRole { member, role } => Payload::SetRole { epoch: 0, member, role },
                         Action::DefineRole { role, perms } => Payload::DefineRole { epoch: 0, role, perms },
                         Action::Owner { ref change, ref keys } => {

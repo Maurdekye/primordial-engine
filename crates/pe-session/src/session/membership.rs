@@ -201,14 +201,18 @@ pub(super) fn admin_key(e: &Entry) -> (u64, MemberId, u32) {
 /// The membership state an admin sequence runs against (D80).
 #[derive(Clone)]
 pub(super) struct AdminRun {
-    members: BTreeSet<MemberId>,
-    roles: BTreeMap<MemberId, RoleId>,
-    defs: BTreeMap<RoleId, u64>,
+    pub(super) members: BTreeSet<MemberId>,
+    pub(super) roles: BTreeMap<MemberId, RoleId>,
+    pub(super) defs: BTreeMap<RoleId, u64>,
     excluded: BTreeSet<MemberId>,
     /// The world owners' keys (12.5).
-    owners: BTreeSet<Key>,
+    pub(super) owners: BTreeSet<Key>,
     /// The members' ownership keys ([`WorldSim::key_of`]), for Q27.
-    keys: BTreeMap<MemberId, Key>,
+    pub(super) keys: BTreeMap<MemberId, Key>,
+    /// 12.4: this session's bans and rejoin roles, by identity key.
+    pub(super) bans: BTreeMap<Key, Restrict>,
+    /// 12.4: the world's perma-bans (its ACL), by identity key.
+    pub(super) perma: BTreeSet<Key>,
     /// The world's ownership chain (12.5), if it has one, and the session lineage that commits to it.
     book: Option<Book>,
     lineage: u32,
@@ -248,6 +252,54 @@ impl AdminRun {
     fn owns(&self, m: MemberId) -> bool {
         self.keys.get(&m).is_some_and(|k| self.owners.contains(k))
     }
+    /// Whether member `a` may kick `target` with option `rejoin` (12.4 kick options): the kick itself
+    /// ([`Self::kick_allowed`]), and for an option the target's key; a rejoin role must be defined and
+    /// not count as an admin; a ban needs the ban's own right ([`Self::may_ban`]), room in its list, and
+    /// a target that is no owner (row 0 is above the bans). Otherwise the whole kick is refused.
+    pub(super) fn kick_ok(&self, a: MemberId, target: MemberId, rejoin: Rejoin) -> bool {
+        if !self.kick_allowed(a, target) {
+            return false;
+        }
+        let Some(k) = self.keys.get(&target) else { return rejoin == Rejoin::Free };
+        match rejoin {
+            Rejoin::Free => true,
+            Rejoin::Role(r) => r != ADMIN && self.defs.contains_key(&r) && !self.role_admin_like(r),
+            Rejoin::Ban | Rejoin::PermaBan => {
+                let perma = rejoin == Rejoin::PermaBan;
+                self.may_ban(a, perma) && !self.owners.contains(k) && self.ban_room(k, perma)
+            }
+        }
+    }
+    /// Who may ban or lift a ban (12.4, user msg m5c4b84d186a8): this session's, the BAN permission
+    /// (Admin holds it); the world's perma-bans, an owner, whatever its role.
+    fn may_ban(&self, a: MemberId, perma: bool) -> bool {
+        if perma { self.owns(a) } else { self.perms(a) & perm::BAN != 0 }
+    }
+    fn banned(&self, k: &Key, perma: bool) -> bool {
+        if perma { self.perma.contains(k) } else { self.bans.get(k) == Some(&Restrict::Ban) }
+    }
+    /// Whether a member holds identity key `k` at this point of the sequence.
+    pub(super) fn holds(&self, k: &Key) -> bool {
+        self.members.iter().any(|m| self.keys.get(m) == Some(k))
+    }
+    /// Whether banning `k` leaves its list within [`MAX_BANS`].
+    fn ban_room(&self, k: &Key, perma: bool) -> bool {
+        let n = if perma { self.perma.len() } else { self.bans.values().filter(|r| **r == Restrict::Ban).count() };
+        self.banned(k, perma) || n < MAX_BANS
+    }
+    /// Whether member `a` may make ban entry (`key`, `on`, `perma`) (12.4): the ban's right; a ban names
+    /// a key that no member and no owner holds and its list doesn't hold yet, within [`MAX_BANS`]; a lift
+    /// names a key its list holds (a session lift: a ban or a rejoin role).
+    pub(super) fn ban_ok(&self, a: MemberId, key: &Key, on: bool, perma: bool) -> bool {
+        if !self.may_ban(a, perma) {
+            return false;
+        }
+        match (on, perma) {
+            (true, _) => !self.holds(key) && !self.owners.contains(key) && !self.banned(key, perma) && self.ban_room(key, perma),
+            (false, true) => self.perma.contains(key),
+            (false, false) => self.bans.contains_key(key),
+        }
+    }
     /// Whether admin entry `e` applies at this point of the sequence; if it does, apply it. A
     /// refused entry changes nothing.
     pub(super) fn apply(&mut self, e: &Entry) -> bool {
@@ -257,12 +309,22 @@ impl AdminRun {
         }
         let p = self.perms(a);
         match e.payload {
-            Payload::Kick { target, .. } => {
-                if !self.kick_allowed(a, target) {
+            Payload::Kick { target, rejoin, .. } => {
+                if !self.kick_ok(a, target, rejoin) {
                     return false;
+                }
+                if let Some(&k) = self.keys.get(&target) {
+                    restrict(&mut self.bans, &mut self.perma, k, rejoin);
                 }
                 self.members.remove(&target);
                 self.roles.remove(&target);
+                true
+            }
+            Payload::Ban { key, on, perma, .. } => {
+                if !self.ban_ok(a, &key, on, perma) {
+                    return false;
+                }
+                ban(&mut self.bans, &mut self.perma, key, on, perma);
                 true
             }
             Payload::SetRole { member, role, .. } => {
@@ -279,6 +341,12 @@ impl AdminRun {
                         None => self.roles.remove(&member),
                     };
                     return false;
+                }
+                // 12.4: an admin's explicit promotion lifts the member's rejoin role.
+                if self.role_admin_like(role)
+                    && let Some(k) = self.keys.get(&member)
+                {
+                    lift_rejoin_role(&mut self.bans, k);
                 }
                 true
             }
@@ -315,6 +383,62 @@ impl AdminRun {
     }
 }
 
+/// What a session's ban list holds for one identity key (12.4): a ban, or a rejoin role (kick and
+/// remove Admin). Session state only: never written into the world (user msg m5c4b84d186a8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restrict {
+    Ban,
+    Role(RoleId),
+}
+
+/// Each ban list (a session's, the world's perma-bans) holds at most this many keys (12.4).
+pub const MAX_BANS: usize = 4096;
+
+/// Record a kick's option for key `k`: in the session's list a ban replaces anything and a rejoin role
+/// replaces nothing but a rejoin role; a perma-ban goes into the world's list, beside the session's.
+fn restrict(bans: &mut BTreeMap<Key, Restrict>, perma: &mut BTreeSet<Key>, k: Key, rejoin: Rejoin) {
+    match rejoin {
+        Rejoin::Free => {}
+        Rejoin::Ban => {
+            bans.insert(k, Restrict::Ban);
+        }
+        Rejoin::PermaBan => {
+            perma.insert(k);
+        }
+        Rejoin::Role(r) => {
+            if bans.get(&k) != Some(&Restrict::Ban) {
+                bans.insert(k, Restrict::Role(r));
+            }
+        }
+    }
+}
+
+/// Apply a ban entry: ban or lift `k` in the session's list or the world's. A session lift clears a
+/// rejoin role too; the two lists never touch each other.
+fn ban(bans: &mut BTreeMap<Key, Restrict>, perma: &mut BTreeSet<Key>, k: Key, on: bool, world: bool) {
+    match (on, world) {
+        (true, false) => {
+            bans.insert(k, Restrict::Ban);
+        }
+        (false, false) => {
+            bans.remove(&k);
+        }
+        (true, true) => {
+            perma.insert(k);
+        }
+        (false, true) => {
+            perma.remove(&k);
+        }
+    }
+}
+
+/// Lift `k`'s rejoin role (not a ban): a promotion to a role that counts as an admin.
+fn lift_rejoin_role(acl: &mut BTreeMap<Key, Restrict>, k: &Key) {
+    if matches!(acl.get(k), Some(Restrict::Role(_))) {
+        acl.remove(k);
+    }
+}
+
 /// A role in a session (D80; user rulings 22:13Z-22:18Z). Admin, role 0, is built in: it always
 /// exists, holds every permission and is by default the only role. Admins define other roles as
 /// subsets of the permission set. Admins are equal: none is above another.
@@ -332,6 +456,9 @@ pub mod perm {
     /// Kick a member who counts as an admin (V1, user 08:31Z): by default only Admin holds it, and a
     /// session may give it to other roles.
     pub const KICK_ADMIN: u64 = 1 << 2;
+    /// Ban and unban identity keys for this session (12.4; any Admin, user msg m5c4b84d186a8). A kick
+    /// with the ban option needs it too. Perma-bans need an owner's key instead.
+    pub const BAN: u64 = 1 << 3;
     pub const ALL: u64 = u64::MAX;
 }
 
@@ -472,6 +599,13 @@ pub fn join_sig_in(session: &SessionId, joiner: MemberId, expires: u64) -> Sig {
 /// A request from `joiner` to join session `session`, signed with its test identity.
 pub fn join_msg(session: &SessionId, joiner: MemberId, attests: Vec<Attest>, expires: u64) -> Msg {
     Msg::Join { member: joiner, attests, sig: join_sig_in(session, joiner, expires), expires }
+}
+
+/// The same request signed with test identity `identity`'s key ([`KeyRing::test_with`]).
+pub fn join_msg_as(session: &SessionId, joiner: MemberId, identity: u32, attests: Vec<Attest>, expires: u64) -> Msg {
+    use ed25519_dalek::Signer;
+    let sig = crate::sign::test_signing_key(identity).sign(&crate::sign::join_message(session, joiner, expires)).to_bytes();
+    Msg::Join { member: joiner, attests, sig, expires }
 }
 
 impl Change {
@@ -669,11 +803,11 @@ impl WorldSim {
                     self.cap_polka.entry(m).or_insert_with(|| polka.clone());
                 }
             }
-            Payload::Kick { target, .. } => {
+            Payload::Kick { target, rejoin, .. } => {
                 // V1: judged by the same rule as in commit order, against the current state, so a kick
                 // that would be refused (an admin by a kick-only role, an owner by a non-owner) freezes
                 // no one. It can be sent again once the state allows it.
-                if self.vcm.admin_outcomes.contains_key(&id) || !self.admin_run().kick_allowed(m, target) {
+                if self.vcm.admin_outcomes.contains_key(&id) || !self.admin_run().kick_ok(m, target, rejoin) {
                     return;
                 }
                 self.vcm.admin_pending.insert(id);
@@ -689,6 +823,12 @@ impl WorldSim {
             }
             Payload::SetRole { .. } | Payload::DefineRole { .. } => {
                 if !self.vcm.admin_outcomes.contains_key(&id) && self.perms_of(m) & perm::ROLES != 0 {
+                    self.vcm.admin_pending.insert(id);
+                }
+            }
+            // 12.4: pending only if it would apply now (V1's receipt rule, V13-1).
+            Payload::Ban { key, on, perma, .. } => {
+                if !self.vcm.admin_outcomes.contains_key(&id) && self.admin_run().ban_ok(m, &key, on, perma) {
                     self.vcm.admin_pending.insert(id);
                 }
             }
@@ -753,6 +893,8 @@ impl WorldSim {
             excluded: BTreeSet::new(),
             owners: self.owner_keys(),
             keys: self.vcm.members.iter().filter_map(|&m| Some((m, self.key_of(m)?))).collect(),
+            bans: self.vcm.bans.clone(),
+            perma: self.vcm.perma_bans.clone(),
             book: self.vcm.book.clone(),
             lineage: self.world_id,
         }
@@ -820,9 +962,36 @@ impl WorldSim {
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
     /// every replica judges it.
     pub fn kick(&mut self, target: MemberId) -> SignedEntry {
+        self.kick_with(target, Rejoin::Free)
+    }
+
+    /// 12.4: kick `target` with an option: remove Admin (a rejoin role) or ban.
+    pub fn kick_with(&mut self, target: MemberId, rejoin: Rejoin) -> SignedEntry {
         let epoch = self.vcm.epoch;
-        let e = self.author_vc(Payload::Kick { epoch, target });
+        let e = self.author_vc(Payload::Kick { epoch, target, rejoin });
         self.signed(e)
+    }
+
+    /// 12.4: ban identity key `key` (no member holds it) for this session or (`perma`) for the world,
+    /// or lift that ban (a session lift also clears a rejoin role).
+    pub fn ban(&mut self, key: Key, on: bool, perma: bool) -> SignedEntry {
+        let epoch = self.vcm.epoch;
+        let e = self.author_vc(Payload::Ban { epoch, key, on, perma });
+        self.signed(e)
+    }
+
+    /// 12.4: the world's perma-bans, as decided: what an owner's client writes into `acl/` (16.10), and
+    /// what the world's next session starts from ([`Self::set_perma_bans`]). This session's own bans
+    /// and rejoin roles (`vcm.bans`) are never written.
+    pub fn perma_bans(&self) -> &BTreeSet<Key> {
+        &self.vcm.perma_bans
+    }
+
+    /// Start the session from the world's saved perma-bans (part of its starting governance, before
+    /// the first frame is simulated). A session starts with no session bans.
+    pub fn set_perma_bans(&mut self, keys: BTreeSet<Key>) {
+        assert_eq!(self.frame, 0, "the perma-bans are part of the session's starting governance");
+        self.vcm.perma_bans = keys;
     }
 
     /// D80: give `member` the role `role`.
@@ -863,9 +1032,32 @@ impl WorldSim {
         // Row 0, fixed in every world (user 22:48Z): a world owner joins as Admin. Owners, like the
         // other targets, are as the admin entries before the join in its change leave them (review OWNY-1).
         let jk = self.key_of(j);
+        // 12.4 (review BN-3): one key, one member. A key a member holds does not join again.
+        if jk.is_some_and(|k| run.holds(&k)) {
+            return None;
+        }
         if jk.is_some_and(|k| run.owners.contains(&k)) {
             return Some(ADMIN);
         }
+        // 12.4: the perma-bans, then the session's bans, after row 0 and before the rows; a rejoin role
+        // replaces a role that counts as an admin (and refuses if it no longer qualifies).
+        if jk.is_some_and(|k| run.perma.contains(&k)) {
+            return None;
+        }
+        let limit = match jk.and_then(|k| run.bans.get(&k)) {
+            Some(Restrict::Ban) => return None,
+            Some(&Restrict::Role(r)) => Some(r),
+            None => None,
+        };
+        let role = self.join_rows(j, jk, attests, run)?;
+        match limit {
+            Some(r) if run.role_admin_like(role) => (r != ADMIN && run.defs.contains_key(&r) && !run.role_admin_like(r)).then_some(r),
+            _ => Some(role),
+        }
+    }
+
+    /// The join rows after row 0 and the ban list, then the fallback (D80).
+    fn join_rows(&self, j: MemberId, jk: Option<Key>, attests: &[Attest], run: &AdminRun) -> Option<RoleId> {
         let has = |rel: Rel, g: MemberId| match rel {
             Rel::Is => g == j,
             Rel::Named(n) => n == j,
@@ -1297,7 +1489,12 @@ impl WorldSim {
         let mut add_roles = Vec::new();
         let mut add_attests = Vec::new();
         let mut add_reqs = Vec::new();
+        let mut join_keys = BTreeSet::new();
         for (j, r, a, req) in joins {
+            // 12.4 (review BN-3): one key, one member, among the change's joiners too.
+            if self.key_of(j).is_some_and(|k| !join_keys.insert(k)) {
+                continue;
+            }
             add.push(j);
             add_roles.push(r);
             add_attests.push(if self.fixes_off & fix::VCR7 == 0 { a } else { Vec::new() });
@@ -1481,7 +1678,7 @@ impl WorldSim {
         for &(id, ok) in &c.admin {
             let e = self.entries.get(&id)?.clone();
             let epoch = match e.payload {
-                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } => epoch,
+                Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } | Payload::Ban { epoch, .. } => epoch,
                 _ => return Some(false),
             };
             let key = admin_key(&e);
@@ -1546,7 +1743,11 @@ impl WorldSim {
         if c.add_roles.len() != c.add.len() || c.add_attests.len() != c.add.len() {
             return Some(false);
         }
+        let mut join_keys = BTreeSet::new();
         for ((&j, &role), carried) in c.add.iter().zip(&c.add_roles).zip(&c.add_attests) {
+            if self.key_of(j).is_some_and(|k| !join_keys.insert(k)) {
+                return Some(false);
+            }
             // Review VCR-7: the change's own attestations decide, the same at every replica.
             let attests = if self.fixes_off & fix::VCR7 == 0 { carried.clone() } else { self.vcm.join_attests.get(&j).cloned().unwrap_or_default() };
             if self.join_role(j, &attests, &run) != Some(role) {
@@ -1918,6 +2119,21 @@ impl WorldSim {
                 match payload {
                     Some(Payload::SetRole { member, role, .. }) => {
                         self.vcm.roles.insert(member, role);
+                        // 12.4: as in the run, an explicit promotion lifts the member's rejoin role.
+                        if (role == ADMIN || self.vcm.role_defs.get(&role).is_some_and(|p| p & perm::ROLES != 0))
+                            && let Some(k) = self.key_of(member)
+                        {
+                            lift_rejoin_role(&mut self.vcm.bans, &k);
+                        }
+                    }
+                    // 12.4: the kick's option, for the target's key (its removal is among the removals).
+                    Some(Payload::Kick { target, rejoin, .. }) => {
+                        if let Some(k) = self.key_of(target) {
+                            restrict(&mut self.vcm.bans, &mut self.vcm.perma_bans, k, rejoin);
+                        }
+                    }
+                    Some(Payload::Ban { key, on, perma, .. }) => {
+                        ban(&mut self.vcm.bans, &mut self.vcm.perma_bans, key, on, perma);
                     }
                     Some(Payload::DefineRole { role, perms, .. }) => {
                         self.vcm.role_defs.insert(role, perms);
