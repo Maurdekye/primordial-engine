@@ -230,7 +230,8 @@ removals decided in two epochs instead of one), strikeframe (which fix-off timin
 {2, 3, 9}; honest 1 is struck in all of them, so the control still shows the bug), r14-chain, -epoch and
 -reverse (the arrival line printed before the departures; every transfer Accepted), and aheadlink-cut (3
 catches up epoch 1 directly at 32.6 s instead of through a reset; never removed, worst lag 1,849 frames
-against 1,838). The tool's regress reproduces every log (the same `Net`); holeforker is pe only.
+against 1,838). The tool's regress reproduces every log (the same `Net`); holeforker is pe only. On Linux (WSL, static musl, at
+0a84449) the pe-session tests pass and the 97 suite logs are identical to these (the 19 others are the tool's own).
 
 **Evidence fixes found on the way** (c3d837c, c6e564f):
 - **Scripted faults saw no runs.** The harness's fault filters are written for `Msg::Entry`; a run of two or
