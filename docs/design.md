@@ -1451,8 +1451,10 @@ if our bulk transport proves weak.
   view-change decisions, against none with every member on Windows [V pe-app p2/app af58f53,
   spikes/out/m1/wsl-clock-skew].
   Real machines drift about 10-100 ppm, so the VM is the case that matters, and M1 mixes the two.
-  1. Every member pings every live member about every 500 ms. For each peer it fits that peer's offset
-     against its own clock as a + b·t, over the recent lowest-RTT samples.
+  1. Every member pings every live member about every 500 ms. A pong carries the replier's session time
+     (for the offset), its raw monotonic stamp, and its applied frequency correction r_j (item 5). For
+     each peer the member fits that peer's offset in session time over the recent lowest-RTT samples, and
+     separately the raw-clock ratio ρ_ij between the two monotonic clocks.
   2. Its target is the **fault-tolerant midpoint** of the predicted offsets to all members, its own (0)
      included (review CM-1). It drops the t lowest and the t highest, with t = floor((n - 1) / 3) as in
      10.8, and targets the midpoint of the lowest and highest that remain. Two members (t = 0) split the
@@ -1466,19 +1468,27 @@ if our bulk transport proves weak.
      frequency, without the slewed offset (review CM-2). That removes the skew. A constant offset is
      absorbed by the estimator's base (10.9, item 3), and a slew never reads as queue. Stamped in slewed
      session time, a slew at join, or a liar moving the target, would look like queue growth and could
-     trip the 40 ms trigger with no queue. The frequency comes from the same trimmed selection: the
-     fault-tolerant midpoint of the members' fitted rates, its own included.
+     trip the 40 ms trigger with no queue. The frequency is the member's applied correction (item 5).
   5. **The frequency is selected again at every sync round, never once** (@shader-reviewer's review of
-     pe-app a83af41, through @coordinator-opus):
-     * Rates drift: WSL2's clock ran 2.3% slow when idle and up to about 9% under load.
-     * A choice made once lets two-faced liars leave honest members on different frequencies. Skewed
-       clocks with a one-time choice disagreed by up to 58, 128 and 232 ms in the first ~15 s
-       [V @shader-reviewer]. Repeated, the trimmed midpoint draws the honest frequencies together, as it
-       does the offsets (the fault bound below covers both).
-     * The applied frequency moves gradually toward each round's selection, never in a step. So neither
-       the session clock nor R18's rate-corrected clock jumps, and what drift remains during convergence
-       is slow next to the estimator's 40 ms trigger and its base filter [I]. The build's evidence shows
-       the honest members' frequencies converging under the 7-member two-colluder case.
+     pe-app a83af41, through @coordinator-opus; the scheme is @shader-lang's, review CF-1):
+     * Rates drift: WSL2's clock ran 2.3% slow when idle and up to about 9% under load. And a choice made
+       once lets two-faced liars leave honest members on different frequencies: skewed clocks disagreed
+       by up to 58, 128 and 232 ms in the first ~15 s at a83af41 [V @shader-reviewer]. (The start-up gap is
+       11, 24 and 43 ms at 137a8b5, which predicts from the newest sample until a frequency is fitted; that
+       part is separate from this item.)
+     * Each round, member i knows each peer's session frequency in its own raw units exactly:
+       (1 + ρ_ij)(1 + r_j) - 1, from the peer's reported correction r_j and the fitted raw ratio ρ_ij. ρ
+       depends on nobody's correction, so its fit converges once and closes no loop. The member targets the
+       fault-tolerant midpoint of those values, its own r_i included, and moves r_i toward it with a gain
+       per round, never in a step.
+     * So the exchanged values are the members' applied corrections, combined with each member's fitted
+       raw-clock ratio; not slopes fitted to corrected clocks, which lag 5-15 s behind and oscillated
+       (±80 ms with a 20 s period in a pe-app unit test before fba1585 [V @shader-lang]).
+     * This is round-based approximate agreement on exchanged values: under the fault bound below the
+       honest corrections converge, and a two-faced r_j or raw stamp is bounded by the trimming, as for
+       offsets. Neither the session clock nor R18's rate-corrected clock steps, and the drift left while
+       converging is slow next to the estimator's 40 ms trigger and its base filter [I]. The build's
+       evidence shows the honest corrections converging in the 7-member two-colluder case.
   * **Why not the leader** [I]: a faulty leader could give each member a different time. A member pushed
     behind looks exactly like a slow link: its acks arrive late, confirmation stalls, and the slow-member
     rule demotes it (10.9, item 7). So one faulty member could get honest ones removed. The leader also
