@@ -91,10 +91,20 @@ impl WorldSim {
             (false, true) => {
                 let fed = self.fed.take().unwrap();
                 self.ev(format!("feed: member {} comes off the state feed at frame {} (on it since {})", self.me, self.frame, fed.since));
-                if let Some(&f) = fed.anchors.keys().next() {
-                    if f >= self.conf && f < self.frame {
-                        self.mark_dirty(f);
-                    }
+                // It heard no entries while fed, so it has no evidence of anyone's silence or lag: the clocks
+                // restart (a stale `heard` voted out live members on leaving).
+                let now = self.now;
+                let ms: Vec<MemberId> = self.members.iter().copied().collect();
+                for m in ms {
+                    self.heard.insert(m, now);
+                }
+                self.suspect_since.clear();
+                self.lagging.clear();
+                // Re-simulate from the frame it went on the feed (its state before that was the log's): anchors are
+                // pruned to the last two windows, so the first kept one left older anchors' writes in the state.
+                let f = fed.since.max(self.conf);
+                if f < self.frame && !fed.anchors.is_empty() {
+                    self.mark_dirty(f);
                 }
             }
             _ => {}
@@ -173,11 +183,15 @@ impl WorldSim {
         let &echoed = self.fed_peers.get(&j)?;
         let after = echoed.or_else(|| self.covered_ckpt(j, self.me).map(|(b, _)| b));
         let lo = after.map_or(0, |b| b + 1);
-        let (&(_, b), &(_, id, _)) = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).next()?;
-        let stamp = self.entries.get(&id).map_or(b * super::CKPT_FRAMES, |e| e.stamp);
+        let (&(_, b), _) = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).next()?;
+        // From when I first sent it that checkpoint (an echo can't be timely about one it was never sent), to j's newest
+        // ack I hold: the evidence is j's own acks, X frames after I sent it, still without the echo. A replica behind
+        // on j's chain (back from the feed, catching up) sees only older acks, and doesn't judge.
+        let sent = *self.ckpt_first_sent.get(&(j, b))?;
+        let acked = self.ack_stamps.get(&j).and_then(|a| a.values().next_back().copied())?;
         let c_max = self.windows.values().next_back().map_or(self.cfg.window / 2, |v| v.c_max);
         let x = self.cfg.window.saturating_sub(c_max).max(self.cfg.suspect_after);
-        let lag = self.now.saturating_sub(stamp);
+        let lag = acked.saturating_sub(sent);
         (lag >= x).then_some((lag, x))
     }
 
@@ -245,7 +259,8 @@ impl WorldSim {
     pub fn ckpt_msgs(&mut self) -> Vec<(MemberId, Msg)> {
         const RESEND_FRAMES: u64 = 2 * super::CKPT_FRAMES;
         let mut out = Vec::new();
-        if self.fed.is_some() || !self.members.contains(&self.me) {
+        // A fed member sends its own checkpoints too (it holds its own chain).
+        if !self.members.contains(&self.me) {
             return out;
         }
         let fs: Vec<(MemberId, Option<u64>)> = self.fed_peers.iter().map(|(&f, &b)| (f, b)).collect();
@@ -260,6 +275,9 @@ impl WorldSim {
             let due = self.ckpt_sent.get(&f).is_none_or(|&(sb, at)| newest > sb || self.frame >= at + RESEND_FRAMES);
             if due {
                 self.ckpt_sent.insert(f, (newest, self.frame));
+                for &(b, _) in &list {
+                    self.ckpt_first_sent.entry((f, b)).or_insert(self.frame);
+                }
                 out.push((f, Msg::Ckpts { member: self.me, after, list }));
             }
         }
