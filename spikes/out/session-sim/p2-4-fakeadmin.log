@@ -1,14 +1,7 @@
-REPRO fakeadmin fixed=false (no-op SetRole every 2 s): 8 removed at never; decisions at m1 6; live at the end: false; m1 conf 106 of frame 226, m2 conf 106 of frame 226, m3 conf 106 of frame 226, m4 conf 106 of frame 226
-RESULT fakeadmin fixed=false: -> HALTS, AS BEFORE THE FIX
-  m1: conf 106 frame 226 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 16 bad 0
-  m2: conf 106 frame 226 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
-  m3: conf 106 frame 226 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
-  m4: conf 106 frame 226 members {1, 2, 3, 4, 8} evicted {} rollbacks 9 max depth 2 violations 0 equivocations 0 checks ok 16 bad 0
-RESULT fakeadmin fixed=false: frames 0..225 honest m1=85287cc85ff7df7a m2=85287cc85ff7df7a m3=85287cc85ff7df7a m4=85287cc85ff7df7a | offline replay 85287cc85ff7df7a | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
-REPRO fakeadmin fixed=true (no-op SetRole every 2 s): 8 removed at 5.23 s; decisions at m1 3; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
-RESULT fakeadmin fixed=true: -> VOTED OUT, CONFIRMATION GOES ON
-  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (89, 296)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 79 bad 0
-  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (89, 296)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
-  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (89, 296)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
-  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (89, 296)} rollbacks 35 max depth 2 violations 0 equivocations 0 checks ok 79 bad 0
-RESULT fakeadmin fixed=true: frames 0..832 honest m1=7ffe7deda332a50e m2=7ffe7deda332a50e m3=7ffe7deda332a50e m4=7ffe7deda332a50e | offline replay 7ffe7deda332a50e | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0
+REPRO fakeadmin (no-op SetRole every 2 s): 8 removed at 6.25 s; decisions at m1 4; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+RESULT fakeadmin: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 247 frames (window 120); 8 removed at 6.25 s; lag at the end 7 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
+  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (104, 358)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 75 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (104, 358)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (104, 358)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
+  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (104, 358)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
+RESULT fakeadmin: frames 0..832 honest m1=994ce1fcb275e64b m2=994ce1fcb275e64b m3=994ce1fcb275e64b m4=994ce1fcb275e64b | offline replay 994ce1fcb275e64b | ALL EQUAL, NO FALSE CHECKS ; checks ok 300 bad 0

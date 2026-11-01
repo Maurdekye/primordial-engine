@@ -503,6 +503,20 @@ fn run_seed(seed: u64, fixes_off: u64, verbose: bool) -> Outcome {
         // Snapshot the live honest members' confirmed frame at GST, for the liveness check.
         if conf_at_gst.is_none() && now >= gst {
             conf_at_gst = Some(min_conf(sim, &honest_snapshot));
+            // Trust survey #4 (user rulings, 2026-11-01): a live faulty member whose lever holds
+            // confirmation (fake references, a bogus cap, a ghost kick vote, acks climbing to an epoch
+            // with no decision) is no longer voted out; it
+            // is left to an admin. At GST the honest admin with the lowest id kicks every such member
+            // still in the session, so L1 is checked "once the admin has kicked" (INVARIANTS.md).
+            let admin = honest_snapshot[0];
+            for (&m, f) in &faulty2 {
+                let stalls = matches!(f, Fault::FakeRefs { .. } | Fault::BogusCap { .. } | Fault::GhostVote { .. } | Fault::Climb { .. } | Fault::ClimbAhead { .. });
+                if stalls && sim.replica(admin, 1).sim.members.contains(&m) {
+                    let e = sim_mut(sim, admin).kick(m);
+                    let to: Vec<MemberId> = sim.replica(admin, 1).sim.members.iter().copied().collect();
+                    send_to(sim, admin, &to, &e);
+                }
+            }
         }
     });
 
