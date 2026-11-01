@@ -220,7 +220,7 @@ pub const LATE_MARGIN_US: u64 = 50_000;
 
 #[derive(Clone, Debug, Default)]
 struct IndState {
-    /// Per member: my entry seq -> (when first handed to the link toward it, the entry's stamp, its id).
+    /// Per member: my entry seq -> (when last handed to the link toward it, the entry's stamp, its id).
     sent: BTreeMap<MemberId, BTreeMap<u32, (u64, u64, EntryId)>>,
     /// Per member: round-trip samples (local time, round trip), from the IO's pings.
     rtt: BTreeMap<MemberId, VecDeque<(u64, u64)>>,
@@ -424,6 +424,15 @@ impl SessionCore {
             // and every answer is a repair, which the IO may drop under a long queue.
             Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } | Msg::FetchState if !audience.contains(&from) => {}
             Msg::Fetch { author, from: a, to: b } => {
+                // Admin indicators: `from` lacks my chain from `a`, so it can't reference anything past
+                // the hole until it is repaired: that restarts the late-acks clock from `a` on.
+                if author == self.sim.me {
+                    if let Some(sent) = self.ind.sent.get_mut(&from) {
+                        for (_, v) in sent.range_mut(a..) {
+                            v.0 = v.0.max(now_us);
+                        }
+                    }
+                }
                 for r in self.sim.on_fetch(author, a, b) {
                     self.send_to(from, Class::Repair, r);
                 }
@@ -724,23 +733,22 @@ impl SessionCore {
         }
     }
 
-    fn median_rtt(&self, member: MemberId) -> Option<u64> {
-        let mut v: Vec<u64> = self.ind.rtt.get(&member)?.iter().map(|&(_, r)| r).collect();
-        if v.is_empty() {
-            return None;
-        }
-        v.sort_unstable();
-        Some(v[(v.len() - 1) / 2])
+    /// The largest round trip sampled toward `member` in the window: conservative, so a path that
+    /// just got slower exempts acks at once instead of after the median catches up. It can only
+    /// exempt an ack, never flag one.
+    fn window_rtt(&self, member: MemberId) -> Option<u64> {
+        self.ind.rtt.get(&member)?.iter().map(|&(_, r)| r).max()
     }
 
-    /// Admin indicators: the first time each of my own entries is handed to the link toward each member.
+    /// Admin indicators: the latest time each of my own entries was handed to the link toward each
+    /// member. A repair restarts the clock: a copy lost on a full queue isn't the receiver's fault.
     fn note_sent(&mut self, to: &[MemberId], msg: &Msg) {
         let me = self.sim.me;
         let now = self.now_us;
         let mine = |e: &SignedEntry, ind: &mut IndState| {
             if e.member == me {
                 for &m in to {
-                    ind.sent.entry(m).or_default().entry(e.seq).or_insert((now, e.stamp, e.id()));
+                    ind.sent.entry(m).or_default().insert(e.seq, (now, e.stamp, e.id()));
                 }
             }
         };
@@ -763,10 +771,10 @@ impl SessionCore {
     /// trip, review LA-5); it is late if it still doesn't reference e in the version I sent.
     fn judge_ack(&mut self, x: MemberId, stamp: u64, horizon: u64, heads: &[(MemberId, u32, EntryId)], now_us: u64) {
         // Review LA-4: a member that voted against me, and a joiner still catching up, are left out.
-        if self.sim.voted_against_me(x) || self.sim.admitted_at(x).is_some_and(|b| horizon < b) {
+        if !self.sim.is_member(x) || self.sim.voted_against_me(x) || self.sim.admitted_at(x).is_some_and(|b| horizon < b) {
             return;
         }
-        let Some(rtt) = self.median_rtt(x) else { return };
+        let Some(rtt) = self.window_rtt(x) else { return };
         let margin = PACK_MAX * self.dt_us + LATE_MARGIN_US;
         let half = rtt / 2 / self.dt_us.max(1);
         let me = self.sim.me;

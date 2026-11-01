@@ -1,0 +1,22 @@
+description = """
+Admin indicators (design 10.8): a thin watcher. Every link into member 3 is capped at 8 kbit/s (down-k8, \
+three members). 3 can't hear the others' entries in time, so it may be shown behind or not \
+referencing (the indicator can't tell a thin downlink from withholding, and says so), but its acks \
+are never flagged late: the pings wait in the same queue."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[net]
+seed = 7
+link = { delay_ms = 30, jitter_ms = 10 }
+caps = [{ from = 1, to = 3, kbps = 8 }, { from = 2, to = 3, kbps = 8 }]
+
+[[report]]
+kind = "indicators"
+at = 1
+label = "ind-thindown"
+honest = [2, 3]
+may_not_reference = [3]

@@ -1,0 +1,26 @@
+description = """
+Admin indicators (design 10.8): a member that withholds references. From 2 s member 8's acks \
+reference no more of anyone's chain, while its horizon keeps advancing (refwithhold's cheater). \
+Admin 1's indicators name 8 as not referencing once confirmation has lagged a quarter of the window \
+for 1 s, and flag its acks late; neither names 2 or 3. On pe-session as on main, the withholding rule \
+then removes 8."""
+include = ["../common/review.toml"]
+end_ms = 8000
+
+[world.1]
+members = [1, 2, 3, 8]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 400, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[[byzantine]]
+kind = "hide_refs"
+member = 8
+from_ms = 2000
+
+[[report]]
+kind = "indicators"
+at = 1
+label = "ind-withhold"
+named = [8]
+honest = [2, 3]
