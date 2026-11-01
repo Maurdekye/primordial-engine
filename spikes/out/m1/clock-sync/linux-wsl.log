@@ -1,0 +1,115 @@
+   Compiling pe-core v0.1.0 (/home/USER/pe-app-glibc/crates/pe-core)
+   Compiling box3d-rust v0.5.0 (/home/USER/pe-app-glibc/crates/box3d-fork)
+   Comp
+running 13 tests
+test clock::tests::midpoints ... ok
+test clock::tests::queued_round_trips_do_not_bias_a_peer ... ok
+test clock::tests::a_path_delay_change_does_not_read_as_a_frequency ... ok
+test clock::tests::the_rate_corrected_clock_never_jumps_while_the_offset_slews ... ok
+test clock::tests::two_members_with_a_5_percent_skew_converge_without_steps ... ok
+test node::tests::loss_from_sequence_gaps ... ok
+test node::tests::queue_delay_over_the_base ... ok
+test node::tests::the_estimates_restart_when_the_frequency_is_fitted ... ok
+test node::tests::timestamps_wrap_and_buckets_expire_by_time ... ok
+test clock::tests::the_start_up_gap_stays_small_at_up_to_9_percent_skew ... ok
+test wire::tests::rejects ... ok
+test wire::tests::packing_respects_the_mtu ... ok
+test wire::tests::roundtrip_and_relay ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+
+running 5 tests
+test auth::tests::issue_authenticate_revoke ... ok
+test auth::tests::revoke_all_ends_the_session ... ok
+test auth::tests::secrets_are_distinct_and_redacted ... ok
+test auth::tests::wrong_malformed_and_other_tokens ... ok
+test auth::tests::idle_ttl_expires_and_use_refreshes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.40s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished      Runni
+running 9 tests
+test binds_loopback_only ... ok
+test forei     Running tests/live_guard.rs (target/debug/deps/live_guard-44e01d93b6cef538)
+     Running tests/pipe.rs (target/debug/deps/pipe-c6c3da258e8011d8)
+pe-mcp: pipe /run/user/1000/primordial-mcp-3400-322b2c0685316b396196f734/mcp.sock
+     Running tests/tools.rs (target/debug/deps/tools-d41a5eee68ef0f52)
+   Doc-tests pe_mcp
+ passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 2 tests
+test a_panic_in_tick_is_reported_by_faulted ... ok
+test live_peer_refuses_scenario_tools_before_and_after_a_fault ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 7 tests
+test bridge_without_environment_fails ... ok
+test handshake_then_mcp_as_the_tokens_principal ... ok
+test revocation_takes_effect_on_an_open_connection ... ok
+test socket_is_private ... ok
+test serve_launches_bridge_end_to_end ... ok
+test wrong_or_malformed_handshake_is_refused ... ok
+test two_principals_share_one_peer ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+
+running 24 tests
+test crash_pause_eviction_and_recovery ... ok
+test driven_peer_crash ... ok
+test engine_panic_faults_the_session_until_reload ... ok
+test forbidden_without_scope ... ok
+test hands_in_the_ball_pit ... ok
+test interaction_status_errors_and_isolation ... ok
+test partition_heal_and_slow_links_stay_consistent ... ok
+test propose_touch_resolves_and_moves_the_object ... ok
+test propose_validates_arguments ... ok
+test rate_limit_on_unresolved_interactions ... ok
+test resources_list_and_read ... ok
+test same_scenario_same_run ... ok
+test scenario_fault_arguments ... ok
+test scenario_load_validates_and_resets ... ok
+test schema_file_is_current ... ok
+test session_info_reports_principal_and_session ... ok
+test tools_list_follows_scopes ... ok
+test unknown_tool_is_a_protocol_error ... ok
+test world_get_object_and_errors ... ok
+test world_get_state_pages_and_errors ... ok
+test world_hashes_range ... ok
+test world_state_resource_holds_every_object ... ok
+test claims_reject_contending_touches ... ok
+test world_step_arguments ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 78.75s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+target/release/pe-app: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, BuildID[sha1]=c8849dc5954fd7c04f02eca2c90817a10ef5d378, not stripped
+Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+[m1 t=9205ms f=472] membership decision: epoch 1, removed [4]
+[m1 t=23122ms f=1384] DONE frames 0..1200: digest 393516d287427d14 replay 393516d287427d14 (EQUAL), conf 1378, members [1, 2, 3]
+[m2 t=2000ms f=119] fault: links to all now 15% loss, 40 ms +-15 ms
+[m2 t=9000ms f=472] fault: links to member 1 now 30% loss, 120 ms +-40 ms
+[m2 t=9130ms f=472] membership decision: epoch 1, removed [4]
+[m2 t=14000ms f=839] fault: links to all now 0% loss, 0 ms +-0 ms
+[m2 t=23103ms f=1383] DONE frames 0..1200: digest 393516d287427d14 replay 393516d287427d14 (EQUAL), conf 1378, members [1, 2, 3]
+[m3 t=1000ms f=59] fault: links to all now 5% loss, 25 ms +-10 ms
+[m3 t=9129ms f=472] membership decision: epoch 1, removed [4]
+[m3 t=23088ms f=1382] DONE frames 0..1200: digest 393516d287427d14 replay 393516d287427d14 (EQUAL), conf 1378, members [1, 2, 3]
+[m4] scripted drop-out at 6000 ms: exiting without a word
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1200 | 393516d287427d14 | equal | 1378 | [1, 2, 3] | 72 | 96/0 | 2369/0 |
+| 2 | 1200 | 393516d287427d14 | equal | 1378 | [1, 2, 3] | 65 | 95/0 | 1603/131 |
+| 3 | 1200 | 393516d287427d14 | equal | 1378 | [1, 2, 3] | 43 | 95/0 | 2059/104 |
+ALL EQUAL
