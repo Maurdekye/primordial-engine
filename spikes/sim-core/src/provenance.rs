@@ -515,7 +515,7 @@ mod tests {
         b.genesis(1, &[1, 2, 3, 4], 100);
         b.genesis(2, &[1, 3], 100);
         // Member 4 signed two different entries with one seq: an equivocation proof.
-        let e = |fact| Entry { member: 4, seq: 1, prev: 0, stamp: 0, payload: Payload::Attest { fact, sig: 0 }, carried: None };
+        let e = |fact| Entry { member: 4, seq: 1, prev: 0, stamp: 0, payload: Payload::Attest { fact, sig: 0 }, carried: None, link: 0 };
         let (ea, eb) = (e(1), e(2));
         let proof = Proof { a: ea.id(), b: eb.id() };
         let change = Change { epoch: 0, remove: vec![], add: vec![], boundary: 300, excluded: vec![(4, proof)], admin: vec![], add_roles: vec![], add_attests: vec![], add_reqs: vec![] };

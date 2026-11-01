@@ -867,13 +867,47 @@ pub struct Entry {
     pub payload: Payload,
     /// User ruling 09:30Z: the resulting state of the touched object after frame `stamp`.
     pub carried: Option<(u32, BodyState)>,
+    /// Thin links Part B (TLP-19, TLP-31): the checkpoint link. A member's first entry stamped in any non-empty
+    /// 32-frame block is its checkpoint, and carries the id of that member's most recent earlier checkpoint;
+    /// every other entry carries 0 (as does a member's first checkpoint).
+    pub link: EntryId,
+}
+
+/// Thin links Part B: a checkpoint block is 32 frames.
+pub const CKPT_FRAMES: u64 = 32;
+
+/// Thin links Part B (TLP-19): a chain's checkpoint state after `e`, from its state before it: the newest
+/// checkpoint's block and id (None before the chain's first entry). `e` is a checkpoint if it is stamped in a
+/// later block than the newest checkpoint's.
+pub fn ckpt_step(ck: Option<(u64, EntryId)>, e: &Entry) -> Option<(u64, EntryId)> {
+    match ck {
+        Some((b, _)) if e.stamp / CKPT_FRAMES <= b => ck,
+        _ => Some((e.stamp / CKPT_FRAMES, e.id())),
+    }
+}
+
+/// The link an entry stamped `stamp` carries after the chain state `ck`: the newest checkpoint's id if the
+/// entry is a checkpoint, and 0 if it is not (or is the chain's first).
+pub fn ckpt_link_for(ck: Option<(u64, EntryId)>, stamp: u64) -> EntryId {
+    match ck {
+        Some((b, id)) if stamp / CKPT_FRAMES > b => id,
+        _ => 0,
+    }
 }
 
 impl Entry {
-    /// Spike: 64-bit FNV of the encoding. Production: BLAKE3 of the signed bytes.
+    /// Spike: H_id(link || H_rest(rest)), two FNV variants under distinct domain prefixes (TLP-22, TLP-31), so a
+    /// fed member computes a checkpoint's id from the link it holds and the rest-hash it is sent. Production:
+    /// domain-separated SHA-256 / BLAKE3 over the signed bytes.
     pub fn id(&self) -> EntryId {
-        let mut w = Wr(Vec::with_capacity(96));
-        w.entry(self);
+        fnv_u64s([0x5045_5f49_445f_5631, self.link, self.rest_hash()])
+    }
+
+    /// H_rest: the hash of everything but the link's value (the encoding's flags still say whether there is one).
+    pub fn rest_hash(&self) -> u64 {
+        let mut w = Wr(Vec::with_capacity(104));
+        w.0.extend_from_slice(b"pe-rest\0");
+        w.entry_rest(self);
         fnv_bytes(&w.0)
     }
 }
@@ -945,6 +979,13 @@ impl Wr {
         for x in a { self.u8(x.rel.tag()); self.u32(x.with); self.u64(x.sig_with); self.u64(x.sig_joiner) }
     }
     fn entry(&mut self, e: &Entry) {
+        self.entry_rest(e);
+        if e.link != 0 {
+            self.u64(e.link);
+        }
+    }
+    /// The canonical encoding without the checkpoint link's value (H_rest's input).
+    fn entry_rest(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
         self.u64(e.prev);
@@ -1035,9 +1076,11 @@ impl Wr {
                 for id in polka { self.u64(*id) }
             }
         }
-        match &e.carried {
-            Some((obj, s)) => { self.u8(1); self.u32(*obj); self.state(s) }
-            None => self.u8(0),
+        // Flags: bit 0 a carried state follows, bit 1 a checkpoint link follows (after it).
+        self.u8(e.carried.is_some() as u8 | ((e.link != 0) as u8) << 1);
+        if let Some((obj, s)) = &e.carried {
+            self.u32(*obj);
+            self.state(s);
         }
     }
     fn change(&mut self, c: &Change) {
@@ -1265,11 +1308,22 @@ impl Rd<'_> {
             }
             _ => return None,
         };
-        let carried = match self.u8()? {
-            1 => Some((self.u32()?, self.state()?)),
-            _ => None,
+        let flags = self.u8()?;
+        if flags > 3 {
+            return None;
+        }
+        let carried = if flags & 1 != 0 { Some((self.u32()?, self.state()?)) } else { None };
+        // A link is never 0 on the wire: the flag says there is none.
+        let link = if flags & 2 != 0 {
+            let l = self.u64()?;
+            if l == 0 {
+                return None;
+            }
+            l
+        } else {
+            0
         };
-        Some(Entry { member, seq, prev, stamp, payload, carried })
+        Some(Entry { member, seq, prev, stamp, payload, carried, link })
     }
     fn change(&mut self) -> Option<Change> {
         let raw = self.u32()?;
@@ -1987,6 +2041,9 @@ pub struct WorldSim {
     window_data_cache: BTreeMap<u64, localize::WindowData>,
     /// Part B, rule 5: this replica is on the state feed (set by the harness, never logged).
     fed: Option<feed::Fed>,
+    /// Part B (TLP-27): per author, the newest checkpoint block on its chain and that checkpoint's id, in chain
+    /// order (a chain-local rule).
+    ckpt: BTreeMap<MemberId, (u64, EntryId)>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
@@ -2248,6 +2305,7 @@ impl WorldSim {
             windows: BTreeMap::new(),
             window_data_cache: BTreeMap::new(),
             fed: None,
+            ckpt: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
@@ -2533,7 +2591,29 @@ impl WorldSim {
         }
     }
 
-    fn publish(&mut self, e: Entry) -> Entry {
+    /// Part B (TLP-19, TLP-31): the link an entry of `m` stamped `stamp` must carry next on its chain: the id
+    /// of m's most recent checkpoint if this one starts a new 32-frame block (0 for m's first checkpoint), and 0
+    /// otherwise. With whether it is a checkpoint.
+    fn ckpt_next(&self, m: MemberId, stamp: u64) -> (bool, EntryId) {
+        match self.ckpt.get(&m) {
+            None => (true, 0),
+            Some(&(block, last)) if stamp / CKPT_FRAMES > block => (true, last),
+            Some(_) => (false, 0),
+        }
+    }
+
+    fn ckpt_link(&self, m: MemberId, stamp: u64) -> EntryId {
+        self.ckpt_next(m, stamp).1
+    }
+
+    /// The checkpoint state of `m`'s chain in my version: its newest checkpoint's block and id.
+    pub fn chain_ckpt(&self, m: MemberId) -> Option<(u64, EntryId)> {
+        self.ckpt.get(&m).copied()
+    }
+
+    fn publish(&mut self, mut e: Entry) -> Entry {
+        // Thin links Part B: a checkpoint carries the link to this member's previous checkpoint.
+        e.link = self.ckpt_link(e.member, e.stamp);
         self.my_seq += 1;
         self.my_last = e.id();
         let _ = self.insert(e.clone());
@@ -2549,7 +2629,7 @@ impl WorldSim {
         } else {
             self.frame.max(self.now)
         };
-        let mut e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let mut e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         if let Some(obj) = carry {
             let scratch = self.save();
             let tmp_id = e.id();
@@ -2572,28 +2652,28 @@ impl WorldSim {
     /// Author a state-free entry stamped `ahead` frames after the present (opt-in input delay).
     pub fn author_ahead(&mut self, payload: Payload, ahead: u64) -> Entry {
         let stamp = self.frame.max(self.now) + ahead;
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         self.publish(e)
     }
 
     /// Author an entry at `stamp` (D73(a): a hand pack, stamped at its first frame, up to k - 1 frames
     /// before the present; its author's horizon has stayed below it).
     pub fn author_stamped(&mut self, payload: Payload, stamp: u64) -> Entry {
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         self.publish(e)
     }
 
     /// Test fixture (review HO-1, round 2): author `payload` carrying a chosen object state.
     pub fn author_carrying(&mut self, payload: Payload, carried: (u32, BodyState)) -> Entry {
         let stamp = self.frame.max(self.now);
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: Some(carried) };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: Some(carried), link: 0 };
         self.publish(e)
     }
 
     /// Test fixture for review H5: author with an arbitrary (backdated) stamp.
     pub fn author_backdated(&mut self, payload: Payload, back: u64) -> Entry {
         let stamp = self.frame.max(self.now).saturating_sub(back);
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         self.publish(e)
     }
 
@@ -2635,6 +2715,7 @@ impl WorldSim {
             stamp,
             payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
             carried: None,
+            link: 0,
         };
         self.publish(e)
     }
@@ -2811,6 +2892,13 @@ impl WorldSim {
                     && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b)
             }
         };
+        // Part B (TLP-27): the checkpoint link, a chain-local rule.
+        let (is_ckpt, want) = self.ckpt_next(m, e.stamp);
+        let link_ok = e.link == want;
+        if link_ok && is_ckpt {
+            self.ckpt.insert(m, (e.stamp / CKPT_FRAMES, id));
+        }
+        let valid = valid && link_ok;
         if !valid {
             self.stats.entries_rejected_violation += 1;
             self.ev(format!("violation: m{m} s{} stamped {} breaks its chain's horizon rules: void for every member", e.seq, e.stamp));
@@ -3093,6 +3181,7 @@ impl WorldSim {
             stamp: self.frame.max(self.now),
             payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid), kick },
             carried: None,
+            link: 0,
         };
         Some(self.publish(v))
     }
@@ -3537,6 +3626,7 @@ impl WorldSim {
             stamp: self.frame.max(self.now),
             payload: Payload::Vote { epoch: self.epoch, target: self.me, seq: 0, frozen: (self.my_seq, self.my_last), kick },
             carried: None,
+            link: 0,
         };
         Some(self.publish(v))
     }
@@ -4180,7 +4270,7 @@ impl WorldSim {
     }
 
     fn author_vc(&mut self, payload: Payload) -> Entry {
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp: self.frame.max(self.now), payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp: self.frame.max(self.now), payload, carried: None, link: 0 };
         self.publish(e)
     }
 
@@ -5180,6 +5270,7 @@ impl WorldSim {
                     stamp: self.frame.max(self.now),
                     payload: Payload::Attest { fact, sig: member_sig(self.world_id, self.me, fact) },
                     carried: None,
+                    link: 0,
                 };
                 out.push(self.publish(e));
             }
@@ -6036,7 +6127,7 @@ mod round3_tests {
         // have panicked the old encoder (asserted at 64); now it round-trips, and a decode claiming
         // more than MAX_POLKA is refused.
         let polka: Vec<EntryId> = (1..=300).collect();
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka }, carried: None };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka }, carried: None, link: 0 };
         assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
         // A precommit payload whose polka count exceeds MAX_POLKA is refused (never read in part).
         let mut w = Wr(Vec::new());
@@ -6068,7 +6159,7 @@ mod round3_tests {
         assert_ne!(join_sig_in(a, 5, 900), join_sig_in(a, 5, 901));
         // A change that adds a member carries its request, in the extended layout.
         let c = Change { epoch: 2, add: vec![5], add_roles: vec![ADMIN], add_attests: vec![vec![]], add_reqs: vec![(join_sig_in(a, 5, 900), 900)], boundary: 7, ..Default::default() };
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Propose { epoch: 2, round: 0, valid_round: NO_ROUND, change: c }, carried: None };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Propose { epoch: 2, round: 0, valid_round: NO_ROUND, change: c }, carried: None, link: 0 };
         assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
     }
 
@@ -6105,7 +6196,7 @@ mod round3_tests {
 
     #[test]
     fn wide_role_ids_are_refused() {
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::SetRole { epoch: 0, member: 2, role: 7 }, carried: None };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::SetRole { epoch: 0, member: 2, role: 7 }, carried: None, link: 0 };
         let mut bytes = encode_msg(&Msg::Entry(e.clone()));
         assert_eq!(decode_msg(&bytes), Some(Msg::Entry(e)));
         // The role is the u32 after tag 18, epoch and member: set its high half.

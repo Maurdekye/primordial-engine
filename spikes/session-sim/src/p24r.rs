@@ -257,6 +257,8 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
         let mut backdated = !backdate;
         let mut b_last: Option<Entry> = None;
         let mut b_ack: Option<Payload> = None;
+        // Branch B's checkpoint state (Part B's checkpoint links), from the chain's state at the fork.
+        let mut b_ck: Option<(u64, EntryId)> = None;
         let (mut extra, mut next_t) = (0u32, 0u64);
         let stopped = run_quiet(&mut sim, |sim| {
             let now = sim.net.now_us;
@@ -266,6 +268,7 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
                     let top = r9.all_entries().iter().filter(|e| e.member == 9).map(|e| e.seq).max().unwrap_or(0);
                     fork_seq.set(top + 1);
                     fork_t.set(now);
+                    b_ck = r9.chain_ckpt(9);
                 }
                 return;
             }
@@ -296,6 +299,8 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
                     if matches!(b.payload, Payload::Ack { .. }) {
                         b_ack = Some(b.payload.clone());
                     }
+                    b.link = ckpt_link_for(b_ck, b.stamp);
+                    b_ck = ckpt_step(b_ck, &b);
                     b_id.insert(b.seq, b.id());
                     crafted.borrow_mut().insert(b.id());
                     sim.net.send(1, 9, 3, &Msg::Entry(b.clone()));
@@ -304,14 +309,16 @@ pub(crate) fn fork_run(fixes_off: u64, live_us: u64, backdate: bool, detect_us: 
             } else if extra < 10 && now >= next_t {
                 // Ten more acks on B only, so 3's copy of 9's chain is longer than A.
                 let (Some(last), Some(Payload::Ack { horizon, heads, check, epoch })) = (b_last.clone(), b_ack.clone()) else { return };
-                let b = Entry {
+                let mut b = Entry {
                     member: 9,
                     seq: last.seq + 1,
                     prev: last.id(),
                     stamp: last.stamp + 3,
                     payload: Payload::Ack { horizon: horizon + 3, heads, check, epoch },
-                    carried: None,
+                    carried: None, link: 0,
                 };
+                b.link = ckpt_link_for(b_ck, b.stamp);
+                b_ck = ckpt_step(b_ck, &b);
                 b_ack = Some(b.payload.clone());
                 crafted.borrow_mut().insert(b.id());
                 sim.net.send(1, 9, 3, &Msg::Entry(b.clone()));

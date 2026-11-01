@@ -1203,6 +1203,7 @@ fn fork_segment_sim(seg: Segment, off: u64) -> (Sim, Option<u64>, MemberId, Memb
         if step == 0 && t >= 2_000_000 {
             let rf = sim_mut(sim, f);
             let epoch = rf.epoch;
+            let ck0 = rf.chain_ckpt(rf.me);
             let b1 = rf.author(Payload::Attest { fact: 1, sig: 0 }, None);
             let b2 = rf.author(Payload::Attest { fact: 2, sig: 0 }, None);
             branch_a = if seg == Segment::Plain {
@@ -1212,7 +1213,8 @@ fn fork_segment_sim(seg: Segment, off: u64) -> (Sim, Option<u64>, MemberId, Memb
                 let h = b1.stamp + 40;
                 let ack_epoch = if seg == Segment::ValidRole { epoch + 2 } else { epoch };
                 let a1 = Entry { payload: Payload::Ack { horizon: h, heads: vec![], check: None, epoch: ack_epoch }, ..b1.clone() };
-                let a2 = Entry { seq: b2.seq, prev: a1.id(), stamp: b1.stamp + 10, payload: Payload::SetRole { epoch, member: p, role: GUEST }, carried: None, ..b2.clone() };
+                let mut a2 = Entry { seq: b2.seq, prev: a1.id(), stamp: b1.stamp + 10, payload: Payload::SetRole { epoch, member: p, role: GUEST }, carried: None, ..b2.clone() };
+                a2.link = ckpt_link_for(ckpt_step(ck0, &a1), a2.stamp);
                 rf.byz_change = Some(Change { epoch, admin: vec![(a2.id(), true)], ..Default::default() });
                 vec![a1, a2]
             };
