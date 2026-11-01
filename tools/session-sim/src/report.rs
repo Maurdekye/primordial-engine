@@ -305,7 +305,7 @@ impl Probe {
         let now = sim.net.now_us;
         match &self.spec {
             Report::Indicators { world, at, every_ms, .. } => {
-                if now % (every_ms * 1000) == 0 {
+                if now.is_multiple_of(every_ms * 1000) {
                     let p = &mut self.ind;
                     let Some(i) = sim.replica(*at, *world).core.indicators(*at, now) else { return };
                     p.asked += 1;
