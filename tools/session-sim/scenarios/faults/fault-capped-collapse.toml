@@ -1,17 +1,12 @@
 description = """
-Fault kinds (P2-9): every link capped at 46 kbit/s (P2-3: the spike's 16 kbit/s scaled to \
-pe-session's messages), below what the pile's acks need at 60 Hz, with no congestion controller \
-(R18 off). The queues overflow (534 datagrams dropped), confirmation stalls by frame 104 of about \
-590 and the members pause at the speculation limit. Safety holds: the confirmed prefix \
-is equal on every replica and to the offline replay. fault-capped-r18 is the same link with the \
-controller on."""
+Fault kinds (P2-9): every link capped at 24 kbit/s, below what the pile's acks need at 60 Hz, with no congestion controller (R18 off). P2-3 had scaled the spike's 16 kbit/s to 46 for pe-session's larger messages; 7.6's ack reductions (idle thinning, check on change) brought the need down, so pe-session no longer collapses at 28 kbit/s and up, and fault-capped-r18 recovers from 21 kbit/s up: 24 keeps both runs' points. The queues overflow (636 datagrams dropped), confirmation stalls by frame 205 of about 590 and the members pause at the speculation limit. Safety holds: the confirmed prefix is equal on every replica and to the offline replay. fault-capped-r18 is the same link with the controller on."""
 include = ["../common/pile.toml", "../common/scripted.toml"]
 end_ms = 10000
 
 [net]
 seed = 35
 link = { delay_ms = 30, jitter_ms = 10 }
-cap = { kbps = 46 }
+cap = { kbps = 24 }
 
 [[report]]
 kind = "stats"
@@ -19,11 +14,11 @@ kind = "stats"
 [[report]]
 kind = "traffic"
 
-# Confirmation collapses (R18's finding): no replica gets past frame 150.
+# Confirmation collapses (R18's finding): no replica gets past frame 250.
 [[report]]
 kind = "expect"
 at = 1
-conf_max = 150
+conf_max = 250
 label = "fault-capped-collapse (stall)"
 
 [[report]]
