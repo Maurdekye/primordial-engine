@@ -36,6 +36,7 @@ use pe_physics::{BodyDesc, BodyKind, Geometry, ObjectId, PhysicsConfig, PhysicsW
 use pe_core::Frame;
 use pe_sim::{SimStore, Snapshot};
 
+use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_BYTES};
 use crate::{fnv_u64s, splitmix64, CLAIM_FRAMES};
 pub use crate::sign::{hash64, sig_words, test_fact_sig, test_join_sig, test_sign, Fact, FactKind, FactWriter, KeyRing, PublicKeys, SessionId, Sig, SignedEntry, TEST_SESSION};
 pub use crate::provenance::{
@@ -54,6 +55,8 @@ mod store;
 mod transfer;
 mod replay;
 mod seam;
+#[cfg(test)]
+mod ownership_tests;
 
 pub use entry::*;
 pub use membership::*;
@@ -650,10 +653,17 @@ pub struct ViewChangeMembership {
     /// The relationships each pending joiner showed.
     join_attests: BTreeMap<MemberId, Vec<Attest>>,
     /// D80 (user 22:37Z): the world's owners, signed world metadata, shareable by several people;
-    /// separate from the session's admins.
+    /// separate from the session's admins. A world without an ownership chain (`book`) lists them
+    /// here; one with a chain takes them from it.
     pub owners: BTreeSet<MemberId>,
+    /// World ownership (12.5): the world's ownership chain. Governance, like roles: changed only by
+    /// the certificates decided view changes commit, never rewound by a rollback.
+    pub book: Option<Book>,
     /// This epoch's admin entries from members allowed to make them, as held.
     admin_pending: BTreeSet<EntryId>,
+    /// Review OWNY-2: ownership entries not pending only because a parent certificate is not in the
+    /// book yet (built on a pending one's head); judged again after each decision.
+    own_held: BTreeSet<EntryId>,
     /// Admin entries as the decided changes judged them: applied, or refused.
     pub admin_outcomes: BTreeMap<EntryId, bool>,
     /// D80: the session closed (no admin was left) from this frame on: no entry stamped at or after
@@ -760,7 +770,9 @@ impl WorldSim {
                 join_rules: JoinRules::default(),
                 join_attests: BTreeMap::new(),
                 owners: BTreeSet::new(),
+                book: None,
                 admin_pending: BTreeSet::new(),
+                own_held: BTreeSet::new(),
                 admin_outcomes: BTreeMap::new(),
                 closed_at: None,
                 fake_ack_epoch: None,

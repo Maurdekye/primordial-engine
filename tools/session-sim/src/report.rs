@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use pe_sim_core::ownership::{test_key_name, Book, Insert, Key, View};
 use pe_sim_core::session::*;
 use pe_sim_core::{build_pile_scene, GameState, InputError, Interaction, RollbackSim};
 use spike::{Acceptance, Replica, Sim, WorldId};
@@ -319,6 +320,9 @@ impl Probe {
                     skip.extend(gone);
                 }
                 check_world(sim, *world, frames, label, &skip);
+            }
+            Report::Ownership { world, frames, label, at } => {
+                ownership(sim, *world, *frames, label, at);
             }
             Report::Stats { world } => print_stats(sim, *world),
             Report::Events { world, filter } => {
@@ -1195,6 +1199,137 @@ pub fn check_world(sim: &Sim, w: WorldId, frames: u64, label: &str, skip: &[Memb
     let conf = sim.peers.iter().filter(|p| !skip.contains(&p.id)).filter_map(|p| p.worlds.get(&w)).map(|r| r.sim.conf).min().unwrap_or(0);
     if frames > conf {
         println!("  UNCONFIRMED: {label} checks frames {conf}..{frames}, past the lowest confirmed frame of the checked replicas ({conf})");
+    }
+    all_equal
+}
+
+/// Keys as the scenario names them (test identities, by number), sorted by number.
+fn key_names<'a>(ks: impl IntoIterator<Item = &'a Key>) -> String {
+    let mut known: Vec<u32> = Vec::new();
+    let mut other: Vec<String> = Vec::new();
+    for k in ks {
+        match test_key_name(*k) {
+            Some(n) => known.push(n),
+            None => other.push(format!("{k:?}")),
+        }
+    }
+    known.sort_unstable();
+    let mut v: Vec<String> = known.iter().map(|n| n.to_string()).collect();
+    v.extend(other);
+    format!("{{{}}}", v.join(", "))
+}
+
+fn view_line(v: &View) -> String {
+    let o = &v.owners;
+    let recovery = || {
+        let mut r: Vec<String> = o.recovery.iter().map(|(k, r)| format!("{}: {}", key_names([k]), key_names(r.keys()))).collect();
+        r.sort();
+        format!(" recovery [{}]", r.join(", "))
+    };
+    format!(
+        "owners {} rule {:?} heads {}{}{}",
+        key_names(&o.owners),
+        o.rule,
+        v.heads.len(),
+        if v.disputed { " DISPUTED" } else { "" },
+        if o.recovery.is_empty() { String::new() } else { recovery() }
+    )
+}
+
+/// World ownership (12.5, on the D80 admin layer): every replica's view of the ownership chain and
+/// its outcomes for the certificate entries, against an offline reference: a fresh book from the
+/// genesis certificate, with the certificates the first replica's decided view changes list applied
+/// in their commit order. Also each entry no decision listed, the fork proofs (each checked as a
+/// third party holding only the chain up to the fork would check it) and, with `at`, the
+/// reference's view after the decisions with boundaries up to each frame.
+pub fn ownership(sim: &Sim, w: WorldId, frames: u64, label: &str, at: &[u64]) -> bool {
+    let replicas: Vec<(u32, &Replica)> = sim.peers.iter().filter_map(|p| p.worlds.get(&w).map(|r| (p.id, r))).collect();
+    let r = replicas[0].1;
+    let b0 = r.sim.vcm.book.as_ref().expect("a world with an ownership chain");
+    let mut rb = Book::new(b0.cert(b0.genesis).unwrap().clone()).unwrap();
+    let mut listed = BTreeMap::new();
+    let mut agree = true;
+    let mut after: Vec<(u64, Book)> = Vec::new();
+    let mut lines = Vec::new();
+    for c in r.sim.decided_changes() {
+        let mut any = false;
+        for &(id, ok) in &c.admin {
+            let Some(e) = r.sim.entry(id) else { continue };
+            let Payload::Ownership { cert, .. } = &e.payload else { continue };
+            let res = rb.commit_local(cert.clone(), r.sim.world_id, c.boundary);
+            let applied = matches!(res, Ok(Insert::Applied));
+            agree &= applied == ok;
+            listed.insert(id, ok);
+            any = true;
+            lines.push(format!(
+                "  epoch {} boundary {}: cert m{}s{} stamped {}: seq {} {:?} by {} -> {}{}",
+                c.epoch + 1,
+                c.boundary,
+                e.member,
+                e.seq,
+                e.stamp,
+                cert.seq,
+                cert.change,
+                key_names(&cert.signers()),
+                if ok { "applied".to_string() } else { "refused".to_string() },
+                if applied == ok { String::new() } else { format!(" (the reference says {res:?}: MISMATCH)") }
+            ));
+        }
+        if any {
+            after.push((c.boundary, rb.clone()));
+        }
+    }
+    let mut all_equal = agree;
+    let mut views = Vec::new();
+    for (m, x) in &replicas {
+        let b = x.sim.vcm.book.as_ref().unwrap();
+        let outcomes: BTreeMap<EntryId, bool> =
+            x.sim.vcm.admin_outcomes.iter().filter(|(id, _)| matches!(x.sim.entry(**id).map(|e| &e.payload), Some(Payload::Ownership { .. }))).map(|(a, b)| (*a, *b)).collect();
+        all_equal &= b.view() == rb.view() && b.digest() == rb.digest() && outcomes == listed;
+        views.push((*m, b.view(), b.digest()));
+    }
+    println!("RESULT {label} world {w}: offline reference {} | {}", view_line(&rb.view()), if all_equal { "ALL EQUAL" } else { "MISMATCH" });
+    for (m, v, d) in &views {
+        println!("  m{m}: {} digest {d:016x}", view_line(v));
+    }
+    for l in lines {
+        println!("{l}");
+    }
+    // An entry no decision listed was never pending, or a decision made it unable to apply (12.5):
+    // the reason shown is the reference book's, as decided before its stamp.
+    let genesis = Book::new(b0.cert(b0.genesis).unwrap().clone()).unwrap();
+    let book_at = |f: u64| after.iter().rev().find(|(b, _)| *b <= f).map_or(&genesis, |(_, b)| b);
+    let mut log = r.sim.all_entries();
+    log.sort_by_key(|e| (e.stamp, e.member, e.seq));
+    for e in &log {
+        if let Payload::Ownership { cert, .. } = &e.payload
+            && !listed.contains_key(&e.id())
+        {
+            let why = match book_at(e.stamp).clone().commit_local(cert.clone(), r.sim.world_id, e.stamp) {
+                Err(err) => format!("{err:?}"),
+                Ok(i) => format!("{i:?} then, unable to apply after a later decision"),
+            };
+            println!("  cert m{}s{} stamped {}: seq {} {:?} by {} -> never committed ({why})", e.member, e.seq, e.stamp, cert.seq, cert.change, key_names(&cert.signers()));
+        }
+    }
+    for p in rb.forks() {
+        let prefix = rb.prefix_of(p.a.prev[0]);
+        println!(
+            "  fork: {:?} vs {:?}, signed both by {} ({}); a third party holding {} certificate(s) verifies it: {}",
+            p.a.change,
+            p.b.change,
+            key_names(&p.signed_both()),
+            if p.equivocation() { "equivocation" } else { "concurrent changes" },
+            prefix.len(),
+            p.verify(&prefix)
+        );
+    }
+    for &f in at {
+        println!("  after the decisions up to frame {f}: {}", view_line(&book_at(f).view()));
+    }
+    let conf = replicas.iter().map(|(_, r)| r.sim.conf).min().unwrap_or(0);
+    if frames > conf {
+        println!("  UNCONFIRMED: {label} checks frames {conf}..{frames}, past the lowest confirmed frame ({conf})");
     }
     all_equal
 }
