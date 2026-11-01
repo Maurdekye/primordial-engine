@@ -1,29 +1,30 @@
    Compiling pe-app v0.1.0 (E:\Libraries\Desktop\Primordial Engine\.worktrees\app\crates\pe-app)
-    Finished `release` profile [optimized] target(s) in 1.95s
+    Finished `release` profile [optimized] target(s) in 8.85s
      Running unittests src\main.rs (target\release\deps\pe_app-d70fcba31a3205c2.exe)
 
-running 11 tests
+running 12 tests
 test clock::tests::midpoints ... ok
-test clock::tests::queued_round_trips_do_not_bias_a_peer ... ok
-test node::tests::loss_from_sequence_gaps ... ok
 test node::tests::queue_delay_over_the_base ... ok
-test node::tests::timestamps_wrap_and_buckets_expire_by_time ... ok
 test clock::tests::a_path_delay_change_does_not_read_as_a_frequency ... ok
+test node::tests::loss_from_sequence_gaps ... ok
+test node::tests::timestamps_wrap_and_buckets_expire_by_time ... ok
+test clock::tests::queued_round_trips_do_not_bias_a_peer ... ok
 test wire::tests::roundtrip_and_relay ... ok
-test wire::tests::rejects ... ok
 test clock::tests::the_rate_corrected_clock_never_jumps_while_the_offset_slews ... ok
+test wire::tests::rejects ... ok
 test wire::tests::packing_respects_the_mtu ... ok
 test clock::tests::two_members_with_a_5_percent_skew_converge_without_steps ... ok
+test clock::tests::the_start_up_gap_stays_small_at_up_to_9_percent_skew ... ok
 
-test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
      Running unittests src\lib.rs (target\release\deps\pe_mcp-28feff4581a67a96.exe)
 
 running 5 tests
 test auth::tests::wrong_malformed_and_other_tokens ... ok
 test auth::tests::revoke_all_ends_the_session ... ok
-test auth::tests::issue_authenticate_revoke ... ok
 test auth::tests::secrets_are_distinct_and_redacted ... ok
+test auth::tests::issue_authenticate_revoke ... ok
 test auth::tests::idle_ttl_expires_and_use_refreshes ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.40s
@@ -39,13 +40,13 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 9 tests
 test binds_loopback_only ... ok
 test preflight_gets_no_cors ... ok
-test ipv6_loopback_when_available ... ok
 test foreign_host_is_refused ... ok
+test ipv6_loopback_when_available ... ok
 test revoked_token_stops_working ... ok
-test token_is_required_and_checked ... ok
 test origin_is_refused_unless_allowed ... ok
-test valid_request_is_served ... ok
 test scopes_come_from_the_token ... ok
+test valid_request_is_served ... ok
+test token_is_required_and_checked ... ok
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
@@ -60,38 +61,38 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests\pipe.rs (target\release\deps\pipe-54a60f4d38fe8887.exe)
 
 running 7 tests
-test wrong_or_malformed_handshake_is_refused ... ok
 test pipe_dacl_admits_only_the_current_user ... ok
+test wrong_or_malformed_handshake_is_refused ... ok
 test handshake_then_mcp_as_the_tokens_principal ... ok
 test revocation_takes_effect_on_an_open_connection ... ok
 test two_principals_share_one_peer ... ok
-pe-mcp: pipe \\.\pipe\primordial-mcp-61700-505807f558b8740e7b746032
+pe-mcp: pipe \\.\pipe\primordial-mcp-73560-058e91360775cfd8fa84b1c7
 test bridge_without_environment_fails ... ok
 test serve_launches_bridge_end_to_end ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
 
      Running tests\tools.rs (target\release\deps\tools-3b5c785f19532ba4.exe)
 
 running 24 tests
 test scenario_fault_arguments ... ok
-test propose_validates_arguments ... ok
 test resources_list_and_read ... ok
+test propose_validates_arguments ... ok
 test interaction_status_errors_and_isolation ... ok
-test engine_panic_faults_the_session_until_reload ... ok
-test schema_file_is_current ... ok
-test scenario_load_validates_and_resets ... ok
 test forbidden_without_scope ... ok
+test engine_panic_faults_the_session_until_reload ... ok
 test unknown_tool_is_a_protocol_error ... ok
 test driven_peer_crash ... ok
+test scenario_load_validates_and_resets ... ok
 test world_get_object_and_errors ... ok
 test tools_list_follows_scopes ... ok
 test world_state_resource_holds_every_object ... ok
+test schema_file_is_current ... ok
 test world_get_state_pages_and_errors ... ok
 test hands_in_the_ball_pit ... ok
 test session_info_reports_principal_and_session ... ok
-test propose_touch_resolves_and_moves_the_object ... ok
 test rate_limit_on_unresolved_interactions ... ok
+test propose_touch_resolves_and_moves_the_object ... ok
 test world_hashes_range ... ok
 test crash_pause_eviction_and_recovery ... ok
 test same_scenario_same_run ... ok
@@ -99,7 +100,7 @@ test world_step_arguments ... ok
 test partition_heal_and_slow_links_stay_consistent ... ok
 test claims_reject_contending_touches ... ok
 
-test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
 
      Running unittests src\lib.rs (target\release\deps\pe_session-568071dc733cd7ac.exe)
 
@@ -107,42 +108,42 @@ running 100 tests
 test ownership::harness::harness_debug_rebuild ... ignored, debug helper: PE_OWN_SEED, prints the rebuild difference
 test ownership::harness::harness_debug_removal ... ignored, debug helper: PE_OWN_SEED, invariant 6 on the honest book
 test ownership::harness::harness_debug_seed ... ignored, debug helper: PE_OWN_SEED
-test ownership::tests::duplicates_change_nothing ... ok
+test ownership::tests::genesis_binds_the_world_id ... ok
 test ownership::tests::a_session_refuses_stale_certificates ... ok
 test ownership::tests::junk_is_skipped_and_unknown_prefix_is_empty ... ok
-test ownership::tests::genesis_binds_the_world_id ... ok
-test ownership::tests::merge_cannot_roll_back ... ok
 test ownership::tests::forged_transfer_and_rogue_co_owner_are_refused ... ok
 test ownership::tests::concurrent_rules_take_the_strictest ... ok
 test ownership::tests::leave_sticks_across_forks ... ok
+test ownership::tests::merge_cannot_roll_back ... ok
 test ownership::tests::honest_concurrency_blames_nobody ... ok
-test ownership::tests::mutual_removal_voids_both ... ok
+test ownership::tests::duplicates_change_nothing ... ok
 test ownership::tests::merge_keeps_both_pre_merge_heads ... ok
 test ownership::tests::backup_key_acts_as_its_owner ... ok
-test ownership::tests::merge_is_causal ... ok
 test ownership::tests::copies_add_independently_but_remove_only_with_the_other_copy ... ok
-test ownership::tests::owns2_unattested_counter_removal_voids_nothing ... ok
 test ownership::tests::orphans_are_not_stored ... ok
+test ownership::tests::mutual_removal_voids_both ... ok
 test ownership::tests::owns12_session_builds_only_on_counting_certificates ... ok
-test ownership::tests::no_instant_removal_under_rule_a ... ok
-test ownership::tests::offline_verification_with_attestations ... ok
+test ownership::tests::owns2_unattested_counter_removal_voids_nothing ... ok
 test ownership::tests::fork_proof_prefix_order_and_merges ... ok
+test ownership::tests::merge_is_causal ... ok
+test ownership::tests::offline_verification_with_attestations ... ok
+test ownership::tests::no_instant_removal_under_rule_a ... ok
 test ownership::tests::owns3_old_fork_does_not_void_later_additions ... ok
 test ownership::tests::old_state_fork_needs_the_owners_added_since ... ok
-test ownership::tests::owns5c_signature_subsets_are_one_certificate ... ok
 test ownership::tests::owns4_old_fork_does_not_loosen_the_rule ... ok
+test ownership::tests::owns5c_signature_subsets_are_one_certificate ... ok
 test ownership::tests::removal_at_the_fork_point_is_the_stated_residual ... ok
 test ownership::tests::removal_survives_a_fork_by_its_target_under_rule_c ... ok
-test ownership::tests::owns8_sock_merge_does_not_clear_the_dispute ... ok
 test ownership::tests::removed_or_departed_owner_is_a_stranger ... ok
-test ownership::tests::rv4_owt8_mutual_removal_dispute ... ok
-test ownership::tests::rv4_owt7_rule_join_order ... ok
+test ownership::tests::owns8_sock_merge_does_not_clear_the_dispute ... ok
 test ownership::tests::ownv7_attestations_forward_and_missing_parents ... ok
-test ownership::tests::rv4_owt6_equal_frame_attests ... ok
 test ownership::tests::double_sale_is_detected_and_merges_in_any_order ... ok
-test ownership::tests::rv5_ownu3_relay_strips_a_parked_copy ... ok
+test ownership::tests::rv4_owt7_rule_join_order ... ok
+test ownership::tests::rv4_owt8_mutual_removal_dispute ... ok
+test ownership::tests::rv4_owt6_equal_frame_attests ... ok
 test ownership::tests::rv4_owt4_new_lineage_and_merge ... ok
 test ownership::tests::owns5_signature_padding_makes_no_copies ... ok
+test ownership::tests::rv5_ownu3_relay_strips_a_parked_copy ... ok
 test ownership::tests::arrival_order_never_matters ... ok
 test ownership::tests::rv6_ownv1_invited_key_spends_inviters_quota ... ok
 test ownership::tests::rv6_ownv3_solo_cap_churn ... ok
@@ -155,58 +156,58 @@ test ownership::tests::rv6_ownv1_quota_charged_to_an_honest_key ... ok
 test ownership::tests::rv8_ownx4_resales_keep_the_share ... ok
 test ownership::tests::rv8_ownx6_one_backup_for_one_owner ... ok
 test ownership::tests::signature_copies_converge ... ok
+test ownership::tests::rv5_ownu5_digest_depends_on_arrival_order ... ok
 test ownership::tests::tampered_or_reordered_chains_are_refused ... ok
 test ownership::tests::threshold_rule_c ... ok
-test ownership::tests::unattested_fork_add_blocks_nothing ... ok
 test ownership::tests::unattested_fork_counts_for_nothing ... ok
+test ownership::tests::unattested_fork_add_blocks_nothing ... ok
 test ownership::tests::wire_round_trip_and_one_encoding ... ok
-test ownership::tests::rv5_ownu5_digest_depends_on_arrival_order ... ok
 test peer::tests::authoring_rules ... ok
 test peer::tests::the_core_verifies_entries ... ok
-test ownership::tests::rv7_ownw1_cosign_veto ... ok
 test provenance::tests::a_b_c_a ... ok
-test provenance::tests::epochs_from_certificates ... ok
-test provenance::tests::import_policy ... ok
+test ownership::tests::rv7_ownw1_cosign_veto ... ok
 test provenance::tests::fork_proof_convinces_a_third_party ... ok
-test session::ownership_tests::a_certificate_on_a_pending_head_is_held_until_its_parent_is_decided ... ok
+test provenance::tests::import_policy ... ok
+test provenance::tests::epochs_from_certificates ... ok
 test session::ownership_tests::a_named_owner_rule_tests_the_joiner ... ok
-test session::ownership_tests::an_author_holds_at_most_max_held_per_author ... ok
+test session::ownership_tests::a_certificate_on_a_pending_head_is_held_until_its_parent_is_decided ... ok
 test session::ownership_tests::an_owner_added_in_the_change_of_its_join_is_row_0 ... ok
-test session::ownership_tests::an_owner_leaving_in_the_change_of_its_join_is_not_row_0 ... ok
+test session::ownership_tests::an_author_holds_at_most_max_held_per_author ... ok
 test session::ownership_tests::ownership_entries_round_trip_and_an_oversized_one_is_refused ... ok
+test session::ownership_tests::an_owner_leaving_in_the_change_of_its_join_is_not_row_0 ... ok
 test session::replay::round3_tests::an_epoch_at_the_flag_bit_is_not_encoded - should panic ... ok
 test session::ownership_tests::without_owny2_a_certificate_on_a_pending_head_is_lost ... ok
-test session::replay::round3_tests::join_with_too_many_attests_is_refused ... ok
 test session::replay::round3_tests::change_attests_round_trip ... ok
+test ownership::tests::rv8_ownx1b_attested_signer_list_does_not_drain_b ... ok
+test session::replay::round3_tests::join_with_too_many_attests_is_refused ... ok
+test session::replay::round3_tests::wide_role_ids_are_refused ... ok
 test session::replay::round3_tests::large_polka_round_trips ... ok
 test session::replay::round3_tests::signed_join_and_branch_fetch_round_trip ... ok
-test session::replay::round3_tests::wide_role_ids_are_refused ... ok
-test session::store::tests::a_keyframe_kept_past_a_compaction_is_refused ... ok
-test ownership::tests::rv8_ownx1b_attested_signer_list_does_not_drain_b ... ok
 test session::transfer::tests::state_messages_round_trip ... ok
-test session::transfer::tests::tables_round_trip ... ok
 test session::transfer::tests::tables_reader_refuses_non_canonical_bytes ... ok
+test peer::tests::two_cores_confirm_and_agree ... ok
+test session::transfer::tests::tables_round_trip ... ok
+test session::store::tests::a_keyframe_kept_past_a_compaction_is_refused ... ok
 test sign::tests::facts_are_bound_to_their_kind_and_session ... ok
 test sign::tests::fact_signatures ... ok
-test sign::tests::sign_and_verify ... ok
 test sign::tests::replicas_drop_bad_signatures_and_relay_good_ones ... ok
-test peer::tests::two_cores_confirm_and_agree ... ok
-test ownership::tests::rv5_ownu6_one_owner_fills_the_attested_cap ... ok
-test ownership::tests::rv4_owt2_minted_keys_fill_the_cap ... ok
-test session::seam::tests::static_membership_keeps_its_members ... ok
+test sign::tests::sign_and_verify ... ok
 test ownership::tests::reviewer_mutated_words_never_panic ... ok
+test ownership::tests::rv4_owt2_minted_keys_fill_the_cap ... ok
+test ownership::tests::rv5_ownu6_one_owner_fills_the_attested_cap ... ok
 test ownership::tests::owns5b_unattested_flood_is_capped_per_signer ... ok
+test session::seam::tests::static_membership_keeps_its_members ... ok
 test ownership::tests::rv5_ownu4_one_owner_fills_the_pool ... ok
 test ownership::tests::rv6_ownv4_solo_share_never_shrinks ... ok
-test ownership::tests::rv7_ownw3_world_cap_overrides_shares ... ok
 test ownership::tests::rv5_ownu7_record_of_unheld_changes_nothing ... ok
-test ownership::tests::rv5_ownu1_verify_chain_over_256_attested ... ok
+test ownership::tests::rv7_ownw3_world_cap_overrides_shares ... ok
 test ownership::tests::rv5_ownu2_keyless_relay_flushes_parked ... ok
+test ownership::tests::rv5_ownu1_verify_chain_over_256_attested ... ok
 test ownership::tests::books_are_capped_and_cheap_to_clone ... ok
 test ownership::harness::adversarial_harness has been running for over 60 seconds
 test ownership::harness::adversarial_harness ... ok
 
-test result: ok. 97 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 67.69s
+test result: ok. 97 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 71.10s
 
      Running tests\compaction.rs (target\release\deps\compaction-9b65253d79954d9d.exe)
 
@@ -243,8 +244,8 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 5 tests
 test a_core_without_a_signal_stays_at_level_0 ... ok
-test congestion_beginning_at_a_higher_level_raises_the_memory ... ok
 test it_lowers_back_into_the_congested_level_only_after_5_s_of_calm ... ok
+test congestion_beginning_at_a_higher_level_raises_the_memory ... ok
 test it_forgets_after_30_s_without_congestion ... ok
 test no_signal_holds_the_level_and_stops_the_forget_timer ... ok
 
@@ -261,7 +262,7 @@ test p23_4_one_state_per_requester_per_interval_and_answers_are_repairs ... ok
 test p23_3_a_joiner_takes_one_answer_per_request_and_only_from_that_donor ... ok
 test p23_3_a_running_member_refuses_an_old_state_it_never_asked_for ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
 
      Running tests\state_transfer.rs (target\release\deps\state_transfer-3ffeaef4f1cab954.exe)
 
@@ -275,8 +276,8 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 3 tests
 test a_touch_carries_only_its_own_object ... ok
-test only_grabs_claim_and_only_grabs_are_refused ... ok
 test a_touch_on_another_members_held_object_does_not_place_it ... ok
+test only_grabs_claim_and_only_grabs_are_refused ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 

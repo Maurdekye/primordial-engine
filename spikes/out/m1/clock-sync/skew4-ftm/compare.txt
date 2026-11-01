@@ -1,0 +1,7 @@
+| member | frames | digest | replay | conf | members at end | rollbacks | checks ok/bad | datagrams sent/faulted |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1800 | 96a3c18eda191991 | equal | 1980 | [1, 2, 3, 4] | 30 | 198/0 | 3646/0 |
+| 2 | 1800 | 96a3c18eda191991 | equal | 1980 | [1, 2, 3, 4] | 30 | 198/0 | 3369/0 |
+| 3 | 1800 | 96a3c18eda191991 | equal | 1980 | [1, 2, 3, 4] | 30 | 198/0 | 3362/0 |
+| 4 | 1800 | 96a3c18eda191991 | equal | 1980 | [1, 2, 3, 4] | 0 | 198/0 | 3459/0 |
+ALL EQUAL
