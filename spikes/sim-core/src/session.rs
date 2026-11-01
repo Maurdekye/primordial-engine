@@ -2964,7 +2964,7 @@ impl WorldSim {
             // deadline bound reads them, and the loop returns early for a member with neither an echo-stable
             // horizon nor a bound. Initialized after it, a member whose first ack took 2.5 s held conf at 0,
             // and every member paused from frame W until that ack was echo-stable.
-            if self.windows.is_empty() && std::env::var_os("PE_TMP_LATE_WINDOWS").is_none() {
+            if self.windows.is_empty() {
                 self.window_vals(1);
             }
             self.decide_verdicts();
@@ -3030,9 +3030,6 @@ impl WorldSim {
             }
         }
         if self.localized() && c != u64::MAX {
-            if self.windows.is_empty() {
-                self.window_vals(1);
-            }
             self.finalize_windows();
             let next = self.windows.keys().next_back().map_or(0, |&k| k + 1);
             c = c.min(next * WINDOW);
