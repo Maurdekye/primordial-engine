@@ -2163,7 +2163,13 @@ is fixed once the author's chain is contiguous up to it.
       session's bans and rejoin roles and the world's perma-bans beside roles and the ownership book, and
       `join_role` checks them after row 0. A session ban needs the Ban permission, a perma-ban an owner's
       key, each with the kick's permissions when it kicks; a kick with a rejoin role needs that role
-      defined and not counting as an admin.
+      defined and not counting as an admin [V bans-session: Admin 2 kicks and session-bans 3, session-bans
+      absent key 6, and its perma-ban of key 7 is refused (not an owner); owner 1 perma-bans key 5 and
+      kicks and perma-bans 4. At 4.5 s, 3 back as member 13 under key 3, and 14 (key 4), 5 and 6 are all
+      refused under Public-as-guest rules. Control without the bans: all four admitted. bans-next, the
+      world's next session from perma-bans {4, 5}: 3 and 6 admitted, 4 and 5 refused; owner 1's
+      perma-unban of 5 admits 5's open request; Admin 2's perma-unban of 4 is refused. The writing of
+      perma-bans into `acl/` (16.10) is not built: a scenario starts from a given list (`perma_bans`)].
     * A close records every member left as removed (`closed_members`) and says so in its event; nothing
       stamped at or after its boundary acts [V adminclose: closed at frame 432 everywhere, members 2 and
       3 removed]. The port into pe-session (P2-3) is to empty the member list and tell the players.
@@ -2746,7 +2752,7 @@ entries that the view change commits (10.8).
 * **Bans** (user, 2026-11-01 11:00Z, msg m7c37f5485e6f: "yes bans"; the trust principle of 10:22Z: admins
   evict cheaters by kicks and bans; the two kinds, msg m5c4b84d186a8). A kick alone keeps no one out: the
   kicked player rejoins at once as a new member (10.8), and under Public as Admin. There are two kinds of
-  ban [proposal; I, nothing built]:
+  ban [proposal; V pe-session `session/bans_tests.rs`, scenarios `bans/bans-session` and `bans/bans-next`]:
   * **A session ban** keeps a player out of this session. Any Admin may make one (user: "Any Admin"). It is
     never saved with the world and is gone when the session ends (user: "bans are not saved with the world
     automatically, they only count for the current session").
@@ -2837,7 +2843,7 @@ entries that the view change commits (10.8).
     persistent identity that costs something to replace is not part of the design.
 * **Kick options** (same ruling: "no automatic demotions, optional when kicking"). A kick never demotes on
   its own. The kick action offers **Kick**, **Kick and remove Admin**, **Kick and ban**, and, for an owner,
-  **Kick and perma-ban** [proposal; I, nothing built].
+  **Kick and perma-ban** [proposal; V `bans_tests.rs`, `bans/bans-session`].
   * **Kick and remove Admin** records the kicked player's key in the session with a **rejoin role**. When
     the key next joins this session and the join rules would admit it with a role that counts as an admin
     (Admin, or a role holding the roles permission, V2), it joins with the rejoin role instead. A row that
