@@ -247,6 +247,16 @@ impl Net {
         self.shapers.get(&(from, to)).map_or(0, |s| s.backlog_us(self.now_us))
     }
 
+    /// What a small ping offered now would take from `a` to `b` and back through the links'
+    /// queues and delays, without loss (mean jitter): the harness's stand-in for clock sync's pings,
+    /// for the admin indicators' late-acks hint (design 10.8). Filters' extra delays aren't seen,
+    /// as a ping on another path wouldn't see them.
+    pub fn ping_rtt_us(&self, a: MemberId, b: MemberId) -> u64 {
+        let ab = self.links.get(&(a, b)).copied().unwrap_or(self.default_link);
+        let ba = self.links.get(&(b, a)).copied().unwrap_or(self.default_link);
+        self.backlog_us(a, b) + ab.delay_us + ab.jitter_us / 2 + self.backlog_us(b, a) + ba.delay_us + ba.jitter_us / 2
+    }
+
     /// Send now, or queue for this tick's batch to that peer.
     pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         if self.batching {
@@ -612,6 +622,15 @@ impl Sim {
                 r.core.set_link(Some(b));
             }
             r.core.ack_on_frames = self.net.batching;
+            // Admin indicators (design 10.8): round-trip samples, as clock sync's pings would give.
+            if now % 250_000 == 0 {
+                for m in r.sim.audience() {
+                    if m != pid {
+                        let rtt = self.net.ping_rtt_us(pid, m);
+                        r.core.rtt_sample(m, rtt, now);
+                    }
+                }
+            }
             let clock_frame = r.core.clock_frame(now);
             // A background world catches up before its member authors anything that carries state
             // (design 22.3 rule 2): a due action forces a burst.
