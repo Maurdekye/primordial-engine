@@ -22,6 +22,9 @@ below.
   the largest. The `TRACE` line's "resimulated" count runs from the keyframe at or before that frame, so
   it is a little larger.
 - Hashes are the top 32 bits of pe-session's per-frame state hash.
+- "Version 1" and "version 2" in `SEEN` and `FINAL` lines number the versions in the order that member
+  saw them. Members 1-2 saw A first and member 4 saw B first. So member 1's "version 1 counts" and
+  member 4's "version 2 counts" both mean A.
 
 ## Run 1 (seq 238; A e08d21d3, B 39e67417)
 
@@ -90,6 +93,12 @@ Frame 486: a2439cc9 / 4c17fa13, then 2bf4f3d7, and a2439cc9 at the end.
   | 1 | at most 477 (decision 8.137 s) | at most 477 (8.140 s) | at most 476 (8.258 s) |
   | 2 | at most 476 (8.134 s) | at most 476 (8.136 s) | at most 476 (8.254 s) |
 
+  Read by time: in run 1, member 4's log has `TRACE ... conf 484` (8258 ms) on the line before its
+  decision (also 8258 ms). Both come from one step: pe-app's `step()` prints the trace after the tick
+  and the decision lines after that (`drain_events`), so the conf 484 is already past the decision.
+  Run 2's member 4 is the same (8256 ms trace after the 8254 ms decision). The state still holding
+  neither version was never checked either: pe-session skips `evaluate_checks` while a rollback is
+  pending, and every member has 0 bad checks.
   Frame 479 is confirmed only once the decision has fixed which version counts. So no replica
   confirmed a frame holding A, B or neither and then had to change it.
 * **Which version won: A, in both runs, by pe-session's cut rule.**
