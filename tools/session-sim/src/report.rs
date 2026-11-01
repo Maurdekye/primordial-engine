@@ -398,13 +398,17 @@ impl Probe {
                     println!("  m{m}: admitted {:?}; {joiner}'s touches: {}", r.vcm.admitted, touch_state(sim, 1, m, *joiner));
                 }
             }
-            Report::Admin { honest: h, label, outcomes: o, roles } => {
+            Report::Admin { honest: h, label, outcomes: o, roles, bans } => {
                 for m in honest(h, sim) {
                     if *o {
                         println!("RESULT {label}: m{m}: {}", outcomes(sim, m));
                     }
                     if *roles {
                         println!("  {}", roles_line(sim, m));
+                    }
+                    if *bans {
+                        let r = &sim.replica(m, 1).sim;
+                        println!("  m{m}: session bans {:?} perma-bans {:?}", r.vcm.bans, r.perma_bans());
                     }
                 }
             }
@@ -620,9 +624,13 @@ fn outcomes(sim: &Sim, m: MemberId) -> String {
         .filter_map(|(id, ok)| {
             let e = r.all_entries().into_iter().find(|e| e.id() == *id)?;
             let what = match e.payload {
-                Payload::Kick { target, .. } => format!("{} kicks {target}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::Free, .. } => format!("{} kicks {target}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::Role(r), .. } => format!("{} kicks {target}, rejoin role {r}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::Ban, .. } => format!("{} kicks and bans {target}", e.member),
+                Payload::Kick { target, rejoin: Rejoin::PermaBan, .. } => format!("{} kicks and perma-bans {target}", e.member),
                 Payload::SetRole { member, role, .. } => format!("{} gives {member} role {role}", e.member),
                 Payload::DefineRole { role, perms, .. } => format!("{} defines role {role} = {perms:#x}", e.member),
+                Payload::Ban { key, on, perma, .. } => format!("{} {}{} {key:?}", e.member, if on { "bans" } else { "unbans" }, if perma { " (perma)" } else { "" }),
                 _ => return None,
             };
             Some((e.stamp, format!("{what} @{}: {}", e.stamp, if *ok { "applied" } else { "refused" })))

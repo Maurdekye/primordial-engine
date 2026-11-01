@@ -285,6 +285,17 @@ impl KeyRing {
         KeyRing { secret: Some(test_signing_key(me)), public: PublicKeys::test(), session: TEST_SESSION }
     }
 
+    /// Test identities, where each member `m` in `identities` signs with test identity
+    /// `identities[m]`'s key instead of its own: a player back under a new member id (10.3), for
+    /// scenarios of bans and one key, one member (12.4).
+    pub fn test_with(me: MemberId, identities: &BTreeMap<MemberId, u32>) -> Self {
+        let mut public = PublicKeys::test();
+        for (&m, &id) in identities {
+            public.add(m, test_signing_key(id).verifying_key());
+        }
+        KeyRing { secret: Some(test_signing_key(identities.get(&me).copied().unwrap_or(me))), public, session: TEST_SESSION }
+    }
+
     fn key(&self) -> &SigningKey {
         self.secret.as_ref().expect("signing needs this replica's key")
     }

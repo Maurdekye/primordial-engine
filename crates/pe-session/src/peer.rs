@@ -613,7 +613,8 @@ impl SessionCore {
                 }
                 match p {
                     Payload::Touch { obj, .. } => self.sim.author(p, Some(obj)),
-                    Payload::Kick { target, .. } => self.sim.kick(target),
+                    Payload::Kick { target, rejoin, .. } => self.sim.kick_with(target, rejoin),
+                    Payload::Ban { key, on, perma, .. } => self.sim.ban(key, on, perma),
                     Payload::SetRole { member, role, .. } => self.sim.set_role(member, role),
                     Payload::DefineRole { role, perms, .. } => self.sim.define_role(role, perms),
                     p => self.sim.author(p, None),

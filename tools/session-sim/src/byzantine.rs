@@ -695,7 +695,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 let r = sim_mut(sim, *member, 1);
                 let epoch = r.vcm.epoch;
-                let e = r.author_backdated(Payload::Kick { epoch, target: *target }, *back);
+                let e = r.author_backdated(Payload::Kick { epoch, target: *target, rejoin: Rejoin::Free }, *back);
                 send_to(sim, *member, to, &e);
                 act.fired = true;
             }
@@ -808,7 +808,7 @@ fn sim_mut(sim: &mut Sim, member: MemberId, w: WorldId) -> &mut WorldSim {
 
 /// Before the step: the join requests due (each once, at the first millisecond at or after its
 /// time), in file order.
-pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result<(), String> {
+pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool], keys: &[(u32, u32, u32)]) -> Result<(), String> {
     for (j, done) in joins.iter().zip(sent.iter_mut()) {
         if *done || sim.net.now_us < j.at_ms * 1000 {
             continue;
@@ -821,7 +821,10 @@ pub fn send_joins(sim: &mut Sim, joins: &[JoinReq], sent: &mut [bool]) -> Result
         for &m in &j.to {
             let a = if j.attests_to.as_ref().is_none_or(|t| t.contains(&m)) { attests.clone() } else { vec![] };
             let msg = match j.sig {
-                None => join_msg(&sim.replica(m, j.world).sim.session(), j.member, a, u64::MAX),
+                None => match keys.iter().find(|(w, mm, _)| *w == j.world && *mm == j.member) {
+                    Some(&(_, _, id)) => join_msg_as(&sim.replica(m, j.world).sim.session(), j.member, id, a, u64::MAX),
+                    None => join_msg(&sim.replica(m, j.world).sim.session(), j.member, a, u64::MAX),
+                },
                 // A scenario's own signature (a forged one): its 64-bit value padded to 64 bytes, which never verifies.
                 Some(sig) => Msg::Join { member: j.member, attests: a, sig: std::array::from_fn(|i| if i < 8 { sig.to_le_bytes()[i] } else { 0 }), expires: u64::MAX },
             };
