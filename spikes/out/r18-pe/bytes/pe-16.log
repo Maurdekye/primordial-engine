@@ -1,0 +1,18 @@
+RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 16 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   per message      | 142.1 /  53.0 |  500 /  500 | 1317 | 1538 / 1547 | 1658 / 1662 | 0 (own entries moved: 0) | 10.1/s,  33 | never | m1 032628d2e1f7e07d / m2 c488d680deea61b2 replay 032628d2e1f7e07d DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 35.2 / 14.1 (206 of 222 unconfirmed), m2 35.0 / 16.3 (211 of 222 unconfirmed)
+RESULT     member 1's offered bytes by kind: entry/hand 64.2 kbit/s (60.4/s x 133 B), ack 39.7 kbit/s (29.5/s x 168 B), (datagram overhead) 38.0 kbit/s (91.3/s x 52 B), fetch 0.1 kbit/s (1.4/s x 13 B)
+RESULT     member 2's offered bytes by kind: ack 39.7 kbit/s (29.5/s x 168 B), (datagram overhead) 13.1 kbit/s (31.4/s x 52 B), fetch 0.2 kbit/s (1.9/s x 13 B)
+RESULT     member 1's own hand against its target, over 136 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched          | 131.4 /  53.8 |  500 /  500 | 1245 | 1536 / 1543 | 1656 / 1659 | 0 (own entries moved: 0) | 10.9/s,  32 | never | m1 8b469f90fb53845d / m2 d8f7dbc5d88318db replay 8b469f90fb53845d DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 29.2 / 11.7 (204 of 222 unconfirmed), m2 29.8 / 12.8 (208 of 222 unconfirmed)
+RESULT     member 1's offered bytes by kind: entry/hand 64.0 kbit/s (60.1/s x 133 B), ack 40.5 kbit/s (30.1/s x 168 B), (datagram overhead) 25.6 kbit/s (61.5/s x 52 B), (batch framing) 1.2 kbit/s (30.1/s x 5 B), fetch 0.1 kbit/s (1.4/s x 13 B)
+RESULT     member 2's offered bytes by kind: ack 40.5 kbit/s (30.1/s x 168 B), (datagram overhead) 13.2 kbit/s (31.7/s x 52 B), fetch 0.2 kbit/s (1.6/s x 13 B)
+RESULT     member 1's own hand against its target, over 138 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched+adaptive |  42.6 /  25.9 |  499 /  495 |   71 | 1535 / 1542 | 1570 / 1613 | 21 (own entries moved: 0) |  7.9/s, 116 | never | m1 722deba6ce42828f / m2 7af4117516b6969d replay 722deba6ce42828f DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 1531.3 / 524.1 (16 of 52 unconfirmed), m2 1542.0 / 403.4 (21 of 52 unconfirmed)
+RESULT     member 1's offered bytes by kind: entry/hand 19.0 kbit/s (13.7/s x 173 B), ack 14.0 kbit/s (10.4/s x 169 B), (datagram overhead) 9.3 kbit/s (22.4/s x 52 B), fetch 0.1 kbit/s (1.4/s x 13 B), (batch framing) 0.1 kbit/s (3.0/s x 5 B)
+RESULT     member 2's offered bytes by kind: ack 19.2 kbit/s (14.2/s x 168 B), (datagram overhead) 6.6 kbit/s (15.8/s x 52 B), fetch 0.2 kbit/s (1.6/s x 13 B)
+RESULT     member 1's own hand against its target, over 142 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2268, 100, 100, 100, 100, 27234] ms

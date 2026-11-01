@@ -1,0 +1,11 @@
+  9 removed: None s; resets 88
+  capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one) with VCR-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833; at m1: members {1, 2, 3, 9}, evicted []
+RESULT capchurn: m1 epoch 4 members {1, 2, 3} view changes 4 (resets 3, highest round 0) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 0 removed []; epoch 3 at frame 135 (t=2.35 s) round 0 removed []; epoch 4 at frame 144 (t=2.50 s) round 0 removed [9]
+RESULT capchurn: m2 epoch 4 members {1, 2, 3} view changes 4 (resets 3, highest round 0) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 0 removed []; epoch 3 at frame 135 (t=2.35 s) round 0 removed []; epoch 4 at frame 144 (t=2.50 s) round 0 removed [9]
+RESULT capchurn: m3 epoch 4 members {1, 2, 3} view changes 4 (resets 3, highest round 0) | epoch 1 at frame 122 (t=2.13 s) round 0 removed []; epoch 2 at frame 129 (t=2.25 s) round 0 removed []; epoch 3 at frame 136 (t=2.37 s) round 0 removed []; epoch 4 at frame 144 (t=2.50 s) round 0 removed [9]
+RESULT capchurn: 3 resets, 9 removed at 2.50 s -> VOTED OUT
+RESULT capchurn: m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833
+  m1: conf 826 frame 833 members {1, 2, 3} evicted {9: (79, 132)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 61 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3} evicted {9: (79, 132)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 61 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3} evicted {9: (79, 132)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 61 bad 0
+RESULT capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one): frames 0..832 honest m1=68564367bd91ba89 m2=68564367bd91ba89 m3=68564367bd91ba89 | offline replay 68564367bd91ba89 | ALL EQUAL, NO FALSE CHECKS ; checks ok 183 bad 0

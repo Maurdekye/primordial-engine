@@ -1,13 +1,13 @@
 RESULT ballpit 60 Hz, 2 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 548 (19914 B/s payload, 27699 B/s wire est.), acks 255 (15514 B/s wire est.), all messages 44350 B/s wire est. (both directions)
-RESULT   naive state streaming measured on member 1: avg 381 balls changed per frame; exact state 1556973 B/s, quantized ~26 B/ball 595907 B/s (one direction, payload only)
+RESULT   perturbation source (hand target per frame + acks): hand entries 548 (16067 B/s payload, 23852 B/s wire est.), acks 255 (11737 B/s wire est.), all messages 36726 B/s wire est. (both directions)
+RESULT   naive state streaming measured on member 1: avg 378 balls changed per frame; exact state 1544655 B/s, quantized ~26 B/ball 591197 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1800 B/s wire est.), m2 7.8 acks/s (1800 B/s wire est.)
-  sweep-window traffic ack: 255 messages, 43520 B payload (15514 B/s wire est.)
-  sweep-window traffic entry/hand: 548 messages, 72884 B payload (27699 B/s wire est.)
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1302 B/s wire est.), m2 7.8 acks/s (1302 B/s wire est.)
+  sweep-window traffic ack: 255 messages, 29696 B payload (11737 B/s wire est.)
+  sweep-window traffic entry/hand: 548 messages, 58804 B payload (23852 B/s wire est.)
   sweep-window traffic fetch: 64 messages, 832 B payload (1137 B/s wire est.)
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 280.1 re-simulated frames/s, re-sim 2.95 ms per rendered sim frame (649 ms over the window); step avg 0.399 ms; max depth 12
+RESULT   member 2 during the sweep: 54.6 rollbacks/s, 259.6 re-simulated frames/s, re-sim 4.58 ms per rendered sim frame (1009 ms over the window); step avg 0.685 ms; max depth 12
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 453223a7a525165a m2 453223a7a525165a -> IDENTICAL
-  m1 world 1: rollbacks 221 max depth 14 resim frames 1202 (775.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 521 frame 534
-  m2 world 1: rollbacks 222 max depth 12 resim frames 1051 (664.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 533
+  m1 world 1: rollbacks 132 max depth 14 resim frames 771 (821.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 521 frame 534
+  m2 world 1: rollbacks 206 max depth 12 resim frames 976 (1034.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 533
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=1ec49eba28f507d6 m2=1ec49eba28f507d6 | offline replay 1ec49eba28f507d6 | ALL EQUAL

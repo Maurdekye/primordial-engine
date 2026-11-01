@@ -1,26 +1,26 @@
   carrier: t=2766ms depart authored in world 1 at frame 160
   carrier: phase WaitDepart accepted None
   carrier: depart entry final outcome at A frame 160: Accepted
-  relayer m4: t=2823ms relaying transfer 5202150833332657095 from world 1, as a member of both worlds
-  relayer m4: t=6730ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 329
-  relayer m4: t=7108ms arrival confirmed in world 2 (frame 329, accepted=true); verdict authored in world 1 at frame 420 (its sim there at frame 420)
-  relayer m4: t=7279ms verdict confirmed in world 1; transfer 5202150833332657095 resolved
-  relayer m4: t=7358ms commit certified in world 1; hop relayed into world 2 at frame 360
+  relayer m4: t=2831ms relaying transfer 10926302294153605785 from world 1, as a member of both worlds
+  relayer m4: t=6630ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 324
+  relayer m4: t=6873ms arrival confirmed in world 2 (frame 324, accepted=true); verdict authored in world 1 at frame 406 (its sim there at frame 406)
+  relayer m4: t=7022ms verdict confirmed in world 1; transfer 10926302294153605785 resolved
+  relayer m4: t=7126ms commit certified in world 1; hop relayed into world 2 at frame 348
   relayer m4: phase Done accepted Some(true)
-RESULT r14 crash: world 1 at m2: members {2, 4} evicted {1: (58, 163)} conf 514 frame 533 paused frames 82
-RESULT r14 crash: world 2 at m3: members {3, 4} evicted {1: (21, 130)} conf 425 frame 442 paused frames 85
-  m1 world A: object 40 live copies 0; escrow ["T5202150833332657095:Pending"]; arrivals []
-  m2 world A: object 40 live copies 0; escrow ["T5202150833332657095:Committed"]; arrivals []
-  m4 world A: object 40 live copies 0; escrow ["T5202150833332657095:Committed"]; arrivals []
+RESULT r14 crash: world 1 at m2: members {2, 4} evicted {1: (58, 163)} conf 518 frame 533 paused frames 86
+RESULT r14 crash: world 2 at m3: members {3, 4} evicted {1: (22, 133)} conf 431 frame 442 paused frames 84
+  m1 world A: object 40 live copies 0; escrow ["T10926302294153605785:Pending"]; arrivals []
+  m2 world A: object 40 live copies 0; escrow ["T10926302294153605785:Committed"]; arrivals []
+  m4 world A: object 40 live copies 0; escrow ["T10926302294153605785:Committed"]; arrivals []
   m1 world B: object 40 live copies 0; escrow []; arrivals []
-  m3 world B: object 40 live copies 1; escrow []; arrivals ["T5202150833332657095:Accepted { obj: 75, frame: 329 }"]
-  m4 world B: object 40 live copies 1; escrow []; arrivals ["T5202150833332657095:Accepted { obj: 75, frame: 329 }"]
+  m3 world B: object 40 live copies 1; escrow []; arrivals ["T10926302294153605785:Accepted { obj: 75, frame: 324 }"]
+  m4 world B: object 40 live copies 1; escrow []; arrivals ["T10926302294153605785:Accepted { obj: 75, frame: 324 }"]
 RESULT r14 crash: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
-  m1 world 1: rollbacks 1 max depth 3 resim frames 3 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 156 frame 165
-  m2 world 1: rollbacks 14 max depth 3 resim frames 58 (7.6 ms) overwrites 0 paused frames 82 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 514 frame 533
-  m4 world 1: rollbacks 16 max depth 3 resim frames 71 (8.8 ms) overwrites 0 paused frames 79 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 517 frame 534
-  m1 world 2: rollbacks 1 max depth 2 resim frames 2 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 9 bad 0 nonfinite 0 conf 123 frame 135
-  m3 world 2: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 85 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 425 frame 442
-  m4 world 2: rollbacks 2 max depth 8 resim frames 11 (1.1 ms) overwrites 0 paused frames 82 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 426 frame 442
-RESULT r14 crash A world 1: frames 0..500 digests m2=d72b2b92dc0c68df m4=d72b2b92dc0c68df | offline replay d72b2b92dc0c68df | ALL EQUAL
-RESULT r14 crash B world 2: frames 0..400 digests m3=05ab5e5ffcd6b069 m4=05ab5e5ffcd6b069 | offline replay 05ab5e5ffcd6b069 | ALL EQUAL
+  m1 world 1: rollbacks 1 max depth 3 resim frames 3 (0.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 11 bad 0 nonfinite 0 conf 155 frame 165
+  m2 world 1: rollbacks 14 max depth 11 resim frames 68 (12.7 ms) overwrites 0 paused frames 86 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 518 frame 533
+  m4 world 1: rollbacks 14 max depth 10 resim frames 72 (14.1 ms) overwrites 0 paused frames 83 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 518 frame 534
+  m1 world 2: rollbacks 1 max depth 3 resim frames 3 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 10 bad 0 nonfinite 0 conf 127 frame 135
+  m3 world 2: rollbacks 1 max depth 3 resim frames 3 (0.5 ms) overwrites 0 paused frames 84 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 431 frame 442
+  m4 world 2: rollbacks 2 max depth 3 resim frames 5 (0.9 ms) overwrites 0 paused frames 81 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 430 frame 442
+RESULT r14 crash A world 1: frames 0..500 digests m2=1fddcca7360668a5 m4=1fddcca7360668a5 | offline replay 1fddcca7360668a5 | ALL EQUAL
+RESULT r14 crash B world 2: frames 0..400 digests m3=4fccde8ef4247cb5 m4=4fccde8ef4247cb5 | offline replay 4fccde8ef4247cb5 | ALL EQUAL

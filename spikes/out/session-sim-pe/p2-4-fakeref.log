@@ -1,12 +1,12 @@
-RESULT fakeref: m1 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
+RESULT fakeref: m1 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8, 9]
 RESULT fakeref: m2 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
 RESULT fakeref: m3 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
-RESULT fakeref: m4 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
+RESULT fakeref: m4 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [8, 9]
 RESULT fakeref: m5 epoch 1 members {1, 2, 3, 4, 5} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 309 (t=5.25 s) round 0 removed [8, 9]
-RESULT fakeref: 9 removed at 5.25 s (1 withholding vote at m1) -> VOTED OUT; m1 conf 822 of frame 833, m2 conf 822 of frame 833, m3 conf 822 of frame 833, m4 conf 822 of frame 833, m5 conf 822 of frame 833
-  m1: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (41, 295), 9: (18, 110)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 100 bad 0
-  m2: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (41, 295), 9: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
-  m3: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (41, 295), 9: (18, 110)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 100 bad 0
-  m4: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (41, 295), 9: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
-  m5: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (41, 295), 9: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
+RESULT fakeref: 9 removed at 5.23 s (1 withholding vote at m1) -> VOTED OUT; m1 conf 822 of frame 833, m2 conf 822 of frame 833, m3 conf 822 of frame 833, m4 conf 822 of frame 833, m5 conf 822 of frame 833
+  m1: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (18, 110)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 100 bad 0
+  m2: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
+  m3: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (18, 110)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 100 bad 0
+  m4: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
+  m5: conf 822 frame 833 members {1, 2, 3, 4, 5} evicted {8: (39, 279), 9: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 100 bad 0
 RESULT fakeref (9 falls silent at 2 s; from then on 8's acks claim 5 more of 9's entries than anyone holds): frames 0..832 honest m1=ccc6168b2083108b m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b m5=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 500 bad 0
