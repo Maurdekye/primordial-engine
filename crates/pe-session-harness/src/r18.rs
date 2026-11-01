@@ -83,6 +83,9 @@ pub fn capped(o: &Opts) {
         let mut qmax = vec![0u64; n];
         let mut lag_max = vec![0u64; n];
         let mut back: Option<u64> = None;
+        // When each frame became confirmed at each member (wall clock, us), for the hand entries'
+        // confirmation latency below (spike 5ad7546).
+        let mut conf_at: Vec<Vec<u64>> = vec![Vec::new(); n];
         // Member 1's own hand against its target, first time each sweep frame is simulated (mm).
         let mut own_err: BTreeMap<u64, f64> = BTreeMap::new();
         let (mut rb0, mut rb1) = (0u64, 0u64);
@@ -111,6 +114,9 @@ pub fn capped(o: &Opts) {
                 let r = &sim.replica(m, 1).sim;
                 let l = r.now.saturating_sub(r.conf);
                 lag_max[i] = lag_max[i].max(l);
+                while (conf_at[i].len() as u64) < r.conf.min(r.now + 1) {
+                    conf_at[i].push(now);
+                }
                 all_lag_ok &= l < 20 || !live.contains(&m);
             }
             {
@@ -159,6 +165,26 @@ pub fn capped(o: &Opts) {
             join(live.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
             if hs.iter().all(|h| *h == rd) { "EQUAL" } else { "DIFFER" }
         );
+        // Each of member 1's hand entries, from the frame it is stamped at until each member confirms it
+        // (design 7.6: unchanged by idle thinning while anything happens). In frames, max / mean.
+        let dt_us = 1_000_000 / hz;
+        let stamps: Vec<u64> = r1.all_entries().iter().filter(|e| e.member == 1 && matches!(e.payload, Payload::Hand { .. })).map(|e| e.stamp).collect();
+        let lat: Vec<String> = conf_at
+            .iter()
+            .zip(&ids)
+            .map(|(c, m)| {
+                let l: Vec<f64> = stamps.iter().filter(|&&s| (s as usize) < c.len()).map(|&s| (c[s as usize] as f64 - (100_000 + s * dt_us) as f64) / dt_us as f64).collect();
+                let open = stamps.len() - l.len();
+                let max = l.iter().cloned().fold(0.0, f64::max);
+                let mean = l.iter().sum::<f64>() / l.len().max(1) as f64;
+                match open {
+                    _ if l.is_empty() => format!("m{m} none of {} confirmed", stamps.len()),
+                    0 => format!("m{m} {max:.1} / {mean:.1}"),
+                    _ => format!("m{m} {max:.1} / {mean:.1} ({open} of {} unconfirmed)", stamps.len()),
+                }
+            })
+            .collect();
+        println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
         let n_err = own_err.len().max(1) as f64;
         println!(
             "RESULT     member 1's own hand against its target, over {} gesture frames: mean {:.2} mm, max {:.2} mm",

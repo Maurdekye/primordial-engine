@@ -1314,6 +1314,20 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32) {
         "RESULT   before the sweep (settled pit, 1.0-1.9 s): avg {:.1} balls changed per frame",
         base_changed as f64 / base_frames.max(1) as f64
     );
+    // The idle session's acks (design 7.6, reduction 2; spike 5ad7546): each member's acks stamped in
+    // that second, from member 1's copy of the log, with the wire estimate used above.
+    let r1 = &sim.replica(1, 1).sim;
+    let all = r1.all_entries();
+    let idle_secs = (b1 - b0) as f64 / 1e6;
+    let idle: Vec<String> = ids
+        .iter()
+        .map(|&m| {
+            let acks: Vec<&Entry> = all.iter().filter(|e| e.member == m && matches!(e.payload, Payload::Ack { .. }) && (f(1.0)..f(1.9)).contains(&e.stamp)).collect();
+            let b: u64 = acks.iter().map(|e| encode_msg(&Msg::Entry(r1.signed_entry(e.id()).expect("a held entry"))).len() as u64 + 52).sum();
+            format!("m{m} {:.1} acks/s ({:.0} B/s wire est.)", acks.len() as f64 / idle_secs, b as f64 / idle_secs)
+        })
+        .collect();
+    println!("RESULT   acks before the sweep (1.0-1.9 s, one direction): {}", idle.join(", "));
     for ((_, k), (n, b)) in sim.net.sent.iter() {
         println!("  sweep-window traffic {k}: {n} messages, {b} B payload ({:.0} B/s wire est.)", wire(*n, *b));
     }
