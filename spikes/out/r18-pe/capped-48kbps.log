@@ -1,12 +1,12 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 48 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 10 s
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   per message      | 141.5 /  53.0 |  499 /   87 |  190 | 322 / 340 | 442 / 446 | 0 (own entries moved: 0) | 23.2/s,  33 | never | m1 2dcade989cc83e7f / m2 2020607c2440630d replay 2dcade989cc83e7f DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 37.6 / 17.0 (190 of 222 unconfirmed), m2 39.0 / 18.0 (195 of 222 unconfirmed)
-RESULT     member 1's own hand against its target, over 152 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched          | 130.7 /  53.9 |  499 /  269 |  104 | 316 / 333 | 436 / 439 | 0 (own entries moved: 0) | 26.2/s,  33 | never | m1 79f1cb783c3950c8 / m2 e7832140389dbc9a replay 79f1cb783c3950c8 DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 39.2 / 16.2 (184 of 222 unconfirmed), m2 38.4 / 16.9 (188 of 222 unconfirmed)
-RESULT     member 1's own hand against its target, over 158 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched+adaptive |  45.5 /  40.0 |  250 /    0 |    0 |   0 /   0 |  28 /  26 | 30 (own entries moved: 0) | 14.5/s,  20 | 0 ms | m1 8eb41e88c05540ce / m2 8eb41e88c05540ce replay 8eb41e88c05540ce EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 28.8 / 15.3, m2 24.7 / 13.1
+RESULT   per message      | 111.0 /  38.0 |  499 /    0 |  148 | 305 / 318 | 413 / 417 | 0 (own entries moved: 0) | 13.9/s, 116 | never | m1 222872c64a5b767e / m2 0a8a76f3d8bb3f12 replay 222872c64a5b767e DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 412.4 / 92.1 (161 of 222 unconfirmed), m2 417.9 / 116.1 (164 of 222 unconfirmed)
+RESULT     member 1's own hand against its target, over 172 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched          | 100.0 /  38.4 |  499 /    0 |   80 | 294 / 298 | 402 / 405 | 0 (own entries moved: 0) | 16.9/s, 115 | never | m1 e1f48a30d8b35aec / m2 5122b69962b9d40a replay e1f48a30d8b35aec DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 297.3 / 61.6 (150 of 222 unconfirmed), m2 298.1 / 64.6 (154 of 222 unconfirmed)
+RESULT     member 1's own hand against its target, over 182 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched+adaptive |  42.0 /  27.2 |  190 /    0 |    0 |   0 /   0 |  24 /  22 | 29 (own entries moved: 0) | 18.9/s,  16 | 0 ms | m1 8eb41e88c05540ce / m2 8eb41e88c05540ce replay 8eb41e88c05540ce EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 24.3 / 13.7, m2 22.6 / 12.2
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2385, 100, 100, 100, 100, 7117] ms
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2635, 100, 100, 100, 100, 6867] ms
