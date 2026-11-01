@@ -166,6 +166,21 @@ impl WorldSim {
             .collect()
     }
 
+    /// Rule 4's exception (TLP-25, TLP-29): if `j` is fed (its newest ack carries an anchor) and its echo of my chain
+    /// has trailed my oldest checkpoint it hasn't echoed for at least X = max(W − C_max, suspect_after) frames: that
+    /// lag, and X. Judged from j's own acks as I received them; a short dropout stays under X.
+    pub(super) fn floor_breach(&self, j: MemberId) -> Option<(u64, u64)> {
+        let &echoed = self.fed_peers.get(&j)?;
+        let after = echoed.or_else(|| self.covered_ckpt(j, self.me).map(|(b, _)| b));
+        let lo = after.map_or(0, |b| b + 1);
+        let (&(_, b), &(_, id, _)) = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).next()?;
+        let stamp = self.entries.get(&id).map_or(b * super::CKPT_FRAMES, |e| e.stamp);
+        let c_max = self.windows.values().next_back().map_or(self.cfg.window / 2, |v| v.c_max);
+        let x = self.cfg.window.saturating_sub(c_max).max(self.cfg.suspect_after);
+        let lag = self.now.saturating_sub(stamp);
+        (lag >= x).then_some((lag, x))
+    }
+
     /// TLP-24: the newest checkpoint of `x`'s chain that `y`'s newest ack I hold references (its block and id).
     fn covered_ckpt(&self, y: MemberId, x: MemberId) -> Option<(u64, EntryId)> {
         let head = self.ack_head_hist.get(&(y, x)).and_then(|h| h.values().next_back()).map_or(0, |&(s, _)| s);
