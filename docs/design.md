@@ -2749,6 +2749,10 @@ entries that the view change commits (10.8).
     Ed25519 key that signs a player's join request, the key 12.5 compares with the owners, read from logged,
     signed state (OWNP-2). A ban names that key and nothing else: a player's relationships (friendships,
     confidant marks, invite tickets) are all signed by it, so there is no second identity to name.
+  * **One key, one member** (review BN-3): a join by a key that a current member holds is refused, so a
+    player is in a session once, whatever its devices. A ban reaches every key delegated from the banned
+    key: a device key it certifies (10.3), and agent and panel keys (12.3). A join or an entry under such a
+    key is judged as the banned key's. pe-session has one key per member, the identity key itself [V code].
   * **Checked at the join, after row 0 and before the other rows.** A joiner whose key is banned is refused,
     whatever the rows say. Row 0 stays on top (22:48Z): an owner always joins, so a ban entry naming a
     current owner's key is refused, and so is a kick of an owner with the ban option, even a co-owner's.
@@ -2775,9 +2779,21 @@ entries that the view change commits (10.8).
     never rewinds it (16.10, ruling 2026-10-31 09:35Z). Until it is written (16.10: no owner present and no
     builder allowed to write), a ban is session state like the session's edits and join-rule changes,
     listed for the owners [I].
-  * **Merges** (D87 q2): when two copies of a world merge, their ban lists merge as a union, and a ban wins
-    over an unban the other copy didn't see. So a merge never lets back in a player either copy kept out
-    [proposal].
+  * **A joiner's copy** (review BN-1). A 9.5 state transfer covers world state only: its check hash
+    doesn't cover governance, so no donor can hand a joiner the ACL. The joiner derives it, as it derives
+    roles, join rules and the ownership book: from the session's starting governance (the world head's
+    `acl/` and governance fields, in an owner-signed commit, 16.10) and the admin entries of every decided
+    change since genesis, each change verified by its epoch certificate from the genesis members
+    (`epoch_cert_ok`), with the listed entries fetched by id (VCR-8). P23-8 relies on the same: a joiner
+    holds the decided changes up to its check frame. The cost grows with the session's decisions; a
+    quorum-signed digest of governance at check frames would bound it. This is the same for all
+    governance, not only bans, and is not built for any of it [I; cross-cutting, @coordinator-opus to
+    docket].
+  * **Merges** (D87 q2; review BN-4): when two copies of a world merge, their ACLs merge against the
+    common ancestor, key by key, like the rest of the merge. A key that only one copy changed since the
+    ancestor takes that copy's entry, so a deliberate unban on one side survives. A key both copies changed
+    differently takes the stricter entry: a ban over a rejoin role, a rejoin role over none. So a merge
+    never lets back in a player whom both copies acted on and either kept out [proposal].
   * **At most 4,096 keys** (128 KiB); a ban past that is refused, and the UI asks for an unban first
     [proposal].
   * **What a ban stops.** Keys cost nothing to make. Under Public join rules a banned player comes back at
@@ -2794,14 +2810,16 @@ entries that the view change commits (10.8).
     admits it with a role that doesn't count as an admin, applies unchanged. Row 0 is above it: an owner
     kicked this way still rejoins as Admin, as the user accepted for kicked owners (22:51Z).
   * The rejoin role must be a defined role that doesn't count as an admin when the kick is decided;
-    otherwise the whole kick is refused. The engine never creates a role for it: roles are only defined
+    otherwise the whole kick is refused, and the refusal notice offers a plain kick at once. It is checked
+    again at the join (review BN-2): if the role has since been deleted or redefined to count as an
+    admin, the join is refused, which keeps the kick's intent. The engine never creates a role for it: roles are only defined
     by hand or come with a preset world template (user, 2026-11-01, msg mabfa0670b915). So "Kick and remove
     Admin" offers the world's existing roles that don't count as an admin to rejoin with. A world with
     none (the default, where Admin is the only role, 22:15Z) offers no such option, and the dialog says a
     role without Admin must first be defined, or come from a template [proposal].
   * The rejoin role lasts until it is lifted: by an unban entry, or by an admin later giving the rejoined
-    player a role that counts as an admin (an explicit promotion overrides it). It persists and merges like
-    a ban (a merge keeps it unless the other copy bans the key).
+    player a role that counts as an admin (a grant naming the player overrides it; redefining a role is
+    not a promotion). It persists and merges like a ban.
 * **Agents** may request kicks, bans and unbans, like the other session admin actions:
   `session.request_kick {member, option}` (option: none, remove_admin or ban), `session.request_ban {key}`
   and `session.request_unban {key}`. Each request waits in its owner's approval layer (Gnosarium UX
