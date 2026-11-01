@@ -215,7 +215,26 @@ impl Net {
         let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
         let mut extra = 0;
         if let Some(f) = self.filter.as_mut() {
-            match f(self.now_us, world, from, to, m) {
+            // c6e564f's rule (as in the crate harness for option 2's runs): a datagram of two or more messages meets
+            // the filter message by message, as each would alone. A filter written for entries otherwise let every
+            // batched datagram past it (partbrand's Split and Rotate faults). One datagram: dropped if any part is,
+            // else delayed by the longest delay.
+            let fate = match m {
+                Msg::Batch(v) if v.len() > 1 => {
+                    let mut fate = Fate::Deliver;
+                    for x in v {
+                        match (f(self.now_us, world, from, to, x), &fate) {
+                            (Fate::Drop, _) => fate = Fate::Drop,
+                            (Fate::Delay(d), Fate::Deliver) => fate = Fate::Delay(d),
+                            (Fate::Delay(d), Fate::Delay(e)) if d > *e => fate = Fate::Delay(d),
+                            _ => {}
+                        }
+                    }
+                    fate
+                }
+                _ => f(self.now_us, world, from, to, m),
+            };
+            match fate {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
