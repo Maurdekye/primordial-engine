@@ -1,0 +1,7 @@
+member 1:  --clock-median
+member 2:  --clock-median
+member 3:  --clock-median
+member 4: --clock-lie 6:-1000:-50000,7:-1000:-50000,1:1000:50000,2:1000:50000,3:1000:50000 --clock-median
+member 5: --clock-lie 6:-1000:-50000,7:-1000:-50000,1:1000:50000,2:1000:50000,3:1000:50000 --clock-median
+member 6: --clock-skew-ppm -50000 --clock-median
+member 7: --clock-skew-ppm -50000 --clock-median

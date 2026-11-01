@@ -13,10 +13,10 @@
 //! ```
 
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::Duration;
 
-use pe_mcp::auth::{Principal, TokenStore};
+use pe_mcp::auth::Principal;
+use pe_mcp::host::HostOpts;
 use pe_mcp::engine::{Engine, EngineHandle};
 use pe_mcp::model::Scope;
 use pe_mcp::server::{Auth, PeerServer};
@@ -84,40 +84,16 @@ async fn serve(o: Opts) -> ExitCode {
         return fail("serve needs --pipe and/or --http");
     }
     let engine = EngineHandle::spawn(Engine::with_default_scenario);
-    let store = Arc::new(TokenStore::new());
-    let mut cmd = tokio::process::Command::new(&o.cmd[0]);
-    cmd.args(&o.cmd[1..]);
-    if o.pipe {
-        match pe_mcp::pipe::serve_pipe(engine.clone(), store.clone()) {
-            Ok(path) => {
-                eprintln!("pe-mcp: pipe {path}");
-                cmd.env("PE_MCP_PIPE", path);
-            }
-            Err(e) => return fail(format!("pipe: {e}")),
-        }
+    let opts = HostOpts { pipe: o.pipe, http: o.http, origins: o.origins, scopes: o.scopes, principal: o.principal, ttl: o.ttl, cmd: o.cmd };
+    let mut hosted = match pe_mcp::host::start(engine, &opts).await {
+        Ok(h) => h,
+        Err(e) => return fail(e),
+    };
+    match hosted.wait().await {
+        Ok(Some(status)) => ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
+        Ok(None) => ExitCode::SUCCESS,
+        Err(e) => fail(e),
     }
-    let _http = if o.http {
-        match pe_mcp::http::serve_http(engine.clone(), store.clone(), o.origins.clone()).await {
-            Ok(h) => {
-                eprintln!("pe-mcp: http {} (ipv6 {})", h.url, h.ipv6);
-                cmd.env("PE_MCP_URL", &h.url);
-                Some(h)
-            }
-            Err(e) => return fail(format!("http: {e}")),
-        }
-    } else {
-        None
-    };
-    // A fresh token per launch (design 17.1: rotation at every harness launch and resume).
-    let (_, secret) = store.issue(&o.principal, &o.scopes, o.ttl);
-    cmd.env("PE_MCP_TOKEN", secret.expose());
-    drop(secret);
-    let status = match cmd.status().await {
-        Ok(s) => s,
-        Err(e) => return fail(format!("launch {:?}: {e}", o.cmd[0])),
-    };
-    store.revoke_all();
-    ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8)
 }
 
 async fn bridge() -> ExitCode {

@@ -1,0 +1,26 @@
+pe-app: member 1 of session b48e1cbcaf8ae8fa on <this PC>:7121; 4 members, 1800 frames
+[m1 t=0ms f=0] every member ready: session epoch 2044321
+[m1 t=0ms f=0] status: frame 0 now 0 conf 0 members {1, 2, 3, 4} rollbacks 0 | sent 38 faulted 0 recv 48 rejected {} unsigned 0 | sigs 0
+[m1 t=1957ms f=117] status: frame 117 now 117 conf 112 members {1, 2, 3, 4} rollbacks 1 | sent 221 faulted 0 recv 213 rejected {} unsigned 0 | sigs 226
+[m1 t=3958ms f=237] status: frame 237 now 237 conf 233 members {1, 2, 3, 4} rollbacks 10 | sent 448 faulted 0 recv 408 rejected {} unsigned 0 | sigs 468
+[m1 t=5960ms f=357] status: frame 357 now 357 conf 352 members {1, 2, 3, 4} rollbacks 18 | sent 666 faulted 0 recv 604 rejected {} unsigned 0 | sigs 709
+[m1 t=7962ms f=477] status: frame 477 now 477 conf 472 members {1, 2, 3, 4} rollbacks 25 | sent 886 faulted 0 recv 799 rejected {} unsigned 0 | sigs 951
+[m1 t=9962ms f=597] status: frame 597 now 597 conf 592 members {1, 2, 3, 4} rollbacks 31 | sent 1092 faulted 0 recv 985 rejected {} unsigned 0 | sigs 1192
+[m1 t=11962ms f=717] status: frame 717 now 717 conf 713 members {1, 2, 3, 4} rollbacks 38 | sent 1308 faulted 0 recv 1180 rejected {} unsigned 0 | sigs 1434
+[m1 t=13964ms f=837] status: frame 837 now 837 conf 832 members {1, 2, 3, 4} rollbacks 46 | sent 1527 faulted 0 recv 1373 rejected {} unsigned 0 | sigs 1675
+[m1 t=15964ms f=957] status: frame 957 now 957 conf 895 members {1, 2, 3, 4} rollbacks 54 | sent 1738 faulted 0 recv 1531 rejected {} unsigned 0 | sigs 1886
+[m1 t=16933ms f=1015] paused at frame 1015 (speculation limit)
+[m1 t=17965ms f=1015] status: frame 1015 now 1077 conf 895 members {1, 2, 3, 4} rollbacks 59 | sent 1946 faulted 0 recv 1641 rejected {} unsigned 0 | sigs 2058
+[m1 t=18022ms f=1015] membership decision: epoch 1, removed []
+[m1 t=18453ms f=1015] membership decision: epoch 2, removed [4]
+[m1 t=18471ms f=1108] resumed at frame 1108
+[m1 t=19968ms f=1198] status: frame 1198 now 1198 conf 1192 members {1, 2, 3} rollbacks 67 | sent 2132 faulted 0 recv 1766 rejected {} unsigned 0 | sigs 2267
+[m1 t=21969ms f=1318] status: frame 1318 now 1318 conf 1313 members {1, 2, 3} rollbacks 76 | sent 2295 faulted 0 recv 1880 rejected {} unsigned 0 | sigs 2445
+[m1 t=23970ms f=1438] status: frame 1438 now 1438 conf 1433 members {1, 2, 3} rollbacks 83 | sent 2445 faulted 0 recv 2003 rejected {} unsigned 0 | sigs 2623
+[m1 t=25970ms f=1558] status: frame 1558 now 1558 conf 1548 members {1, 2, 3} rollbacks 91 | sent 2592 faulted 0 recv 2118 rejected {} unsigned 0 | sigs 2799
+[m1 t=27971ms f=1678] status: frame 1678 now 1678 conf 1671 members {1, 2, 3} rollbacks 100 | sent 2745 faulted 0 recv 2239 rejected {} unsigned 0 | sigs 2978
+[m1 t=29972ms f=1798] status: frame 1798 now 1798 conf 1792 members {1, 2, 3} rollbacks 105 | sent 2881 faulted 0 recv 2352 rejected {} unsigned 0 | sigs 3146
+[m1 t=30416ms f=1816] DONE frames 0..1800: digest 1274055ae97d3cb0 replay 1274055ae97d3cb0 (EQUAL), conf 1803, members [1, 2, 3]
+[m1 t=30416ms f=1816] slow step: 133 ms (receive 0 ms, tick 0 ms, send 132 ms)
+[m1 t=31973ms f=1918] status: frame 1918 now 1918 conf 1913 members {1, 2, 3} rollbacks 105 | sent 3016 faulted 0 recv 2449 rejected {} unsigned 0 | sigs 3294
+member 1: frames 0..1800 digest 1274055ae97d3cb0 replay 1274055ae97d3cb0 (EQUAL), conf 1803, members at end [1, 2, 3], rollbacks 105, checks ok 141 bad 0
