@@ -480,6 +480,8 @@ impl Node {
         // scripted split equivocation handle lean entries (which carry no prev / head ids, so their
         // id is not the entry's): every entry goes explicit, as before.
         core.sim.lean_wire = false;
+        // Option 2's runs too (its wire refuses Msg::Run): every entry explicit, signed on itself.
+        core.sim.run_wire = false;
         let keys = ids.iter().map(|&m| (m, s.key_of(m).expect("validated key"))).collect();
         // Background touches: deterministic in (seed, member), on non-hand objects.
         let mut plan: BTreeMap<u64, Vec<Payload>> = BTreeMap::new();
