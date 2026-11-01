@@ -168,6 +168,14 @@ struct RxLink {
     /// (receive time, one-way delay), oldest first.
     recent: std::collections::VecDeque<(u64, i64)>,
     q_us: Option<u64>,
+    /// The two clocks' drift since the estimates began, µs: the integral of `ClockSync::drift_rate`
+    /// up to `drift_at` (receive time). Delays are kept less it, so a frequency difference clock sync
+    /// knows of never reads as queueing; the clamp handles only the error of its estimate (review H1).
+    drift: f64,
+    drift_at: Option<u64>,
+    /// The sender's frequency was fitted: the estimates restarted then, since before it the whole
+    /// skew drifted into them unmeasured.
+    fitted: bool,
     last_seq: Option<u16>,
     received: u64,
     lost: u64,
@@ -179,16 +187,27 @@ impl RxLink {
         self.base.clear();
         self.recent.clear();
         self.q_us = None;
+        self.drift = 0.0;
+        self.drift_at = None;
     }
 
-    fn sample(&mut self, st: Stamp, recv_us: u64) {
+    /// `drift_rate`: the clocks' frequency difference, if known (`ClockSync::drift_rate`).
+    fn sample(&mut self, st: Stamp, recv_us: u64, drift_rate: Option<f64>) {
+        if let Some(e) = drift_rate {
+            if !self.fitted {
+                self.fitted = true;
+                self.restart();
+            }
+            self.drift += e * recv_us.saturating_sub(self.drift_at.unwrap_or(recv_us)) as f64;
+            self.drift_at = Some(recv_us);
+        }
         let ts = match self.last_ts {
             None => st.ts as i64,
             Some(l) => l + st.ts.wrapping_sub(l as u32) as i32 as i64,
         };
         self.last_ts = Some(self.last_ts.map_or(ts, |l| l.max(ts)));
-        // Offset by the unknown clock difference, which is constant, so it cancels in q.
-        let owd = recv_us as i64 - ts;
+        // Offset by the unknown clock difference, which is constant less the drift, so it cancels in q.
+        let owd = recv_us as i64 - ts - self.drift.round() as i64;
         match self.base.back_mut() {
             Some(b) if recv_us < b.0 + BASE_BUCKET_US => b.1 = b.1.min(owd),
             _ => {
@@ -606,7 +625,8 @@ impl Node {
                 Ok((sender, st, items)) if sender != self.me => {
                     // R18 measures on the rate-corrected clock, as the sender stamps (design 10.4).
                     let recv_rc = self.clock.rc(recv_us);
-                    self.rx.entry(sender).or_default().sample(st, recv_rc);
+                    let drift = self.clock.drift_rate(sender);
+                    self.rx.entry(sender).or_default().sample(st, recv_rc, drift);
                     if st.qrep != QREP_NONE {
                         self.reports.insert(sender, (st.qrep, recv_us));
                     }
@@ -1326,7 +1346,7 @@ mod tests {
 
     /// A datagram sent at `send_us` (sender clock) arriving at `recv_us` (receiver clock).
     fn feed(r: &mut RxLink, seq: u16, send_us: u64, recv_us: u64) {
-        r.sample(Stamp { ts: send_us as u32, seq, qrep: QREP_NONE }, recv_us);
+        r.sample(Stamp { ts: send_us as u32, seq, qrep: QREP_NONE }, recv_us, None);
     }
 
     #[test]
@@ -1362,6 +1382,32 @@ mod tests {
         feed(&mut r, 3, s0 + 10_000 + 11 * 60_000_000, t + 30_000);
         assert_eq!(r.q_us, Some(0));
         assert_eq!(r.base.len(), 1);
+    }
+
+    #[test]
+    fn a_known_frequency_difference_is_not_queueing() {
+        let mut r = RxLink::default();
+        // The sender's clock runs 5 % slow against the receiver's, unknown for 10 s: the delay grows
+        // 50 ms/s and reads as queue.
+        let send = |t: u64| t * 95 / 100;
+        for i in 0..600u64 {
+            let t = i * 16_667;
+            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 20_000, None);
+        }
+        assert!(r.q_us.unwrap() > 400_000);
+        // Then clock sync knows the difference: the estimates restart and the drift is taken out.
+        for i in 600..2400u64 {
+            let t = i * 16_667;
+            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 20_000, Some(0.05));
+        }
+        assert!(r.q_us.unwrap() < 1_000, "{:?}", r.q_us);
+        // A real 60 ms queue still shows.
+        for i in 2400..2410u64 {
+            let t = i * 16_667;
+            r.sample(Stamp { ts: send(t) as u32, seq: i as u16, qrep: QREP_NONE }, t + 80_000, Some(0.05));
+        }
+        // (Less 5 %: the drift is integrated over receive time, which the queue delays too.)
+        assert!(r.q_us.unwrap().abs_diff(60_000) <= 3_000, "{:?}", r.q_us);
     }
 
     #[test]
