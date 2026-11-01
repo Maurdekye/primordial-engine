@@ -31,28 +31,31 @@ next hole by hand. They are stated for one world's session; design 10.8 is the p
   members agree on the member set, the roles, and every admin entry's applied/refused outcome.
   [checked: equal member sets; the admin scenarios check outcomes]
 * **S5 No honest removal.** A member that is honest and not crashed, whose links to the other honest
-  members are clean (the generator's honest members are, but for S6's drawn late members, whom the check
-  covers too), is never removed at any honest member.
+  members are clean (the generator's honest members are, but for those S6's check exempts, whom S5's
+  check covers too), is never removed at any honest member.
   [checked: no honest, non-crashed member appears in any honest member's evicted set]
-* **S6 No false accusation** (experimental until @design-reviewer approves the generator's widening;
-  @coordinator-opus, 2026-11-01). A member that is honest, not crashed and clean is never voted against,
-  to remove or to demote it, by any honest member.
-  * *Clean* means every message the member sends reaches every honest member within W/2 frames of being
-    sent: half the speculation window, 60 frames, 1 s at 60 Hz.
-  * W/2 is the shortest time any view-change rule waits for a member's evidence before acting on its
-    absence: a capped precommit's polka, a kick vote's kick. A clean member can always supply its own
-    evidence in that time, including the prevotes its precommit names, by fetch. So other members' delays
-    never make an accusation of a clean member correct. That is VC4R-1's case: the missing prevotes were
-    a third member's, and the capper's links were clean.
-  * A member whose own messages take longer may be suspected legitimately, by the rules that wait longer:
-    silence (`suspect_after`, 180 frames), a horizon trailing by over W/2 for 3 s (demotion), or
-    references withheld for `suspect_after`.
+* **S6 No false accusation** (@coordinator-opus, 2026-11-01; review S6-1). A member that is honest, not
+  crashed and clean is never voted against, to remove or to demote it, by any honest member.
+  * *Clean* means the member is timely and keeps up. Timely: every message it sends reaches every honest
+    member within W/2 frames of being sent (half the speculation window, 60 frames, 1 s at 60 Hz).
+    Keeping up: it acks at its configured interval, and its declared horizon stays within W/2 of its
+    present.
+  * Timely, because W/2 is the shortest time any view-change rule waits for a member's evidence before
+    acting on its absence: a capped precommit's polka, a kick vote's kick. A clean member can always
+    supply its own evidence in that time, including the prevotes its precommit names, by fetch. So other
+    members' delays never make an accusation of a clean member correct. That is VC4R-1's case: the
+    missing prevotes were a third member's, and the capper was clean.
+  * Keeping up, because the silence, demotion and withheld-reference rules judge a member's own
+    responsiveness. A member that stalls (a paused process, an overloaded machine) may still have its few
+    messages arrive promptly, but its horizon falls behind. It is not clean, and those rules' votes
+    against it are what 10.9 item 7 prescribes (review S6-1).
   * Why S5 is not enough: with one faulty member, the honest members a false accusation fools plus the
     faulty member stay short of a quorum, so nobody is removed. The vote itself is the fault, as
     prevotefork's control checks.
   [checked: no honest member's event log holds a vote against an honest, non-crashed member, except the
-  drawn late members, whose round-0 prevotes are held back past W/2. With VC4R-1 and VC8R-1 off it fails
-  on 5 of 120 seeds, the first at seed 20; with every fix on, all 120 hold]
+  members the generator makes unclean: VC4R-1's drawn late members (round-0 prevotes held back past W/2)
+  and VCR-12's slow acker (its horizon up to 1.5 s behind). With VC4R-1 and VC8R-1 off it fails on 5 of
+  120 seeds, the first at seed 20; with every fix on, all 120 hold]
 
 ## Liveness (hold after GST, within a bound)
 
@@ -93,7 +96,7 @@ Each seed draws, from a splitmix64 stream:
 - a GST after which the faulty members' network games stop. A crash stays, and so does a ClimbAhead
   member's rotation (below): a faulty member's own links may stay adversarial.
 
-It runs the deterministic simulator and checks S1-S6 (S6 experimental) and L1 on every seed.
+It runs the deterministic simulator and checks S1-S6 and L1 on every seed.
 
 Four review holes need a particular shape. The generator builds each a share of the time, from its own
 stream, so the other draws keep theirs:
