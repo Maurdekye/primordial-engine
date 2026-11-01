@@ -1342,7 +1342,9 @@ impl WorldSim {
                 }
             }
         }
-        Some(self.fixes_off & fix::VCR9 != 0 || max_h.is_none_or(|h| e.stamp > h))
+        // D73(a), review D73-1: the same bound as `validate`'s admin arm, so a listed admin entry stamped
+        // in the wider ack gap (more than horizon_slack before its author's last ack) is void on both paths.
+        Some(self.fixes_off & fix::VCR9 != 0 || (max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack))
     }
 
     pub(super) fn change_valid(&mut self, c: &Change) -> Option<bool> {
