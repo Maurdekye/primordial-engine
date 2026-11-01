@@ -145,6 +145,23 @@ pub struct Net {
     pub trace: Vec<SendRec>,
 }
 
+fn has_lean(m: &Msg) -> bool {
+    match m {
+        Msg::Lean(_) => true,
+        Msg::Batch(v) => v.iter().any(has_lean),
+        _ => false,
+    }
+}
+
+/// `m` with every lean entry as an explicit one (for fault filters and fixtures).
+pub fn as_explicit(m: &Msg) -> Msg {
+    match m {
+        Msg::Lean(e) => Msg::Entry(e.clone()),
+        Msg::Batch(v) => Msg::Batch(v.iter().map(as_explicit).collect()),
+        _ => m.clone(),
+    }
+}
+
 /// See [`Net::what_if`].
 pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
     match m {
@@ -155,12 +172,14 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
             };
             (bits & 1 != 0) as u64 * 32 + (bits & 2 != 0) as u64 * 32 * heads + (bits & 4 != 0) as u64 * 64
         }
+        // Already without its ids.
+        Msg::Lean(_) => (bits & 4 != 0) as u64 * 64,
         Msg::Batch(v) => {
             let chained = if bits & 8 != 0 && bits & 4 == 0 {
                 // Entries of an author followed later in the same batch by another of theirs.
                 v.iter()
                     .enumerate()
-                    .filter(|(i, x)| matches!(x, Msg::Entry(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) if f.member == e.member))))
+                    .filter(|(i, x)| matches!(x, Msg::Entry(e) | Msg::Lean(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) | Msg::Lean(f) if f.member == e.member))))
                     .count() as u64
                     * 64
             } else {
@@ -174,7 +193,7 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
 
 pub fn kind(m: &Msg) -> &'static str {
     match m {
-        Msg::Entry(e) => match e.payload {
+        Msg::Entry(e) | Msg::Lean(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
@@ -238,7 +257,16 @@ impl Net {
         let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
         let mut extra = 0;
         if let Some(f) = self.filter.as_mut() {
-            match f(self.now_us, world, from, to, m) {
+            // Scripted faults match entries by their content: a lean entry is shown to them as the
+            // entry it is (its ids are not on the wire, but a fault never reads them).
+            let explicit;
+            let seen = if has_lean(m) {
+                explicit = as_explicit(m);
+                &explicit
+            } else {
+                m
+            };
+            match f(self.now_us, world, from, to, seen) {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
@@ -497,6 +525,8 @@ impl Peer {
             _ => {}
         }
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, KeyRing::test(self.id)));
+        // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
+        core.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;
@@ -606,17 +636,24 @@ impl Sim {
             due.extend(v.into_iter().map(|x| (to, w, from, x)));
         }
         for (to, w, from, m) in due {
+            // A carried touch's id; a lean one's ids are not on the wire, so its author's id for it.
+            let accept = match &m {
+                Msg::Entry(e) => e.carried.map(|(obj, _)| (Some(e.id()), e.member, obj)),
+                Msg::Lean(e) => e.carried.map(|(obj, _)| {
+                    let ai = self.peer_index(e.member);
+                    (self.peers[ai].worlds.get(&w).and_then(|r| r.sim.id_at(e.member, e.seq)), e.member, obj)
+                }),
+                _ => None,
+            };
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
             if peer.crashed {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            if let Msg::Entry(e) = &m {
-                if let Some((obj, _)) = e.carried {
-                    if e.member != to {
-                        r.pending_accept.push((e.id(), e.member, obj));
-                    }
+            if let Some((Some(id), member, obj)) = accept {
+                if member != to {
+                    r.pending_accept.push((id, member, obj));
                 }
             }
             r.core.receive(from, m, now);

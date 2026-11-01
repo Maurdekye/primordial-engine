@@ -258,6 +258,15 @@ pub fn capped(o: &Opts) {
                     .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / secs, *n as f64 / secs, b / (*n).max(1)))
                     .collect();
                 println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
+                let st = sim.replica(m, 1).sim.stats;
+                println!(
+                    "RESULT     member {m}'s lean entries received: {}, explicit form asked for: {}; waited: {} (mean {:.1} frames); fetch requests sent (whole run): {}",
+                    st.lean_in,
+                    st.lean_fallbacks,
+                    st.lean_waited,
+                    st.lean_wait_frames as f64 / st.lean_waited.max(1) as f64,
+                    st.fetches_sent
+                );
             }
         }
         let n_err = own_err.len().max(1) as f64;
