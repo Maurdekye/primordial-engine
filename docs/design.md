@@ -1484,6 +1484,26 @@ if our bulk transport proves weak.
        and a change (WSL's idle to load) only adds tracking lag. The member targets the
        fault-tolerant midpoint of those values, its own r_i included, and moves r_i toward it with a gain
        per round, never in a step.
+     * **An anchor for the common frequency** (@shader-lang, measured; accepted by @coordinator-opus,
+       2026-11-01). Agreement fixes only the differences between members: a common shift of every r is
+       neutral, so the session frequency is free to walk. On a 2-minute Windows + WSL run it wandered to
+       as much as 7.5% slow while the members stayed in step [V pe-app 28e7cb1]. So each round r_i also
+       moves a small share toward the fault-tolerant midpoint of the raw-clock ratios, the ρ_ij with its
+       own 0 included. That is the rate the members' oscillators actually run at: the same absolute rate
+       for every honest member when nobody lies, with a liar bounded by the trimming. Gains [proposal]:
+       25% per round toward the agreement target, 2% toward the anchor.
+       * Measured [V pe-app 4634137; spikes/out/m1/clock-sync/README.md at d835a94]: on the mixed 2-minute
+         run the frequencies stayed within 0.1% of true time, except one WSL skew episode that the members
+         split and recovered from; all equal, no membership decision, no pause. In the 7-member
+         two-colluder case the honest members end at 1.00003 of true time and the slow pair at 0.99657:
+         under two-faced liars the anchor leaves a residual honest split of about the gains' ratio (2/25)
+         times the raw split. Agreement alone ended at 1.00045, but drifts with no liars present; the
+         frequency chosen once left a 2.6% split.
+       * **At small n** (review AN-1): with n ≤ 3, t = 0, and the fault-tolerant midpoint of the raw ratios
+         is their midrange, so one outlying oscillator moves the session by half its offset: two native
+         clocks and one VM 9% slow settle about 4.5% slow. The median of three would stay at the native
+         clocks [proposal: trim at least one value from each end when n ≥ 3, which is the median at n = 3
+         and changes nothing from n = 4, where t ≥ 1]. Two members can only meet halfway.
      * So the exchanged values are the members' applied corrections, combined with each member's fitted
        raw-clock ratio; not slopes fitted to corrected clocks, which lag 5-15 s behind and oscillated
        (±80 ms with a 20 s period in a pe-app unit test before fba1585 [V @shader-lang]).
