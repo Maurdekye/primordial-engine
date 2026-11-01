@@ -1568,6 +1568,8 @@ fn main() {
         Some("kickbackdate") => p24r3::kickbackdate(),
         Some("lagprecommit") => p24r3::lagprecommit(),
         Some("aheadlink") => p24r3::aheadlink(),
+        Some("aheadlink-long") => p24r3::aheadlink_long(),
+        Some("aheadlink-cut") => p24r3::aheadlink_cut(),
         Some("strikeframe") => p24r4::strikeframe(),
         Some("aheadshield") => p24r4::aheadshield(),
         Some("fakeref") => p24r4::fakeref(),
