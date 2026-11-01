@@ -139,6 +139,8 @@ pub struct LeanWait {
     pub sig: Option<Sig>,
     pub since: u64,
     pub asked: bool,
+    /// The full range below it has been asked of everyone (the hole rule's fallback).
+    pub asked_all: bool,
 }
 
 /// How a stored entry is authenticated (option 2): by its author's signature on it, or by the next

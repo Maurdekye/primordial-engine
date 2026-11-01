@@ -1582,6 +1582,7 @@ fn main() {
         Some("voidfork") => p24r4::voidfork(),
         Some("voiddeep") => p24r4::voiddeep(),
         Some("plainfork") => p24r4::plainfork(),
+        Some("holeforker") => p24r4::holeforker(),
         Some("pfsilent") => p24r4::pfsilent(),
         Some("slowcapper") => p24r4::slowcapper(),
         Some("fakeadmin") => p24r4::fakeadmin(),

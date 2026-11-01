@@ -6,7 +6,7 @@ impl WorldSim {
     /// Ask `holder` for `author`'s entries `from..=to`. The reply may be lean when this member holds
     /// the entry below the range (a wrong rebuild fails verification and falls back).
     pub(super) fn want_from(&mut self, holder: MemberId, author: MemberId, from: u32, to: u32) {
-        let below = self.lean_wire && std::env::var("PE_LEANREP").map_or(true, |v| v != "0") && (from <= 1 || self.by_author.contains_key(&(author, from - 1)));
+        let below = self.lean_wire && (from <= 1 || self.by_author.contains_key(&(author, from - 1)));
         self.want_from_held(holder, author, from, to, if below { HELD_BELOW } else { 0 });
     }
 
