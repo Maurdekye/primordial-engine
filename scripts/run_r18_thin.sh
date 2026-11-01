@@ -25,3 +25,9 @@ for k in 16 32; do
   for m in 2 4; do run gap-up-k$k-m$m --kbps 256 --slow 1 --slow-kbps $k --members $m --gap 40 --end 66; done
   for m in 3 4; do run gap-down-k$k-m$m --kbps 256 --slow 3 --slow-kbps $k --members $m --gap 40 --end 66; done
 done
+# Review PA-2: three gestures, 40 s apart, where a second congestion in one D56 episode used to leave an idle
+# member at levels 6-8 for the next gesture.
+for k in 8 12 16 32; do
+  for m in 2 4; do run gap3-up-k$k-m$m --kbps 256 --slow 1 --slow-kbps $k --members $m --gap 40 --gestures 3 --end 110; done
+  for m in 3 4; do run gap3-down-k$k-m$m --kbps 256 --slow 3 --slow-kbps $k --members $m --gap 40 --gestures 3 --end 110; done
+done
