@@ -2519,7 +2519,7 @@ transport; the R18 runs opt in [V @world-chunks].
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3;
 adaptive cells re-run with span then coast and the level-change rule, p2/spike-hand, then with D56's
 congested-level memory, p2/spike-d56; every cell then re-run with idle thinning, p2/spike-idle; the
-adaptive cells then with D73(a)'s packs, p2/spike-d73]:
+adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part A, p2/thin-link]:
 
 | Cap | Transport | Uplink m1 | Max queue, drops | Stalled frames | Max confirmation lag | Back to real time after the gesture | End state |
 |---|---|---|---|---|---|---|---|
@@ -2528,14 +2528,14 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73]:
 | 64 kbit/s | batched, or batched + adaptive | 65 kbit/s | 0 ms, 0 | 0 / 0 | 19 frames | at once | equal |
 | 48 kbit/s | per message | 77 kbit/s | 499 ms, 53 | 242 / 273 | 324 frames | never in the run | not converged |
 | 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 20 | 139 frames | 2.4 s | equal |
-| 48 kbit/s | **batched + adaptive** | 50 kbit/s | **73 ms**, 0 | **0 / 0** | 19 frames | **at once** | equal |
-| 32 kbit/s | **batched + adaptive** | 34 kbit/s | **213 ms**, 0 | **0 / 0** | 27 frames | **at once** | equal |
-| 16 kbit/s | batched + adaptive (30 s run) | 29 kbit/s | 498 ms, 19 | 449 / 452 | 465 frames | 7.3 s | equal |
-| 12 kbit/s | batched + adaptive (30 s run) | 29 kbit/s | 499 ms, 36 | 874 / 873 | 857 frames | 13.6 s | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 28 kbit/s | 500 ms, 56 | 1,519 / 1,521 | 1,641 frames | never in the run | not converged |
-| 64, then 16 from t = 3 s | batched + adaptive (30 s run) | 40 kbit/s | 498 ms, 13 | 285 / 287 | 311 frames | 5.1 s | equal |
-| 64 per uplink, shared by 3 peers (4 members) | batched + adaptive (30 s run) | 79 kbit/s | 493 ms, 21 | 1,408 before its demotion; 156-157 the others | 274 frames (the others) | 1.4 s | member 1 demoted; 2-4 equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 67 kbit/s | 500 ms on member 3's links | 204 / 207 before the demotion | 326 frames | 2.4 s | member 3 demoted after 3 s of lag; members 1 and 2 equal |
+| 48 kbit/s | **batched + adaptive** | 49 kbit/s | **70 ms**, 0 | **0 / 0** | 19 frames | **at once** | equal |
+| 32 kbit/s | **batched + adaptive** | 31 kbit/s | **196 ms**, 0 | **0 / 0** | 25 frames | **at once** | equal |
+| 16 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 494 ms, 3 | **0 / 0** | 63 frames | **at once** | equal |
+| 12 kbit/s | batched + adaptive (30 s run) | 21 kbit/s | 498 ms, 9 | **0 / 0** | 119 frames | **at once** | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 24 kbit/s | 493 ms, 16 | 224 / 209 | 344 frames | 3.5 s | equal |
+| 64, then 16 from t = 3 s | batched + adaptive (30 s run) | 37 kbit/s | 496 ms, 4 | **0 / 0** | 87 frames | 0.1 s | equal |
+| 64 per uplink, shared by 3 peers (4 members) | batched + adaptive (30 s run) | 61 kbit/s | 479 ms, 3 | **0 / 0 / 0 / 0** | 57 frames | **at once** | all equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 494 ms on member 3's links | 95 / 98 before the demotion | 218 frames | 0.6 s | member 3 demoted after 3 s of lag (from frame 352); members 1 and 2 equal |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
@@ -2613,9 +2613,12 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73]:
       then demoted) and 156 for the others → 0.
     * **The others' confirmation lag** is a mean of 14-19 frames wherever nothing stalls (14 uncapped), and
       22-48 where stalls remain.
-    * **Second gestures,** 40 s later at 16 and 32 kbit/s, start at level 5 and never stall. On main they
-      stalled 2,427 frames in those cells. The sweeper's hand is exact on them at 32 kbit/s, and trails 143-162
-      mm at 16.
+    * **Second gestures,** 40 s later at 16 and 32 kbit/s, never stall. On main they stalled 2,427 frames in
+      those cells.
+      * They start at level 5, except the 2-player 16 kbit/s thin sweeper's, which starts at level 1 (the first
+        gesture after idle, below).
+      * The sweeper's hand is exact through both gestures at 32 kbit/s, and trails a mean of 143-161 mm over
+        both at 16.
     * **No cell is worse than main for the others,** in stalled frames or, where main itself doesn't stall,
       in hand entries' confirmation latency.
     * **Where Part A stops** (Part B's ground, in the thin-link plan):
@@ -2627,6 +2630,11 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73]:
     * **Known costs:**
       * **The thin player's own hand** trails while it is thinned: a mean of 0-373 mm, up to 862 mm. It is
         exact at 32 kbit/s with up to 4 players. D73 is relaxed on its side only, as the user's goal allows.
+      * **After a second congestion in one D56 episode,** the controller can rest at the drain level while
+        idle. In the 2-player 16 kbit/s thin-sweeper cell it spent 17.4 s at level 6, nearly all of it idle
+        after the second gesture [V]. So a third gesture there would start without packs, its hand trailing,
+        until D56 forgets the level [I; no cell has a third gesture]. The others aren't affected: level 6 sends
+        less than level 5.
       * **A player whose own link is fine:** in the thin-watcher cells the sweeper's link is fast, yet its
         hand trails 0-338 mm on average at 24-32 kbit/s (exact at 32 with up to 4 players), and up to 373 mm
         at 8-16 kbit/s.
@@ -2646,22 +2654,51 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73]:
         order didn't weigh (@coordinator-opus, 2026-11-01).
       * Variants v2-v7 were first compared on Windows builds that linked a stale sim-core without delta
         packs, from a target dir shared with another worktree. Those comparisons were void, and were redone.
+* **Thin links, Part A (p2/thin-link)** then moved every adaptive cell in the table below 64 kbit/s
+  [V spikes/out/r18]:
+  * **Below 20 kbit/s the recovery is back.**
+    * 16 and 12 kbit/s no longer stall (449 and 874 stalled frames before). They are back in real time at
+      once, instead of after 7.3 and 13.6 s.
+    * So does the step from 64 to 16 kbit/s (285 before), back after 0.1 s instead of 5.1 s.
+    * 8 kbit/s now converges: 224 / 209 stalled frames, and back in real time 3.5 s after the gesture.
+  * **On the shared uplink nobody stalls or is demoted.** Before, the member making the gesture stalled 1,408
+    frames and was demoted, and the others stalled 156-157.
+  * **The slow member** costs the others 95 / 98 stalled frames instead of 204 / 207, and is demoted from frame
+    352 instead of 208.
+  * **The cost is the author's own hand** while the levels above 5 send single poses, where D73(a) had made it
+    exact:
+    * a mean of 152-373 mm behind its targets (max 862) at 8-16 kbit/s, in the step and on the shared uplink,
+      where the author's own link is the thin one. D73 is relaxed on the thin player's side only;
+    * 288 mm (max 780) in the slow-member cell, where the author's own links are fine. Its controller backs off
+      for member 3's link, as in the thin-watcher cells above: a cost to another player, which Part B's feed
+      removes at 4 or more players.
+  * **At 32 and 48 kbit/s** the controller stays at the packed levels, and the delta-encoded packs lower the
+    queue's peak (196 ms instead of 213 at 32 kbit/s, 70 instead of 73 at 48), and the lag at 32 kbit/s (25
+    frames instead of 27).
+  * The unthinned transports don't change.
 * **The first gesture after idle (p2/spike-gesture2).** The same sweep twice: 40 s apart, where D56's
   30 s without congestion used to forget L, and 310 s apart, past the 5-minute ceiling. Batched + adaptive only
-  [V spikes/out/r18, the two-gestures and after-5min logs; "without the rule" is the same cell with the
-  rule taken out, not kept as a log]:
+  [V spikes/out/r18, the two-gestures and after-5min logs, since thin links Part A; "without the rule" is
+  the same cell with the rule taken out, measured before Part A and not kept as a log]:
 
   | Cap, gap | Second gesture: level at its start | Max queue | Stalled frames | Back to real time after it | Its hand entries' confirmation latency, mean (author / observer) |
   |---|---|---|---|---|---|
   | 32 kbit/s, 40 s | 5 (without the rule: 0) | 0 ms (191) | 0 / 0 (0 / 0) | at once (at once) | 19.0 / 11.4 frames (12.6 / 11.4) |
-  | 16 kbit/s, 40 s | 5 (0) | 0 ms (498) | 0 / 0 (438 / 440) | at once (6.7 s) | 19.0 / 11.4 frames (139 / 147) |
-  | 12 kbit/s, 40 s | 5 (0) | 0 ms (499) | 0 / 0 (1,052 / 1,061) | at once (never in the run) | 17.3 / 14.9 frames (255 / 276) |
-  | 16 kbit/s, 310 s | 0: the ceiling forgot L | 498 ms | 438 / 440 | 6.7 s | 140 / 148 frames |
+  | 16 kbit/s, 40 s | 1 (0) | 394 ms (498) | 0 / 0 (438 / 440) | 0.6 s (6.7 s) | 19.1 / 19.9 frames (139 / 147) |
+  | 12 kbit/s, 40 s | 5 (0) | 0 ms (499) | 0 / 0 (1,052 / 1,061) | at once (never in the run) | 19.0 / 11.4 frames (255 / 276) |
+  | 16 kbit/s, 310 s | 0: the ceiling forgot L | 498 ms | 0 / 0 | at once | 21.2 / 22.1 frames |
 
-  * The first gesture plays out as in the single-gesture cells (back 7.3 s after it at 16 kbit/s, 13.6 s
-    at 12); only the second moves. The 310 s cell's second gesture plays out like the 40 s cell
-    without the rule, so the ceiling lapses as intended.
-  * Held at level 5, the second gesture is the coarsest stream. Below 20 kbit/s that keeps the session in
+  * The first gesture plays out as in the single-gesture cells; only the second moves. The 310 s cell's
+    second gesture starts at level 0, like the 40 s cell without the rule, so the ceiling lapses as intended.
+  * **Part A changed the 16 kbit/s cell's second gesture** [V]. It now starts at level 1, queues 394 ms
+    without stalling, and is back in real time 0.6 s after it; the observer confirms its entries 19.9 frames
+    later on average instead of 11.4.
+    * The cause [I, from the controller's rules]: the first gesture's congestion began at level 0. With level 5
+      now carrying the link after the drain, it never began again at a higher level, so D56 remembers level 0,
+      and idle calm stops at level 1. Before Part A, level 5 couldn't carry 16 kbit/s, and congestion that
+      began again at the higher levels raised the memory.
+    * At 12 kbit/s the second gesture still starts at level 5 [V].
+  * Held at level 5, the second gesture is the coarsest packed stream. Below 20 kbit/s that keeps the session in
     real time. Where the link had room it costs latency: at 32 kbit/s the author confirms the gesture's
     entries 6.4 frames later on average.
   * The single-gesture cells in the table changed only in the time the controller spends at each level
