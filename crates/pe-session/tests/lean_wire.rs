@@ -164,3 +164,32 @@ fn an_ack_naming_a_chain_far_past_what_the_peer_holds_goes_explicit() {
     assert!(!a.lean_to(2, &ack));
     assert!(a.lean_to(3, &ack));
 }
+
+/// Review O2-1 (option 2): a view-change or admin entry is always signed on itself. A run that covers
+/// one by a later entry's signature is refused and its range asked for again; an answer ends at each
+/// such entry, signed on itself, and a run whose signed top it is goes in.
+#[test]
+fn a_view_change_entry_is_never_covered_by_another_entrys_signature() {
+    let (mut a, mut b) = (sim(1), sim(2));
+    a.run_wire = true;
+    let a1 = a.author_ack();
+    let pv = a.author(Payload::Prevote { epoch: 0, round: 0, value: 0 }, None);
+    let a3 = a.author_ack();
+    assert!(pv.payload.signs_itself() && !a1.payload.signs_itself());
+    // Covered by a3's signature: refused, nothing inserted, the range asked for again from the sender.
+    assert!(b.insert_run(1, false, false, true, vec![a1.clone(), pv.clone(), a3.clone()]).is_empty());
+    assert_eq!((b.stats.covered_refused, b.id_at(1, 1), b.id_at(1, 2)), (1, None, None));
+    assert!(fetches(&mut b).contains(&(1, 1, 1, 3)));
+    // An unsigned hole-fill run may not carry it either.
+    b.insert_run(1, false, false, false, vec![pv.clone()]);
+    assert_eq!(b.stats.covered_refused, 2);
+    // The sender's answer, even to a hole-fill request, ends at the prevote and is signed on it.
+    match a.on_fetch(1, 1, 3, HELD_ABOVE).as_slice() {
+        [Msg::Run { signed: true, entries, .. }] => assert_eq!(entries.last().map(|e| e.id()), Some(pv.id())),
+        other => panic!("answer: {other:?}"),
+    }
+    // As the signed top of a run it goes in.
+    b.insert_run(1, false, false, true, vec![a1.clone(), pv.clone()]);
+    b.resolve_lean();
+    assert_eq!((b.id_at(1, 1), b.id_at(1, 2)), (Some(a1.id()), Some(pv.id())));
+}
