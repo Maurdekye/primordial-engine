@@ -68,3 +68,60 @@ same protocol, same entries, same timing. Adaptive transport, single gesture:
    signed), so it needs @engine-architect and a user ruling.
 
 Not an M1 gate: M1 runs on a LAN (coordinator, 2026-11-01).
+
+## Rulings (@coordinator-opus, 2026-11-01)
+
+Option 1 now, with @engine-architect's conditions: (a) the explicit form wherever the receiver may
+lack the predecessor (fetch replies, proofs, certificates, saves); (b) an implicit entry that fails
+verification is fetched explicit, never dropped as a bad signature; (c) any hold is bounded well inside
+W/2, and a withheld entry must not make an honest member look silent (S6). Option 2 (one signature per
+author's run per datagram) is decided, to be built after option 1 lands. Option 3 is off the table for now.
+
+## Option 1 as built: measured with the real codec [V]
+
+`Msg::Lean` (wire tag 12): an author's own live entry without `prev` and without an ack's head ids.
+The receiver rebuilds them from its own (member, seq) -> id index, then verifies the signature over the
+full entry. The rules as built:
+
+- An entry that names one the receiver lacks waits: the hole is asked for from everyone, a head from
+  the acker. A head still missing after 15 frames also gets the explicit form asked for from the sender.
+- A failed verification fetches the explicit form from the sender, and everyone's version of seq - 1.
+- A waiting entry counts as hearing from its author (S6) and keeps the receiver busy (7.6's idle
+  predicate).
+- An ack naming a chain more than 32 entries past what the receiver has acked holding goes explicit
+  (bridge). Fetch replies and relays stay explicit.
+
+A hand is 101 B on the wire instead of 133, and a two-member ack 106 B instead of 170.
+
+Single gesture, batched + adaptive, member 1 (explicit = pe-session before option 1, set by `PE_LEAN=0`;
+what-if 3 = the earlier byte charge):
+
+| Cap | Explicit: stalled, back | Option 1: stalled, back | What-if 3: stalled, back | Spike |
+|---|---|---|---|---|
+| 32 | 168, 1.9 s (queue 493 ms) | 0, at once (queue 399 ms) | 0, at once | 0, at once |
+| 24 | 563, 8.5 s | 200, 2.4 s | 184, 2.4 s | |
+| 20 | 1,462, 24.0 s | 662, 10.8 s | 473, 6.9 s | |
+| 18 | 1,535, never | 1,190, 18.9 s | 590, 8.9 s | |
+| 16 | 1,535, never | 1,527, never | 936, 14.9 s | 449, 7.3 s |
+| 14, 12 | never | never | never | 12: 874, 13.6 s |
+
+- **The 32 kbit/s single-gesture row is back** at no stall and instant recovery, as asked. So are its
+  two-gesture and 310 s cells (the second gesture starts at level 5 or, past the ceiling, level 0; no
+  stall either way).
+- Other R18 cells [V, `spikes/out/r18-pe`]:
+  - Four members sharing 64 kbit/s are back in real time 944 ms after the gesture (before: never).
+  - 16 kbit/s recovers in the longer runs: 37.5 s after the gesture in the two-gesture run, against
+    never. The 310 s cell's second gesture plays out with no stall.
+  - Regression: the slow member on 8 kbit/s is demoted about 0.5 s later (cut seq 25 -> 42). Its
+    smaller entries keep it within the window longer, so the others stall 112 frames instead of 94
+    and are back 553 ms after the gesture instead of 57.
+- Option 1 beats today's form at every cap from 18 kbit/s up. At 16 and below it still collapses.
+- **Why it falls short of what-if 3 below 24 kbit/s:** the what-if also charged fetch replies lean. Under
+  option 1 they stay explicit (condition (a)), and recovery from a collapse is mostly repair traffic.
+  The real codec, with only its explicit entries charged as if lean, reproduces what-if 3 exactly (936 /
+  14.9 s, 590 / 8.9 s, 473 / 6.9 s). So the waits behind holes cost nothing measurable; the explicit
+  repairs are the whole difference. At 18 kbit/s, 159 lean entries waited a mean of 437 frames for holes.
+- A proposal, not built: a hole-fill fetch could carry a bit "I hold (author, from - 1)", and the reply
+  could then go lean. That is condition (a)'s case of a receiver that does hold the predecessor. It fits
+  option 2's fetch bit ("I hold a later entry").
+
