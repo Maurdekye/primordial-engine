@@ -202,6 +202,45 @@ pub struct Probe {
     pit: Pit,
     /// Ball pit: the header's parameters, from the scenario.
     pit_params: (u64, usize, u64, u32, usize),
+    ind: IndProbe,
+}
+
+/// Admin indicators' samples (design 10.8).
+#[derive(Default)]
+struct IndProbe {
+    /// A line each time the answer changes.
+    lines: Vec<String>,
+    last: String,
+    /// Members shown holding the session at least once.
+    named: BTreeSet<MemberId>,
+    /// Members shown not referencing, or flagged late, at least once.
+    accused: BTreeSet<MemberId>,
+    /// Anything shown or flagged at all.
+    any: bool,
+    asked: u32,
+}
+
+/// The members a hold names.
+fn hold_names(h: &Hold) -> Vec<MemberId> {
+    match *h {
+        Hold::Adopting | Hold::Membership { .. } | Hold::Voted { .. } | Hold::ReplicaGap { .. } => Vec::new(),
+        Hold::NoAckYet { of } | Hold::Behind { of, .. } | Hold::NotHeard { of, .. } => vec![of],
+        Hold::NotReferencing { by, .. } => vec![by],
+    }
+}
+
+/// A hold, without its frame counts (a line is printed when this changes).
+fn hold_text(h: &Hold) -> String {
+    match *h {
+        Hold::Adopting => "adopting a decision".into(),
+        Hold::Membership { of } => format!("membership change ({of})"),
+        Hold::Voted { voter, of } => format!("{voter} voted against {of}"),
+        Hold::NoAckYet { of } => format!("behind ({of}): no ack yet"),
+        Hold::ReplicaGap { of } => format!("this replica (gap in {of})"),
+        Hold::Behind { of, .. } => format!("behind ({of})"),
+        Hold::NotReferencing { by, of, .. } => format!("not referencing ({by}, {of})"),
+        Hold::NotHeard { of, .. } => format!("not heard ({of})"),
+    }
 }
 
 #[derive(Default)]
@@ -244,7 +283,7 @@ impl Probe {
             }
         }
         let pit = Pit { prev: vec![None; pit_params.4], ..Default::default() };
-        Ok(Probe { spec, lag: Vec::new(), pit, pit_params })
+        Ok(Probe { spec, lag: Vec::new(), pit, pit_params, ind: IndProbe::default() })
     }
 
     /// Before every 1 ms step (where the spike's loops sampled): `votechurn`'s confirmation lag at
@@ -263,6 +302,30 @@ impl Probe {
     pub fn sample(&mut self, sim: &Sim) {
         let now = sim.net.now_us;
         match &self.spec {
+            Report::Indicators { world, at, every_ms, .. } => {
+                if now % (every_ms * 1000) == 0 {
+                    let p = &mut self.ind;
+                    let Some(i) = sim.replica(*at, *world).core.indicators(*at, now) else { return };
+                    p.asked += 1;
+                    let mut text: Vec<String> = i.holding.iter().map(hold_text).collect();
+                    text.sort();
+                    text.dedup();
+                    let late: Vec<String> = i.late.iter().filter(|l| l.flagged).map(|l| format!("{} ({}/{})", l.member, l.late, l.eligible)).collect();
+                    for h in &i.holding {
+                        p.named.extend(hold_names(h));
+                        if let Hold::NotReferencing { by, .. } = h {
+                            p.accused.insert(*by);
+                        }
+                    }
+                    p.accused.extend(i.late.iter().filter(|l| l.flagged).map(|l| l.member));
+                    p.any |= !i.holding.is_empty() || !late.is_empty();
+                    let line = format!("holding [{}] late acks flagged [{}]", text.join(", "), late.join(", "));
+                    if line != p.last {
+                        p.lines.push(format!("  t={:.2}s m{at}: lag {} frames ({:.2} s); {line}", now as f64 / 1e6, i.lag_frames, i.lag_secs));
+                        p.last = line;
+                    }
+                }
+            }
             Report::R14Lag { .. } => {
                 if now % 100_000 == 0 && now > 1_000_000 {
                     let r = sim.replica(2, 1);
@@ -418,6 +481,34 @@ impl Probe {
                 }
             }
             Report::Confs { honest, label } => println!("RESULT {label}: {}", confs(sim, honest)),
+            Report::Indicators { label, named, honest, quiet, at, .. } => {
+                let p = &self.ind;
+                for l in &p.lines {
+                    println!("{l}");
+                }
+                let mut bad = Vec::new();
+                if p.asked == 0 {
+                    bad.push(format!("m{at} never holds Kick"));
+                }
+                let missed: Vec<&u32> = named.iter().filter(|m| !p.named.contains(m)).collect();
+                if !missed.is_empty() {
+                    bad.push(format!("never named: {missed:?}"));
+                }
+                let wrong: Vec<&u32> = honest.iter().filter(|m| p.accused.contains(m)).collect();
+                if !wrong.is_empty() {
+                    bad.push(format!("honest shown not referencing or late: {wrong:?}"));
+                }
+                if *quiet && p.any {
+                    bad.push("something was shown in a quiet run".into());
+                }
+                println!(
+                    "RESULT {label}: m{at} asked {} times; named {:?}; not referencing or late {:?} -> {}",
+                    p.asked,
+                    p.named,
+                    p.accused,
+                    if bad.is_empty() { "OK".to_string() } else { format!("FAIL ({})", bad.join("; ")) }
+                );
+            }
             Report::BeforeFix { honest: h, label, fix } => before_fix(sim, &honest(h, sim), label, fix, ctx.panic_at_ms),
             Report::ForkInfo => println!("  {}", ctx.fork_info.as_deref().unwrap_or("no fork_branch behaviour")),
             Report::Check { .. } => check(sim, ctx, kept, &self.spec, &self.lag),
