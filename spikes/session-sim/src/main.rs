@@ -1408,6 +1408,7 @@ fn main() {
                 (a.parse().unwrap(), b.parse().unwrap())
             }),
             adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
+            count_all: args.iter().any(|a| a == "--count-all"),
         }),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),
