@@ -358,6 +358,8 @@ pub struct Node {
     authored: u64,
     out_dir: PathBuf,
     written: Option<u64>,
+    /// Every frame of the session was confirmed at this local time (the linger starts).
+    done_at: Option<u64>,
     finished: Arc<AtomicBool>,
     traffic: Traffic,
     log: Vec<String>,
@@ -494,6 +496,7 @@ impl Node {
             authored: 0,
             out_dir: o.out_dir,
             written: None,
+            done_at: None,
             finished: o.finished,
             traffic: Traffic::default(),
             log: Vec::new(),
@@ -983,7 +986,13 @@ impl Node {
     fn finish(&mut self) {
         let frames = self.session.frames;
         let now = self.local_us();
-        if self.written.is_none() && self.core.sim.conf >= frames {
+        // Keep acking a while first, so the others can confirm too; only then the offline replay,
+        // which blocks the node for seconds on a long session (a member silent that long at the end
+        // was removed by the others, measured on a 2-minute Windows + WSL run).
+        if self.done_at.is_none() && self.core.sim.conf >= frames {
+            self.done_at = Some(now);
+        }
+        if self.written.is_none() && self.done_at.is_some_and(|d| now >= d + LINGER_US) {
             match self.write_results() {
                 Ok(s) => self.note(format!(
                     "DONE frames 0..{frames}: digest {} replay {} ({}), conf {}, members {:?}",
@@ -996,9 +1005,6 @@ impl Node {
                 Err(e) => self.note(format!("could not write results: {e}")),
             }
             self.written = Some(now);
-        }
-        // Keep acking a while, so the others can confirm too.
-        if self.written.is_some_and(|w| now >= w + LINGER_US) {
             self.finished.store(true, Ordering::SeqCst);
         }
     }
