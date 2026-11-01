@@ -2331,8 +2331,10 @@ and there is no fork-proof indicator (same ruling).
        past C (review IND-3). r isn't stable because some member k's newest reference to j's chain, in the
        version this replica holds, is below r. **Guard** (review IND-2): k is named only if k's newest ack
        this replica has applied is stamped at least 1 s (the show threshold) after j's entry r, so k has had
-       time to hold r. Otherwise k is shown as **behind (k)** if its own acks are old, which is also what
-       this replica sees when it isn't hearing k. Shown with P minus the stamp of r. This is a cheater
+       time to hold r. If k's newest ack is recent but stamped less than 1 s after r, nothing is shown for k
+       yet (review IND-7). If k's acks are old, k is shown as **behind (k)**, which is also what this
+       replica sees when it isn't hearing k, unless this replica holds an entry of k beyond a gap, which is
+       this replica's own gap (IND-7). Shown with P minus the stamp of r. This is a cheater
        withholding references, and equally an honest member with a one-way inbound cut, which can't
        reference what it can't hear (Limits, accepted cost); the indicator can't tell them apart, and says
        so. The timing hint below, for this replica's own chain, is the nearest thing to a tie-breaker.
@@ -2359,7 +2361,8 @@ and there is no fork-proof indicator (same ruling).
     settled data, the same data Part B uses. Fed members are left out: their acks reference nothing. Built
     with Part B's pe-session port, which brings the reports (@engine-architect: the spike reads backlogs
     directly, so no report exists until then).
-  * **Late acks: a timing hint, not proof** (@coordinator-opus's ruling, 16:35Z: the clock-free test).
+  * **Late acks: a timing hint, not proof** (@coordinator-opus's ruling, 16:35Z: the clock-free test;
+    review LA-5).
     Nothing that feeds L, Q, E or G is a report; a member moves them only by behaving, stamping or sending
     its acks late (@engine-architect). So this hint is about behaviour, measured on one path with no clock:
     * **Only this replica's own entries.** For each of its entries e and each member X: S is the local
@@ -2367,6 +2370,13 @@ and there is no fork-proof indicator (same ruling).
       ack of X, R is its local arrival time. X's ack is **late** if R − S exceeds this replica's measured
       round trip to X (the median of the transport's pings over 10 s) plus a margin, and its reference to
       this replica's chain is still below e (in the version this replica sent).
+    * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
+      least e's stamp plus half the round trip. Otherwise the time it waited in X's own send queue (R18,
+      upstream of the transport, so the pings skip it) would make an honest member with a thin uplink look
+      late: its acks arrive seconds after they were built, before e could have reached it. The stamp can
+      only exempt an ack, never flag one. A liar that backdates its acks' stamps to be exempted drags their
+      horizons down with them, since an ack's horizon stays within slack of its stamp (8.2); it then holds
+      confirmation and shows as behind.
     * **Why it doesn't misfire** (review LA-1 to LA-3): R − S and the round trip are both round trips on
       the same path, so asymmetric links and clock-sync error don't enter; S is taken after this
       replica's own queue, so another author's queue or a thin sweeper's uplink doesn't either; and each
@@ -2375,15 +2385,17 @@ and there is no fork-proof indicator (same ruling).
       frames plus 50 ms (183 ms at 60 Hz).
     * **Flagged** when, over the last 10 s, more than half of X's acks that arrived after S + round trip +
       margin for some e were late. The share absorbs loss: at 10% loss a hole delays some references by a
-      repair round trip, up to 21 frames [V runs19], but not most.
+      repair round trip, up to 21 frames [V runs19], but not most. "Eligible" means counted under the stamp
+      rule above.
     * **Excluded** (review LA-4): a joiner still catching up (before its first applied ack declares a
       horizon at or past its admission), a member that voted against this replica (its references are
       frozen by construction), and fed members under Part B.
     * **Limit:** it sees only withholding of this replica's own chain. For other chains, the hint pairs
       "not referencing (k, j)" with whether k references this replica's chain promptly: if it does, the
       withholding is targeted at j, or j's link toward k is cut. Still a hint, not proof.
-  * **Scenarios** (@coordinator-opus): a withholding cheater, an honest slow member, the one-way cut
-    (`aheadlink`), a thin watcher (down-k8-m3), a thin sweeper as author, 10% loss, and an asymmetric link.
+  * **Scenarios** (@coordinator-opus; review LA-5): a withholding cheater, an honest slow member, the
+    one-way cut (`aheadlink`), a thin watcher (down-k8-m3), a thin sweeper as author, a thin sweeper as the
+    judged member (up-k8-m4), 10% loss, and an asymmetric link.
     The cheater is named in each place it should be; no honest member is ever flagged late; and the honest
     slow member is shown as behind, never as withholding.
 
