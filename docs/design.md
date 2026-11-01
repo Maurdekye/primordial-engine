@@ -872,9 +872,11 @@ every player, perfectly synced, and optimized for CPU and memory.
     automatically whenever a player interacts with an object".
 * **Acceptance criterion (user, 09:31Z):** after a receiver re-simulates to its present frame, its copy of
   the object must equal the author's copy at that frame. Measured:
-  * **3 members, 60 ms ± 20 ms:** 22/22 uncontended checks equal, both to the author's copy at that instant and to its final history [V session-sim state-frame]. **Over real UDP between two processes:** 14/14 at 60 ms ± 20 ms, and 15/15 in the fault run [V p2p-v2]
-  * **10% loss on every link:** 25/25 uncontended checks equal [V session-sim loss]; 20/21 over UDP, the one miss contended [V p2p-v2 loss10]
-  * **A receiver that had missed an earlier entry on the same object:** 25/25 equal to the author's final history, and 23/25 at that instant: two checks were influenced indirectly through the pile (below). Its carried-state overwrite fired once and pulled the object onto the author's world line before the missing entry arrived [V session-sim diverged]. Checks are *contended* when another member touched the same object in the previous 10 frames; that is the scripted same-frame conflict on object 50, 10 checks per run. Those can differ while the competing entry is in flight, and all converge when it lands. Every run ends with all histories bit-identical [V]
+  * **3 members, 60 ms ± 20 ms:** 40/40 uncontended checks equal, both to the author's copy at that instant and to its final history [V session-sim state-frame]. **Over real UDP between two processes:** 14/14 at 60 ms ± 20 ms, and 15/15 in the fault run [V p2p-v2]
+  * **10% loss on every link:** 41/41 uncontended checks equal [V session-sim loss]; 20/21 over UDP, the one miss contended [V p2p-v2 loss10]
+  * **A receiver that had missed an earlier entry on the same object:** 43/43 equal to the author's final history, and 41/43 at that instant: two checks were influenced indirectly through the pile (below). Its carried-state overwrite fired once and pulled the object onto the author's world line before the missing entry arrived [V session-sim diverged]. Checks are *contended* when another member touched the same object in the previous 10 frames; that is the scripted same-frame conflict on object 50, 10 checks per run. Those can differ while the competing entry is in flight, and all converge when it lands. Every run ends with all histories bit-identical [V]
+  * The counts are of deliveries: the harness checks every delivery of a carried entry, repairs included,
+    so they move with how many repairs arrive (idle thinning raised them, p2/spike-idle).
 * **The limit, stated plainly:** carried state makes the *touched object* exact. It cannot make an object
   exact while the receiver's *other* objects still differ, because they keep pushing on it. Bit-exactness
   everywhere comes from holding the same log. Gap detection guarantees that before a frame is confirmed
@@ -900,8 +902,8 @@ every player, perfectly synced, and optimized for CPU and memory.
     object the author touched ends where the author saw it end, on every peer. What varies with timing is
     whose view other objects follow when two players' effects meet.
 * **"Contended" should mean causally connected, not "the same object"** [I, proposal].
-  * With vdW on, uncontended acceptance at the instant in `diverged` is 23/25 (25/25 with upstream
-    physics). Both misses are object 5, at frames 332 and 333. @vdw-physics traced the same misses
+  * With vdW on, uncontended acceptance at the instant in `diverged` is 41/43 (23/25 before idle thinning,
+    25/25 with upstream physics). Both misses are object 5, at frames 332 and 333. @vdw-physics traced the same misses
     (b8f130c): the author had not yet seen another member's touch on object 77, whose effect reached
     object 5 through the pile.
   * Final-history acceptance is 25/25 [V session-sim diverged, integration run].
@@ -1018,8 +1020,8 @@ release build [V session-sim ballpit].
     datagrams) and about 103 kB/s at 8: over the budget, as the spike already was from 3 members.
 * **Four reductions** (I: estimates from the sizes above). **Decided** (@coordinator-opus, about 15:05Z):
   build 1 and 2 in pe-session (@item:primordial-engine/ack-bandwidth-reductions-in-pe-session-check-on-c,
-  @world-chunks's, after P2-3 merges), and the spike mirrors 2. 3 and 4 wait until after M1. None is
-  built yet:
+  @world-chunks's, after P2-3 merges), and the spike mirrors 2. 3 and 4 wait until after M1. pe-session
+  builds neither yet; the spike mirrors 2 since p2/spike-idle (measured under 2):
   1. **The check hash only when it changes.** It changes once per check interval (30 frames) but rides on
      every ack. Sending it once saves 40 bytes on 14 acks of 15: idle at 2 members falls from 7.6 to
      about 6.4 kB/s. It changes the ack encoding, so every entry id moves and pe-session's goldens are
@@ -1044,6 +1046,17 @@ release build [V session-sim ballpit].
      * Idle acks fall on frames that are multiples of 8, the coarsest level's grid, so they share
        datagrams with hand entries. The ack that leaves idle goes at once, off the grid. A check hash
        due at a check frame rides the first ack after it, at most 7 frames later.
+     * **Measured in the spike** (p2/spike-idle) [V session-sim ballpit, r18]:
+       * Before the ball-pit sweep, each member's acks fall from 28.9 to 6.7-7.8 a second (11.1 at
+         90 Hz, from 43.3): 3.6 to 0.8-1.0 kB/s each way with the spike's 72-byte acks.
+       * Hand entries' confirmation latency is unchanged where nothing congests: a mean of 8.8 frames at
+         64 and 256 kbit/s, and the slowest entry confirmed at most 2 frames later. What it does to R18's
+         cells is under 10.9's table.
+       * Every scenario still ends all equal. 256 of 305 view-change decisions move by 0.05 s or less,
+         the rest by up to 0.5 s (`bridge`, `joinrules`). One outcome changes shape: `colluders` removes
+         its two faulty members in two changes instead of one (10.8).
+       * A repro whose member acks once every 1.5 s (`lagprecommit`) keeps that member strictly on its
+         grid: its ack on leaving idle would refresh the horizon the repro needs stale.
   3. **Compact heads** (the compact acks above). Each head is a (member, seq) pair as varints, plus one
      32-byte BLAKE3 digest over every (member, seq, id), as P23-2 moves facts to (review DS-4: 16 bytes
      would give evidence only 2^64 collision resistance). It saves about 4 bytes an ack at 2 members,
@@ -1299,7 +1312,7 @@ than allowed to rewrite others' history (10.9). The decision is **D42**, revised
     * `ackfork`: member 9 showed member 2 a different chain. Both honest members found the conflict,
       evicted 9 with a cut before its touch, and agreed. Before, they forked.
     * `lateequiv`: a second version of an already-confirmed entry. The stable version stood, 9 was evicted
-      (cut at seq 103, from frame 206), and nobody panicked. Before, every honest member crashed.
+      (cut at seq 36, from frame 212), and nobody panicked. Before, every honest member crashed.
     * `evict`: after an eviction, a late entry kept its frame (60) on every member. Before, a member crashed.
     * c2 equivocation before confirmation: as in 3d0f98a, both members ended equal and equal to the replay.
     * `badvote` (round 3): 9 equivocated on a touch confirmed at frame 50. Colluding member 8 showed the
@@ -2086,55 +2099,56 @@ is fixed once the author's chain is contiguous up to it.
     proof, a release) closes the session at its boundary. The boundary lies ahead, as a join's does, with
     the same precommit caps, so nothing confirmed is undone, and nothing stamped at or after it acts. A
     last admin that crashes or times out therefore closes the session (user 22:13Z) [V adminclose].
-* **Measured** [V session-sim, branch `viewchange`, D80 (b) unless named; logs in `spikes/out/session-sim/`]:
+* **Measured** [V session-sim, branch `viewchange`, D80 (b) unless named; logs in `spikes/out/session-sim/`;
+  times as re-run with idle thinning, p2/spike-idle]:
 
 | Scenario | What happens | Result |
 |---|---|---|
-| `crashstall` | member 3 of 3 silent from 3 s | removed with round 3's cut (seq 86, from frame 173) and history; paused 72 and 74 frames (round 3: 72); all equal |
-| `twosilent` | members 5 and 6 of 6 silent from 3 s | both removed in one change at 6.15 s (round 0); paused 74 frames; all equal |
-| `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.15 s. (b): no decision, the three left pause safely (confirmed frame 169) |
-| `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed at 3.73 s, about 160 ms after its second signature, without 8; the confirmed touch stands; no pause |
-| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed in one change at 3.73 s; no pause |
+| `crashstall` | member 3 of 3 silent from 3 s | removed with round 3's cut (seq 28, from frame 166) and history; paused 76 and 78 frames (round 3: 72); all equal |
+| `twosilent` | members 5 and 6 of 6 silent from 3 s | both removed in one change at 6.07 s (round 0); paused 80 frames; all equal |
+| `twosilent5` | members 4 and 5 of 5 silent from 3 s | (a): both removed in one change at 6.03 s. (b): no decision, the three left pause safely (confirmed frame 158) |
+| `withheld` | 9 equivocates on a confirmed touch; 8 casts no view-change entry | 9 removed at 3.87 s, about 180 ms after its second signature, without 8; the confirmed touch stands; no pause |
+| `colluders` | two of five: 9 equivocates, 8 forks its vote | both proven and removed: 9 at 3.85 s, 8 in a second change at 4.30 s; no pause. Before idle thinning one change removed both at 3.73 s: the first proposal came 4 frames after 9's proof, once 8's forked vote was proven too. Now it comes 2 frames after, in the frame that proves 8 but before the proof [V events] |
 | `badvote` | two of four: 9 equivocates, 8 forks its vote | **recovers** (round 3 stalled): both removed; confirmation resumes, no pause |
 | `liar` | 8's vote contradicts its own ack | 8 proven faulty and removed with 9 |
-| `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.58 s |
-| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (529 paused frames); after the heal one session, and a reset at 13.67 s keeps all five, since 8 behaves again and is proven of nothing (round 1 removed it as a withholder; its references stopped only behind its own votes, which review VC-9 no longer counts). (a): {1,2} removes 3 and 4 at 6.18 s, {3,4} removes 1 and 2 at 7.80 s, and each side then removes 8: **two sessions** |
-| `join` | member 4 asks to join at 2 s, touches an object at frame 420 | admitted at 2.10 s with boundary frame 175; its touch applies at every member; all four equal |
-| `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s | 8 removed at 5.23 s; paused 78 frames; all equal |
-| `fork9` | 9 forks its chain: 1 and 2 get a branch with its touch at frame 120, 3 a longer one without it; 3's votes 300 ms late | 9 removed at 2.32 s with the touch's branch as the cut; 3 adopts it; all equal (before the VC-2 fix 3 confirmed past the touch, then hit the rollback assertion) |
+| `badproposer` | the first proposer shows one member a reset and the others a removal; 5 silent | that round fails; round 1 removes the proposer (proven) and 5 together at 6.48 s |
+| `bridge` | partition {1,2} / {3,4} from 3 to 12 s; faulty 8 reaches both sides and backs everything | (b): nothing is decided during the partition (515 paused frames); after the heal one session, and a reset at 13.28 s keeps all five, since 8 behaves again and is proven of nothing (round 1 removed it as a withholder; its references stopped only behind its own votes, which review VC-9 no longer counts). (a): {1,2} removes 3 and 4 at 6.08 s, {3,4} removes 1 and 2 at 7.70 s, and each side then removes 8: **two sessions** |
+| `join` | member 4 asks to join at 2 s, touches an object at frame 420 | admitted at 2.10 s with boundary frame 176; its touch applies at every member; all four equal |
+| `refwithhold` | 8 keeps acking but stops referencing the others' chains from 2 s | 8 removed at 5.23 s; paused 80 frames; all equal |
+| `fork9` | 9 forks its chain: 1 and 2 get a branch with its touch at frame 120, 3 a longer one without it; 3's votes 300 ms late | 9 removed at 2.30 s with the touch's branch as the cut; 3 adopts it; all equal (before the VC-2 fix 3 confirmed past the touch, then hit the rollback assertion) |
 | `jointiming` | 5 joins; prevotes reach 3 and 4 1.5 s late, past the boundary | decided in round 0 at 3.6 s, all five equal (before the VC-3 fix: wedged, confirmation stuck at frame 176) |
-| `bogusprecommit` | 9 signs a precommit with boundary 1, or just ahead of its horizon | the first is void; for the second, 9 is voted out at 3.17 s with no reset and no pause; confirmation goes on (before the VC-4 fix: stuck at frames 112 and 143) |
-| `futureack` | 9's acks claim epoch 999, or epoch 1 with no decision | 9 removed at 5.23 s, and at 5.17 s; confirmation resumes (before the VC-5 fix: stuck at frame 112) |
+| `bogusprecommit` | 9 signs a precommit with boundary 1, or just ahead of its horizon | the first is void; for the second, 9 is voted out at 3.15 s with no reset and no pause; confirmation goes on (before the VC-4 fix: stuck at frames 100-108 and 143) |
+| `futureack` | 9's acks claim epoch 999, or epoch 1 with no decision | 9 removed at 5.23 s, and at 5.20 s; confirmation resumes (before the VC-5 fix: stuck at frame 108) |
 | `kickwar` | admins 1 and 2 kick each other at frame 120 | 1's kick applies first in commit order: 2 removed at 2.30 s, 2's kick refused; all equal |
-| `kickpartition` | partition {1,2} / {3,4} from 2 to 6 s; admin 1 kicks 3 at 3 s | nothing decided during it; 3 removed at 6.97 s after the heal; one session |
+| `kickpartition` | partition {1,2} / {3,4} from 2 to 6 s; admin 1 kicks 3 at 3 s | nothing decided during it; 3 removed at 6.80 s after the heal; one session |
 | `lastadmin` | the only admin releases the role; later hands it to 2, then releases | release refused (2.17 s); hand-over and release applied (4.17 s, 4.23 s); admins {2} |
-| `adminclose` | the only admin silent from 3 s | removed at 6.5 s; the session closes at frame 438 on both remaining members; all equal |
+| `adminclose` | the only admin silent from 3 s | removed at 6.4 s; the session closes at frame 432 on both remaining members; all equal |
 | `joinrules` | rules: friends of an admin join as Guest, confidants of an owner as Admin; four ask | the friend joins as Guest, the confidant and the owner (row 0) as Admin, the stranger is refused |
 | `onesided` (control) | 3 of 6 collude, above the bound; partition {1,2} / {3}; proofs only for 1 and 2 | two different epoch-1 decisions: the session forks, as the restated bound allows |
-| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | nobody delivers the kick, and 9 is voted out at 3.17 s (round 3: a reset at 5.13 s kept it; before the VCR-1 fix: stuck at frame 108) |
-| `selfkickhead` | admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed | 4 removed at 2.28 s (before the VCR-2 fix: never; confirmation stuck at frame 116) |
+| `ghostkick` | 9 votes against 2 at 2 s for a kick that does not exist | nobody delivers the kick, and 9 is voted out at 3.15 s (round 3: a reset at 5.13 s kept it; before the VCR-1 fix: stuck at frame 102) |
+| `selfkickhead` | admin 1 kicks 4 at 2 s; 4's vote on its own kick names a head it never signed | 4 removed at 2.27 s (before the VCR-2 fix: never; confirmation stuck at frame 108) |
 | `ackgap` | 3 acks once a second; two decisions 0.25 s apart fall between two of its acks | both decided, 3 stays (before the VCR-3 fix: its later acks void, and 3 voted out as too slow) |
 | `latejoin` | 5 catches up on two decisions at once, then joins at epoch 3 | admitted at 3.10 s and stays (before the VCR-3 fix: voted out after joining) |
-| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | no reset; 9 voted out at 3.17 s (round 3: three resets, then 2.50 s; before the VCR-4 fix: 88 resets, 9 never removed) |
-| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late, so the cut lies over 16 entries past what 3 holds | 9 removed at 3.63 s; 3 fetches the branch by id, 16 entries per request; all equal (before the VCR-5 fix: 3 stuck at frame 116) |
-| `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.29 s) |
+| `capchurn` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next | no reset; 9 voted out at 3.15 s (round 3: three resets, then 2.52 s; before the VCR-4 fix: 87 resets, 9 never removed) |
+| `deepfork` | `fork9`, with 3's entries reaching 1 and 2 1.5 s late, so the cut lies over 16 entries past what 3 holds | 9 removed at 3.57 s; 3 fetches the branch by id, 16 entries per request; all equal (before the VCR-5 fix, through round 5, the replicas did not all equal the replay; since round 6 the run with the fix off no longer shows it, an open follow-up) |
+| `cutbackdate` | `fork9` with a touch backdated 90 frames on the cut's branch | the touch is void everywhere; all equal (before the VCR-6 fix: 3 hit the rollback assertion at 2.28 s) |
 | `joinattests` | 5 shows its friendship with admin 1 to 1 and 2 only; 9 prevotes but never precommits | 5 joins as Guest; 9 is removed later for not referencing 5's chain (before the VCR-7 fix: wedged, confirmation stuck at frame 176) |
-| `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.60 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.23 s) |
+| `slowadmin` | an admin's entries reach follower 6 2.5 s late on every path | 6 decides at 3.68 s once it has fetched the entry (before the VCR-8 fix: it panicked at 2.25 s) |
 | `kickbackdate` | `kickwar`, with 2's kick backdated 30 frames | 2's kick is void; 2 removed at 2.27 s (before the VCR-9 fix: the backdated kick removed 1) |
-| `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.95 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224) |
-| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.23 s for not keeping up; its votes against the members ahead, in epochs 0 and 1, remove none of them |
-| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in three (round 3's strikes voted 1 out in two) |
-| `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn | voted out at 5.30 s (climbing alone: 5.17 s; rotating alone is harmless, conf 697-701 of 713); before the VC3R-1 fix: never, stuck at frame 112 |
+| `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.93 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224). Since idle thinning, 3 acks strictly on its grid, never on leaving idle (a fixture) |
+| `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 removed at 5.25 s for not keeping up; its votes against the members ahead, in epochs 0 and 1, remove none of them |
+| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in two (before the VC3R-2 fix, round 3's strikes voted 1 out in four of the five; five before idle thinning) |
+| `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn | voted out at 5.42 s (climbing alone: 5.20 s; rotating alone is harmless, conf 688 of 713); before the VC3R-1 fix: never, stuck at frame 108 |
 | `fakeref` | 9 silent from 2 s; 8's acks claim 5 more of 9's entries than anyone holds | the withholding rule removes 9 at 5.25 s |
-| `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch | no reset; voted out at 3.17 s (round 3: three resets, then 2.50 s) |
-| `lagchurn` | from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch | two resets; 9 demoted at 6.48 s (with round 3's timer restarts: never, after 8 resets) |
-| `votechurn` | 2-10 s: 9 votes against 2 in every epoch; admin 1 kicks 9 at 10 s | 20 resets, 2.5 a second; confirmation lag median/max 7/8 frames before, 16/40 during, 7/8 after; the kick ends it |
+| `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch | no reset; voted out at 3.15 s (round 3: three resets, then 2.52 s) |
+| `lagchurn` | from 2 s, 9's messages arrive 1.3 s late and 9 votes against 2 in every epoch | two resets; 9 demoted at 6.40 s (with round 3's timer restarts: never, after 8 resets) |
+| `votechurn` | 2-10 s: 9 votes against 2 in every epoch; admin 1 kicks 9 at 10 s | 20 resets, 2.5 a second; confirmation lag median/max 13/19 frames before, 17/37 during, 15/19 after (idle before and after, so acks every 8 frames; 7/8 before idle thinning); the kick ends it |
 | `adminvoid` | 9 proposes a change listing its own horizon-void SetRole demoting 3 | refused; 3 stays Admin (before the VC3R-3 fix: applied) |
 | `joinsquat` | 9 asks to join in 5's name before 5 does | 9's request refused; 5's two requests merge; 5 joins as Guest at 2.63 s (before the VC3R-4 fix: never) |
 | `joinskip` | 5 authors no ack before it is admitted at epoch 2 | 5 stays (before the VC3R-6 fix: its acks void, voted out) |
-| `joinwedge` | 5's signed request reaches 1, 2 and 9 only; 9 crashes after its first prevote | 5 admitted at 2.6 s, 9 removed at 5.6 s (before the VC4R-2 fix: 1 and 2 locked on a join 3 can't validate, stuck at frame 114) |
-| `slowref` | a member grows slower while another fakes references to its chain | the slow member removed at 7.4 s (before the VC4R-3 fix: never, stuck at frame 108) |
-| `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
+| `joinwedge` | 5's signed request reaches 1, 2 and 9 only; 9 crashes after its first prevote | 5 admitted at 2.13 s, 9 removed at 5.62 s (before the VC4R-2 fix: 1 and 2 locked on a join 3 can't validate, stuck at frame 108) |
+| `slowref` | a member grows slower while another fakes references to its chain | the slow member removed at 7.4 s (before the VC4R-3 fix: never, stuck at frame 102) |
+| `vcscale` | 64 members with ack heads, and 256 log-only members without; the last 2 silent from 1 s | every live member (62 and 254) decides the removal 2.77-2.78 s after the silence began, in one change. With heads confirmation resumes; without them nothing confirms, so the 256 run times the decision alone |
 
   Every scenario's honest members equal each other and the offline replay of the final log, with no false
   check failure; no confirmed frame was rolled back (that is asserted). The rest of the suite is
@@ -2150,7 +2164,11 @@ is fixed once the author's chain is contiguous up to it.
   some scenarios' cuts land one entry later and their confirmed digests move with them (`evict`,
   `deepfork`), and `fakeref` and `strikeframe` now also remove the faulty member whose fake references
   or hostile timing the new rules catch. Every member still equals the replay with no false check, and
-  roles and closures are unchanged [V 5k].
+  roles and closures are unchanged [V 5k]. Idle thinning (7.6 reduction 2, p2/spike-idle) moves every
+  log: most decisions by 0.05 s or less, cuts to lower seqs since idle members author fewer acks, and
+  `colluders`' two removals into two changes. The rows above are refreshed to it, with some that had
+  gone stale before it (`bridge`, `deepfork`, `strikeframe`, `joinwedge`, `aheadlink`, and by a frame
+  `kickpartition` and `cutbackdate`).
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -2358,27 +2376,27 @@ transport; the R18 runs opt in [V @world-chunks].
 **Measured** (500-ball pit; member 1 sweeps; 50 ± 5 ms one-way; token-bucket cap each way, 4 kB burst,
 500 ms router queue, tail drop; dead reckoning on) [V session-sim `capped`, spikes/out/r18, round 3;
 adaptive cells re-run with span then coast and the level-change rule, p2/spike-hand, then with D56's
-congested-level memory, p2/spike-d56]:
+congested-level memory, p2/spike-d56; every cell then re-run with idle thinning, p2/spike-idle]:
 
 | Cap | Transport | Uplink m1 | Max queue, drops | Stalled frames | Max confirmation lag | Back to real time after the gesture | End state |
 |---|---|---|---|---|---|---|---|
-| 256 kbit/s | any | 65-78 kbit/s | 0 ms, 0 | 0 / 0 | 9-10 frames | at once | all equal |
-| 64 kbit/s | per message (3d0f98a transport) | 77 kbit/s | 274 ms, 0 | 0 / 0 | 26 frames | 515 ms | equal |
-| 64 kbit/s | batched, or batched + adaptive | 65 kbit/s | 0 ms, 0 | 0 / 0 | 9 frames | at once | equal |
-| 48 kbit/s | per message | 76 kbit/s | 499 ms, 52 | 238 / 262 | 328 frames | never in the run | not converged |
-| 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 22 | 139 frames | 2.4 s | equal |
-| 48 kbit/s | **batched + adaptive** | 54 kbit/s | **49 ms**, 0 | **0 / 0** | 13 frames | **at once** | equal |
-| 32 kbit/s | **batched + adaptive** | 29 kbit/s | **82 ms**, 0 | **0 / 0** | 15 frames | **at once** | equal |
-| 16 kbit/s | **batched + adaptive** (30 s run) | 14 kbit/s | **414 ms**, 0 | **0 / 0** | 45 frames | **at once** | equal |
-| 12 kbit/s | batched + adaptive (30 s run) | 14 kbit/s | 492 ms, 2 | 191 / 204 | 322 frames | 1.7 s | equal |
-| 8 kbit/s | batched + adaptive (30 s run) | 12 kbit/s | 498 ms, 34 | 1,586 / 1,588 | 1,706 frames | never in the run | not converged |
+| 256 kbit/s | any | 65-79 kbit/s | 0 ms, 0 | 0 / 0 | 19-23 frames | at once | all equal |
+| 64 kbit/s | per message (3d0f98a transport) | 77 kbit/s | 271 ms, 0 | 0 / 0 | 28 frames | 590 ms | equal |
+| 64 kbit/s | batched, or batched + adaptive | 65 kbit/s | 0 ms, 0 | 0 / 0 | 19 frames | at once | equal |
+| 48 kbit/s | per message | 77 kbit/s | 499 ms, 53 | 242 / 273 | 324 frames | never in the run | not converged |
+| 48 kbit/s | batched | 65 kbit/s | 498 ms, 6 | 22 / 20 | 139 frames | 2.4 s | equal |
+| 48 kbit/s | **batched + adaptive** | 54 kbit/s | **49 ms**, 0 | **0 / 0** | 19 frames | **at once** | equal |
+| 32 kbit/s | **batched + adaptive** | 29 kbit/s | **82 ms**, 0 | **0 / 0** | 19 frames | **at once** | equal |
+| 16 kbit/s | **batched + adaptive** (30 s run) | 23 kbit/s | **427 ms**, 0 | **0 / 0** | 37 frames | **at once** | equal |
+| 12 kbit/s | batched + adaptive (30 s run) | 21 kbit/s | 481 ms, 2 | 195 / 191 | 315 frames | 2.4 s | equal |
+| 8 kbit/s | batched + adaptive (30 s run) | 21 kbit/s | 499 ms, 30 | 1,518 / 1,523 | 1,641 frames | never in the run | not converged |
 | 64, then 16 from t = 3 s | **batched + adaptive** (30 s run) | 35 kbit/s | **393 ms**, 0 | **0 / 0** | 35 frames | **at once** | equal |
-| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 38 kbit/s | **177 ms**, 0 | **0** (all four) | 27 frames | **at once** | all four equal |
-| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 31 kbit/s | 498 ms on member 3's links | 113 / 116 before the demotion | 236 frames | at once | member 3 demoted after 3 s of lag; members 1 and 2 equal |
+| 64 per uplink, shared by 3 peers (4 members) | **batched + adaptive** (30 s run) | 54 kbit/s | **256 ms**, 0 | **0** (all four) | 39 frames | **at once** | all four equal |
+| 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 48 kbit/s | 500 ms on member 3's links | 95 / 99 before the demotion | 218 frames | 0.55 s | member 3 demoted after 3 s of lag; members 1 and 2 equal |
 
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
-  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 2 s of the gesture's end, and a
+  to 16, and the shared uplink stay real time. 12 kbit/s recovers within 2.5 s of the gesture's end, and a
   member too slow for the session is demoted.
 * **Span then coast and the level-change rule (p2/spike-hand)** moved the adaptive cells a little, and no
   cell changed state [V spikes/out/r18]: peaks rose at 16 kbit/s (364 → 414 ms) and in the step (343 →
@@ -2398,6 +2416,23 @@ congested-level memory, p2/spike-d56]:
     built it, kept it 21 s of 30 at level 5.
 * **Earlier stale cells:** the slow-member row is updated to the logs as D58's double precision left them
   (31 kbit/s, 113 / 116 stalled frames, 236 frames of lag; it read 30, 135 / 135 and 255).
+* **Idle thinning (7.6 reduction 2, p2/spike-idle)** then moved most cells [V spikes/out/r18]:
+  * **The controller now idles at level 0.** The idle session's acks fit every capped link here, so a
+    gesture starts at level 0 and climbs. Before, idle acks alone congested 16 kbit/s and below and the
+    shared uplink, so the controller was already coarse when the gesture began.
+  * So those cells send more during the gesture: 21-23 kbit/s instead of 14 at 16 and 12 kbit/s, and 54
+    instead of 38 on the shared uplink. The shared uplink peaks at 256 ms instead of 177, with 39 frames
+    of lag instead of 27, and 12 kbit/s recovers in 2.4 s instead of 1.7. 16 kbit/s peaks at 427 ms
+    instead of 414. 8 kbit/s now confirms 34 of its 61 hand entries but still never converges.
+  * **The max confirmation lag column now includes the idle session's lag:** 19 frames where nothing
+    congests (it read 9-15), from acks every 8 frames while idle. Hand entries' confirmation latency,
+    which counts only frames holding something to confirm, is unchanged there: a mean of 8.8 frames at
+    64 and 256 kbit/s, and the slowest entry confirmed at most 2 frames later (11.2 instead of 9.3) [V,
+    the r18 latency line].
+  * **A member too slow for the session now keeps up while the session is idle,** and is demoted once
+    the gesture overloads its link instead (cut from frame 328 instead of 84 in the adaptive run).
+    Members 1 and 2 stall a little less (95 / 99 frames instead of 113 / 116), but part of it comes
+    after the gesture, so they are back in real time 0.55 s after it instead of at once.
 * **The floor for two members is about 12 kbit/s each way** at 60 Hz. Per-datagram overhead dominates:
   even at the coarsest level, acks alone need about 7.4 kbit/s (7.5 datagrams/s × 124 B) [I, from the
   wire format]. Below the floor a two-member session stalls, because it cannot demote either member
