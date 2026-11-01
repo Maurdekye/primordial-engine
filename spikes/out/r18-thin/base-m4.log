@@ -1,4 +1,4 @@
-PROVENANCE commit ff4e407719f5, sources ecf407a58a7a6b1b, binary bad9c04b00b3d4ac
+PROVENANCE commit ff939a570f71, sources 481da330e1053d65, binary 7ded3263d75c6835
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
