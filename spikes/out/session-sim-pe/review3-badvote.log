@@ -1,9 +1,9 @@
-  t=3693 ms: 9's touch s8 at frame 50 confirmed at m1: true, at m2: true (m1 conf 203) -> 9 signs a second version
-  t=3731 ms: 8 sends members 1 and 2 a forged vote against 9 with frozen head (0, 0)
+  t=3687 ms: 9's touch s8 at frame 50 confirmed at m1: true, at m2: true (m1 conf 203) -> 9 signs a second version
+  t=3723 ms: 8 sends members 1 and 2 a forged vote against 9 with frozen head (0, 0)
   9's touches at m1: m9s8@50 eff=None void=true, m9s8@50 eff=Some(50) void=false
   9's touches at m2: m9s8@50 eff=None void=true, m9s8@50 eff=Some(50) void=false
-RESULT badvote: m1 members {1, 2} evicted {8: (32, 213), 9: (33, 212)} conf 459 frame 473 paused frames 0 lying votes found 1
-RESULT badvote: m2 members {1, 2} evicted {8: (32, 213), 9: (33, 212)} conf 459 frame 473 paused frames 0 lying votes found 1
-  m1: conf 459 frame 473 members {1, 2} evicted {8: (32, 213), 9: (33, 212)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 30 bad 0
-  m2: conf 459 frame 473 members {1, 2} evicted {8: (32, 213), 9: (33, 212)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 30 bad 0
-RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0
+RESULT badvote: m1 members {1, 2} evicted {8: (31, 211), 9: (33, 212)} conf 464 frame 473 paused frames 0 lying votes found 1
+RESULT badvote: m2 members {1, 2} evicted {8: (31, 211), 9: (33, 212)} conf 454 frame 473 paused frames 0 lying votes found 1
+  m1: conf 464 frame 473 members {1, 2} evicted {8: (31, 211), 9: (33, 212)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 30 bad 0
+  m2: conf 454 frame 473 members {1, 2} evicted {8: (31, 211), 9: (33, 212)} rollbacks 1 max depth 2 violations 0 equivocations 2 checks ok 29 bad 0
+RESULT badvote (9 equivocates on a confirmed touch; 8 forks its vote with a forged head): frames 0..472 honest m1=f3f72d0699b24668 m2=f3f72d0699b24668 | offline replay f3f72d0699b24668 | ALL EQUAL, NO FALSE CHECKS ; checks ok 59 bad 0

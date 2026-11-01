@@ -1,10 +1,10 @@
-RESULT aheadlink-cut: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 1, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 2161 (t=36.12 s) round 0 removed []
-RESULT aheadlink-cut: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 1, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 2161 (t=36.12 s) round 0 removed []
-RESULT aheadlink-cut: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 1, highest round 0) | epoch 1 at frame 1938 (t=32.40 s) round 0 removed []; epoch 2 at frame 2161 (t=36.12 s) round 0 removed []
-RESULT aheadlink-cut: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 1, highest round 0) | epoch 1 at frame 129 (t=2.25 s) round 0 removed []; epoch 2 at frame 2161 (t=36.12 s) round 0 removed []
-RESULT aheadlink-cut: 3 removed at never; first vote against 3 at m1: no vote against 3; worst confirmation lag at 1, 2 and 4: 1838 frames, at 32.44 s
-  m1: conf 2375 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 195 bad 0
-  m2: conf 2375 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 196 bad 0
-  m3: conf 2375 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 194 bad 0
-  m4: conf 2375 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 195 bad 0
-RESULT aheadlink-cut (3 hears only 4's acks for 30 s; the rest is lost): frames 0..2392 honest m1=9184054a5023fe56 m2=9184054a5023fe56 m3=9184054a5023fe56 m4=9184054a5023fe56 | offline replay 9184054a5023fe56 | ALL EQUAL, NO FALSE CHECKS ; checks ok 780 bad 0
+RESULT aheadlink-cut: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT aheadlink-cut: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT aheadlink-cut: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 1949 (t=32.58 s) round 0 removed []
+RESULT aheadlink-cut: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
+RESULT aheadlink-cut: 3 removed at never; first vote against 3 at m1: no vote against 3; worst confirmation lag at 1, 2 and 4: 1849 frames, at 32.62 s
+  m1: conf 2381 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 198 bad 0
+  m2: conf 2381 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 198 bad 0
+  m3: conf 2381 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 198 bad 0
+  m4: conf 2381 frame 2393 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 198 bad 0
+RESULT aheadlink-cut (3 hears only 4's acks for 30 s; the rest is lost): frames 0..2392 honest m1=9184054a5023fe56 m2=9184054a5023fe56 m3=9184054a5023fe56 m4=9184054a5023fe56 | offline replay 9184054a5023fe56 | ALL EQUAL, NO FALSE CHECKS ; checks ok 792 bad 0

@@ -1,6 +1,6 @@
 RESULT lastadmin: m1 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 248 (t=4.23 s) round 0 removed []
-RESULT lastadmin: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 248 (t=4.23 s) round 0 removed []
-RESULT lastadmin: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 248 (t=4.23 s) round 0 removed []
+RESULT lastadmin: m2 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 124 (t=2.17 s) round 0 removed []; epoch 2 at frame 243 (t=4.15 s) round 0 removed []; epoch 3 at frame 247 (t=4.22 s) round 0 removed []
+RESULT lastadmin: m3 epoch 3 members {1, 2, 3} view changes 3 (resets 0, highest round 0) | epoch 1 at frame 123 (t=2.15 s) round 0 removed []; epoch 2 at frame 244 (t=4.17 s) round 0 removed []; epoch 3 at frame 247 (t=4.22 s) round 0 removed []
 RESULT lastadmin: m1: 1 gives 1 role 1 @120: refused; 1 gives 2 role 0 @240: applied; 1 gives 1 role 1 @241: applied
   m1: members {1, 2, 3} roles {1: 1, 2: 0, 3: 1} admins [2] closed at None
 RESULT lastadmin: m2: 1 gives 1 role 1 @120: refused; 1 gives 2 role 0 @240: applied; 1 gives 1 role 1 @241: applied
