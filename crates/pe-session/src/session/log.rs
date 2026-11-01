@@ -332,6 +332,7 @@ impl WorldSim {
         let Some(top) = entries.last() else { return vec![] };
         let sig = signed.then_some(top.sig);
         let (m, s0) = (entries[0].member, entries[0].seq);
+        self.note_answer(from, m, s0);
         // O2-1: a view-change or admin entry covered by another entry's signature is refused; the range
         // is asked for again from the sender, whose answer ends at each such entry, signed on itself.
         let n = entries.len();
@@ -405,7 +406,7 @@ impl WorldSim {
         let known: Vec<MemberId> = self.known.iter().copied().collect();
         let mut s = self.contiguous.get(&m).copied().unwrap_or(0) + 1;
         let mut below_verified = true;
-        for _ in 0..Self::GAPS_MAX {
+        for _ in 0..if self.congested { 1 } else { Self::GAPS_MAX } {
             loop {
                 if self.by_author.contains_key(&(m, s)) {
                     s += 1;
@@ -438,10 +439,6 @@ impl WorldSim {
             s = end;
         }
     }
-
-    /// The hole rule's fallback (ask everyone for the whole range) after this many frames of waiting:
-    /// about one round trip on a fast link (review O2-3), so a lost answer costs one more round trip.
-    pub const HOLE_HOLD_FRAMES: u64 = 15;
 
     /// At most this many gaps of one author are asked for per call ([`Self::want_gap`]).
     pub const GAPS_MAX: usize = 8;
@@ -533,10 +530,11 @@ impl WorldSim {
         // The hole rule's fallback: a run still waiting on its author's entry below after the hold
         // asks everyone, once, for the whole range from the verified prefix.
         let hole_rule = self.fixes_off & fix::HOLE == 0;
+        let hold = self.hole_hold();
         let stuck: Vec<(MemberId, u32)> = self
             .lean_wait
             .iter()
-            .filter(|(k, w)| hole_rule && !w.asked_all && k.0 != self.me && now >= w.since + Self::HOLE_HOLD_FRAMES && self.lean_missing(w).0)
+            .filter(|(k, w)| hole_rule && !w.asked_all && k.0 != self.me && now >= w.since + hold && self.lean_missing(w).0)
             .map(|(k, _)| *k)
             .collect();
         for k in stuck {

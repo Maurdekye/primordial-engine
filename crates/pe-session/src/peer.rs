@@ -392,6 +392,8 @@ impl SessionCore {
     }
 
     fn fetches(&mut self, now_us: u64) {
+        // Review O2-3: gaps are asked for in parallel only while this member's uplink is not adapting.
+        self.sim.congested = self.adapt && self.level > 0;
         for (dest, f) in self.sim.take_fetches(now_us / 1000) {
             self.send_to(dest, Class::Control, f);
         }
@@ -426,7 +428,10 @@ impl SessionCore {
                 }
                 let mut v = match m {
                     Msg::Run { lean, heads, signed, entries } => self.sim.insert_run(from, lean, heads, signed, entries),
-                    Msg::Entry(e) => self.sim.insert(e),
+                    Msg::Entry(e) => {
+                        self.sim.note_answer(from, e.member, e.seq);
+                        self.sim.insert(e)
+                    }
                     _ => unreachable!(),
                 };
                 // Runs that waited for this one.

@@ -594,6 +594,12 @@ pub struct WorldSim {
     my_last: EntryId,
     /// (holder, author) -> (first seq asked, when, current retry interval), all in ms.
     fetch_asked: BTreeMap<(MemberId, MemberId, u32), (u32, u64, u64)>,
+    /// Review O2-3: when each range was first asked of each holder (frame, ms), until its answer arrives.
+    fetch_first: BTreeMap<(MemberId, MemberId, u32), (u64, u64)>,
+    /// Each holder's last fetch round trips (frames, ms), newest last ([`Self::hole_hold`]).
+    fetch_rtt: BTreeMap<MemberId, std::collections::VecDeque<(u64, u64)>>,
+    /// The ms clock as of the last [`Self::take_fetches`].
+    clock_ms: u64,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
     pub check_hashes: BTreeMap<u64, CheckHash>,
@@ -621,6 +627,9 @@ pub struct WorldSim {
     /// when the requester holds the entry below; option 2, own live entries in runs signed once, and
     /// hole-fill replies unsigned. Off: the explicit, signed-per-entry wire (measurement A/B).
     pub lean_wire: bool,
+    /// Set by the session each tick: its R18 controller is above level 0 (review O2-3). A congested link
+    /// repairs one gap per author at a time; parallel asks only add answers competing for it.
+    pub congested: bool,
     pub run_wire: bool,
     /// The membership and view-change state (P2-3 S6b): read through [`Membership`], written by
     /// the view change.
@@ -891,6 +900,9 @@ impl WorldSim {
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
+            fetch_first: BTreeMap::new(),
+            fetch_rtt: BTreeMap::new(),
+            clock_ms: 0,
             hashes: BTreeMap::new(),
             check_hashes: BTreeMap::new(),
             remote_checks: BTreeMap::new(),
@@ -908,6 +920,7 @@ impl WorldSim {
             sigs: BTreeMap::new(),
             run_next: BTreeMap::new(),
             lean_wire: true,
+            congested: false,
             run_wire: true,
         }
     }

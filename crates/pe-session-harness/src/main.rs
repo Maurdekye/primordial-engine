@@ -1243,7 +1243,8 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32, waits: bo
             p
         })
         .collect();
-    let mut net = Net::new(link(60, 10, loss), 17);
+    // PE_BALLPIT_SEED: measurement only (review O2-3, loss distributions over seeds).
+    let mut net = Net::new(link(60, 10, loss), std::env::var("PE_BALLPIT_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(17));
     // Measure the sweep window only.
     let (w0, w1) = (100_000 + 2_000_000, 100_000 + 5_660_000);
     net.count_from_us = w0;
@@ -1354,7 +1355,14 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32, waits: bo
     // logs (and the tool's mirror of them) are unchanged.
     for m in (1..=2).filter(|_| waits && loss > 0) {
         let st = sim.replica(m, 1).sim.stats;
-        println!("RESULT   member {m}'s lean waits: {} (mean {:.1}, max {} frames), explicit form asked for {}", st.lean_waited, st.lean_wait_frames as f64 / st.lean_waited.max(1) as f64, st.lean_wait_max, st.lean_fallbacks);
+        println!(
+            "RESULT   member {m}'s lean waits: {} (mean {:.1}, max {} frames), explicit form asked for {}; hole rule's fallback after {} frames",
+            st.lean_waited,
+            st.lean_wait_frames as f64 / st.lean_waited.max(1) as f64,
+            st.lean_wait_max,
+            st.lean_fallbacks,
+            sim.replica(m, 1).sim.hole_hold()
+        );
     }
     print_stats(&sim, 1);
     // 8.0 s: 0.9 s before the end, so a loss being repaired at the end stays outside the checked frames
