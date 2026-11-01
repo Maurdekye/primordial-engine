@@ -1317,6 +1317,7 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32) {
     );
     // The idle session's acks (design 7.6, reduction 2; spike 5ad7546): each member's acks stamped in
     // that second, from member 1's copy of the log, with the wire estimate used above.
+    let lean = sim.replica(1, 1).lean_wire;
     let r1 = &sim.replica(1, 1).sim;
     let all = r1.all_entries();
     let idle_secs = (b1 - b0) as f64 / 1e6;
@@ -1324,7 +1325,10 @@ fn ballpit(hz: u64, ahead: u64, hands: usize, loss: u32, members: u32) {
         .iter()
         .map(|&m| {
             let acks: Vec<&Entry> = all.iter().filter(|e| e.member == m && matches!(e.payload, Payload::Ack { .. }) && (f(1.0)..f(1.9)).contains(&e.stamp)).collect();
-            let b: u64 = acks.iter().map(|e| encode_msg(&Msg::Entry(r1.signed_entry(e.id()).expect("a held entry"))).len() as u64 + 52).sum();
+            let b: u64 = acks.iter().map(|e| encode_msg(&{
+                let se = r1.signed_entry(e.id()).expect("a held entry");
+                if lean { Msg::Lean(se) } else { Msg::Entry(se) }
+            }).len() as u64 + 52).sum();
             format!("m{m} {:.1} acks/s ({:.0} B/s wire est.)", acks.len() as f64 / idle_secs, b as f64 / idle_secs)
         })
         .collect();
