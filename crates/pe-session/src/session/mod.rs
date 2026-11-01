@@ -543,6 +543,12 @@ pub struct WorldSim {
     my_seq: u32,
     /// Test fixture (review H5): publish horizons this many frames behind the present.
     pub horizon_lag: u64,
+    /// D73(a): this member's own hand poses waiting for their pack, by (frame, hand): applied at their
+    /// frames on this replica only (`step_frame`). Set by `SessionCore`.
+    pub own_pending: BTreeMap<(u64, u32), [i32; 3]>,
+    /// D73(a): while a pack is pending, its first frame: this member's acks declare a horizon below
+    /// it, so nothing it confirms can miss the pack.
+    pub hold_horizon_below: Option<u64>,
     /// Test fixture (review R3-1): vote with a forged frozen head of (0, 0).
     pub lie_in_votes: bool,
     my_last: EntryId,
@@ -834,6 +840,8 @@ impl WorldSim {
             now: 0,
             my_seq: 0,
             horizon_lag: 0,
+            own_pending: BTreeMap::new(),
+            hold_horizon_below: None,
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
@@ -857,5 +865,28 @@ impl WorldSim {
 
     fn ev(&mut self, s: String) {
         self.events.push(format!("[w{} m{} f{} c{}] {s}", self.world_id, self.me, self.frame, self.conf));
+    }
+}
+
+#[cfg(test)]
+mod d73_review {
+    use super::*;
+    use crate::sign::test_sign;
+
+    /// Review D73-1 (@design-reviewer's probe): an admin entry stamped within the wider ack lag but
+    /// more than horizon_slack before its author's last ack stamp is void where linked (`validate`),
+    /// and `valid_on_own_branch` (change_valid, VC7R-1) agrees.
+    #[test]
+    fn admin_backdating_bound_agrees_on_both_paths() {
+        let mut s = WorldSim::new(1, 1, &[1, 2, 3], SceneKind::Empty, SimConfig::default(), KeyRing::test(1));
+        let a = Entry { member: 2, seq: 1, prev: EntryId::NONE, stamp: 20, payload: Payload::Ack { horizon: 12, heads: vec![], check: None, epoch: 0 }, carried: None };
+        let sa = test_sign(1, a);
+        let k = Entry { member: 2, seq: 2, prev: sa.id(), stamp: 14, payload: Payload::Kick { epoch: 0, target: 3 }, carried: None };
+        let sk = test_sign(1, k);
+        let kid = sk.id();
+        s.insert(sa);
+        s.insert(sk);
+        assert!(s.violations.contains(&kid), "void where linked");
+        assert_eq!(s.valid_on_own_branch(kid), Some(false), "void on its own branch too");
     }
 }
