@@ -1,0 +1,20 @@
+pe-app: member 3 of session 7bb08e58f4cab0b8 on 127.0.0.1:7393; 4 members, 1200 frames
+[m3 t=0ms f=0] session start received: epoch 1221616 (leader clock), my offset 10898 us, best rtt 1570 us
+[m3 t=789ms f=47] status: frame 47 now 47 conf 44 members {1, 2, 3, 4} rollbacks 0 | sent 95 faulted 0 capped 0 recv 91 rejected {} bad entry sigs 0 | R18 level 0 signal Some(0) ms | clock offset 11028 us, rate 0 ppm, rtt excess ms [(1, Some(0)), (2, Some(0)), (4, Some(0))]
+[m3 t=1001ms f=59] fault: links to all now 5% loss, 25 ms +-10 ms
+[m3 t=2798ms f=167] status: frame 167 now 167 conf 154 members {1, 2, 3, 4} rollbacks 2 | sent 288 faulted 13 capped 0 recv 297 rejected {} bad entry sigs 0 | R18 level 0 signal Some(30) ms | clock offset 18068 us, rate 0 ppm, rtt excess ms [(1, Some(26)), (2, Some(281)), (4, Some(281))]
+[m3 t=4800ms f=288] status: frame 288 now 288 conf 278 members {1, 2, 3, 4} rollbacks 8 | sent 484 faulted 27 capped 0 recv 476 rejected {} bad entry sigs 0 | R18 level 0 signal Some(29) ms | clock offset 20039 us, rate 0 ppm, rtt excess ms [(1, Some(32)), (2, Some(279)), (4, Some(33))]
+[m3 t=6807ms f=408] status: frame 408 now 408 conf 352 members {1, 2, 3, 4} rollbacks 20 | sent 690 faulted 39 capped 0 recv 628 rejected {} bad entry sigs 0 | R18 level 0 signal Some(29) ms | clock offset 24269 us, rate 0 ppm, rtt excess ms [(1, Some(26)), (2, Some(80)), (4, Some(779))]
+[m3 t=7884ms f=472] paused at frame 472 (speculation limit)
+[m3 t=8808ms f=472] status: frame 472 now 528 conf 352 members {1, 2, 3, 4} rollbacks 25 | sent 895 faulted 48 capped 0 recv 733 rejected {} bad entry sigs 0 | R18 level 0 signal Some(28) ms | clock offset 23452 us, rate 0 ppm, rtt excess ms [(1, Some(25)), (2, Some(79)), (4, Some(2781))]
+[m3 t=9230ms f=472] membership decision: epoch 1, removed [4]
+[m3 t=9240ms f=554] resumed at frame 554
+[m3 t=10804ms f=648] status: frame 648 now 648 conf 628 members {1, 2, 3} rollbacks 34 | sent 1069 faulted 56 capped 0 recv 857 rejected {} bad entry sigs 0 | R18 level 0 signal Some(28) ms | clock offset 18528 us, rate -46 ppm, rtt excess ms [(1, Some(25)), (2, Some(71))]
+[m3 t=12807ms f=768] status: frame 768 now 768 conf 756 members {1, 2, 3} rollbacks 45 | sent 1219 faulted 64 capped 0 recv 973 rejected {} bad entry sigs 0 | R18 level 0 signal Some(32) ms | clock offset 20503 us, rate -533 ppm, rtt excess ms [(1, Some(28)), (2, Some(84))]
+[m3 t=14813ms f=888] status: frame 888 now 888 conf 884 members {1, 2, 3} rollbacks 54 | sent 1360 faulted 73 capped 0 recv 1086 rejected {} bad entry sigs 0 | R18 level 4 signal Some(41) ms | clock offset 24933 us, rate -324 ppm, rtt excess ms [(1, Some(31)), (2, Some(268))]
+[m3 t=16820ms f=1009] status: frame 1009 now 1009 conf 1000 members {1, 2, 3} rollbacks 59 | sent 1409 faulted 75 capped 0 recv 1221 rejected {} bad entry sigs 0 | R18 level 5 signal Some(38) ms | clock offset 29946 us, rate -17 ppm, rtt excess ms [(1, Some(31)), (2, Some(33))]
+[m3 t=18821ms f=1129] status: frame 1129 now 1129 conf 1120 members {1, 2, 3} rollbacks 64 | sent 1459 faulted 76 capped 0 recv 1361 rejected {} bad entry sigs 0 | R18 level 5 signal Some(37) ms | clock offset 31515 us, rate 248 ppm, rtt excess ms [(1, Some(26)), (2, Some(35))]
+[m3 t=20821ms f=1249] status: frame 1249 now 1249 conf 1240 members {1, 2, 3} rollbacks 65 | sent 1504 faulted 77 capped 0 recv 1499 rejected {} bad entry sigs 0 | R18 level 5 signal Some(39) ms | clock offset 30392 us, rate 411 ppm, rtt excess ms [(1, Some(27)), (2, Some(34))]
+[m3 t=22823ms f=1369] status: frame 1369 now 1369 conf 1360 members {1, 2, 3} rollbacks 65 | sent 1548 faulted 79 capped 0 recv 1635 rejected {} bad entry sigs 0 | R18 level 5 signal Some(35) ms | clock offset 30740 us, rate 421 ppm, rtt excess ms [(1, Some(33)), (2, Some(36))]
+[m3 t=23115ms f=1383] DONE frames 0..1200: digest 09492b19d90e0171 replay 09492b19d90e0171 (EQUAL), conf 1376, members [1, 2, 3]
+member 3: frames 0..1200 digest 09492b19d90e0171 replay 09492b19d90e0171 (EQUAL), conf 1376, members at end [1, 2, 3], rollbacks 65, checks ok 95 bad 0

@@ -95,12 +95,14 @@ measures that queue and feeds it (`set_link`) every tick.
 
 ## Evidence (`spikes/out/m1/`)
 
-All measured. The current build (main 0d792e8 with P2-3's pe-session, the held hand target and the
-10.3 session id) is the `*-rebase` set; the `*-store` set is the build before it (pe-session at
-p2/session f634185, with pe-physics).
+All measured. The current build adds continuous clock sync (`clock-sync/`, p2/app d398e86); the
+`*-rebase` set is the build before it (main 0d792e8 with P2-3's pe-session, the held hand target and
+the 10.3 session id); the `*-store` set is older (pe-session at p2/session f634185, with pe-physics).
 
 | Run | Result |
 |---|---|
+| `clock-sync/` | Continuous clock sync (design 10.4): a 2-minute Windows + WSL session with R18 on is ALL EQUAL with all four members and no membership decision; 80 kbit/s R18 close to before; a lying member trimmed; with two colluders and a slow pair the fault-tolerant midpoint keeps all seven, a plain median removes the slow pair. See its README |
+| `wsl-clock-skew/` | The problem: the WSL2 VM's clock runs 2-9 % slow against Windows; synced once at the start, Windows + WSL sessions broke (215 empty view changes in 2 minutes, an honest member removed with R18 on) |
 | `mixed-windows-wsl-rebase/` | Members 1–2 on Windows, 3–4 native Linux in WSL; loss on members 2 and 3; member 4 drops out at 15 s and is removed about 3 s later. Members 1–3 identical over 1800 frames, replay-equal, 0 failed checks |
 | `loopback-windows-rebase/`, `tests-windows-rebase.log` | Windows loopback (`m1-loopback.sh`): ALL EQUAL. pe-session, pe-mcp and pe-app tests: 94 pass |
 | `linux-wsl-rebase.log` | WSL2 Ubuntu-24.04, native glibc: pe-app and pe-mcp tests pass, `m1-loopback.sh` ALL EQUAL |
