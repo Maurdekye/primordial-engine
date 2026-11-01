@@ -58,6 +58,11 @@ const CURRENT_SAMPLES: usize = 4;
 /// clock-frequency error cannot fake queueing beyond what the round trip, on one clock, shows). Below
 /// R18's 10 ms calm level, so a clamped signal can still read as calm.
 const RTT_CLAMP_MARGIN_US: u64 = 5_000;
+/// A report is clamped only after it has stood above the round-trip bound this long: a frequency
+/// error drifts slowly and persists, while at a congestion onset the round trip catches up within a
+/// ping interval and a queued ping's age (with the ping phase unlucky, a clamp without grace held
+/// back the 80 kbit/s run's first raise: queue peak 480 against 394 ms, measured).
+const RTT_CLAMP_GRACE_US: u64 = 1_500_000;
 /// A member's report counts at its last value for 5 s (fresh within 1 s), then is ignored.
 const REPORT_HOLD_US: u64 = 5_000_000;
 /// The scripted bandwidth cap's token bucket (the harness's `Cap` model).
@@ -344,6 +349,8 @@ pub struct Node {
     signal_held: bool,
     max_signal_us: u64,
     clamped_ticks: u64,
+    /// Per reporter: since when its report has stood above the round-trip bound.
+    over_since: BTreeMap<u32, u64>,
     max_true_queue_us: u64,
     hand: Option<u32>,
     hand_frame: u64,
@@ -484,6 +491,7 @@ impl Node {
             signal_held: false,
             max_signal_us: 0,
             clamped_ticks: 0,
+            over_since: BTreeMap::new(),
             max_true_queue_us: 0,
             hand,
             hand_frame: u64::MAX,
@@ -597,16 +605,18 @@ impl Node {
                 let local = self.local_us();
                 let lie = lie + (local as f64 * ppm as f64 / 1e6) as i64;
                 let (now, raw) = (self.now_us() as i64 + lie, local as i64 + lie);
-                self.push_control(sender, Item::Pong(t, now.max(0) as u64, raw.max(0) as u64))
+                // A lying clock also reports its correction shifted by the lie's rate.
+                let rate = self.clock.rate() + ppm as f64 / 1e6;
+                self.push_control(sender, Item::Pong(t, now.max(0) as u64, raw.max(0) as u64, rate.to_bits()))
             }
-            Item::Pong(t, r, raw) if self.pings_out.remove(&(sender, t)) => {
+            Item::Pong(t, r, raw, rate) if self.pings_out.remove(&(sender, t)) => {
                 // The peer's clocks read r (session) and raw (local) about halfway through the round trip.
                 if sender == self.leader {
                     self.pongs += 1;
                 }
                 let a = self.answered.entry(sender).or_insert(t);
                 *a = (*a).max(t);
-                self.clock.sample(sender, t, recv_us, r, raw);
+                self.clock.sample(sender, t, recv_us, r, raw, f64::from_bits(rate));
                 self.apply_clock();
             }
             Item::Pong(..) => {}
@@ -867,23 +877,29 @@ impl Node {
     /// Reports are held at their last value for 5 s; with none left the core gets no signal (None),
     /// which holds the level and is never read as calm.
     fn feed_link(&mut self, now: u64) {
-        // Each report is capped at the reporter's round-trip excess plus a margin (design 10.4).
+        // Each report is capped at the reporter's round-trip excess plus a margin (design 10.4), once
+        // it has stood above that bound for the grace time.
         let mut clamped = false;
-        let v = self
-            .reports
-            .iter()
-            .filter(|(_, r)| now < r.1 + REPORT_HOLD_US)
-            .map(|(&m, r)| {
-                let q = r.0 as u64 * 1000;
-                match self.rtt_excess(m, now) {
-                    Some(x) if q > x + RTT_CLAMP_MARGIN_US => {
+        let fresh: Vec<(u32, u64)> = self.reports.iter().filter(|(_, r)| now < r.1 + REPORT_HOLD_US).map(|(&m, r)| (m, r.0 as u64 * 1000)).collect();
+        let mut v = None;
+        for (m, q) in fresh {
+            let q = match self.rtt_excess(m, now).map(|x| x + RTT_CLAMP_MARGIN_US) {
+                Some(bound) if q > bound => {
+                    let since = *self.over_since.entry(m).or_insert(now);
+                    if now >= since + RTT_CLAMP_GRACE_US {
                         clamped = true;
-                        x + RTT_CLAMP_MARGIN_US
+                        bound
+                    } else {
+                        q
                     }
-                    _ => q,
                 }
-            })
-            .max();
+                _ => {
+                    self.over_since.remove(&m);
+                    q
+                }
+            };
+            v = v.max(Some(q));
+        }
         if clamped {
             self.clamped_ticks += 1;
         }
