@@ -482,6 +482,10 @@ struct FeedCtl {
     rr: usize,
     /// When it last came off the feed: no re-entry for LEAVE_US, while it catches up on the log.
     left_us: Option<u64>,
+    /// Since when the level-0 backlog into it has stayed over ENTER_US.
+    over_since_us: Option<u64>,
+    /// The frame it came off the feed at: no re-entry before its confirmed frame passes it (it has caught up).
+    left_frame: u64,
 }
 
 pub struct Sim {
@@ -496,6 +500,8 @@ pub struct Sim {
     pub reverse_order: bool,
     /// R14: a carrier's deadline, in frames of the destination after its present (review R3-6).
     pub carry_deadline_frames: u64,
+    /// Thin links Part B (plan section 6): feeders that lie, sending every body 0.2 m higher than it is.
+    pub lying_feeders: BTreeSet<MemberId>,
 }
 
 impl Peer {
@@ -648,7 +654,7 @@ impl Sim {
                 r.sim.epochs = epochs.clone();
             }
         }
-        Sim { feed: false, feeds: BTreeMap::new(), net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600 }
+        Sim { feed: false, feeds: BTreeMap::new(), net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600, lying_feeders: BTreeSet::new() }
     }
 
     fn peer_index(&self, id: MemberId) -> usize {
@@ -668,6 +674,13 @@ impl Sim {
         const LEAVE_US: u64 = 5_000_000;
         const ROTATE_US: u64 = 10_000_000;
         const PERIOD_US: u64 = 50_000;
+        // Thin links Part B: the full stream "doesn't fit" only if the backlog stays over ENTER_US this long. One
+        // 16-entry fetch reply is about 50 ms on a 256 kbit/s link, and put clean members on the feed; at 300 ms a
+        // slow sender's catch-up burst after GST still did (partbrand seed 11). A thin link's backlog grows for good.
+        const ENTER_HOLD_US: u64 = 1_000_000;
+        // ... unless it is clearly thin: a backlog this deep enters at once (an 8-16 kbit/s downlink under the full
+        // stream gets there in tens of ms; the catch-up bursts seen on fat links peaked at 43-212 ms).
+        const ENTER_NOW_US: u64 = 400_000;
         let mut todo: Vec<(WorldId, MemberId, Vec<MemberId>)> = Vec::new();
         // Each member's R18 level and quorum, per world.
         let mut level: BTreeMap<(WorldId, MemberId), usize> = BTreeMap::new();
@@ -695,10 +708,20 @@ impl Sim {
                 let backlog = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).map(|&s| self.net.backlog_us(s, t)).max().unwrap_or(0);
                 let fed_now = members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
                 let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
-                let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US);
-                if backlog > ENTER_US && settled && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
+                let caught_up = {
+                    let pi = self.peer_index(t);
+                    self.peers[pi].worlds.get(&w).is_none_or(|r| r.sim.conf >= ctl.left_frame)
+                };
+                let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US) && caught_up;
+                ctl.over_since_us = if backlog > ENTER_US { Some(ctl.over_since_us.unwrap_or(now)) } else { None };
+                let held = backlog > ENTER_NOW_US || ctl.over_since_us.is_some_and(|t0| now >= t0 + ENTER_HOLD_US);
+                if held && settled && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
                     let feeder = *feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)).unwrap();
-                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us };
+                    if std::env::var("PE_FEED_LOG").is_ok() {
+                        let worst = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).max_by_key(|&&s| self.net.backlog_us(s, t)).copied();
+                        eprintln!("FEED t={} ms: {t} goes on the feed; worst level-0 sender {worst:?} backlog {} us", now / 1000, backlog);
+                    }
+                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us, over_since_us: None, left_frame: ctl.left_frame };
                     self.net.fed.insert((w, t));
                     let pi = self.peer_index(t);
                     if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
@@ -711,10 +734,24 @@ impl Sim {
                     let stream = reference.map_or(0, |x| self.net.recent_bps(s, x));
                     cap_of(&self.net, s, t) as f64 >= 1.3 * stream as f64
                 });
+                if std::env::var("PE_FEED_LOG").is_ok() && now % 2_000_000 == 0 {
+                    let v: Vec<(MemberId, u64, u64)> = senders
+                        .iter()
+                        .map(|&s| {
+                            let reference = members.iter().copied().find(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)));
+                            (s, cap_of(&self.net, s, t), reference.map_or(0, |x| self.net.recent_bps(s, x)))
+                        })
+                        .collect();
+                    eprintln!("FEED t={} ms: {t} fed; leave test (sender, cap, stream) {v:?} ok {ok}", now / 1000);
+                }
                 ctl.leave_ok_since_us = if ok { Some(ctl.leave_ok_since_us.unwrap_or(now)) } else { None };
                 if ctl.leave_ok_since_us.is_some_and(|t0| now >= t0 + LEAVE_US) {
                     ctl.fed = false;
                     ctl.left_us = Some(now);
+                    ctl.left_frame = {
+                        let pi = self.peer_index(t);
+                        self.peers[pi].worlds.get(&w).map_or(0, |r| r.sim.frame)
+                    };
                     self.net.fed.remove(&(w, t));
                     let pi = self.peer_index(t);
                     let fetches = match self.peers[pi].worlds.get_mut(&w) {
@@ -753,6 +790,15 @@ impl Sim {
                         let mut rr = ctl.rr;
                         let pkt = if self.peers[pf].crashed { None } else { self.peers[pf].worlds.get(&w).and_then(|r| r.sim.feed_packet(budget, &mut rr)) };
                         ctl.rr = rr;
+                        let pkt = match pkt {
+                            Some(Msg::Feed { frame, mut bodies }) if self.lying_feeders.contains(&ctl.feeder) => {
+                                for b in &mut bodies {
+                                    b.pos[1] += 2000;
+                                }
+                                Some(Msg::Feed { frame, bodies })
+                            }
+                            p => p,
+                        };
                         if let Some(m) = pkt {
                             self.net.post(w, ctl.feeder, t, &m);
                         }
