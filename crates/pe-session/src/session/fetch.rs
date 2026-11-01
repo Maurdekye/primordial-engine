@@ -53,7 +53,7 @@ impl WorldSim {
         if run.len() == 1 && signed && !lean {
             return vec![Msg::Entry(run.pop().expect("one"))];
         }
-        vec![Msg::Run { lean, signed, entries: run }]
+        vec![Msg::Run { lean, heads: false, signed, entries: run }]
     }
 
     /// Fetch requests from gap and conflict detection: (who to ask, request), rate-limited.
