@@ -479,6 +479,8 @@ struct FeedCtl {
     leave_ok_since_us: Option<u64>,
     next_send_us: u64,
     rr: usize,
+    /// When it last came off the feed: no re-entry for LEAVE_US, while it catches up on the log.
+    left_us: Option<u64>,
 }
 
 pub struct Sim {
@@ -692,9 +694,10 @@ impl Sim {
                 let backlog = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).map(|&s| self.net.backlog_us(s, t)).max().unwrap_or(0);
                 let fed_now = members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
                 let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
-                if backlog > ENTER_US && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
+                let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US);
+                if backlog > ENTER_US && settled && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
                     let feeder = *feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)).unwrap();
-                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr };
+                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us };
                     self.net.fed.insert((w, t));
                     let pi = self.peer_index(t);
                     if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
@@ -710,6 +713,7 @@ impl Sim {
                 ctl.leave_ok_since_us = if ok { Some(ctl.leave_ok_since_us.unwrap_or(now)) } else { None };
                 if ctl.leave_ok_since_us.is_some_and(|t0| now >= t0 + LEAVE_US) {
                     ctl.fed = false;
+                    ctl.left_us = Some(now);
                     self.net.fed.remove(&(w, t));
                     let pi = self.peer_index(t);
                     let fetches = match self.peers[pi].worlds.get_mut(&w) {
@@ -719,8 +723,13 @@ impl Sim {
                         }
                         None => Vec::new(),
                     };
+                    // Each chain from its own author, so the catch-up spreads over the links.
                     for f in fetches {
-                        self.net.post(w, t, ctl.feeder, &f);
+                        let to = match f {
+                            Msg::Fetch { author, .. } => author,
+                            _ => ctl.feeder,
+                        };
+                        self.net.post(w, t, to, &f);
                     }
                 } else {
                     if now >= ctl.feeder_since_us + ROTATE_US {
