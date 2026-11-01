@@ -116,7 +116,10 @@ pub(crate) fn before_fix(label: &str, fix: &str, sim: &Sim, honest: &[MemberId],
 
 pub fn fork9() {
     for fixed in [false, true] {
+        // Option 2: the fix-off control runs without runs, the form whose path the fix guards.
+        set_no_runs(!fixed);
         let (sim, stopped, info) = fork_run(if fixed { 0 } else { fix::VC2 }, 700_000, false, 0, 0);
+        set_no_runs(false);
         let honest = [1, 2, 3];
         let label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)";
         if !fixed {

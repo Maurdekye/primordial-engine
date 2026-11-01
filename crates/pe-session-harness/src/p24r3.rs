@@ -350,6 +350,8 @@ pub fn joinattests() {
 
 pub fn slowadmin() {
     for fixed in RUNS {
+        // Option 2: the fix-off control runs without runs, the form whose path the fix guards.
+        set_no_runs(!fixed);
         let ids = [1, 2, 3, 4];
         let follower: MemberId = 6;
         // The admin entry's author is not the first proposer, so 6 gets the proposal on time.
@@ -382,6 +384,7 @@ pub fn slowadmin() {
             }
         }));
         let mut sim = Sim::new(net, ps, 9_000_000);
+        set_no_runs(false);
         let stopped = run_quiet(&mut sim, |_| {});
         let all = [1, 2, 3, 4, 6];
         let label = "slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first)";
