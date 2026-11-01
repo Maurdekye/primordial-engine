@@ -1,0 +1,13 @@
+  part 1: member 3 entry stamped 300 -> effective None (void: true)
+  part 1: member 3 entry stamped 180 -> effective None (void: true)
+  part 1: member 3 entry stamped 420 -> effective None (void: true)
+  m1 world 1: rollbacks 6 max depth 2 resim frames 16 (4.3 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
+  m2 world 1: rollbacks 6 max depth 2 resim frames 14 (3.3 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 654
+  m3 world 1: rollbacks 12 max depth 2 resim frames 25 (6.9 ms) overwrites 0 paused frames 0 violations 3 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 646 frame 653
+RESULT backdate part 1 world 1: frames 0..600 digests m1=154a1f2b17360d56 m2=154a1f2b17360d56 m3=154a1f2b17360d56 | offline replay 154a1f2b17360d56 | ALL EQUAL
+  part 2: member 3 entry stamped 180 -> effective None (void: true)
+  m1 world 1: rollbacks 4 max depth 2 resim frames 12 (2.4 ms) overwrites 0 paused frames 66 violations 89 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 646 frame 653
+  m2 world 1: rollbacks 4 max depth 2 resim frames 6 (1.3 ms) overwrites 0 paused frames 66 violations 89 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 648 frame 654
+  m3 world 1: rollbacks 4 max depth 2 resim frames 7 (3.0 ms) overwrites 0 paused frames 416 violations 90 equivocations 0 checks ok 2 bad 0 nonfinite 0 conf 183 frame 303
+RESULT backdate part 2: removed from the session (cut, from frame): {3: (87, 1)}
+RESULT backdate part 2 world 1: frames 0..600 digests m1=762cf0b0b70b26d0 m2=762cf0b0b70b26d0 | offline replay 762cf0b0b70b26d0 | ALL EQUAL

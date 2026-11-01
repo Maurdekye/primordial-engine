@@ -1,24 +1,24 @@
 RESULT ownership world 1: offline reference owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] | ALL EQUAL
-  m1: owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] digest fac6e00c72897dff
-  m2: owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] digest fac6e00c72897dff
-  m3: owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] digest fac6e00c72897dff
+  m1: owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] digest 24e9683e5068e622
+  m2: owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] digest 24e9683e5068e622
+  m3: owners {3, 10, 40} rule All heads 1 recovery [{40}: {60}] digest 24e9683e5068e622
   epoch 1 boundary 62: cert m1s9 stamped 60: seq 1 Add { key: k20 } by {10} -> applied
-  epoch 2 boundary 150: cert m1s39 stamped 150: seq 2 SetRecovery { owner: k10, recovery: Some(k50) } by {10} -> applied
-  epoch 3 boundary 180: cert m2s49 stamped 180: seq 3 Add { key: k30 } by {20, 50} -> applied
-  epoch 4 boundary 221: cert m1s70 stamped 220: seq 4 SetRecovery { owner: k30, recovery: Some(k52) } by {30} -> applied
-  epoch 5 boundary 232: cert m2s78 stamped 230: seq 5 Leave { key: k20 } by {20} -> applied
-  epoch 6 boundary 241: cert m3s83 stamped 240: seq 6 Leave { key: k30 } by {52} -> applied
-  epoch 7 boundary 300: cert m1s108 stamped 300: seq 7 Add { key: k40 } by {10} -> applied
-  epoch 8 boundary 342: cert m2s125 stamped 340: seq 8 SetRecovery { owner: k10, recovery: None } by {50} -> applied
-  epoch 9 boundary 352: cert m3s130 stamped 350: seq 9 SetRecovery { owner: k40, recovery: Some(k60) } by {40} -> applied
-  epoch 10 boundary 362: cert m2s143 stamped 362: seq 10 Add { key: k3 } by {10, 40} -> applied
-  cert m2s20 stamped 90: seq 2 Add { key: k66 } by {66} -> never committed (Signers)
-  cert m3s29 stamped 120: seq 2 Add { key: k66 } by {20} -> never committed (Signers)
-  cert m3s60 stamped 200: seq 4 Remove { key: k30 } by {10, 20} -> never committed (NotAllowed)
-  cert m1s102 stamped 290: seq 7 Leave { key: k10 } by {10} -> never committed (LastOwner)
-  cert m2s107 stamped 300: seq 7 Add { key: k41 } by {10} -> never committed (Stale)
-  cert m3s115 stamped 330: seq 8 Merge by {40} -> never committed (BadLink)
-  cert m1s144 stamped 360: seq 10 Add { key: k66 } by {10} -> never committed (Signers)
+  epoch 2 boundary 150: cert m1s40 stamped 150: seq 2 SetRecovery { owner: k10, recovery: Some(k50) } by {10} -> applied
+  epoch 3 boundary 180: cert m2s51 stamped 180: seq 3 Add { key: k30 } by {20, 50} -> applied
+  epoch 4 boundary 222: cert m1s72 stamped 220: seq 4 SetRecovery { owner: k30, recovery: Some(k52) } by {30} -> applied
+  epoch 5 boundary 232: cert m2s81 stamped 230: seq 5 Leave { key: k20 } by {20} -> applied
+  epoch 6 boundary 241: cert m3s85 stamped 240: seq 6 Leave { key: k30 } by {52} -> applied
+  epoch 7 boundary 300: cert m1s112 stamped 300: seq 7 Add { key: k40 } by {10} -> applied
+  epoch 8 boundary 342: cert m2s129 stamped 340: seq 8 SetRecovery { owner: k10, recovery: None } by {50} -> applied
+  epoch 9 boundary 352: cert m3s132 stamped 350: seq 9 SetRecovery { owner: k40, recovery: Some(k60) } by {40} -> applied
+  epoch 10 boundary 362: cert m2s147 stamped 362: seq 10 Add { key: k3 } by {10, 40} -> applied
+  cert m2s23 stamped 90: seq 2 Add { key: k66 } by {66} -> never committed (Signers)
+  cert m3s31 stamped 120: seq 2 Add { key: k66 } by {20} -> never committed (Signers)
+  cert m3s62 stamped 200: seq 4 Remove { key: k30 } by {10, 20} -> never committed (NotAllowed)
+  cert m1s106 stamped 290: seq 7 Leave { key: k10 } by {10} -> never committed (LastOwner)
+  cert m2s111 stamped 300: seq 7 Add { key: k41 } by {10} -> never committed (Stale)
+  cert m3s118 stamped 330: seq 8 Merge by {40} -> never committed (BadLink)
+  cert m1s147 stamped 360: seq 10 Add { key: k66 } by {10} -> never committed (Signers)
   after the decisions up to frame 210: owners {10, 20, 30} rule All heads 1 recovery [{10}: {50}]
   after the decisions up to frame 250: owners {10} rule All heads 1 recovery [{10}: {50}]
   after the decisions up to frame 320: owners {10, 40} rule All heads 1 recovery [{10}: {50}]

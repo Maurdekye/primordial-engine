@@ -1,0 +1,28 @@
+  futureack part 1 (from t=2 s 9's acks claim epoch 999) with VC-5's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 112 of frame 232, m2 conf 112 of frame 232, m3 conf 112 of frame 232
+RESULT futureack-1: m1 members {1, 2, 3} evicted {9: (147, 112)} conf 705 frame 713 paused frames 80 lying votes found 0
+RESULT futureack-1: m2 members {1, 2, 3} evicted {9: (147, 112)} conf 707 frame 713 paused frames 80 lying votes found 0
+RESULT futureack-1: m3 members {1, 2, 3} evicted {9: (147, 112)} conf 705 frame 713 paused frames 80 lying votes found 0
+RESULT futureack-1: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
+RESULT futureack-1: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
+RESULT futureack-1: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 308 (t=5.23 s) round 0 removed [9]
+RESULT futureack-1: m1 conf 705 of frame 713, m2 conf 707 of frame 713, m3 conf 705 of frame 713
+OUTCOME futureack part 1 (from t=2 s 9's acks claim epoch 999) w1 m1 s31 push Accepted
+OUTCOME futureack part 1 (from t=2 s 9's acks claim epoch 999) w1 m1 s301 push Accepted
+  m1: conf 705 frame 713 members {1, 2, 3} evicted {9: (147, 112)} rollbacks 0 max depth 0 violations 95 equivocations 0 checks ok 40 bad 0
+  m2: conf 707 frame 713 members {1, 2, 3} evicted {9: (147, 112)} rollbacks 2 max depth 2 violations 95 equivocations 0 checks ok 40 bad 0
+  m3: conf 705 frame 713 members {1, 2, 3} evicted {9: (147, 112)} rollbacks 2 max depth 2 violations 95 equivocations 0 checks ok 40 bad 0
+RESULT futureack part 1 (from t=2 s 9's acks claim epoch 999): frames 0..712 honest m1=3ad35b92c7f7db95 m2=3ad35b92c7f7db95 m3=3ad35b92c7f7db95 | offline replay 3ad35b92c7f7db95 | ALL EQUAL, NO FALSE CHECKS ; checks ok 120 bad 0
+  futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision) with VC-5's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 112 of frame 232, m2 conf 112 of frame 232, m3 conf 112 of frame 232
+RESULT futureack-2: m1 members {1, 2, 3} evicted {9: (145, 293)} conf 707 frame 713 paused frames 72 lying votes found 0
+RESULT futureack-2: m2 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
+RESULT futureack-2: m3 members {1, 2, 3} evicted {9: (145, 293)} conf 705 frame 713 paused frames 72 lying votes found 0
+RESULT futureack-2: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 304 (t=5.17 s) round 0 removed [9]
+RESULT futureack-2: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 304 (t=5.17 s) round 0 removed [9]
+RESULT futureack-2: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 304 (t=5.17 s) round 0 removed [9]
+RESULT futureack-2: m1 conf 707 of frame 713, m2 conf 705 of frame 713, m3 conf 705 of frame 713
+OUTCOME futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision) w1 m1 s31 push Accepted
+OUTCOME futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision) w1 m1 s301 push Accepted
+  m1: conf 707 frame 713 members {1, 2, 3} evicted {9: (145, 293)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 42 bad 0
+  m2: conf 705 frame 713 members {1, 2, 3} evicted {9: (145, 293)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 42 bad 0
+  m3: conf 705 frame 713 members {1, 2, 3} evicted {9: (145, 293)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 42 bad 0
+RESULT futureack part 2 (from t=2 s 9's acks claim epoch 1, with no decision): frames 0..712 honest m1=3ad35b92c7f7db95 m2=3ad35b92c7f7db95 m3=3ad35b92c7f7db95 | offline replay 3ad35b92c7f7db95 | ALL EQUAL, NO FALSE CHECKS ; checks ok 126 bad 0
