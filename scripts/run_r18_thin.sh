@@ -9,10 +9,12 @@ cd "$(dirname "$0")/.."
 B=${PE_BIN:-./target/release}/pe-spike-session-sim
 O=${PE_OUT:-spikes/out}/r18-thin
 mkdir -p "$O"
-# Provenance: the commit (and whether the tree differs from it), the sources' and the binary's hashes. Each
-# log also prints the linked sim-core's encoding of a fixed pack.
-SRC=$(cat spikes/session-sim/src/*.rs spikes/sim-core/src/*.rs | sha256sum | cut -c1-16)
-PROV="commit $(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- spikes || echo ' + uncommitted changes'), sources $SRC, binary $(sha256sum "$([ -f "$B" ] && echo "$B" || echo "$B.exe")" | cut -c1-16)"
+# Provenance: the commit (and whether the spikes' sources differ from it, tracked or not; outputs under
+# spikes/out don't count, since a re-run overwrites them), the sources' and the binary's hashes. Each log also
+# prints the linked sim-core's encoding of a fixed pack.
+SRC=$(find spikes/session-sim/src spikes/sim-core/src -name '*.rs' | LC_ALL=C sort | xargs cat | sha256sum | cut -c1-16)
+DIRTY=$(git status --porcelain -- spikes ':(exclude)spikes/out' | head -1)
+PROV="commit $(git rev-parse --short=12 HEAD)${DIRTY:+ + uncommitted changes}, sources $SRC, binary $(sha256sum "$([ -f "$B" ] && echo "$B" || echo "$B.exe")" | cut -c1-16)"
 echo "$PROV" > "$O/PROVENANCE"
 run() { local name=$1; shift; { echo "PROVENANCE $PROV"; "$B" capped "$@" --adaptive-only; } > "$O/$name.log"; grep "batched+adaptive" "$O/$name.log" | cut -c1-120; }
 for m in 2 3 4 8; do run base-m$m --kbps 256 --members $m --end 30; done
