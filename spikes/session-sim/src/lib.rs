@@ -735,6 +735,10 @@ pub const IDLE_ACK_FRAMES: u64 = 8;
 /// its level. By level alone it acked every 2 frames at level 0 until its controller stepped down, flooding a thin
 /// uplink (r18 capped n = 4, 8 kbit/s: about 62 acks a second offered in the first gesture's window).
 pub const FED_ACK_FRAMES: u64 = 16;
+/// Revision 22 (@coordinator-opus m26541fc023df): P = 32 for a fed member at n >= 4, 16 at n = 3. At n = 4 the lag
+/// didn't change (53.7 / 53.8 frames at both) and the fed member's uplink dropped 29.3 -> 22.6 kbit/s; at n = 3 the fed
+/// echo is always needed and 32 cost 13 frames (43.0 -> 56.4).
+pub const FED_ACK_FRAMES_N4: u64 = 32;
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
 /// or any finer level only after this much calm instead of 300 ms, and forgets L after
 /// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
@@ -1393,7 +1397,7 @@ impl Sim {
             let fed = self.net.fed.contains(&(w, pid));
             let every = if fed {
                 // (spike: PE_FED_ACK_FRAMES overrides P, for measuring)
-                let p = std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(FED_ACK_FRAMES);
+                let p = std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(if r.sim.members.len() >= 4 { FED_ACK_FRAMES_N4 } else { FED_ACK_FRAMES });
                 base.max(p)
             } else if idle {
                 base.max(IDLE_ACK_FRAMES)
