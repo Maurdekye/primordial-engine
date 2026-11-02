@@ -354,6 +354,13 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
             println!("RESULT {label}: m{f}'s touches at m1: {} held, {nv} void (late past rule 1's deadline)", touches.len());
         }
     }
+    // The latency-floor terms of each fed member, at m1 (the P = 16 / 32 decision).
+    for &f in thin {
+        match sim.replica(1, 1).sim.fed_latency_terms(f) {
+            Some((e, u, cf, m)) => println!("RESULT {label}: m{f} latency floor at m1: E_T P95 {e}, U_T P95 {u}, C_floor {cf}, margin {m} frames (W - 15 - C_floor - (32 + E_T + U_T + 4))"),
+            None => println!("RESULT {label}: m{f} latency floor at m1: no echo data"),
+        }
+    }
     // TLP-23 with two fed (rev 22 delta): a fed member must hear the other's checkpoints, or it votes it out as crashed.
     for &f in thin {
         let v: Vec<&String> = sim.replica(f, 1).sim.events.iter().filter(|e| e.contains("presumed crashed")).collect();
