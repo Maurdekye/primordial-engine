@@ -170,6 +170,17 @@ pub fn leave_s4() {
 /// q = 3 needs member 1, the fed member 3 (on the leave's evidence) and member 4 itself. (The spike's feed controller
 /// feeds at most n − q = 1 at n = 4, so member 4 isn't fed; the property is the same.)
 pub fn leave_withhold() {
+    leave_withhold_n("leave-withhold", &[3], None);
+}
+
+/// Item C: L withholding on T2's leave at n = 4 with two fed (members 3 and 4, the fixture lifting the room to 2):
+/// member 2 takes no part in view changes, member 4 (fed) leaves at 8 s. The leave decides on q = 3 from member 1,
+/// member 3 (fed, it takes the request by value) and the leaver's own precommit.
+pub fn leave_withhold2() {
+    leave_withhold_n("leave-withhold2", &[3, 4], Some(2));
+}
+
+fn leave_withhold_n(label: &str, thin: &[MemberId], room: Option<usize>) {
     let ids: Vec<MemberId> = vec![1, 2, 3, 4];
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
     let plans = |m: MemberId| plan(&(120..1700).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
@@ -185,17 +196,22 @@ pub fn leave_withhold() {
     let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 35);
     net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
     net.batching = true;
-    for &x in &[1, 2, 4] {
-        for pair in [(3, x), (x, 3)] {
-            net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    for &f in thin {
+        for &x in ids.iter().filter(|&&x| x != f) {
+            for pair in [(f, x), (x, f)] {
+                net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+            }
         }
     }
     let mut sim = Sim::new(net, ps, 16_000_000);
     sim.feed = true;
+    sim.feed_room = room;
     sim_mut(&mut sim, 2).withhold_vc = true;
     let mut removed: Option<u64> = None;
+    let mut fed_at_leave: Vec<bool> = Vec::new();
     let panic_at = run_to_end(&mut sim, |s| {
         if s.net.now_us == 8_000_000 {
+            fed_at_leave = thin.iter().map(|&f| s.is_fed(1, f)).collect();
             if let Some(e) = sim_mut(s, 4).request_leave() {
                 for to in [1, 2, 3] {
                     s.net.send_urgent(1, 4, to, &Msg::Entry(e.clone()));
@@ -207,11 +223,11 @@ pub fn leave_withhold() {
         }
     });
     let r1 = &sim.replica(1, 1).sim;
+    let signers = r1.epoch_certs_upto(r1.epoch).unwrap_or_default().iter().find(|c| c.change.remove.iter().any(|r| r.member == 4)).map(|c| c.precommits.iter().map(|x| x.0).collect::<Vec<_>>());
     println!(
-        "RESULT leave-withhold: member 4 removed at {}; members at m1 {:?}; 3 fed {}",
+        "RESULT {label}: member 4 removed at {}; members at m1 {:?}; {thin:?} fed at the leave {fed_at_leave:?}; the removal's precommits {signers:?}",
         removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
         r1.members,
-        sim.is_fed(1, 3)
     );
     if std::env::var("PE_PB_DEBUG").is_ok() {
         for m in [1, 3, 4] {
@@ -223,10 +239,10 @@ pub fn leave_withhold() {
     // Members 1 and 2 (the liar still runs the sim honestly) hold the log; member 3 may still be fed.
     let finals: Vec<MemberId> = vec![1, 2];
     if removed.is_none() {
-        println!("RESULT leave-withhold: the leave never decided -> FAIL");
+        println!("RESULT {label}: the leave never decided -> FAIL");
         return;
     }
-    verdict(&sim, &finals, "leave-withhold", panic_at);
+    verdict(&sim, &finals, label, panic_at);
 }
 
 /// Rev 22 (e1): an honest admin kicks the liar while a member is fed. n = 4: member 2 is the liar and takes no part in

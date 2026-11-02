@@ -1443,6 +1443,7 @@ fn main() {
         Some("rejoin") => partb::rejoin(),
         Some("leave-s4") => partb::leave_s4(),
         Some("leave-withhold") => partb::leave_withhold(),
+        Some("leave-withhold2") => partb::leave_withhold2(),
         Some("kickliar-fed") => partb::kickliar_fed(),
         Some("kickliar-fed2") => partb::kickliar_fed2(),
         Some("kickliar-fed7") => partb::kickliar_fed7(),
