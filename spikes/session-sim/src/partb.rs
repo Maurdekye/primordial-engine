@@ -532,6 +532,8 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
 ///   (@coordinator-opus m15aed3d58263, ruling 2).
 /// - "same-promote": admin 1 only; 1 promotes 2 at frame 360 and 2 kicks 4 at 361. V1: the guest's kick is refused on
 ///   arrival; 2 sends it again once its promotion has decided, and it decides (ruling 1).
+/// - "kick-owner": member 1 owns the world (an ownership chain from its genesis) and is an admin; admin 2 kicks it at
+///   frame 360. A non-owner can't kick an owner: refused (on arrival, V1); 1 stays.
 pub fn e1_roles(case: &str) {
     let ids: Vec<MemberId> = vec![1, 2, 3, 4];
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
@@ -543,6 +545,7 @@ pub fn e1_roles(case: &str) {
             ("same-revoke", 2) => v.push((361, Action::Kick { target: 4 })),
             ("same-promote", 1) => v.push((360, Action::SetRole { member: 2, role: ADMIN })),
             ("same-promote", 2) => v.push((361, Action::Kick { target: 4 })),
+            ("kick-owner", 2) => v.push((360, Action::Kick { target: 1 })),
             _ => {}
         }
         v.sort_by_key(|x| x.0);
@@ -558,6 +561,11 @@ pub fn e1_roles(case: &str) {
         })
         .collect();
     crate::p24r::guests(&mut ps, &admins);
+    if case == "kick-owner" {
+        for p in ps.iter_mut() {
+            p.worlds.get_mut(&1).unwrap().sim.set_ownership(pe_sim_core::ownership::Cert::genesis(&[1], pe_sim_core::ownership::SignRule::default(), 7));
+        }
+    }
     let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 37);
     net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
     net.batching = true;
@@ -623,11 +631,13 @@ pub fn e1_roles(case: &str) {
     let expect = match case {
         "revoke-kick" => r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST),
         "same-revoke" => r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST),
+        "kick-owner" => r1.members.contains(&1) && r1.owner_keys().contains(&1),
         _ => !r1.members.contains(&4) && r1.roles.get(&2) == Some(&ADMIN) && removal_epoch.as_ref().is_some_and(|(e, _)| role_epoch.is_some_and(|r| *e > r)),
     };
     let what = match case {
         "revoke-kick" => "the backdated kick of a revoked admin is refused; 4 stays",
         "same-revoke" => "the kick lands in the decision after its author's demotion and is refused; 4 stays",
+        "kick-owner" => "a non-owner admin's kick of the owner is refused; 1 stays",
         _ => "the guest's kick is refused on arrival; sent again after the promotion decides, it decides",
     };
     println!("RESULT {label}: {}", if expect { what.to_string() } else { format!("FAIL (expected: {what})") });
