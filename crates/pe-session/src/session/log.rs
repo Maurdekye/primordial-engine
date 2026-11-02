@@ -386,7 +386,7 @@ impl WorldSim {
             // that is the forker, or that withholds the other version, cannot stop that: a run still
             // waiting after LEAN_HOLD_FRAMES asks everyone for the whole range (resolve_lean), as
             // option 1 did at once.
-            self.want_gap(m);
+            self.want_gap(m, from);
             if sig.is_some() && m != self.me {
                 let c = self.contiguous.get(&m).copied().unwrap_or(0);
                 self.want_from(from, m, c + 1, s0 - 1);
@@ -399,13 +399,16 @@ impl WorldSim {
     /// below the next entry held or waiting. The requester holds what is above the range (waiting,
     /// or verified past a hole), so the reply needs no signature; and it may be lean if the requester
     /// holds the entry below verified.
-    fn want_gap(&mut self, m: MemberId) {
+    fn want_gap(&mut self, m: MemberId, sender: MemberId) {
         // Review O2-3: every gap up to the newest waiting or held entry, not only the first. Under loss
         // several holes are open at once, and asking one per round trip made a 10 %-loss wait several
-        // round trips long. Bounded per call; each gap has its own backoff (`take_fetches`).
+        // round trips long. Bounded per call; each gap has its own backoff (`take_fetches`). The first gap
+        // is asked of everyone, the later ones of the sender only (with every gap of every author asked of
+        // every member, vcscale's 256 members took 3.7 times as long); the fallback still asks everyone.
         let known: Vec<MemberId> = self.known.iter().copied().collect();
         let mut s = self.contiguous.get(&m).copied().unwrap_or(0) + 1;
         let mut below_verified = true;
+        let mut first = true;
         for _ in 0..if self.congested { 1 } else { Self::GAPS_MAX } {
             loop {
                 if self.by_author.contains_key(&(m, s)) {
@@ -433,9 +436,14 @@ impl WorldSim {
             if self.run_wire && fits {
                 bits |= HELD_ABOVE;
             }
-            for &j in &known {
-                self.want_from_held(j, m, s, end - 1, bits);
+            if first {
+                for &j in &known {
+                    self.want_from_held(j, m, s, end - 1, bits);
+                }
+            } else if sender != self.me {
+                self.want_from_held(sender, m, s, end - 1, bits);
             }
+            first = false;
             s = end;
         }
     }
