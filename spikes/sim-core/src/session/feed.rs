@@ -8,7 +8,7 @@
 //!
 //! The feed never enters the shared log. The harness (the spike's net model) decides who is fed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{echo_digest, entry_id, BodyState, Entry, EntryId, FedAck, MemberId, Msg, Payload, WorldSim};
 
@@ -126,8 +126,11 @@ impl WorldSim {
 
     /// A feed packet: the feeder's states of `bodies` after `frame`. Written at that frame on the next
     /// re-simulation, if it lies within what this replica simulated (older ones are dropped).
-    pub fn on_feed(&mut self, frame: u64, bodies: Vec<FeedBody>) {
+    pub fn on_feed(&mut self, frame: u64, fed: Vec<MemberId>, bodies: Vec<FeedBody>) {
         let Some(since) = self.fed.as_ref().map(|f| f.since) else { return };
+        // Rev 22 delta (proposal): the feeder's fed set starts contact with the other fed members.
+        self.feeder_fed = fed.into_iter().filter(|&m| m != self.me && self.members.contains(&m)).collect();
+        self.refresh_fed_peers();
         // My downlink delay, from this packet (revision 21: F's silence threshold allows for it).
         let now = self.now;
         if let Some(f) = self.fed.as_mut() {
@@ -151,8 +154,10 @@ impl WorldSim {
     /// message (datagram overhead excluded).
     pub fn feed_packet(&self, budget: usize, rr: &mut usize) -> Option<Msg> {
         let frame = self.frame.checked_sub(1)?;
-        // 13 bytes of message header (tag, frame, count), 30 per body.
-        let n = (budget.saturating_sub(13) / 30).max(1);
+        // Rev 22 delta (proposal): the members my log shows fed (their acks' anchors).
+        let fed: Vec<MemberId> = self.fed_peers.keys().copied().collect();
+        // 13 bytes of message header (tag, frame, count), 1 + 4 per fed member, 30 per body.
+        let n = (budget.saturating_sub(14 + 4 * fed.len()) / 30).max(1);
         let live: Vec<(u32, BodyState)> =
             self.t.objs.iter().enumerate().filter_map(|(i, o)| o.map(|o| (i as u32, BodyState::read(&self.world, o.body)))).collect();
         if live.is_empty() {
@@ -182,7 +187,7 @@ impl WorldSim {
             }
         }
         *rr = (*rr + n) % k;
-        Some(Msg::Feed { frame, bodies: picked })
+        Some(Msg::Feed { frame, fed, bodies: picked })
     }
 
     /// Coming off the feed: fetch every chain from what this replica holds, from `holder`.
@@ -333,13 +338,20 @@ impl WorldSim {
     /// TLP-23, the fed side: `member`'s checkpoints, from `from` (only the chain's author is followed). The
     /// chain is computed forward from the checkpoint I echo: each id from the previous one and the rest-hash.
     /// A list that doesn't link up with mine (it starts past it) is ignored; the author resends from my echo.
-    pub fn on_ckpts(&mut self, from: MemberId, member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>) {
+    pub fn on_ckpts(&mut self, from: MemberId, member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>, fed: bool, echo: Option<u64>) {
         if self.fed.is_none() || from != member || member == self.me {
             return;
         }
         let now = self.now;
         if let Some(f) = self.fed.as_mut() {
             f.ckpt_heard.insert(member, now);
+        }
+        // Rev 22 delta (proposal) with the tightening: a peer whose own Ckpts say it is fed is fed on my own evidence,
+        // until they stop for the silence threshold; the echo of my chain it reports is where my checkpoints to it start.
+        if fed && self.members.contains(&member) {
+            self.fed_heard.insert(member, now);
+            self.fed_echo_of_me.insert(member, echo);
+            self.refresh_fed_peers();
         }
         let mut cur = self.echo_last.get(&member).copied();
         let mut it = list.into_iter().peekable();
@@ -386,14 +398,26 @@ impl WorldSim {
         if !self.members.contains(&self.me) {
             return out;
         }
+        let fed_me = self.fed.is_some();
+        if fed_me {
+            self.refresh_fed_peers();
+        }
         let fs: Vec<(MemberId, Option<u64>)> = self.fed_peers.iter().map(|(&f, &b)| (f, b)).collect();
         for (f, echoed) in fs {
             if !self.members.contains(&f) {
                 continue;
             }
-            let after = echoed.or_else(|| self.covered_ckpt(f, self.me).map(|(b, _)| b));
+            let mut after = echoed.or_else(|| self.covered_ckpt(f, self.me).map(|(b, _)| b));
             let lo = after.map_or(0, |b| b + 1);
-            let list: Vec<(u64, u32, u64)> = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).map(|(&(_, b), &(s, _, r))| (b, s, r)).collect();
+            let mut list: Vec<(u64, u32, u64)> = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).map(|(&(_, b), &(s, _, r))| (b, s, r)).collect();
+            // Rev 22 delta (proposal): a fed sender knows a fed peer's echo of its chain only from that peer's own
+            // report. Before the first one it sends only its newest checkpoint, so the list stays bounded; the peer
+            // can't link it yet, but hears me, and its report sets where the next list starts.
+            if fed_me && echoed.is_none() && list.len() > 1 {
+                let last = *list.last().unwrap();
+                after = Some(list[list.len() - 2].0);
+                list = vec![last];
+            }
             let Some(&(newest, _, _)) = list.last() else { continue };
             let due = self.ckpt_sent.get(&f).is_none_or(|&(sb, at)| newest > sb || self.frame >= at + RESEND_FRAMES);
             if due {
@@ -401,10 +425,40 @@ impl WorldSim {
                 for &(b, _, _) in &list {
                     self.ckpt_first_sent.entry((f, b)).or_insert(self.frame);
                 }
-                out.push((f, Msg::Ckpts { member: self.me, after, list }));
+                let echo = if fed_me { self.echo_last.get(&f).map(|&(b, _)| b) } else { None };
+                out.push((f, Msg::Ckpts { member: self.me, after, list, fed: fed_me, echo }));
             }
         }
         out
+    }
+
+    /// Rev 22 delta (proposal): a fed member's fed peers, whom it sends its own checkpoints. A fed member gets no
+    /// acks (rule 5), so it can't read who is fed from its log: the feeder's set starts contact, and a peer whose own
+    /// fed Ckpts reach me stays a fed peer until they stop for the silence threshold, whatever a feeder says. The
+    /// peer's reported echo of my chain is where my list to it starts.
+    pub(super) fn refresh_fed_peers(&mut self) {
+        let Some(f) = self.fed.as_ref() else { return };
+        let limit = self.cfg.suspect_after + super::CKPT_FRAMES + f.delay_frames;
+        let now = self.now;
+        let mut want: BTreeSet<MemberId> = self.feeder_fed.iter().copied().filter(|m| self.members.contains(m)).collect();
+        for (&m, &t) in &self.fed_heard {
+            if now < t + limit && self.members.contains(&m) && m != self.me {
+                want.insert(m);
+            }
+        }
+        let gone: Vec<MemberId> = self.fed_peers.keys().copied().filter(|m| !want.contains(m)).collect();
+        for m in gone {
+            self.fed_peers.remove(&m);
+            self.ckpt_sent.remove(&m);
+            self.ckpt_first_sent.retain(|&(x, _), _| x != m);
+        }
+        for m in want {
+            let reported = self.fed_echo_of_me.get(&m).copied().flatten();
+            let e = self.fed_peers.entry(m).or_insert(None);
+            if reported.is_some() {
+                *e = reported;
+            }
+        }
     }
 
     /// Rule 1's echo (TLP-15), the receivers' side: check each fed member's newest echo against my version

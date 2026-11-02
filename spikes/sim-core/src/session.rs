@@ -974,12 +974,14 @@ pub enum Msg {
     /// that branch of a forked chain.
     FetchEntry { id: EntryId, back: u8 },
     /// Thin links Part B, rule 5: the state feed to a fed member, from its feeder. The bodies' states
-    /// after `frame`, quantized (`FeedBody`). Never logged.
-    Feed { frame: u64, bodies: Vec<FeedBody> },
+    /// after `frame`, quantized (`FeedBody`). Rev 22 delta (proposal): `fed`, the members the feeder's log shows
+    /// fed, so a fed member knows whom to send its own checkpoints (contact only). Never logged.
+    Feed { frame: u64, fed: Vec<MemberId>, bodies: Vec<FeedBody> },
     /// Thin links Part B (TLP-23): `member`'s checkpoints for a fed member, block and rest-hash each, from the
     /// one after block `after` (the checkpoint the first one links to; None: the first is the chain's first).
-    /// Only from the chain's own author. Never logged.
-    Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)> },
+    /// Only from the chain's own author. Never logged. Rev 22 delta (proposal): `fed`, the sender is fed itself, and
+    /// `echo`, its own last echo of the recipient's chain (a block), from which the recipient sends its checkpoints.
+    Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>, fed: bool, echo: Option<u64> },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -1184,14 +1186,19 @@ impl Wr {
             }
             Msg::FetchEntry { id, back: 0 } => { self.u8(8); self.u64(*id) }
             Msg::FetchEntry { id, back } => { self.u8(9); self.u64(*id); self.u8(*back) }
-            Msg::Ckpts { member, after, list } => {
+            Msg::Ckpts { member, after, list, fed, echo } => {
                 self.u8(11); self.u32(*member);
                 match after { Some(b) => { self.u8(1); self.u64(*b) } None => self.u8(0) }
                 self.u32(list.len() as u32);
                 for (b, s, r) in list { self.u64(*b); self.u32(*s); self.u64(*r) }
+                self.u8(u8::from(*fed) | if echo.is_some() { 2 } else { 0 });
+                if let Some(b) = echo { self.u64(*b) }
             }
-            Msg::Feed { frame, bodies } => {
-                self.u8(10); self.u64(*frame); self.u32(bodies.len() as u32);
+            Msg::Feed { frame, fed, bodies } => {
+                self.u8(10); self.u64(*frame);
+                self.u8(fed.len() as u8);
+                for m in fed { self.u32(*m) }
+                self.u32(bodies.len() as u32);
                 for b in bodies {
                     self.u32(b.obj);
                     for &x in &b.pos { self.i32(x) }
@@ -1458,10 +1465,15 @@ impl Rd<'_> {
                 let n = self.u32()? as usize;
                 let mut list = Vec::with_capacity(n.min(256));
                 for _ in 0..n { list.push((self.u64()?, self.u32()?, self.u64()?)) }
-                Msg::Ckpts { member, after, list }
+                let flags = self.u8()?;
+                let echo = if flags & 2 != 0 { Some(self.u64()?) } else { None };
+                Msg::Ckpts { member, after, list, fed: flags & 1 != 0, echo }
             }
             10 => {
                 let frame = self.u64()?;
+                let k = self.u8()? as usize;
+                let mut fed = Vec::with_capacity(k);
+                for _ in 0..k { fed.push(self.u32()?) }
                 let n = self.u32()? as usize;
                 let mut bodies = Vec::with_capacity(n.min(256));
                 for _ in 0..n {
@@ -1471,7 +1483,7 @@ impl Rd<'_> {
                     let lin = [self.i16()?, self.i16()?, self.i16()?];
                     bodies.push(FeedBody { obj, pos, rot, lin });
                 }
-                Msg::Feed { frame, bodies }
+                Msg::Feed { frame, fed, bodies }
             }
             _ => return None,
         })
@@ -2203,6 +2215,11 @@ pub struct WorldSim {
     pub vc_log: Vec<(u32, u64, u32, Vec<MemberId>)>,
     /// Test fixture: author no vote, proposal, prevote or precommit (a member that withholds them).
     pub withhold_vc: bool,
+    /// Rev 22 delta (proposal), a fed member's: the fed set in its feeder's latest packet (contact only); when each
+    /// peer's own fed Ckpts last reached it, and the echo of my chain that peer last reported in them.
+    feeder_fed: BTreeSet<MemberId>,
+    fed_heard: BTreeMap<MemberId, u64>,
+    fed_echo_of_me: BTreeMap<MemberId, Option<u64>>,
     /// Non-members this replica sends its entries to: members that asked to join, or followers.
     pub followers: BTreeSet<MemberId>,
     /// Members that asked to join and are not admitted yet.
@@ -2462,6 +2479,9 @@ impl WorldSim {
             decided: Vec::new(),
             vc_log: Vec::new(),
             withhold_vc: false,
+            feeder_fed: BTreeSet::new(),
+            fed_heard: BTreeMap::new(),
+            fed_echo_of_me: BTreeMap::new(),
             byz_ally: false,
             byz_no_precommit: false,
             hidden: None,
@@ -3586,6 +3606,13 @@ impl WorldSim {
     pub fn suspects_due(&mut self) -> Vec<Entry> {
         // Part B, rule 5: a fed replica receives no entries; it votes only on what it can check without a log
         // (revision 21, RV20-3).
+        // Rev 22 delta (proposal): a member that has asked to leave casts no new votes. Its view is the one it declared
+        // unfit (leave-s4: the leaving thin member's R3-9 votes against both others, at its request's frame, gave the
+        // full member's marginal vote against the fed member its q at n = 3, and the leave never decided). It still
+        // takes part in the view change, and its precommit counts toward its own leave's q.
+        if self.leaving() {
+            return vec![];
+        }
         if self.fed.is_some() {
             return self.fed_suspects();
         }
@@ -6902,7 +6929,12 @@ mod echo_tests {
                 assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
             }
         }
-        for m in [Msg::Ckpts { member: 2, after: Some(11), list: vec![(12, 40, 5), (13, 41, 6)] }, Msg::Ckpts { member: 2, after: None, list: vec![(0, 1, 5)] }] {
+        for m in [
+            Msg::Ckpts { member: 2, after: Some(11), list: vec![(12, 40, 5), (13, 41, 6)], fed: false, echo: None },
+            Msg::Ckpts { member: 2, after: None, list: vec![(0, 1, 5)], fed: true, echo: Some(9) },
+            Msg::Ckpts { member: 2, after: None, list: vec![], fed: true, echo: None },
+            Msg::Feed { frame: 7, fed: vec![3, 4], bodies: vec![] },
+        ] {
             assert_eq!(decode_msg(&encode_msg(&m)), Some(m));
         }
     }
