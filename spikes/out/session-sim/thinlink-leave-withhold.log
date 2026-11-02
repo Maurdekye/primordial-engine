@@ -1,0 +1,4 @@
+RESULT leave-withhold: member 4 removed at 9.24 s; members at m1 {1, 2, 3}; 3 fed true
+  m1: conf 901 frame 953 rollbacks 71 max depth 45 paused frames 0 checks ok 53 bad 0
+  m2: conf 901 frame 953 rollbacks 71 max depth 46 paused frames 0 checks ok 53 bad 0
+RESULT leave-withhold: frames 0..952 m1=89f62b4940a2248a m2=89f62b4940a2248a | offline replay 89f62b4940a2248a | ALL EQUAL, NO FALSE CHECKS

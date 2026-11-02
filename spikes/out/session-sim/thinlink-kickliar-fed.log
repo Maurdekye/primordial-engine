@@ -1,22 +1,22 @@
 RESULT kickliar-fed: n = 4, thin [3] at 8 kbit/s each way per link, out of view changes [2]
 TRACE kickliar-fed t= 1 s m3: fed false level 0 ack every 2 fr | acks/s 10 | uplink 11.3 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t= 2 s m3: fed false level 0 ack every 2 fr | acks/s 8 | uplink 10.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed t= 3 s m3: fed true level 1 ack every 2 fr | acks/s 27 | uplink 36.2 kbit/s per link, queue 346 ms | downlink queue 437 ms
-TRACE kickliar-fed t= 4 s m3: fed true level 7 ack every 16 fr | acks/s 4 | uplink 8.6 kbit/s per link, queue 267 ms | downlink queue 0 ms
-TRACE kickliar-fed t= 5 s m3: fed true level 8 ack every 32 fr | acks/s 3 | uplink 7.2 kbit/s per link, queue 167 ms | downlink queue 0 ms
+TRACE kickliar-fed t= 3 s m3: fed true level 1 ack every 2 fr | acks/s 27 | uplink 36.1 kbit/s per link, queue 346 ms | downlink queue 437 ms
+TRACE kickliar-fed t= 4 s m3: fed true level 8 ack every 32 fr | acks/s 4 | uplink 7.4 kbit/s per link, queue 222 ms | downlink queue 0 ms
+TRACE kickliar-fed t= 5 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 7.1 kbit/s per link, queue 104 ms | downlink queue 0 ms
 TRACE kickliar-fed t= 6 s m3: fed true level 7 ack every 16 fr | acks/s 2 | uplink 6.0 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed t= 7 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 11.2 kbit/s per link, queue 118 ms | downlink queue 0 ms
-TRACE kickliar-fed t= 8 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.3 kbit/s per link, queue 103 ms | downlink queue 0 ms
-TRACE kickliar-fed t= 9 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 4.3 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed t=10 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.7 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE kickliar-fed t= 7 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 9.9 kbit/s per link, queue 82 ms | downlink queue 0 ms
+TRACE kickliar-fed t= 8 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 4.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE kickliar-fed t= 9 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.7 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE kickliar-fed t=10 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t=11 s m3: fed true level 5 ack every 8 fr | acks/s 3 | uplink 4.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t=12 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t=13 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed t=14 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed m3 uplink by kind, kbit/s per link from 4 s: total 6.16 | (batch framing) 15x 0.02, (datagram overhead) 136x 1.89, ack 76x 2.66, entry/touch 47x 1.40, fetch 19x 0.07, vote 9x 0.13
+TRACE kickliar-fed t=14 s m3: fed true level 4 ack every 6 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE kickliar-fed m3 uplink by kind, kbit/s per link from 4 s: total 5.93 | (batch framing) 11x 0.01, (datagram overhead) 126x 1.75, ack 71x 2.48, entry/touch 50x 1.49, fetch 19x 0.07, vote 9x 0.13
 RESULT kickliar-fed: m3 silence votes as a fed member: none
-RESULT kickliar-fed: member 2 removed at 6.71 s; members at m1 {1, 3, 4}; [3] fed at the kick [true], at the decision [true]
-RESULT kickliar-fed: epoch 1 change removes 2 by kick 0xf960cd03497559ac, admin 1; precommits from [1, 3, 4]
-  m1: conf 753 frame 833 rollbacks 59 max depth 114 paused frames 2 checks ok 42 bad 0
-  m4: conf 753 frame 833 rollbacks 60 max depth 114 paused frames 14 checks ok 42 bad 0
-RESULT kickliar-fed: frames 0..832 m1=b4bc670646f01557 m4=b4bc670646f01557 | offline replay b4bc670646f01557 | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed: member 2 removed at 6.69 s; members at m1 {1, 3, 4}; [3] fed at the kick [true], at the decision [true]
+RESULT kickliar-fed: epoch 1 change removes 2 by kick 0x31b896c95122fc24, admin 1; precommits from [1, 3, 4]
+  m1: conf 753 frame 833 rollbacks 60 max depth 91 paused frames 0 checks ok 42 bad 0
+  m4: conf 753 frame 833 rollbacks 60 max depth 91 paused frames 0 checks ok 42 bad 0
+RESULT kickliar-fed: frames 0..832 m1=4577dfb227cbc2ff m4=4577dfb227cbc2ff | offline replay 4577dfb227cbc2ff | ALL EQUAL, NO FALSE CHECKS
