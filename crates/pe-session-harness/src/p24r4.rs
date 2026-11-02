@@ -1176,6 +1176,13 @@ enum Segment {
 /// the others first and P second. f's own code skips the admin checks, so it prevotes its listing; it
 /// drops its precommits, and crashes once the others have precommitted (or at 6 s).
 fn fork_segment_sim(seg: Segment, off: u64) -> (Sim, Option<u64>, MemberId, MemberId, Vec<MemberId>) {
+    fork_segment_sim_slow(seg, off, 0)
+}
+
+/// `fork_segment_sim` with the forker's answers (its entries stamped over 200 ms before they are sent:
+/// fetch answers and relays, not its live entries) delayed by `slow_us` (review O2-3: a forker that
+/// answers slowly, to stretch the hole rule's deadline).
+fn fork_segment_sim_slow(seg: Segment, off: u64, slow_us: u64) -> (Sim, Option<u64>, MemberId, MemberId, Vec<MemberId>) {
     let ids = [1, 2, 3, 4];
     let mut ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
     let f = ps[0].worlds[&1].sim.proposer_of(0, 0).unwrap();
@@ -1193,6 +1200,10 @@ fn fork_segment_sim(seg: Segment, off: u64) -> (Sim, Option<u64>, MemberId, Memb
     net.filter = Some(Box::new(move |_t, _w, from, _to, m| {
         if from == f && (fc.get() || matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Precommit { .. }))) {
             return Fate::Drop;
+        }
+        let old = |e: &SignedEntry| e.stamp * 1_000_000 / 60 + 200_000 < _t;
+        if slow_us > 0 && from == f && matches!(m, Msg::Entry(e) if old(e)) {
+            return Fate::Delay(slow_us);
         }
         Fate::Deliver
     }));
@@ -1294,6 +1305,18 @@ pub fn holeforker() {
         vc_report(&sim, &honest, "holeforker");
         verdict(&sim, &honest, &format!("holeforker fixed={fixed}"), stopped);
     }
+    // Review O2-3: the forker answers every fetch 1 s late, to stretch the deadline (the hole rule's
+    // fallback waits the members' median round trip, capped at 30 frames, so it cannot).
+    let (sim, stopped, f, p, honest) = fork_segment_sim_slow(Segment::Plain, 0, 1_000_000);
+    let (gone, up) = (removed_at(&sim, honest[0], f).is_some(), live(&sim, &honest));
+    println!(
+        "REPRO holeforker slow answers: f={f}, P={p}; {f} removed at {}; live at the end: {up}; {} -> {}",
+        secs(removed_at(&sim, honest[0], f)),
+        confs(&sim, &honest),
+        if gone && up { "THE FORKER IS REMOVED, CONFIRMATION GOES ON" } else { "FAIL" }
+    );
+    vc_report(&sim, &honest, "holeforker-slow");
+    verdict(&sim, &honest, "holeforker slow answers", stopped);
 }
 
 pub fn plainfork() {
