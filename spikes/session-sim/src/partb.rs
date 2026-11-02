@@ -510,10 +510,12 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
 /// Rev 22 (e1) role cells, n = 4, member 3 fed at 8 kbit/s each way (it checks every kick itself). `case`:
 /// - "revoke-kick": admins 1 and 2; 1 demotes 2 at frame 120; once that is decided, 2 sends a kick of 4 backdated 150
 ///   frames, to before its demotion. Judged on the previous decided ACL, it is refused everywhere: 4 stays.
-/// - "same-revoke": admins 1 and 2; 1 demotes 2 at frame 120 and 2 kicks 4 at 121, so both land in one decision. The
-///   kick is judged on the ACL before it, where 2 was an admin: it stands, and 2 ends a guest.
-/// - "same-promote": admin 1 only; 1 promotes 2 at frame 120 and 2 kicks 4 at 121. In that decision the kick is void
-///   (2 wasn't an admin before it); it stays pending and decides in a later one.
+/// - "same-revoke": admins 1 and 2; 1 demotes 2 at frame 360 and 2 kicks 4 at 361. The proposer doesn't wait, so the
+///   demotion decides alone and the kick comes in the next decision, judged on the ACL after the demotion: refused, 4
+///   stays (the two-decision outcome). The same-decision case is the unit test session::e1_commit_order
+///   (@coordinator-opus m15aed3d58263, ruling 2).
+/// - "same-promote": admin 1 only; 1 promotes 2 at frame 360 and 2 kicks 4 at 361. V1: the guest's kick is refused on
+///   arrival; 2 sends it again once its promotion has decided, and it decides (ruling 1).
 pub fn e1_roles(case: &str) {
     let ids: Vec<MemberId> = vec![1, 2, 3, 4];
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
@@ -570,6 +572,16 @@ pub fn e1_roles(case: &str) {
         if case != "revoke-kick" && s.net.now_us == 6_100_000 {
             fed_at_kick = s.is_fed(1, 3);
         }
+        if case == "same-promote" && !sent {
+            let r2 = &s.replica(2, 1).sim;
+            if r2.roles.get(&2) == Some(&ADMIN) && r2.epoch >= 1 {
+                let e = sim_mut(s, 2).kick(4);
+                for to in [1, 3, 4] {
+                    s.net.send(1, 2, to, &Msg::Entry(e.clone()));
+                }
+                sent = true;
+            }
+        }
     });
     let r1 = &sim.replica(1, 1).sim;
     let all = r1.all_entries();
@@ -594,13 +606,13 @@ pub fn e1_roles(case: &str) {
     );
     let expect = match case {
         "revoke-kick" => r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST),
-        "same-revoke" => !r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST) && removal_epoch.as_ref().is_some_and(|(e, _)| Some(*e) == role_epoch),
+        "same-revoke" => r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST),
         _ => !r1.members.contains(&4) && r1.roles.get(&2) == Some(&ADMIN) && removal_epoch.as_ref().is_some_and(|(e, _)| role_epoch.is_some_and(|r| *e > r)),
     };
     let what = match case {
         "revoke-kick" => "the backdated kick of a revoked admin is refused; 4 stays",
-        "same-revoke" => "the kick in its revocation's decision stands; 4 removed in that decision",
-        _ => "the kick in its author's promotion decision is void, then decides in a later one",
+        "same-revoke" => "the kick lands in the decision after its author's demotion and is refused; 4 stays",
+        _ => "the guest's kick is refused on arrival; sent again after the promotion decides, it decides",
     };
     println!("RESULT {label}: {}", if expect { what.to_string() } else { format!("FAIL (expected: {what})") });
     let finals: Vec<MemberId> = r1.members.iter().copied().filter(|&m| m != 3).collect();

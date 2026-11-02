@@ -1,7 +1,7 @@
 RESULT e1-same-promote: epoch 1 change: remove [] admin ["\"SetRole\" by 1 stamp 360 -> applied"]
-RESULT e1-same-promote: 3 fed at the kick true; members at m1 {1, 2, 3, 4}; roles {1: 0, 2: 0, 3: 1, 4: 1}; first change with admin entries: epoch Some(1); member 4 removed by: None
-RESULT e1-same-promote: FAIL (expected: the kick in its author's promotion decision is void, then decides in a later one)
-  m1: conf 901 frame 953 rollbacks 66 max depth 26 paused frames 0 checks ok 73 bad 0
-  m2: conf 901 frame 953 rollbacks 66 max depth 27 paused frames 0 checks ok 73 bad 0
-  m4: conf 901 frame 953 rollbacks 66 max depth 29 paused frames 0 checks ok 73 bad 0
-RESULT e1-same-promote: frames 0..952 m1=9b86472ed97b71ac m2=9b86472ed97b71ac m4=9b86472ed97b71ac | offline replay 9b86472ed97b71ac | ALL EQUAL, NO FALSE CHECKS
+RESULT e1-same-promote: epoch 2 change: remove [(4, 12060614798992748822)] admin ["\"Kick\" by 2 stamp 369 -> applied"]
+RESULT e1-same-promote: 3 fed at the kick true; members at m1 {1, 2, 3}; roles {1: 0, 2: 0, 3: 1}; first change with admin entries: epoch Some(1); member 4 removed by: Some((2, [1, 2, 4]))
+RESULT e1-same-promote: the guest's kick is refused on arrival; sent again after the promotion decides, it decides
+  m1: conf 848 frame 953 rollbacks 50 max depth 29 paused frames 0 checks ok 51 bad 0
+  m2: conf 848 frame 953 rollbacks 50 max depth 29 paused frames 0 checks ok 51 bad 0
+RESULT e1-same-promote: frames 0..952 m1=540ddaecd06bbe5b m2=540ddaecd06bbe5b | offline replay 540ddaecd06bbe5b | ALL EQUAL, NO FALSE CHECKS
