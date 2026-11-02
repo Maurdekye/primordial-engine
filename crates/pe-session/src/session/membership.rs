@@ -2602,22 +2602,16 @@ impl WorldSim {
         let mut e = run[0].entry.clone();
         while below.len() < back.min(15) as usize && e.seq > 1 {
             let Some(p) = self.entries.get(&e.prev) else { break };
-            // O2-1: a view-change or admin entry is never covered by another entry's signature.
-            if p.payload.signs_itself() {
-                break;
-            }
             e = p.clone();
-            below.push(SignedEntry { entry: e.clone(), sig: [0; 64] });
+            below.push(SignedEntry { entry: e.clone(), sig: self.sigs.get(&e.id()).copied().unwrap_or([0; 64]) });
         }
         below.reverse();
         below.append(&mut run);
         if below.len() > WorldSim::RUN_MAX {
             return vec![];
         }
-        if below.len() == 1 {
-            return vec![Msg::Entry(below.pop().expect("one"))];
-        }
-        vec![Msg::Run { lean: false, heads: false, signed: true, entries: below }]
+        // O2-1: each view-change or admin entry ends a run, signed on itself.
+        self.split_runs(below, false, true)
     }
 
     /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version, with its cover.

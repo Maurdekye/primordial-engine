@@ -140,6 +140,36 @@ impl WorldSim {
         v.iter().filter_map(|e| self.relay(e.id())).collect()
     }
 
+    /// Review O2-1: an answer chain as runs that each end at a view-change or admin entry, signed on it,
+    /// sent together (not cut short, so the requester need not ask again per such entry). The first run
+    /// is lean if `lean`; the last is signed by its top if `signed`, else unsigned (a hole fill).
+    pub(super) fn split_runs(&self, chain: Vec<SignedEntry>, lean: bool, signed: bool) -> Vec<Msg> {
+        let mut out = Vec::new();
+        let mut cur: Vec<SignedEntry> = Vec::new();
+        let n = chain.len();
+        for (i, e) in chain.into_iter().enumerate() {
+            let cut = e.entry.payload.signs_itself() && i + 1 < n;
+            cur.push(e);
+            if cut {
+                let first = out.is_empty();
+                out.push(Self::run_msg(std::mem::take(&mut cur), first && lean, true));
+            }
+        }
+        if !cur.is_empty() {
+            let first = out.is_empty();
+            out.push(Self::run_msg(cur, first && lean, signed));
+        }
+        out
+    }
+
+    fn run_msg(mut run: Vec<SignedEntry>, lean: bool, signed: bool) -> Msg {
+        if run.len() == 1 && signed && !lean {
+            Msg::Entry(run.pop().expect("one"))
+        } else {
+            Msg::Run { lean, heads: false, signed, entries: run }
+        }
+    }
+
     /// Author an entry at the current frame. With `carry`, the entry carries the touched object's
     /// state after this frame: computed by stepping the frame once on a scratch copy.
     pub fn author(&mut self, payload: Payload, carry: Option<u32>) -> SignedEntry {
