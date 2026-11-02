@@ -9,7 +9,7 @@
 //! them in, since the spike has no 9.5 joiner that would need them without the log. A replica computing
 //! other values would still show, in the world digests and the check hashes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{quorum, Entry, EntryId, MemberId, Payload, QuorumRule, WorldSim};
 
@@ -56,6 +56,11 @@ pub struct WindowVals {
     pub c_max: u64,
     /// Each member's largest gap between consecutive echo-stable acks in window k − 2 (P_m).
     pub p: BTreeMap<MemberId, u64>,
+    /// Rule 3 while n − f < q (P1 (a)): C_floor(k), and each fed member's (E_T, U_T) from window k − 2; the fed
+    /// members over the latency floor (32 + E_T + U_T + 4 > W − 15 − C_floor). Empty otherwise.
+    pub c_floor: u64,
+    pub fed_terms: BTreeMap<MemberId, (u64, u64)>,
+    pub over_floor: Vec<MemberId>,
 }
 
 /// Per window: what its settled data gives the windows after it.
@@ -70,6 +75,10 @@ pub(super) struct WindowData {
     echo: BTreeMap<MemberId, Vec<u64>>,
     /// Per member: its largest gap between consecutive echo-stable acks, the later stamped in the window.
     gap: BTreeMap<MemberId, u64>,
+    /// Members whose acks in the window carry an anchor (fed), and each one's echo delays E_T (section 3): for each
+    /// checkpoint its acks stamped in the window name for the first time, the ack's stamp minus the checkpoint's.
+    fed: BTreeSet<MemberId>,
+    e_t: BTreeMap<MemberId, Vec<u64>>,
 }
 
 /// The P95 of `v` (index ceil(0.95 × count) − 1, ascending), or None if empty.
@@ -91,49 +100,6 @@ fn lower_median(v: &mut [u64]) -> Option<u64> {
 }
 
 impl WorldSim {
-    /// Revision 22 measurement (the P = 16 / 32 decision): fed member `t`'s latency-floor terms over the whole run, as
-    /// section 3 defines them, from this replica's log. E_T: for each checkpoint t's acks echo, the stamp of t's first
-    /// ack echoing it minus the checkpoint's stamp, P95. U_T: P95 of d(e) over t's own entries in the settled windows.
-    /// C_floor: min(W/2, max(F, the largest L_m among members not fed, plus Q_min')) from the newest window's values.
-    /// Returns (E_T, U_T, C_floor, margin = W − 15 − C_floor − (32 + E_T + U_T + 4)). The spike's C_max doesn't use
-    /// these terms (it uses E); this only measures them.
-    pub fn fed_latency_terms(&self, t: MemberId) -> Option<(u64, u64, u64, i64)> {
-        let p95 = |mut v: Vec<u64>| -> Option<u64> {
-            if v.is_empty() {
-                return None;
-            }
-            v.sort_unstable();
-            Some(v[((v.len() as f64 * 0.95).ceil() as usize).clamp(1, v.len()) - 1])
-        };
-        let mut seen: BTreeMap<MemberId, u64> = BTreeMap::new();
-        let mut e_t: Vec<u64> = Vec::new();
-        let top = self.contiguous.get(&t).copied().unwrap_or(0);
-        for s in 1..=top {
-            let Some(id) = self.by_author.get(&(t, s)) else { continue };
-            let Some(e) = self.entries.get(id) else { continue };
-            let Payload::Ack { fed: Some(fa), .. } = &e.payload else { continue };
-            for &(x, b) in &fa.echo {
-                if seen.get(&x).is_some_and(|&b0| b0 >= b) {
-                    continue;
-                }
-                seen.insert(x, b);
-                let stamp = self.ckpt_by_block.get(&(x, b)).and_then(|&(cs, _, _)| self.by_author.get(&(x, cs))).and_then(|cid| self.entries.get(cid)).map(|c| c.stamp);
-                if let Some(cst) = stamp {
-                    e_t.push(e.stamp.saturating_sub(cst));
-                }
-            }
-        }
-        let e_t = p95(e_t)?;
-        let u: Vec<u64> = self.window_data_cache.values().flat_map(|wd| wd.d.get(&t).cloned().unwrap_or_default()).collect();
-        let u_t = p95(u).unwrap_or(0);
-        let v = self.windows.values().next_back()?;
-        let w = self.cfg.window;
-        let l_max = v.l.iter().filter(|(m, _)| !self.fed_peers.contains_key(m) && **m != t).map(|(_, &l)| l).max().unwrap_or(0);
-        let c_floor = (w / 2).min(self.cfg.floor_f.max(l_max + v.q_floor));
-        let margin = w as i64 - 15 - c_floor as i64 - (32 + e_t + u_t + 4) as i64;
-        Some((e_t, u_t, c_floor, margin))
-    }
-
     /// Section 3's values of every window computed so far.
     pub fn window_values(&self) -> &BTreeMap<u64, WindowVals> {
         &self.windows
@@ -174,6 +140,23 @@ impl WorldSim {
             }
         }
         Some(fed)
+    }
+
+    /// Member m's echo as of its last anchored ack before `seq` (empty if none): which block of each chain it had
+    /// already named, so E_T counts each checkpoint at its first echo.
+    fn prev_echo(&self, m: MemberId, seq: u32) -> BTreeMap<MemberId, u64> {
+        let mut s = seq;
+        while s > 1 {
+            s -= 1;
+            let Some(e) = self.by_author.get(&(m, s)).and_then(|id| self.entries.get(id)) else { break };
+            if let super::Payload::Ack { fed: Some(fa), .. } = &e.payload {
+                return fa.echo.iter().copied().collect();
+            }
+            if seq - s > 256 {
+                break;
+            }
+        }
+        BTreeMap::new()
     }
 
     fn quorum_q(&self) -> usize {
@@ -394,6 +377,19 @@ impl WorldSim {
                 data.d.entry(m).or_default().push(d);
                 let mn = data.min_d.entry(m).or_insert(d);
                 *mn = (*mn).min(d);
+                if let super::Payload::Ack { fed: Some(fa), .. } = &e.payload {
+                    data.fed.insert(m);
+                    let before = self.prev_echo(m, seq);
+                    for &(x, b) in &fa.echo {
+                        if before.get(&x).is_some_and(|&b0| b0 >= b) {
+                            continue;
+                        }
+                        let cst = self.ckpt_by_block.get(&(x, b)).and_then(|&(cs, _, _)| self.by_author.get(&(x, cs))).and_then(|cid| self.entries.get(cid)).map(|c| c.stamp);
+                        if let Some(cst) = cst {
+                            data.e_t.entry(m).or_default().push(e.stamp.saturating_sub(cst));
+                        }
+                    }
+                }
                 if matches!(e.payload, super::Payload::Ack { .. }) {
                     // E is measured up to W, not C_max: capped at C_max it would hold C_max where it is.
                     data.echo.entry(m).or_default().push(self.ranked_delay(e, q - 1, &es, self.cfg.window)?);
@@ -420,6 +416,9 @@ impl WorldSim {
         for j in from..=k {
             let v = self.compute_window(j)?;
             self.ev(format!("localize: window {j}: Q {} (floor {}), E {}, C_max {}, L {:?}, P {:?}", v.q, v.q_floor, v.e, v.c_max, v.l, v.p));
+            if !v.fed_terms.is_empty() {
+                self.ev(format!("localize: window {j}: fed (E_T, U_T) {:?}, C_floor {}, over the latency floor {:?}", v.fed_terms, v.c_floor, v.over_floor));
+            }
             if v.c_max < self.cfg.floor_f {
                 self.ev(format!("localize: window {j}: C_max {} is below the floor F = {}", v.c_max, self.cfg.floor_f));
             }
@@ -439,6 +438,9 @@ impl WorldSim {
             e: 0,
             c_max: (w / 2).min(w.saturating_sub(15)),
             p: BTreeMap::new(),
+            c_floor: 0,
+            fed_terms: BTreeMap::new(),
+            over_floor: Vec::new(),
         };
         // Q(0) = Q(1) = Q_max: lenient at the start, with no data yet.
         if k < 2 {
@@ -505,11 +507,33 @@ impl WorldSim {
         // actions, and a liar sending its acks late could do the same.
         let mut per_member_e: Vec<u64> = data.echo.values().filter_map(|v| p95(&mut v.clone())).collect();
         let e = lower_median(&mut per_member_e).unwrap_or(prev.e);
-        let c_max = (w / 2).min(w.saturating_sub(e + 15));
+        let mut c_max = (w / 2).min(w.saturating_sub(e + 15));
+        // Rule 3 while n − f < q (P1 (a); rev 16/17, TLP-28, TLP-33): C_floor(k) = min(W/2, max(F, the largest L_m among
+        // members not fed, plus Q_min')); C_max(k) = max(C_floor, min(W/2, W − 15 − max over fed T of (32 + E_T + U_T +
+        // 4))), E_T and U_T T's own P95s from window k − 2 (its echo delays; d(e) over its own entries). A fed member
+        // whose echo path needs more than W − 15 − C_floor is over the latency floor (rule 4 removes it).
+        let fed: Vec<MemberId> = data.fed.iter().copied().filter(|m| self.members.contains(m)).collect();
+        let (mut c_floor, mut fed_terms, mut over_floor) = (0, BTreeMap::new(), Vec::new());
+        if !fed.is_empty() && self.members.len() - fed.len() < self.quorum_q() {
+            let l_max = l.iter().filter(|(m, _)| !fed.contains(m)).map(|(_, &x)| x).max().unwrap_or(0);
+            c_floor = (w / 2).min(self.cfg.floor_f.max(l_max + q_floor));
+            let mut worst = 0;
+            for &t in &fed {
+                let e_t = data.e_t.get(&t).and_then(|v| p95(&mut v.clone())).unwrap_or(0);
+                let u_t = data.d.get(&t).and_then(|v| p95(&mut v.clone())).unwrap_or(0);
+                let need = 32 + e_t + u_t + 4;
+                worst = worst.max(need);
+                fed_terms.insert(t, (e_t, u_t));
+                if need > w.saturating_sub(15 + c_floor) {
+                    over_floor.push(t);
+                }
+            }
+            c_max = c_floor.max((w / 2).min(w.saturating_sub(15 + worst)));
+        }
         // P_m: a member without acks in window k − 2 keeps its last gap.
         let mut p = prev.p.clone();
         p.extend(data.gap.iter().map(|(&m, &g)| (m, g)));
-        Some(WindowVals { l, q, q_floor, e, c_max, p })
+        Some(WindowVals { l, q, q_floor, e, c_max, p, c_floor, fed_terms, over_floor })
     }
 
     /// Rule 2's race window G_{m,a}(k) (section 3): both writers' base delays plus the jitter limit, at least

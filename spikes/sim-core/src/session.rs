@@ -3760,7 +3760,7 @@ impl WorldSim {
             let slow = !self.localized() && self.now >= since + self.cfg.suspect_after;
             // Part B, rule 4's exception (TLP-25, TLP-29): a fed member that can't carry even the echo is treated
             // like a disconnection.
-            let floor = if self.localized() { self.floor_breach(j) } else { None };
+            let floor = if self.localized() { self.floor_breach(j).or_else(|| self.latency_breach(j)) } else { None };
             if !silent && !slow && floor.is_none() {
                 self.suspect_since.remove(&j);
                 continue;
