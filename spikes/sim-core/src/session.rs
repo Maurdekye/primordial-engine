@@ -6983,3 +6983,106 @@ mod echo_tests {
         assert!(decode_msg(&b).is_some());
     }
 }
+
+/// Rev 22 (e1), @coordinator-opus m15aed3d58263 ruling 2: the commit order of one decision's admin entries,
+/// deterministically. Stamp-effective entries run first; a kick is judged on the ACL as of the previous decided change
+/// (acl0), whatever this decision's role entries changed.
+#[cfg(test)]
+mod e1_commit_order {
+    use super::*;
+
+    const GUEST: RoleId = 1;
+
+    fn entry(member: MemberId, stamp: u64, payload: Payload) -> Entry {
+        Entry { member, seq: 5, prev: 0, stamp, payload, carried: None, link: 0 }
+    }
+
+    fn run(admins: &[MemberId]) -> AdminRun {
+        let members: BTreeSet<MemberId> = [1, 2, 3, 4].into_iter().collect();
+        let roles: BTreeMap<MemberId, RoleId> = members.iter().map(|&m| (m, if admins.contains(&m) { ADMIN } else { GUEST })).collect();
+        let defs: BTreeMap<RoleId, u64> = [(GUEST, 0)].into_iter().collect();
+        AdminRun {
+            members: members.clone(),
+            roles: roles.clone(),
+            defs: defs.clone(),
+            excluded: BTreeSet::new(),
+            owners: BTreeSet::new(),
+            book: None,
+            lineage: 1,
+            acl0: Some(Box::new((members, roles, defs, BTreeSet::new()))),
+        }
+    }
+
+    fn decide(r: &mut AdminRun, mut es: Vec<Entry>) -> Vec<(bool, Entry)> {
+        es.sort_by_key(|e| admin_key(e, 7));
+        es.into_iter().map(|e| (r.apply(&e), e)).collect()
+    }
+
+    #[test]
+    fn same_decision_revocation_then_kick_stands() {
+        let mut r = run(&[1, 2]);
+        let out = decide(&mut r, vec![entry(2, 361, Payload::Kick { epoch: 0, target: 4 }), entry(1, 360, Payload::SetRole { epoch: 0, member: 2, role: GUEST })]);
+        assert!(matches!(out[0].1.payload, Payload::SetRole { .. }), "stamp-effective entries run first");
+        assert_eq!(out.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, true]);
+        assert_eq!(r.roles.get(&2), Some(&GUEST));
+        assert!(!r.members.contains(&4), "the kick is judged on acl0, where 2 was an admin");
+    }
+
+    #[test]
+    fn same_decision_promotion_then_kick_refused() {
+        let mut r = run(&[1]);
+        let out = decide(&mut r, vec![entry(2, 361, Payload::Kick { epoch: 0, target: 4 }), entry(1, 360, Payload::SetRole { epoch: 0, member: 2, role: ADMIN })]);
+        assert_eq!(out.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, false]);
+        assert_eq!(r.roles.get(&2), Some(&ADMIN));
+        assert!(r.members.contains(&4), "on acl0 2 was a guest");
+    }
+
+    /// Both judgement paths agree on one decision's list (@design-reviewer mf9870e4051a7): the full member's commit-order
+    /// apply, and a fed member's check of the same change (fed_change_valid). The demotion applies, and the kick, judged
+    /// on acl0, stands; a fed member can't check the stamp-effective demotion, so its answer is "can't tell" (None,
+    /// prevoted once t + 1 have, rule (c)); a change marking the kick refused gets its nil (Some(false)).
+    #[test]
+    fn fed_check_agrees_with_full_apply() {
+        let mut f = WorldSim::new(1, 3, &[1, 2, 3, 4], SceneKind::Empty, SimConfig { localize: true, ..SimConfig::default() });
+        f.role_defs.insert(GUEST, 0);
+        f.roles.insert(3, GUEST);
+        f.roles.insert(4, GUEST);
+        f.set_fed(true);
+        let demote = entry(1, 360, Payload::SetRole { epoch: 0, member: 2, role: GUEST });
+        let kick = entry(2, 361, Payload::Kick { epoch: 0, target: 4 });
+        let (did, kid) = (demote.id(), kick.id());
+        f.entries.insert(did, demote.clone());
+        f.entries.insert(kid, kick.clone());
+        // The full member's path.
+        let mut full = run(&[1, 2]);
+        let applied = decide(&mut full, vec![kick.clone(), demote.clone()]);
+        let order: Vec<(EntryId, bool)> = applied.iter().map(|(ok, e)| (e.id(), *ok)).collect();
+        assert_eq!(order, vec![(did, true), (kid, true)]);
+        // The fed member's path, on the same list.
+        let change = |admin: Vec<(EntryId, bool)>, kick_ok: bool| Change {
+            epoch: 0,
+            remove: if kick_ok { vec![Removal { member: 4, votes: vec![], cut: (0, 0), kick: kid }] } else { vec![] },
+            add: vec![],
+            boundary: 600,
+            excluded: vec![],
+            admin,
+            add_roles: vec![],
+            add_attests: vec![],
+            add_reqs: vec![],
+        };
+        assert_eq!(f.fed_change_valid(&change(order.clone(), true)), None, "agrees, but can't check the demotion: can't tell");
+        assert_eq!(f.fed_change_valid(&change(vec![(did, true), (kid, false)], false)), Some(false), "a refused kick that should stand gets its nil");
+    }
+
+    #[test]
+    fn kick_order_by_hash_not_stamp() {
+        // Two admins kick each other in one decision: the order is hash(seed, author), then seq, never the stamp, so a
+        // backdated kick doesn't come first by backdating.
+        let mut a = run(&[1, 2]);
+        let out_a = decide(&mut a, vec![entry(1, 400, Payload::Kick { epoch: 0, target: 2 }), entry(2, 100, Payload::Kick { epoch: 0, target: 1 })]);
+        let mut b = run(&[1, 2]);
+        let out_b = decide(&mut b, vec![entry(1, 400, Payload::Kick { epoch: 0, target: 2 }), entry(2, 399, Payload::Kick { epoch: 0, target: 1 })]);
+        assert_eq!(out_a[0].1.member, out_b[0].1.member, "the stamp doesn't change the order");
+        assert_eq!(out_a.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, false], "the second kick's author is gone");
+    }
+}
