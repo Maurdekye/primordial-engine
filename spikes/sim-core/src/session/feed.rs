@@ -94,6 +94,9 @@ impl WorldSim {
                     if let Some(c) = self.covered_ckpt(self.me, x) {
                         if self.echo_last.get(&x).is_none_or(|&(b0, _)| c.0 > b0) {
                             self.echo_last.insert(x, c);
+                            if let Some(&(s, _, _)) = self.ckpt_by_block.get(&(x, c.0)) {
+                                self.echo_seq.insert(x, s);
+                            }
                         }
                     }
                 }
@@ -296,7 +299,7 @@ impl WorldSim {
     /// TLP-23, the fed side: `member`'s checkpoints, from `from` (only the chain's author is followed). The
     /// chain is computed forward from the checkpoint I echo: each id from the previous one and the rest-hash.
     /// A list that doesn't link up with mine (it starts past it) is ignored; the author resends from my echo.
-    pub fn on_ckpts(&mut self, from: MemberId, member: MemberId, after: Option<u64>, list: Vec<(u64, u64)>) {
+    pub fn on_ckpts(&mut self, from: MemberId, member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>) {
         if self.fed.is_none() || from != member || member == self.me {
             return;
         }
@@ -310,7 +313,7 @@ impl WorldSim {
             // The list starts before my checkpoint: it must name it, and I go on after it.
             let Some((mine, _)) = cur else { return };
             let mut found = false;
-            while let Some((b, _)) = it.next() {
+            while let Some((b, _, _)) = it.next() {
                 if b == mine {
                     found = true;
                     break;
@@ -323,14 +326,19 @@ impl WorldSim {
                 return;
             }
         }
-        for (b, rest) in it {
+        let mut seq = None;
+        for (b, s, rest) in it {
             if cur.is_some_and(|(b0, _)| b <= b0) {
                 break;
             }
             cur = Some((b, entry_id(cur.map_or(0, |(_, id)| id), rest)));
+            seq = Some(s);
         }
         if let Some(c) = cur {
             self.echo_last.insert(member, c);
+        }
+        if let Some(s) = seq {
+            self.echo_seq.insert(member, s);
         }
     }
 
@@ -351,12 +359,12 @@ impl WorldSim {
             }
             let after = echoed.or_else(|| self.covered_ckpt(f, self.me).map(|(b, _)| b));
             let lo = after.map_or(0, |b| b + 1);
-            let list: Vec<(u64, u64)> = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).map(|(&(_, b), &(_, _, r))| (b, r)).collect();
-            let Some(&(newest, _)) = list.last() else { continue };
+            let list: Vec<(u64, u32, u64)> = self.ckpt_by_block.range((self.me, lo)..=(self.me, u64::MAX)).map(|(&(_, b), &(s, _, r))| (b, s, r)).collect();
+            let Some(&(newest, _, _)) = list.last() else { continue };
             let due = self.ckpt_sent.get(&f).is_none_or(|&(sb, at)| newest > sb || self.frame >= at + RESEND_FRAMES);
             if due {
                 self.ckpt_sent.insert(f, (newest, self.frame));
-                for &(b, _) in &list {
+                for &(b, _, _) in &list {
                     self.ckpt_first_sent.entry((f, b)).or_insert(self.frame);
                 }
                 out.push((f, Msg::Ckpts { member: self.me, after, list }));

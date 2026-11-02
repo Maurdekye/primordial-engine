@@ -962,7 +962,7 @@ pub enum Msg {
     /// Thin links Part B (TLP-23): `member`'s checkpoints for a fed member, block and rest-hash each, from the
     /// one after block `after` (the checkpoint the first one links to; None: the first is the chain's first).
     /// Only from the chain's own author. Never logged.
-    Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u64)> },
+    Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)> },
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -1171,7 +1171,7 @@ impl Wr {
                 self.u8(11); self.u32(*member);
                 match after { Some(b) => { self.u8(1); self.u64(*b) } None => self.u8(0) }
                 self.u32(list.len() as u32);
-                for (b, r) in list { self.u64(*b); self.u64(*r) }
+                for (b, s, r) in list { self.u64(*b); self.u32(*s); self.u64(*r) }
             }
             Msg::Feed { frame, bodies } => {
                 self.u8(10); self.u64(*frame); self.u32(bodies.len() as u32);
@@ -1440,7 +1440,7 @@ impl Rd<'_> {
                 let after = if self.u8()? == 1 { Some(self.u64()?) } else { None };
                 let n = self.u32()? as usize;
                 let mut list = Vec::with_capacity(n.min(256));
-                for _ in 0..n { list.push((self.u64()?, self.u64()?)) }
+                for _ in 0..n { list.push((self.u64()?, self.u32()?, self.u64()?)) }
                 Msg::Ckpts { member, after, list }
             }
             10 => {
@@ -2137,6 +2137,8 @@ pub struct WorldSim {
     /// The fed side (TLP-24): per member, the newest checkpoint of its chain I echo, its block and id. Kept
     /// across leaving and re-entering the feed.
     echo_last: BTreeMap<MemberId, (u64, EntryId)>,
+    /// Rev 22 (TLP-24): the seq of each chain's last echoed checkpoint, so a fed member's vote can freeze it.
+    echo_seq: BTreeMap<MemberId, u32>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
@@ -2423,6 +2425,7 @@ impl WorldSim {
             ckpt_first_sent: BTreeMap::new(),
             anchored_acks: BTreeMap::new(),
             echo_last: BTreeMap::new(),
+            echo_seq: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
@@ -3509,6 +3512,25 @@ impl WorldSim {
             return None;
         }
         let f = self.contiguous.get(&m).copied().unwrap_or(0);
+        // Rev 22 (TLP-24): a fed member's frozen head is its last echoed checkpoint of m: it echoed that far, so its
+        // held prefix (stale while fed) would drop references it published.
+        if self.fed.is_some() {
+            if let (Some(&s), Some(&(_, id))) = (self.echo_seq.get(&m), self.echo_last.get(&m)) {
+                if s > f {
+                    self.frozen.insert(m, s);
+                    let e = Entry {
+                        member: self.me,
+                        seq: self.my_seq + 1,
+                        prev: self.my_last,
+                        stamp: self.frame.max(self.now),
+                        payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (s, id), kick },
+                        carried: None,
+                        link: 0,
+                    };
+                    return Some(self.publish(e));
+                }
+            }
+        }
         // A faulty member (fixture) votes without freezing: it keeps processing that chain.
         if !self.byz_ally {
             self.frozen.insert(m, f);
@@ -5037,7 +5059,7 @@ impl WorldSim {
         }
         // F2, revision 21 (a): removing from a Part B epoch, the cut is the final vouched prefix (`finalize_cuts`);
         // until then the removed chain keeps linking and nothing of it past its vouched prefix counts.
-        let pb_old = self.cfg.localize && self.members.len() >= 4;
+        let pb_old = self.cfg.localize && self.members.len() >= 3;
         for r in &c.remove {
             self.members.remove(&r.member);
             self.roles.remove(&r.member);
@@ -6826,7 +6848,7 @@ mod echo_tests {
                 assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
             }
         }
-        for m in [Msg::Ckpts { member: 2, after: Some(11), list: vec![(12, 5), (13, 6)] }, Msg::Ckpts { member: 2, after: None, list: vec![(0, 5)] }] {
+        for m in [Msg::Ckpts { member: 2, after: Some(11), list: vec![(12, 40, 5), (13, 41, 6)] }, Msg::Ckpts { member: 2, after: None, list: vec![(0, 1, 5)] }] {
             assert_eq!(decode_msg(&encode_msg(&m)), Some(m));
         }
     }

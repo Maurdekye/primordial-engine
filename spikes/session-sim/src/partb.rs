@@ -81,18 +81,11 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
 /// Revision 22, S-4: at 3 players with member 3 fed (8 kbit/s each way), member 2 drops under the floor (0.5 kbit/s each
 /// way from 5 s). It isn't fed (at most one is, n − q = 1), so no floor test judges it, and its removal would need the
 /// fed member's vote, which a fed member never casts on a floor; its client measures its link and it leaves by request
-/// at 8 s. The leave decides and members 1 and 3 go on.
+/// at 8 s of the session's time. The leave decides and members 1 and 3 go on.
 pub fn leave_s4() {
     let ids: Vec<MemberId> = vec![1, 2, 3];
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
-    let plans = |m: MemberId| {
-        let mut v: Vec<(u64, Action)> = (120..1700).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
-        if m == 2 {
-            v.push((480, Action::Leave));
-            v.sort_by_key(|x| x.0);
-        }
-        plan(&v)
-    };
+    let plans = |m: MemberId| plan(&(120..1700).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
     let ps: Vec<Peer> = ids
         .iter()
         .map(|&id| {
@@ -118,6 +111,15 @@ pub fn leave_s4() {
             for &x in &[1, 3] {
                 for pair in [(2, x), (x, 2)] {
                     s.net.caps.insert(pair, Cap { rate_bps: 500, burst_bytes: 4000, max_queue_us: 500_000 });
+                }
+            }
+        }
+        // Its client measures its link and asks to leave at 8 s of the session's time (a member paused behind its own
+        // link never reaches a plan frame), sent first, ahead of its queued entries (D-5).
+        if s.net.now_us == 8_000_000 {
+            if let Some(e) = sim_mut(s, 2).request_leave() {
+                for to in [1, 3] {
+                    s.net.send_urgent(1, 2, to, &Msg::Entry(e.clone()));
                 }
             }
         }
