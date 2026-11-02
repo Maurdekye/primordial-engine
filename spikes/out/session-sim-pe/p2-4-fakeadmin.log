@@ -1,7 +1,7 @@
-REPRO fakeadmin (no-op SetRole every 2 s): 8 removed at 6.33 s; decisions at m1 4; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
-RESULT fakeadmin: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 247 frames (window 120); 8 removed at 6.33 s; lag at the end 7 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 358)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 75 bad 0
-  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 358)} rollbacks 32 max depth 5 violations 0 equivocations 0 checks ok 75 bad 0
-  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 358)} rollbacks 32 max depth 3 violations 0 equivocations 0 checks ok 75 bad 0
-  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 358)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
+REPRO fakeadmin (no-op SetRole every 2 s): 8 removed at 6.32 s; decisions at m1 4; live at the end: true; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
+RESULT fakeadmin: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 247 frames (window 120); 8 removed at 6.32 s; lag at the end 7 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
+  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 356)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 75 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 356)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 356)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
+  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (134, 356)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 75 bad 0
 RESULT fakeadmin: frames 0..832 honest m1=4d9c3ea37f62db7a m2=4d9c3ea37f62db7a m3=4d9c3ea37f62db7a m4=4d9c3ea37f62db7a | offline replay 4d9c3ea37f62db7a | ALL EQUAL, NO FALSE CHECKS ; checks ok 300 bad 0

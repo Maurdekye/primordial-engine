@@ -30,6 +30,7 @@ live_ms = 700
 [[part]]
 world.1.fixes_off = ["VC2"]
 world.1.no_runs = true  # option 2: the fix-off control runs without runs, as the harness does
+world.1.no_lean = true  # and fully explicit since review O2-3 (faster gap repair heals the fork first)
 report = [
     { kind = "before_fix", honest = [1, 2, 3], label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)", fix = "VC-2's fix" },
 ]

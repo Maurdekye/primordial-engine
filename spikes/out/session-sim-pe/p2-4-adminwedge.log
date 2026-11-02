@@ -9,14 +9,14 @@ RESULT adminwedge: m4 epoch 0 members {1, 2, 3, 4, 9} view changes 0 (resets 0, 
   m3: conf 110 frame 230 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
   m4: conf 110 frame 230 members {1, 2, 3, 4, 9} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 16 bad 0
 RESULT adminwedge fixed=false: frames 0..229 honest m1=ea541df0c03f22cc m2=ea541df0c03f22cc m3=ea541df0c03f22cc m4=ea541df0c03f22cc | offline replay ea541df0c03f22cc | ALL EQUAL, NO FALSE CHECKS ; checks ok 64 bad 0
-REPRO adminwedge fixed=true: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2209000) us; 9 removed at 4.43 s; live at the end: true; m1 conf 820 of frame 833, m2 conf 820 of frame 833, m3 conf 820 of frame 833, m4 conf 820 of frame 833
+REPRO adminwedge fixed=true: proposer(0,0)=1, partitioned 4; step reached 4, 9 crashed at Some(2209000) us; 9 removed at 4.45 s; live at the end: true; m1 conf 820 of frame 833, m2 conf 820 of frame 833, m3 conf 820 of frame 833, m4 conf 820 of frame 833
 RESULT adminwedge fixed=true: -> REMOVED, CONFIRMATION GOES ON
-RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 203 (t=3.48 s) round 0 removed []; epoch 2 at frame 260 (t=4.43 s) round 1 removed [9]
-RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 204 (t=3.50 s) round 0 removed []; epoch 2 at frame 258 (t=4.40 s) round 1 removed [9]
-RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 210 (t=3.60 s) round 0 removed []; epoch 2 at frame 260 (t=4.43 s) round 1 removed [9]
-RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 197 (t=3.38 s) round 0 removed []; epoch 2 at frame 258 (t=4.40 s) round 1 removed [9]
+RESULT adminwedge: m1 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 208 (t=3.57 s) round 0 removed []; epoch 2 at frame 261 (t=4.45 s) round 1 removed [9]
+RESULT adminwedge: m2 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 207 (t=3.55 s) round 0 removed []; epoch 2 at frame 261 (t=4.45 s) round 1 removed [9]
+RESULT adminwedge: m3 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 203 (t=3.48 s) round 0 removed []; epoch 2 at frame 259 (t=4.42 s) round 1 removed [9]
+RESULT adminwedge: m4 epoch 2 members {1, 2, 3, 4} view changes 2 (resets 0, highest round 1) | epoch 1 at frame 197 (t=3.38 s) round 0 removed []; epoch 2 at frame 253 (t=4.32 s) round 1 removed [9]
   m1: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 79 bad 0
-  m2: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 78 bad 0
-  m3: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 78 bad 0
-  m4: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 78 bad 0
-RESULT adminwedge fixed=true: frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 m4=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 313 bad 0
+  m2: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 2 max depth 1 violations 0 equivocations 1 checks ok 79 bad 0
+  m3: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+  m4: conf 820 frame 833 members {1, 2, 3, 4} evicted {9: (25, 126)} rollbacks 2 max depth 2 violations 0 equivocations 1 checks ok 79 bad 0
+RESULT adminwedge fixed=true: frames 0..832 honest m1=11d49bf119ef14c8 m2=11d49bf119ef14c8 m3=11d49bf119ef14c8 m4=11d49bf119ef14c8 | offline replay 11d49bf119ef14c8 | ALL EQUAL, NO FALSE CHECKS ; checks ok 316 bad 0

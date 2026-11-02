@@ -188,9 +188,12 @@ pub(crate) fn lag(sim: &Sim, honest: &[MemberId]) -> u64 {
 pub fn fork9() {
     for fixed in [false, true] {
         // Option 2: the fix-off control runs without runs, the form whose path the fix guards.
+        // Since review O2-3 also without lean entries: the faster gap repair heals the fork first.
         set_no_runs(!fixed);
+        set_no_lean(!fixed);
         let (sim, stopped, info) = fork_run(if fixed { 0 } else { fix::VC2 }, 700_000, false, 0, 0);
         set_no_runs(false);
+        set_no_lean(false);
         let honest = [1, 2, 3];
         let label = "fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3)";
         if !fixed {
