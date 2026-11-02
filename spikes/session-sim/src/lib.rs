@@ -20,6 +20,12 @@ pub struct Link {
 
 /// Wire overhead per datagram (IP/UDP/AEAD/session), as in the ball-pit wire estimate.
 pub const DATAGRAM_OVERHEAD: u64 = 52;
+/// The per-datagram overhead in use: DATAGRAM_OVERHEAD (phase 3, Noise), or PE_DGRAM_OVERHEAD for a run (today's
+/// signed datagrams: 117).
+pub fn dgram_overhead() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_DGRAM_OVERHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(DATAGRAM_OVERHEAD))
+}
 /// Largest datagram payload a batch may fill (review R3-9).
 pub const MTU: usize = 1200;
 /// A member answers a fetch only while its uplink to the requester holds less than this; the
@@ -205,7 +211,7 @@ impl Net {
         {
             let now = self.now_us;
             let q = self.recent.entry((from, to)).or_default();
-            q.push_back((now, bytes.len() as u64 + DATAGRAM_OVERHEAD));
+            q.push_back((now, bytes.len() as u64 + dgram_overhead()));
             while q.front().is_some_and(|&(t, _)| t + 1_000_000 < now) {
                 q.pop_front();
             }
@@ -248,13 +254,13 @@ impl Net {
             }
         }
         if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
-            *self.wire_from.entry(from).or_default() += bytes.len() as u64 + DATAGRAM_OVERHEAD;
+            *self.wire_from.entry(from).or_default() += bytes.len() as u64 + dgram_overhead();
             let mut count = |k: &'static str, n: u64| {
                 let c = self.kinds_from.entry((from, k)).or_default();
                 c.0 += 1;
                 c.1 += n;
             };
-            count("(datagram overhead)", DATAGRAM_OVERHEAD);
+            count("(datagram overhead)", dgram_overhead());
             match m {
                 Msg::Batch(v) => {
                     let mut inner = 0;
@@ -296,7 +302,7 @@ impl Net {
         let bytes = encode_msg(m);
         let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
         let ser = match self.caps.get(&(from, to)).copied().or(self.default_cap) {
-            Some(cap) => ((bytes.len() as u64 + DATAGRAM_OVERHEAD) as f64 * 8.0 * 1e6 / cap.rate_bps as f64).ceil() as u64,
+            Some(cap) => ((bytes.len() as u64 + dgram_overhead()) as f64 * 8.0 * 1e6 / cap.rate_bps as f64).ceil() as u64,
             None => 0,
         };
         let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
@@ -310,7 +316,7 @@ impl Net {
     /// the link is uncapped), or None if its queue is full.
     pub fn shape(&mut self, from: MemberId, to: MemberId, payload: u64) -> Option<u64> {
         let Some(cap) = self.caps.get(&(from, to)).copied().or(self.default_cap) else { return Some(self.now_us) };
-        self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + DATAGRAM_OVERHEAD)
+        self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + dgram_overhead())
     }
 
     /// Current queue backlog of a capped link, in microseconds (0 if uncapped): the router queue plus, for a fed
@@ -321,7 +327,7 @@ impl Net {
             (Some((hi, lo)), Some(cap)) if !hi.is_empty() || !lo.is_empty() => {
                 let bytes: u64 = hi.iter().chain(lo.iter()).map(|(_, m)| encode_msg(m).len() as u64).sum();
                 let datagrams = bytes / MTU as u64 + 1;
-                ((bytes + datagrams * DATAGRAM_OVERHEAD) as f64 * 8.0 * 1e6 / cap.rate_bps as f64) as u64
+                ((bytes + datagrams * dgram_overhead()) as f64 * 8.0 * 1e6 / cap.rate_bps as f64) as u64
             }
             _ => 0,
         };
@@ -434,7 +440,7 @@ impl Net {
 
     fn record(&mut self, from: MemberId, to: MemberId, payload: u64, fate: u8, arrive_us: u64) {
         if self.tracing {
-            self.trace.push(SendRec { at_us: self.now_us, from, to, wire: payload + DATAGRAM_OVERHEAD, fate, arrive_us });
+            self.trace.push(SendRec { at_us: self.now_us, from, to, wire: payload + dgram_overhead(), fate, arrive_us });
         }
     }
 
@@ -961,10 +967,10 @@ impl Sim {
                         // Within 70% of the feeder's link to the member, datagram overhead included: packets of at
                         // least 4 bodies, as often as that rate allows, at most every 50 ms.
                         let rate = cap_of(&self.net, ctl.feeder, t) as f64 * 0.7 / 8.0;
-                        let header = DATAGRAM_OVERHEAD as f64 + 13.0;
+                        let header = dgram_overhead() as f64 + 13.0;
                         let size = (rate * PERIOD_US as f64 / 1e6).clamp(header + 4.0 * 30.0, 1200.0);
                         ctl.next_send_us = now + ((size / rate * 1e6) as u64).max(PERIOD_US);
-                        let budget = (size - DATAGRAM_OVERHEAD as f64) as usize;
+                        let budget = (size - dgram_overhead() as f64) as usize;
                         let pf = self.peer_index(ctl.feeder);
                         let mut rr = ctl.rr;
                         let pkt = if self.peers[pf].crashed { None } else { self.peers[pf].worlds.get(&w).and_then(|r| r.sim.feed_packet(budget, &mut rr)) };
@@ -1026,7 +1032,7 @@ impl Sim {
         let mut due = Vec::new();
         for (to, w, from, m) in self.net.due() {
             // Rule 4 (D): each datagram's size, as it arrives directly from its sender.
-            let bytes = encode_msg(&m).len() as u64 + DATAGRAM_OVERHEAD;
+            let bytes = encode_msg(&m).len() as u64 + dgram_overhead();
             let pi = self.peer_index(to);
             if !self.peers[pi].crashed {
                 if let Some(r) = self.peers[pi].worlds.get_mut(&w) {

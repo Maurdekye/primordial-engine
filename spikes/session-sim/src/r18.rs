@@ -260,13 +260,18 @@ pub fn capped(o: &Opts) {
         let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / bsecs;
         // A member demoted (removed) from the session no longer counts: compare the others.
         let live: Vec<MemberId> = ids.iter().copied().filter(|m| sim.replica(1, 1).sim.members.contains(m)).collect();
-        let last = live.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap().saturating_sub(1);
-        let hs: Vec<u64> = live.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
+        // Confirmed frames only, and fed members skipped (@coordinator-opus m721ec7943321, @design-reviewer): a fed
+        // replica's state comes from the feed, and speculative frames may still roll back, so comparing either read
+        // DIFFER whenever someone was fed, which would hide a real difference.
+        let cmp: Vec<MemberId> = live.iter().copied().filter(|&m| !sim.is_fed(1, m)).collect();
+        let cmp = if cmp.is_empty() { live.clone() } else { cmp };
+        let last = cmp.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap().saturating_sub(1);
+        let hs: Vec<u64> = cmp.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
         let r1 = &sim.replica(1, 1).sim;
         // The offline replay is built from a live member's log, and keeps that replica's hand owners, as
         // the suite's check does: a demoted member's log stops at its removal, and its hand entries
         // before it still count (D73 made member 1 removable here, on the shared uplink).
-        let rl = &sim.replica(live[0], 1).sim;
+        let rl = &sim.replica(cmp[0], 1).sim;
         let members: Vec<MemberId> = rl.members.iter().copied().collect();
         let rd = digest(&replay_sim_like(rl, scene, &members, &final_log(rl), last).hashes, last);
         let restamped = r1.all_entries().iter().filter(|e| e.member == 1 && r1.effective_frame(e.id()).is_some_and(|f| f != e.stamp)).count();
@@ -283,7 +288,7 @@ pub fn capped(o: &Opts) {
             (rb1 - rb0) as f64 / secs,
             s2.max_depth,
             back.map_or("never".to_string(), |t| format!("{} ms", t / 1000)),
-            join(live.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
+            join(cmp.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
             if hs.iter().all(|h| *h == rd) { "EQUAL" } else { "DIFFER" }
         );
         // Each of member 1's hand entries, from the frame it is stamped at until each member confirms it
