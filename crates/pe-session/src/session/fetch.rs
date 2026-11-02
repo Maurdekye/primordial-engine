@@ -120,7 +120,7 @@ impl WorldSim {
         }
         self.clock_ms = now_ms;
         // At most every 8 frames: the median over holders sorts every holder's figure.
-        if self.rtt_dirty && self.now % 8 == 0 {
+        if self.rtt_dirty {
             self.rtt_dirty = false;
             let (rtt_frames, rtt_ms) = self.rtt_figures();
             self.rtt_ms_now = rtt_ms;
