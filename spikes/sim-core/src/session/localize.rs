@@ -91,6 +91,49 @@ fn lower_median(v: &mut [u64]) -> Option<u64> {
 }
 
 impl WorldSim {
+    /// Revision 22 measurement (the P = 16 / 32 decision): fed member `t`'s latency-floor terms over the whole run, as
+    /// section 3 defines them, from this replica's log. E_T: for each checkpoint t's acks echo, the stamp of t's first
+    /// ack echoing it minus the checkpoint's stamp, P95. U_T: P95 of d(e) over t's own entries in the settled windows.
+    /// C_floor: min(W/2, max(F, the largest L_m among members not fed, plus Q_min')) from the newest window's values.
+    /// Returns (E_T, U_T, C_floor, margin = W − 15 − C_floor − (32 + E_T + U_T + 4)). The spike's C_max doesn't use
+    /// these terms (it uses E); this only measures them.
+    pub fn fed_latency_terms(&self, t: MemberId) -> Option<(u64, u64, u64, i64)> {
+        let p95 = |mut v: Vec<u64>| -> Option<u64> {
+            if v.is_empty() {
+                return None;
+            }
+            v.sort_unstable();
+            Some(v[((v.len() as f64 * 0.95).ceil() as usize).clamp(1, v.len()) - 1])
+        };
+        let mut seen: BTreeMap<MemberId, u64> = BTreeMap::new();
+        let mut e_t: Vec<u64> = Vec::new();
+        let top = self.contiguous.get(&t).copied().unwrap_or(0);
+        for s in 1..=top {
+            let Some(id) = self.by_author.get(&(t, s)) else { continue };
+            let Some(e) = self.entries.get(id) else { continue };
+            let Payload::Ack { fed: Some(fa), .. } = &e.payload else { continue };
+            for &(x, b) in &fa.echo {
+                if seen.get(&x).is_some_and(|&b0| b0 >= b) {
+                    continue;
+                }
+                seen.insert(x, b);
+                let stamp = self.ckpt_by_block.get(&(x, b)).and_then(|&(cs, _, _)| self.by_author.get(&(x, cs))).and_then(|cid| self.entries.get(cid)).map(|c| c.stamp);
+                if let Some(cst) = stamp {
+                    e_t.push(e.stamp.saturating_sub(cst));
+                }
+            }
+        }
+        let e_t = p95(e_t)?;
+        let u: Vec<u64> = self.window_data_cache.values().flat_map(|wd| wd.d.get(&t).cloned().unwrap_or_default()).collect();
+        let u_t = p95(u).unwrap_or(0);
+        let v = self.windows.values().next_back()?;
+        let w = self.cfg.window;
+        let l_max = v.l.iter().filter(|(m, _)| !self.fed_peers.contains_key(m) && **m != t).map(|(_, &l)| l).max().unwrap_or(0);
+        let c_floor = (w / 2).min(self.cfg.floor_f.max(l_max + v.q_floor));
+        let margin = w as i64 - 15 - c_floor as i64 - (32 + e_t + u_t + 4) as i64;
+        Some((e_t, u_t, c_floor, margin))
+    }
+
     /// Section 3's values of every window computed so far.
     pub fn window_values(&self) -> &BTreeMap<u64, WindowVals> {
         &self.windows
