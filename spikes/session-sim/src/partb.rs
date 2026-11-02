@@ -507,6 +507,106 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
     verdict(&sim, &finals, label, panic_at);
 }
 
+/// Rev 22 (e1) role cells, n = 4, member 3 fed at 8 kbit/s each way (it checks every kick itself). `case`:
+/// - "revoke-kick": admins 1 and 2; 1 demotes 2 at frame 120; once that is decided, 2 sends a kick of 4 backdated 150
+///   frames, to before its demotion. Judged on the previous decided ACL, it is refused everywhere: 4 stays.
+/// - "same-revoke": admins 1 and 2; 1 demotes 2 at frame 120 and 2 kicks 4 at 121, so both land in one decision. The
+///   kick is judged on the ACL before it, where 2 was an admin: it stands, and 2 ends a guest.
+/// - "same-promote": admin 1 only; 1 promotes 2 at frame 120 and 2 kicks 4 at 121. In that decision the kick is void
+///   (2 wasn't an admin before it); it stays pending and decides in a later one.
+pub fn e1_roles(case: &str) {
+    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let admins: Vec<MemberId> = if case == "same-promote" { vec![1] } else { vec![1, 2] };
+    let plans = |m: MemberId| {
+        let mut v: Vec<(u64, Action)> = (300..1300).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        match (case, m) {
+            ("revoke-kick" | "same-revoke", 1) => v.push((360, Action::SetRole { member: 2, role: crate::p24r::GUEST })),
+            ("same-revoke", 2) => v.push((361, Action::Kick { target: 4 })),
+            ("same-promote", 1) => v.push((360, Action::SetRole { member: 2, role: ADMIN })),
+            ("same-promote", 2) => v.push((361, Action::Kick { target: 4 })),
+            _ => {}
+        }
+        v.sort_by_key(|x| x.0);
+        plan(&v)
+    };
+    let mut ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    crate::p24r::guests(&mut ps, &admins);
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 37);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &x in &[1, 2, 4] {
+        for pair in [(3, x), (x, 3)] {
+            net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+        }
+    }
+    let mut sim = Sim::new(net, ps, 16_000_000);
+    sim.feed = true;
+    let mut sent = false;
+    let mut fed_at_kick = false;
+    let label = format!("e1-{case}");
+    let panic_at = run_to_end(&mut sim, |s| {
+        if case == "revoke-kick" && !sent {
+            let r2 = &s.replica(2, 1).sim;
+            if r2.roles.get(&2) == Some(&crate::p24r::GUEST) && r2.epoch >= 1 {
+                fed_at_kick = s.is_fed(1, 3);
+                let r2 = sim_mut(s, 2);
+                let epoch = r2.epoch;
+                let e = r2.author_backdated(Payload::Kick { epoch, target: 4 }, 150);
+                for to in [1, 3, 4] {
+                    s.net.send(1, 2, to, &Msg::Entry(e.clone()));
+                }
+                sent = true;
+            }
+        }
+        if case != "revoke-kick" && s.net.now_us == 6_100_000 {
+            fed_at_kick = s.is_fed(1, 3);
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    let all = r1.all_entries();
+    for c in r1.epoch_certs_upto(r1.epoch).unwrap_or_default() {
+        let admin: Vec<String> = c
+            .change
+            .admin
+            .iter()
+            .map(|&(id, ok)| match all.iter().find(|e| e.id() == id) {
+                Some(e) => format!("{:?} by {} stamp {} -> {}", crate::kind_short(&e.payload), e.member, e.stamp, if ok { "applied" } else { "refused" }),
+                None => format!("{id:#x} (not held) -> {ok}"),
+            })
+            .collect();
+        let rm: Vec<(MemberId, EntryId)> = c.change.remove.iter().map(|r| (r.member, r.kick)).collect();
+        println!("RESULT {label}: epoch {} change: remove {rm:?} admin {admin:?}", c.epoch);
+    }
+    let removal_epoch = r1.epoch_certs_upto(r1.epoch).unwrap_or_default().iter().find(|c| c.change.remove.iter().any(|r| r.member == 4)).map(|c| (c.epoch, c.precommits.iter().map(|x| x.0).collect::<Vec<_>>()));
+    let role_epoch = r1.epoch_certs_upto(r1.epoch).unwrap_or_default().iter().find(|c| !c.change.admin.is_empty()).map(|c| c.epoch);
+    println!(
+        "RESULT {label}: 3 fed at the kick {fed_at_kick}; members at m1 {:?}; roles {:?}; first change with admin entries: epoch {role_epoch:?}; member 4 removed by: {removal_epoch:?}",
+        r1.members, r1.roles
+    );
+    let expect = match case {
+        "revoke-kick" => r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST),
+        "same-revoke" => !r1.members.contains(&4) && r1.roles.get(&2) == Some(&crate::p24r::GUEST) && removal_epoch.as_ref().is_some_and(|(e, _)| Some(*e) == role_epoch),
+        _ => !r1.members.contains(&4) && r1.roles.get(&2) == Some(&ADMIN) && removal_epoch.as_ref().is_some_and(|(e, _)| role_epoch.is_some_and(|r| *e > r)),
+    };
+    let what = match case {
+        "revoke-kick" => "the backdated kick of a revoked admin is refused; 4 stays",
+        "same-revoke" => "the kick in its revocation's decision stands; 4 removed in that decision",
+        _ => "the kick in its author's promotion decision is void, then decides in a later one",
+    };
+    println!("RESULT {label}: {}", if expect { what.to_string() } else { format!("FAIL (expected: {what})") });
+    let finals: Vec<MemberId> = r1.members.iter().copied().filter(|&m| m != 3).collect();
+    verdict(&sim, &finals, &label, panic_at);
+}
+
 pub fn stale() {
     let ids = [1, 2, 3, 4];
     // (frame, member, object, impulse): who writes which object when.
