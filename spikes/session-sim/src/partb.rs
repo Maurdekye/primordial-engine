@@ -134,6 +134,14 @@ pub fn leave_s4() {
         r1.members,
         sim.is_fed(1, 3)
     );
+    // Diagnostics (PE_PB_DEBUG): each member's view-change and leave events.
+    if std::env::var("PE_PB_DEBUG").is_ok() {
+        for m in [1, 2, 3] {
+            for e in sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("view change") || e.contains("VIEW CHANGE") || e.contains("leave") || e.contains("vote to")).take(14) {
+                println!("  m{m}: {e}");
+            }
+        }
+    }
     let finals: Vec<MemberId> = r1.members.iter().copied().collect();
     verdict(&sim, &finals, "leave-s4", panic_at);
 }
