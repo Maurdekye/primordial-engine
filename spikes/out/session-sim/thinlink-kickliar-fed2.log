@@ -11,29 +11,31 @@ TRACE kickliar-fed2 t= 5 s m3: fed true level 8 ack every 32 fr | acks/s 2 | upl
 TRACE kickliar-fed2 t= 5 s m4: fed true level 8 ack every 32 fr | acks/s 3 | uplink 5.7 kbit/s per link, queue 78 ms | downlink queue 15 ms
 TRACE kickliar-fed2 t= 6 s m3: fed true level 7 ack every 16 fr | acks/s 2 | uplink 4.6 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed2 t= 6 s m4: fed true level 7 ack every 16 fr | acks/s 2 | uplink 4.6 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 7 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 8.5 kbit/s per link, queue 69 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 7 s m4: fed true level 8 ack every 32 fr | acks/s 2 | uplink 8.5 kbit/s per link, queue 43 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 8 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 2.9 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 8 s m4: fed true level 8 ack every 32 fr | acks/s 2 | uplink 3.2 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 9 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 9 s m4: fed true level 8 ack every 32 fr | acks/s 3 | uplink 3.0 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=10 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=10 s m4: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.8 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=11 s m3: fed true level 5 ack every 8 fr | acks/s 3 | uplink 2.9 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=11 s m4: fed true level 5 ack every 8 fr | acks/s 3 | uplink 2.9 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=12 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=12 s m4: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=13 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=13 s m4: fed true level 5 ack every 8 fr | acks/s 4 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=14 s m3: fed true level 4 ack every 6 fr | acks/s 4 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t=14 s m4: fed true level 6 ack every 8 fr | acks/s 4 | uplink 3.7 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 m3 uplink by kind, kbit/s per link from 4 s: total 4.14 | (batch framing) 10x 0.01, (datagram overhead) 97x 1.35, ack 39x 1.38, ckpts 19x 0.34, entry/touch 29x 0.87, fetch 16x 0.06, vote 10x 0.14
-TRACE kickliar-fed2 m4 uplink by kind, kbit/s per link from 4 s: total 4.22 | (batch framing) 13x 0.02, (datagram overhead) 96x 1.33, ack 40x 1.43, ckpts 19x 0.34, entry/touch 30x 0.90, fetch 16x 0.06, vote 10x 0.14
-RESULT kickliar-fed2: m3's touches at m1: 24 held, 0 void (late past rule 1's deadline)
-RESULT kickliar-fed2: m4's touches at m1: 24 held, 0 void (late past rule 1's deadline)
+TRACE kickliar-fed2 t= 7 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 9.3 kbit/s per link, queue 125 ms | downlink queue 0 ms
+TRACE kickliar-fed2 t= 7 s m4: fed true level 8 ack every 32 fr | acks/s 2 | uplink 9.7 kbit/s per link, queue 242 ms | downlink queue 0 ms
+TRACE kickliar-fed2 t= 8 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.9 kbit/s per link, queue 264 ms | downlink queue 359 ms
+TRACE kickliar-fed2 t= 8 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 8.1 kbit/s per link, queue 346 ms | downlink queue 357 ms
+TRACE kickliar-fed2 t= 9 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 4.7 kbit/s per link, queue 0 ms | downlink queue 450 ms
+TRACE kickliar-fed2 t= 9 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.0 kbit/s per link, queue 73 ms | downlink queue 317 ms
+TRACE kickliar-fed2 t=10 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 5.0 kbit/s per link, queue 0 ms | downlink queue 410 ms
+TRACE kickliar-fed2 t=10 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 10.1 kbit/s per link, queue 321 ms | downlink queue 445 ms
+TRACE kickliar-fed2 t=11 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 3.4 kbit/s per link, queue 0 ms | downlink queue 370 ms
+TRACE kickliar-fed2 t=11 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 6.2 kbit/s per link, queue 0 ms | downlink queue 413 ms
+TRACE kickliar-fed2 t=12 s m3: fed false level 7 ack every 16 fr | acks/s 5 | uplink 5.8 kbit/s per link, queue 271 ms | downlink queue 330 ms
+TRACE kickliar-fed2 t=12 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 10.7 kbit/s per link, queue 258 ms | downlink queue 373 ms
+TRACE kickliar-fed2 t=13 s m3: fed false level 8 ack every 32 fr | acks/s 3 | uplink 1.8 kbit/s per link, queue 0 ms | downlink queue 450 ms
+TRACE kickliar-fed2 t=13 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 7.7 kbit/s per link, queue 194 ms | downlink queue 341 ms
+TRACE kickliar-fed2 t=14 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 3.0 kbit/s per link, queue 0 ms | downlink queue 437 ms
+TRACE kickliar-fed2 t=14 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 9.1 kbit/s per link, queue 437 ms | downlink queue 301 ms
+TRACE kickliar-fed2 m3 uplink by kind, kbit/s per link from 4 s: total 5.60 | (batch framing) 23x 0.03, (datagram overhead) 153x 2.12, ack 62x 2.03, ckpts 6x 0.11, entry/touch 23x 0.69, fetch 95x 0.33, vote 21x 0.29
+TRACE kickliar-fed2 m4 uplink by kind, kbit/s per link from 4 s: total 8.40 | (batch framing) 36x 0.05, (datagram overhead) 159x 2.20, ack 136x 4.27, ckpts 6x 0.11, entry/touch 24x 0.72, fetch 79x 0.27, vote 51x 0.77
+RESULT kickliar-fed2: m3's touches at m1: 11 held, 0 void (late past rule 1's deadline)
+RESULT kickliar-fed2: m4's touches at m1: 10 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed2: m3 silence votes as a fed member: none
 RESULT kickliar-fed2: m4 silence votes as a fed member: none
-RESULT kickliar-fed2: member 2 removed at 6.64 s; members at m1 {1, 3, 4}; [3, 4] fed at the kick [true, true], at the decision [true, true]
+RESULT kickliar-fed2: member 2 removed at 6.64 s; members at m1 {1, 3}; [3, 4] fed at the kick [true, true], at the decision [true, true]
 RESULT kickliar-fed2: epoch 1 change removes 2 by kick 0x92d8e2b6657dcba3, admin 1; precommits from [1, 3, 4]
-  m1: conf 751 frame 833 rollbacks 66 max depth 114 paused frames 37 checks ok 20 bad 0
-RESULT kickliar-fed2: frames 0..832 m1=3c727a18956eb65d | offline replay 3c727a18956eb65d | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed2: S-4 ["[w1 m4 f395 c121] S-4: n = 3 with members [3] and 4 fed: member 4 leaves by request"]; members at m1 at the end {1, 3}; m1's touches 12 held, 0 void
+RESULT kickliar-fed2: S-4 transition -> one fed member left by request
+  m1: conf 384 frame 504 rollbacks 31 max depth 108 paused frames 377 checks ok 22 bad 0
+RESULT kickliar-fed2: frames 0..503 m1=01dc38aa217fafda | offline replay 01dc38aa217fafda | ALL EQUAL, NO FALSE CHECKS

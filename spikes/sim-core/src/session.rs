@@ -4063,6 +4063,23 @@ impl WorldSim {
         Some(e)
     }
 
+    /// Revision 22, S-4 on the transition (@coordinator-opus m5c7b7e5c860e): at most one member is fed at n = 3, so
+    /// when a removal leaves n = 3 with two fed, one fed member leaves by request at once: the higher id among the fed
+    /// members I know of (myself, and the fed peers the TLP-23 contact rule gives me). The spectator path that follows
+    /// (item 7, RV16-2's rejoin after 10 s above both floors) isn't built.
+    pub fn s4_leave_due(&mut self) -> Option<Entry> {
+        if !self.cfg.localize || self.members.len() != 3 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() {
+            return None;
+        }
+        let fed: Vec<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m) && *m != self.me).collect();
+        let top = fed.iter().copied().max()?;
+        if top > self.me {
+            return None;
+        }
+        self.ev(format!("S-4: n = 3 with members {fed:?} and {} fed: member {} leaves by request", self.me, self.me));
+        self.request_leave()
+    }
+
     pub fn kick(&mut self, target: MemberId) -> Entry {
         let epoch = self.epoch;
         self.author_vc(Payload::Kick { epoch, target })
