@@ -4912,6 +4912,15 @@ impl WorldSim {
                     Some(c) => self.change_valid(&c),
                     None => Some(false),
                 };
+                // Rev 22 (c): a value a fed member can't fully check gets its prevote once t + 1 distinct members (any,
+                // fed or not) have prevoted it in this round: the first honest prevote is a full member's, which checked
+                // it against the whole chain.
+                let ok = if ok.is_none() && self.fed.is_some() {
+                    let n = self.vc.prevotes.get(&r).map_or(0, |ms| ms.iter().filter(|&(m, &x)| x == v && any_base.contains(m)).count());
+                    if n > t_any { Some(true) } else { None }
+                } else {
+                    ok
+                };
                 // Review VC-3: validity never changes with time (a Tendermint lock relies on it); a
                 // fresh proposal must also bring its boundary in time, a re-proposal need not.
                 let fresh_in_time = match self.vc.changes.get(&v) {
@@ -4952,7 +4961,12 @@ impl WorldSim {
                     let ahead = c.boundary > self.now;
                     let capped = self.join_caps.values().any(|&(_, b)| b <= c.boundary);
                     let in_time = !leads || ahead || (self.fixes_off & fix::VC3 == 0 && capped);
-                    if self.vc.changes.contains_key(&v) && in_time && self.change_valid(&c) == Some(true) {
+                    // Rev 22 (c): a polka (q >= t + 1 prevotes) settles what a fed member can't check.
+                    let valid = match self.change_valid(&c) {
+                        None if self.fed.is_some() => Some(true),
+                        x => x,
+                    };
+                    if self.vc.changes.contains_key(&v) && in_time && valid == Some(true) {
                         self.vc.polka_done.insert(r);
                         if self.vc.step == Step::Prevote {
                             self.vc.locked = Some((v, r));
