@@ -21,4 +21,4 @@ RESULT kickliar-fed: member 2 removed at 6.37 s; members at m1 {1, 3, 4}; [3] fe
 RESULT kickliar-fed: epoch 1 change removes 2 by kick 0x317d4f3dfbf32969, admin 1; precommits from [1, 3, 4]
   m1: conf 753 frame 833 rollbacks 59 max depth 43 paused frames 0 checks ok 43 bad 0
   m4: conf 753 frame 833 rollbacks 59 max depth 46 paused frames 0 checks ok 43 bad 0
-RESULT kickliar-fed: frames 0..752 m1=71820a7aa8979823 m4=71820a7aa8979823 | offline replay 71820a7aa8979823 | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed: frames 0..752 (replay from m1; each replica over its own confirmed frames: m1 0..752 71820a7aa8979823, m4 0..752 71820a7aa8979823) | offline replay 71820a7aa8979823 | ALL EQUAL, NO FALSE CHECKS
