@@ -1409,6 +1409,7 @@ fn main() {
             }),
             adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
             count_all: args.iter().any(|a| a == "--count-all"),
+            count_from_ms: get("--count-from-ms").map(|v| v.parse().unwrap()),
         }),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),

@@ -41,6 +41,8 @@ pub struct Opts {
     pub adaptive_only: bool,
     /// Count offered bytes over the whole run instead of the first gesture's window.
     pub count_all: bool,
+    /// Count offered bytes from this many ms to the end instead (a steady state after the controller settles).
+    pub count_from_ms: Option<u64>,
 }
 
 pub fn capped(o: &Opts) {
@@ -128,8 +130,8 @@ pub fn capped(o: &Opts) {
             }
         }
         net.batching = batching;
-        net.count_from_us = if o.count_all { 0 } else { w0 };
-        net.count_to_us = if o.count_all { u64::MAX } else { w1 };
+        net.count_from_us = if let Some(ms) = o.count_from_ms { ms * 1000 } else if o.count_all { 0 } else { w0 };
+        net.count_to_us = if o.count_all || o.count_from_ms.is_some() { u64::MAX } else { w1 };
         let mut sim = Sim::new(net, peers, o.end_s * 1_000_000);
         sim.feed = o.localize;
         // Thin links Part B: each member's time on the state feed (ms).
@@ -254,7 +256,7 @@ pub fn capped(o: &Opts) {
         }
         let secs = (w1 - w0) as f64 / 1e6;
         // Offered bytes are counted over the whole run with --count-all.
-        let bsecs = if o.count_all { o.end_s as f64 } else { secs };
+        let bsecs = if let Some(ms) = o.count_from_ms { o.end_s as f64 - ms as f64 / 1000.0 } else if o.count_all { o.end_s as f64 } else { secs };
         let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / bsecs;
         // A member demoted (removed) from the session no longer counts: compare the others.
         let live: Vec<MemberId> = ids.iter().copied().filter(|m| sim.replica(1, 1).sim.members.contains(m)).collect();
