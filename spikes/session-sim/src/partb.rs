@@ -242,13 +242,15 @@ pub fn kickliar_fed() {
 /// other its checkpoints and each votes the other out as crashed (TLP-23 gap, reported); and 8 kbit/s per link is too
 /// thin at n = 7 for this cell.
 pub fn kickliar_fed2() {
-    // 12 kbit/s: at 8, two acting fed members at n = 4 overfill their links (9.6 kbit/s offered per link) and the floor
-    // test votes them out, a parameter note like n = 7 (kickliar-fed7), not a fault.
-    let kbps = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(12_000);
+    // 8 kbit/s. Before rev 22's ack priority the two acting fed members' echo-carrying acks queued behind their own
+    // inputs in the FIFO router queue and the echo test voted them out (8d47e07 ran this cell at 12 kbit/s); with the
+    // client's two-class queue and pacing they stay members and every touch counts.
+    let kbps = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000);
     kickliar_fed_n("kickliar-fed2", 4, &[3, 4], &[2], Some(2), kbps);
 }
 
-/// The n = 7 two-fed variant (within scope: room n − q = 2). Kept for the cadence trace (rev 22, the fed ack period).
+/// The n = 7 two-fed variant (within scope: room n − q = 2), 8 kbit/s. Failed before rev 22's ack priority (the echo
+/// behind the fed members' own inputs and repairs in the FIFO router queue); passes with it. Also the cadence trace.
 pub fn kickliar_fed7() {
     kickliar_fed_n("kickliar-fed7", 7, &[6, 7], &[2, 5], None, 8_000);
 }
@@ -341,6 +343,16 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
             .collect();
         let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / secs / 1000.0 / (n as f64 - 1.0);
         println!("TRACE {label} m{f} uplink by kind, kbit/s per link from 4 s: total {total:.2} | {}", v.join(", "));
+    }
+    // Ack priority (rev 22): an acting fed member stays a member and its actions run late; count its touches void at m1.
+    {
+        let r1 = &sim.replica(1, 1).sim;
+        let void = r1.void_ids();
+        for &f in thin {
+            let touches: Vec<EntryId> = r1.all_entries().into_iter().filter(|e| e.member == f && matches!(e.payload, Payload::Touch { .. })).map(|e| e.id()).collect();
+            let nv = touches.iter().filter(|id| void.contains(id)).count();
+            println!("RESULT {label}: m{f}'s touches at m1: {} held, {nv} void (late past rule 1's deadline)", touches.len());
+        }
     }
     // TLP-23 with two fed (rev 22 delta): a fed member must hear the other's checkpoints, or it votes it out as crashed.
     for &f in thin {

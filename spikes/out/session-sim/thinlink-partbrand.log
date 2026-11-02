@@ -1,5 +1,5 @@
 RESULT partbrand seed 1 n=4 shapes {} faulty {} gst 10.6 s: fed {} (left []: ); digests over frames 0..1335; slow-honest touches not counting 0; worst clean lag after GST + 2 s 55 frames -> OK
-RESULT partbrand seed 2 n=4 shapes {2: ThinDown { kbps: 11, heal: true }} faulty {} gst 11.0 s: fed {2} (left [2]: m2 conf 1360 of frame 1372); digests over frames 0..1359; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK
+RESULT partbrand seed 2 n=4 shapes {2: ThinDown { kbps: 11, heal: true }} faulty {} gst 11.0 s: fed {2} (left []: ); digests over frames 0..1359; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK
 RESULT partbrand seed 3 n=6 shapes {} faulty {3: "Slow { by_us: 1261821 }"} gst 10.9 s: fed {} (left []: ); digests over frames 0..1351; slow-honest touches not counting 0; worst clean lag after GST + 2 s 67 frames -> OK
 RESULT partbrand seed 4 n=5 shapes {} faulty {} gst 11.0 s: fed {} (left []: ); digests over frames 0..1359; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK
 RESULT partbrand seed 5 n=5 shapes {} faulty {5: "Backdate { frames: 17 }"} gst 10.7 s: fed {} (left []: ); digests over frames 0..1335; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK

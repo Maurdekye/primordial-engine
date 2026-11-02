@@ -132,6 +132,8 @@ pub struct Net {
     /// R18 (viz-4): merge everything one member sends one peer in one tick into one datagram.
     pub batching: bool,
     outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
+    /// Rev 22, ack priority: a fed member's client queue per directed link, (protocol, own inputs), each (world, msg).
+    client_q: BTreeMap<(MemberId, MemberId), (std::collections::VecDeque<(WorldId, Msg)>, std::collections::VecDeque<(WorldId, Msg)>)>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
     pub trace: Vec<SendRec>,
@@ -181,6 +183,7 @@ impl Net {
             kinds_from: BTreeMap::new(),
             batching: false,
             outbox: BTreeMap::new(),
+            client_q: BTreeMap::new(),
             tracing: false,
             trace: Vec::new(),
         }
@@ -310,9 +313,62 @@ impl Net {
         self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + DATAGRAM_OVERHEAD)
     }
 
-    /// Current queue backlog of a capped link, in microseconds (0 if uncapped).
+    /// Current queue backlog of a capped link, in microseconds (0 if uncapped): the router queue plus, for a fed
+    /// member, its client queue (rev 22 ack priority), so the R18 controller still climbs when its inputs back up.
     pub fn backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
+        let router = self.router_backlog_us(from, to);
+        let client = match (self.client_q.get(&(from, to)), self.caps.get(&(from, to)).copied().or(self.default_cap)) {
+            (Some((hi, lo)), Some(cap)) if !hi.is_empty() || !lo.is_empty() => {
+                let bytes: u64 = hi.iter().chain(lo.iter()).map(|(_, m)| encode_msg(m).len() as u64).sum();
+                let datagrams = bytes / MTU as u64 + 1;
+                ((bytes + datagrams * DATAGRAM_OVERHEAD) as f64 * 8.0 * 1e6 / cap.rate_bps as f64) as u64
+            }
+            _ => 0,
+        };
+        router + client
+    }
+
+    /// The router queue alone (what a datagram offered now would wait at the bottleneck).
+    fn router_backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
         self.shapers.get(&(from, to)).map_or(0, |s| s.backlog_us(self.now_us))
+    }
+
+    /// Rev 22 ack priority: a fed member's client sends its protocol messages ahead of its own inputs. Each tick it
+    /// releases datagrams, protocol first, while the router queue is empty (the harness stand-in for pacing at its
+    /// estimated rate; production: R18's delay-gradient capacity estimate). Inputs wait in the client queue and run late; rule 1
+    /// voids what arrives past its deadline ("a spectator in effect"), and the echo stays timely.
+    fn release_client_queues(&mut self) {
+        let keys: Vec<(MemberId, MemberId)> = self.client_q.iter().filter(|(_, (hi, lo))| !hi.is_empty() || !lo.is_empty()).map(|(k, _)| *k).collect();
+        for (from, to) in keys {
+            if self.caps.get(&(from, to)).copied().or(self.default_cap).is_none() {
+                continue;
+            }
+            // Pacing at the link rate: the next datagram goes only once the router queue is empty (the bucket's burst
+            // still passes at once). One full datagram's worth of queue is over a second at 8 kbit/s.
+            loop {
+                if self.router_backlog_us(from, to) > 0 {
+                    break;
+                }
+                let (hi, lo) = self.client_q.get_mut(&(from, to)).unwrap();
+                let Some(w) = hi.front().or(lo.front()).map(|x| x.0) else { break };
+                let mut cur: Vec<Msg> = Vec::new();
+                let mut size = 0;
+                for q in [&mut *hi, &mut *lo] {
+                    while let Some((w2, m)) = q.front() {
+                        let n = encode_msg(m).len();
+                        if *w2 != w || (!cur.is_empty() && size + n > MTU) {
+                            break;
+                        }
+                        size += n;
+                        cur.push(q.pop_front().unwrap().1);
+                    }
+                }
+                if cur.is_empty() {
+                    break;
+                }
+                self.send_batch(w, from, to, cur);
+            }
+        }
     }
 
     /// Send now, or queue for this tick's batch to that peer.
@@ -336,7 +392,23 @@ impl Net {
     /// Review R3-9: unsplit, a tick's repairs became one multi-kilobyte datagram, which a full
     /// router queue dropped whole.
     pub fn flush(&mut self) {
+        // (spike: PE_NO_ACK_PRIORITY switches rev 22's ack priority off, for comparison)
+        let prio = std::env::var("PE_NO_ACK_PRIORITY").is_err();
         for ((w, from, to), v) in std::mem::take(&mut self.outbox) {
+            // A fed member's datagrams go through its client queue; so do a member's just off the feed while the queue
+            // still holds older ones (in order).
+            let queued = self.client_q.get(&(from, to)).is_some_and(|(h, l)| !h.is_empty() || !l.is_empty());
+            if prio && (self.fed.contains(&(w, from)) || queued) && self.caps.get(&(from, to)).or(self.default_cap.as_ref()).is_some() {
+                let (hi, lo) = self.client_q.entry((from, to)).or_default();
+                for m in v {
+                    let protocol = match &m {
+                        Msg::Entry(e) => is_protocol(&e.payload),
+                        _ => true,
+                    };
+                    if protocol { hi.push_back((w, m)) } else { lo.push_back((w, m)) }
+                }
+                continue;
+            }
             let mut cur: Vec<Msg> = Vec::new();
             let mut size = 0;
             for m in v {
@@ -352,6 +424,7 @@ impl Net {
                 self.send_batch(w, from, to, cur);
             }
         }
+        self.release_client_queues();
     }
 
     fn send_batch(&mut self, w: WorldId, from: MemberId, to: MemberId, mut v: Vec<Msg>) {
