@@ -233,7 +233,7 @@ pub fn leave_withhold() {
 /// view changes, member 3 is fed (8 kbit/s each way), member 1 kicks member 2 at frame 360. The fed member checks the
 /// kick itself (signature, epoch, the previous decided ACL), so members 1, 3 and 4 make q = 3 and the kick decides.
 pub fn kickliar_fed() {
-    kickliar_fed_n("kickliar-fed", 4, &[3], &[2]);
+    kickliar_fed_n("kickliar-fed", 4, &[3], &[2], None);
 }
 
 /// The same with two fed: n = 7 (q = 5, room for two fed), members 6 and 7 fed, members 2 (the liar) and 5 out of view
@@ -242,10 +242,15 @@ pub fn kickliar_fed() {
 /// other its checkpoints and each votes the other out as crashed (TLP-23 gap, reported); and 8 kbit/s per link is too
 /// thin at n = 7 for this cell.
 pub fn kickliar_fed2() {
-    kickliar_fed_n("kickliar-fed2", 7, &[6, 7], &[2, 5]);
+    kickliar_fed_n("kickliar-fed2", 4, &[3, 4], &[2], Some(2));
 }
 
-fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId]) {
+/// The n = 7 two-fed variant (within scope: room n − q = 2). Kept for the cadence trace (rev 22, the fed ack period).
+pub fn kickliar_fed7() {
+    kickliar_fed_n("kickliar-fed7", 7, &[6, 7], &[2, 5], None);
+}
+
+fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId], room: Option<usize>) {
     let ids: Vec<MemberId> = (1..=n).collect();
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
     let plans = |m: MemberId| {
@@ -277,13 +282,41 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId])
     }
     let mut sim = Sim::new(net, ps, 14_000_000);
     sim.feed = true;
+    sim.feed_room = room;
+    // Bytes by kind from 4 s (after the feed starts) to the end.
+    sim.net.count_from_us = 4_000_000;
     for &m in withhold {
         sim_mut(&mut sim, m).withhold_vc = true;
     }
     let mut removed: Option<u64> = None;
     let mut fed_at_kick: Vec<bool> = Vec::new();
     let mut fed_at_decide: Vec<bool> = Vec::new();
+    let mut acks_before: BTreeMap<MemberId, u64> = BTreeMap::new();
     let panic_at = run_to_end(&mut sim, |s| {
+        // Rev 22 cadence trace: each fed-candidate's R18 level, ack interval, acks in the last second, uplink offered
+        // (mean over its links) and deepest uplink queue, once a second.
+        if s.net.now_us % 1_000_000 == 0 && s.net.now_us > 0 {
+            for &f in thin {
+                let rep = s.replica(f, 1);
+                let acks = s.ack_count.get(&(1, f)).copied().unwrap_or(0);
+                let prev = acks_before.insert(f, acks).unwrap_or(0);
+                let others: Vec<MemberId> = ids.iter().copied().filter(|&x| x != f).collect();
+                let up_bps: u64 = others.iter().map(|&x| s.net.recent_bps(f, x)).sum::<u64>() / others.len() as u64;
+                let up_q = others.iter().map(|&x| s.net.backlog_us(f, x)).max().unwrap_or(0);
+                let down_q = others.iter().map(|&x| s.net.backlog_us(x, f)).max().unwrap_or(0);
+                println!(
+                    "TRACE {label} t={:>2} s m{f}: fed {} level {} ack every {} fr | acks/s {} | uplink {:.1} kbit/s per link, queue {} ms | downlink queue {} ms",
+                    s.net.now_us / 1_000_000,
+                    s.is_fed(1, f),
+                    rep.level,
+                    (rep.ack_every_us / rep.dt_us).max(1),
+                    acks - prev,
+                    up_bps as f64 / 1000.0,
+                    up_q / 1000,
+                    down_q / 1000
+                );
+            }
+        }
         if s.net.now_us == 6_000_000 {
             fed_at_kick = thin.iter().map(|&f| s.is_fed(1, f)).collect();
         }
@@ -292,6 +325,19 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId])
             fed_at_decide = thin.iter().map(|&f| s.is_fed(1, f)).collect();
         }
     });
+    // What fills a fed member's uplink: bytes by kind it offered from 4 s on, per link (n − 1 links).
+    let secs = (sim.end_us.saturating_sub(4_000_000)) as f64 / 1e6;
+    for &f in thin {
+        let v: Vec<String> = sim
+            .net
+            .kinds_from
+            .iter()
+            .filter(|((m, _), _)| *m == f)
+            .map(|((_, k), (c, b))| format!("{k} {c}x {:.2}", *b as f64 * 8.0 / secs / 1000.0 / (n as f64 - 1.0)))
+            .collect();
+        let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / secs / 1000.0 / (n as f64 - 1.0);
+        println!("TRACE {label} m{f} uplink by kind, kbit/s per link from 4 s: total {total:.2} | {}", v.join(", "));
+    }
     let r1 = &sim.replica(1, 1).sim;
     println!(
         "RESULT {label}: member 2 removed at {}; members at m1 {:?}; {thin:?} fed at the kick {fed_at_kick:?}, at the decision {fed_at_decide:?}",
