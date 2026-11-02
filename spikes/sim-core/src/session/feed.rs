@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{echo_digest, entry_id, BodyState, Entry, EntryId, FedAck, MemberId, Msg, WorldSim};
+use super::{echo_digest, entry_id, BodyState, Entry, EntryId, FedAck, MemberId, Msg, Payload, WorldSim};
 
 /// Item 7's bandwidth floor as rule 4 (D) reads it, total over a member's peers: about 0.625 kbit/s per member (2.5 at
 /// n = 4, 5 at n = 8). A voter's share is this over n − 1. (Revision 22 restates the floor itself, pending the user's
@@ -225,10 +225,30 @@ impl WorldSim {
     /// final vouched prefix, whatever the value says).
     pub(super) fn fed_change_valid(&self, c: &super::Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
-        if c.epoch != self.epoch || c.boundary < last || !c.add.is_empty() || !c.admin.is_empty() {
+        if c.epoch != self.epoch || c.boundary < last || !c.add.is_empty() {
             return Some(false);
         }
+        // Rev 22 (e1): kicks it checks itself, as a full member does: signature, epoch, the previous decided ACL, in the
+        // commit order. Any other admin entry it can't check (stamp-effective: (c), not built yet) gets its nil.
+        let mut run = self.admin_run();
+        let mut kicked: BTreeMap<EntryId, MemberId> = BTreeMap::new();
+        for &(id, ok) in &c.admin {
+            let Some(e) = self.entries.get(&id).cloned() else { return Some(false) };
+            let Payload::Kick { epoch, target, .. } = e.payload else { return Some(false) };
+            if epoch > self.epoch || run.apply(&e) != ok {
+                return Some(false);
+            }
+            if ok {
+                kicked.insert(id, target);
+            }
+        }
         for r in &c.remove {
+            if r.kick != 0 {
+                if kicked.get(&r.kick) != Some(&r.member) {
+                    return Some(false);
+                }
+                continue;
+            }
             let mine = self.votes.get(&r.member).is_some_and(|v| v.contains_key(&self.me));
             let proof = self.proofs.contains_key(&r.member) || self.liars.contains_key(&r.member);
             let leave = self.leaves.get(&r.member).is_some_and(|id| r.votes == [*id]);
