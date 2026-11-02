@@ -1452,6 +1452,7 @@ fn main() {
         Some("e1-revoke-kick") => partb::e1_roles("revoke-kick"),
         Some("e1-same-revoke") => partb::e1_roles("same-revoke"),
         Some("e1-same-promote") => partb::e1_roles("same-promote"),
+        Some("e1-kick-owner") => partb::e1_roles("kick-owner"),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
