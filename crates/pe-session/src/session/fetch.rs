@@ -79,6 +79,7 @@ impl WorldSim {
             if q.len() > Self::RTT_SAMPLES {
                 q.pop_front();
             }
+            self.rtt_dirty = true;
         }
     }
 
@@ -104,12 +105,10 @@ impl WorldSim {
 
     /// The hole rule's fallback deadline in frames (review O2-3, ruled 2026-11-01): 1.5 x the members'
     /// median fetch round trip, at least 4 frames and at most W/4 = 30 (the most a slow forker can
-    /// delay the ask to everyone); LEAN_HOLD_FRAMES before any round trip is measured.
+    /// delay the ask to everyone); LEAN_HOLD_FRAMES before any round trip is measured. Computed once per
+    /// tick in `take_fetches`.
     pub fn hole_hold(&self) -> u64 {
-        match self.rtt_figures().0 {
-            0 => Self::LEAN_HOLD_FRAMES,
-            r => (r * 3 / 2 + 1).clamp(4, Self::HOLE_HOLD_MAX),
-        }
+        self.hold_now
     }
 
     /// The cap on [`Self::hole_hold`]: W/4 at the default window of 120 frames.
@@ -123,7 +122,16 @@ impl WorldSim {
         self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
         self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
         self.clock_ms = now_ms;
-        let first_wait = if self.congested { self.rtt_figures().1.clamp(60, 2000) } else { 60 };
+        if self.rtt_dirty {
+            self.rtt_dirty = false;
+            let (rtt_frames, rtt_ms) = self.rtt_figures();
+            self.rtt_ms_now = rtt_ms;
+            self.hold_now = match rtt_frames {
+                0 => Self::LEAN_HOLD_FRAMES,
+                r => (r * 3 / 2 + 1).clamp(4, Self::HOLE_HOLD_MAX),
+            };
+        }
+        let first_wait = if self.congested { self.rtt_ms_now.clamp(60, 2000) } else { 60 };
         for (to, author, from, upto, held) in std::mem::take(&mut self.wants) {
             // Review R3-9: the same range is re-asked with exponential backoff, 60 ms doubling up to
             // 2 s, so a congested link is not flooded with repeats of requests whose replies are

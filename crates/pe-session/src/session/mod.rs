@@ -600,6 +600,12 @@ pub struct WorldSim {
     fetch_rtt: BTreeMap<MemberId, std::collections::VecDeque<(u64, u64)>>,
     /// The ms clock as of the last [`Self::take_fetches`].
     clock_ms: u64,
+    /// [`Self::hole_hold`] as of the last [`Self::take_fetches`] (once per tick; it sorts every holder's figures).
+    hold_now: u64,
+    /// The members' median round trip in ms, as of the last new sample.
+    rtt_ms_now: u64,
+    /// A round trip was sampled since `hold_now` was computed.
+    rtt_dirty: bool,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
     pub check_hashes: BTreeMap<u64, CheckHash>,
@@ -903,6 +909,9 @@ impl WorldSim {
             fetch_first: BTreeMap::new(),
             fetch_rtt: BTreeMap::new(),
             clock_ms: 0,
+            hold_now: Self::LEAN_HOLD_FRAMES,
+            rtt_ms_now: 0,
+            rtt_dirty: false,
             hashes: BTreeMap::new(),
             check_hashes: BTreeMap::new(),
             remote_checks: BTreeMap::new(),
