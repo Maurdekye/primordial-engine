@@ -2936,8 +2936,10 @@ impl WorldSim {
         let mut out = Vec::new();
         // Revision 22: a leave request (its author's vote on itself, no kick) is taken by value by every replica: it is
         // evidence for its author's removal on its own, and it may arrive ahead of its author's queued entries (D-5).
+        // It stands until its author is removed: a reset decided meanwhile doesn't clear it (leave-s4: member 2 asked in
+        // epoch 0 while the others had just reset into epoch 1, and its request was dropped).
         if let Payload::Vote { epoch, target, kick: 0, .. } = self.entries[&id].payload {
-            if target == member && epoch == self.epoch && self.members.contains(&member) {
+            if target == member && epoch <= self.epoch && self.members.contains(&member) {
                 self.leaves.entry(member).or_insert(id);
             }
         }
@@ -5248,7 +5250,9 @@ impl WorldSim {
         ));
         // A new epoch: the old one's votes, freezes and view-change state end.
         self.votes.clear();
-        self.leaves.clear();
+        // A leave request stands until its author is removed (it is its author's standing wish, not a vote).
+        let members_now = self.members.clone();
+        self.leaves.retain(|m, _| members_now.contains(m));
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
         self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
