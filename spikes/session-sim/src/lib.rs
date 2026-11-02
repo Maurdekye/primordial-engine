@@ -287,6 +287,22 @@ impl Net {
         self.queue.push(Reverse((at, self.seq, to, world, from, bytes)));
     }
 
+    /// Revision 22, D-5: a leave request goes first, ahead of the sender's queued datagrams (its client puts it at the
+    /// head of its send queue): it leaves after its own serialization time and is never tail-dropped. Not batched.
+    pub fn send_urgent(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
+        let bytes = encode_msg(m);
+        let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
+        let ser = match self.caps.get(&(from, to)).copied().or(self.default_cap) {
+            Some(cap) => ((bytes.len() as u64 + DATAGRAM_OVERHEAD) as f64 * 8.0 * 1e6 / cap.rate_bps as f64).ceil() as u64,
+            None => 0,
+        };
+        let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
+        let at = self.now_us + ser + link.delay_us + jitter;
+        self.record(from, to, bytes.len() as u64, 0, at);
+        self.seq += 1;
+        self.queue.push(Reverse((at, self.seq, to, world, from, bytes)));
+    }
+
     /// Departure time through the link's bandwidth cap for a payload of `payload` bytes (now, if
     /// the link is uncapped), or None if its queue is full.
     pub fn shape(&mut self, from: MemberId, to: MemberId, payload: u64) -> Option<u64> {
@@ -1176,6 +1192,17 @@ impl Sim {
                             // request froze are cut at the decision; counted meanwhile, their withdrawal would roll back
                             // confirmed frames).
                             if r.sim.leaving() && !matches!(a, Action::Leave) {
+                                continue;
+                            }
+                            // Revision 22, D-5: a leave request is sent first, ahead of queued entries.
+                            if matches!(a, Action::Leave) {
+                                if let Some(e) = r.sim.request_leave() {
+                                    for &to in &members {
+                                        if to != pid {
+                                            self.net.send_urgent(w, pid, to, &Msg::Entry(e.clone()));
+                                        }
+                                    }
+                                }
                                 continue;
                             }
                             let e = match a {
