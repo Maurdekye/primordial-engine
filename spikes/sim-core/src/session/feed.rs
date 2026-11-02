@@ -225,17 +225,28 @@ impl WorldSim {
     /// final vouched prefix, whatever the value says).
     pub(super) fn fed_change_valid(&self, c: &super::Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
-        if c.epoch != self.epoch || c.boundary < last || !c.add.is_empty() {
+        if c.epoch != self.epoch || c.boundary < last {
             return Some(false);
         }
+        // Rev 22 (c): a join or a stamp-effective admin entry it can't check; everything else it checks below. If all
+        // that passes, the answer is None ("can't tell"): it prevotes such a value once t + 1 members have (vc_rules).
+        let mut uncheckable = !c.add.is_empty();
         // Rev 22 (e1): kicks it checks itself, as a full member does: signature, epoch, the previous decided ACL, in the
         // commit order. Any other admin entry it can't check (stamp-effective: (c), not built yet) gets its nil.
         let mut run = self.admin_run();
         let mut kicked: BTreeMap<EntryId, MemberId> = BTreeMap::new();
         let mut prev = None;
         for &(id, ok) in &c.admin {
-            let Some(e) = self.entries.get(&id).cloned() else { return Some(false) };
-            let Payload::Kick { epoch, target, .. } = e.payload else { return Some(false) };
+            let Some(e) = self.entries.get(&id).cloned() else {
+                uncheckable = true;
+                continue;
+            };
+            let Payload::Kick { epoch, target, .. } = e.payload else {
+                // Stamp-effective (roles, ownership): it can't check D73-1 without the chain. They run before every kick
+                // and don't change who is a member, so the kicks below are checked all the same.
+                uncheckable = true;
+                continue;
+            };
             let key = super::admin_key(&e, self.kick_seed());
             if epoch > self.epoch || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
                 return Some(false);
@@ -264,7 +275,7 @@ impl WorldSim {
                 return Some(false);
             }
         }
-        Some(true)
+        if uncheckable { None } else { Some(true) }
     }
 
     /// Rule 4's floor test, the uplink half (D) (revision 22): the bytes of fed member j's own datagrams that reached
