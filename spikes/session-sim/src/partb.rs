@@ -142,8 +142,26 @@ pub fn leave_s4() {
             }
         }
     }
+    // The verdict reads the frames every member has confirmed: after the leave the session is 2 players (D54) with
+    // member 3 off the feed and replaying the log over its 8 kbit/s link (the spike has no state transfer), so its
+    // speculative frames lag; what the cell checks is that the leave decides with no rollback and everyone agrees on
+    // everything confirmed.
     let finals: Vec<MemberId> = r1.members.iter().copied().collect();
-    verdict(&sim, &finals, "leave-s4", panic_at);
+    if let Some(t) = panic_at {
+        println!("RESULT leave-s4: PANIC at t={t} ms -> FAIL");
+        return;
+    }
+    let upto = finals.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap_or(0);
+    let members: Vec<MemberId> = r1.members.iter().copied().collect();
+    let rd = digest(&replay_sim_like(r1, SCENE, &members, &final_log(r1), upto).hashes, upto);
+    let ds: Vec<(MemberId, u64)> = finals.iter().map(|&m| (m, digest(&sim.replica(m, 1).sim.hashes, upto))).collect();
+    let bad: u64 = finals.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
+    let ok = removed.is_some() && ds.iter().all(|(_, d)| *d == rd) && bad == 0;
+    println!(
+        "RESULT leave-s4: confirmed frames 0..{upto} {} | offline replay {rd:016x} | {}",
+        ds.iter().map(|(m, d)| format!("m{m}={d:016x}")).collect::<Vec<_>>().join(" "),
+        if ok { "ALL EQUAL, NO FALSE CHECKS, LEAVE DECIDED" } else { "FAIL" }
+    );
 }
 
 pub fn stale() {

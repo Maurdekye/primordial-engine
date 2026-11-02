@@ -742,6 +742,40 @@ impl Sim {
                 }
             }
         }
+        // Revision 22: below 3 members a fed member's echo counts for nothing (2 players keep D54), so its feed ends, as a
+        // leave would (leave-s4: after the second thin member left by request, the fed one stalled the 2-player session).
+        let ended: Vec<(WorldId, MemberId)> = self
+            .net
+            .fed
+            .iter()
+            .copied()
+            .filter(|&(w, m)| {
+                let pi = self.peer_index(m);
+                self.peers[pi].worlds.get(&w).is_none_or(|r| !(r.sim.localized() || r.sim.fed_mode_capable()))
+            })
+            .collect();
+        for (w, t) in ended {
+            self.net.fed.remove(&(w, t));
+            if let Some(ctl) = self.feeds.get_mut(&(w, t)) {
+                ctl.fed = false;
+                ctl.left_us = Some(now);
+            }
+            let pi = self.peer_index(t);
+            let fetches = match self.peers[pi].worlds.get_mut(&w) {
+                Some(r) => {
+                    r.sim.set_fed(false);
+                    r.sim.recovery_fetches()
+                }
+                None => Vec::new(),
+            };
+            for f in fetches {
+                if let Msg::Fetch { author, .. } = f {
+                    if author != t {
+                        self.net.post(w, t, author, &f);
+                    }
+                }
+            }
+        }
         let cap_of = |net: &Net, a: MemberId, b: MemberId| net.caps.get(&(a, b)).copied().or(net.default_cap).map_or(u64::MAX, |c| c.rate_bps);
         for (w, t, members) in todo {
             let senders: Vec<MemberId> = members.iter().copied().filter(|&s| s != t).collect();
