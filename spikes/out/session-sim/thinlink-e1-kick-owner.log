@@ -3,4 +3,4 @@ RESULT e1-kick-owner: a non-owner admin's kick of the owner is refused; 1 stays
   m1: conf 901 frame 953 rollbacks 66 max depth 25 paused frames 0 checks ok 73 bad 0
   m2: conf 901 frame 953 rollbacks 66 max depth 25 paused frames 0 checks ok 73 bad 0
   m4: conf 901 frame 953 rollbacks 66 max depth 27 paused frames 0 checks ok 73 bad 0
-RESULT e1-kick-owner: frames 0..952 m1=728aae04abe83dc8 m2=728aae04abe83dc8 m4=728aae04abe83dc8 | offline replay 728aae04abe83dc8 | ALL EQUAL, NO FALSE CHECKS
+RESULT e1-kick-owner: frames 0..900 m1=ace04e85e043d150 m2=ace04e85e043d150 m4=ace04e85e043d150 | offline replay ace04e85e043d150 | ALL EQUAL, NO FALSE CHECKS

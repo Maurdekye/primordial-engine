@@ -4,4 +4,4 @@ RESULT e1-same-promote: 3 fed at the kick true; members at m1 {1, 2, 3}; roles {
 RESULT e1-same-promote: the guest's kick is refused on arrival; sent again after the promotion decides, it decides
   m1: conf 848 frame 953 rollbacks 50 max depth 29 paused frames 0 checks ok 51 bad 0
   m2: conf 848 frame 953 rollbacks 50 max depth 29 paused frames 0 checks ok 51 bad 0
-RESULT e1-same-promote: frames 0..952 m1=540ddaecd06bbe5b m2=540ddaecd06bbe5b | offline replay 540ddaecd06bbe5b | ALL EQUAL, NO FALSE CHECKS
+RESULT e1-same-promote: frames 0..847 m1=56daf6b1b1451a27 m2=56daf6b1b1451a27 | offline replay 56daf6b1b1451a27 | ALL EQUAL, NO FALSE CHECKS
