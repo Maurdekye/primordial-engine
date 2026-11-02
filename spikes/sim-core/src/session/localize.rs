@@ -387,6 +387,9 @@ impl WorldSim {
                         let cst = self.ckpt_by_block.get(&(x, b)).and_then(|&(cs, _, _)| self.by_author.get(&(x, cs))).and_then(|cid| self.entries.get(cid)).map(|c| c.stamp);
                         if let Some(cst) = cst {
                             data.e_t.entry(m).or_default().push(e.stamp.saturating_sub(cst));
+                            if std::env::var("PE_ET_DEBUG").ok().and_then(|v| v.parse::<MemberId>().ok()) == Some(self.me) {
+                                eprintln!("ET m{} window {w}: fed {m} ack seq {seq} stamp {} echoes ({x}, {b}) checkpoint stamp {cst} -> {}", self.me, e.stamp, e.stamp.saturating_sub(cst));
+                            }
                         }
                     }
                 }
