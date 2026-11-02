@@ -10,6 +10,6 @@ RESULT bans-next: m1: 1 unbans (perma) k5 @180: applied
 RESULT bans-next: m2: 1 unbans (perma) k5 @180: applied
   m2: members {1, 2, 3, 5, 6} roles {1: 0, 2: 0, 3: 1, 5: 1, 6: 1} admins [1, 2] closed at None
   m2: session bans {}, rejoin roles [], perma-bans {4}
-RESULT bans-next: 3 and 6 admitted; 5 admitted after its perma-unban; 4 refused again: m1 world 1 conf 403 members {1, 2, 3, 5, 6} evicted {} -> OK
-RESULT bans-next: member 2 agrees: m2 world 1 conf 403 members {1, 2, 3, 5, 6} evicted {} -> OK
+RESULT bans-next: 3 and 6 admitted; 5 admitted after its perma-unban; 4 refused again: m1 world 1 conf 394 members {1, 2, 3, 5, 6} evicted {} -> OK
+RESULT bans-next: member 2 agrees: m2 world 1 conf 394 members {1, 2, 3, 5, 6} evicted {} -> OK
 RESULT bans-next world 1: frames 0..360 digests m1=3f746f57df0ed2b6 m2=3f746f57df0ed2b6 m3=3f746f57df0ed2b6 m4=3f746f57df0ed2b6 m5=3f746f57df0ed2b6 m6=3f746f57df0ed2b6 | offline replay 3f746f57df0ed2b6 | ALL EQUAL

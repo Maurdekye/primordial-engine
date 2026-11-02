@@ -1,4 +1,4 @@
-  cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2474 ms: a replica hit an assertion or a panic; m1 conf 118 of frame 142, m2 conf 118 of frame 142, m3 conf 102 of frame 142; at m1: members {1, 2, 3}, evicted [9]
+  cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2478 ms: a replica hit an assertion or a panic; m1 conf 118 of frame 142, m2 conf 118 of frame 142, m3 conf 102 of frame 142; at m1: members {1, 2, 3}, evicted [9]
   fork at 9's seq 18, t=1935 ms; branch B 23 entries plus 10 extra acks
 RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (25, 126)} conf 456 frame 473 paused frames 0 lying votes found 0
 RESULT cutbackdate: m2 members {1, 2, 3} evicted {9: (25, 126)} conf 456 frame 473 paused frames 0 lying votes found 0

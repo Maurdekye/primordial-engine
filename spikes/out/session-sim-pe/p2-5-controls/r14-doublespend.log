@@ -9,8 +9,8 @@ RESULT   forged by m2 in world 1: RESIDUAL: W's majority double-spends A:52 (now
   carrier: depart entry final outcome at A frame 160: Accepted
   carrier: t=5009ms relaying transfer 13306586633597056491 from world 2, as a member of both worlds
   carrier: t=5243ms depart confirmed in world 2 (frame 242); arrive authored in world 1 at frame 308
-  carrier: t=5598ms arrival confirmed in world 1 (frame 308, accepted=false); verdict authored in world 2 at frame 272 (its sim there at frame 272)
-  carrier: t=5796ms verdict confirmed in world 2; transfer 13306586633597056491 resolved
+  carrier: t=5557ms arrival confirmed in world 1 (frame 308, accepted=false); verdict authored in world 2 at frame 270 (its sim there at frame 270)
+  carrier: t=5718ms verdict confirmed in world 2; transfer 13306586633597056491 resolved
   carrier: phase Done accepted Some(false)
   relayer m2: t=1768ms depart authored in world 1 at frame 100
   relayer m2: t=2131ms depart confirmed in world 1 (frame 100); arrive authored in world 6 at frame 121
@@ -31,12 +31,12 @@ RESULT   forged by m2 in world 1: RESIDUAL: W's majority double-spends A:52 (now
 RESULT r14 doublespend: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (exactly one live copy, nothing in limbo)
 RESULT r14 doublespend: dishonest-majority W (provenance on): A:52 A 1 B 1 pending 0 (W 0); A:53 A 1 B 0 pending 0 (W 0); A:54 A 1 B 0 pending 0 (W 0); A:55 A 1 B 0 pending 0 (W 0); W:500 A 0 B 0 pending 0 (W 0) -> NOT CONSERVED in the honest worlds
 RESULT r14 doublespend: world 1 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 2367915161791316339 (transfers 13816223028924348135 and 501852699341704483); verifies for a third party: true
-  m2 world 6: rollbacks 2 max depth 3 resim frames 9 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 502 frame 533
+  m2 world 6: rollbacks 2 max depth 3 resim frames 9 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 502 frame 533
   m3 world 6: rollbacks 1 max depth 3 resim frames 4 (0.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 512 frame 533
-  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (4.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 508 frame 534
-  m2 world 1: rollbacks 14 max depth 10 resim frames 72 (11.9 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 517 frame 533
-  m1 world 2: rollbacks 3 max depth 3 resim frames 8 (1.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 426 frame 442
-  m3 world 2: rollbacks 3 max depth 3 resim frames 11 (1.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 427 frame 442
+  m1 world 1: rollbacks 6 max depth 4 resim frames 27 (3.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 508 frame 534
+  m2 world 1: rollbacks 14 max depth 10 resim frames 72 (10.1 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 516 frame 533
+  m1 world 2: rollbacks 3 max depth 3 resim frames 8 (1.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 430 frame 442
+  m3 world 2: rollbacks 3 max depth 3 resim frames 13 (1.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 433 frame 442
 RESULT r14 doublespend A world 1: frames 0..500 digests m1=d42a1addc997c722 m2=d42a1addc997c722 | offline replay d42a1addc997c722 | ALL EQUAL
-RESULT r14 doublespend B world 2: frames 0..400 digests m1=851ec0d93ad78a1f m3=851ec0d93ad78a1f | offline replay 851ec0d93ad78a1f | ALL EQUAL
+RESULT r14 doublespend B world 2: frames 0..400 digests m1=565012d845f47552 m3=565012d845f47552 | offline replay 565012d845f47552 | ALL EQUAL
 RESULT r14 doublespend W world 6: frames 0..480 digests m2=58f1a3c01d4dd6cf m3=58f1a3c01d4dd6cf | offline replay 58f1a3c01d4dd6cf | ALL EQUAL

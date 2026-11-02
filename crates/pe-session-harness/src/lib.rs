@@ -159,6 +159,15 @@ pub fn set_no_runs(on: bool) {
     NO_RUNS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Replicas made while set: no lean entries either (the fully explicit wire, pe-app's). fork9's fix-off
+/// control needs it since option 2's faster gap repair (review O2-3) heals its fork before the bug's path.
+static NO_LEAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// See [`NO_LEAN`].
+pub fn set_no_lean(on: bool) {
+    NO_LEAN.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn has_lean(m: &Msg) -> bool {
     match m {
         Msg::Run { .. } => true,
@@ -589,7 +598,7 @@ impl Peer {
         };
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, keys));
         // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
-        core.sim.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
+        core.sim.lean_wire = !NO_LEAN.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("PE_LEAN").map_or(true, |v| v != "0");
         // A/B for the option 2 triage: PE_RUNS=0 sends no runs (every entry signed on itself).
         core.sim.run_wire = !NO_RUNS.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("PE_RUNS").map_or(true, |v| v != "0");
         core.start(epoch_us);

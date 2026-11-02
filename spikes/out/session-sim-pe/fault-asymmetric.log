@@ -4,7 +4,7 @@ RESULT fault-asymmetric acceptance (after re-sim to its present frame, the recei
   differs at that instant: world 1 receiver m2 author m1 obj 50 frame 129; equal to the author's final history: false
   differs at that instant: world 1 receiver m3 author m2 obj 50 frame 131; equal to the author's final history: true
   differs at that instant: world 1 receiver m2 author m1 obj 50 frame 134; equal to the author's final history: false
-  m1 world 1: rollbacks 5 max depth 4 resim frames 23 (15.4 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 580 frame 593
-  m2 world 1: rollbacks 9 max depth 10 resim frames 81 (45.0 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 572 frame 594
-  m3 world 1: rollbacks 11 max depth 7 resim frames 30 (21.8 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 572 frame 593
+  m1 world 1: rollbacks 5 max depth 4 resim frames 23 (10.9 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 40 bad 0 nonfinite 0 conf 580 frame 593
+  m2 world 1: rollbacks 9 max depth 10 resim frames 81 (34.2 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 572 frame 594
+  m3 world 1: rollbacks 11 max depth 7 resim frames 30 (13.2 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 39 bad 0 nonfinite 0 conf 572 frame 593
 RESULT fault-asymmetric world 1: frames 0..550 digests m1=491baff8a583ad90 m2=491baff8a583ad90 m3=491baff8a583ad90 | offline replay 491baff8a583ad90 | ALL EQUAL
