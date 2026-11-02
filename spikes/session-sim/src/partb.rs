@@ -229,6 +229,98 @@ pub fn leave_withhold() {
     verdict(&sim, &finals, "leave-withhold", panic_at);
 }
 
+/// Rev 22 (e1): an honest admin kicks the liar while a member is fed. n = 4: member 2 is the liar and takes no part in
+/// view changes, member 3 is fed (8 kbit/s each way), member 1 kicks member 2 at frame 360. The fed member checks the
+/// kick itself (signature, epoch, the previous decided ACL), so members 1, 3 and 4 make q = 3 and the kick decides.
+pub fn kickliar_fed() {
+    kickliar_fed_n("kickliar-fed", 4, &[3], &[2]);
+}
+
+/// The same with two fed: n = 7 (q = 5, room for two fed), members 6 and 7 fed, members 2 (the liar) and 5 out of view
+/// changes, so the five left (1, 3, 4, 6, 7) are exactly q and both fed members have to check the kick and sign it.
+/// Fails as of this commit: a fed member never learns another is fed (rule 5 sends it no acks), so neither sends the
+/// other its checkpoints and each votes the other out as crashed (TLP-23 gap, reported); and 8 kbit/s per link is too
+/// thin at n = 7 for this cell.
+pub fn kickliar_fed2() {
+    kickliar_fed_n("kickliar-fed2", 7, &[6, 7], &[2, 5]);
+}
+
+fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId]) {
+    let ids: Vec<MemberId> = (1..=n).collect();
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| {
+        let mut v: Vec<(u64, Action)> = (120..1300).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        if m == 1 {
+            v.push((360, Action::Kick { target: 2 }));
+            v.sort_by_key(|x| x.0);
+        }
+        plan(&v)
+    };
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 37);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &f in thin {
+        for &x in ids.iter().filter(|&&x| x != f) {
+            for pair in [(f, x), (x, f)] {
+                net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+            }
+        }
+    }
+    let mut sim = Sim::new(net, ps, 14_000_000);
+    sim.feed = true;
+    for &m in withhold {
+        sim_mut(&mut sim, m).withhold_vc = true;
+    }
+    let mut removed: Option<u64> = None;
+    let mut fed_at_kick: Vec<bool> = Vec::new();
+    let mut fed_at_decide: Vec<bool> = Vec::new();
+    let panic_at = run_to_end(&mut sim, |s| {
+        if s.net.now_us == 6_000_000 {
+            fed_at_kick = thin.iter().map(|&f| s.is_fed(1, f)).collect();
+        }
+        if removed.is_none() && !s.replica(1, 1).sim.members.contains(&2) {
+            removed = Some(s.net.now_us);
+            fed_at_decide = thin.iter().map(|&f| s.is_fed(1, f)).collect();
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    println!(
+        "RESULT {label}: member 2 removed at {}; members at m1 {:?}; {thin:?} fed at the kick {fed_at_kick:?}, at the decision {fed_at_decide:?}",
+        removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
+        r1.members,
+    );
+    if removed.is_none() {
+        println!("RESULT {label}: the kick never decided -> FAIL");
+        crate::viewchange::vc_report(&sim, &ids, label);
+        return;
+    }
+    // Who signed the change that removed member 2: with the withholding members out of view changes, q is met only
+    // with every fed member's precommit.
+    let mut f_signed = false;
+    for c in r1.epoch_certs_upto(r1.epoch).unwrap_or_default() {
+        if c.change.remove.iter().any(|r| r.member == 2) {
+            let signers: Vec<MemberId> = c.precommits.iter().map(|x| x.0).collect();
+            let kick = c.change.remove.iter().find(|r| r.member == 2).map_or(0, |r| r.kick);
+            println!("RESULT {label}: epoch {} change removes 2 by kick {:#x}, admin {:?}; precommits from {:?}", c.epoch, kick, c.change.admin.len(), signers);
+            f_signed = thin.iter().all(|f| signers.contains(f)) && kick != 0;
+        }
+    }
+    if !f_signed || fed_at_decide.iter().any(|&x| !x) {
+        println!("RESULT {label}: a fed member did not sign the kick removal while fed -> FAIL");
+    }
+    let finals: Vec<MemberId> = ids.iter().copied().filter(|&m| m != 2 && !thin.contains(&m)).collect();
+    verdict(&sim, &finals, label, panic_at);
+}
+
 pub fn stale() {
     let ids = [1, 2, 3, 4];
     // (frame, member, object, impulse): who writes which object when.
