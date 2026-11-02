@@ -1,0 +1,2 @@
+RESULT leave-s4: member 2 removed at 18.12 s; members at m1 {1, 3}; 3 fed false
+RESULT leave-s4: confirmed frames 0..248 m1=db32c6ca5b795960 m3=db32c6ca5b795960 | offline replay db32c6ca5b795960 | ALL EQUAL, NO FALSE CHECKS, LEAVE DECIDED

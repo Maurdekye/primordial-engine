@@ -233,7 +233,7 @@ pub fn leave_withhold() {
 /// view changes, member 3 is fed (8 kbit/s each way), member 1 kicks member 2 at frame 360. The fed member checks the
 /// kick itself (signature, epoch, the previous decided ACL), so members 1, 3 and 4 make q = 3 and the kick decides.
 pub fn kickliar_fed() {
-    kickliar_fed_n("kickliar-fed", 4, &[3], &[2], None);
+    kickliar_fed_n("kickliar-fed", 4, &[3], &[2], None, 8_000);
 }
 
 /// The same with two fed: n = 7 (q = 5, room for two fed), members 6 and 7 fed, members 2 (the liar) and 5 out of view
@@ -242,15 +242,18 @@ pub fn kickliar_fed() {
 /// other its checkpoints and each votes the other out as crashed (TLP-23 gap, reported); and 8 kbit/s per link is too
 /// thin at n = 7 for this cell.
 pub fn kickliar_fed2() {
-    kickliar_fed_n("kickliar-fed2", 4, &[3, 4], &[2], Some(2));
+    // 12 kbit/s: at 8, two acting fed members at n = 4 overfill their links (9.6 kbit/s offered per link) and the floor
+    // test votes them out, a parameter note like n = 7 (kickliar-fed7), not a fault.
+    let kbps = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(12_000);
+    kickliar_fed_n("kickliar-fed2", 4, &[3, 4], &[2], Some(2), kbps);
 }
 
 /// The n = 7 two-fed variant (within scope: room n − q = 2). Kept for the cadence trace (rev 22, the fed ack period).
 pub fn kickliar_fed7() {
-    kickliar_fed_n("kickliar-fed7", 7, &[6, 7], &[2, 5], None);
+    kickliar_fed_n("kickliar-fed7", 7, &[6, 7], &[2, 5], None, 8_000);
 }
 
-fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId], room: Option<usize>) {
+fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId], room: Option<usize>, thin_bps: u64) {
     let ids: Vec<MemberId> = (1..=n).collect();
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
     let plans = |m: MemberId| {
@@ -276,10 +279,11 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
     for &f in thin {
         for &x in ids.iter().filter(|&&x| x != f) {
             for pair in [(f, x), (x, f)] {
-                net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+                net.caps.insert(pair, Cap { rate_bps: thin_bps, burst_bytes: 4000, max_queue_us: 500_000 });
             }
         }
     }
+    println!("RESULT {label}: n = {n}, thin {thin:?} at {} kbit/s each way per link, out of view changes {withhold:?}", thin_bps / 1000);
     let mut sim = Sim::new(net, ps, 14_000_000);
     sim.feed = true;
     sim.feed_room = room;
@@ -337,6 +341,11 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
             .collect();
         let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / secs / 1000.0 / (n as f64 - 1.0);
         println!("TRACE {label} m{f} uplink by kind, kbit/s per link from 4 s: total {total:.2} | {}", v.join(", "));
+    }
+    // TLP-23 with two fed (rev 22 delta): a fed member must hear the other's checkpoints, or it votes it out as crashed.
+    for &f in thin {
+        let v: Vec<&String> = sim.replica(f, 1).sim.events.iter().filter(|e| e.contains("presumed crashed")).collect();
+        println!("RESULT {label}: m{f} silence votes as a fed member: {}", if v.is_empty() { "none".to_string() } else { format!("{v:?}") });
     }
     let r1 = &sim.replica(1, 1).sim;
     println!(

@@ -744,7 +744,12 @@ impl Sim {
                 level.insert((*w, p.id), r.level);
                 if (r.sim.localized() || r.sim.fed_mode_capable()) && r.sim.members.contains(&p.id) {
                     todo.push((*w, p.id, r.sim.members.iter().copied().collect()));
-                    room.entry(*w).or_insert_with(|| room_fixture.unwrap_or_else(|| r.sim.members.len().saturating_sub(pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, r.sim.members.len()).1)));
+                    // The fixture lifts the room only at n >= 4 (S-4: at most one fed at n = 3).
+                    room.entry(*w).or_insert_with(|| {
+                        room_fixture
+                            .filter(|_| r.sim.members.len() >= 4)
+                            .unwrap_or_else(|| r.sim.members.len().saturating_sub(pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, r.sim.members.len()).1))
+                    });
                 }
             }
         }
@@ -804,7 +809,7 @@ impl Sim {
                     let feeder = *feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)).unwrap();
                     if std::env::var("PE_FEED_LOG").is_ok() {
                         let worst = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).max_by_key(|&&s| self.net.backlog_us(s, t)).copied();
-                        eprintln!("FEED t={} ms: {t} goes on the feed; worst level-0 sender {worst:?} backlog {} us", now / 1000, backlog);
+                        eprintln!("FEED t={} ms: {t} goes on the feed, feeder {feeder}; worst level-0 sender {worst:?} backlog {} us", now / 1000, backlog);
                     }
                     ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us, over_since_us: None, left_frame: ctl.left_frame };
                     self.net.fed.insert((w, t));
@@ -814,6 +819,18 @@ impl Sim {
                     }
                 }
             } else {
+                // A feeder that went on the feed itself, or isn't a member any more, can't feed: re-pick at once (the
+                // n = 4 two-fed cell: member 4 was picked as member 3's feeder, then went on the feed and kept feeding).
+                if self.net.fed.contains(&(w, ctl.feeder)) || !senders.contains(&ctl.feeder) {
+                    let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
+                    if let Some(&f) = feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)) {
+                        if std::env::var("PE_FEED_LOG").is_ok() {
+                            eprintln!("FEED t={} ms: {t}'s feeder {} re-picked: {f}", now / 1000, ctl.feeder);
+                        }
+                        ctl.feeder = f;
+                        ctl.feeder_since_us = now;
+                    }
+                }
                 let ok = senders.iter().all(|&s| {
                     let reference = members.iter().copied().find(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)));
                     let stream = reference.map_or(0, |x| self.net.recent_bps(s, x));
@@ -876,11 +893,11 @@ impl Sim {
                         let pkt = if self.peers[pf].crashed { None } else { self.peers[pf].worlds.get(&w).and_then(|r| r.sim.feed_packet(budget, &mut rr)) };
                         ctl.rr = rr;
                         let pkt = match pkt {
-                            Some(Msg::Feed { frame, mut bodies }) if self.lying_feeders.contains(&ctl.feeder) => {
+                            Some(Msg::Feed { frame, fed, mut bodies }) if self.lying_feeders.contains(&ctl.feeder) => {
                                 for b in &mut bodies {
                                     b.pos[1] += 2000;
                                 }
-                                Some(Msg::Feed { frame, bodies })
+                                Some(Msg::Feed { frame, fed, bodies })
                             }
                             p => p,
                         };
@@ -994,8 +1011,8 @@ impl Sim {
                     }
                 }
                 Msg::Batch(_) => {}
-                Msg::Feed { frame, bodies } => r.sim.on_feed(frame, bodies),
-                Msg::Ckpts { member, after, list } => r.sim.on_ckpts(from, member, after, list),
+                Msg::Feed { frame, fed, bodies } => r.sim.on_feed(frame, fed, bodies),
+                Msg::Ckpts { member, after, list, fed, echo } => r.sim.on_ckpts(from, member, after, list, fed, echo),
             }
         }
         // 2. peers tick
