@@ -403,6 +403,10 @@ impl WorldSim {
         }
         if let Some(s) = seq {
             self.echo_seq.insert(member, s);
+            if let Some(b) = std::env::var("PE_ECHO_ACK").ok().and_then(|v| v.parse::<u64>().ok()) {
+                let now = self.now;
+                self.echo_ack_at.get_or_insert(now + b);
+            }
         }
     }
 
