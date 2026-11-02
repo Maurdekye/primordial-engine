@@ -1268,6 +1268,13 @@ impl Sim {
                 // needs a caught-up sim and is dropped otherwise (as in 3d0f98a).
                 let ready = r.sim.caught_up() && r.sim.frame == clock_frame;
                 {
+                    // (spike measurement, the start transient: PE_FED_MIN_LEVEL=L keeps a fed member's R18 level at L or coarser,
+                    // as P floors its acks, so a gesture starting on a thin fed uplink doesn't start at stride 1)
+                    if let Some(min) = std::env::var("PE_FED_MIN_LEVEL").ok().and_then(|v| v.parse::<usize>().ok()) {
+                        if self.net.fed.contains(&(w, pid)) && r.level < min {
+                            r.level = min;
+                        }
+                    }
                     let actions = r.plan.remove(&clock_frame).unwrap_or_default();
                     {
                         for a in actions {
