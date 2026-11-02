@@ -164,6 +164,71 @@ pub fn leave_s4() {
     );
 }
 
+/// Revision 22 (@coordinator-opus mb10dc8f0e773): a liar can't block a leave request by withholding, since the leaver's
+/// own precommit counts toward its leave's q. n = 4: member 2 is the liar and takes no part in view changes (it withholds
+/// every vote, proposal, prevote and precommit), member 3 is fed (8 kbit/s each way), member 4 asks to leave at 8 s.
+/// q = 3 needs member 1, the fed member 3 (on the leave's evidence) and member 4 itself. (The spike's feed controller
+/// feeds at most n − q = 1 at n = 4, so member 4 isn't fed; the property is the same.)
+pub fn leave_withhold() {
+    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| plan(&(120..1700).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 35);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &x in &[1, 2, 4] {
+        for pair in [(3, x), (x, 3)] {
+            net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+        }
+    }
+    let mut sim = Sim::new(net, ps, 16_000_000);
+    sim.feed = true;
+    sim_mut(&mut sim, 2).withhold_vc = true;
+    let mut removed: Option<u64> = None;
+    let panic_at = run_to_end(&mut sim, |s| {
+        if s.net.now_us == 8_000_000 {
+            if let Some(e) = sim_mut(s, 4).request_leave() {
+                for to in [1, 2, 3] {
+                    s.net.send_urgent(1, 4, to, &Msg::Entry(e.clone()));
+                }
+            }
+        }
+        if removed.is_none() && !s.replica(1, 1).sim.members.contains(&4) {
+            removed = Some(s.net.now_us);
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    println!(
+        "RESULT leave-withhold: member 4 removed at {}; members at m1 {:?}; 3 fed {}",
+        removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
+        r1.members,
+        sim.is_fed(1, 3)
+    );
+    if std::env::var("PE_PB_DEBUG").is_ok() {
+        for m in [1, 3, 4] {
+            for e in sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("view change") || e.contains("VIEW CHANGE") || e.contains("leave") || e.contains("vote to")).take(12) {
+                println!("  m{m}: {e}");
+            }
+        }
+    }
+    // Members 1 and 2 (the liar still runs the sim honestly) hold the log; member 3 may still be fed.
+    let finals: Vec<MemberId> = vec![1, 2];
+    if removed.is_none() {
+        println!("RESULT leave-withhold: the leave never decided -> FAIL");
+        return;
+    }
+    verdict(&sim, &finals, "leave-withhold", panic_at);
+}
+
 pub fn stale() {
     let ids = [1, 2, 3, 4];
     // (frame, member, object, impulse): who writes which object when.
