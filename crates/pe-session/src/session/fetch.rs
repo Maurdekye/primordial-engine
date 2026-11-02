@@ -108,7 +108,7 @@ impl WorldSim {
     pub fn hole_hold(&self) -> u64 {
         match self.rtt_figures().0 {
             0 => Self::LEAN_HOLD_FRAMES,
-            r => (r + 1).clamp(4, Self::HOLE_HOLD_MAX),
+            r => (r * 3 / 2 + 1).clamp(4, Self::HOLE_HOLD_MAX),
         }
     }
 
