@@ -2,4 +2,4 @@ RESULT join-onefed-down: [3] fed at the request [true]; 5 admitted at 9.53 s; me
 RESULT join-onefed-down: decides with one fed and a full member down, via (c)
   m1: conf 1021 frame 1073 rollbacks 72 max depth 23 paused frames 13 checks ok 83 bad 0
   m4: conf 1021 frame 1073 rollbacks 72 max depth 23 paused frames 8 checks ok 83 bad 0
-RESULT join-onefed-down: frames 0..1020 m1=2a716eb24f84f6d9 m4=2a716eb24f84f6d9 | offline replay 2a716eb24f84f6d9 | ALL EQUAL, NO FALSE CHECKS
+RESULT join-onefed-down: frames 0..1020 (replay from m1; each replica over its own confirmed frames: m1 0..1020 2a716eb24f84f6d9, m4 0..1020 2a716eb24f84f6d9) | offline replay 2a716eb24f84f6d9 | ALL EQUAL, NO FALSE CHECKS

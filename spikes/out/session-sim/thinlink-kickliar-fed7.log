@@ -41,4 +41,4 @@ RESULT kickliar-fed7: epoch 1 change removes 2 by kick 0xcebb1ebf195a76f4, admin
   m3: conf 781 frame 833 rollbacks 136 max depth 98 paused frames 0 checks ok 103 bad 0
   m4: conf 781 frame 833 rollbacks 136 max depth 98 paused frames 0 checks ok 103 bad 0
   m5: conf 781 frame 833 rollbacks 135 max depth 101 paused frames 0 checks ok 102 bad 0
-RESULT kickliar-fed7: frames 0..780 m1=d400682634abdd67 m3=d400682634abdd67 m4=d400682634abdd67 m5=d400682634abdd67 | offline replay d400682634abdd67 | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed7: frames 0..780 (replay from m1; each replica over its own confirmed frames: m1 0..780 d400682634abdd67, m3 0..780 d400682634abdd67, m4 0..780 d400682634abdd67, m5 0..780 d400682634abdd67) | offline replay d400682634abdd67 | ALL EQUAL, NO FALSE CHECKS

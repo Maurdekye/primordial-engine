@@ -8,4 +8,4 @@ RESULT twofed-long: m3's touches at m1: 55 held, 0 void
 RESULT twofed-long: m4's touches at m1: 55 held, 0 void
   m1: conf 1651 frame 1771 rollbacks 163 max depth 120 paused frames 318 checks ok 56 bad 0
   m2: conf 1651 frame 1771 rollbacks 163 max depth 120 paused frames 319 checks ok 56 bad 0
-RESULT twofed-long: frames 0..1650 m1=8a2693bddb468c4b m2=8a2693bddb468c4b | offline replay 8a2693bddb468c4b | ALL EQUAL, NO FALSE CHECKS
+RESULT twofed-long: frames 0..1650 (replay from m1; each replica over its own confirmed frames: m1 0..1650 8a2693bddb468c4b, m2 0..1650 8a2693bddb468c4b) | offline replay 8a2693bddb468c4b | ALL EQUAL, NO FALSE CHECKS
