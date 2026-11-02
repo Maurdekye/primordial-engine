@@ -1,9 +1,2 @@
-RESULT leave-s4: member 2 removed at 18.12 s; members at m1 {1, 3}; 3 fed false
-  m1: [w1 m1 f421 c301] member 2 silent for 180 frames: presumed crashed; vote to remove it
-  m1: [w1 m1 f421 c301] member 3's horizon has trailed the present by over 92 frames for 180 frames: vote to demote it
-  m1: [w1 m1 f421 c301] VIEW CHANGE decided (epoch 0 -> 1, round 2): removed [2] with cuts [166], excluded by proof {}, added [] from frame 606; members {1, 3}
-  m2: [w1 m2 f408 c288] member 2 asks to leave
-  m3: [w1 m3 f565 c232] fed: member 2's checkpoints haven't reached me for 216 frames (limit 216): presumed crashed; vote to remove it
-  m3: [w1 m3 f606 c232] view change: propose in round 2: remove [(2, 166)], excluded []
-  m3: [w1 m3 f636 c232] VIEW CHANGE decided (epoch 0 -> 1, round 2): removed [2] with cuts [166], excluded by proof {}, added [] from frame 606; members {1, 3}
+RESULT leave-s4: member 2 removed at 11.33 s; members at m1 {1, 3}; 3 fed false
 RESULT leave-s4: confirmed frames 0..248 m1=db32c6ca5b795960 m3=db32c6ca5b795960 | offline replay db32c6ca5b795960 | ALL EQUAL, NO FALSE CHECKS, LEAVE DECIDED
