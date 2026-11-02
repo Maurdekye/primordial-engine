@@ -1430,6 +1430,7 @@ fn main() {
         Some("late") => partb::late(),
         Some("rejoin") => partb::rejoin(),
         Some("leave-s4") => partb::leave_s4(),
+        Some("leave-withhold") => partb::leave_withhold(),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),

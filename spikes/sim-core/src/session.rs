@@ -4804,6 +4804,8 @@ impl WorldSim {
             let busy = joins
                 || (self.fixes_off & fix::VC4 == 0 && !self.join_caps.is_empty())
                 || !self.votes.is_empty()
+                // Revision 22: a member's leave request starts a view change on its own.
+                || self.leaves.keys().any(|m| self.members.contains(m))
                 || !self.admin_pending.is_empty()
                 || !self.vc.proposals.is_empty()
                 || !self.vc.prevotes.is_empty()
