@@ -33,11 +33,14 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
         println!("RESULT {label}: PANIC at t={t} ms -> FAIL");
         return false;
     }
-    // Confirmed frames only (as r18's end state, @coordinator-opus m721ec7943321): a paused replica's speculative frames
-    // past its confirmation may still roll back (join-beyond: member 1 paused at frame 931 with conf 811, missing entries
-    // member 2 held, read FAIL over 812-930).
-    let frames = ids.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap_or(0).saturating_sub(1);
-    let first = &sim.replica(ids[0], 1).sim;
+    // Each replica against the offline replay over its own confirmed frames (@design-reviewer m912db9fb4df1,
+    // @coordinator-opus m7e6ec6ce3a67): speculative frames past a replica's confirmation may still roll back (join-beyond:
+    // member 1 paused at frame 931 with conf 811 read FAIL over 812-930), and a global minimum would skip frames two
+    // others both confirmed. The replay comes from the replica that confirmed most, whose log holds every confirmed entry.
+    let conf_of = |m: MemberId| sim.replica(m, 1).sim.conf.saturating_sub(1);
+    let src = *ids.iter().max_by_key(|&&m| (conf_of(m), std::cmp::Reverse(m))).unwrap();
+    let frames = conf_of(src);
+    let first = &sim.replica(src, 1).sim;
     let members: Vec<MemberId> = first.members.iter().copied().collect();
     let rs = replay_sim_like(first, SCENE, &members, &final_log(first), frames);
     let rd = digest(&rs.hashes, frames);
@@ -63,9 +66,16 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
             .collect();
         println!("  first difference from the replay at frame {f} (conf {}): acting near it {:?}", first.conf, acts);
     }
-    let ds: Vec<(MemberId, u64)> = ids.iter().map(|&m| (m, digest(&sim.replica(m, 1).sim.hashes, frames))).collect();
+    // (member, its confirmed frames, its digest over them, the replay's digest over the same frames)
+    let ds: Vec<(MemberId, u64, u64, u64)> = ids
+        .iter()
+        .map(|&m| {
+            let f = conf_of(m);
+            (m, f, digest(&sim.replica(m, 1).sim.hashes, f), digest(&rs.hashes, f))
+        })
+        .collect();
     let bad: u64 = ids.iter().map(|&m| sim.replica(m, 1).sim.stats.checks_bad).sum();
-    let equal = ds.iter().all(|(_, d)| *d == rd);
+    let equal = ds.iter().all(|(_, _, d, r)| d == r);
     for &m in ids {
         let r = &sim.replica(m, 1).sim;
         println!(
@@ -74,8 +84,8 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
         );
     }
     println!(
-        "RESULT {label}: frames 0..{frames} {} | offline replay {rd:016x} | {}",
-        ds.iter().map(|(m, d)| format!("m{m}={d:016x}")).collect::<Vec<_>>().join(" "),
+        "RESULT {label}: frames 0..{frames} (replay from m{src}; each replica over its own confirmed frames: {}) | offline replay {rd:016x} | {}",
+        ds.iter().map(|(m, f, d, r)| format!("m{m} 0..{f} {}", if d == r { format!("{d:016x}") } else { format!("{d:016x} != {r:016x}") })).collect::<Vec<_>>().join(", "),
         if equal && bad == 0 { "ALL EQUAL, NO FALSE CHECKS" } else { "FAIL" }
     );
     equal && bad == 0

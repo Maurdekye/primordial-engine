@@ -40,4 +40,4 @@ RESULT kickliar-fed2: epoch 1 change removes 2 by kick 0x92d8e2b6657dcba3, admin
 RESULT kickliar-fed2: S-4 ["[w1 m4 f395 c121] S-4: n = 3 with members [3] and 4 fed: member 4 leaves by request"]; members at m1 at the end {1, 3}; m1's touches 12 held, 0 void
 RESULT kickliar-fed2: S-4 transition -> one fed member left by request
   m1: conf 384 frame 504 rollbacks 31 max depth 108 paused frames 377 checks ok 22 bad 0
-RESULT kickliar-fed2: frames 0..383 m1=78c8fcdc03f33e18 | offline replay 78c8fcdc03f33e18 | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed2: frames 0..383 (replay from m1; each replica over its own confirmed frames: m1 0..383 78c8fcdc03f33e18) | offline replay 78c8fcdc03f33e18 | ALL EQUAL, NO FALSE CHECKS

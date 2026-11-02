@@ -5,4 +5,4 @@ RESULT e1-same-revoke: the kick lands in the decision after its author's demotio
   m1: conf 901 frame 953 rollbacks 67 max depth 79 paused frames 0 checks ok 73 bad 0
   m2: conf 901 frame 953 rollbacks 67 max depth 79 paused frames 0 checks ok 73 bad 0
   m4: conf 901 frame 953 rollbacks 66 max depth 84 paused frames 0 checks ok 73 bad 0
-RESULT e1-same-revoke: frames 0..900 m1=4cfc59a7bdc6b492 m2=4cfc59a7bdc6b492 m4=4cfc59a7bdc6b492 | offline replay 4cfc59a7bdc6b492 | ALL EQUAL, NO FALSE CHECKS
+RESULT e1-same-revoke: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 4cfc59a7bdc6b492, m2 0..900 4cfc59a7bdc6b492, m4 0..900 4cfc59a7bdc6b492) | offline replay 4cfc59a7bdc6b492 | ALL EQUAL, NO FALSE CHECKS

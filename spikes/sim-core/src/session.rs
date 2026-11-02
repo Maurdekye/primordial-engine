@@ -7037,12 +7037,13 @@ mod e1_commit_order {
         assert!(r.members.contains(&4), "on acl0 2 was a guest");
     }
 
-    /// Both judgement paths agree on one decision's list (@design-reviewer mf9870e4051a7): the full member's commit-order
-    /// apply, and a fed member's check of the same change (fed_change_valid). The demotion applies, and the kick, judged
-    /// on acl0, stands; a fed member can't check the stamp-effective demotion, so its answer is "can't tell" (None,
-    /// prevoted once t + 1 have, rule (c)); a change marking the kick refused gets its nil (Some(false)).
+    /// F never accepts what a full member rejects (@design-reviewer mf9870e4051a7, m912db9fb4df1): on one decision's
+    /// list, the full member's commit-order apply has the demotion apply and the kick, judged on acl0, stand; a fed
+    /// member's check of the same change (fed_change_valid) can't check the stamp-effective demotion, so it answers
+    /// "can't tell" (None, which falls to rule (c): a prevote once t + 1 have), never Some(true) where the full member
+    /// rejects; a change marking the standing kick refused gets its nil (Some(false)).
     #[test]
-    fn fed_check_agrees_with_full_apply() {
+    fn fed_never_accepts_what_full_rejects() {
         let mut f = WorldSim::new(1, 3, &[1, 2, 3, 4], SceneKind::Empty, SimConfig { localize: true, ..SimConfig::default() });
         f.role_defs.insert(GUEST, 0);
         f.roles.insert(3, GUEST);

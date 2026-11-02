@@ -5,4 +5,4 @@ RESULT fed3-long: floor votes: ["[w1 m1 f339 c301] localize: window 2: fed (E_T,
 RESULT fed3-long: m3's touches at m1: 56 held, 0 void
   m1: conf 1741 frame 1793 rollbacks 112 max depth 5 paused frames 0 checks ok 64 bad 0
   m2: conf 1741 frame 1793 rollbacks 112 max depth 9 paused frames 0 checks ok 64 bad 0
-RESULT fed3-long: frames 0..1740 m1=dd29574a1ddbdf8e m2=dd29574a1ddbdf8e | offline replay dd29574a1ddbdf8e | ALL EQUAL, NO FALSE CHECKS
+RESULT fed3-long: frames 0..1740 (replay from m1; each replica over its own confirmed frames: m1 0..1740 dd29574a1ddbdf8e, m2 0..1740 dd29574a1ddbdf8e) | offline replay dd29574a1ddbdf8e | ALL EQUAL, NO FALSE CHECKS
