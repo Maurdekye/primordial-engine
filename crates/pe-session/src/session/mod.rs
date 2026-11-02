@@ -138,6 +138,9 @@ pub struct LeanWait {
     pub first_prev: bool,
     pub lean_heads: bool,
     pub entries: Vec<Entry>,
+    /// Review O2-1 (4): the own signature of each view-change or admin entry inside the run, aligned
+    /// with `entries` (None for the others, and for a signed top, whose signature is `sig`).
+    pub own: Vec<Option<Sig>>,
     pub sig: Option<Sig>,
     pub since: u64,
     pub asked: bool,
@@ -598,6 +601,8 @@ pub struct WorldSim {
     fetch_first: BTreeMap<(MemberId, MemberId, u32), (u64, u64)>,
     /// Each holder's last fetch round trips (frames, ms), newest last ([`Self::hole_hold`]).
     fetch_rtt: BTreeMap<MemberId, std::collections::VecDeque<(u64, u64)>>,
+    /// Each holder's figure: the median of its samples in `fetch_rtt` (frames, ms), kept on each sample.
+    fetch_rtt_fig: BTreeMap<MemberId, (u64, u64)>,
     /// The ms clock as of the last [`Self::take_fetches`].
     clock_ms: u64,
     /// [`Self::hole_hold`] as of the last [`Self::take_fetches`] (once per tick; it sorts every holder's figures).
@@ -908,6 +913,7 @@ impl WorldSim {
             fetch_asked: BTreeMap::new(),
             fetch_first: BTreeMap::new(),
             fetch_rtt: BTreeMap::new(),
+            fetch_rtt_fig: BTreeMap::new(),
             clock_ms: 0,
             hold_now: Self::LEAN_HOLD_FRAMES,
             rtt_ms_now: 0,

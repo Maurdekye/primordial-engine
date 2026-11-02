@@ -2610,8 +2610,7 @@ impl WorldSim {
         if below.len() > WorldSim::RUN_MAX {
             return vec![];
         }
-        // O2-1: each view-change or admin entry ends a run, signed on itself.
-        self.split_runs(below, false, true)
+        vec![WorldSim::run_msg(below, false, true)]
     }
 
     /// Answer `Msg::FetchValue`: the proposal entry carrying `value`, any version, with its cover.
