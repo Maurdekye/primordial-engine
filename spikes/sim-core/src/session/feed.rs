@@ -222,6 +222,24 @@ impl WorldSim {
         self.uplink_breach(j, x)
     }
 
+    /// Rule 3's latency floor (TLP-28), only while n − f < q: fed member j over it in the two newest windows (about
+    /// 4 s, at least X) is treated like a disconnection, as the bandwidth floor is. Every replica computes the same
+    /// window values, so every honest voter votes alike.
+    pub(super) fn latency_breach(&self, j: MemberId) -> Option<String> {
+        let mut it = self.windows.iter().rev();
+        let (k, v) = it.next()?;
+        let (_, u) = it.next()?;
+        if !(v.over_floor.contains(&j) && u.over_floor.contains(&j)) {
+            return None;
+        }
+        let (e_t, u_t) = v.fed_terms.get(&j).copied().unwrap_or((0, 0));
+        Some(format!(
+            "its echo path needs 32 + E_T {e_t} + U_T {u_t} + 4 frames, over the latency floor W - 15 - C_floor = {} (windows {} and {k})",
+            self.cfg.window.saturating_sub(15 + v.c_floor),
+            k - 1
+        ))
+    }
+
     /// Revision 22: what a fed member checks of a change, from what it holds (view-change entries by value, its clock,
     /// the decided changes). Every removal needs its own evidence: its own vote (silence) or a proof it holds. A join or
     /// any admin entry gets its nil (it can't check join rules without the log; a kick needs the kicker's chain

@@ -1404,9 +1404,12 @@ impl Sim {
             } else {
                 base
             };
+            // (spike: PE_FED_ACK_PHASE=1 offsets a fed member's ack ticks by half a period from the 32-frame checkpoint
+            // blocks, so the ack after a block's end isn't always ahead of that block's checkpoint; measuring E_T)
+            let phase = if fed && std::env::var("PE_FED_ACK_PHASE").is_ok() { every / 2 } else { 0 };
             let ack_due = leaving
                 || if self.net.batching {
-                    new_frame && clock_frame % every == 0
+                    new_frame && (clock_frame + phase) % every == 0
                 } else {
                     now >= r.next_ack_us
                 };
