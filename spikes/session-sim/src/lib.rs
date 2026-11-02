@@ -1415,6 +1415,15 @@ impl Sim {
             for e in r.sim.attest_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
+            // Revision 22, S-4 on the transition: a removal that left n = 3 with two fed sends one fed member out by
+            // request, first, ahead of queued datagrams (D-5).
+            if let Some(e) = r.sim.s4_leave_due() {
+                for &to in &members {
+                    if to != pid {
+                        self.net.send_urgent(w, pid, to, &Msg::Entry(e.clone()));
+                    }
+                }
+            }
             // Review R3-2: vote out members that have gone silent; P2-4: decide removals.
             for e in r.sim.suspects_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));

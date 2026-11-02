@@ -14,6 +14,7 @@ TRACE kickliar-fed t=12 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplin
 TRACE kickliar-fed t=13 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t=14 s m3: fed true level 4 ack every 6 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed m3 uplink by kind, kbit/s per link from 4 s: total 5.93 | (batch framing) 11x 0.01, (datagram overhead) 126x 1.75, ack 71x 2.48, entry/touch 50x 1.49, fetch 19x 0.07, vote 9x 0.13
+RESULT kickliar-fed: m3's touches at m1: 24 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed: m3 silence votes as a fed member: none
 RESULT kickliar-fed: member 2 removed at 6.69 s; members at m1 {1, 3, 4}; [3] fed at the kick [true], at the decision [true]
 RESULT kickliar-fed: epoch 1 change removes 2 by kick 0x31b896c95122fc24, admin 1; precommits from [1, 3, 4]

@@ -384,6 +384,22 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
     if !f_signed || fed_at_decide.iter().any(|&x| !x) {
         println!("RESULT {label}: a fed member did not sign the kick removal while fed -> FAIL");
     }
+    // S-4 on the transition: with two fed, the kick leaves n = 3 with two fed, and the higher fed id leaves by request.
+    if thin.len() >= 2 && n == 4 {
+        let s4: Vec<String> = thin.iter().flat_map(|&f| sim.replica(f, 1).sim.events.iter().filter(|e| e.contains("S-4")).cloned().collect::<Vec<_>>()).collect();
+        let r1 = &sim.replica(1, 1).sim;
+        let void = r1.void_ids();
+        let mine: Vec<EntryId> = r1.all_entries().into_iter().filter(|e| e.member == 1 && matches!(e.payload, Payload::Touch { .. })).map(|e| e.id()).collect();
+        println!(
+            "RESULT {label}: S-4 {:?}; members at m1 at the end {:?}; m1's touches {} held, {} void",
+            s4,
+            r1.members,
+            mine.len(),
+            mine.iter().filter(|id| void.contains(id)).count()
+        );
+        let left_one = r1.members.len() == 2 && r1.members.contains(&1);
+        println!("RESULT {label}: S-4 transition -> {}", if left_one { "one fed member left by request" } else { "FAIL" });
+    }
     let finals: Vec<MemberId> = ids.iter().copied().filter(|&m| m != 2 && !thin.contains(&m)).collect();
     verdict(&sim, &finals, label, panic_at);
 }
