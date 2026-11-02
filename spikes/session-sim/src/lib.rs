@@ -543,6 +543,11 @@ pub struct Sim {
     pub carry_deadline_frames: u64,
     /// Thin links Part B (plan section 6): feeders that lie, sending every body 0.2 m higher than it is.
     pub lying_feeders: BTreeSet<MemberId>,
+    /// Fixture: the feed controller's room (how many members it may feed) instead of n − q, for cells beyond the
+    /// scope (two fed at n = 4).
+    pub feed_room: Option<usize>,
+    /// Acks each member authored (traces).
+    pub ack_count: BTreeMap<(WorldId, MemberId), u64>,
 }
 
 impl Peer {
@@ -699,7 +704,7 @@ impl Sim {
                 r.sim.epochs = epochs.clone();
             }
         }
-        Sim { feed: false, feeds: BTreeMap::new(), net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600, lying_feeders: BTreeSet::new() }
+        Sim { feed: false, feeds: BTreeMap::new(), net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600, lying_feeders: BTreeSet::new(), feed_room: None, ack_count: BTreeMap::new() }
     }
 
     fn peer_index(&self, id: MemberId) -> usize {
@@ -730,6 +735,7 @@ impl Sim {
         // Each member's R18 level and quorum, per world.
         let mut level: BTreeMap<(WorldId, MemberId), usize> = BTreeMap::new();
         let mut room: BTreeMap<WorldId, usize> = BTreeMap::new();
+        let room_fixture = self.feed_room;
         for p in &self.peers {
             if p.crashed {
                 continue;
@@ -738,7 +744,7 @@ impl Sim {
                 level.insert((*w, p.id), r.level);
                 if (r.sim.localized() || r.sim.fed_mode_capable()) && r.sim.members.contains(&p.id) {
                     todo.push((*w, p.id, r.sim.members.iter().copied().collect()));
-                    room.entry(*w).or_insert_with(|| r.sim.members.len().saturating_sub(pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, r.sim.members.len()).1));
+                    room.entry(*w).or_insert_with(|| room_fixture.unwrap_or_else(|| r.sim.members.len().saturating_sub(pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, r.sim.members.len()).1)));
                 }
             }
         }
@@ -1312,6 +1318,7 @@ impl Sim {
                 };
             if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
                 r.next_ack_us = now + every * r.dt_us;
+                *self.ack_count.entry((w, pid)).or_default() += 1;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
             }
