@@ -438,9 +438,13 @@ pub struct Change {
     pub add_reqs: Vec<(u64, u64)>,
 }
 
-/// Commit order of admin entries (D80): stamp, then author, then seq.
-fn admin_key(e: &Entry) -> (u64, MemberId, u32) {
-    (e.stamp, e.member, e.seq)
+/// Commit order of admin entries (D80, rev 22 (e1)): the stamp-effective ones (role entries, ownership) first, by stamp,
+/// author, seq; then kicks, by author and seq. No kick's stamp is read.
+fn admin_key(e: &Entry) -> (u8, u64, MemberId, u32) {
+    match e.payload {
+        Payload::Kick { .. } => (1, 0, e.member, e.seq),
+        _ => (0, e.stamp, e.member, e.seq),
+    }
 }
 
 /// A member's ownership key (12.5). In the spike a member id is its identity (10.3); production
@@ -466,6 +470,9 @@ struct AdminRun {
     /// The world's ownership chain (12.5), if it has one, and the session lineage that commits to it.
     book: Option<Book>,
     lineage: u32,
+    /// Rev 22 (e1): the ACL as of the previous decided change (members, roles, role definitions, owners), against which
+    /// a kick is judged, whatever this decision's role entries (which run first) changed.
+    acl0: Option<Box<(BTreeSet<MemberId>, BTreeMap<MemberId, RoleId>, BTreeMap<RoleId, u64>, BTreeSet<Key>)>>,
 }
 
 impl AdminRun {
@@ -508,7 +515,15 @@ impl AdminRun {
         let p = self.perms(a);
         match e.payload {
             Payload::Kick { target, .. } => {
-                if !self.kick_allowed(a, target) {
+                // Rev 22 (e1): judged against the previous decided ACL; the target must still be a member here.
+                let allowed = match &self.acl0 {
+                    Some(b) => {
+                        let v = AdminRun { members: b.0.clone(), roles: b.1.clone(), defs: b.2.clone(), excluded: BTreeSet::new(), owners: b.3.clone(), book: None, lineage: self.lineage, acl0: None };
+                        v.kick_allowed(a, target) && self.members.contains(&target)
+                    }
+                    None => self.kick_allowed(a, target),
+                };
+                if !allowed {
                     return false;
                 }
                 self.members.remove(&target);
@@ -2949,7 +2964,11 @@ impl WorldSim {
         // fed member gives it its nil.
         if self.fed.is_some() && member != self.me && self.members.contains(&member) {
             let ep = match &self.entries[&id].payload {
-                Payload::Vote { epoch, .. } | Payload::Propose { epoch, .. } | Payload::Prevote { epoch, .. } | Payload::Precommit { epoch, .. } => Some(*epoch),
+                Payload::Vote { epoch, .. }
+                | Payload::Propose { epoch, .. }
+                | Payload::Prevote { epoch, .. }
+                | Payload::Precommit { epoch, .. }
+                | Payload::Kick { epoch, .. } => Some(*epoch),
                 _ => None,
             };
             match ep {
@@ -3043,7 +3062,8 @@ impl WorldSim {
             // horizon like any entry: no backdating past what its author has declared.
             // D73(a): and within horizon_slack of its author's last ack stamp, so only packs get the
             // wider window the ack lag allows.
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
+            // Rev 22 (e1): not kicks: a kick is valid on its signature, epoch and the previous decided ACL, never its stamp.
+            Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
                 max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack
             }
             Payload::Vote { .. }
@@ -3927,14 +3947,16 @@ impl WorldSim {
     }
 
     fn admin_run(&self) -> AdminRun {
+        let owners = self.owner_keys();
         AdminRun {
             members: self.members.clone(),
             roles: self.roles.clone(),
             defs: self.role_defs.clone(),
             excluded: BTreeSet::new(),
-            owners: self.owner_keys(),
+            owners: owners.clone(),
             book: self.book.clone(),
             lineage: self.world_id,
+            acl0: Some(Box::new((self.members.clone(), self.roles.clone(), self.role_defs.clone(), owners))),
         }
     }
 
@@ -4326,7 +4348,7 @@ impl WorldSim {
         // A kick waits, unlisted, until a quorum has frozen its target's chain for the cut.
         let mut run = self.admin_run();
         run.excluded = proven.clone();
-        let mut order: Vec<((u64, MemberId, u32), EntryId)> =
+        let mut order: Vec<((u8, u64, MemberId, u32), EntryId)> =
             self.admin_pending.iter().filter_map(|id| self.entries.get(id).map(|e| (admin_key(e), *id))).collect();
         order.sort_unstable();
         let mut admin = Vec::new();
@@ -4484,6 +4506,10 @@ impl WorldSim {
     /// missing (it is fetched).
     fn valid_on_own_branch(&mut self, id: EntryId) -> Option<bool> {
         let e = self.entries.get(&id)?.clone();
+        // Rev 22 (e1): a kick is valid without its chain.
+        if matches!(e.payload, Payload::Kick { .. }) {
+            return Some(true);
+        }
         let m = e.member;
         let linked = if m == self.me { self.my_seq } else { self.contiguous.get(&m).copied().unwrap_or(0) };
         let mut seg: Vec<Entry> = Vec::new();
