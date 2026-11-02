@@ -435,9 +435,19 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
 /// windows (300 frames each) with two fed for section 3's E_T, U_T, C_floor and the margin. `PE_THIN_BPS` overrides
 /// the rate.
 pub fn twofed_long() {
+    fed_long("twofed-long", &[1, 2, 3, 4], &[3, 4], Some(2));
+}
+
+/// The same at n = 3 with one acting fed member (section 7: the fed C_max and latency floor apply whenever someone is
+/// fed at n = 3; P = 16 there).
+pub fn fed3_long() {
+    fed_long("fed3-long", &[1, 2, 3], &[3], None);
+}
+
+fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize>) {
     let kbps: u64 = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000);
-    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
-    let thin = [3, 4];
+    let ids: Vec<MemberId> = ids.to_vec();
+    let thin: Vec<MemberId> = thin.to_vec();
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
     let plans = |m: MemberId| plan(&(120..1900).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
     let ps: Vec<Peer> = ids
@@ -452,7 +462,7 @@ pub fn twofed_long() {
     let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 37);
     net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
     net.batching = true;
-    for &f in &thin {
+    for &f in thin.iter() {
         for &x in ids.iter().filter(|&&x| x != f) {
             for pair in [(f, x), (x, f)] {
                 net.caps.insert(pair, Cap { rate_bps: kbps, burst_bytes: 4000, max_queue_us: 500_000 });
@@ -461,38 +471,40 @@ pub fn twofed_long() {
     }
     let mut sim = Sim::new(net, ps, 30_000_000);
     sim.feed = true;
-    sim.feed_room = Some(2);
+    sim.feed_room = room;
     sim.net.count_from_us = 8_000_000;
     let panic_at = run_to_end(&mut sim, |_| {});
-    for &f in &thin {
-        let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / 22.0 / 1000.0 / 3.0;
-        let acks = sim.net.kinds_from.get(&(f, "ack")).map_or(0, |x| x.0) as f64 / 22.0 / 3.0;
-        println!("RESULT twofed-long: m{f} uplink {total:.1} kbit/s per link from 8 s, {acks:.1} acks/s per link");
+    for &f in thin.iter() {
+        let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / 22.0 / 1000.0 / (ids.len() - 1) as f64;
+        let links = (ids.len() - 1) as f64;
+        let acks = sim.net.kinds_from.get(&(f, "ack")).map_or(0, |x| x.0) as f64 / 22.0 / links;
+        let dg = sim.net.kinds_from.get(&(f, "(datagram overhead)")).map_or(0, |x| x.0) as f64 / 22.0 / links;
+        println!("RESULT {label}: m{f} uplink {total:.1} kbit/s per link from 8 s, {acks:.1} acks/s per link, {dg:.1} datagrams/s per link");
     }
     let r1 = &sim.replica(1, 1).sim;
-    println!("RESULT twofed-long: n = 4, members 3 and 4 fed at {} kbit/s each way, all acting, 30 s; members at m1 at the end {:?}", kbps / 1000, r1.members);
+    println!("RESULT {label}: n = {}, members {thin:?} fed at {} kbit/s each way, all acting, 30 s, overhead {} B; members at m1 at the end {:?}", ids.len(), kbps / 1000, dgram_overhead(), r1.members);
     let w = cfg.window;
-    for &f in &thin {
+    for &f in thin.iter() {
         let vals: Vec<(u64, u64, u64, u64, i64)> = r1
             .window_values()
             .iter()
             .filter_map(|(&k, v)| v.fed_terms.get(&f).map(|&(e, u)| (k, e, u, v.c_floor, w as i64 - 15 - v.c_floor as i64 - (32 + e + u + 4) as i64)))
             .collect();
         println!(
-            "RESULT twofed-long: m{f} fed {}; windows with n - f < q: {:?} (window, E_T, U_T, C_floor, margin = W - 15 - C_floor - (32 + E_T + U_T + 4))",
+            "RESULT {label}: m{f} fed {}; windows with n - f < q: {:?} (window, E_T, U_T, C_floor, margin = W - 15 - C_floor - (32 + E_T + U_T + 4))",
             sim.is_fed(1, f),
             vals
         );
     }
     let floor_votes: Vec<String> = ids.iter().flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("latency floor") || e.contains("below the floors")).cloned().collect::<Vec<_>>()).collect();
-    println!("RESULT twofed-long: floor votes: {}", if floor_votes.is_empty() { "none".to_string() } else { format!("{floor_votes:?}") });
-    for &f in &thin {
+    println!("RESULT {label}: floor votes: {}", if floor_votes.is_empty() { "none".to_string() } else { format!("{floor_votes:?}") });
+    for &f in thin.iter() {
         let void = r1.void_ids();
         let t: Vec<EntryId> = r1.all_entries().into_iter().filter(|e| e.member == f && matches!(e.payload, Payload::Touch { .. })).map(|e| e.id()).collect();
-        println!("RESULT twofed-long: m{f}'s touches at m1: {} held, {} void", t.len(), t.iter().filter(|id| void.contains(id)).count());
+        println!("RESULT {label}: m{f}'s touches at m1: {} held, {} void", t.len(), t.iter().filter(|id| void.contains(id)).count());
     }
     let finals: Vec<MemberId> = r1.members.iter().copied().filter(|m| !thin.contains(m)).collect();
-    verdict(&sim, &finals, "twofed-long", panic_at);
+    verdict(&sim, &finals, label, panic_at);
 }
 
 pub fn stale() {

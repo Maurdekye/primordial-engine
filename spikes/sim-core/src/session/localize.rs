@@ -517,7 +517,8 @@ impl WorldSim {
         // whose echo path needs more than W − 15 − C_floor is over the latency floor (rule 4 removes it).
         let fed: Vec<MemberId> = data.fed.iter().copied().filter(|m| self.members.contains(m)).collect();
         let (mut c_floor, mut fed_terms, mut over_floor) = (0, BTreeMap::new(), Vec::new());
-        if !fed.is_empty() && self.members.len() - fed.len() < self.quorum_q() {
+        // At n = 3 whenever someone is fed (section 7: F's echo is always necessary there).
+        if !fed.is_empty() && (self.members.len() - fed.len() < self.quorum_q() || self.members.len() == 3) {
             let l_max = l.iter().filter(|(m, _)| !fed.contains(m)).map(|(_, &x)| x).max().unwrap_or(0);
             c_floor = (w / 2).min(self.cfg.floor_f.max(l_max + q_floor));
             let mut worst = 0;
