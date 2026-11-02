@@ -33,7 +33,10 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
         println!("RESULT {label}: PANIC at t={t} ms -> FAIL");
         return false;
     }
-    let frames = ids.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap_or(0).saturating_sub(1);
+    // Confirmed frames only (as r18's end state, @coordinator-opus m721ec7943321): a paused replica's speculative frames
+    // past its confirmation may still roll back (join-beyond: member 1 paused at frame 931 with conf 811, missing entries
+    // member 2 held, read FAIL over 812-930).
+    let frames = ids.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap_or(0).saturating_sub(1);
     let first = &sim.replica(ids[0], 1).sim;
     let members: Vec<MemberId> = first.members.iter().copied().collect();
     let rs = replay_sim_like(first, SCENE, &members, &final_log(first), frames);
@@ -642,6 +645,92 @@ pub fn e1_roles(case: &str) {
     };
     println!("RESULT {label}: {}", if expect { what.to_string() } else { format!("FAIL (expected: {what})") });
     let finals: Vec<MemberId> = r1.members.iter().copied().filter(|&m| m != 3).collect();
+    verdict(&sim, &finals, &label, panic_at);
+}
+
+/// Rev 22 (c), the join cells (item C). Joiner 5 asks to join world 1. `case`:
+/// - "beyond-withhold": n = 4 beyond the scope (members 3 and 4 fed, the fixture lifting the room to 2), member 2 out of
+///   view changes; 5 asks at 8 s. A fed member prevotes a join only after t + 1 = 2 members have, and only member 1
+///   will: blocked while 2 withholds.
+/// - "beyond": the same with nobody withholding: 1 and 2 prevote, the fed members follow, it decides.
+/// - "onefed-down": n = 4, member 3 fed, member 2 silent from 6 s; 5 asks at 9 s. Members 1 and 4 prevote, so the fed
+///   member does too: it decides (with 2's removal, if bundled).
+pub fn join_fed(case: &str) {
+    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
+    let joiner: MemberId = 5;
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let thin: Vec<MemberId> = if case == "onefed-down" { vec![3] } else { vec![3, 4] };
+    let plans = |m: MemberId| plan(&(120..1700).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let mut ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut pj = Peer::new(joiner, 0);
+    pj.join(1, &ids, SCENE, cfg, 100_000, BTreeMap::new());
+    ps.push(pj);
+    for p in ps.iter_mut().filter(|p| p.id != joiner) {
+        p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
+    }
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 39);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &f in &thin {
+        for x in [1, 2, 3, 4, joiner].into_iter().filter(|&x| x != f) {
+            for pair in [(f, x), (x, f)] {
+                net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+            }
+        }
+    }
+    if case == "onefed-down" {
+        net.filter = Some(Box::new(|t, _w, from, to, _m| if (from == 2 || to == 2) && t >= 6_000_000 { Fate::Drop } else { Fate::Deliver }));
+    }
+    let mut sim = Sim::new(net, ps, 18_000_000);
+    sim.feed = true;
+    if case != "onefed-down" {
+        sim.feed_room = Some(2);
+    }
+    if case == "beyond-withhold" {
+        sim_mut(&mut sim, 2).withhold_vc = true;
+    }
+    let ask_at = if case == "onefed-down" { 9_000_000 } else { 8_000_000 };
+    let mut fed_at_ask: Vec<bool> = Vec::new();
+    let mut admitted: Option<u64> = None;
+    let label = format!("join-{case}");
+    let panic_at = run_to_end(&mut sim, |s| {
+        if s.net.now_us == ask_at {
+            fed_at_ask = thin.iter().map(|&f| s.is_fed(1, f)).collect();
+            for m in [1, 2, 3, 4] {
+                s.net.send(1, joiner, m, &join_msg(session_id(1, &[1, 2, 3, 4]), joiner, vec![], u64::MAX));
+            }
+        }
+        if admitted.is_none() && s.replica(1, 1).sim.members.contains(&joiner) {
+            admitted = Some(s.net.now_us);
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    let cert = r1.epoch_certs_upto(r1.epoch).unwrap_or_default().into_iter().find(|c| c.change.add.contains(&joiner));
+    println!(
+        "RESULT {label}: {thin:?} fed at the request {fed_at_ask:?}; 5 admitted at {}; members at m1 {:?}; the admitting change's precommits {:?}",
+        admitted.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
+        r1.members,
+        cert.map(|c| c.precommits.iter().map(|x| x.0).collect::<Vec<_>>())
+    );
+    let ok = match case {
+        "beyond-withhold" => admitted.is_none(),
+        _ => admitted.is_some(),
+    };
+    let what = match case {
+        "beyond-withhold" => "blocked while a member withholds (beyond the scope)",
+        "beyond" => "decides beyond the scope with nobody withholding",
+        _ => "decides with one fed and a full member down, via (c)",
+    };
+    println!("RESULT {label}: {}", if ok { what.to_string() } else { format!("FAIL (expected: {what})") });
+    let finals: Vec<MemberId> = r1.members.iter().copied().filter(|m| !thin.contains(m) && *m != joiner && *m != 2 || (*m == 2 && case != "onefed-down" && !thin.contains(m))).collect();
     verdict(&sim, &finals, &label, panic_at);
 }
 

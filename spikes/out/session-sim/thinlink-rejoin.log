@@ -8,7 +8,7 @@ RESULT rejoin (asks after 10 s above both floors): floor votes per member [1, 1,
   m1: conf 2976 frame 2993 rollbacks 168 max depth 11 paused frames 103 checks ok 193 bad 0
   m2: conf 2976 frame 2993 rollbacks 168 max depth 11 paused frames 103 checks ok 193 bad 0
   m4: conf 2976 frame 2993 rollbacks 170 max depth 54 paused frames 103 checks ok 193 bad 0
-RESULT rejoin (asks after 10 s above both floors): frames 0..2992 m1=9a42b9c13bb29790 m2=9a42b9c13bb29790 m4=9a42b9c13bb29790 | offline replay 9a42b9c13bb29790 | ALL EQUAL, NO FALSE CHECKS
+RESULT rejoin (asks after 10 s above both floors): frames 0..2975 m1=1ed40b2de84dde34 m2=1ed40b2de84dde34 m4=1ed40b2de84dde34 | offline replay 1ed40b2de84dde34 | ALL EQUAL, NO FALSE CHECKS
 RESULT rejoin (control: asks 1 s after the removal, under the floor): 3 fed 47032 ms; removed at 9.25 s (member 3 is fed and only 208 B of its own datagrams reached me in 180 frames, under my share of the floor (312 B): below the floors; vote to remove it); spectator 103 at once; join asked at 10.25 s; admitted at 10.40 s; removed again at 14.01 s
 RESULT rejoin (control: asks 1 s after the removal, under the floor): the others' paused frames: to the removal [0, 0, 0], removal to admission [0, 0, 0], after admission [104, 104, 106]; worst lag (frames at s) before the removal 54 at 3.02, until admission 54 at 9.25, after 226 at 14.00
 RESULT rejoin (control: asks 1 s after the removal, under the floor): floor votes per member [1, 1, 1]; members at m1 {1, 2, 4}
@@ -19,4 +19,4 @@ RESULT rejoin (control: asks 1 s after the removal, under the floor): floor vote
   m1: conf 2976 frame 2993 rollbacks 170 max depth 11 paused frames 104 checks ok 195 bad 0
   m2: conf 2976 frame 2993 rollbacks 170 max depth 11 paused frames 104 checks ok 195 bad 0
   m4: conf 2976 frame 2993 rollbacks 172 max depth 54 paused frames 106 checks ok 195 bad 0
-RESULT rejoin (control: asks 1 s after the removal, under the floor): frames 0..2992 m1=9a8846a8a049bd14 m2=9a8846a8a049bd14 m4=9a8846a8a049bd14 | offline replay 9a8846a8a049bd14 | ALL EQUAL, NO FALSE CHECKS
+RESULT rejoin (control: asks 1 s after the removal, under the floor): frames 0..2975 m1=1a2fbdf40944f957 m2=1a2fbdf40944f957 m4=1a2fbdf40944f957 | offline replay 1a2fbdf40944f957 | ALL EQUAL, NO FALSE CHECKS
