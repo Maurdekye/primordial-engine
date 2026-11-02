@@ -23,6 +23,17 @@ mod randsched;
 mod review3;
 mod viewchange;
 
+/// A payload's kind, for cell reports.
+pub(crate) fn kind_short(p: &Payload) -> &'static str {
+    match p {
+        Payload::Kick { .. } => "Kick",
+        Payload::SetRole { .. } => "SetRole",
+        Payload::DefineRole { .. } => "DefineRole",
+        Payload::Ownership { .. } => "Ownership",
+        _ => "other",
+    }
+}
+
 use pe_session_sim::*;
 use pe_sim_core::session::*;
 use pe_sim_core::{build_pile_scene, GameState, Interaction, InputError, RollbackSim, DT as OLD_DT};
@@ -1437,6 +1448,9 @@ fn main() {
         Some("kickliar-fed7") => partb::kickliar_fed7(),
         Some("twofed-long") => partb::twofed_long(),
         Some("fed3-long") => partb::fed3_long(),
+        Some("e1-revoke-kick") => partb::e1_roles("revoke-kick"),
+        Some("e1-same-revoke") => partb::e1_roles("same-revoke"),
+        Some("e1-same-promote") => partb::e1_roles("same-promote"),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
