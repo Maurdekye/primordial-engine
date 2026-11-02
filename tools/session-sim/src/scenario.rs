@@ -114,6 +114,9 @@ pub struct WorldCfg {
     /// `set_no_runs`. Review repros' fix-off parts use it where the bug's path needs entries one by one.
     #[serde(default)]
     pub no_runs: bool,
+    /// No lean entries either (the fully explicit wire), the harness's `set_no_lean` (fork9's fix-off part).
+    #[serde(default)]
+    pub no_lean: bool,
     /// D80: define role `role` with no permissions and give it to every member and joiner, except
     /// `admins`, who keep ADMIN (the spike's `guests`).
     pub guests: Option<GuestsCfg>,

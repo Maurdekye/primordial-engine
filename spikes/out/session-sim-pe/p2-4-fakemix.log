@@ -1,25 +1,25 @@
 REPRO fakemix mix=false stale-refresh=0us: 8 removed at 6.18 s; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
 RESULT fakemix: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 247 frames (window 120); 8 removed at 6.18 s; lag at the end 7 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (99, 342)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 78 bad 0
-  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (99, 342)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
-  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (99, 342)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
-  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (99, 342)} rollbacks 32 max depth 6 violations 0 equivocations 0 checks ok 78 bad 0
+  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 78 bad 0
+  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
+  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
+  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
 RESULT fakemix mix=false: frames 0..832 honest m1=4d9c3ea37f62db7a m2=4d9c3ea37f62db7a m3=4d9c3ea37f62db7a m4=4d9c3ea37f62db7a | offline replay 4d9c3ea37f62db7a | ALL EQUAL, NO FALSE CHECKS ; checks ok 312 bad 0
-REPRO fakemix mix=true stale-refresh=0us: 8 removed at never; m1 conf 810 of frame 833, m2 conf 801 of frame 833, m3 conf 807 of frame 833, m4 conf 807 of frame 833
-  m1: conf 810 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 108 bad 0
-  m2: conf 801 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 7 violations 0 equivocations 0 checks ok 108 bad 0
-  m3: conf 807 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 8 violations 0 equivocations 0 checks ok 108 bad 0
-  m4: conf 807 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 8 violations 0 equivocations 0 checks ok 108 bad 0
+REPRO fakemix mix=true stale-refresh=0us: 8 removed at never; m1 conf 806 of frame 833, m2 conf 806 of frame 833, m3 conf 806 of frame 833, m4 conf 806 of frame 833
+  m1: conf 806 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 108 bad 0
+  m2: conf 806 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 8 violations 0 equivocations 0 checks ok 108 bad 0
+  m3: conf 806 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 6 violations 0 equivocations 0 checks ok 108 bad 0
+  m4: conf 806 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 2 violations 0 equivocations 0 checks ok 108 bad 0
 RESULT fakemix mix=true: frames 0..832 honest m1=b5828fa1a5b879b9 m2=b5828fa1a5b879b9 m3=b5828fa1a5b879b9 m4=b5828fa1a5b879b9 | offline replay b5828fa1a5b879b9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 432 bad 0
 REPRO fakemix mix=true stale-refresh=1000000us: 8 removed at never; m1 conf 770 of frame 833, m2 conf 770 of frame 833, m3 conf 770 of frame 833, m4 conf 770 of frame 833
-  m1: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 72 bad 0
-  m2: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 7 violations 0 equivocations 0 checks ok 72 bad 0
-  m3: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 8 violations 0 equivocations 0 checks ok 72 bad 0
+  m1: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 71 bad 0
+  m2: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 9 violations 0 equivocations 0 checks ok 71 bad 0
+  m3: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 8 violations 0 equivocations 0 checks ok 71 bad 0
   m4: conf 770 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 39 max depth 3 violations 0 equivocations 0 checks ok 71 bad 0
-RESULT fakemix mix=true: frames 0..832 honest m1=b5828fa1a5b879b9 m2=b5828fa1a5b879b9 m3=b5828fa1a5b879b9 m4=b5828fa1a5b879b9 | offline replay b5828fa1a5b879b9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 287 bad 0
+RESULT fakemix mix=true: frames 0..832 honest m1=b5828fa1a5b879b9 m2=b5828fa1a5b879b9 m3=b5828fa1a5b879b9 m4=b5828fa1a5b879b9 | offline replay b5828fa1a5b879b9 | ALL EQUAL, NO FALSE CHECKS ; checks ok 284 bad 0
 REPRO fakemix mix=true stale-refresh=2000000us: 8 removed at never; m1 conf 709 of frame 829, m2 conf 709 of frame 829, m3 conf 709 of frame 829, m4 conf 709 of frame 829
   m1: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 51 bad 0
-  m2: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 34 max depth 7 violations 0 equivocations 0 checks ok 51 bad 0
-  m3: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 34 max depth 9 violations 0 equivocations 0 checks ok 51 bad 0
-  m4: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 34 max depth 9 violations 0 equivocations 0 checks ok 51 bad 0
+  m2: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 34 max depth 2 violations 0 equivocations 0 checks ok 51 bad 0
+  m3: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 34 max depth 4 violations 0 equivocations 0 checks ok 51 bad 0
+  m4: conf 709 frame 829 members {1, 2, 3, 4, 8} evicted {} rollbacks 34 max depth 7 violations 0 equivocations 0 checks ok 51 bad 0
 RESULT fakemix mix=true: frames 0..828 honest m1=9a8d84b5356519d7 m2=9a8d84b5356519d7 m3=9a8d84b5356519d7 m4=9a8d84b5356519d7 | offline replay 9a8d84b5356519d7 | ALL EQUAL, NO FALSE CHECKS ; checks ok 204 bad 0

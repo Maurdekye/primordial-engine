@@ -7,8 +7,8 @@ RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (1318 B
   sweep-window traffic entry/hand: 219 messages, 22045 B payload (9135 B/s wire est.)
   sweep-window traffic fetch: 14 messages, 196 B payload (252 B/s wire est.)
   sweep-window traffic run2+: 9 messages, 1318 B payload (488 B/s wire est.)
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.0 re-simulated frames/s, re-sim 3.46 ms per rendered sim frame (761 ms over the window); step avg 0.473 ms; max depth 4
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 273.0 re-simulated frames/s, re-sim 2.42 ms per rendered sim frame (533 ms over the window); step avg 0.319 ms; max depth 4
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 2b4c116d2ebb127f m2 2b4c116d2ebb127f -> IDENTICAL
   m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 534
-  m2 world 1: rollbacks 222 max depth 4 resim frames 1024 (786.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 533
+  m2 world 1: rollbacks 222 max depth 4 resim frames 1024 (547.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 519 frame 533
 RESULT ballpit 60Hz world 1: frames 0..480 digests m1=05a5ab3db67595ec m2=05a5ab3db67595ec | offline replay 05a5ab3db67595ec | ALL EQUAL

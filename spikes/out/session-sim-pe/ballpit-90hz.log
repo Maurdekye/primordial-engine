@@ -1,14 +1,14 @@
 RESULT ballpit 90 Hz, 1 hand(s), input delay 0 frames, loss 2%: sweep window 3.66 s, 329 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 344 (9174 B/s payload, 14061 B/s wire est.), acks 324 (14068 B/s wire est.), all messages 29880 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 350 (9290 B/s payload, 14263 B/s wire est.), acks 334 (14486 B/s wire est.), all messages 31170 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 284 balls changed per frame; exact state 1734546 B/s, quantized ~26 B/ball 664097 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
 RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 11.1 acks/s (1889 B/s wire est.), m2 11.1 acks/s (1889 B/s wire est.)
-  sweep-window traffic ack: 324 messages, 34640 B payload (14068 B/s wire est.)
-  sweep-window traffic entry/hand: 344 messages, 33576 B payload (14061 B/s wire est.)
-  sweep-window traffic fetch: 53 messages, 742 B payload (956 B/s wire est.)
-  sweep-window traffic run2+: 15 messages, 2130 B payload (795 B/s wire est.)
-RESULT   member 2 during the sweep: 47.8 rollbacks/s, 363.7 re-simulated frames/s, re-sim 3.27 ms per rendered sim frame (1075 ms over the window); step avg 0.456 ms; max depth 30
+  sweep-window traffic ack: 334 messages, 35652 B payload (14486 B/s wire est.)
+  sweep-window traffic entry/hand: 350 messages, 34002 B payload (14263 B/s wire est.)
+  sweep-window traffic fetch: 74 messages, 1036 B payload (1334 B/s wire est.)
+  sweep-window traffic run2+: 19 messages, 2987 B payload (1086 B/s wire est.)
+RESULT   member 2 during the sweep: 54.9 rollbacks/s, 400.8 re-simulated frames/s, re-sim 2.52 ms per rendered sim frame (830 ms over the window); step avg 0.318 ms; max depth 18
 RESULT   end state at frame 799 (all 500 balls, both hands, all tables): m1 c88afef9ef0b12bd m2 c88afef9ef0b12bd -> IDENTICAL
   m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 26 bad 0 nonfinite 0 conf 782 frame 801
-  m2 world 1: rollbacks 176 max depth 30 resim frames 1349 (1104.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 26 bad 0 nonfinite 0 conf 783 frame 800
+  m2 world 1: rollbacks 208 max depth 18 resim frames 1512 (867.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 26 bad 0 nonfinite 0 conf 783 frame 800
 RESULT ballpit 90Hz world 1: frames 0..720 digests m1=a9073c237b391553 m2=a9073c237b391553 | offline replay a9073c237b391553 | ALL EQUAL

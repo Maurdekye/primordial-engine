@@ -327,6 +327,9 @@ pub fn build(s: &Scenario) -> Result<Sim, String> {
             if w.no_runs {
                 r.sim.run_wire = false;
             }
+            if w.no_lean {
+                r.sim.lean_wire = false;
+            }
         }
         peers.push(p);
     }

@@ -5,7 +5,7 @@ RESULT kickpartition: m1: 1 kicks 3 @180: applied
 RESULT kickpartition: m2: 1 kicks 3 @180: applied
 RESULT kickpartition: m4: 1 kicks 3 @180: applied
 RESULT kickpartition: decided during the partition: false; members after: m1 {1, 2, 4}, m4 {1, 2, 4} -> ONE SESSION, 3 removed after the heal
-  m1: conf 701 frame 713 members {1, 2, 4} evicted {3: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 35 bad 0
-  m2: conf 701 frame 713 members {1, 2, 4} evicted {3: (18, 110)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 35 bad 0
-  m4: conf 701 frame 713 members {1, 2, 4} evicted {3: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 36 bad 0
-RESULT kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s): frames 0..712 honest m1=4de26a1088fdbd9d m2=4de26a1088fdbd9d m4=4de26a1088fdbd9d | offline replay 4de26a1088fdbd9d | ALL EQUAL, NO FALSE CHECKS ; checks ok 106 bad 0
+  m1: conf 703 frame 713 members {1, 2, 4} evicted {3: (18, 110)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 34 bad 0
+  m2: conf 703 frame 713 members {1, 2, 4} evicted {3: (18, 110)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 34 bad 0
+  m4: conf 703 frame 713 members {1, 2, 4} evicted {3: (18, 110)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 34 bad 0
+RESULT kickpartition (partition {1,2} | {3,4} 2-6 s; admin 1 kicks 3 at 3 s): frames 0..712 honest m1=4de26a1088fdbd9d m2=4de26a1088fdbd9d m4=4de26a1088fdbd9d | offline replay 4de26a1088fdbd9d | ALL EQUAL, NO FALSE CHECKS ; checks ok 102 bad 0

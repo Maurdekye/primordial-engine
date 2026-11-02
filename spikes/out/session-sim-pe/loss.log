@@ -1,11 +1,14 @@
-RESULT loss acceptance, uncontended checks: 29/29 equal at that instant and 29/29 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 12
-RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 37/41 equal to the author's copy at that instant, 38/41 equal to the author's final history
-  differs at that instant: world 1 receiver m2 author m1 obj 50 frame 122; equal to the author's final history: true
-  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 125; equal to the author's final history: false
-  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 125; equal to the author's final history: false
-  differs at that instant: world 1 receiver m2 author m1 obj 50 frame 128; equal to the author's final history: true
-  m1 world 1: rollbacks 8 max depth 11 resim frames 49 (32.4 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 45 bad 0 nonfinite 0 conf 740 frame 773
-  m2 world 1: rollbacks 8 max depth 13 resim frames 63 (33.9 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 46 bad 0 nonfinite 0 conf 748 frame 774
-  m3 world 1: rollbacks 11 max depth 16 resim frames 76 (46.6 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 46 bad 0 nonfinite 0 conf 741 frame 773
-  bytes: entries 8 msgs 1232 B (avg 154 B), acks 1289 msgs 158222 B, dropped 174
-RESULT loss world 1: frames 0..700 digests m1=158a40e8a6135814 m2=158a40e8a6135814 m3=158a40e8a6135814 | offline replay 158a40e8a6135814 | ALL EQUAL
+RESULT loss acceptance, uncontended checks: 21/21 equal at that instant and 21/21 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 12
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 26/33 equal to the author's copy at that instant, 31/33 equal to the author's final history
+  differs at that instant: world 1 receiver m1 author m2 obj 50 frame 121; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 122; equal to the author's final history: false
+  differs at that instant: world 1 receiver m1 author m2 obj 50 frame 127; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 127; equal to the author's final history: false
+  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 127; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 133; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 134; equal to the author's final history: true
+  m1 world 1: rollbacks 9 max depth 10 resim frames 48 (21.9 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 753 frame 773
+  m2 world 1: rollbacks 9 max depth 10 resim frames 46 (21.3 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 753 frame 774
+  m3 world 1: rollbacks 12 max depth 8 resim frames 47 (20.8 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
+  bytes: entries 8 msgs 1232 B (avg 154 B), acks 1289 msgs 158274 B, dropped 172
+RESULT loss world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112baf49e9c4b m3=a97112baf49e9c4b | offline replay a97112baf49e9c4b | ALL EQUAL

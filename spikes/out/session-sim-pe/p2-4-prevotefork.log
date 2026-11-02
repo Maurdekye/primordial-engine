@@ -1,10 +1,10 @@
   epochs at the end: m1 1, m2 1, m3 0, m9 0, m5 1; confirmation live at the end (2, 3, 9, 5): false
   prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it) with PF-1's fix (and VC8R-1's) switched off (the behaviour before the fix): every replica equals the replay; m1 conf 48 of frame 168, m2 conf 48 of frame 168, m3 conf 40 of frame 160; at m1: members {1, 2, 3, 5, 9}, evicted []
-RESULT prevotefork: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 67 (t=1.22 s) round 0 removed []; epoch 2 at frame 166 (t=2.87 s) round 2 removed [1]
-RESULT prevotefork: m2 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 66 (t=1.20 s) round 0 removed []; epoch 2 at frame 172 (t=2.97 s) round 2 removed [1]
-RESULT prevotefork: m3 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 66 (t=1.20 s) round 0 removed []; epoch 2 at frame 170 (t=2.93 s) round 2 removed [1]
+RESULT prevotefork: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 67 (t=1.22 s) round 0 removed []; epoch 2 at frame 175 (t=3.02 s) round 2 removed [1]
+RESULT prevotefork: m2 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 66 (t=1.20 s) round 0 removed []; epoch 2 at frame 178 (t=3.07 s) round 2 removed [1]
+RESULT prevotefork: m3 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 67 (t=1.22 s) round 0 removed []; epoch 2 at frame 175 (t=3.02 s) round 2 removed [1]
 RESULT prevotefork: m3 votes to remove capper 2: false; 2 kept: true; epochs at the end: m1 2, m2 2, m3 2, m9 2, m5 2; confirmation live at the end (2, 3, 9, 5): true -> NO VOTE AGAINST THE CAPPER, AND CONFIRMATION GOES ON
-  m1: conf 60 frame 180 members {2, 3, 5, 9} evicted {1: (16, 64)} rollbacks 2 max depth 106 violations 0 equivocations 1 checks ok 8 bad 0
-  m2: conf 586 frame 593 members {2, 3, 5, 9} evicted {1: (16, 64)} rollbacks 3 max depth 108 violations 0 equivocations 1 checks ok 57 bad 0
-  m3: conf 586 frame 593 members {2, 3, 5, 9} evicted {1: (16, 64)} rollbacks 1 max depth 100 violations 0 equivocations 1 checks ok 59 bad 0
-RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..179 honest m1=43a86cd1a3b983dc m2=43a86cd1a3b983dc m3=43a86cd1a3b983dc | offline replay 43a86cd1a3b983dc | ALL EQUAL, NO FALSE CHECKS ; checks ok 124 bad 0
+  m1: conf 57 frame 177 members {2, 3, 5, 9} evicted {1: (16, 64)} rollbacks 2 max depth 108 violations 0 equivocations 1 checks ok 8 bad 0
+  m2: conf 586 frame 593 members {2, 3, 5, 9} evicted {1: (16, 64)} rollbacks 3 max depth 108 violations 0 equivocations 1 checks ok 58 bad 0
+  m3: conf 586 frame 593 members {2, 3, 5, 9} evicted {1: (16, 64)} rollbacks 1 max depth 100 violations 0 equivocations 1 checks ok 58 bad 0
+RESULT prevotefork (proposer 1 equivocates its prevote: v to capper 2, nil to observer 3; 2 caps on the polka, 3 cannot see it): frames 0..176 honest m1=418eeeee7851fa7e m2=418eeeee7851fa7e m3=418eeeee7851fa7e | offline replay 418eeeee7851fa7e | ALL EQUAL, NO FALSE CHECKS ; checks ok 124 bad 0
