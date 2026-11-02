@@ -439,10 +439,12 @@ pub struct Change {
 }
 
 /// Commit order of admin entries (D80, rev 22 (e1)): the stamp-effective ones (role entries, ownership) first, by stamp,
-/// author, seq; then kicks, by author and seq. No kick's stamp is read.
-fn admin_key(e: &Entry) -> (u8, u64, MemberId, u32) {
+/// author, seq; then kicks, by a hash of `seed` (the previous decided change's value: unknown until it decides, so no
+/// author can grind a key that sorts first; @coordinator-opus m67ddf30d63ad, @design-reviewer m4b209491ab0b) and the
+/// author, then seq. No kick's stamp is read.
+fn admin_key(e: &Entry, seed: u64) -> (u8, u64, MemberId, u32) {
     match e.payload {
-        Payload::Kick { .. } => (1, 0, e.member, e.seq),
+        Payload::Kick { .. } => (1, fnv_u64s([0x5045_4b49_434b_4f52, seed, e.member as u64]), e.member, e.seq),
         _ => (0, e.stamp, e.member, e.seq),
     }
 }
@@ -3946,6 +3948,12 @@ impl WorldSim {
         self.members.iter().copied().filter(|m| self.roles.get(m) == Some(&ADMIN)).collect()
     }
 
+    /// Rev 22 (e1): the seed of this decision's kick order: the previous decided change's value (the session id before
+    /// the first decision).
+    pub(super) fn kick_seed(&self) -> u64 {
+        self.decided.last().map_or(self.session, |d| d.0.value())
+    }
+
     fn admin_run(&self) -> AdminRun {
         let owners = self.owner_keys();
         AdminRun {
@@ -4349,7 +4357,7 @@ impl WorldSim {
         let mut run = self.admin_run();
         run.excluded = proven.clone();
         let mut order: Vec<((u8, u64, MemberId, u32), EntryId)> =
-            self.admin_pending.iter().filter_map(|id| self.entries.get(id).map(|e| (admin_key(e), *id))).collect();
+            self.admin_pending.iter().filter_map(|id| self.entries.get(id).map(|e| (admin_key(e, self.kick_seed()), *id))).collect();
         order.sort_unstable();
         let mut admin = Vec::new();
         for (_, id) in order {
@@ -4642,7 +4650,7 @@ impl WorldSim {
                 Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } => epoch,
                 _ => return Some(false),
             };
-            let key = admin_key(&e);
+            let key = admin_key(&e, self.kick_seed());
             if epoch > self.epoch || self.admin_outcomes.contains_key(&id) || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
                 return Some(false);
             }
