@@ -38,11 +38,6 @@ impl WorldSim {
                 break;
             }
             run.push(SignedEntry { entry: e.clone(), sig: self.sigs.get(&e.id()).copied().unwrap_or([0; 64]) });
-            // O2-1: a view-change or admin entry ends the answer, signed on itself; the requester asks
-            // again for the rest, as it does past 16 entries.
-            if e.payload.signs_itself() && self.run_wire {
-                break;
-            }
         }
         let Some(top) = run.last() else { return vec![] };
         // Without runs on the wire (A/B, option 1's form): every entry on its own, signed on itself.
@@ -64,10 +59,8 @@ impl WorldSim {
             run.extend(cover);
         }
         let lean = held & HELD_BELOW != 0;
-        if run.len() == 1 && signed && !lean {
-            return vec![Msg::Entry(run.pop().expect("one"))];
-        }
-        vec![Msg::Run { lean, heads: false, signed, entries: run }]
+        // O2-1: each view-change or admin entry ends a run, signed on itself.
+        self.split_runs(run, lean, signed)
     }
 
     /// An answer from `holder` starting at `author`'s `seq` arrived: its round trip, if that range was
@@ -118,9 +111,12 @@ impl WorldSim {
     pub fn take_fetches(&mut self, now_ms: u64) -> Vec<(MemberId, Msg)> {
         let mut out = Vec::new();
         // Backoff state for ranges the author's verified prefix has passed is done with.
-        let contiguous = &self.contiguous;
-        self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
-        self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
+        // Every 32 frames: each pass is over every (holder, author, range) asked.
+        if self.now % 32 == 0 {
+            let contiguous = &self.contiguous;
+            self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
+            self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
+        }
         self.clock_ms = now_ms;
         if self.rtt_dirty {
             self.rtt_dirty = false;

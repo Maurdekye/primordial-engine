@@ -183,9 +183,13 @@ fn a_view_change_entry_is_never_covered_by_another_entrys_signature() {
     // An unsigned hole-fill run may not carry it either.
     b.insert_run(1, false, false, false, vec![pv.clone()]);
     assert_eq!(b.stats.covered_refused, 2);
-    // The sender's answer, even to a hole-fill request, ends at the prevote and is signed on it.
+    // The sender's answer, even to a hole fill, is split at the prevote: a run ending at it, signed on
+    // it, then the rest (unsigned: covered by the requester's entry above), in the same answer.
     match a.on_fetch(1, 1, 3, HELD_ABOVE).as_slice() {
-        [Msg::Run { signed: true, entries, .. }] => assert_eq!(entries.last().map(|e| e.id()), Some(pv.id())),
+        [Msg::Run { signed: true, entries, .. }, Msg::Run { signed: false, entries: rest, .. }] => {
+            assert_eq!(entries.last().map(|e| e.id()), Some(pv.id()));
+            assert_eq!(rest.iter().map(|e| e.id()).collect::<Vec<_>>(), vec![a3.id()]);
+        }
         other => panic!("answer: {other:?}"),
     }
     // As the signed top of a run it goes in.
