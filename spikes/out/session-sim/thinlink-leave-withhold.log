@@ -1,4 +1,4 @@
-RESULT leave-withhold: member 4 removed at 8.70 s; members at m1 {1, 2, 3}; 3 fed true
+RESULT leave-withhold: member 4 removed at 8.70 s; members at m1 {1, 2, 3}; [3] fed at the leave [true]; the removal's precommits Some([1, 3, 4])
   m1: conf 901 frame 953 rollbacks 70 max depth 20 paused frames 0 checks ok 52 bad 0
   m2: conf 901 frame 953 rollbacks 70 max depth 20 paused frames 0 checks ok 52 bad 0
 RESULT leave-withhold: frames 0..952 m1=9a221517a1e24dee m2=9a221517a1e24dee | offline replay 9a221517a1e24dee | ALL EQUAL, NO FALSE CHECKS
