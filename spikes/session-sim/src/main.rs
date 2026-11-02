@@ -1435,6 +1435,7 @@ fn main() {
         Some("kickliar-fed") => partb::kickliar_fed(),
         Some("kickliar-fed2") => partb::kickliar_fed2(),
         Some("kickliar-fed7") => partb::kickliar_fed7(),
+        Some("twofed-long") => partb::twofed_long(),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),

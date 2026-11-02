@@ -354,11 +354,30 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
             println!("RESULT {label}: m{f}'s touches at m1: {} held, {nv} void (late past rule 1's deadline)", touches.len());
         }
     }
-    // The latency-floor terms of each fed member, at m1 (the P = 16 / 32 decision).
+    if std::env::var("PE_WIN_DEBUG").is_ok() {
+        for (k, v) in sim.replica(1, 1).sim.window_values() {
+            println!("WIN m1 window {k}: E {} C_max {} c_floor {} fed_terms {:?} over {:?}", v.e, v.c_max, v.c_floor, v.fed_terms, v.over_floor);
+        }
+    }
+    // Rule 3's latency floor (built in the spike): each fed member's margin W - 15 - C_floor - (32 + E_T + U_T + 4) in
+    // the windows where n - f < q, at m1: the smallest, and how many windows it was over.
     for &f in thin {
-        match sim.replica(1, 1).sim.fed_latency_terms(f) {
-            Some((e, u, cf, m)) => println!("RESULT {label}: m{f} latency floor at m1: E_T P95 {e}, U_T P95 {u}, C_floor {cf}, margin {m} frames (W - 15 - C_floor - (32 + E_T + U_T + 4))"),
-            None => println!("RESULT {label}: m{f} latency floor at m1: no echo data"),
+        let w = SimConfig { localize: true, ..SimConfig::default() }.window;
+        let vals: Vec<(u64, u64, u64, u64, i64)> = sim
+            .replica(1, 1)
+            .sim
+            .window_values()
+            .iter()
+            .filter_map(|(&k, v)| v.fed_terms.get(&f).map(|&(e, u)| (k, e, u, v.c_floor, w as i64 - 15 - v.c_floor as i64 - (32 + e + u + 4) as i64)))
+            .collect();
+        match vals.iter().min_by_key(|x| x.4) {
+            Some(&(k, e, u, cf, m)) => println!(
+                "RESULT {label}: m{f} latency floor at m1: {} windows with n - f < q, {} over; smallest margin {m} frames (window {k}: E_T {e}, U_T {u}, C_floor {cf}); margins {:?}",
+                vals.len(),
+                vals.iter().filter(|x| x.4 < 0).count(),
+                vals.iter().map(|x| x.4).collect::<Vec<_>>()
+            ),
+            None => println!("RESULT {label}: m{f} latency floor at m1: no window with n - f < q"),
         }
     }
     // TLP-23 with two fed (rev 22 delta): a fed member must hear the other's checkpoints, or it votes it out as crashed.
@@ -409,6 +428,65 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
     }
     let finals: Vec<MemberId> = ids.iter().copied().filter(|&m| m != 2 && !thin.contains(&m)).collect();
     verdict(&sim, &finals, label, panic_at);
+}
+
+/// Rule 3's latency floor with two fed (rev 16/17, built in the spike): n = 4, members 3 and 4 fed at 8 kbit/s each way
+/// (the fixture lifts the room to 2, so n − f < q), everyone acting (a touch every 30 frames), no removal, 30 s: enough
+/// windows (300 frames each) with two fed for section 3's E_T, U_T, C_floor and the margin. `PE_THIN_BPS` overrides
+/// the rate.
+pub fn twofed_long() {
+    let kbps: u64 = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000);
+    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
+    let thin = [3, 4];
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| plan(&(120..1900).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 37);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &f in &thin {
+        for &x in ids.iter().filter(|&&x| x != f) {
+            for pair in [(f, x), (x, f)] {
+                net.caps.insert(pair, Cap { rate_bps: kbps, burst_bytes: 4000, max_queue_us: 500_000 });
+            }
+        }
+    }
+    let mut sim = Sim::new(net, ps, 30_000_000);
+    sim.feed = true;
+    sim.feed_room = Some(2);
+    let panic_at = run_to_end(&mut sim, |_| {});
+    let r1 = &sim.replica(1, 1).sim;
+    println!("RESULT twofed-long: n = 4, members 3 and 4 fed at {} kbit/s each way, all acting, 30 s; members at m1 at the end {:?}", kbps / 1000, r1.members);
+    let w = cfg.window;
+    for &f in &thin {
+        let vals: Vec<(u64, u64, u64, u64, i64)> = r1
+            .window_values()
+            .iter()
+            .filter_map(|(&k, v)| v.fed_terms.get(&f).map(|&(e, u)| (k, e, u, v.c_floor, w as i64 - 15 - v.c_floor as i64 - (32 + e + u + 4) as i64)))
+            .collect();
+        println!(
+            "RESULT twofed-long: m{f} fed {}; windows with n - f < q: {:?} (window, E_T, U_T, C_floor, margin = W - 15 - C_floor - (32 + E_T + U_T + 4))",
+            sim.is_fed(1, f),
+            vals
+        );
+    }
+    let floor_votes: Vec<String> = ids.iter().flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("latency floor") || e.contains("below the floors")).cloned().collect::<Vec<_>>()).collect();
+    println!("RESULT twofed-long: floor votes: {}", if floor_votes.is_empty() { "none".to_string() } else { format!("{floor_votes:?}") });
+    for &f in &thin {
+        let void = r1.void_ids();
+        let t: Vec<EntryId> = r1.all_entries().into_iter().filter(|e| e.member == f && matches!(e.payload, Payload::Touch { .. })).map(|e| e.id()).collect();
+        println!("RESULT twofed-long: m{f}'s touches at m1: {} held, {} void", t.len(), t.iter().filter(|id| void.contains(id)).count());
+    }
+    let finals: Vec<MemberId> = r1.members.iter().copied().filter(|m| !thin.contains(m)).collect();
+    verdict(&sim, &finals, "twofed-long", panic_at);
 }
 
 pub fn stale() {
