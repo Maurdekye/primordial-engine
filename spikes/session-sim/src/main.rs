@@ -1431,6 +1431,8 @@ fn main() {
         Some("rejoin") => partb::rejoin(),
         Some("leave-s4") => partb::leave_s4(),
         Some("leave-withhold") => partb::leave_withhold(),
+        Some("kickliar-fed") => partb::kickliar_fed(),
+        Some("kickliar-fed2") => partb::kickliar_fed2(),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
