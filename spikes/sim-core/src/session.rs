@@ -2221,6 +2221,9 @@ pub struct WorldSim {
     /// Rev 22 delta (proposal), a fed member's: the fed set in its feeder's latest packet (contact only); when each
     /// peer's own fed Ckpts last reached it, and the echo of my chain that peer last reported in them.
     feeder_fed: BTreeSet<MemberId>,
+    /// Spike measurement (option 2, m9d40b0d9a9d7): when a fed member's next echo ack is due after a Ckpts advanced
+    /// its echo (PE_ECHO_ACK=B batches B frames); the harness clears it when it authors an ack.
+    pub echo_ack_at: Option<u64>,
     fed_heard: BTreeMap<MemberId, u64>,
     fed_echo_of_me: BTreeMap<MemberId, Option<u64>>,
     /// Non-members this replica sends its entries to: members that asked to join, or followers.
@@ -2483,6 +2486,7 @@ impl WorldSim {
             vc_log: Vec::new(),
             withhold_vc: false,
             feeder_fed: BTreeSet::new(),
+            echo_ack_at: None,
             fed_heard: BTreeMap::new(),
             fed_echo_of_me: BTreeMap::new(),
             byz_ally: false,

@@ -1397,7 +1397,12 @@ impl Sim {
             let fed = self.net.fed.contains(&(w, pid));
             let every = if fed {
                 // (spike: PE_FED_ACK_FRAMES overrides P, for measuring)
-                let p = std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(if r.sim.members.len() >= 4 { FED_ACK_FRAMES_N4 } else { FED_ACK_FRAMES });
+                // Revision 22 (@coordinator-opus mfdac6071ad92): 32 only while n − f >= q; in the two-fed region (n − f < q),
+                // where the latency floor applies and E_T's P95 is about P, 16 until settled.
+                let n = r.sim.members.len();
+                let f = r.sim.members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
+                let in_scope = n.saturating_sub(f) >= pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, n).1;
+                let p = std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(if n >= 4 && in_scope { FED_ACK_FRAMES_N4 } else { FED_ACK_FRAMES });
                 base.max(p)
             } else if idle {
                 base.max(IDLE_ACK_FRAMES)
@@ -1407,7 +1412,11 @@ impl Sim {
             // (spike: PE_FED_ACK_PHASE=1 offsets a fed member's ack ticks by half a period from the 32-frame checkpoint
             // blocks, so the ack after a block's end isn't always ahead of that block's checkpoint; measuring E_T)
             let phase = if fed && std::env::var("PE_FED_ACK_PHASE").is_ok() { every / 2 } else { 0 };
+            // (spike measurement, option 2 of m9d40b0d9a9d7: PE_ECHO_ACK=B, a fed member acks within B frames of a Ckpts
+            // that advanced its echo, besides its tick)
+            let echo_ack = fed && new_frame && r.sim.echo_ack_at.is_some_and(|t| r.sim.now >= t);
             let ack_due = leaving
+                || echo_ack
                 || if self.net.batching {
                     new_frame && (clock_frame + phase) % every == 0
                 } else {
@@ -1416,6 +1425,7 @@ impl Sim {
             if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
                 r.next_ack_us = now + every * r.dt_us;
                 *self.ack_count.entry((w, pid)).or_default() += 1;
+                r.sim.echo_ack_at = None;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
             }

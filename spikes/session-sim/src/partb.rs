@@ -462,7 +462,13 @@ pub fn twofed_long() {
     let mut sim = Sim::new(net, ps, 30_000_000);
     sim.feed = true;
     sim.feed_room = Some(2);
+    sim.net.count_from_us = 8_000_000;
     let panic_at = run_to_end(&mut sim, |_| {});
+    for &f in &thin {
+        let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / 22.0 / 1000.0 / 3.0;
+        let acks = sim.net.kinds_from.get(&(f, "ack")).map_or(0, |x| x.0) as f64 / 22.0 / 3.0;
+        println!("RESULT twofed-long: m{f} uplink {total:.1} kbit/s per link from 8 s, {acks:.1} acks/s per link");
+    }
     let r1 = &sim.replica(1, 1).sim;
     println!("RESULT twofed-long: n = 4, members 3 and 4 fed at {} kbit/s each way, all acting, 30 s; members at m1 at the end {:?}", kbps / 1000, r1.members);
     let w = cfg.window;
