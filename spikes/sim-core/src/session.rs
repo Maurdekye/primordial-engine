@@ -588,6 +588,9 @@ impl AdminRun {
 pub type RoleId = u16;
 pub const ADMIN: RoleId = 0;
 
+/// Thin links Part B, rule 5: the longest a fed member's ack period P can be (P <= 32 frames).
+pub const FED_ACK_MAX_FRAMES: u64 = 32;
+
 /// The permissions a role grants. The catalogue grows with the engine; these are the ones the
 /// membership protocol checks. Admin holds them all.
 pub mod perm {
@@ -3741,7 +3744,11 @@ impl WorldSim {
             // silent member is given, is voted out the same way. Its link cannot carry the session;
             // it can follow as a spectator. A short congestion (c1: about 2 s) does not qualify.
             let h = self.chain_state.get(&j).and_then(|c| c.0).unwrap_or(0);
-            let since = if self.now > h + self.cfg.window / 2 {
+            // Rev 22 (@coordinator-opus m4ec1d459d82b, (a)): a fed member's horizon trails by its ack period by design
+            // (P <= 32), so that part isn't slowness: its threshold is W/2 + P. R3-9 still applies at n = 3, and a
+            // hopeless fed member stays removable.
+            let limit = self.cfg.window / 2 + if self.fed_peers.contains_key(&j) { FED_ACK_MAX_FRAMES } else { 0 };
+            let since = if self.now > h + limit {
                 *self.lagging.entry(j).or_insert(self.now)
             } else {
                 self.lagging.remove(&j);
@@ -3791,7 +3798,7 @@ impl WorldSim {
                 self.ev(format!("member {j} is fed and {why}: below the floors; vote to remove it"));
             } else {
                 self.stats.demotions += 1;
-                self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
+                self.ev(format!("member {j}'s horizon has trailed the present by over {limit} frames for {} frames: vote to demote it", self.now - since));
             }
             out.extend(self.freeze_and_vote(j, 0, 0));
         }
