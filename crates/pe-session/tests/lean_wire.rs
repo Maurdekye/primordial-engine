@@ -165,35 +165,38 @@ fn an_ack_naming_a_chain_far_past_what_the_peer_holds_goes_explicit() {
     assert!(a.lean_to(3, &ack));
 }
 
-/// Review O2-1 (option 2): a view-change or admin entry is always signed on itself. A run that covers
-/// one by a later entry's signature is refused and its range asked for again; an answer ends at each
-/// such entry, signed on itself, and a run whose signed top it is goes in.
+/// Review O2-1 (option 2, form (4)): a view-change or admin entry is always signed on itself. Inside a
+/// run it carries its own signature on the wire; a run in which it lacks one is refused and its range
+/// asked for again; with it, the run goes in whole and the entry is held signed on itself.
 #[test]
-fn a_view_change_entry_is_never_covered_by_another_entrys_signature() {
+fn a_view_change_entry_carries_its_own_signature_inside_a_run() {
     let (mut a, mut b) = (sim(1), sim(2));
     a.run_wire = true;
     let a1 = a.author_ack();
     let pv = a.author(Payload::Prevote { epoch: 0, round: 0, value: 0 }, None);
     let a3 = a.author_ack();
     assert!(pv.payload.signs_itself() && !a1.payload.signs_itself());
-    // Covered by a3's signature: refused, nothing inserted, the range asked for again from the sender.
-    assert!(b.insert_run(1, false, false, true, vec![a1.clone(), pv.clone(), a3.clone()]).is_empty());
+    let run = |v: Vec<SignedEntry>, signed: bool| match decode_msg(&encode_msg(&Msg::Run { lean: false, heads: false, signed, entries: v })) {
+        Some(Msg::Run { entries, .. }) => entries,
+        other => panic!("round trip: {other:?}"),
+    };
+    // The wire carries the prevote's own signature inside the run, and not a1's.
+    let wire = run(vec![a1.clone(), pv.clone(), a3.clone()], true);
+    assert_eq!((wire[0].sig, wire[1].sig), ([0; 64], pv.sig));
+    // Without it: refused, nothing inserted, the range asked for again from the sender.
+    let mut bare = pv.clone();
+    bare.sig = [0; 64];
+    assert!(b.insert_run(1, false, false, true, vec![a1.clone(), bare, a3.clone()]).is_empty());
     assert_eq!((b.stats.covered_refused, b.id_at(1, 1), b.id_at(1, 2)), (1, None, None));
     assert!(fetches(&mut b).contains(&(1, 1, 1, 3)));
-    // An unsigned hole-fill run may not carry it either.
-    b.insert_run(1, false, false, false, vec![pv.clone()]);
-    assert_eq!(b.stats.covered_refused, 2);
-    // The sender's answer, even to a hole fill, is split at the prevote: a run ending at it, signed on
-    // it, then the rest (unsigned: covered by the requester's entry above), in the same answer.
+    // A hole-fill answer stays one unsigned run, the prevote signed inside it.
     match a.on_fetch(1, 1, 3, HELD_ABOVE).as_slice() {
-        [Msg::Run { signed: true, entries, .. }, Msg::Run { signed: false, entries: rest, .. }] => {
-            assert_eq!(entries.last().map(|e| e.id()), Some(pv.id()));
-            assert_eq!(rest.iter().map(|e| e.id()).collect::<Vec<_>>(), vec![a3.id()]);
-        }
+        [Msg::Run { signed: false, entries, .. }] => assert_eq!(entries.iter().find(|e| e.id() == pv.id()).map(|e| e.sig), Some(pv.sig)),
         other => panic!("answer: {other:?}"),
     }
-    // As the signed top of a run it goes in.
-    b.insert_run(1, false, false, true, vec![a1.clone(), pv.clone()]);
+    // With it, the whole run goes in, and the prevote alone relays as a signed entry.
+    b.insert_run(1, false, false, true, wire);
     b.resolve_lean();
-    assert_eq!((b.id_at(1, 1), b.id_at(1, 2)), (Some(a1.id()), Some(pv.id())));
+    assert_eq!((b.id_at(1, 1), b.id_at(1, 2), b.id_at(1, 3)), (Some(a1.id()), Some(pv.id()), Some(a3.id())));
+    assert!(matches!(b.relay(pv.id()), Some(Msg::Entry(e)) if e.sig == pv.sig));
 }

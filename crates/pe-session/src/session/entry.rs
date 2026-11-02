@@ -57,9 +57,10 @@ pub const LOGIC: MemberId = 0;
 pub const PACK_MAX: u64 = 8;
 
 impl Payload {
-    /// View-change and admin entries (review O2-1): always signed on themselves, never covered by a
-    /// later entry's signature in a run, so each can be held, relayed and judged on its own (Part B's
-    /// fed members hold them by value and signature, without the acks and perturbations around them).
+    /// View-change and admin entries (review O2-1): always signed on themselves, never only covered by
+    /// a later entry's signature: inside a run each carries its own signature on the wire (option (4)),
+    /// so each can be held, relayed and judged on its own (Part B's fed members hold them by value and
+    /// signature, without the acks and perturbations around them).
     pub fn signs_itself(&self) -> bool {
         matches!(
             self,
@@ -517,8 +518,14 @@ impl Wr {
                 self.u8(12);
                 self.u8(*lean as u8 | (*signed as u8) << 1 | (*heads as u8) << 2);
                 self.u8(entries.len() as u8);
+                let n = entries.len();
                 for (i, e) in entries.iter().enumerate() {
                     self.entry_opt(e, i > 0 || *lean, *heads);
+                    // Review O2-1 (4): a view-change or admin entry carries its own signature inside the
+                    // run (the signed top's comes once, at the end).
+                    if e.payload.signs_itself() && !(*signed && i + 1 == n) {
+                        self.0.extend_from_slice(&e.sig);
+                    }
                 }
                 if *signed {
                     self.0.extend_from_slice(&entries.last().expect("non-empty").sig);
@@ -793,7 +800,9 @@ impl<'a> Rd<'a> {
                 }
                 let mut entries = Vec::with_capacity(n);
                 for i in 0..n {
-                    entries.push(SignedEntry { entry: self.entry_opt(i > 0 || lean, heads)?, sig: [0; 64] });
+                    let entry = self.entry_opt(i > 0 || lean, heads)?;
+                    let sig = if entry.payload.signs_itself() && !(signed && i + 1 == n) { self.take(64)?.try_into().ok()? } else { [0; 64] };
+                    entries.push(SignedEntry { entry, sig });
                 }
                 if signed {
                     entries.last_mut().expect("n > 0").sig = self.take(64)?.try_into().ok()?;

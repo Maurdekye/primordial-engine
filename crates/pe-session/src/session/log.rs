@@ -129,6 +129,21 @@ impl WorldSim {
         }
     }
 
+    /// [`Self::run_of`]'s length, without building it.
+    fn run_len(&self, id: EntryId) -> Option<usize> {
+        let mut cur = id;
+        for n in 1..=Self::RUN_MAX {
+            if !self.entries.contains_key(&cur) {
+                return None;
+            }
+            if self.sigs.contains_key(&cur) {
+                return Some(n);
+            }
+            cur = *self.run_next.get(&cur)?;
+        }
+        None
+    }
+
     /// The message that relays entry `id` with its authentication: the entry if it is signed on
     /// itself, else its run up to its cover (explicit).
     pub fn relay(&self, id: EntryId) -> Option<Msg> {
@@ -140,29 +155,8 @@ impl WorldSim {
         v.iter().filter_map(|e| self.relay(e.id())).collect()
     }
 
-    /// Review O2-1: an answer chain as runs that each end at a view-change or admin entry, signed on it,
-    /// sent together (not cut short, so the requester need not ask again per such entry). The first run
-    /// is lean if `lean`; the last is signed by its top if `signed`, else unsigned (a hole fill).
-    pub(super) fn split_runs(&self, chain: Vec<SignedEntry>, lean: bool, signed: bool) -> Vec<Msg> {
-        let mut out = Vec::new();
-        let mut cur: Vec<SignedEntry> = Vec::new();
-        let n = chain.len();
-        for (i, e) in chain.into_iter().enumerate() {
-            let cut = e.entry.payload.signs_itself() && i + 1 < n;
-            cur.push(e);
-            if cut {
-                let first = out.is_empty();
-                out.push(Self::run_msg(std::mem::take(&mut cur), first && lean, true));
-            }
-        }
-        if !cur.is_empty() {
-            let first = out.is_empty();
-            out.push(Self::run_msg(cur, first && lean, signed));
-        }
-        out
-    }
-
-    fn run_msg(mut run: Vec<SignedEntry>, lean: bool, signed: bool) -> Msg {
+    /// One run, or the entry alone if it is a single entry signed on itself and not lean.
+    pub(super) fn run_msg(mut run: Vec<SignedEntry>, lean: bool, signed: bool) -> Msg {
         if run.len() == 1 && signed && !lean {
             Msg::Entry(run.pop().expect("one"))
         } else {
@@ -363,10 +357,12 @@ impl WorldSim {
         let sig = signed.then_some(top.sig);
         let (m, s0) = (entries[0].member, entries[0].seq);
         self.note_answer(from, m, s0);
-        // O2-1: a view-change or admin entry covered by another entry's signature is refused; the range
-        // is asked for again from the sender, whose answer ends at each such entry, signed on itself.
+        // O2-1: a view-change or admin entry must carry its own signature in the run (verified once its
+        // ids are rebuilt); one without it is refused and the range asked for again from the sender.
         let n = entries.len();
-        if entries.iter().enumerate().any(|(i, e)| e.entry.payload.signs_itself() && !(signed && i + 1 == n)) {
+        let own: Vec<Option<Sig>> =
+            entries.iter().enumerate().map(|(i, e)| (e.entry.payload.signs_itself() && !(signed && i + 1 == n)).then_some(e.sig)).collect();
+        if own.iter().any(|s| s.is_some_and(|s| s == [0; 64])) {
             self.stats.covered_refused += 1;
             if m != self.me {
                 self.want_from(from, m, s0, s0 + n as u32 - 1);
@@ -381,6 +377,7 @@ impl WorldSim {
             first_prev: !lean,
             lean_heads: heads,
             entries: entries.into_iter().map(|e| e.entry).collect(),
+            own,
             sig,
             since: self.now,
             asked: false,
@@ -462,7 +459,7 @@ impl WorldSim {
             // if the chain from the hole up to that entry's own cover fits one run (`run_of` stays whole
             // for relays and proofs). A waiting run above is joined within RUN_MAX (`resolve_lean`).
             let fits = held != Some(end)
-                || self.by_author.get(&(m, end)).and_then(|id| self.run_of(*id)).is_some_and(|r| r.len() + (end - s) as usize <= Self::RUN_MAX);
+                || self.by_author.get(&(m, end)).and_then(|id| self.run_len(*id)).is_some_and(|n| n + (end - s) as usize <= Self::RUN_MAX);
             if self.run_wire && fits {
                 bits |= HELD_ABOVE;
             }
@@ -534,6 +531,7 @@ impl WorldSim {
                         let u = self.lean_wait.remove(&up).expect("checked");
                         let w = self.lean_wait.get_mut(&k).expect("listed");
                         w.entries.extend(u.entries);
+                        w.own.extend(u.own);
                         w.sig = u.sig;
                         w.from = u.from;
                         w.lean_heads |= u.lean_heads;
@@ -611,7 +609,10 @@ impl WorldSim {
         let ok = match w.sig {
             Some(sig) => self.keys.verify(self.world_id, &SignedEntry { entry: w.entries.last().expect("non-empty").clone(), sig }),
             None => above.and_then(|a| self.entries.get(&a)).is_some_and(|e| e.prev == top_id),
-        };
+        } && w.own.iter().zip(&w.entries).zip(&ids).all(|((s, e), id)| {
+            // A copy already held signed on itself needs no second check (votes arrive from many holders).
+            s.is_none_or(|sig| self.sigs.contains_key(id) || self.keys.verify(self.world_id, &SignedEntry { entry: e.clone(), sig }))
+        });
         if !ok {
             self.stats.lean_fallbacks += 1;
             self.want_from_held(w.from, m, s0, top_seq, 0);
@@ -625,8 +626,11 @@ impl WorldSim {
         }
         let mut out = Vec::new();
         let n = w.entries.len();
+        let own = std::mem::take(&mut w.own);
         for (i, e) in w.entries.into_iter().enumerate() {
-            let auth = if i + 1 < n {
+            let auth = if let Some(sig) = own.get(i).copied().flatten() {
+                Auth::Sig(sig)
+            } else if i + 1 < n {
                 Auth::Next(ids[i + 1])
             } else {
                 match w.sig {

@@ -885,8 +885,7 @@ impl SessionCore {
                 }
                 let lean = self.sim.lean_wire && self.sim.lean_to(p, e);
                 match runs.last_mut() {
-                    // O2-1: a run ends at a view-change or admin entry, its signed top.
-                    Some((a, b, l)) if self.sim.run_wire && *l == lean && q[*b].0.seq + 1 == e.seq && i - *a < WorldSim::RUN_MAX && !q[*b].0.payload.signs_itself() => *b = i,
+                    Some((a, b, l)) if self.sim.run_wire && *l == lean && q[*b].0.seq + 1 == e.seq && i - *a < WorldSim::RUN_MAX => *b = i,
                     _ => runs.push((i, i, lean)),
                 }
             }

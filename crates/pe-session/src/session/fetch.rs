@@ -49,7 +49,7 @@ impl WorldSim {
                 .map(|(i, e)| if i == 0 && lean { Msg::Run { lean: true, heads: false, signed: true, entries: vec![e] } } else { Msg::Entry(e) })
                 .collect();
         }
-        let signed = held & HELD_ABOVE == 0 || top.entry.payload.signs_itself();
+        let signed = held & HELD_ABOVE == 0;
         if signed && !self.sigs.contains_key(&top.id()) {
             let Some(cover) = self.run_of(top.id()) else { return vec![] };
             if run.len() + cover.len() - 1 > Self::RUN_MAX {
@@ -59,8 +59,7 @@ impl WorldSim {
             run.extend(cover);
         }
         let lean = held & HELD_BELOW != 0;
-        // O2-1: each view-change or admin entry ends a run, signed on itself.
-        self.split_runs(run, lean, signed)
+        vec![Self::run_msg(run, lean, signed)]
     }
 
     /// An answer from `holder` starting at `author`'s `seq` arrived: its round trip, if that range was
@@ -72,6 +71,14 @@ impl WorldSim {
             if q.len() > Self::RTT_SAMPLES {
                 q.pop_front();
             }
+            let (mut fr, mut ms) = ([0u64; Self::RTT_SAMPLES], [0u64; Self::RTT_SAMPLES]);
+            for (i, x) in q.iter().enumerate() {
+                (fr[i], ms[i]) = *x;
+            }
+            let k = q.len();
+            fr[..k].sort_unstable();
+            ms[..k].sort_unstable();
+            self.fetch_rtt_fig.insert(holder, (fr[k / 2], ms[k / 2]));
             self.rtt_dirty = true;
         }
     }
@@ -87,13 +94,7 @@ impl WorldSim {
             v.sort_unstable();
             v.get(v.len() / 2).copied().unwrap_or(0)
         };
-        let per: Vec<(u64, u64)> = self
-            .fetch_rtt
-            .values()
-            .filter(|q| !q.is_empty())
-            .map(|q| (med(q.iter().map(|x| x.0).collect()), med(q.iter().map(|x| x.1).collect())))
-            .collect();
-        (med(per.iter().map(|x| x.0).collect()), med(per.iter().map(|x| x.1).collect()))
+        (med(self.fetch_rtt_fig.values().map(|x| x.0).collect()), med(self.fetch_rtt_fig.values().map(|x| x.1).collect()))
     }
 
     /// The hole rule's fallback deadline in frames (review O2-3, ruled 2026-11-01): 1.5 x the members'
@@ -118,7 +119,8 @@ impl WorldSim {
             self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
         }
         self.clock_ms = now_ms;
-        if self.rtt_dirty {
+        // At most every 8 frames: the median over holders sorts every holder's figure.
+        if self.rtt_dirty && self.now % 8 == 0 {
             self.rtt_dirty = false;
             let (rtt_frames, rtt_ms) = self.rtt_figures();
             self.rtt_ms_now = rtt_ms;
