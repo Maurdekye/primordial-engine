@@ -2825,6 +2825,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         and with per-message sends 171-177 and 1.7 s; both remove member 3, from frame 192 and 188.
         * The likely reason [I]: Part A's thinning keeps the watcher's acks flowing, so nothing removes it.
           Without adaptation its uplink clogs as well, and R3-9, which survey #4 kept, removes it.
+        * pe-session's slow-member cell moved with survey #4's port (f0d2ff4): the others stall 163 / 166 frames
+          and are back after 1.40 s instead of 112 / 115 and 0.55 s, matching the spike's non-adaptive cell above.
+          Member 3 is cut at the same point; the others confirm later after it [V bisected,
+          docs/p2-3-r18-bytes.md; the mechanism I].
       * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
         plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
 
