@@ -232,12 +232,15 @@ impl WorldSim {
         // commit order. Any other admin entry it can't check (stamp-effective: (c), not built yet) gets its nil.
         let mut run = self.admin_run();
         let mut kicked: BTreeMap<EntryId, MemberId> = BTreeMap::new();
+        let mut prev = None;
         for &(id, ok) in &c.admin {
             let Some(e) = self.entries.get(&id).cloned() else { return Some(false) };
             let Payload::Kick { epoch, target, .. } = e.payload else { return Some(false) };
-            if epoch > self.epoch || run.apply(&e) != ok {
+            let key = super::admin_key(&e, self.kick_seed());
+            if epoch > self.epoch || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
                 return Some(false);
             }
+            prev = Some(key);
             if ok {
                 kicked.insert(id, target);
             }
