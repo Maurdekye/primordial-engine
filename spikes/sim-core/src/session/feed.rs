@@ -226,26 +226,34 @@ impl WorldSim {
     /// 4 s, at least X) is treated like a disconnection, as the bandwidth floor is. Every replica computes the same
     /// window values, so every honest voter votes alike.
     pub(super) fn latency_breach(&self, j: MemberId) -> Option<String> {
-        let mut it = self.windows.iter().rev();
+        // The entry transient (@coordinator-opus me915f2726556): a window whose fed set differs from the one before it (a
+        // member entered or left the feed in the data it reads) doesn't count toward a latency vote. twofed-long: window
+        // 2, where the second member entered the feed, was over the floor in every run.
+        // (spike: PE_COUNT_ENTRY_WINDOWS=1 counts them again, for measuring)
+        let all = std::env::var("PE_COUNT_ENTRY_WINDOWS").is_ok();
+        let counts = |k: u64, v: &super::WindowVals| -> bool {
+            all || k > 0 && self.windows.get(&(k - 1)).is_some_and(|p| p.fed_terms.keys().eq(v.fed_terms.keys()))
+        };
+        let (_, newest) = self.windows.iter().next_back()?;
+        let mut it = self.windows.iter().rev().filter(|(k, v)| counts(**k, v));
         let (k, v) = it.next()?;
-        let (_, u) = it.next()?;
+        let (ku, u) = it.next()?;
         if !(v.over_floor.contains(&j) && u.over_floor.contains(&j)) {
             return None;
         }
         // Only while the region holds with today's members (compute_window's test, with the newest window's fed members
-        // that are still members): the two newest windows may predate a membership change that ended it. join-beyond:
-        // with 5 members and two fed, 4 left by request; with 4 members and one fed the full members then voted 3 out on
-        // windows computed before the change.
+        // that are still members): the two windows may predate a membership change that ended it. join-beyond: with 5
+        // members and two fed, 4 left by request; with 4 members and one fed the full members then voted 3 out on windows
+        // computed before the change.
         let n = self.members.len();
-        let f = v.fed_terms.keys().filter(|m| self.members.contains(m)).count();
+        let f = newest.fed_terms.keys().filter(|m| self.members.contains(m)).count();
         if f == 0 || !(n - f < super::quorum(super::QuorumRule::Bft, n).1 || n == 3) {
             return None;
         }
         let (e_t, u_t) = v.fed_terms.get(&j).copied().unwrap_or((0, 0));
         Some(format!(
-            "its echo path needs 32 + E_T {e_t} + U_T {u_t} + 4 frames, over the latency floor W - 15 - C_floor = {} (windows {} and {k})",
+            "its echo path needs 32 + E_T {e_t} + U_T {u_t} + 4 frames, over the latency floor W - 15 - C_floor = {} (windows {ku} and {k})",
             self.cfg.window.saturating_sub(15 + v.c_floor),
-            k - 1
         ))
     }
 
@@ -258,6 +266,10 @@ impl WorldSim {
     pub(super) fn fed_change_valid(&self, c: &super::Change) -> Option<bool> {
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
         if c.epoch != self.epoch || c.boundary < last {
+            return Some(false);
+        }
+        // Revision 22, plan (A): it holds the leaves by value, so it checks the latency-leave rule as a full member does.
+        if !self.latency_leaves_ok(c) {
             return Some(false);
         }
         // Rev 22 (c): a join or a stamp-effective admin entry it can't check; everything else it checks below. If all

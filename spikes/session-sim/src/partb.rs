@@ -464,17 +464,108 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
 /// windows (300 frames each) with two fed for section 3's E_T, U_T, C_floor and the margin. `PE_THIN_BPS` overrides
 /// the rate.
 pub fn twofed_long() {
-    fed_long("twofed-long", &[1, 2, 3, 4], &[3, 4], Some(2));
+    fed_long("twofed-long", &[1, 2, 3, 4], &[3, 4], Some(2), None);
 }
 
 /// The same at n = 3 with one acting fed member (section 7: the fed C_max and latency floor apply whenever someone is
 /// fed at n = 3; P = 16 there).
 pub fn fed3_long() {
-    fed_long("fed3-long", &[1, 2, 3], &[3], None);
+    fed_long("fed3-long", &[1, 2, 3], &[3], None, None);
 }
 
-fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize>) {
-    let kbps: u64 = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000);
+/// Revision 22, the entry transient (@coordinator-opus me915f2726556): twofed-long at 12 kbit/s, where window 3 dips once.
+/// The fed members' links drop to 6 kbit/s from 5.5 s to 8.5 s, inside the data window that window 3 reads (frames
+/// 300-599). Window 2, where the second member enters the feed, is over the floor too, but it doesn't count toward a
+/// latency vote, so one dipping window alone must not send anyone out. `PE_COUNT_ENTRY_WINDOWS=1` counts window 2 again
+/// (the build before this rule). `PE_THIN_BPS` overrides the 12 kbit/s.
+pub fn twofed_dip() {
+    fed_long("twofed-dip", &[1, 2, 3, 4], &[3, 4], Some(2), Some((5_500_000, 8_500_000, 6_000)));
+}
+
+/// Revision 22, plan (A): the race. n = 4, members 3 and 4 fed at 12 kbit/s (the fixture lifts the room to 2, so n − f <
+/// q), everyone acting. At 10 s both fed members ask to leave by latency leave in the same tick (a fixture call, whatever
+/// the votes), and with no jitter on the links every replica holds both requests at once. The commit rule applies the
+/// higher id's leave (4) and leaves 3's out: with 3 members and one fed the region has ended. 3's leave is void at the
+/// epoch change, and 3 stays a member, fed, and acts again. Exactly one member leaves.
+pub fn leave_race() {
+    let label = "leave-race";
+    let ids: Vec<MemberId> = vec![1, 2, 3, 4];
+    let thin: Vec<MemberId> = vec![3, 4];
+    let kbps: u64 = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(12_000);
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| plan(&(120..1600).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 0, loss_pct: 0 }, 43);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &f in thin.iter() {
+        for &x in ids.iter().filter(|&&x| x != f) {
+            for pair in [(f, x), (x, f)] {
+                net.caps.insert(pair, Cap { rate_bps: kbps, burst_bytes: 4000, max_queue_us: 500_000 });
+            }
+        }
+    }
+    let mut sim = Sim::new(net, ps, 20_000_000);
+    sim.feed = true;
+    sim.feed_room = Some(2);
+    let mut fed_at_ask: Vec<bool> = Vec::new();
+    let mut sent: Vec<MemberId> = Vec::new();
+    let mut removed: BTreeMap<MemberId, u64> = BTreeMap::new();
+    let panic_at = run_to_end(&mut sim, |s| {
+        if s.net.now_us == 10_000_000 {
+            fed_at_ask = thin.iter().map(|&f| s.is_fed(1, f)).collect();
+            for &f in &thin {
+                if let Some(e) = sim_mut(s, f).force_latency_leave() {
+                    sent.push(f);
+                    for &to in ids.iter().filter(|&&x| x != f) {
+                        s.net.send_urgent(1, f, to, &Msg::Entry(e.clone()));
+                    }
+                }
+            }
+        }
+        for &f in &thin {
+            if !removed.contains_key(&f) && !s.replica(1, 1).sim.members.contains(&f) {
+                removed.insert(f, s.net.now_us);
+            }
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    println!(
+        "RESULT {label}: n = 4, {thin:?} fed at {} kbit/s each way {fed_at_ask:?} at 10 s; latency leaves sent by {sent:?} in the same tick",
+        kbps / 1000
+    );
+    let changes: Vec<Vec<MemberId>> = r1.decided_changes().map(|c| c.remove.iter().map(|r| r.member).collect()).collect();
+    println!(
+        "RESULT {label}: removals at m1 {:?}; decided changes' removals {changes:?}; members at m1 at the end {:?}; 3 fed at the end {}",
+        removed.iter().map(|(m, t)| format!("m{m} at {:.2} s", *t as f64 / 1e6)).collect::<Vec<_>>(),
+        r1.members,
+        sim.is_fed(1, 3)
+    );
+    let one = removed.len() == 1 && removed.contains_key(&4) && r1.members.contains(&3) && changes.iter().filter(|c| c.contains(&3) || c.contains(&4)).count() == 1;
+    let void = r1.void_ids();
+    let after: Vec<EntryId> = r1.all_entries().into_iter().filter(|e| e.member == 3 && matches!(e.payload, Payload::Touch { .. }) && e.stamp >= 780).map(|e| e.id()).collect();
+    println!(
+        "RESULT {label}: m3's touches stamped from frame 780 (13 s) held at m1: {}, void {} (it acts again after its void leave)",
+        after.len(),
+        after.iter().filter(|id| void.contains(id)).count()
+    );
+    let left_out: Vec<String> = ids.iter().flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("plan (A)")).cloned().collect::<Vec<_>>()).collect();
+    println!("RESULT {label}: commit rule: {}", if left_out.is_empty() { "no leave left out by a proposer".to_string() } else { format!("{left_out:?}") });
+    println!("RESULT {label}: {}", if one { "exactly one fed member left (4); 3's leave was void" } else { "FAIL (expected exactly one: 4)" });
+    let finals: Vec<MemberId> = vec![1, 2];
+    verdict(&sim, &finals, label, panic_at);
+}
+
+fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize>, dip: Option<(u64, u64, u64)>) {
+    let kbps: u64 = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(if dip.is_some() { 12_000 } else { 8_000 });
     let ids: Vec<MemberId> = ids.to_vec();
     let thin: Vec<MemberId> = thin.to_vec();
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
@@ -507,6 +598,19 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
     let mut shrunk: Option<(u64, Vec<MemberId>, Vec<u64>)> = None;
     let full: Vec<MemberId> = ids.iter().copied().filter(|m| !thin.contains(m)).collect();
     let panic_at = run_to_end(&mut sim, |s| {
+        // The dip: the fed members' links at `bps` from `from` to `to`, then back.
+        if let Some((from, to, bps)) = dip {
+            if s.net.now_us == from || s.net.now_us == to {
+                let rate = if s.net.now_us == from { bps } else { kbps };
+                for &f in thin.iter() {
+                    for &x in ids.iter().filter(|&&x| x != f) {
+                        for pair in [(f, x), (x, f)] {
+                            s.net.caps.insert(pair, Cap { rate_bps: rate, burst_bytes: 4000, max_queue_us: 500_000 });
+                        }
+                    }
+                }
+            }
+        }
         if shrunk.is_none() && s.replica(1, 1).sim.members.len() < ids.len() {
             let paused = full.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect();
             shrunk = Some((s.net.now_us, s.replica(1, 1).sim.members.iter().copied().collect(), paused));

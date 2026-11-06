@@ -477,6 +477,27 @@ struct AdminRun {
     acl0: Option<Box<(BTreeSet<MemberId>, BTreeMap<MemberId, RoleId>, BTreeMap<RoleId, u64>, BTreeSet<Key>)>>,
 }
 
+/// Revision 22, plan (A) (@coordinator-opus, 2026-11-06 22:13Z): a latency leave carries the fed set its sender saw. Spike
+/// encoding: a mask in the leave vote's `seq` (0 on every other leave), bit m − 1 for member m, the top bit set. A lying
+/// leaver can only affect its own leave.
+pub const LATENCY_LEAVE: u32 = 1 << 31;
+
+pub fn latency_leave_mask(fed: &BTreeSet<MemberId>) -> u32 {
+    fed.iter().filter(|&&m| (1..=31).contains(&m)).fold(LATENCY_LEAVE, |a, &m| a | 1 << (m - 1))
+}
+
+/// The fed set a leave vote's `seq` carries: None for a plain leave.
+pub fn latency_leave_fed(seq: u32) -> Option<BTreeSet<MemberId>> {
+    (seq & LATENCY_LEAVE != 0).then(|| (1..=31u32).filter(|&m| seq & (1 << (m - 1)) != 0).collect())
+}
+
+/// The two-fed region for a latency leave at commit: n − f < q with `members`, f the carried fed set among them.
+fn latency_region(members: &BTreeSet<MemberId>, fed: &BTreeSet<MemberId>) -> bool {
+    let n = members.len();
+    let f = fed.iter().filter(|m| members.contains(m)).count();
+    f > 0 && n - f < quorum(QuorumRule::Bft, n).1
+}
+
 impl AdminRun {
     fn perms(&self, m: MemberId) -> u64 {
         match self.roles.get(&m) {
@@ -2194,6 +2215,10 @@ pub struct WorldSim {
     cut_done: BTreeSet<MemberId>,
     /// (spike diagnostics) Each Part B removal's cut as finalized here: `localize::CutRecord`.
     pub cut_records: BTreeMap<MemberId, localize::CutRecord>,
+    /// Revision 22: since when my latency leave has deferred to another fed member (at most one window).
+    latency_defer_since: Option<u64>,
+    /// (diagnostics) Latency leaves a change I built left out, logged once each.
+    latency_left_out: BTreeSet<EntryId>,
     /// The view change of the current epoch.
     vc: Vc,
     /// View-change entries (votes, proposals, prevotes, precommits) of later epochs, processed on
@@ -2478,6 +2503,8 @@ impl WorldSim {
             cut_ids: BTreeMap::new(),
             cut_done: BTreeSet::new(),
             cut_records: BTreeMap::new(),
+            latency_defer_since: None,
+            latency_left_out: BTreeSet::new(),
             vc: Vc::default(),
             vc_later: BTreeMap::new(),
             proposal_ids: BTreeMap::new(),
@@ -2985,8 +3012,11 @@ impl WorldSim {
         // evidence for its author's removal on its own, and it may arrive ahead of its author's queued entries (D-5).
         // It stands until its author is removed: a reset decided meanwhile doesn't clear it (leave-s4: member 2 asked in
         // epoch 0 while the others had just reset into epoch 1, and its request was dropped).
-        if let Payload::Vote { epoch, target, kick: 0, .. } = self.entries[&id].payload {
-            if target == member && epoch <= self.epoch && self.members.contains(&member) {
+        if let Payload::Vote { epoch, target, kick: 0, seq, .. } = self.entries[&id].payload {
+            // Revision 22, plan (A): a latency leave is conditional and counts only in its own epoch; one from an earlier
+            // epoch is void (its region may have ended at the decision that came between).
+            let conditional = latency_leave_fed(seq).is_some();
+            if target == member && (epoch == self.epoch || (epoch < self.epoch && !conditional)) && self.members.contains(&member) {
                 self.leaves.entry(member).or_insert(id);
             }
         }
@@ -4052,6 +4082,11 @@ impl WorldSim {
     }
 
     pub fn request_leave(&mut self) -> Option<Entry> {
+        self.request_leave_with(0)
+    }
+
+    /// A leave request whose vote carries `seq`: 0 for a plain leave, `latency_leave_mask` for a latency leave.
+    fn request_leave_with(&mut self, seq: u32) -> Option<Entry> {
         if !self.members.contains(&self.me) || self.leaves.contains_key(&self.me) {
             return None;
         }
@@ -4060,7 +4095,7 @@ impl WorldSim {
             seq: self.my_seq + 1,
             prev: self.my_last,
             stamp: self.frame.max(self.now),
-            payload: Payload::Vote { epoch: self.epoch, target: self.me, seq: 0, frozen: (self.my_seq, self.my_last), kick: 0 },
+            payload: Payload::Vote { epoch: self.epoch, target: self.me, seq, frozen: (self.my_seq, self.my_last), kick: 0 },
             carried: None,
             link: 0,
         };
@@ -4068,6 +4103,50 @@ impl WorldSim {
         self.leaves.insert(self.me, e.id());
         self.ev(format!("member {} asks to leave", self.me));
         Some(e)
+    }
+
+    /// (spike fixture) A latency leave now, carrying the fed set I see, whatever the votes: the race cell has two fed
+    /// members ask at once.
+    pub fn force_latency_leave(&mut self) -> Option<Entry> {
+        let fed: BTreeSet<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m)).chain([self.me]).collect();
+        self.ev(format!("latency floor (fixture): member {} leaves by request, fed {fed:?}", self.me));
+        self.request_leave_with(latency_leave_mask(&fed))
+    }
+
+    /// Revision 22, plan (A): the fed set a held leave carries, if it is a latency leave.
+    fn leave_fed(&self, id: EntryId) -> Option<BTreeSet<MemberId>> {
+        match self.entries.get(&id)?.payload {
+            Payload::Vote { seq, kick: 0, .. } => latency_leave_fed(seq),
+            _ => None,
+        }
+    }
+
+    /// Revision 22, plan (A): whether `c`'s latency leaves all apply. With the change's members after its other removals,
+    /// highest id first, each needs n − f < q, f the fed set it carries among the members left after the ones before
+    /// it, and it must be of this epoch. Every replica (and a fed member, by value) reads the same.
+    pub(crate) fn latency_leaves_ok(&self, c: &Change) -> bool {
+        let mut lat: Vec<(MemberId, BTreeSet<MemberId>, u32)> = c
+            .remove
+            .iter()
+            .filter(|r| r.kick == 0 && r.votes.len() == 1)
+            .filter_map(|r| match self.entries.get(&r.votes[0]).map(|e| (e.member, &e.payload)) {
+                Some((m, Payload::Vote { target, seq, epoch, kick: 0, .. })) if m == r.member && *target == r.member => latency_leave_fed(*seq).map(|f| (r.member, f, *epoch)),
+                _ => None,
+            })
+            .collect();
+        if lat.is_empty() {
+            return true;
+        }
+        let lat_ids: BTreeSet<MemberId> = lat.iter().map(|x| x.0).collect();
+        let mut members: BTreeSet<MemberId> = self.members.iter().copied().filter(|m| !c.remove.iter().any(|r| r.member == *m && !lat_ids.contains(m))).collect();
+        lat.sort_by(|a, b| b.0.cmp(&a.0));
+        for (x, fed, epoch) in lat {
+            if epoch != self.epoch || !latency_region(&members, &fed) {
+                return false;
+            }
+            members.remove(&x);
+        }
+        true
     }
 
     /// Revision 22, S-4 on the transition (@coordinator-opus m5c7b7e5c860e): at most one member is fed at n = 3, so
@@ -4099,11 +4178,13 @@ impl WorldSim {
     pub fn latency_leave_due(&mut self) -> Option<Entry> {
         let n = self.members.len();
         if !self.cfg.localize || n < 4 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
+            self.latency_defer_since = None;
             return None;
         }
         let fed: BTreeSet<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m)).chain([self.me]).collect();
         let (t, q) = quorum(QuorumRule::Bft, n);
         if n - fed.len() >= q {
+            self.latency_defer_since = None;
             return None;
         }
         let full_voters = |x: MemberId| -> Vec<MemberId> {
@@ -4111,20 +4192,27 @@ impl WorldSim {
         };
         let mine = full_voters(self.me);
         if mine.len() < t + 1 {
+            self.latency_defer_since = None;
             return None;
         }
-        if fed.iter().any(|&o| o != self.me && self.leaves.contains_key(&o)) {
-            return None;
+        // Deference, bounded (@coordinator-opus me915f2726556): while another fed member's leave is held, or a higher fed id
+        // qualifies in my view, I wait at most one window, then ask anyway; the commit rule (`latency_leaves_ok`) keeps one.
+        let defer = fed.iter().any(|&o| o != self.me && self.leaves.contains_key(&o)) || fed.iter().any(|&o| o > self.me && full_voters(o).len() >= t + 1);
+        if defer {
+            let since = *self.latency_defer_since.get_or_insert(self.now);
+            if self.now < since + localize::WINDOW {
+                return None;
+            }
         }
-        if fed.iter().any(|&o| o > self.me && full_voters(o).len() >= t + 1) {
-            return None;
-        }
+        self.latency_defer_since = None;
         self.ev(format!(
-            "latency floor: n = {n}, fed {fed:?} (n - f < q = {q}); removal votes against me from full members {mine:?} (t + 1 = {}): member {} leaves by request",
+            "latency floor: n = {n}, fed {fed:?} (n - f < q = {q}); removal votes against me from full members {mine:?} (t + 1 = {}){}: member {} leaves by request",
             t + 1,
+            if defer { ", after deferring a window" } else { "" },
             self.me
         ));
-        self.request_leave()
+        let mask = latency_leave_mask(&fed);
+        self.request_leave_with(mask)
     }
 
     pub fn kick(&mut self, target: MemberId) -> Entry {
@@ -4523,12 +4611,26 @@ impl WorldSim {
             run.roles.remove(&x);
         }
         // Revision 22: a member's own leave request removes it on its own, cut at the head it froze.
-        let leavers: Vec<(MemberId, EntryId)> = self.leaves.iter().map(|(&x, &id)| (x, id)).filter(|(x, _)| run.members.contains(x)).collect();
+        // Revision 22, plan (A): latency leaves after every other removal, highest id first, each only while the two-fed
+        // region still holds with the members left and the fed set it carries; one left out is void (`latency_leaves_ok`).
+        let mut leavers: Vec<(MemberId, EntryId)> = self.leaves.iter().map(|(&x, &id)| (x, id)).filter(|(x, _)| run.members.contains(x)).collect();
+        leavers.sort_by_key(|&(x, id)| match self.leave_fed(id) {
+            None => (0, x as i64),
+            Some(_) => (1, -(x as i64)),
+        });
         for (x, id) in leavers {
             if remove.iter().any(|r: &Removal| r.member == x) {
                 continue;
             }
-            let Some(Payload::Vote { frozen, .. }) = self.entries.get(&id).map(|e| e.payload.clone()) else { continue };
+            let Some(Payload::Vote { frozen, epoch, .. }) = self.entries.get(&id).map(|e| e.payload.clone()) else { continue };
+            if let Some(fed) = self.leave_fed(id) {
+                if epoch != self.epoch || !latency_region(&run.members, &fed) {
+                    if self.latency_left_out.insert(id) {
+                        self.ev(format!("plan (A): member {x}'s latency leave left out (fed {fed:?}, members then {:?}): the region has ended", run.members));
+                    }
+                    continue;
+                }
+            }
             remove.push(Removal { member: x, votes: vec![id], cut: frozen, kick: 0 });
             run.members.remove(&x);
             run.roles.remove(&x);
@@ -4756,6 +4858,10 @@ impl WorldSim {
             if let (true, Payload::Kick { target, .. }) = (ok, &e.payload) {
                 kicked.insert(id, *target);
             }
+        }
+        // Revision 22, plan (A): every latency leave listed applies (the region holds for it at commit).
+        if !self.latency_leaves_ok(c) {
+            return Some(false);
         }
         let mut seen = BTreeSet::new();
         for r in &c.remove {
@@ -5400,7 +5506,10 @@ impl WorldSim {
         self.votes.clear();
         // A leave request stands until its author is removed (it is its author's standing wish, not a vote).
         let members_now = self.members.clone();
-        self.leaves.retain(|m, _| members_now.contains(m));
+        // Revision 22, plan (A): a latency leave the decision didn't apply is void; its sender asks again if it qualifies
+        // again.
+        let latency: BTreeSet<MemberId> = self.leaves.iter().filter(|(_, id)| self.leave_fed(**id).is_some()).map(|(m, _)| *m).collect();
+        self.leaves.retain(|m, _| members_now.contains(m) && !latency.contains(m));
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
         self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
