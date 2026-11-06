@@ -1,5 +1,5 @@
 RESULT join-beyond-withhold: [3, 4] fed at the request [true, true]; 5 admitted at never; members at m1 {1, 2, 3, 4}; the admitting change's precommits None
 RESULT join-beyond-withhold: blocked while a member withholds (beyond the scope)
-  m1: conf 963 frame 1073 rollbacks 93 max depth 118 paused frames 72 checks ok 40 bad 0
-  m2: conf 963 frame 1073 rollbacks 92 max depth 113 paused frames 62 checks ok 40 bad 0
-RESULT join-beyond-withhold: frames 0..962 (replay from m1; each replica over its own confirmed frames: m1 0..962 657c54bae92a00dd, m2 0..962 657c54bae92a00dd) | offline replay 657c54bae92a00dd | ALL EQUAL, NO FALSE CHECKS
+  m1: conf 961 frame 1073 rollbacks 94 max depth 113 paused frames 72 checks ok 40 bad 0
+  m2: conf 961 frame 1073 rollbacks 92 max depth 118 paused frames 62 checks ok 40 bad 0
+RESULT join-beyond-withhold: frames 0..960 (replay from m1; each replica over its own confirmed frames: m1 0..960 fc140877b5f39a68, m2 0..960 fc140877b5f39a68) | offline replay fc140877b5f39a68 | ALL EQUAL, NO FALSE CHECKS

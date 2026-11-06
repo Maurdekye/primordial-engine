@@ -1,4 +1,4 @@
-RESULT leave-withhold2: member 4 removed at 8.53 s; members at m1 {1, 2, 3}; [3, 4] fed at the leave [true, true]; the removal's precommits Some([1, 3, 4])
-  m1: conf 901 frame 953 rollbacks 71 max depth 50 paused frames 0 checks ok 39 bad 0
-  m2: conf 901 frame 953 rollbacks 71 max depth 51 paused frames 0 checks ok 39 bad 0
-RESULT leave-withhold2: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 2cd4d454b862fe12, m2 0..900 2cd4d454b862fe12) | offline replay 2cd4d454b862fe12 | ALL EQUAL, NO FALSE CHECKS
+RESULT leave-withhold2: member 4 removed at 8.51 s; members at m1 {1, 2, 3}; [3, 4] fed at the leave [true, true]; the removal's precommits Some([1, 3, 4])
+  m1: conf 901 frame 953 rollbacks 71 max depth 40 paused frames 0 checks ok 39 bad 0
+  m2: conf 901 frame 953 rollbacks 71 max depth 41 paused frames 0 checks ok 39 bad 0
+RESULT leave-withhold2: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 9e7ac8dbfddf553e, m2 0..900 9e7ac8dbfddf553e) | offline replay 9e7ac8dbfddf553e | ALL EQUAL, NO FALSE CHECKS
