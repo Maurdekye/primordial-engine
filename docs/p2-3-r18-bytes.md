@@ -268,6 +268,13 @@ EQUAL, randsched ALL PASS. Eight logs change a fact, all with no safety effect (
 holeforker is pe only. It halts without the fallback. With it, the forker is removed at 4.37 s, and at 3.98 s when
 it answers every fetch 1 s late. Every replica is ALL EQUAL. The tool's regress reproduces every other log.
 
+**Review O2-5..O2-8 (delta check, 2026-11-06)** [V]: O2-5 is neutral on every log. O2-6 drops a removed
+member's round-trip figure, which moves 12 tool logs, all scenarios with a removal: the removal times and
+evictions are as before, and only the last confirmations move, by 1 to 8 frames (deepfork's fix-off control:
+m1 confirms 465 instead of 414). The suite has no fact change, and r18-pe is identical. A first form that pruned
+every non-member also dropped joiners' figures and changed slowcapper's epochs, so only removed members are
+pruned.
+
 **Evidence fixes found on the way** (c3d837c, c6e564f and later):
 - **Scripted faults saw no runs.** A run of two or more entries reached the harness's entry-written fault filters
   as a batch and slipped past them. `Net::send` now shows such a run to the filter entry by entry, as each entry

@@ -9,9 +9,9 @@ RESULT aheadshield climb=false rotate=true: 9 removed at never; m1 conf 666 of f
   m2: conf 664 frame 713 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 6 violations 0 equivocations 0 checks ok 66 bad 0
   m3: conf 666 frame 713 members {1, 2, 3, 9} evicted {} rollbacks 2 max depth 6 violations 0 equivocations 0 checks ok 65 bad 0
 RESULT aheadshield (from 2 s, 9's acks claim epoch 1: false; 9 sends each of its entries to one honest member only, in turn: true): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 197 bad 0
-RESULT aheadshield climb=true rotate=true: m1 conf 696 of frame 713, m2 conf 696 of frame 713, m3 conf 696 of frame 713
-RESULT aheadshield climb=true rotate=true: worst confirmation lag when admin 1 kicks 9 at 6.00 s: 243 frames (window 120); 9 removed at 6.18 s; lag at the end 17 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 696 frame 713 members {1, 2, 3} evicted {9: (46, 335)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 38 bad 0
-  m2: conf 696 frame 713 members {1, 2, 3} evicted {9: (46, 335)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 38 bad 0
-  m3: conf 696 frame 713 members {1, 2, 3} evicted {9: (46, 335)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 38 bad 0
+RESULT aheadshield climb=true rotate=true: m1 conf 697 of frame 713, m2 conf 697 of frame 713, m3 conf 697 of frame 713
+RESULT aheadshield climb=true rotate=true: worst confirmation lag when admin 1 kicks 9 at 6.00 s: 243 frames (window 120); 9 removed at 6.18 s; lag at the end 16 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
+  m1: conf 697 frame 713 members {1, 2, 3} evicted {9: (46, 335)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 38 bad 0
+  m2: conf 697 frame 713 members {1, 2, 3} evicted {9: (46, 335)} rollbacks 2 max depth 1 violations 0 equivocations 0 checks ok 38 bad 0
+  m3: conf 697 frame 713 members {1, 2, 3} evicted {9: (46, 335)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 38 bad 0
 RESULT aheadshield (from 2 s, 9's acks claim epoch 1: true; 9 sends each of its entries to one honest member only, in turn: true): frames 0..712 honest m1=bf3bb9f4a31f043c m2=bf3bb9f4a31f043c m3=bf3bb9f4a31f043c | offline replay bf3bb9f4a31f043c | ALL EQUAL, NO FALSE CHECKS ; checks ok 114 bad 0
