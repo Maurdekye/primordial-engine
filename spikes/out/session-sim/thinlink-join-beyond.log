@@ -1,5 +1,5 @@
 RESULT join-beyond: [3, 4] fed at the request [true, true]; 5 admitted at 11.50 s; members at m1 {1, 2, 3, 4, 5}; the admitting change's precommits Some([1, 3, 4])
 RESULT join-beyond: decides beyond the scope with nobody withholding
-  m1: conf 811 frame 931 rollbacks 71 max depth 120 paused frames 265 checks ok 56 bad 0
-  m2: conf 901 frame 1021 rollbacks 70 max depth 120 paused frames 276 checks ok 60 bad 0
-RESULT join-beyond: frames 0..900 (replay from m2; each replica over its own confirmed frames: m1 0..810 c6aa5dd51df31c14, m2 0..900 459bb68664a5d7ed) | offline replay 459bb68664a5d7ed | ALL EQUAL, NO FALSE CHECKS
+  m1: conf 903 frame 1023 rollbacks 86 max depth 120 paused frames 193 checks ok 65 bad 0
+  m2: conf 903 frame 1023 rollbacks 85 max depth 120 paused frames 182 checks ok 65 bad 0
+RESULT join-beyond: frames 0..902 (replay from m1; each replica over its own confirmed frames: m1 0..902 ee7360cb80677bbb, m2 0..902 ee7360cb80677bbb) | offline replay ee7360cb80677bbb | ALL EQUAL, NO FALSE CHECKS

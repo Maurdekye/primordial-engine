@@ -19,6 +19,13 @@ pub(super) fn judged(p: &Payload) -> bool {
     matches!(p, Payload::Touch { .. } | Payload::Hand { .. })
 }
 
+/// (spike diagnostics: PE_CUT_TRACE=1 prints the evidence behind each Part B cut, and the vouched prefix behind each
+/// counted entry of a removed member or an older epoch)
+fn cut_trace() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_CUT_TRACE").is_ok())
+}
+
 /// F2: one epoch's membership, as rule 1 judges that epoch's entries (revision 21 (a): a removed member's entries
 /// with the members and quorum of the epoch it was last a member of).
 #[derive(Clone, Debug)]
@@ -713,18 +720,75 @@ impl WorldSim {
     /// member's last epoch has an echo-stable ack of the new epoch, so the evidence-grade references to its chain are
     /// fixed. The cut is its vouched prefix with that epoch's members and quorum; entries past it are void (none of
     /// them counted: coverage).
+    ///
+    /// "That epoch's members" includes one that has left since (removed in a later change): its evidence counted for
+    /// coverage while it was a member, so it counts for the cut too, with its echo-stable prefix in its own last epoch,
+    /// once its own removal is final (then the references to its chain are fixed). kickliar-fed2 with the fed level
+    /// floor: member 2 was kicked, then fed member 4 left by request (S-4) before 2's cut was final; m1 had counted 2's
+    /// s132 with 4's evidence (vouched 143), and the cut without it fell to 126, voiding a confirmed entry. A member
+    /// removed in the same change as x still gives no evidence here (open: x's own references enter its rank).
     pub(super) fn finalize_cuts(&mut self) {
         let xs: Vec<MemberId> = self.pb_pending.iter().copied().collect();
         for x in xs {
-            let Some(&e_new) = self.removed_in.get(&x) else { continue };
-            let Some(old) = self.ctx(e_new - 1) else { continue };
-            let survivors: Vec<MemberId> = old.members.iter().copied().filter(|&m| m != x && self.members.contains(&m)).collect();
-            let fin = survivors.iter().all(|&m| self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).is_some_and(|&s| self.echo_stable(m) >= s));
-            if !fin {
+            // `adopt_cut` recomputes confirmation, which comes back here: one finalized meanwhile is done.
+            if !self.pb_pending.contains(&x) {
                 continue;
             }
-            let es: BTreeMap<MemberId, u32> = survivors.iter().map(|&m| (m, self.echo_stable(m))).collect();
+            let Some(&e_new) = self.removed_in.get(&x) else { continue };
+            let Some(old) = self.ctx(e_new - 1) else { continue };
+            let mut es: BTreeMap<MemberId, u32> = BTreeMap::new();
+            let mut fin = true;
+            for &m in old.members.iter().filter(|&&m| m != x) {
+                if self.members.contains(&m) {
+                    fin &= self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).is_some_and(|&s| self.echo_stable(m) >= s);
+                    es.insert(m, self.echo_stable(m));
+                } else if let Some(&e_m) = self.removed_in.get(&m).filter(|&&e_m| e_m > e_new) {
+                    // Left after x's removal. Its evidence toward x's chain comes from its acks before its first ack of
+                    // epoch e_new only (`ref_cap`), so it is complete once that ack is echo-stable in its own last epoch,
+                    // as a survivor's is; without such an ack, once its own removal is final.
+                    match self.ctx(e_m - 1) {
+                        Some(last) => {
+                            let e = self.echo_stable_in(m, &last);
+                            let first = self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).copied();
+                            fin &= first.map_or(!self.pb_pending.contains(&m), |s| e >= s);
+                            es.insert(m, e);
+                        }
+                        None => fin = false,
+                    }
+                }
+            }
+            if !fin {
+                if cut_trace() {
+                    let why: Vec<(MemberId, bool, Option<u32>, Option<u32>, bool)> = old
+                        .members
+                        .iter()
+                        .filter(|&&m| m != x)
+                        .map(|&m| {
+                            let first = self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).copied();
+                            (m, self.members.contains(&m), first, es.get(&m).copied(), self.pb_pending.contains(&m))
+                        })
+                        .collect();
+                    eprintln!(
+                        "CUTWAIT m{} now {} conf {} epoch {}: m{x} (removed in epoch {e_new}) not final; (member, still a member, first ack of epoch {e_new}, es, own cut pending) {why:?}",
+                        self.me, self.now, self.conf, self.epoch
+                    );
+                }
+                continue;
+            }
             let cut = self.vouched_in(x, &es, &old);
+            // (spike diagnostics: PE_CUT_TRACE=1 prints each voter's evidence behind a cut)
+            if cut_trace() {
+                let per: Vec<(MemberId, Option<u32>, u32, bool)> = old
+                    .members
+                    .iter()
+                    .filter(|&&y| y != x)
+                    .map(|&y| (y, es.get(&y).copied(), self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0)), self.members.contains(&y)))
+                    .collect();
+                eprintln!(
+                    "CUT m{} now {} conf {}: m{x} removed in epoch {e_new} (old members {:?}, rank {}); (voter, es, evidence, member now) {per:?}; cut {cut}",
+                    self.me, self.now, self.conf, old.members, old.rank()
+                );
+            }
             let cid = if cut == 0 { 0 } else { self.by_author.get(&(x, cut)).copied().unwrap_or(0) };
             self.pb_pending.remove(&x);
             self.frozen.insert(x, cut);
@@ -831,6 +895,12 @@ impl WorldSim {
                 self.verdict_of(&e, &ctx, &newest, &vouch)
             };
             let Some(counts) = decided else { continue };
+            if counts && cut_trace() && (self.evicted.contains_key(&e.member) || ctx.epoch < self.epoch) {
+                eprintln!(
+                    "VERDICT m{} now {} conf {} epoch {}: m{} s{} stamp {} (epoch {}) counts; vouch {:?}, es {es:?}",
+                    self.me, self.now, self.conf, self.epoch, e.member, e.seq, stamp, ctx.epoch, vouch.get(&e.member)
+                );
+            }
             self.pending.remove(&(stamp, id));
             self.verdicts.insert(id, counts);
             if !counts && !self.is_void(id) {
