@@ -1,0 +1,149 @@
+VERDICT m4 now 379 conf 326 epoch 1: m2 s156 stamp 326 (epoch 0) counts; vouch Some(178), es {1: 159, 3: 155, 4: 154, 5: 155, 6: 154, 7: 156}
+VERDICT m2 now 379 conf 326 epoch 1: m2 s156 stamp 326 (epoch 0) counts; vouch Some(178), es {1: 159, 3: 157, 4: 154, 5: 154, 6: 154, 7: 156}
+VERDICT m1 now 379 conf 326 epoch 1: m2 s156 stamp 326 (epoch 0) counts; vouch Some(178), es {1: 157, 3: 157, 4: 155, 5: 154, 6: 154, 7: 156}
+VERDICT m6 now 379 conf 326 epoch 1: m2 s156 stamp 326 (epoch 0) counts; vouch Some(178), es {1: 157, 3: 156, 4: 154, 5: 155, 6: 154, 7: 156}
+VERDICT m5 now 379 conf 326 epoch 1: m2 s156 stamp 326 (epoch 0) counts; vouch Some(178), es {1: 159, 3: 155, 4: 154, 5: 154, 6: 155, 7: 156}
+VERDICT m3 now 379 conf 326 epoch 1: m2 s156 stamp 326 (epoch 0) counts; vouch Some(178), es {1: 159, 3: 155, 4: 154, 5: 154, 6: 156, 7: 156}
+VERDICT m5 now 385 conf 331 epoch 1: m1 s133 stamp 331 (epoch 0) counts; vouch Some(159), es {1: 162, 3: 162, 4: 159, 5: 159, 6: 160, 7: 159}
+VERDICT m5 now 385 conf 331 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 162, 3: 162, 4: 159, 5: 159, 6: 160, 7: 159}
+VERDICT m3 now 385 conf 331 epoch 1: m1 s133 stamp 331 (epoch 0) counts; vouch Some(159), es {1: 163, 3: 161, 4: 160, 5: 159, 6: 159, 7: 159}
+VERDICT m3 now 385 conf 331 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 163, 3: 161, 4: 160, 5: 159, 6: 159, 7: 159}
+VERDICT m1 now 385 conf 331 epoch 1: m1 s133 stamp 331 (epoch 0) counts; vouch Some(159), es {1: 162, 3: 161, 4: 159, 5: 160, 6: 160, 7: 159}
+VERDICT m1 now 385 conf 331 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 162, 3: 161, 4: 159, 5: 160, 6: 160, 7: 159}
+VERDICT m4 now 385 conf 331 epoch 1: m1 s133 stamp 331 (epoch 0) counts; vouch Some(159), es {1: 162, 3: 162, 4: 159, 5: 160, 6: 159, 7: 159}
+VERDICT m4 now 385 conf 331 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 162, 3: 162, 4: 159, 5: 160, 6: 159, 7: 159}
+VERDICT m6 now 385 conf 331 epoch 1: m1 s133 stamp 331 (epoch 0) counts; vouch Some(159), es {1: 162, 3: 162, 4: 160, 5: 159, 6: 159, 7: 159}
+VERDICT m6 now 385 conf 331 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 162, 3: 162, 4: 160, 5: 159, 6: 159, 7: 159}
+VERDICT m6 now 387 conf 333 epoch 1: m3 s133 stamp 333 (epoch 0) counts; vouch Some(158), es {1: 164, 3: 162, 4: 161, 5: 160, 6: 160, 7: 160}
+VERDICT m6 now 387 conf 333 epoch 1: m4 s132 stamp 334 (epoch 0) counts; vouch Some(157), es {1: 164, 3: 162, 4: 161, 5: 160, 6: 160, 7: 160}
+VERDICT m1 now 387 conf 333 epoch 1: m3 s133 stamp 333 (epoch 0) counts; vouch Some(158), es {1: 163, 3: 163, 4: 160, 5: 161, 6: 160, 7: 160}
+VERDICT m1 now 387 conf 333 epoch 1: m4 s132 stamp 334 (epoch 0) counts; vouch Some(157), es {1: 163, 3: 163, 4: 160, 5: 161, 6: 160, 7: 160}
+VERDICT m4 now 387 conf 333 epoch 1: m3 s133 stamp 333 (epoch 0) counts; vouch Some(158), es {1: 163, 3: 163, 4: 160, 5: 160, 6: 163, 7: 160}
+VERDICT m4 now 387 conf 333 epoch 1: m4 s132 stamp 334 (epoch 0) counts; vouch Some(157), es {1: 163, 3: 163, 4: 160, 5: 160, 6: 163, 7: 160}
+VERDICT m5 now 387 conf 333 epoch 1: m3 s133 stamp 333 (epoch 0) counts; vouch Some(158), es {1: 163, 3: 163, 4: 161, 5: 160, 6: 160, 7: 160}
+VERDICT m5 now 387 conf 333 epoch 1: m4 s132 stamp 334 (epoch 0) counts; vouch Some(157), es {1: 163, 3: 163, 4: 161, 5: 160, 6: 160, 7: 160}
+VERDICT m3 now 387 conf 333 epoch 1: m3 s133 stamp 333 (epoch 0) counts; vouch Some(158), es {1: 164, 3: 162, 4: 161, 5: 160, 6: 160, 7: 160}
+VERDICT m3 now 387 conf 333 epoch 1: m4 s132 stamp 334 (epoch 0) counts; vouch Some(157), es {1: 164, 3: 162, 4: 161, 5: 160, 6: 160, 7: 160}
+VERDICT m4 now 389 conf 335 epoch 1: m5 s133 stamp 335 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 165, 4: 161, 5: 161, 6: 164, 7: 161}
+VERDICT m4 now 389 conf 335 epoch 1: m6 s133 stamp 336 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 165, 4: 161, 5: 161, 6: 164, 7: 161}
+VERDICT m6 now 389 conf 335 epoch 2: m5 s133 stamp 335 (epoch 0) counts; vouch Some(159), es {1: 164, 4: 163, 5: 161, 6: 163, 7: 161}
+VERDICT m6 now 389 conf 335 epoch 2: m6 s133 stamp 336 (epoch 0) counts; vouch Some(159), es {1: 164, 4: 163, 5: 161, 6: 163, 7: 161}
+VERDICT m1 now 389 conf 335 epoch 1: m5 s133 stamp 335 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 164, 4: 161, 5: 163, 6: 163, 7: 161}
+VERDICT m1 now 389 conf 335 epoch 1: m6 s133 stamp 336 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 164, 4: 161, 5: 163, 6: 163, 7: 161}
+VERDICT m5 now 389 conf 335 epoch 1: m5 s133 stamp 335 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 164, 4: 163, 5: 161, 6: 163, 7: 161}
+VERDICT m5 now 389 conf 335 epoch 1: m6 s133 stamp 336 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 164, 4: 163, 5: 161, 6: 163, 7: 161}
+VERDICT m3 now 389 conf 335 epoch 2: m5 s133 stamp 335 (epoch 0) counts; vouch Some(159), es {1: 164, 4: 163, 5: 161, 6: 163, 7: 161}
+VERDICT m3 now 389 conf 335 epoch 2: m6 s133 stamp 336 (epoch 0) counts; vouch Some(159), es {1: 164, 4: 163, 5: 161, 6: 163, 7: 161}
+VERDICT m6 now 391 conf 337 epoch 2: m2 s164 stamp 338 (epoch 0) counts; vouch Some(178), es {1: 166, 4: 163, 5: 164, 6: 164, 7: 162}
+VERDICT m5 now 391 conf 337 epoch 2: m2 s164 stamp 338 (epoch 0) counts; vouch Some(178), es {1: 166, 4: 163, 5: 163, 6: 165, 7: 162}
+VERDICT m6 now 391 conf 337 epoch 2: m7 s134 stamp 337 (epoch 0) counts; vouch Some(160), es {1: 167, 4: 164, 5: 164, 6: 165, 7: 162}
+VERDICT m1 now 391 conf 337 epoch 2: m2 s164 stamp 338 (epoch 0) counts; vouch Some(178), es {1: 166, 4: 163, 5: 163, 6: 165, 7: 162}
+VERDICT m4 now 391 conf 337 epoch 2: m2 s164 stamp 338 (epoch 0) counts; vouch Some(178), es {1: 166, 4: 163, 5: 164, 6: 164, 7: 162}
+VERDICT m4 now 391 conf 337 epoch 2: m7 s134 stamp 337 (epoch 0) counts; vouch Some(160), es {1: 167, 4: 164, 5: 164, 6: 165, 7: 162}
+VERDICT m3 now 391 conf 337 epoch 2: m2 s164 stamp 338 (epoch 0) counts; vouch Some(178), es {1: 166, 4: 164, 5: 163, 6: 164, 7: 162}
+VERDICT m1 now 391 conf 337 epoch 2: m7 s134 stamp 337 (epoch 0) counts; vouch Some(160), es {1: 167, 4: 164, 5: 164, 6: 165, 7: 162}
+VERDICT m5 now 391 conf 337 epoch 2: m7 s134 stamp 337 (epoch 0) counts; vouch Some(160), es {1: 167, 4: 164, 5: 164, 6: 165, 7: 162}
+VERDICT m3 now 391 conf 337 epoch 2: m7 s134 stamp 337 (epoch 0) counts; vouch Some(160), es {1: 167, 4: 164, 5: 164, 6: 165, 7: 162}
+VERDICT m4 now 397 conf 344 epoch 2: m2 s168 stamp 344 (epoch 0) counts; vouch Some(178), es {1: 172, 4: 167, 5: 167, 6: 168, 7: 165}
+VERDICT m1 now 397 conf 344 epoch 2: m2 s168 stamp 344 (epoch 0) counts; vouch Some(178), es {1: 170, 4: 169, 5: 167, 6: 168, 7: 165}
+VERDICT m6 now 397 conf 344 epoch 2: m2 s168 stamp 344 (epoch 0) counts; vouch Some(178), es {1: 170, 4: 167, 5: 169, 6: 168, 7: 165}
+VERDICT m5 now 397 conf 344 epoch 2: m2 s168 stamp 344 (epoch 0) counts; vouch Some(178), es {1: 172, 4: 167, 5: 167, 6: 168, 7: 165}
+VERDICT m5 now 403 conf 350 epoch 2: m2 s172 stamp 350 (epoch 0) counts; vouch Some(178), es {1: 176, 4: 172, 5: 171, 6: 172, 7: 168}
+VERDICT m1 now 403 conf 350 epoch 2: m2 s172 stamp 350 (epoch 0) counts; vouch Some(178), es {1: 175, 4: 173, 5: 171, 6: 172, 7: 168}
+VERDICT m6 now 403 conf 350 epoch 2: m2 s172 stamp 350 (epoch 0) counts; vouch Some(178), es {1: 176, 4: 172, 5: 171, 6: 172, 7: 168}
+VERDICT m4 now 403 conf 350 epoch 2: m2 s172 stamp 350 (epoch 0) counts; vouch Some(178), es {1: 175, 4: 172, 5: 173, 6: 172, 7: 168}
+VERDICT m6 now 409 conf 356 epoch 2: m2 s176 stamp 356 (epoch 0) counts; vouch Some(178), es {1: 178, 4: 176, 5: 175, 6: 176, 7: 172}
+VERDICT m5 now 409 conf 356 epoch 2: m2 s176 stamp 356 (epoch 0) counts; vouch Some(178), es {1: 179, 4: 175, 5: 175, 6: 176, 7: 172}
+VERDICT m4 now 409 conf 356 epoch 2: m2 s176 stamp 356 (epoch 0) counts; vouch Some(178), es {1: 179, 4: 175, 5: 175, 6: 176, 7: 172}
+VERDICT m1 now 409 conf 356 epoch 2: m2 s176 stamp 356 (epoch 0) counts; vouch Some(178), es {1: 178, 4: 175, 5: 176, 6: 176, 7: 172}
+VERDICT m4 now 415 conf 361 epoch 2: m1 s151 stamp 361 (epoch 0) counts; vouch Some(179), es {1: 181, 4: 178, 5: 178, 6: 180, 7: 175}
+VERDICT m5 now 415 conf 361 epoch 2: m1 s151 stamp 361 (epoch 0) counts; vouch Some(180), es {1: 182, 4: 179, 5: 179, 6: 180, 7: 175}
+VERDICT m6 now 415 conf 361 epoch 2: m1 s151 stamp 361 (epoch 0) counts; vouch Some(180), es {1: 182, 4: 179, 5: 179, 6: 180, 7: 175}
+VERDICT m1 now 415 conf 361 epoch 2: m1 s151 stamp 361 (epoch 0) counts; vouch Some(179), es {1: 181, 4: 179, 5: 178, 6: 179, 7: 175}
+VERDICT m4 now 417 conf 363 epoch 2: m3 s149 stamp 363 (epoch 0) counts; vouch Some(166), es {1: 183, 4: 179, 5: 179, 6: 180, 7: 176}
+VERDICT m4 now 417 conf 363 epoch 2: m4 s149 stamp 364 (epoch 0) counts; vouch Some(177), es {1: 183, 4: 179, 5: 179, 6: 180, 7: 176}
+VERDICT m5 now 417 conf 363 epoch 2: m3 s149 stamp 363 (epoch 0) counts; vouch Some(166), es {1: 182, 4: 180, 5: 179, 6: 180, 7: 176}
+VERDICT m6 now 417 conf 363 epoch 2: m3 s149 stamp 363 (epoch 0) counts; vouch Some(166), es {1: 183, 4: 179, 5: 179, 6: 180, 7: 176}
+VERDICT m6 now 417 conf 363 epoch 2: m4 s149 stamp 364 (epoch 0) counts; vouch Some(177), es {1: 183, 4: 179, 5: 179, 6: 180, 7: 176}
+VERDICT m5 now 417 conf 363 epoch 2: m4 s149 stamp 364 (epoch 0) counts; vouch Some(178), es {1: 183, 4: 180, 5: 180, 6: 181, 7: 176}
+VERDICT m1 now 417 conf 363 epoch 2: m3 s149 stamp 363 (epoch 0) counts; vouch Some(166), es {1: 182, 4: 179, 5: 179, 6: 181, 7: 176}
+VERDICT m1 now 417 conf 363 epoch 2: m4 s149 stamp 364 (epoch 0) counts; vouch Some(177), es {1: 182, 4: 179, 5: 179, 6: 181, 7: 176}
+VERDICT m1 now 419 conf 365 epoch 2: m5 s150 stamp 365 (epoch 0) counts; vouch Some(178), es {1: 183, 4: 181, 5: 180, 6: 181, 7: 177}
+VERDICT m1 now 419 conf 365 epoch 2: m6 s150 stamp 366 (epoch 0) counts; vouch Some(179), es {1: 183, 4: 181, 5: 180, 6: 181, 7: 177}
+VERDICT m6 now 419 conf 365 epoch 2: m5 s150 stamp 365 (epoch 0) counts; vouch Some(178), es {1: 184, 4: 180, 5: 180, 6: 181, 7: 177}
+VERDICT m6 now 419 conf 365 epoch 2: m6 s150 stamp 366 (epoch 0) counts; vouch Some(179), es {1: 184, 4: 180, 5: 180, 6: 181, 7: 177}
+VERDICT m4 now 419 conf 365 epoch 2: m5 s150 stamp 365 (epoch 0) counts; vouch Some(178), es {1: 183, 4: 180, 5: 180, 6: 182, 7: 177}
+VERDICT m5 now 419 conf 365 epoch 2: m5 s150 stamp 365 (epoch 0) counts; vouch Some(178), es {1: 183, 4: 180, 5: 180, 6: 182, 7: 177}
+VERDICT m5 now 419 conf 365 epoch 2: m6 s150 stamp 366 (epoch 0) counts; vouch Some(180), es {1: 184, 4: 181, 5: 181, 6: 182, 7: 177}
+VERDICT m4 now 419 conf 365 epoch 2: m6 s150 stamp 366 (epoch 0) counts; vouch Some(180), es {1: 184, 4: 181, 5: 181, 6: 182, 7: 177}
+VERDICT m1 now 421 conf 367 epoch 2: m7 s153 stamp 367 (epoch 0) counts; vouch Some(176), es {1: 185, 4: 182, 5: 182, 6: 183, 7: 178}
+VERDICT m4 now 421 conf 367 epoch 2: m7 s153 stamp 367 (epoch 0) counts; vouch Some(176), es {1: 185, 4: 182, 5: 182, 6: 183, 7: 178}
+VERDICT m5 now 421 conf 367 epoch 2: m7 s153 stamp 367 (epoch 0) counts; vouch Some(176), es {1: 185, 4: 182, 5: 182, 6: 183, 7: 178}
+VERDICT m6 now 421 conf 367 epoch 2: m7 s153 stamp 367 (epoch 0) counts; vouch Some(176), es {1: 185, 4: 182, 5: 182, 6: 183, 7: 178}
+VERDICT m5 now 451 conf 397 epoch 2: m7 s169 stamp 397 (epoch 0) counts; vouch Some(192), es {1: 201, 4: 198, 5: 198, 6: 199, 7: 194}
+VERDICT m1 now 451 conf 397 epoch 2: m7 s169 stamp 397 (epoch 0) counts; vouch Some(192), es {1: 201, 4: 198, 5: 198, 6: 199, 7: 194}
+VERDICT m4 now 451 conf 397 epoch 2: m7 s169 stamp 397 (epoch 0) counts; vouch Some(192), es {1: 201, 4: 198, 5: 198, 6: 199, 7: 194}
+VERDICT m6 now 451 conf 397 epoch 2: m7 s169 stamp 397 (epoch 0) counts; vouch Some(192), es {1: 201, 4: 198, 5: 198, 6: 199, 7: 194}
+VERDICT m6 now 481 conf 427 epoch 2: m7 s185 stamp 427 (epoch 0) counts; vouch Some(207), es {1: 217, 4: 214, 5: 214, 6: 215, 7: 209}
+VERDICT m4 now 481 conf 427 epoch 2: m7 s185 stamp 427 (epoch 0) counts; vouch Some(207), es {1: 217, 4: 214, 5: 214, 6: 215, 7: 209}
+VERDICT m5 now 481 conf 427 epoch 2: m7 s185 stamp 427 (epoch 0) counts; vouch Some(207), es {1: 217, 4: 214, 5: 214, 6: 215, 7: 209}
+VERDICT m1 now 481 conf 427 epoch 2: m7 s185 stamp 427 (epoch 0) counts; vouch Some(207), es {1: 217, 4: 214, 5: 214, 6: 215, 7: 209}
+VERDICT m7 now 556 conf 332 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 163, 3: 162, 4: 160, 5: 160, 6: 160, 7: 159}
+VERDICT m7 now 565 conf 333 epoch 1: m3 s133 stamp 333 (epoch 0) counts; vouch Some(158), es {1: 163, 3: 163, 4: 161, 5: 161, 6: 160, 7: 159}
+VERDICT m7 now 565 conf 333 epoch 1: m4 s132 stamp 334 (epoch 0) counts; vouch Some(157), es {1: 163, 3: 163, 4: 161, 5: 161, 6: 160, 7: 159}
+VERDICT m2 now 565 conf 331 epoch 1: m1 s133 stamp 331 (epoch 0) counts; vouch Some(159), es {1: 163, 3: 162, 4: 160, 5: 159, 6: 159, 7: 159}
+VERDICT m2 now 565 conf 331 epoch 1: m2 s160 stamp 332 (epoch 0) counts; vouch Some(178), es {1: 163, 3: 162, 4: 160, 5: 159, 6: 159, 7: 159}
+VERDICT m7 now 567 conf 335 epoch 1: m5 s133 stamp 335 (epoch 0) counts; vouch Some(159), es {1: 164, 3: 165, 4: 163, 5: 163, 6: 163, 7: 160}
+VERDICT m7 now 567 conf 335 epoch 1: m6 s133 stamp 336 (epoch 0) counts; vouch Some(160), es {1: 164, 3: 165, 4: 163, 5: 163, 6: 163, 7: 160}
+VERDICT m7 now 567 conf 337 epoch 1: m7 s134 stamp 337 (epoch 0) counts; vouch Some(160), es {1: 164, 3: 166, 4: 164, 5: 164, 6: 163, 7: 160}
+VERDICT m7 now 567 conf 337 epoch 1: m2 s164 stamp 338 (epoch 0) counts; vouch Some(178), es {1: 164, 3: 166, 4: 164, 5: 164, 6: 163, 7: 160}
+VERDICT m7 now 567 conf 344 epoch 1: m2 s168 stamp 344 (epoch 0) counts; vouch Some(178), es {1: 171, 3: 171, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 350 epoch 1: m2 s172 stamp 350 (epoch 0) counts; vouch Some(178), es {1: 171, 3: 175, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 356 epoch 1: m2 s176 stamp 356 (epoch 0) counts; vouch Some(178), es {1: 171, 3: 178, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 358 epoch 1: m1 s151 stamp 361 (epoch 0) counts; vouch Some(168), es {1: 171, 3: 181, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 358 epoch 1: m4 s149 stamp 364 (epoch 0) counts; vouch Some(164), es {1: 171, 3: 182, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 358 epoch 1: m5 s150 stamp 365 (epoch 0) counts; vouch Some(166), es {1: 171, 3: 183, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 358 epoch 1: m6 s150 stamp 366 (epoch 0) counts; vouch Some(167), es {1: 171, 3: 183, 4: 164, 5: 168, 6: 169, 7: 254}
+VERDICT m7 now 567 conf 359 epoch 1: m3 s149 stamp 363 (epoch 0) counts; vouch Some(178), es {1: 181, 3: 259, 4: 180, 5: 178, 6: 179, 7: 254}
+VERDICT m7 now 567 conf 363 epoch 1: m7 s153 stamp 367 (epoch 0) counts; vouch Some(174), es {1: 183, 3: 259, 4: 182, 5: 180, 6: 181, 7: 254}
+VERDICT m7 now 567 conf 391 epoch 1: m7 s169 stamp 397 (epoch 0) counts; vouch Some(190), es {1: 199, 3: 259, 4: 198, 5: 196, 6: 197, 7: 254}
+VERDICT m7 now 567 conf 391 epoch 1: m7 s185 stamp 427 (epoch 0) counts; vouch Some(205), es {1: 215, 3: 259, 4: 214, 5: 212, 6: 213, 7: 254}
+CUT m7 now 575 conf 521: m3 removed in epoch 2 (old members [1, 3, 4, 5, 6, 7], rank 2); (voter, es, evidence, member now) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]; cut 166 (without members that left: 166)
+CUT m7 now 575 conf 521: m2 removed in epoch 1 (old members [1, 2, 3, 4, 5, 6, 7], rank 3); (voter, es, evidence, member now) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]; cut 178 (without members that left: 178)
+CUT m4 now 575 conf 521: m3 removed in epoch 2 (old members [1, 3, 4, 5, 6, 7], rank 2); (voter, es, evidence, member now) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]; cut 166 (without members that left: 166)
+CUT m4 now 575 conf 521: m2 removed in epoch 1 (old members [1, 2, 3, 4, 5, 6, 7], rank 3); (voter, es, evidence, member now) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]; cut 178 (without members that left: 178)
+CUT m1 now 575 conf 521: m3 removed in epoch 2 (old members [1, 3, 4, 5, 6, 7], rank 2); (voter, es, evidence, member now) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]; cut 166 (without members that left: 166)
+CUT m1 now 575 conf 521: m2 removed in epoch 1 (old members [1, 2, 3, 4, 5, 6, 7], rank 3); (voter, es, evidence, member now) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]; cut 178 (without members that left: 178)
+CUT m5 now 575 conf 521: m3 removed in epoch 2 (old members [1, 3, 4, 5, 6, 7], rank 2); (voter, es, evidence, member now) [(1, Some(267), 166, true), (4, Some(263), 166, true), (5, Some(263), 166, true), (6, Some(264), 166, true), (7, Some(260), 166, true)]; cut 166 (without members that left: 166)
+CUT m5 now 575 conf 521: m2 removed in epoch 1 (old members [1, 2, 3, 4, 5, 6, 7], rank 3); (voter, es, evidence, member now) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(263), 178, true), (5, Some(263), 179, true), (6, Some(264), 178, true), (7, Some(260), 179, true)]; cut 178 (without members that left: 178)
+CUT m6 now 575 conf 521: m3 removed in epoch 2 (old members [1, 3, 4, 5, 6, 7], rank 2); (voter, es, evidence, member now) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]; cut 166 (without members that left: 166)
+CUT m6 now 575 conf 521: m2 removed in epoch 1 (old members [1, 2, 3, 4, 5, 6, 7], rank 3); (voter, es, evidence, member now) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]; cut 178 (without members that left: 178)
+VERDICT m3 now 577 conf 344 epoch 2: m2 s168 stamp 344 (epoch 0) counts; vouch Some(178), es {1: 169, 4: 166, 5: 169, 6: 167, 7: 178}
+VERDICT m3 now 577 conf 350 epoch 2: m2 s172 stamp 350 (epoch 0) counts; vouch Some(178), es {1: 174, 4: 170, 5: 173, 6: 171, 7: 178}
+VERDICT m3 now 577 conf 356 epoch 2: m2 s176 stamp 356 (epoch 0) counts; vouch Some(178), es {1: 177, 4: 174, 5: 176, 6: 175, 7: 178}
+VERDICT m3 now 577 conf 358 epoch 2: m1 s151 stamp 361 (epoch 0) counts; vouch Some(178), es {1: 180, 4: 177, 5: 179, 6: 178, 7: 178}
+VERDICT m3 now 577 conf 359 epoch 2: m3 s149 stamp 363 (epoch 0) counts; vouch Some(166), es {1: 181, 4: 178, 5: 180, 6: 179, 7: 178}
+VERDICT m3 now 577 conf 359 epoch 2: m4 s149 stamp 364 (epoch 0) counts; vouch Some(176), es {1: 181, 4: 178, 5: 180, 6: 179, 7: 178}
+VERDICT m3 now 577 conf 361 epoch 2: m6 s150 stamp 366 (epoch 0) counts; vouch Some(178), es {1: 182, 4: 179, 5: 181, 6: 180, 7: 178}
+VERDICT m3 now 577 conf 365 epoch 2: m5 s150 stamp 365 (epoch 0) counts; vouch Some(179), es {1: 184, 4: 181, 5: 182, 6: 182, 7: 178}
+VERDICT m3 now 577 conf 367 epoch 2: m7 s153 stamp 367 (epoch 0) counts; vouch Some(176), es {1: 185, 4: 182, 5: 182, 6: 183, 7: 178}
+RESULT cutfix-left: n = 7; removals at m1: m2 at 6.37 s (epoch Some(1)), m3 at 6.59 s (epoch Some(2)); members at m1 at the end {1, 4, 5, 6, 7}
+RESULT cutfix-left: m2's final cut per replica [(1, Some(178)), (4, Some(178)), (5, Some(178)), (6, Some(178)), (7, Some(178))] -> SAME
+RESULT cutfix-left: m1: m2's cut 178 at frame 575 (without members that had left: 178); (voter, read to, evidence, still a member) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]
+RESULT cutfix-left: m4: m2's cut 178 at frame 575 (without members that had left: 178); (voter, read to, evidence, still a member) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]
+RESULT cutfix-left: m5: m2's cut 178 at frame 575 (without members that had left: 178); (voter, read to, evidence, still a member) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(263), 178, true), (5, Some(263), 179, true), (6, Some(264), 178, true), (7, Some(260), 179, true)]
+RESULT cutfix-left: m6: m2's cut 178 at frame 575 (without members that had left: 178); (voter, read to, evidence, still a member) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]
+RESULT cutfix-left: m7: m2's cut 178 at frame 575 (without members that had left: 178); (voter, read to, evidence, still a member) [(1, Some(267), 177, true), (3, Some(166), 178, false), (4, Some(264), 178, true), (5, Some(264), 179, true), (6, Some(265), 178, true), (7, Some(260), 179, true)]
+RESULT cutfix-left: m3's final cut per replica [(1, Some(166)), (4, Some(166)), (5, Some(166)), (6, Some(166)), (7, Some(166))] -> SAME
+RESULT cutfix-left: m1: m3's cut 166 at frame 575 (without members that had left: 166); (voter, read to, evidence, still a member) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]
+RESULT cutfix-left: m4: m3's cut 166 at frame 575 (without members that had left: 166); (voter, read to, evidence, still a member) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]
+RESULT cutfix-left: m5: m3's cut 166 at frame 575 (without members that had left: 166); (voter, read to, evidence, still a member) [(1, Some(267), 166, true), (4, Some(263), 166, true), (5, Some(263), 166, true), (6, Some(264), 166, true), (7, Some(260), 166, true)]
+RESULT cutfix-left: m6: m3's cut 166 at frame 575 (without members that had left: 166); (voter, read to, evidence, still a member) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]
+RESULT cutfix-left: m7: m3's cut 166 at frame 575 (without members that had left: 166); (voter, read to, evidence, still a member) [(1, Some(267), 166, true), (4, Some(264), 166, true), (5, Some(264), 166, true), (6, Some(265), 166, true), (7, Some(260), 166, true)]
+RESULT cutfix-left: 3's evidence in 2's cut at every replica: yes
+  m1: conf 1141 frame 1193 rollbacks 224 max depth 54 paused frames 0 checks ok 175 bad 0
+  m4: conf 1141 frame 1193 rollbacks 225 max depth 54 paused frames 0 checks ok 175 bad 0
+  m5: conf 1141 frame 1193 rollbacks 223 max depth 54 paused frames 0 checks ok 175 bad 0
+  m6: conf 1141 frame 1193 rollbacks 225 max depth 54 paused frames 0 checks ok 175 bad 0
+  m7: conf 1141 frame 1193 rollbacks 194 max depth 118 paused frames 128 checks ok 180 bad 0
+RESULT cutfix-left: frames 0..1140 (replay from m1; each replica over its own confirmed frames: m1 0..1140 c8a6b5e59630a0a4, m4 0..1140 c8a6b5e59630a0a4, m5 0..1140 c8a6b5e59630a0a4, m6 0..1140 c8a6b5e59630a0a4, m7 0..1140 c8a6b5e59630a0a4) | offline replay c8a6b5e59630a0a4 | ALL EQUAL, NO FALSE CHECKS
