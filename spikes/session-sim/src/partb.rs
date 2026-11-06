@@ -502,7 +502,29 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
     sim.feed = true;
     sim.feed_room = room;
     sim.net.count_from_us = 8_000_000;
-    let panic_at = run_to_end(&mut sim, |_| {});
+    // Revision 22, the latency floor's leave: when m1's membership first shrinks, and the full members' paused frames
+    // then.
+    let mut shrunk: Option<(u64, Vec<MemberId>, Vec<u64>)> = None;
+    let full: Vec<MemberId> = ids.iter().copied().filter(|m| !thin.contains(m)).collect();
+    let panic_at = run_to_end(&mut sim, |s| {
+        if shrunk.is_none() && s.replica(1, 1).sim.members.len() < ids.len() {
+            let paused = full.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect();
+            shrunk = Some((s.net.now_us, s.replica(1, 1).sim.members.iter().copied().collect(), paused));
+        }
+    });
+    let leaves: Vec<String> = ids.iter().flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("leaves by request")).cloned().collect::<Vec<_>>()).collect();
+    println!("RESULT {label}: leave requests: {}", if leaves.is_empty() { "none".to_string() } else { format!("{leaves:?}") });
+    match &shrunk {
+        Some((t, m, p)) => {
+            let now: Vec<u64> = full.iter().map(|&m| sim.replica(m, 1).sim.stats.paused_frames).collect();
+            println!(
+                "RESULT {label}: m1's members first shrank at {:.2} s to {m:?}; full members {full:?} paused frames by then {p:?}, after it {:?}",
+                *t as f64 / 1e6,
+                now.iter().zip(p).map(|(a, b)| a - b).collect::<Vec<_>>()
+            );
+        }
+        None => println!("RESULT {label}: m1's members never shrank"),
+    }
     for &f in thin.iter() {
         let total = sim.net.wire_from.get(&f).copied().unwrap_or(0) as f64 * 8.0 / 22.0 / 1000.0 / (ids.len() - 1) as f64;
         let links = (ids.len() - 1) as f64;
@@ -520,7 +542,7 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
             .filter_map(|(&k, v)| v.fed_terms.get(&f).map(|&(e, u)| (k, e, u, v.c_floor, w as i64 - 15 - v.c_floor as i64 - (32 + e + u + 4) as i64)))
             .collect();
         println!(
-            "RESULT {label}: m{f} fed {}; windows with n - f < q: {:?} (window, E_T, U_T, C_floor, margin = W - 15 - C_floor - (32 + E_T + U_T + 4))",
+            "RESULT {label}: m{f} fed {}; windows with fed terms (n - f < q at n >= 4, anyone fed at n = 3): {:?} (window, E_T, U_T, C_floor, margin = W - 15 - C_floor - (32 + E_T + U_T + 4))",
             sim.is_fed(1, f),
             vals
         );
@@ -740,6 +762,12 @@ pub fn join_fed(case: &str) {
         _ => "decides with one fed and a full member down, via (c)",
     };
     println!("RESULT {label}: {}", if ok { what.to_string() } else { format!("FAIL (expected: {what})") });
+    // Revision 22: leave requests (S-4, the latency floor's) and removals, as each replica logged them.
+    let leaves: Vec<String> = [1, 2, 3, 4, joiner]
+        .iter()
+        .flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("leaves by request") || e.contains("vote to remove")).cloned().collect::<Vec<_>>())
+        .collect();
+    println!("RESULT {label}: leave requests and removal votes: {}", if leaves.is_empty() { "none".to_string() } else { format!("{leaves:?}") });
     let finals: Vec<MemberId> = r1.members.iter().copied().filter(|m| !thin.contains(m) && *m != joiner && *m != 2 || (*m == 2 && case != "onefed-down" && !thin.contains(m))).collect();
     verdict(&sim, &finals, &label, panic_at);
 }
