@@ -232,6 +232,15 @@ impl WorldSim {
         if !(v.over_floor.contains(&j) && u.over_floor.contains(&j)) {
             return None;
         }
+        // Only while the region holds with today's members (compute_window's test, with the newest window's fed members
+        // that are still members): the two newest windows may predate a membership change that ended it. join-beyond:
+        // with 5 members and two fed, 4 left by request; with 4 members and one fed the full members then voted 3 out on
+        // windows computed before the change.
+        let n = self.members.len();
+        let f = v.fed_terms.keys().filter(|m| self.members.contains(m)).count();
+        if f == 0 || !(n - f < super::quorum(super::QuorumRule::Bft, n).1 || n == 3) {
+            return None;
+        }
         let (e_t, u_t) = v.fed_terms.get(&j).copied().unwrap_or((0, 0));
         Some(format!(
             "its echo path needs 32 + E_T {e_t} + U_T {u_t} + 4 frames, over the latency floor W - 15 - C_floor = {} (windows {} and {k})",

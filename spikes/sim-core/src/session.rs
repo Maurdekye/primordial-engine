@@ -4072,7 +4072,9 @@ impl WorldSim {
     /// members I know of (myself, and the fed peers the TLP-23 contact rule gives me). The spectator path that follows
     /// (item 7, RV16-2's rejoin after 10 s above both floors) isn't built.
     pub fn s4_leave_due(&mut self) -> Option<Entry> {
-        if !self.cfg.localize || self.members.len() != 3 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() {
+        // (Not a member any more, e.g. after my own leave decided: nothing to leave. Before this guard the event was logged
+        // on every tick, though `request_leave` sent nothing.)
+        if !self.cfg.localize || self.members.len() != 3 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
             return None;
         }
         let fed: Vec<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m) && *m != self.me).collect();
@@ -4081,6 +4083,44 @@ impl WorldSim {
             return None;
         }
         self.ev(format!("S-4: n = 3 with members {fed:?} and {} fed: member {} leaves by request", self.me, self.me));
+        self.request_leave()
+    }
+
+    /// Revision 22, the latency floor's leave (@coordinator-opus m18d29a6faa0b, 2026-11-02 03:40Z): in the two-fed region
+    /// (n − f < q) the full members alone are no quorum and a fed member doesn't judge floors, so a vote to remove a fed
+    /// member over rule 3's latency floor can't decide. That member leaves by request instead, sent first (D-5), once it
+    /// holds removal votes against itself from at least t + 1 distinct full members: never on a liar's vote alone, and a
+    /// withholding liar can't keep it in. One fed member leaves (the user's confirmed text, "one of the fed players drops
+    /// to watching"): not while another fed member's leave is held, nor if a higher fed id qualifies too (S-4's order).
+    /// The fed members are myself and the fed peers I know of (TLP-23); the votes reach me by value (`record_vc`).
+    pub fn latency_leave_due(&mut self) -> Option<Entry> {
+        let n = self.members.len();
+        if !self.cfg.localize || n < 4 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
+            return None;
+        }
+        let fed: BTreeSet<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m)).chain([self.me]).collect();
+        let (t, q) = quorum(QuorumRule::Bft, n);
+        if n - fed.len() >= q {
+            return None;
+        }
+        let full_voters = |x: MemberId| -> Vec<MemberId> {
+            self.votes.get(&x).map_or(Vec::new(), |v| v.keys().copied().filter(|&y| y != x && self.members.contains(&y) && !fed.contains(&y)).collect())
+        };
+        let mine = full_voters(self.me);
+        if mine.len() < t + 1 {
+            return None;
+        }
+        if fed.iter().any(|&o| o != self.me && self.leaves.contains_key(&o)) {
+            return None;
+        }
+        if fed.iter().any(|&o| o > self.me && full_voters(o).len() >= t + 1) {
+            return None;
+        }
+        self.ev(format!(
+            "latency floor: n = {n}, fed {fed:?} (n - f < q = {q}); removal votes against me from full members {mine:?} (t + 1 = {}): member {} leaves by request",
+            t + 1,
+            self.me
+        ));
         self.request_leave()
     }
 
