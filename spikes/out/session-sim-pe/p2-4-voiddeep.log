@@ -7,15 +7,15 @@ RESULT voiddeep: m4 epoch 0 members {1, 2, 3, 4} view changes 0 (resets 0, highe
   m3: conf 102 frame 222 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 12 bad 0
   m4: conf 102 frame 222 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 1 equivocations 1 checks ok 12 bad 0
 RESULT voiddeep void fixes_off=0x200000000: frames 0..221 honest m2=5a2d384f92d4bdcb m3=5a2d384f92d4bdcb m4=5a2d384f92d4bdcb | offline replay 5a2d384f92d4bdcb | ALL EQUAL, NO FALSE CHECKS ; checks ok 36 bad 0
-REPRO voiddeep void fixes_off=0x0: f=1, P=4; 1 removed at 2.50 s; P demoted: false; live at the end: true; m2 conf 812 of frame 833, m3 conf 812 of frame 833, m4 conf 818 of frame 833
+REPRO voiddeep void fixes_off=0x0: f=1, P=4; 1 removed at 2.50 s; P demoted: false; live at the end: true; m2 conf 818 of frame 833, m3 conf 818 of frame 833, m4 conf 818 of frame 833
 RESULT voiddeep void fixed=true: -> THE VOID LISTING IS REFUSED EVERYWHERE, CONFIRMATION GOES ON
 RESULT voiddeep: m2 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 144 (t=2.50 s) round 1 removed [1]
 RESULT voiddeep: m3 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 142 (t=2.47 s) round 1 removed [1]
 RESULT voiddeep: m4 epoch 1 members {2, 3, 4} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 142 (t=2.47 s) round 1 removed [1]
-  m2: conf 812 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 59 bad 0
-  m3: conf 812 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 58 bad 0
-  m4: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 1 equivocations 1 checks ok 59 bad 0
-RESULT voiddeep void fixes_off=0x0: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 176 bad 0
+  m2: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 1 violations 0 equivocations 1 checks ok 58 bad 0
+  m3: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 0 equivocations 1 checks ok 58 bad 0
+  m4: conf 818 frame 833 members {2, 3, 4} evicted {1: (20, 110)} rollbacks 1 max depth 2 violations 1 equivocations 1 checks ok 58 bad 0
+RESULT voiddeep void fixes_off=0x0: frames 0..832 honest m2=ccc6168b2083108b m3=ccc6168b2083108b m4=ccc6168b2083108b | offline replay ccc6168b2083108b | ALL EQUAL, NO FALSE CHECKS ; checks ok 174 bad 0
 REPRO voiddeep valid fixes_off=0x0: f=1, P=4; 1 removed at 4.52 s; P demoted: true; live at the end: true; m2 conf 812 of frame 833, m3 conf 812 of frame 833, m4 conf 820 of frame 833
 RESULT voiddeep valid fixed=true: -> THE LISTING, VALID ON ITS OWN ANCESTRY, IS DECIDED EVERYWHERE
 RESULT voiddeep: m2 epoch 2 members {2, 3, 4} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 201 (t=3.45 s) round 2 removed []; epoch 2 at frame 265 (t=4.52 s) round 2 removed [1]

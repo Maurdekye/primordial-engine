@@ -1,9 +1,9 @@
-REPRO fakemix mix=false stale-refresh=0us: 8 removed at 6.18 s; m1 conf 826 of frame 833, m2 conf 826 of frame 833, m3 conf 826 of frame 833, m4 conf 826 of frame 833
-RESULT fakemix: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 247 frames (window 120); 8 removed at 6.18 s; lag at the end 7 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 78 bad 0
-  m2: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
-  m3: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
-  m4: conf 826 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
+REPRO fakemix mix=false stale-refresh=0us: 8 removed at 6.18 s; m1 conf 825 of frame 833, m2 conf 824 of frame 833, m3 conf 824 of frame 833, m4 conf 824 of frame 833
+RESULT fakemix: worst confirmation lag when admin 1 kicks 8 at 6.00 s: 247 frames (window 120); 8 removed at 6.18 s; lag at the end 9 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
+  m1: conf 825 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 78 bad 0
+  m2: conf 824 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
+  m3: conf 824 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
+  m4: conf 824 frame 833 members {1, 2, 3, 4} evicted {8: (102, 349)} rollbacks 32 max depth 2 violations 0 equivocations 0 checks ok 78 bad 0
 RESULT fakemix mix=false: frames 0..832 honest m1=4d9c3ea37f62db7a m2=4d9c3ea37f62db7a m3=4d9c3ea37f62db7a m4=4d9c3ea37f62db7a | offline replay 4d9c3ea37f62db7a | ALL EQUAL, NO FALSE CHECKS ; checks ok 312 bad 0
 REPRO fakemix mix=true stale-refresh=0us: 8 removed at never; m1 conf 806 of frame 833, m2 conf 806 of frame 833, m3 conf 806 of frame 833, m4 conf 806 of frame 833
   m1: conf 806 frame 833 members {1, 2, 3, 4, 8} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 108 bad 0
