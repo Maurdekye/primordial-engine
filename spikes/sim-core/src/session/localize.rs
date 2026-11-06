@@ -722,11 +722,14 @@ impl WorldSim {
     /// them counted: coverage).
     ///
     /// "That epoch's members" includes one that has left since (removed in a later change): its evidence counted for
-    /// coverage while it was a member, so it counts for the cut too, with its echo-stable prefix in its own last epoch,
-    /// once its own removal is final (then the references to its chain are fixed). kickliar-fed2 with the fed level
-    /// floor: member 2 was kicked, then fed member 4 left by request (S-4) before 2's cut was final; m1 had counted 2's
-    /// s132 with 4's evidence (vouched 143), and the cut without it fell to 126, voiding a confirmed entry. A member
-    /// removed in the same change as x still gives no evidence here (open: x's own references enter its rank).
+    /// coverage while it was a member, so it counts for the cut too. kickliar-fed2 with the fed level floor: member 2
+    /// was kicked, then fed member 4 left by request (S-4) before 2's cut was final; m1 had counted 2's s132 with 4's
+    /// evidence (vouched 143), and the cut without it fell to 126, voiding a confirmed entry. The rule (@design-reviewer
+    /// m810710f2f4c6 point 3, ruled by @coordinator-opus m6426247221b1): a left member m's evidence toward x is its acks
+    /// up to min(m's first ack of x's new epoch − 1, m's own cut), used once m's own cut is final and I hold m's chain
+    /// up to it (`cut_done`). Every replica then agrees on m's cut, and nothing void counts; x's cut always waits for
+    /// m's. A member removed in the same change as x still gives no evidence here (open: x's own references enter its
+    /// rank).
     pub(super) fn finalize_cuts(&mut self) {
         let xs: Vec<MemberId> = self.pb_pending.iter().copied().collect();
         for x in xs {
@@ -742,18 +745,14 @@ impl WorldSim {
                 if self.members.contains(&m) {
                     fin &= self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).is_some_and(|&s| self.echo_stable(m) >= s);
                     es.insert(m, self.echo_stable(m));
-                } else if let Some(&e_m) = self.removed_in.get(&m).filter(|&&e_m| e_m > e_new) {
-                    // Left after x's removal. Its evidence toward x's chain comes from its acks before its first ack of
-                    // epoch e_new only (`ref_cap`), so it is complete once that ack is echo-stable in its own last epoch,
-                    // as a survivor's is; without such an ack, once its own removal is final.
-                    match self.ctx(e_m - 1) {
-                        Some(last) => {
-                            let e = self.echo_stable_in(m, &last);
-                            let first = self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).copied();
-                            fin &= first.map_or(!self.pb_pending.contains(&m), |s| e >= s);
-                            es.insert(m, e);
+                } else if self.removed_in.get(&m).is_some_and(|&e_m| e_m > e_new) {
+                    // Left after x's removal: its acks up to its own cut, once that cut is final and held here.
+                    // `evidence_ref` caps them at its first ack of e_new itself (`ref_cap`).
+                    match self.evicted.get(&m) {
+                        Some(&(cut_m, _)) if self.cut_done.contains(&m) => {
+                            es.insert(m, cut_m);
                         }
-                        None => fin = false,
+                        _ => fin = false,
                     }
                 }
             }

@@ -1469,7 +1469,9 @@ impl Sim {
             }
             // Revision 22, S-4 on the transition: a removal that left n = 3 with two fed sends one fed member out by
             // request, first, ahead of queued datagrams (D-5).
-            if let Some(e) = r.sim.s4_leave_due() {
+            // Revision 22, the latency floor's leave: a fed member over it in the two-fed region, with removal votes from
+            // t + 1 distinct full members, leaves by request, sent first too (D-5).
+            if let Some(e) = r.sim.s4_leave_due().or_else(|| r.sim.latency_leave_due()) {
                 for &to in &members {
                     if to != pid {
                         self.net.send_urgent(w, pid, to, &Msg::Entry(e.clone()));
