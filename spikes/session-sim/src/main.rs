@@ -1449,6 +1449,8 @@ fn main() {
         Some("kickliar-fed7") => partb::kickliar_fed7(),
         Some("twofed-long") => partb::twofed_long(),
         Some("fed3-long") => partb::fed3_long(),
+        Some("twofed-dip") => partb::twofed_dip(),
+        Some("leave-race") => partb::leave_race(),
         Some("e1-revoke-kick") => partb::e1_roles("revoke-kick"),
         Some("e1-same-revoke") => partb::e1_roles("same-revoke"),
         Some("e1-same-promote") => partb::e1_roles("same-promote"),
