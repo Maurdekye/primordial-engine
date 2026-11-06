@@ -26,6 +26,11 @@ pub fn dgram_overhead() -> u64 {
     static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("PE_DGRAM_OVERHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(DATAGRAM_OVERHEAD))
 }
+/// (spike: PE_FED_MIN_LEVEL=L replaces `fed_level_floor` for a run, for measuring; 0 is no floor)
+fn fed_min_level_override() -> Option<usize> {
+    static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FED_MIN_LEVEL").ok().and_then(|v| v.parse().ok()))
+}
 /// Largest datagram payload a batch may fill (review R3-9).
 pub const MTU: usize = 1200;
 /// A member answers a fetch only while its uplink to the requester holds less than this; the
@@ -745,6 +750,19 @@ pub const FED_ACK_FRAMES: u64 = 16;
 /// didn't change (53.7 / 53.8 frames at both) and the fed member's uplink dropped 29.3 -> 22.6 kbit/s; at n = 3 the fed
 /// echo is always needed and 32 cost 13 frames (43.0 -> 56.4).
 pub const FED_ACK_FRAMES_N4: u64 = 32;
+/// Revision 22: whether `n` members with `f` of them fed are in scope (n − f >= q). Outside it at n >= 4 is the two-fed
+/// region, where rule 3's latency floor applies and P = 16.
+pub fn fed_in_scope(n: usize, f: usize) -> bool {
+    n.saturating_sub(f) >= pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, n).1
+}
+/// Revision 22, the start transient (@coordinator-opus mbe5278d26bae): the lowest R18 level a fed member may be at, matching
+/// its ack period P. Level 8 (hand stride and acks 32) while n − f >= q, level 7 (16, as P = 16) in the two-fed region,
+/// and no floor at n = 3 (today's levels). Measured at 64433b2, r18 capped with 8 members and member 1 fed at 8 kbit/s and
+/// sweeping: without a floor its gesture starts at stride 1, offers 93.3 kbit/s of 56 and the others stall 233 frames; at
+/// level 8 they stall 0 (7 changed little there).
+pub fn fed_level_floor(n: usize, f: usize) -> Option<usize> {
+    (n >= 4).then(|| if fed_in_scope(n, f) { 8 } else { 7 })
+}
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
 /// or any finer level only after this much calm instead of 300 ms, and forgets L after
 /// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
@@ -1246,6 +1264,17 @@ impl Sim {
                     r.level_b = b;
                     r.calm_since = now;
                 }
+                // Revision 22, the start transient: a fed member never goes below `fed_level_floor`, so a gesture that
+                // starts on a thin fed uplink starts coarse. (spike: PE_FED_MIN_LEVEL=L overrides the floor for measuring;
+                // 0 turns it off)
+                if self.net.fed.contains(&(w, pid)) {
+                    let n = r.sim.members.len();
+                    let f = r.sim.members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
+                    let floor = fed_min_level_override().or_else(|| fed_level_floor(n, f));
+                    if let Some(l) = floor {
+                        r.level = r.level.max(l.min(HAND_STRIDE.len() - 1));
+                    }
+                }
                 r.ack_every_us = ACK_FRAMES[r.level] * r.dt_us;
                 r.level_ms[r.level] += 1;
             }
@@ -1268,13 +1297,6 @@ impl Sim {
                 // needs a caught-up sim and is dropped otherwise (as in 3d0f98a).
                 let ready = r.sim.caught_up() && r.sim.frame == clock_frame;
                 {
-                    // (spike measurement, the start transient: PE_FED_MIN_LEVEL=L keeps a fed member's R18 level at L or coarser,
-                    // as P floors its acks, so a gesture starting on a thin fed uplink doesn't start at stride 1)
-                    if let Some(min) = std::env::var("PE_FED_MIN_LEVEL").ok().and_then(|v| v.parse::<usize>().ok()) {
-                        if self.net.fed.contains(&(w, pid)) && r.level < min {
-                            r.level = min;
-                        }
-                    }
                     let actions = r.plan.remove(&clock_frame).unwrap_or_default();
                     {
                         for a in actions {
@@ -1414,8 +1436,8 @@ impl Sim {
                 // where the latency floor applies and E_T's P95 is about P, 16 until settled.
                 let n = r.sim.members.len();
                 let f = r.sim.members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
-                let in_scope = n.saturating_sub(f) >= pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, n).1;
-                let p = std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(if n >= 4 && in_scope { FED_ACK_FRAMES_N4 } else { FED_ACK_FRAMES });
+                let in_scope = fed_in_scope(n, f);
+                let p =std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(if n >= 4 && in_scope { FED_ACK_FRAMES_N4 } else { FED_ACK_FRAMES });
                 base.max(p)
             } else if idle {
                 base.max(IDLE_ACK_FRAMES)
