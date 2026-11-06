@@ -649,7 +649,10 @@ impl WorldSim {
         let had = self.entries.contains_key(&id);
         match auth {
             Auth::Sig(sig) => {
-                self.sigs.insert(id, sig);
+                // Review O2-5: a signature already held stays. Only verified signatures are stored, and
+                // `insert_rebuilt` skips the check of an own signature for an id held signed, so a
+                // replayed run must not replace a good one with the unchecked copy it carries.
+                self.sigs.entry(id).or_insert(sig);
                 self.run_next.remove(&id);
             }
             Auth::Next(n) => {

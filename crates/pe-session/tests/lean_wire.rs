@@ -199,4 +199,11 @@ fn a_view_change_entry_carries_its_own_signature_inside_a_run() {
     b.resolve_lean();
     assert_eq!((b.id_at(1, 1), b.id_at(1, 2), b.id_at(1, 3)), (Some(a1.id()), Some(pv.id()), Some(a3.id())));
     assert!(matches!(b.relay(pv.id()), Some(Msg::Entry(e)) if e.sig == pv.sig));
+    // Review O2-5: member 3 replays the genuine run with junk in the prevote's own slot; the
+    // signature held stays the prevote's own.
+    let mut junk = pv.clone();
+    junk.sig = [7; 64];
+    b.insert_run(3, false, false, true, vec![a1.clone(), junk, a3.clone()]);
+    b.resolve_lean();
+    assert!(matches!(b.relay(pv.id()), Some(Msg::Entry(e)) if e.sig == pv.sig));
 }
