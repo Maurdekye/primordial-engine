@@ -41,7 +41,7 @@ use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, M
 mod feed;
 mod localize;
 pub use feed::FeedBody;
-pub use localize::{WindowVals, WINDOW};
+pub use localize::{CutRecord, WindowVals, WINDOW};
 use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
@@ -2192,6 +2192,8 @@ pub struct WorldSim {
     cut_ids: BTreeMap<MemberId, EntryId>,
     /// Evicted members whose prefix up to the cut this replica holds and has reconciled.
     cut_done: BTreeSet<MemberId>,
+    /// (spike diagnostics) Each Part B removal's cut as finalized here: `localize::CutRecord`.
+    pub cut_records: BTreeMap<MemberId, localize::CutRecord>,
     /// The view change of the current epoch.
     vc: Vc,
     /// View-change entries (votes, proposals, prevotes, precommits) of later epochs, processed on
@@ -2475,6 +2477,7 @@ impl WorldSim {
             evicted: BTreeMap::new(),
             cut_ids: BTreeMap::new(),
             cut_done: BTreeSet::new(),
+            cut_records: BTreeMap::new(),
             vc: Vc::default(),
             vc_later: BTreeMap::new(),
             proposal_ids: BTreeMap::new(),

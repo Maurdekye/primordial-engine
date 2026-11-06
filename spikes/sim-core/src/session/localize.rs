@@ -19,6 +19,17 @@ pub(super) fn judged(p: &Payload) -> bool {
     matches!(p, Payload::Touch { .. } | Payload::Hand { .. })
 }
 
+/// (spike diagnostics) A Part B removal's cut as this replica finalized it: when, each other member of the removed
+/// member's last epoch with the seq its evidence was read to (None: no evidence), that evidence, and whether it was
+/// still a member then; and the cut the same evidence gives without the members that had left.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CutRecord {
+    pub at_frame: u64,
+    pub cut: u32,
+    pub voters: Vec<(MemberId, Option<u32>, u32, bool)>,
+    pub without_left: u32,
+}
+
 /// (spike diagnostics: PE_CUT_TRACE=1 prints the evidence behind each Part B cut, and the vouched prefix behind each
 /// counted entry of a removed member or an older epoch)
 fn cut_trace() -> bool {
@@ -731,6 +742,15 @@ impl WorldSim {
     /// m's. A member removed in the same change as x still gives no evidence here (open: x's own references enter its
     /// rank).
     pub(super) fn finalize_cuts(&mut self) {
+        // Not while I'm behind on decisions: more than t members ack an epoch newer than mine (so an honest one has moved
+        // on; one liar's acks can't hold this back). A later removal I haven't applied yet would make me take its member
+        // for a survivor, with evidence read to its echo-stable prefix instead of its own cut (cutfix-left: member 7, its
+        // view-change entries delayed, finalized 2's cut before it had applied 3's leave).
+        let t = quorum(QuorumRule::Bft, self.members.len()).0;
+        let ahead = self.members.iter().filter(|m| self.ack_epoch_from.get(m).and_then(|a| a.keys().next_back()).is_some_and(|&e| e > self.epoch)).count();
+        if ahead > t {
+            return;
+        }
         let xs: Vec<MemberId> = self.pb_pending.iter().copied().collect();
         for x in xs {
             // `adopt_cut` recomputes confirmation, which comes back here: one finalized meanwhile is done.
@@ -775,18 +795,23 @@ impl WorldSim {
                 continue;
             }
             let cut = self.vouched_in(x, &es, &old);
-            // (spike diagnostics: PE_CUT_TRACE=1 prints each voter's evidence behind a cut)
-            if cut_trace() {
+            // (spike diagnostics: the record, and PE_CUT_TRACE=1 prints each voter's evidence behind a cut)
+            {
                 let per: Vec<(MemberId, Option<u32>, u32, bool)> = old
                     .members
                     .iter()
                     .filter(|&&y| y != x)
                     .map(|&y| (y, es.get(&y).copied(), self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0)), self.members.contains(&y)))
                     .collect();
-                eprintln!(
-                    "CUT m{} now {} conf {}: m{x} removed in epoch {e_new} (old members {:?}, rank {}); (voter, es, evidence, member now) {per:?}; cut {cut}",
-                    self.me, self.now, self.conf, old.members, old.rank()
-                );
+                let present: BTreeMap<MemberId, u32> = es.iter().filter(|(m, _)| self.members.contains(m)).map(|(&m, &s)| (m, s)).collect();
+                let without_left = self.vouched_in(x, &present, &old);
+                if cut_trace() {
+                    eprintln!(
+                        "CUT m{} now {} conf {}: m{x} removed in epoch {e_new} (old members {:?}, rank {}); (voter, es, evidence, member now) {per:?}; cut {cut} (without members that left: {without_left})",
+                        self.me, self.now, self.conf, old.members, old.rank()
+                    );
+                }
+                self.cut_records.insert(x, CutRecord { at_frame: self.now, cut, voters: per, without_left });
             }
             let cid = if cut == 0 { 0 } else { self.by_author.get(&(x, cut)).copied().unwrap_or(0) };
             self.pb_pending.remove(&x);
@@ -796,6 +821,18 @@ impl WorldSim {
             self.ev(format!("revision 21 (a): member {x}'s removal is final; its chain is cut at its vouched prefix, seq {cut}"));
             self.adopt_cut(x);
         }
+    }
+
+    /// (spike diagnostics) A removed member's entries this replica counted (verdict true) that lie past its final cut,
+    /// which coverage says can't exist: (seq, stamp) each. Empty until the cut is final and held here.
+    pub fn counted_past_cut(&self, x: MemberId) -> Vec<(u32, u64)> {
+        let Some(&(cut, _)) = self.evicted.get(&x).filter(|_| self.cut_done.contains(&x)) else { return Vec::new() };
+        self.entries.iter().filter(|(id, e)| e.member == x && e.seq > cut && self.verdicts.get(id) == Some(&true)).map(|(_, e)| (e.seq, e.stamp)).collect()
+    }
+
+    /// (spike diagnostics) A removed member's final cut here, once held (`cut_done`).
+    pub fn final_cut(&self, x: MemberId) -> Option<u32> {
+        self.evicted.get(&x).filter(|_| self.cut_done.contains(&x)).map(|&(c, _)| c)
     }
 
     /// Rule 1: decide every pending entry whose statuses are known. A void entry leaves the simulation at its
@@ -829,6 +866,15 @@ impl WorldSim {
                 self.pending.remove(&(stamp, id));
                 continue;
             };
+            // A removed member's entry past its final cut is void for good (`reconcile` disputed it), held behind a hole
+            // in its chain or not. Its chain is frozen at the cut, so the hole never fills, and waiting below for the
+            // entry's epoch held conf at the boundary for good (cutfix-same: member 2's entries reached 5, 6 and 7 late,
+            // past its cut; their conf stopped at 404 while 1's and 4's went on).
+            if self.cut_done.contains(&e.member) && self.evicted.get(&e.member).is_some_and(|&(cut, _)| e.seq > cut) {
+                self.pending.remove(&(stamp, id));
+                self.verdicts.insert(id, false);
+                continue;
+            }
             // F2: judged with the members and quorum of the entry's own epoch, by its author's chain. One of an
             // epoch I haven't reached waits (its members aren't known to me yet).
             let ep = self.entry_epoch(e.member, e.seq);

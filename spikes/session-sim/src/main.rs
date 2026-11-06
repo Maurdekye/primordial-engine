@@ -1456,6 +1456,8 @@ fn main() {
         Some("join-beyond-withhold") => partb::join_fed("beyond-withhold"),
         Some("join-beyond") => partb::join_fed("beyond"),
         Some("join-onefed-down") => partb::join_fed("onefed-down"),
+        Some("cutfix-left") => partb::cutfix("left"),
+        Some("cutfix-same") => partb::cutfix("same"),
         Some("partbrand") => partb::partbrand(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
