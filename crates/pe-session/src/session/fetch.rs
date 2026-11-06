@@ -117,6 +117,13 @@ impl WorldSim {
             let contiguous = &self.contiguous;
             self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
             self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
+            // Review O2-6: a removed member's round-trip figure leaves the median.
+            let gone: Vec<MemberId> = self.fetch_rtt_fig.keys().copied().filter(|&m| !self.is_member(m)).collect();
+            for m in gone {
+                self.fetch_rtt.remove(&m);
+                self.fetch_rtt_fig.remove(&m);
+                self.rtt_dirty = true;
+            }
         }
         self.clock_ms = now_ms;
         // At most every 8 frames: the median over holders sorts every holder's figure.
