@@ -189,7 +189,8 @@ pe-app) is in `_teams/1827/opt2-design-delta.md`, sections 1-11, reviewed by @de
 is in `_teams/1827/opt2-triage.md`. In short:
 - An author's consecutive entries travel as one `Msg::Run`: every prev after the first is left out and only the
   top entry is signed. **View-change and admin entries carry their own signature inside the run** (review O2-1,
-  form (4)); Part B's fed members rely on that.
+  form (4)); Part B's fed members rely on that. A signature already held is kept, so a replayed run can't replace
+  a held vote's signature with an unchecked copy (review O2-5).
 - A fetch states what the requester holds (`HELD_BELOW`, `HELD_ABOVE`), so a hole-fill answer goes lean and
   unsigned.
 - A signed run past a hole:
@@ -198,6 +199,8 @@ is in `_teams/1827/opt2-triage.md`. In short:
   - asks the sender for the whole range from the author's verified prefix;
   - asks everyone for that range if it is still waiting after **1.5 × the members' median fetch round trip + 1
     frame, clamped to 4..30 frames** (review O2-3). A slow forker can't stretch this: holeforker's third run.
+    A removed member's figure leaves the median (O2-6). A round trip is sampled before its answer verifies, so a
+    liar can lower its own figure; that only makes the fallback earlier, costing bytes, not safety (O2-7).
 
 **R18 cells, option 2 against main** (batched + adaptive; stalled frames per member / back in real time after
 the gesture; main measured at b57ec86 in its own worktree and target dir; option 2 at b02d3e2):
@@ -262,7 +265,7 @@ EQUAL, randsched ALL PASS. Eight logs change a fact, all with no safety effect (
 - bans-next: the admissions are decided in 2 epochs instead of 4, with the same members admitted and refused.
 - fork9: its fix-off control trips the assertion at 2,315 ms instead of 2,401; the fixed run is as on main.
 
-holeforker is pe only. It halts without the fallback. With it, the forker is removed at 3.60 s, and at 4.07 s when
+holeforker is pe only. It halts without the fallback. With it, the forker is removed at 4.37 s, and at 3.98 s when
 it answers every fetch 1 s late. Every replica is ALL EQUAL. The tool's regress reproduces every other log.
 
 **Evidence fixes found on the way** (c3d837c, c6e564f and later):
@@ -272,8 +275,9 @@ it answers every fetch 1 s late. Every replica is ALL EQUAL. The tool's regress 
   longest delay.
 - **Controls:**
   - fork9, pfsilent and slowadmin's fix-off parts run without runs (`set_no_runs`, tool `no_runs`).
-  - fork9's also runs without lean entries (`set_no_lean`, tool `no_lean`), since the faster gap repair heals its
-    fork first.
+  - fork9's also runs without lean entries (`set_no_lean`, tool `no_lean`). VC-2's only scenario is fork9, and with
+    lean on, its fixed run no longer reaches VC-2's path: the gap repair heals the fork first. The explicit wire
+    still needs the fix.
 - **fault-capped-collapse** moves from 12 to 8 kbit/s: at 12 the run pauses, but confirms past the check's 250.
 - **Ballpit's check** moves from 8.5 s to 8.0 s of a 9 s run: a 2 %-loss repair was still in flight at the end of
   seed 17.
