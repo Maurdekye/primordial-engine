@@ -772,6 +772,142 @@ pub fn join_fed(case: &str) {
     verdict(&sim, &finals, &label, panic_at);
 }
 
+/// Revision 21 (a)'s cut with a membership change on top of it (@coordinator-opus m6426247221b1): one n = 7 fixture, two
+/// cells. Everyone acts (a touch every 30 frames, member 2 every 6), and member 1 kicks at frame 360.
+/// - "left": member 1 kicks 2, and member 3 asks to leave once it has applied the kick, before 2's cut is final. The
+///   view-change entries to member 7 run 3 s late from 5.5 s to 9.5 s, so 7 reaches the new epochs late and 2's cut
+///   waits for it. Expected: 2's cut is final with 3's evidence (its acks up to its own cut), the same at every replica;
+///   nothing counted past either cut; ALL EQUAL.
+/// - "same": member 1 kicks 2 and 3 at once, so one change removes both. Member 2's entries reach 5 late (250 ms) and 6
+///   and 7 later (750 ms), so 3's references to 2's chain run ahead of most survivors', and 3 gives 2's cut no evidence
+///   (the open gap). It bites if an entry of 2 counted past its cut, or a replica rolls back below its confirmed frame.
+pub fn cutfix(case: &str) {
+    let ids: Vec<MemberId> = (1..=7).collect();
+    let label = format!("cutfix-{case}");
+    let same = case == "same";
+    // "same": a kick is listed only once a quorum has frozen its target's chain, and commit order holds the later kick
+    // back, so the first proposal took one kick and the next change the other. So the round-0 proposer of epoch 0 is one
+    // of the two kicked members (the first session seed that makes it so), and both stay out of view changes: round 0
+    // times out, and round 1's proposer holds both kicks' votes.
+    let seed = if same {
+        (0u64..1000)
+            .find(|&s| {
+                let mut p = Peer::new(1, 0);
+                p.join(1, &ids, SCENE, SimConfig { localize: true, seed: s, ..SimConfig::default() }, 100_000, BTreeMap::new());
+                matches!(p.worlds[&1].sim.proposer_of(0, 0), Some(2) | Some(3))
+            })
+            .expect("a seed whose first proposer is 2 or 3")
+    } else {
+        SimConfig::default().seed
+    };
+    let cfg = SimConfig { localize: true, seed, ..SimConfig::default() };
+    let plans = |m: MemberId| {
+        let step = if m == 2 { 6 } else { 30 };
+        let mut v: Vec<(u64, Action)> = (120..1600).step_by(step).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        if m == 1 {
+            v.push((360, Action::Kick { target: 2 }));
+            if same {
+                v.push((360, Action::Kick { target: 3 }));
+            }
+            v.sort_by_key(|x| x.0);
+        }
+        plan(&v)
+    };
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 41);
+    net.batching = true;
+    if same {
+        net.filter = Some(Box::new(|_t, _w, from, to, _m| match (from, to) {
+            (2, 5) => Fate::Delay(250_000),
+            (2, 6) | (2, 7) => Fate::Delay(750_000),
+            _ => Fate::Deliver,
+        }));
+    } else {
+        net.filter = Some(Box::new(|t, _w, _from, to, m| {
+            let vc = matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }));
+            if to == 7 && vc && (5_500_000..9_500_000).contains(&t) {
+                Fate::Delay(3_000_000)
+            } else {
+                Fate::Deliver
+            }
+        }));
+    }
+    let mut sim = Sim::new(net, ps, 20_000_000);
+    if same {
+        for m in [2, 3] {
+            sim_mut(&mut sim, m).withhold_vc = true;
+        }
+        println!("RESULT {label}: session seed {seed}: epoch 0's round-0 proposer is m{:?}; 2 and 3 out of view changes", sim.replica(1, 1).sim.proposer_of(0, 0));
+    }
+    let gone: Vec<MemberId> = vec![2, 3];
+    let mut removed: BTreeMap<MemberId, u64> = BTreeMap::new();
+    let mut asked = false;
+    let panic_at = run_to_end(&mut sim, |s| {
+        for &x in &gone {
+            if !removed.contains_key(&x) && !s.replica(1, 1).sim.members.contains(&x) {
+                removed.insert(x, s.net.now_us);
+            }
+        }
+        // "left": member 3 asks to leave as soon as it has applied the kick (sent first, D-5).
+        if !same && !asked && !s.replica(3, 1).sim.members.contains(&2) {
+            asked = true;
+            if let Some(e) = sim_mut(s, 3).request_leave() {
+                for to in [1, 4, 5, 6, 7] {
+                    s.net.send_urgent(1, 3, to, &Msg::Entry(e.clone()));
+                }
+            }
+        }
+    });
+    let survivors: Vec<MemberId> = vec![1, 4, 5, 6, 7];
+    let r1 = &sim.replica(1, 1).sim;
+    let epoch_of = |x: MemberId| r1.decided_changes().position(|c| c.remove.iter().any(|r| r.member == x)).map(|i| i + 1);
+    println!(
+        "RESULT {label}: n = 7; removals at m1: {}; members at m1 at the end {:?}",
+        gone.iter()
+            .map(|&x| format!("m{x} at {} (epoch {:?})", removed.get(&x).map_or("never".to_string(), |t| format!("{:.2} s", *t as f64 / 1e6)), epoch_of(x)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        r1.members
+    );
+    let mut bites = false;
+    for &x in &gone {
+        let cuts: Vec<(MemberId, Option<u32>)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.final_cut(x))).collect();
+        let distinct: BTreeSet<Option<u32>> = cuts.iter().map(|c| c.1).collect();
+        println!("RESULT {label}: m{x}'s final cut per replica {cuts:?} -> {}", if distinct.len() == 1 && cuts[0].1.is_some() { "SAME" } else { "DIFFERENT OR NOT FINAL" });
+        for &m in &survivors {
+            let r = &sim.replica(m, 1).sim;
+            if let Some(rec) = r.cut_records.get(&x) {
+                println!(
+                    "RESULT {label}: m{m}: m{x}'s cut {} at frame {} (without members that had left: {}); (voter, read to, evidence, still a member) {:?}",
+                    rec.cut, rec.at_frame, rec.without_left, rec.voters
+                );
+            }
+            let past = r.counted_past_cut(x);
+            if !past.is_empty() {
+                bites = true;
+                println!("RESULT {label}: m{m} counted m{x}'s entries past its cut (seq, stamp): {past:?} -> BITES");
+            }
+        }
+    }
+    if panic_at.is_some() {
+        bites = true;
+    }
+    if same {
+        println!("RESULT {label}: the same-change gap {}", if bites { "BITES" } else { "does not bite here" });
+    } else {
+        let used = survivors.iter().all(|&m| sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && !v.3 && v.1.is_some() && v.2 > 0)));
+        println!("RESULT {label}: 3's evidence in 2's cut at every replica: {}", if used { "yes" } else { "NO -> FAIL" });
+    }
+    verdict(&sim, &survivors, &label, panic_at);
+}
+
 pub fn stale() {
     let ids = [1, 2, 3, 4];
     // (frame, member, object, impulse): who writes which object when.
