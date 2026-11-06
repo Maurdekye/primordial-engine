@@ -117,8 +117,10 @@ impl WorldSim {
             let contiguous = &self.contiguous;
             self.fetch_asked.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
             self.fetch_first.retain(|&(_, a, from), _| from > contiguous.get(&a).copied().unwrap_or(0));
-            // Review O2-6: a removed member's round-trip figure leaves the median.
-            let gone: Vec<MemberId> = self.fetch_rtt_fig.keys().copied().filter(|&m| !self.is_member(m)).collect();
+            // Review O2-6: a removed member's round-trip figure leaves the median. Only removed ones: a
+            // holder being admitted keeps its figure.
+            let removed = self.membership().removed();
+            let gone: Vec<MemberId> = self.fetch_rtt_fig.keys().copied().filter(|m| removed.contains_key(m)).collect();
             for m in gone {
                 self.fetch_rtt.remove(&m);
                 self.fetch_rtt_fig.remove(&m);
