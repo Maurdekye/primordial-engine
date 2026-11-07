@@ -1,3 +1,4 @@
+RESULT twofed-long: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 58.0 / 82, m2 58.0 / 82
 RESULT twofed-long: leave requests: ["[w1 m4 f1034 c121] latency floor: n = 4, fed {3, 4} (n - f < q = 3); removal votes against me from full members [1, 2] (t + 1 = 2): member 4 leaves by request"]
 RESULT twofed-long: m1's members first shrank at 17.80 s to [1, 2, 3]; full members [1, 2] paused frames by then [0, 0], after it [0, 0]
 RESULT twofed-long: m3 uplink 5.7 kbit/s per link from 8 s, 2.4 acks/s per link, 4.2 datagrams/s per link

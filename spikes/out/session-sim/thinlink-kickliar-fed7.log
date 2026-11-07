@@ -27,6 +27,7 @@ TRACE kickliar-fed7 t=13 s m6: fed true level 8 ack every 32 fr | acks/s 2 | upl
 TRACE kickliar-fed7 t=13 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=14 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=14 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
+RESULT kickliar-fed7: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 50.5 / 83, m3 50.2 / 83, m4 50.2 / 83
 TRACE kickliar-fed7 m6 uplink by kind, kbit/s per link from 4 s: total 6.21 | (batch framing) 46x 0.03, (datagram overhead) 221x 1.53, ack 88x 2.69, ckpts 19x 0.18, entry/touch 92x 1.38, fetch 105x 0.18, vote 32x 0.22
 TRACE kickliar-fed7 m7 uplink by kind, kbit/s per link from 4 s: total 6.16 | (batch framing) 50x 0.03, (datagram overhead) 221x 1.53, ack 88x 2.69, ckpts 19x 0.18, entry/touch 88x 1.31, fetch 111x 0.19, vote 32x 0.22
 RESULT kickliar-fed7: m6's touches at m1: 24 held, 0 void (late past rule 1's deadline)

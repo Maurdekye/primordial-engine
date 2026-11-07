@@ -1,3 +1,4 @@
+RESULT twofed-dip: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 61.7 / 86, m2 61.7 / 86
 RESULT twofed-dip: leave requests: none
 RESULT twofed-dip: m1's members never shrank
 RESULT twofed-dip: m3 uplink 6.0 kbit/s per link from 8 s, 2.5 acks/s per link, 4.5 datagrams/s per link

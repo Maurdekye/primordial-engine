@@ -1,0 +1,6 @@
+Confirmation lag before carry-over (@coordinator-opus m6ffc48c88e9e), spike at c9a980c (binary f140963adda9ff9d):
+r18-n3-fed   capped --members 3 --localize --slow 3 --slow-kbps 8 --adaptive-only
+r18-n3-base  capped --members 3 --localize --adaptive-only
+r18-n8-fed   capped --members 8 --localize --slow 1 --slow-kbps 8 --by-kind --adaptive-only --gap 0 --gestures 4 --end 16 --count-from-ms 8000
+r18-n8-base  capped --members 8 --localize --adaptive-only --gap 0 --gestures 4 --end 16
+The cells' own lines (thinlink-<cell>.log next to this folder): "confirmation lag with no view change".
