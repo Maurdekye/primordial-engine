@@ -8,6 +8,6 @@ RESULT partbrand seed 7 n=4 shapes {1: ThinDown { kbps: 10, heal: false }} fault
 RESULT partbrand seed 8 n=5 shapes {} faulty {5: "LyingFeeder"} gst 10.0 s: fed {} (left []: ); digests over frames 0..1303; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK
 RESULT partbrand seed 9 n=6 shapes {} faulty {4: "Backdate { frames: 15 }"} gst 9.4 s: fed {} (left []: ); digests over frames 0..1263; slow-honest touches not counting 0; worst clean lag after GST + 2 s 55 frames -> OK
 RESULT partbrand seed 10 n=4 shapes {} faulty {} gst 9.3 s: fed {} (left []: ); digests over frames 0..1255; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK
-RESULT partbrand seed 11 n=7 shapes {7: Distant { ms: 227 }} faulty {3: "Slow { by_us: 1107908 }"} gst 10.8 s: fed {7} (left [7]: m7 conf 901 of frame 1039); digests over frames 0..900; slow-honest touches not counting 0; worst clean lag after GST + 2 s 67 frames -> OK
+RESULT partbrand seed 11 n=7 shapes {7: Distant { ms: 227 }} faulty {3: "Slow { by_us: 1107908 }"} gst 10.8 s: fed {7} (left [7]: m7 conf 1328 of frame 1364); digests over frames 0..1327; slow-honest touches not counting 0; worst clean lag after GST + 2 s 67 frames -> OK
 RESULT partbrand seed 12 n=4 shapes {} faulty {1: "LyingFeeder"} gst 10.5 s: fed {} (left []: ); digests over frames 0..1327; slow-honest touches not counting 0; worst clean lag after GST + 2 s 56 frames -> OK
 RESULT partbrand: 12 of 12 seeds OK -> ALL EQUAL, NO FALSE CHECKS
