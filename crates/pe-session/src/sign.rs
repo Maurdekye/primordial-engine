@@ -448,7 +448,7 @@ mod tests {
         b.insert(ack.clone());
         assert_eq!(b.stats.bad_sigs, 3);
         assert_eq!(b.signed_entry(ack.id()), Some(ack.clone()));
-        assert_eq!(b.on_fetch(1, 1, 1), vec![Msg::Entry(ack.clone())]);
+        assert_eq!(b.on_fetch(1, 1, 1, 0), vec![Msg::Entry(ack.clone())]);
         // Signed bytes round-trip through the wire encoding.
         let m = Msg::Entry(ack);
         assert_eq!(crate::session::decode_msg(&crate::session::encode_msg(&m)), Some(m));

@@ -1,12 +1,12 @@
-  deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A) with VCR-5's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 414 of frame 527, m2 conf 416 of frame 527, m3 conf 414 of frame 527; at m1: members {1, 2, 3}, evicted [9]
+  deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A) with VCR-5's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 465 of frame 527, m2 conf 416 of frame 527, m3 conf 416 of frame 527; at m1: members {1, 2, 3}, evicted [9]
   fork at 9's seq 33, t=1935 ms; branch B 48 entries plus 10 extra acks
-RESULT deepfork: m1 members {1, 2, 3} evicted {9: (75, 194)} conf 414 frame 527 paused frames 2 lying votes found 0
-RESULT deepfork: m2 members {1, 2, 3} evicted {9: (75, 194)} conf 416 frame 527 paused frames 0 lying votes found 0
-RESULT deepfork: m3 members {1, 2, 3} evicted {9: (75, 194)} conf 414 frame 527 paused frames 14 lying votes found 0
-RESULT deepfork: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 208 (t=3.57 s) round 0 removed [9]
-RESULT deepfork: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed [9]
-RESULT deepfork: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 210 (t=3.60 s) round 0 removed [9]
-  m1: conf 414 frame 527 members {1, 2, 3} evicted {9: (75, 194)} rollbacks 1 max depth 5 violations 0 equivocations 1 checks ok 22 bad 0
-  m2: conf 416 frame 527 members {1, 2, 3} evicted {9: (75, 194)} rollbacks 2 max depth 5 violations 0 equivocations 1 checks ok 20 bad 0
-  m3: conf 414 frame 527 members {1, 2, 3} evicted {9: (75, 194)} rollbacks 2 max depth 97 violations 0 equivocations 1 checks ok 18 bad 0
-RESULT deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A): frames 0..526 honest m1=29e739c7df89af32 m2=29e739c7df89af32 m3=29e739c7df89af32 | offline replay 29e739c7df89af32 | ALL EQUAL, NO FALSE CHECKS ; checks ok 60 bad 0
+RESULT deepfork: m1 members {1, 2, 3} evicted {9: (76, 196)} conf 467 frame 527 paused frames 4 lying votes found 0
+RESULT deepfork: m2 members {1, 2, 3} evicted {9: (76, 196)} conf 416 frame 527 paused frames 0 lying votes found 0
+RESULT deepfork: m3 members {1, 2, 3} evicted {9: (76, 196)} conf 416 frame 527 paused frames 24 lying votes found 0
+RESULT deepfork: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 213 (t=3.65 s) round 0 removed [9]
+RESULT deepfork: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 215 (t=3.68 s) round 0 removed [9]
+RESULT deepfork: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 219 (t=3.75 s) round 0 removed [9]
+  m1: conf 467 frame 527 members {1, 2, 3} evicted {9: (76, 196)} rollbacks 3 max depth 93 violations 0 equivocations 1 checks ok 18 bad 0
+  m2: conf 416 frame 527 members {1, 2, 3} evicted {9: (76, 196)} rollbacks 4 max depth 95 violations 0 equivocations 1 checks ok 17 bad 0
+  m3: conf 416 frame 527 members {1, 2, 3} evicted {9: (76, 196)} rollbacks 2 max depth 103 violations 0 equivocations 1 checks ok 14 bad 0
+RESULT deepfork (fork9, with 3's entries reaching 1 and 2 1.5 s late and 1 and 2 acking once a second: they find the fork late, and the cut lies over 16 entries past what 3 holds of A): frames 0..526 honest m1=29e739c7df89af32 m2=29e739c7df89af32 m3=29e739c7df89af32 | offline replay 29e739c7df89af32 | ALL EQUAL, NO FALSE CHECKS ; checks ok 49 bad 0

@@ -1,0 +1,5 @@
+  t=0.00s m1: lag 0 frames (0.00 s); holding [] late acks flagged []
+  t=3.50s m1: lag 101 frames (1.68 s); holding [not referencing (3, 1), not referencing (3, 2)] late acks flagged []
+  t=7.25s m1: lag 288 frames (4.80 s); holding [not referencing (3, 2)] late acks flagged []
+  t=7.75s m1: lag 57 frames (0.95 s); holding [] late acks flagged []
+RESULT ind-aheadlink: m1 asked 57 times; named {3}; not referencing {3}; late {} -> OK

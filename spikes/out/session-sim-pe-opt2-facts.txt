@@ -1,0 +1,9 @@
+8 logs with a fact change (cuts masked)
+bans-next.log -F removed [] | -F removed [] | -F removed [] | -F removed []
+p2-4-colluders.log -F removed [8, 9] | +F removed [9] | +F removed [8] | -F removed [8, 9]
+p2-4-fork9.log -F members {1, 2, 3} | +F members {1, 2, 3, 9}
+p2-4-slowcapper.log +F removed [] | +F removed []
+p2-4-strikeframe.log -F members {1, 2, 3} | -F members {1, 2, 3} | +F members {1, 2, 3, 9} | +F members {1, 2, 3, 9}
+r14-chain-epoch.log +V ->N relayed into C: signed by epoch N at frame N, carrying N epoch certificate(s) | -V ->N relayed into C: signed by epoch N at frame N, carrying N epoch certificate(s)
+r14-chain-reverse.log +V ->N, N->N] -> Some(Accepted) | -V ->N, N->N] -> Some(Accepted)
+r14-chain.log +V ->N, N->N] -> Some(Accepted) | -V ->N, N->N] -> Some(Accepted)

@@ -6,7 +6,7 @@
 //!   and is refused too (Unrequested); member 1's state, vouched for by a quorum's signed acks, is
 //!   restored, and from its frame on the joiner's history equals the members'.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pe_session_sim::*;
 use pe_session::session::*;
@@ -33,9 +33,20 @@ pub fn statejoin() {
     let relay = |sim: &mut Sim| {
         let mut log = sim.replica(1, 1).sim.all_entries();
         log.sort_by_key(|e| (e.member, e.seq));
+        // Each entry with its authentication: signed on itself, or in its run up to its cover (option 2).
+        let mut sent = BTreeSet::new();
         for e in log {
-            let se = sim.replica(1, 1).sim.signed_entry(e.id()).expect("held entries are signed");
-            sim.net.send(1, 1, joiner, &Msg::Entry(se));
+            if sent.contains(&e.id()) {
+                continue;
+            }
+            let m = sim.replica(1, 1).sim.relay(e.id()).expect("held entries are authenticated");
+            match &m {
+                Msg::Run { entries, .. } => sent.extend(entries.iter().map(|x| x.id())),
+                _ => {
+                    sent.insert(e.id());
+                }
+            }
+            sim.net.send(1, 1, joiner, &m);
         }
     };
     let mut step = 0;

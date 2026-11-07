@@ -70,6 +70,10 @@ pub trait DrivenPeer {
     fn hashes(&self, from: u64, to: u64) -> Hashes;
     fn member_info(&self) -> Members;
     fn sync(&self) -> SyncStatus;
+    /// Admin indicators (design 10.8) for the driven member; None unless it holds Kick.
+    fn indicators(&self) -> Option<Indicators> {
+        None
+    }
     /// The simulator's extra controls; None for a live peer.
     fn scenario(&mut self) -> Option<&mut dyn ScenarioControl>;
     /// A live peer's housekeeping (network, clock), called by the engine thread between MCP calls

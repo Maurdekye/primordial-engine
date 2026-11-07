@@ -1,7 +1,8 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 32 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 335 s
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  38.1 /  31.0 |  399 /    0 |    0 |   0 /   0 |  39 /  39 | 61 (own entries moved: 0) | 16.1/s,  30 | 0 ms | m1 ee8717a1d2f5eab6 / m2 ee8717a1d2f5eab6 replay ee8717a1d2f5eab6 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 39.8 / 17.9, m2 39.2 / 17.1
-RESULT     second gesture (310 s after the first): level at its start 0; max queue ms per member 347 / 0; stalled frames during it 0 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 38.5 / 18.3, m2 36.5 / 16.9
-RESULT     member 1's own hand against its target, over 442 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [13111, 500, 500, 500, 500, 319791] ms
+RESULT   batched+adaptive |  34.0 /  31.6 |  370 /    0 |    0 |   0 /   0 |  35 /  34 | 54 (own entries moved: 0) | 18.6/s,  28 | 0 ms | m1 9ad867a7928e7f45 / m2 9ad867a7928e7f45 replay 9ad867a7928e7f45 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 35.4 / 15.0, m2 34.3 / 14.2
+RESULT     second gesture (310 s after the first): level at its start 0; max queue ms per member 303 / 0; stalled frames during it 0 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 36.1 / 15.8, m2 34.1 / 14.2
+RESULT     mean confirmation lag per member from the gesture's start, frames: 14.8 / 14.5
+RESULT     member 1's own hand against its target, over 442 gesture frames: mean 16.04 mm, max 227.54 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [14097, 500, 500, 500, 500, 317979, 826, 0, 0] ms

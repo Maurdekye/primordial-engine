@@ -2055,8 +2055,9 @@ is fixed once the author's chain is contiguous up to it.
     change, which needs no confirmation progress, and its decision ends every cap, freeze and vote of the
     epoch [V the eight repros above with a kick at 6 s: the worst honest lag at the kick is 177-251
     frames (window 120), the cheater is removed 0.17-0.55 s later, and the lag at the end is 7-17
-    frames; every replica equals the replay]. The "holding the session" indicator is on hold with the
-    user, so for now only the admin's own judgment tells who to kick.
+    frames; every replica equals the replay]. The user authorized a "holding the session" indicator
+    for admins (Admin indicators, below); until it's built, only the admin's own judgment tells who to
+    kick.
   * **Accepted cost: a live honest member with a one-way inbound cut holds the session too** (user
     ruling 2026-11-01, "A. Accept it"). Its own entries reach everyone, so silence never fires, and its
     acks declare its present horizon, so demotion never fires; but it references no more of the chains it
@@ -2276,6 +2277,152 @@ is fixed once the author's chain is contiguous up to it.
   `colluders`' two removals into two changes. The rows above are refreshed to it, with some that had
   gone stale before it (`bridge`, `deepfork`, `strikeframe`, `joinwedge`, `aheadlink`, and by a frame
   `kickpartition` and `cutbackdate`).
+
+**Admin indicators** (user ruling 2026-11-01 16:27Z, msg mf32513b5c469: "Holding the session · Implausible
+reports"; trust survey #4, #6 and #7; @coordinator-opus's rulings 16:32Z and 16:35Z, msgs m31b4deb20f58
+and m4f022c20a7c8, after @design-reviewer's review IND-1 to IND-6 and LA-1 to LA-4) [proposal; I, nothing
+built]. Automatic removals no longer end a live cheater's stall, so an admin's kick does (Limits, above).
+Two indicators show admins whom to look at. **An indicator never acts:** it doesn't remove, demote, vote,
+fetch, or change any timer, cap or deadline. Equivocator exclusion and its fork proof stay as they are,
+and there is no fork-proof indicator (same ruling).
+* **Where they are computed.** On the admin's own replica, when its client asks, from what that replica
+  already holds: the chains and their references, the acks and their horizons, the membership state, and
+  (for the timing hint) the transport's send times and round trips toward each member. Nothing goes on the
+  wire, into the log or into the check hash. So an indicator can't fork the session, can't be fed by
+  another member except through that member's own behaviour, and costs nothing in steady state.
+  * **Read-only** (review IND-6). `stable_seq` is `&mut`: it queues fetch requests (`want_from`) and raises
+    `stable_hi`. The indicator uses a read-only twin that computes the same value and changes nothing, so
+    "never acts, nothing on the wire" holds.
+  * A query costs one pass over the members' references, O(n²) map reads, the work `recompute_conf` does on
+    every ack. Two replicas can show slightly different answers, since each sees its own arrivals; that is
+    acceptable for a hint.
+* **Admin-only.** `SessionCore::indicators(asker)` returns nothing unless `asker` holds the Kick
+  permission in the decided roles (12.4): the indicators exist to inform a kick. pe-mcp exposes them as a
+  `session_indicators` tool, returning nothing for a token whose driven member lacks Kick; pe-app prints
+  an admin status line while the local member holds Kick and an indicator names someone. **The gate is
+  presentation only:** the inputs are data every replica holds, so a modified client can compute the same
+  thing. Nothing is secret, and nothing depends on non-admins not seeing it.
+* **Thresholds are starting values** (@coordinator-opus): W/4 for 1 s for holding, and the timing hint's
+  margin and share below. The scenarios check them: in each, no honest member is shown as late or as
+  withholding, and ordinary jitter names nobody.
+
+* **"Holding the session"**: whom confirmation is waiting on, and for how long. **It says who, never why**
+  (review): a slow honest member holds confirmation as surely as a cheater, and is named too. Honest thin
+  members' confirmation lag is 120-190 frames in r18-thin's down cells [V runs20], well past the threshold.
+  * **Shown only when confirmation lags:** the present frame P minus the confirmed frame C is at least a
+    quarter of the speculation window (30 frames at the 120-frame window, 0.5 s) and has been for at least
+    1 s. Ordinary lag is 7-17 frames on the scenarios' links [V votechurn, the eight 10.8 repros after
+    the kick], so ordinary jitter names nobody.
+  * **Attribution.** It takes confirmation's own bound apart (Stability and confirmation, above;
+    `recompute_conf` and `stable_seq`). C is the minimum over members j of j's term. For each member j whose
+    term equals C, the first of these that applies is its cause (review IND-2's order):
+    1. **Membership change** (names no member; it ends with the view change): the replica is adopting a
+       decision (`adopting()` freezes C); the term is capped by a join (`join_cap`), by an ack from a newer
+       epoch, or by a removed member's prefix not yet held; or a vote holds it (review IND-1): this replica
+       voted against j, so its copy counts only up to j's frozen head, or a member k voted against j, so k's
+       later references to j never count (R3-1). Shown as "k voted against j; waits for the view change".
+    2. **Behind (j): no ack yet** (review IND-5): j has no ack this replica has applied and isn't admitted.
+    3. **This replica (gap in j's chain)** (review IND-4): this replica holds an entry of j beyond a gap
+       (applied means contiguous: `ack_hist` fills in chain order), so its own copy is what waits.
+    4. **Behind (j):** j's newest applied ack declares no horizon at or past C. j hasn't declared progress
+       that this replica has heard: a slow or stalled peer, a cheater withholding acks, or j's packets not
+       reaching this replica. Shown with P minus j's newest declared horizon.
+    5. **Not referencing (k, j):** let r be the **lowest** seq of j whose applied ack declares a horizon at or
+       past C (review IND-3). r isn't stable because some member k's newest reference to j's chain, in the
+       version this replica holds, is below r. **Guard** (review IND-2): k is named only if k's newest ack
+       this replica has applied is stamped at least 1 s (the show threshold) after j's entry r, so k has had
+       time to hold r. If k's newest ack is recent but stamped less than 1 s after r, nothing is shown for k
+       yet (review IND-7), unless that ack was already at least W/8 old (15 frames, 0.25 s) when this
+       replica holds it: then k is slow, its view reaching here late, and is shown as **behind (k)** with
+       that age. Without this, a member on a 0.4-0.7 s link, whose newest ack always arrives that old, is
+       never shown, though it holds confirmation 1.5 s back [V ind-slow, found in the build]. If k's acks are old, k is shown as **behind (k)**, which is also what this
+       replica sees when it isn't hearing k, unless this replica holds an entry of k beyond a gap, which is
+       this replica's own gap (IND-7). Shown with P minus the stamp of r. This is a cheater
+       withholding references, and equally an honest member with a one-way inbound cut, which can't
+       reference what it can't hear (Limits, accepted cost); the indicator can't tell them apart, and says
+       so. The timing hint below, for this replica's own chain, is the nearest thing to a tie-breaker.
+    6. **Not heard (j):** when more than t of the other members are each named "not referencing (·, j)"
+       under the guard, the common cause is j's outbound link, not that many members withholding at once,
+       so it is shown as j not heard instead of naming them. At n = 3 (t = 0, one other member) the two
+       readings can't be told apart, and both are shown. The guard keeps this sound: without it, slow
+       inbound to this replica from the others would make every j look not heard.
+  * **Output:** per named member, its causes, and the lag in frames and in seconds (frames / hz). The same
+    member can be behind and not referencing at once.
+  * **With Part B** (for sessions of 4 or more; 10.9 thin link), "verdicts waiting on" is the same
+    attribution over the open verdicts that hold back a frame's close: for an entry still undecided, the
+    members whose echo-stable acks are missing for its void-or-count status. Built with Part B's
+    pe-session port.
+
+* **"Implausible reports"**: soft warnings, labelled as hints and never as proof. Two parts:
+  * **Backlog reports** (Part B, rule 5, P2's plain smallest): in production each receiver reports its
+    downlink backlog in its acks, and a sender's controller reads the smallest over its non-fed
+    receivers, so one receiver reporting zero switches off back-off for every sender (trust survey #7,
+    accepted). A receiver's report is implausible when it disagrees with what the echo-stable acks show
+    about delivery to it: it reports near zero while its δ for a sender's entries (its first echo-stable
+    reference minus the entry's stamp) runs well past that sender's L + Q, or reports high while δ stays
+    near L. It's flagged when that disagreement holds over 3 consecutive windows, from window k − 2's
+    settled data, the same data Part B uses. Fed members are left out: their acks reference nothing. Built
+    with Part B's pe-session port, which brings the reports (@engine-architect: the spike reads backlogs
+    directly, so no report exists until then).
+  * **Late acks: a timing hint, not proof** (@coordinator-opus's ruling, 16:35Z: the clock-free test;
+    review LA-5).
+    Nothing that feeds L, Q, E or G is a report; a member moves them only by behaving, stamping or sending
+    its acks late (@engine-architect). So this hint is about behaviour, measured on one path with no clock:
+    * **Only this replica's own entries.** For each of its entries e and each member X: S is the local
+      time the transport last handed e to the link toward X, after this replica's own send queue (a
+      repair restarts it); and for each ack of X, R is its local arrival time. X's ack is **late** if
+      R − S exceeds this replica's measured round trip to X plus a margin, and its reference to this
+      replica's chain is still below e (in the version this replica sent).
+    * **The round trip is the largest the transport's pings measured over the last 2 s** (review IB-1:
+      2 s, not 10), not the median: a path that just got slower (a cut, a filling queue) exempts acks at once, rather than after
+      the median catches up. Like the stamp rule, it can only exempt. [V ind-aheadlink: with the median,
+      the honest member behind the 5 s cut was flagged; found in the build.]
+    * **A fetch restarts the clock** (found in the build): when X asks for this replica's chain from seq
+      a, it lacks a and can reference nothing past the hole until it's repaired (references cover only a
+      contiguous prefix), so S for every entry from a on becomes the fetch's arrival. On a thin downlink
+      that tail-drops, an honest member's references wait on repairs [V ind-thindown on main
+      699f8fb's R18: flagged without this; since the thin-link landing (a0af773) that watcher no longer
+      lags past the threshold at all]. **Limit:** a withholder that keeps re-fetching this replica's chain is never flagged late; it
+      still shows as not referencing.
+    * **Only current members' acks** are judged; a removed member's are ignored.
+    * **In pe-app, S is the socket hand-off:** the core's outbox and the clock-sync pings go through one
+      pack and one shaper per peer, in one flush, and pe-app has no other send queue [V node.rs
+      `flush_out`, @design-reviewer].
+    * **What it can't do** (review IB-1): it catches a withholder that doesn't game it. A withholder that
+      slows one pong in every 2 s (raising the round trip it is judged by) or keeps re-fetching this
+      replica's chain (restarting the clock) is never flagged, at no visible cost. So no flag proves
+      nothing; and "holding the session" still names such a member as not referencing.
+    * **Only acks X built after it could hold e** (review LA-5): an ack counts only if its own stamp is at
+      least e's stamp plus half the round trip. Otherwise the time it waited in X's own send queue (R18,
+      upstream of the transport, so the pings skip it) would make an honest member with a thin uplink look
+      late: its acks arrive seconds after they were built, before e could have reached it. The stamp can
+      only exempt an ack, never flag one. A liar that backdates its acks' stamps to be exempted drags their
+      horizons down with them, since an ack's horizon stays within slack of its stamp (8.2); it then holds
+      confirmation and shows as behind.
+    * **Why it doesn't misfire** (review LA-1 to LA-3): R − S and the round trip are both round trips on
+      the same path, so asymmetric links and clock-sync error don't enter; S is taken after this
+      replica's own queue, so another author's queue or a thin sweeper's uplink doesn't either; and each
+      ack is judged on its own, so ack cadence (2-8 frames) doesn't count. The margin covers X's own
+      packing: an ack can be built up to PACK_MAX (8) frames before it is sent, so the margin is PACK_MAX
+      frames plus 50 ms (183 ms at 60 Hz).
+    * **Flagged** when, over the last 10 s, more than half of X's acks that arrived after S + round trip +
+      margin for some e were late. The share absorbs loss: at 10% loss a hole delays some references by a
+      repair round trip, up to 21 frames [V runs19], but not most. "Eligible" means counted under the stamp
+      rule above.
+    * **Excluded** (review LA-4): a joiner still catching up (before its first applied ack declares a
+      horizon at or past its admission), a member that voted against this replica (its references are
+      frozen by construction), and fed members under Part B.
+    * **Limit:** it sees only withholding of this replica's own chain. For other chains, the hint pairs
+      "not referencing (k, j)" with whether k references this replica's chain promptly: if it does, the
+      withholding is targeted at j, or j's link toward k is cut. Still a hint, not proof.
+  * **The harness's pings** (session-sim): a ping's round trip is what a small datagram offered now would
+    take through the two links' queues and delays (mean jitter), plus any scripted fault on the whole
+    link (a stateless copy of the fault rules that name no message kind); a dropped one is lost.
+  * **Scenarios** (@coordinator-opus; review LA-5): a withholding cheater, an honest slow member, the
+    one-way cut (`aheadlink`), a thin watcher (down-k8-m3), a thin sweeper as author, a thin sweeper as the
+    judged member (up-k8-m4), 10% loss, and an asymmetric link.
+    The cheater is named in each place it should be; no honest member is ever flagged late; and the honest
+    slow member is shown as behind, never as withholding.
 
 **Per region (R16) [I].**
 * Each region log (25.5) is a session log in this sense, with its own chains, stability, confirmed frame
@@ -2678,6 +2825,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         and with per-message sends 171-177 and 1.7 s; both remove member 3, from frame 192 and 188.
         * The likely reason [I]: Part A's thinning keeps the watcher's acks flowing, so nothing removes it.
           Without adaptation its uplink clogs as well, and R3-9, which survey #4 kept, removes it.
+        * pe-session's slow-member cell moved with survey #4's port (f0d2ff4): the others stall 163 / 166 frames
+          and are back after 1.40 s instead of 112 / 115 and 0.55 s, matching the spike's non-adaptive cell above.
+          Member 3 is cut at the same point; the others confirm later after it [V bisected,
+          docs/p2-3-r18-bytes.md; the mechanism I].
       * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
         plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
 
@@ -2976,6 +3127,26 @@ entries that the view change commits (10.8).
   * An admin may kick anyone by one signed entry; the view change only commits it, in order (D80).
     Kicking an admin is a permission of its own: by default only admins hold it, and a session may give
     it to other roles (V1, 08:31Z).
+  * **Admin entries while paused** (coordinator decision 2026-11-07; found by @engine-architect in
+    cutfix-shrink). A pause that only a kick ends (trust survey #4; Part B beyond its tolerance, user
+    2026-11-01 17:26Z, msg m91230d5adacb, Q1 (b)) pauses the admin's own replica too. So kicks, bans,
+    role definitions and role grants are authored while their author's replica is paused or behind its
+    clock, as hand poses and votes are. Touches and every other payload still need a caught-up replica.
+    * **Why it is safe:** none of the four reads the sim. Each is judged in the view change, in commit
+      order, on its signature, its epoch (never later than the deciding replica's) and the roles left by
+      the entries before it (the admin sequence, `AdminRun`), and it applies at the decision, not at a
+      frame. Role grants and definitions are ordered with the other membership changes the same way
+      (Roles, below), so they are as safe as kicks and bans.
+    * **Its stamp** is the present, `max(frame, now)`, as a vote's: at or past its author's horizon. It
+      only orders the entry among the admin entries (stamp, member, seq).
+    * **Its epoch** is the author's latest decided epoch. A replica that is behind on decisions signs an
+      older one, which is still judged; only a later epoch than the decider's is refused.
+    * [V `admin_entries_are_authored_while_paused`: a replica paused with no word from its peer authors
+      all four, stamped at the present, and its touch is refused NotReady. V d80-pausedkick: 8 withholds
+      references from 2 s and every honest replica pauses (at 5.9 s: frame 230, confirmation 110);
+      admin 1's role definition, role grant and ban (stamped 270, 285, 300) and its kick of 8 (360)
+      are authored while paused and applied, 8 is removed and confirmation reaches 520, ALL EQUAL; with
+      the old gate none is authored and confirmation stays at 110 to the end.]
   * There is always at least one admin: the last cannot give the role up without handing it on (22:11Z).
   * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
     removes every other player, tells everyone that the session has closed, and allows no further change
@@ -3552,6 +3723,157 @@ count; the residual risks that leaves are recorded in D87, and the user accepted
   then refused. A control without that certificate lets the kick through [V: control run].
 
 ---
+
+### 12.6 Profile statistics: witnessed join date and hours played (confirmed by the user 2026-11-01, msg m1c2bbbc512d6; design only, build not authorized)
+
+The user asked how to stop players spoofing account details such as join date and hours played
+(msg mac142474e81b). There is no authority to ask (decision 1) and a player is only an identity key
+(10.3). The rulings (msgs meaa1f3bd2dab, mf05f74388be9):
+* the stats are **display only**: no join rule, ban, role or game rule reads them;
+* **no log**: no public log, chain or timestamp service, and nothing mined or farmed on players'
+  computers; simple signing;
+* **two stats for now**: join date and hours played.
+
+So a profile stat is not a fact the network agrees on. It is a set of signed statements by other
+players, and **each viewer weighs them by who signed**. Two viewers can show the same player different
+numbers, and both are right about what they can check.
+
+**The witness receipt.** When two players share a session, each signs a short receipt for the other:
+"I, W, was in a session with S for these minutes".
+* **Body:** format version (1 B); the subject's user key (32 B); a session tag, BLAKE3(session id ‖
+  subject key) (32 B); the start, in UTC minutes (4 B); the start frame (4 B); the duration in seconds
+  (4 B). About 77 B.
+* **Signature:** the witness's device key (10.3) over a domain string and the body (64 B). The device
+  certificate, which ties it to the witness's user key, is sent once per witness, not per receipt.
+* **An honest witness takes the interval from the membership log:** the overlap of the frames during
+  which both S and W were members, which every replica of the session has identically (10.8),
+  converted to seconds at the session's tick rate. A joiner admitted by state transfer needs only its
+  own admission and the changes decided after it, since a pair's overlap starts no earlier than both
+  admissions. The start time is the witness's own clock at that frame, rounded to the minute. A viewer
+  can't check any of this: it binds an honest witness's computation, not a dishonest one's (PS-6).
+* **Up to the witness's confirmed frame**, not its present one: a removal decided later with an earlier
+  boundary would otherwise make a superseding receipt shorter than the one before it.
+* **Spectators** (non-members that follow the session, 10.9) accrue no hours and witness nothing.
+* **When:** a witness signs at the end of each 15 minutes of overlap and when either of them leaves.
+  A later receipt from the same witness for the same session supersedes the earlier one (same start,
+  longer duration), so a crash loses at most 15 minutes and the subject keeps one per witness.
+* **Never in the session log.** Receipts go to the subject as control messages over the session's
+  transport. They take no part in confirmation, consensus or the simulation, so they cost the session
+  nothing and a witness that refuses to sign only withholds its own receipt.
+* **Who counts as a witness:** a player, counted by **user key**: a player's several devices are one
+  witness, and a receipt signed by a device of the subject's own user key doesn't count. An AI agent's
+  delegated key (12.3) doesn't count either, or one player with ten agents would be ten witnesses
+  (user: "Exclude", msg m1c2bbbc512d6).
+* **Why one receipt per witness and not one roster co-signed by everyone:** players join and leave at
+  different times, so each pair's overlap differs; and a roster would show every member to anyone the
+  subject shows it to (see privacy, below).
+
+**Hours played.**
+* A viewer takes the receipts whose witnesses it counts (tiers, below) and adds up the **union** of
+  their intervals, not the sum:
+  * **within one session** (one session tag), on frames: the receipts' start frames and durations line
+    up exactly, so two witnesses' receipts for the same minutes count once, whatever their clocks say;
+  * **across sessions**, in UTC: each session is placed by the median of its witnesses' clocks, so a
+    player in three worlds at once (22) gets one hour per hour, not three.
+* **In tier 4, one key's share is shown apart when it dominates** (PS-2, coordinator's ruling): the
+  viewer also computes the hours each witness key alone contributes. When one key contributes more than
+  half the tier's hours, the line shows the rest first and that key's hours separately: "312 h by 41
+  keys you don't know, plus 10,000 h from one key". Otherwise it adds the largest share in brackets:
+  "312 h by 41 keys you don't know (at most 30 h from one key)". Nothing is dropped, so 2-player play
+  counts in full: a player who mostly plays with one stranger reads "500 h, 480 h of it from one key".
+  Cost: one more number per line and a per-key union at the viewer; two or more throwaway keys that
+  split a fabricated claim evenly still pass, as any ring does.
+* **Hours are clipped to the join date** of the same tier and to the viewer's present: nothing before
+  the one or after the other counts.
+* It measures **presence with witnesses**, not activity: an idle player in a session accrues hours.
+
+**Join date.** The earliest start of a counted receipt that a second, distinct counted witness matches
+with a receipt of its own starting at most 7 days later, so that one witness with a wrong clock (or one dishonest
+friend) can't move it more than 7 days. With only one counted witness it shows with "(1 witness)". It
+is computed per tier and shown with its tier, like the hours.
+
+**What each stat proves, and what it doesn't.**
+* **Against a subject with no other keys it holds:** a receipt needs the witness's private key, so a
+  player can't add hours or move its join date earlier with its own key. It can hide receipts, which
+  only makes it look newer or less active.
+* **Against a colluding group it doesn't, and one person with throwaway keys is such a group:** keys
+  cost nothing, and any set of them can sign any receipts, with any dates and durations. Proving "this existed by date D" needs a third party that recorded it by D; with no log,
+  the witnesses are that third party, so a stat is worth exactly as much as the viewer's trust in the
+  witnesses. That is accepted (no-log ruling), and it is why the display is relative to the viewer.
+* **Dates are the witnesses' clocks.** Honest witnesses with right clocks give right dates.
+
+**Tiers: how a viewer weighs witnesses.** Each counted receipt falls in the highest tier its witness
+reaches for this viewer:
+1. **You:** receipts the viewer itself signed (it keeps a copy of each receipt it issues).
+2. **Your friends:** witnesses with a mutual friendship with the viewer (21.5, 12.4).
+3. **Worlds you trust:** witnesses that are owner keys (12.5) of worlds the viewer has marked as
+   trusted. A world or community vouches by its owners taking part as witnesses; no extra mechanism.
+4. **Others:** any other valid witness, shown with the number of distinct witness keys. These are
+   keys, not people: one person can hold any number.
+5. **Self-reported:** the totals the subject claims, when nothing in tiers 1-4 backs them.
+
+**The display** shows the tiers, not one score. For example:
+* "Joined Jun 2026 by your friends (Mar 2026 by 41 keys you don't know)"
+* "40 h with you or your friends · 12 h in worlds you trust · 312 h by 41 keys you don't know"
+* a stranger with no overlap: "Joined Mar 2026, 312 h, by 41 keys you don't know"
+* nothing verifiable: "Joined Mar 2026 · 312 h (self-reported)".
+
+A ring of 50 throwaway keys that witness one another reads as "by 50 keys you don't know". Counting
+only witnesses with their own witnessed history (the "weight witnesses by history" idea) is left out:
+a closed ring can give itself any history too, and it would mean fetching every witness's profile
+(user: "Leave out", msg m1c2bbbc512d6).
+
+**How the claims travel with the player.**
+* The receipts live in the player's profile store on its own devices, synced across them as signed
+  records like the friend list (21.5). No one else stores them except as a viewer's cache.
+* Viewing a profile asks the player's peer directly, in a shared session or over a friend connection.
+  The peer sends a summary first (claimed totals, shown at once as self-reported), then the receipts and
+  the witnesses' device certificates. The viewer caches them by hash and later asks only for new ones.
+  Offline, a viewer shows its cached view with its date.
+* Lost devices with no copy lose the receipts. Witnesses keep the receipts they issued, so friends could
+  give back theirs; there is no other backup (no service).
+* A new identity key is a new profile. Device keys can rotate under the same user key without losing
+  anything.
+
+**Costs.** [I] throughout: arithmetic from the formats above and published Ed25519 speeds (sign about
+20 µs, verify about 50 µs on one desktop core, roughly twice as fast batched), not measured here.
+
+| Cost | Per player | 8-player session | 100-player session |
+|---|---|---|---|
+| Signing | one receipt per co-member per 15 min | 7 receipts, 0.14 ms | 99 receipts, 2 ms |
+| Checking received receipts | one per co-member per 15 min | 0.35 ms | 5 ms |
+| Bandwidth | about 140 B per receipt, one each way per pair per 15 min | about 1 B/s each way | about 15 B/s each way |
+| Storage, per session played | one receipt per witness kept, at most 16 (the subject picks: friends and owners first) | 7 × 140 B ≈ 1 KB | 16 × 140 B ≈ 2.2 KB |
+
+* **A heavy profile** of 1000 sessions: about 1-2.2 MB of receipts, plus about 130 B per distinct
+  witness for its certificate.
+* **A viewer's first look** at that profile: the transfer (1-2.2 MB, once, then only new receipts) and
+  up to 16,000 signature checks, about 0.8 s on one core, off the frame thread. Tiers 1-3 are checked in
+  full and first (they are small). In tier 4, every receipt that sets a displayed value is checked in
+  full (the join-date pair, and any receipt over 4 h), and the rest on a random sample of 256: one bad
+  signature rejects the whole profile as forged, and forging signatures gains nothing over a ring of
+  throwaway keys anyway (PS-5).
+* **Nothing is mined, no log is kept, and the session's simulation, log and confirmation are
+  untouched.**
+
+**Privacy (user: (a) and (c), msg m1c2bbbc512d6).** A receipt shows that its witness and its subject played
+together, and when, to anyone the subject shows it to, including people who weren't there. The witness
+is exposed as much as the subject. The session tag is per subject, so two players' receipts can't be
+matched to each other by tag by someone who doesn't know the session id (its 256-bit nonce, 10.3, makes
+it unguessable; members know it); the witness keys and times still link them. The two chosen controls:
+* **(a) The subject picks what to show.** Each receipt stands alone, so a player can show some
+  witnesses and hide others, per viewer or for everyone. Cost: hidden receipts don't count, so the stat
+  is lower; nothing else.
+* **(c) The witness chooses whom it signs for:** everyone in the session, friends only, or no one.
+  Cost: fewer receipts for players who meet strangers.
+* **Defaults:** both start at everyone. Witnesses sign for everyone in the session, and subjects show
+  their receipts to everyone. Each player can narrow either.
+* **Not chosen:** (b) showing receipts to friends only (strangers could check nothing), and (d) counts
+  without keys (with plain signatures a keyless count can't be checked; making it checkable needs ring
+  or group signatures or private set intersection, more than simple signing).
+
+**Open points.** The 15-minute receipt period and the 16 kept witnesses per session are starting
+values.
 
 ## 13. Live game logic in Rust (R7, 100%-Rust clarification)
 

@@ -55,6 +55,8 @@ mod store;
 mod transfer;
 mod replay;
 mod seam;
+mod indicators;
+pub use indicators::Hold;
 #[cfg(test)]
 mod ownership_tests;
 #[cfg(test)]
@@ -125,14 +127,33 @@ struct Keyframe {
     t: Tables,
 }
 
-/// A lean entry waiting in [`WorldSim::insert_lean`]: its sender, the entry, since when (frame), and
-/// whether its explicit form has been asked for.
+/// A run waiting in [`WorldSim::insert_run`]: its sender, its entries (consecutive seqs of one
+/// author; ids left out on the wire are `EntryId::NONE` until rebuilt), whether its first entry's
+/// `prev` came on the wire, whether its acks' heads must be rebuilt, the top entry's signature if
+/// it came signed, since when it waits (frame), and whether its signed, explicit form has been asked
+/// for.
 #[derive(Clone, Debug)]
 pub struct LeanWait {
     pub from: MemberId,
-    pub se: SignedEntry,
+    pub first_prev: bool,
+    pub lean_heads: bool,
+    pub entries: Vec<Entry>,
+    /// Review O2-1 (4): the own signature of each view-change or admin entry inside the run, aligned
+    /// with `entries` (None for the others, and for a signed top, whose signature is `sig`).
+    pub own: Vec<Option<Sig>>,
+    pub sig: Option<Sig>,
     pub since: u64,
     pub asked: bool,
+    /// The full range below it has been asked of everyone (the hole rule's fallback).
+    pub asked_all: bool,
+}
+
+/// How a stored entry is authenticated (option 2): by its author's signature on it, or by the next
+/// entry of the run it arrived in, which names it (and so on up to a signature).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Auth {
+    Sig(Sig),
+    Next(EntryId),
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -184,16 +205,17 @@ pub struct Stats {
     pub view_changes: u64,
     pub resets: u64,
     pub max_round: u32,
-    /// Members this replica voted out for withholding references (P2-4).
-    pub withholders: u64,
     /// D80: kicks and role entries the decided changes applied, and those they refused.
     pub admin_applied: u64,
     pub admin_refused: u64,
     /// Received entries dropped because their signature did not verify (S3).
     pub bad_sigs: u64,
-    /// Lean entries ([`Msg::Lean`]) received, and those this member could not rebuild and verify,
+    /// Lean entries ([`Msg::Run`] with its lean flag) received, and those this member could not rebuild and verify,
     /// whose explicit form it fetched from their author instead.
     pub lean_in: u64,
+    /// Runs refused because a view-change or admin entry in them was covered by another entry's
+    /// signature (review O2-1); their range is asked for again.
+    pub covered_refused: u64,
     pub lean_fallbacks: u64,
     /// Lean entries that waited for an entry they name, and their total wait in frames.
     pub lean_waited: u64,
@@ -425,8 +447,6 @@ struct Vc {
     precommit_timer: BTreeMap<u32, u64>,
     /// Review VC3R-2: value -> my present when its proposal by the round's proposer first reached me.
     seen_at: BTreeMap<u64, u64>,
-    /// Review VC4R-1: (round, value) -> every member a prevote for it is held from, in any version.
-    any_prevotes: BTreeMap<(u32, u64), BTreeSet<MemberId>>,
     /// Review VC4R-1: (round, member) -> the id of that member's first prevote this replica holds, so a
     /// precommitter can name the prevote ids of the polka it saw.
     prevote_id: BTreeMap<(u32, MemberId), EntryId>,
@@ -539,20 +559,9 @@ pub struct WorldSim {
     pub fixes_off: u64,
     /// Review VC4R-4: (holder, id) -> (when last asked, current retry interval), in ms.
     entry_backoff: BTreeMap<(MemberId, EntryId), (u64, u64)>,
-    /// Review VC4R-3 (and the generator's RG-1): (claimant, author) -> (the highest seq of the author's
-    /// chain the claimant has referenced that I hold in the named version, and my present when that last
-    /// rose). A member faking a reference advances its raw reference but not this verified one, so the
-    /// withholding rule catches it; a real backlog clears once I fetch the entries, advancing it.
-    ref_seen: BTreeMap<(MemberId, MemberId), (u32, u64)>,
     /// Review VC4R-3: per member suspected silent or slow, my present when it first was, so the fetch
     /// exemption that spares it while I chase another member's claim about it is bounded in time.
     suspect_since: BTreeMap<MemberId, u64>,
-    /// Review VC3R-2: per member, its first capped precommit of this epoch: (round, value, my present
-    /// when I recorded it).
-    cap_seen: BTreeMap<MemberId, (u32, u64, u64)>,
-    /// Review VC4R-1: the prevote ids a member's capped precommit carried as its polka, and every id of
-    /// them asked for so far, so the justification is fetched once before the member is voted out.
-    cap_polka: BTreeMap<MemberId, Vec<EntryId>>,
     /// Review VC3R-6: the epoch each member entered the session in (genesis members: 0).
     admitted_epoch: BTreeMap<MemberId, u32>,
     /// Review VC3R-2: per member, until when I cast no suspicion vote against it, because decisions
@@ -568,7 +577,7 @@ pub struct WorldSim {
     /// Test fixture (review VC3R-6): author no ack before this member is admitted, as a joiner that
     /// starts from a state transfer rather than replaying the log would.
     pub quiet_until_member: bool,
-    wants: Vec<(MemberId, MemberId, u32, u32)>,
+    wants: Vec<(MemberId, MemberId, u32, u32, u8)>,
     pub conf: u64,
     /// My clock frame (my present), set by the harness each tick.
     pub now: u64,
@@ -587,7 +596,21 @@ pub struct WorldSim {
     pub lie_in_votes: bool,
     my_last: EntryId,
     /// (holder, author) -> (first seq asked, when, current retry interval), all in ms.
-    fetch_asked: BTreeMap<(MemberId, MemberId), (u32, u64, u64)>,
+    fetch_asked: BTreeMap<(MemberId, MemberId, u32), (u32, u64, u64)>,
+    /// Review O2-3: when each range was first asked of each holder (frame, ms), until its answer arrives.
+    fetch_first: BTreeMap<(MemberId, MemberId, u32), (u64, u64)>,
+    /// Each holder's last fetch round trips (frames, ms), newest last ([`Self::hole_hold`]).
+    fetch_rtt: BTreeMap<MemberId, std::collections::VecDeque<(u64, u64)>>,
+    /// Each holder's figure: the median of its samples in `fetch_rtt` (frames, ms), kept on each sample.
+    fetch_rtt_fig: BTreeMap<MemberId, (u64, u64)>,
+    /// The ms clock as of the last [`Self::take_fetches`].
+    clock_ms: u64,
+    /// [`Self::hole_hold`] as of the last [`Self::take_fetches`] (once per tick; it sorts every holder's figures).
+    hold_now: u64,
+    /// The members' median round trip in ms, as of the last new sample.
+    rtt_ms_now: u64,
+    /// A round trip was sampled since `hold_now` was computed.
+    rtt_dirty: bool,
     // ---- results
     pub hashes: BTreeMap<u64, u64>,
     pub check_hashes: BTreeMap<u64, CheckHash>,
@@ -607,8 +630,18 @@ pub struct WorldSim {
     pub events: Vec<String>,
     /// This replica's signing key and the members' public keys (S3).
     keys: KeyRing,
-    /// The author's signature of every entry held, for relaying it.
+    /// The author's signature of each entry held signed on itself, for relaying it (option 2: an
+    /// entry that came inside a run is covered by the next entry of the run instead: `run_next`).
     sigs: BTreeMap<EntryId, Sig>,
+    run_next: BTreeMap<EntryId, EntryId>,
+    /// The R18 below-20 item: option 1, own live entries lean (implicit ids) and fetch replies lean
+    /// when the requester holds the entry below; option 2, own live entries in runs signed once, and
+    /// hole-fill replies unsigned. Off: the explicit, signed-per-entry wire (measurement A/B).
+    pub lean_wire: bool,
+    /// Set by the session each tick: its R18 controller is above level 0 (review O2-3). A congested link
+    /// repairs one gap per author at a time; parallel asks only add answers competing for it.
+    pub congested: bool,
+    pub run_wire: bool,
     /// The membership and view-change state (P2-3 S6b): read through [`Membership`], written by
     /// the view change.
     pub vcm: ViewChangeMembership,
@@ -666,11 +699,6 @@ pub struct ViewChangeMembership {
     join_caps: BTreeMap<MemberId, (u32, u64)>,
     /// Per member: the first seq of its chain whose ack declares each epoch after 0.
     ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
-    /// (referrer, author) -> my present frame when the referrer's acks last referenced more of that
-    /// author's chain (P2-4: a member that stops referencing a chain stalls everyone's confirmation).
-    ref_advanced: BTreeMap<(MemberId, MemberId), u64>,
-    /// The last frame withheld references were checked for.
-    withhold_checked: u64,
     /// Test fixture (D80 bridge): a faulty member that backs every vote another member casts,
     /// prevotes and precommits every proposal it sees, in every round, echoes the nil votes of
     /// rounds it holds no proposal for, never proposes, and never applies a decision, so it can
@@ -711,8 +739,6 @@ pub struct ViewChangeMembership {
     pub closed_at: Option<u64>,
     /// Test fixture (review VC-5): the epoch this member's acks declare, whatever epoch it is in.
     pub fake_ack_epoch: Option<u32>,
-    /// VC-5: per member, my present when its acks first declared an epoch newer than mine.
-    newer_since: BTreeMap<MemberId, u64>,
     /// VC-2: a removed member's chain is being switched to its cut's branch; confirmation waits.
     adopting: bool,
     /// Review VCR-4: per member, the epochs reached by resets that overruled one of its votes or caps.
@@ -798,8 +824,6 @@ impl WorldSim {
                 withhold_vc: false,
                 byz_ally: false,
                 byz_no_precommit: false,
-                ref_advanced: BTreeMap::new(),
-                withhold_checked: 0,
                 followers: BTreeSet::new(),
                 join_requests: BTreeSet::new(),
                 admitted: BTreeMap::new(),
@@ -818,7 +842,6 @@ impl WorldSim {
                 admin_outcomes: BTreeMap::new(),
                 closed_at: None,
                 fake_ack_epoch: None,
-                newer_since: BTreeMap::new(),
                 adopting: false,
                 strikes: BTreeMap::new(),
                 entry_wants: Vec::new(),
@@ -870,10 +893,7 @@ impl WorldSim {
             closed_members: Vec::new(),
             fixes_off: 0,
             entry_backoff: BTreeMap::new(),
-            ref_seen: BTreeMap::new(),
             suspect_since: BTreeMap::new(),
-            cap_seen: BTreeMap::new(),
-            cap_polka: BTreeMap::new(),
             admitted_epoch: BTreeMap::new(),
             vote_hold: BTreeMap::new(),
             hold_n: BTreeMap::new(),
@@ -891,6 +911,13 @@ impl WorldSim {
             lie_in_votes: false,
             my_last: EntryId::NONE,
             fetch_asked: BTreeMap::new(),
+            fetch_first: BTreeMap::new(),
+            fetch_rtt: BTreeMap::new(),
+            fetch_rtt_fig: BTreeMap::new(),
+            clock_ms: 0,
+            hold_now: Self::LEAN_HOLD_FRAMES,
+            rtt_ms_now: 0,
+            rtt_dirty: false,
             hashes: BTreeMap::new(),
             check_hashes: BTreeMap::new(),
             remote_checks: BTreeMap::new(),
@@ -906,6 +933,10 @@ impl WorldSim {
             events: Vec::new(),
             keys,
             sigs: BTreeMap::new(),
+            run_next: BTreeMap::new(),
+            lean_wire: true,
+            congested: false,
+            run_wire: true,
         }
     }
 

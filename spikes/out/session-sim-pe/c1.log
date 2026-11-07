@@ -2,7 +2,7 @@ RESULT c1 before (phase-1 rule): A Ok(true), B Err(TooLate { frame: 50, oldest: 
   m1 holds member 3's frame-50 entry; effective frame None
   m2 holds member 3's frame-50 entry; effective frame None
   m3 holds member 3's frame-50 entry; effective frame None
-  m1 world 1: rollbacks 7 max depth 110 resim frames 128 (79.7 ms) overwrites 9 paused frames 31 violations 0 equivocations 0 checks ok 49 bad 0 nonfinite 0 conf 729 frame 743
-  m2 world 1: rollbacks 7 max depth 110 resim frames 125 (73.7 ms) overwrites 9 paused frames 31 violations 0 equivocations 0 checks ok 48 bad 0 nonfinite 0 conf 729 frame 744
-  m3 world 1: rollbacks 12 max depth 2 resim frames 27 (16.6 ms) overwrites 8 paused frames 22 violations 0 equivocations 0 checks ok 49 bad 0 nonfinite 0 conf 729 frame 743
+  m1 world 1: rollbacks 7 max depth 110 resim frames 129 (51.5 ms) overwrites 9 paused frames 33 violations 0 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 727 frame 743
+  m2 world 1: rollbacks 7 max depth 110 resim frames 127 (52.1 ms) overwrites 9 paused frames 39 violations 0 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 729 frame 744
+  m3 world 1: rollbacks 12 max depth 2 resim frames 28 (11.8 ms) overwrites 8 paused frames 24 violations 0 equivocations 0 checks ok 44 bad 0 nonfinite 0 conf 727 frame 743
 RESULT c1 after world 1: frames 0..700 digests m1=8a9808ca108194ae m2=8a9808ca108194ae m3=8a9808ca108194ae | offline replay 8a9808ca108194ae | ALL EQUAL

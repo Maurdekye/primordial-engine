@@ -86,6 +86,42 @@ fn matches(r: &FaultRule, t_us: u64, w: u32, from: u32, to: u32, m: &Msg) -> boo
         && r.nil.is_none_or(|x| entry.is_some_and(|e| matches!(e.payload, Payload::Prevote { value, .. } | Payload::Precommit { value, .. } if (value == 0) == x)))
 }
 
+/// The scripted faults as pings see them (admin indicators, design 10.8): only the rules that apply
+/// to every message on a link (no message kind, author, stamp, seq, round or nil, and no `times`
+/// limit), first match wins. Stateless, so the real filter's counters are untouched.
+pub fn ping_filter(rules: &[FaultRule]) -> Option<pe_session_harness::PingFilter> {
+    let link: Vec<FaultRule> = rules
+        .iter()
+        .filter(|r| r.msg.is_none() && r.author.is_none() && r.stamp.is_none() && r.seq.is_none() && r.round.is_none() && r.nil.is_none() && r.times.is_none())
+        .cloned()
+        .collect();
+    if link.is_empty() {
+        return None;
+    }
+    Some(Box::new(move |t, from, to| {
+        for r in &link {
+            let on = r.after_ms.is_none_or(|a| t >= a * 1000)
+                && r.before_ms.is_none_or(|b| t < b * 1000)
+                && r.from.as_ref().is_none_or(|x| x.contains(from))
+                && r.to.as_ref().is_none_or(|x| x.contains(to))
+                && r.involves.as_ref().is_none_or(|x| x.contains(from) || x.contains(to))
+                && r.partition.as_ref().is_none_or(|groups| {
+                    let g = |m: u32| groups.iter().position(|v| v.contains(&m));
+                    matches!((g(from), g(to)), (Some(a), Some(b)) if a != b)
+                });
+            if on {
+                return match (r.drop, r.delay_ms) {
+                    (true, _) => Fate::Drop,
+                    (false, Some(d)) if r.delay_grows => Fate::Delay(t - r.after_ms.unwrap_or(0) * 1000 + d * 1000),
+                    (false, Some(d)) => Fate::Delay(d * 1000),
+                    (false, None) => Fate::Deliver,
+                };
+            }
+        }
+        Fate::Deliver
+    }))
+}
+
 /// A filter from a Byzantine behaviour: `Some(fate)` decides the message.
 pub type Hook = Box<dyn FnMut(u64, u32, u32, u32, &Msg) -> Option<Fate>>;
 
