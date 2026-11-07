@@ -2,25 +2,28 @@ RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, c
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 3 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   per message      | 175.9 /  80.9 /  72.7 |  500 /  500 /  500 | 1338 | 171 / 175 / 949 | 291 / 294 / 1042 | 0 (own entries moved: 0) | 39.9/s,   3 | 1687 ms | m1 1cb9d3be343a1d55 / m2 1cb9d3be343a1d55 replay 1cb9d3be343a1d55 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 291.8 / 173.1, m2 294.8 / 175.8, m3 504.8 / 133.2 (190 of 222 unconfirmed)
-RESULT     hand entries' confirmation latency P95, frames: m1 280.8, m2 283.8, m3 486.8
-RESULT     mean confirmation lag per member from the gesture's start, frames: 51.2 / 50.5 / 509.0
-RESULT     P95 confirmation lag per member from the gesture's start, frames: 238 / 240 / 988
+RESULT   per message      | 173.9 /  81.5 /  71.2 |  500 /  500 /  500 | 1228 | 171 / 177 / 950 | 291 / 294 / 1048 | 0 (own entries moved: 0) | 39.9/s,   3 | 1692 ms | m1 5c2d7d9dd32321ec / m2 5c2d7d9dd32321ec replay 5c2d7d9dd32321ec EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 291.9 / 173.1, m2 295.1 / 176.0, m3 641.1 / 133.8 (196 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 280.9, m2 284.1, m3 640.1
+RESULT     mean confirmation lag per member from the gesture's start, frames: 51.2 / 50.6 / 514.1
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 238 / 241 / 994
 RESULT     member 1's own hand against its target, over 146 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (52, 188)}
-RESULT   batched          | 145.6 /  76.1 /  72.1 |  500 /  500 /  500 | 1102 | 169 / 174 / 929 | 289 / 292 / 1040 | 0 (own entries moved: 0) | 41.5/s,   3 | 1751 ms | m1 f59224272d1ebd3e / m2 f59224272d1ebd3e replay f59224272d1ebd3e EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 289.6 / 168.5, m2 292.7 / 171.2, m3 425.0 / 61.9 (188 of 222 unconfirmed)
-RESULT     hand entries' confirmation latency P95, frames: m1 278.6, m2 281.7, m3 424.0
-RESULT     mean confirmation lag per member from the gesture's start, frames: 49.6 / 50.1 / 505.1
-RESULT     P95 confirmation lag per member from the gesture's start, frames: 235 / 238 / 986
-RESULT     member 1's own hand against its target, over 152 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 49/7/0  47/5/0  13/3/0
+RESULT   batched          | 147.6 /  76.8 /  72.0 |  500 /  500 /  500 | 1106 | 167 / 172 / 929 | 287 / 290 / 1040 | 0 (own entries moved: 0) | 42.1/s,   3 | 1751 ms | m1 f59224272d1ebd3e / m2 f59224272d1ebd3e replay f59224272d1ebd3e EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 287.4 / 166.3, m2 290.7 / 169.2, m3 653.6 / 88.8 (188 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 276.4, m2 279.7, m3 652.6
+RESULT     mean confirmation lag per member from the gesture's start, frames: 49.1 / 49.7 / 505.9
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 233 / 236 / 986
+RESULT     member 1's own hand against its target, over 154 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (55, 192)}
-RESULT   batched+adaptive |  45.7 /  32.3 /  34.4 |  494 /  476 /  500 |   40 | 481 / 481 / 476 | 579 / 579 / 577 | 10 (own entries moved: 0) | 11.7/s,  11 | 7461 ms | m1 49789004142f0e4e / m2 49789004142f0e4e / m3 49789004142f0e4e replay 49789004142f0e4e EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 579.2 / 121.0, m2 579.2 / 124.3, m3 575.5 / 130.3
-RESULT     hand entries' confirmation latency P95, frames: m1 563.2, m2 563.2, m3 564.5
-RESULT     mean confirmation lag per member from the gesture's start, frames: 166.9 / 167.4 / 166.0
-RESULT     P95 confirmation lag per member from the gesture's start, frames: 525 / 525 / 523
-RESULT     member 1's own hand against its target, over 157 gesture frames: mean 296.50 mm, max 803.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2468, 100, 100, 100, 100, 8694, 1666, 1530, 5144] ms
-RESULT     controller on member 3, the slow member: time at each level: [2968, 100, 100, 100, 251, 7327, 967, 833, 7255] ms
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 49/6/0  52/9/0  12/2/0
+RESULT   batched+adaptive |  49.4 /  35.8 /  31.4 |  490 /  480 /  489 |   46 | 697 / 696 / 692 | 795 / 794 / 789 | 10 (own entries moved: 0) | 11.7/s,  10 | 11062 ms | m1 f924007a2457e784 / m2 f924007a2457e784 / m3 f924007a2457e784 replay f924007a2457e784 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 795.3 / 271.3, m2 795.1 / 271.3, m3 788.8 / 294.7
+RESULT     hand entries' confirmation latency P95, frames: m1 779.3, m2 779.1, m3 777.8
+RESULT     mean confirmation lag per member from the gesture's start, frames: 310.9 / 311.0 / 307.6
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 741 / 741 / 735
+RESULT     member 1's own hand against its target, over 155 gesture frames: mean 290.00 mm, max 780.22 mm
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 74/0/0  74/0/0  72/23/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2468, 100, 100, 100, 100, 6188, 1083, 6158, 3605] ms
+RESULT     controller on member 3, the slow member: time at each level: [2934, 100, 100, 100, 100, 7293, 1027, 7143, 1104] ms

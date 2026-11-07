@@ -1,22 +1,25 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 16 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   per message      |  76.9 /  30.5 |  500 /  500 |  892 | 1518 / 1533 | 1638 / 1642 | 0 (own entries moved: 0) | 20.8/s,  33 | never | m1 45a8823c869de00c / m2 45a8823c869de00c replay 45a8823c869de00c EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 37.5 / 13.4 (186 of 222 unconfirmed), m2 39.0 / 13.8 (191 of 222 unconfirmed)
-RESULT     hand entries' confirmation latency P95, frames: m1 36.5, m2 38.0
+RESULT   per message      |  76.8 /  30.4 |  500 /  500 |  888 | 1518 / 1533 | 1638 / 1642 | 0 (own entries moved: 0) | 20.5/s,  33 | never | m1 45a8823c869de00c / m2 45a8823c869de00c replay 45a8823c869de00c EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 37.5 / 13.3 (186 of 222 unconfirmed), m2 38.7 / 13.7 (191 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 36.5, m2 37.7
 RESULT     mean confirmation lag per member from the gesture's start, frames: 801.3 / 806.0
 RESULT     P95 confirmation lag per member from the gesture's start, frames: 1554 / 1559
 RESULT     member 1's own hand against its target, over 156 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched          |  65.8 /  30.8 |  500 /  500 |  821 | 1508 / 1522 | 1628 / 1631 | 0 (own entries moved: 0) | 23.8/s,  33 | never | m1 a8d1f14fab5d3636 / m2 a8d1f14fab5d3636 replay a8d1f14fab5d3636 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 35.3 / 11.9 (176 of 222 unconfirmed), m2 35.8 / 12.2 (180 of 222 unconfirmed)
-RESULT     hand entries' confirmation latency P95, frames: m1 29.3, m2 29.7
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 33/25/0  29/25/0
+RESULT   batched          |  65.5 /  30.7 |  500 /  500 |  817 | 1508 / 1521 | 1628 / 1631 | 0 (own entries moved: 0) | 23.8/s,  32 | never | m1 a8d1f14fab5d3636 / m2 a8d1f14fab5d3636 replay a8d1f14fab5d3636 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 35.3 / 11.9 (176 of 222 unconfirmed), m2 35.3 / 12.1 (180 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 29.3, m2 29.2
 RESULT     mean confirmation lag per member from the gesture's start, frames: 791.5 / 795.3
 RESULT     P95 confirmation lag per member from the gesture's start, frames: 1544 / 1548
 RESULT     member 1's own hand against its target, over 166 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched+adaptive |  22.7 /  23.2 |  497 /  211 |    3 |   0 /   0 |  67 /  66 | 18 (own entries moved: 0) | 16.7/s,  62 | 0 ms | m1 114eb11d0cc86867 / m2 114eb11d0cc86867 replay 114eb11d0cc86867 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 67.3 / 18.6, m2 66.5 / 20.0
-RESULT     hand entries' confirmation latency P95, frames: m1 59.3, m2 58.5
-RESULT     mean confirmation lag per member from the gesture's start, frames: 16.1 / 15.8
-RESULT     P95 confirmation lag per member from the gesture's start, frames: 26 / 24
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 31/23/0  26/21/0
+RESULT   batched+adaptive |  24.3 /  23.3 |  494 /  191 |    3 |   0 /   0 |  63 /  63 | 22 (own entries moved: 0) | 17.8/s,  57 | 0 ms | m1 114eb11d0cc86867 / m2 114eb11d0cc86867 replay 114eb11d0cc86867 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 63.3 / 17.8, m2 63.3 / 18.6
+RESULT     hand entries' confirmation latency P95, frames: m1 57.3, m2 57.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 16.0 / 15.6
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 26 / 23
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 204.86 mm, max 837.30 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2652, 100, 100, 100, 100, 25166, 400, 400, 884] ms
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 55/0/0  55/0/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2652, 23956, 400, 400, 400, 400, 400, 400, 894] ms
