@@ -436,7 +436,7 @@ fn run_seed(seed: u64, fixes_off: u64, verbose: bool) -> Outcome {
                     let epoch = sim.replica(m, 1).sim.epoch;
                     if cap_done.insert((m, epoch)) {
                         let b = sim.replica(m, 1).sim.now + 30;
-                        let e = sim_mut(sim, m).author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary: b, polka: vec![] }, None);
+                        let e = sim_mut(sim, m).author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary: b }, None);
                         send_to(sim, m, &ids, &e);
                     }
                 }

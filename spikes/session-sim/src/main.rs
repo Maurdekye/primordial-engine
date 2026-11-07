@@ -1507,7 +1507,6 @@ fn main() {
         Some("fakemix") => p24r4::fakemix(),
         Some("adminfork") => p24r4::adminfork(),
         Some("randsched") => randsched::main(&args),
-        Some("capfake") => p24r4::capfake(),
         Some("voidfork") => p24r4::voidfork(),
         Some("voiddeep") => p24r4::voiddeep(),
         Some("plainfork") => p24r4::plainfork(),

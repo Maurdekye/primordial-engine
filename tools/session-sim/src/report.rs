@@ -121,7 +121,6 @@ pub const CHECKS: &[&str] = &[
     "adminfork",
     "prevotefork",
     "prevotefork_pf",
-    "capfake",
     "fakeadmin",
     "adminwedge",
     "voidfork",
@@ -1225,10 +1224,6 @@ fn check(sim: &Sim, ctx: &Ctx, kept: &Kept, spec: &Report, samples: &[(u64, u64)
         }
         "prevotefork_pf" => {
             println!("  epochs at the end: {}; confirmation live at the end ({}): {}", epochs(sim, members), id_list(honest), live(sim, honest));
-        }
-        "capfake" => {
-            let (a, t) = (need(at, case, "at"), need(target, case, "target"));
-            println!("REPRO {label}: {t} removed at {}; live at the end: {}; {}", secs(removed_at(sim, a, t)), live(sim, honest), confs(sim, honest));
         }
         "fakeadmin" => {
             let (a, t) = (need(at, case, "at"), need(target, case, "target"));

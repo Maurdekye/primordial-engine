@@ -252,10 +252,11 @@ pub enum Payload {
     /// View change: this member's second-phase vote; a quorum of them decides the value. A value
     /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
     /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
-    /// `polka` (review VC4R-1): a capped precommit carries the prevote ids of the polka that justifies
-    /// it. `sig` is the author's signature over [`vc_fact`] (S3c): the epoch certificate collects
-    /// these, so another world can check it without the entries.
-    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, polka: Vec<EntryId>, sig: Sig },
+    /// `sig` is the author's signature over [`vc_fact`] (S3c): the epoch certificate collects these,
+    /// so another world can check it without the entries. (A capped precommit no longer carries its
+    /// polka's prevote ids, review VC4R-1's list: trust survey #4 retired the cap rule that read them,
+    /// so they were dead bytes; removed 2026-11-07.)
+    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, sig: Sig },
     /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
     /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
     /// target's chain for the cut, never to approve it. The view change commits it in order with
@@ -495,14 +496,8 @@ impl Wr {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
             Payload::Prevote { epoch, round, value } => { self.u8(12); self.u32(*epoch); self.u32(*round); self.u64(*value) }
-            Payload::Precommit { epoch, round, value, boundary, polka, sig } => {
+            Payload::Precommit { epoch, round, value, boundary, sig } => {
                 self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary);
-                // Review VC4R-1: a capped precommit carries the prevote ids of the polka that justifies
-                // it, so a member that did not receive them (an equivocated prevote) can fetch them
-                // before it votes the capper out. At most `MAX_POLKA` so the size is bounded.
-                assert!(polka.len() <= MAX_POLKA, "a precommit carries at most {MAX_POLKA} prevote ids");
-                self.u32(polka.len() as u32);
-                for id in polka { self.id(*id) }
                 self.sig(sig)
             }
         }
@@ -778,14 +773,7 @@ impl<'a> Rd<'a> {
             }
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
-            13 => {
-                let (epoch, round, value, boundary) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?);
-                let n = self.u32()? as usize;
-                if n > MAX_POLKA { return None; }
-                let mut polka = Vec::with_capacity(n);
-                for _ in 0..n { polka.push(self.id()?) }
-                Payload::Precommit { epoch, round, value, boundary, polka, sig: self.sig()? }
-            }
+            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()?, sig: self.sig()? },
             _ => return None,
         };
         let carried = match self.u8()? {

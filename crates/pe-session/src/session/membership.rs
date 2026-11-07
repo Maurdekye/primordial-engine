@@ -130,10 +130,6 @@ pub mod fix {
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
 pub const MAX_ATTESTS: usize = 64;
 
-/// Review VC6R-2: the most prevote ids a capped precommit carries (its polka). At least the largest
-/// quorum, so honest code never exceeds it; a decode of more is refused.
-pub const MAX_POLKA: usize = 512;
-
 /// Review OWNZ-1: the most ownership entries one author has held for a missing parent (OWNY-2); past
 /// it, such an entry is dropped at receipt as before, so one faulty member can't grow the set that
 /// every decision re-scans.
@@ -788,7 +784,6 @@ impl WorldSim {
             }
             Payload::Prevote { round, value, .. } => {
                 self.vcm.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
-                self.vcm.vc.prevote_id.entry((round, m)).or_insert(id);
             }
             Payload::Precommit { epoch, round, value, boundary, sig, .. } => {
                 // S3c: a precommit counts only with a valid signature over its fact, which the
@@ -1728,9 +1723,9 @@ impl WorldSim {
     }
 
     /// A precommit, signed over its fact for the epoch certificate (S3c).
-    pub(super) fn author_precommit(&mut self, epoch: u32, round: u32, value: u64, boundary: u64, polka: Vec<EntryId>) -> Entry {
+    pub(super) fn author_precommit(&mut self, epoch: u32, round: u32, value: u64, boundary: u64) -> Entry {
         let sig = self.keys.sign_fact(self.world_id, vc_fact(epoch, round, value));
-        self.author_vc(Payload::Precommit { epoch, round, value, boundary, polka, sig })
+        self.author_vc(Payload::Precommit { epoch, round, value, boundary, sig })
     }
 
     pub(super) fn start_round(&mut self, r: u32) {
@@ -1757,27 +1752,7 @@ impl WorldSim {
         self.vcm.vc.step = Step::Precommit;
         if !self.vcm.withhold_vc {
             let (epoch, round) = (self.vcm.epoch, self.vcm.vc.round);
-            // Review VC4R-1: a capped precommit names the prevote ids of the polka this replica saw for
-            // `v` in `round`, so a member that lacks one (an equivocated prevote sent only to me) can
-            // fetch it before it holds my cap unjustified.
-            // Review VC6R-2: at most a quorum of prevote ids; more is never needed to justify the cap,
-            // and listing every prevoting member overran the encoding in a large session. Capped at
-            // MAX_POLKA as well (review 6.1 low): a quorum passes MAX_POLKA only past ~768 members (3x
-            // the 256-player target), where the proof is truncated rather than overrunning the encoding.
-            let polka = if boundary > 0 {
-                let (_, q) = quorum(self.cfg.quorum, self.vcm.members.len());
-                let mut ids: Vec<EntryId> = self
-                    .vcm.vc
-                    .prevotes
-                    .get(&round)
-                    .map(|ms| ms.iter().filter(|&(_, &x)| x == v).filter_map(|(k, _)| self.vcm.vc.prevote_id.get(&(round, *k)).copied()).collect())
-                    .unwrap_or_default();
-                ids.truncate(q.min(MAX_POLKA));
-                ids
-            } else {
-                Vec::new()
-            };
-            out.push(self.author_precommit(epoch, round, v, boundary, polka));
+            out.push(self.author_precommit(epoch, round, v, boundary));
         }
     }
 
@@ -1813,7 +1788,7 @@ impl WorldSim {
                     out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
                     if !self.vcm.byz_no_precommit {
                         let boundary = self.vcm.vc.changes.get(&v).filter(|c| self.change_leads(c)).map_or(0, |c| c.boundary);
-                        out.push(self.author_precommit(epoch, r, v, boundary, vec![]));
+                        out.push(self.author_precommit(epoch, r, v, boundary));
                     }
                 }
             }
@@ -1831,7 +1806,7 @@ impl WorldSim {
             }
             for r in nil_in(&self.vcm.vc.precommits) {
                 if !self.vcm.vc.proposals.contains_key(&r) && !self.vcm.byz_no_precommit {
-                    out.push(self.author_precommit(epoch, r, 0, 0, vec![]));
+                    out.push(self.author_precommit(epoch, r, 0, 0));
                 }
             }
             return out;

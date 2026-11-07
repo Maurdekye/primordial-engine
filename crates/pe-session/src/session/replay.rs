@@ -86,25 +86,12 @@ mod round3_tests {
     use super::*;
 
     #[test]
-    pub(super) fn large_polka_round_trips() {
-        // Review VC6R-2: a capped precommit carries up to MAX_POLKA prevote ids. A polka of 300 would
-        // have panicked the old encoder (asserted at 64); now it round-trips, and a decode claiming
-        // more than MAX_POLKA is refused.
-        let polka: Vec<EntryId> = (1..=300).map(EntryId::fake).collect();
+    pub(super) fn precommit_carries_no_polka() {
+        // The polka's prevote ids (VC4R-1, VC6R-2) were removed with the cap rule that read them: a
+        // precommit round-trips as its epoch, round, value, boundary and fact signature alone.
         let sig = test_fact_sig(1, 1, vc_fact(0, 0, 9));
-        let e = test_sign(1, Entry { member: 1, seq: 1, prev: EntryId::NONE, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka, sig }, carried: None });
+        let e = test_sign(1, Entry { member: 1, seq: 1, prev: EntryId::NONE, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, sig }, carried: None });
         assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
-        // A precommit payload whose polka count exceeds MAX_POLKA is refused (never read in part).
-        let mut w = Wr(Vec::new());
-        w.u8(1); // Msg::Entry
-        w.u32(1); w.u32(1); w.id(EntryId::NONE); w.u64(5); // member, seq, prev, stamp
-        w.u8(13); w.u32(0); w.u32(0); w.u64(9); w.u64(7); // Precommit epoch, round, value, boundary
-        w.u32(MAX_POLKA as u32 + 1);
-        for i in 0..=MAX_POLKA as u64 { w.id(EntryId::fake(i)) }
-        w.sig(&[0; 64]);
-        w.u8(0); // carried: none
-        w.sig(&[0; 64]); // the entry's signature
-        assert_eq!(decode_msg(&w.0), None);
     }
 
     #[test]

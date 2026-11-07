@@ -82,7 +82,7 @@ for v in joinwedge slowref prevotefork; do run p2-4-$v $v; done
 for v in fakemix adminfork; do run p2-4-$v $v; done
 # P2-4 review round 6, fixed in round 7 (design 10.8): three halts by one faulty member; each
 # repro also reports its run with the fix switched off.
-for v in capfake fakeadmin adminwedge; do run p2-4-$v $v; done
+for v in fakeadmin adminwedge; do run p2-4-$v $v; done
 # P2-4 review rounds 7-8, fixed in round 8 (design 10.8): admin validity along the entry's own
 # ancestry, a capper's fetch budget at the slow-member allowance, and a forker's prevotes in polkas.
 for v in voidfork slowcapper voiddeep plainfork pfsilent; do run p2-4-$v $v; done

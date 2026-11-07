@@ -447,9 +447,6 @@ struct Vc {
     precommit_timer: BTreeMap<u32, u64>,
     /// Review VC3R-2: value -> my present when its proposal by the round's proposer first reached me.
     seen_at: BTreeMap<u64, u64>,
-    /// Review VC4R-1: (round, member) -> the id of that member's first prevote this replica holds, so a
-    /// precommitter can name the prevote ids of the polka it saw.
-    prevote_id: BTreeMap<(u32, MemberId), EntryId>,
 }
 
 pub struct WorldSim {
