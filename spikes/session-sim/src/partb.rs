@@ -40,6 +40,25 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
             })
             .collect();
         println!("RESULT {label}: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: {}", w.join("; "));
+        // Gap 1 (measurement): epoch certificates sent to fed members (pushed and pulled), requests, and what fed
+        // replicas applied; printed only when there were any.
+        let by_kind = |k: &str| sim.net.kinds_from.iter().filter(|((_, kk), _)| *kk == k).fold((0u64, 0u64), |a, (_, v)| (a.0 + v.0, a.1 + v.1));
+        let ((cn, cb), (rn, rb)) = (by_kind("certs"), by_kind("certreq"));
+        if cn + rn > 0 {
+            let applied: Vec<String> = sim
+                .peers
+                .iter()
+                .filter_map(|p| p.worlds.get(&1).map(|r| (p.id, r.sim.stats.certs_applied, r.sim.stats.certs_refused)))
+                .filter(|x| x.1 + x.2 > 0)
+                .map(|(m, a, r)| format!("m{m} {a} applied, {r} refused"))
+                .collect();
+            println!("RESULT {label}: gap 1: {cn} certificate messages, {cb} B; {rn} requests, {rb} B; at fed replicas: {}", if applied.is_empty() { "none applied".to_string() } else { applied.join(", ") });
+        }
+        // Gap 1's round fallback (rounds ended with no proposal and fewer than q precommits), per replica, when any.
+        let fb: Vec<String> = sim.peers.iter().filter_map(|p| p.worlds.get(&1).map(|r| (p.id, r.sim.stats.round_fallbacks))).filter(|x| x.1 > 0).map(|(m, n)| format!("m{m} {n}")).collect();
+        if !fb.is_empty() {
+            println!("RESULT {label}: gap 1: rounds ended by the fallback: {}", fb.join(", "));
+        }
         // Rule 1's voids of entries whose authors are still members, per replica (carry-over expects none from a view
         // change: an entry not vouched before its epoch ends waits for a later epoch's acks).
         let v: Vec<String> = ids
@@ -586,7 +605,14 @@ fn leave_withhold_n(label: &str, thin: &[MemberId], room: Option<usize>) {
 /// view changes, member 3 is fed (8 kbit/s each way), member 1 kicks member 2 at frame 360. The fed member checks the
 /// kick itself (signature, epoch, the previous decided ACL), so members 1, 3 and 4 make q = 3 and the kick decides.
 pub fn kickliar_fed() {
-    kickliar_fed_n("kickliar-fed", 4, &[3], &[2], None, 8_000);
+    kickliar_fed_n("kickliar-fed", 4, &[3], &[2], None, 8_000, None);
+}
+
+/// Gap 1's cell (@coordinator-opus m0813b922e026): kickliar-fed with every precommit to fed member 3 lost from 5.9 s to
+/// 9 s, whoever sends it, so it misses the kick's decision and holds no log to follow it by. Expected: it follows by
+/// epoch certificate (pushed by its feeder, or pulled on an entry of the new epoch) and the replicas stay equal.
+pub fn fedcatch() {
+    kickliar_fed_n("fedcatch", 4, &[3], &[2], None, 8_000, Some(3));
 }
 
 /// The same with two fed: n = 7 (q = 5, room for two fed), members 6 and 7 fed, members 2 (the liar) and 5 out of view
@@ -599,16 +625,16 @@ pub fn kickliar_fed2() {
     // inputs in the FIFO router queue and the echo test voted them out (8d47e07 ran this cell at 12 kbit/s); with the
     // client's two-class queue and pacing they stay members and every touch counts.
     let kbps = std::env::var("PE_THIN_BPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000);
-    kickliar_fed_n("kickliar-fed2", 4, &[3, 4], &[2], Some(2), kbps);
+    kickliar_fed_n("kickliar-fed2", 4, &[3, 4], &[2], Some(2), kbps, None);
 }
 
 /// The n = 7 two-fed variant (within scope: room n − q = 2), 8 kbit/s. Failed before rev 22's ack priority (the echo
 /// behind the fed members' own inputs and repairs in the FIFO router queue); passes with it. Also the cadence trace.
 pub fn kickliar_fed7() {
-    kickliar_fed_n("kickliar-fed7", 7, &[6, 7], &[2, 5], None, 8_000);
+    kickliar_fed_n("kickliar-fed7", 7, &[6, 7], &[2, 5], None, 8_000, None);
 }
 
-fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId], room: Option<usize>, thin_bps: u64) {
+fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId], room: Option<usize>, thin_bps: u64, drop_pc_to: Option<MemberId>) {
     let ids: Vec<MemberId> = (1..=n).collect();
     let cfg = SimConfig { localize: true, ..SimConfig::default() };
     let plans = |m: MemberId| {
@@ -639,7 +665,14 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
         }
     }
     println!("RESULT {label}: n = {n}, thin {thin:?} at {} kbit/s each way per link, out of view changes {withhold:?}", thin_bps / 1000);
+    if let Some(to_m) = drop_pc_to {
+        net.filter = Some(Box::new(move |t, _w, _from, to, m| match m {
+            Msg::Entry(e) if to == to_m && matches!(e.payload, Payload::Precommit { .. }) && (5_900_000..9_000_000).contains(&t) => Fate::Drop,
+            _ => Fate::Deliver,
+        }));
+    }
     let mut sim = Sim::new(net, ps, 14_000_000);
+    sim.net.tracing = std::env::var("PE_NET_TRACE").is_ok();
     sim.feed = true;
     sim.feed_room = room;
     // Bytes by kind from 4 s (after the feed starts) to the end.
@@ -782,6 +815,24 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
         );
         let left_one = r1.members.len() == 2 && r1.members.contains(&1);
         println!("RESULT {label}: S-4 transition -> {}", if left_one { "one fed member left by request" } else { "FAIL" });
+    }
+    // (spike diagnostics, PE_NET_TRACE) Every datagram from 1 to 4 from 5.9 s to 7 s: sent, wire bytes, fate, arrival.
+    if sim.net.tracing {
+        for t in sim.net.trace.iter().filter(|t| t.from == 1 && (5_950_000..6_150_000).contains(&t.at_us)) {
+            println!("  NET 1->{} at {} us: {} B, fate {}, arrives {} us", t.to, t.at_us, t.wire, t.fate, t.arrive_us);
+        }
+        for p in sim.net.post_log.iter().filter(|p| p.1 == 1 && p.3 == 1 && (5_950_000..6_150_000).contains(&p.0)) {
+            println!("  POST at {} us: 1->{} m{} s{} {} (to fed {})", p.0, p.2, p.3, p.4, p.5, p.6);
+        }
+        // (PE_NET_FROM=<member>, on stderr) every datagram that member sent from 6 s to 8 s, and every entry it posted.
+        if let Some(m) = std::env::var("PE_NET_FROM").ok().and_then(|v| v.parse::<MemberId>().ok()) {
+            for t in sim.net.trace.iter().filter(|t| t.from == m && (6_000_000..8_000_000).contains(&t.at_us)) {
+                eprintln!("NETFROM {m}->{} at {} us: {} B, fate {}, arrives {} us", t.to, t.at_us, t.wire, t.fate, t.arrive_us);
+            }
+            for p in sim.net.post_log.iter().filter(|p| p.1 == m && (6_000_000..8_000_000).contains(&p.0)) {
+                eprintln!("POSTFROM at {} us: {m}->{} m{} s{} {}", p.0, p.2, p.3, p.4, p.5);
+            }
+        }
     }
     // (spike diagnostics, PE_PB_DEBUG) Each member's view-change, leave and carry-over events.
     if std::env::var("PE_PB_DEBUG").is_ok() {
@@ -1658,105 +1709,6 @@ pub fn window1() {
     println!("RESULT {label}: member 1's touch at frame 241, verdict per replica {verdicts:?} -> {}", if same { "SAME" } else { "DIFFERENT" });
     let finals: Vec<MemberId> = r1.members.iter().copied().filter(|&m| m != joiner).collect();
     verdict(&sim, &finals, &label, panic_at);
-}
-
-/// Ruling 2's holdings cell (@coordinator-opus m5b983ab01446, @design-reviewer m3a3ca7b15bac): the final term must not
-/// depend on how much of the removed chain a replica holds. NOT WORKING YET (kept out of the regression): as built the
-/// kick never decides at replica 1. The replica holding less must still decide the removal, which needs the removed
-/// member's view-change entries, so its copy can't stop short before the decision; and a non-voter's acks after it
-/// applies the decision are of the next epoch, so its jump has to fall before that. The timings below don't meet both. n = 5, member 4 acts every 6 frames, member 1 kicks it at
-/// 4.5 s; member 3 casts no view-change entries from 4.4 s (a non-voter), and the decision doesn't need it (q = 4 of 1,
-/// 2, 5 and 4's own vote; precommits from 1, 2, 4 and 5).
-/// - 4's entries reach 1 300 ms late and 2 150 ms late, so the voters freeze increasing heads: f_1 < f_2 < f_5 = B_4
-///   (B never takes 4's own vote).
-/// - Replica 1 never receives 4's entries stamped from frame 330 (5.5 s), whoever sends them: it holds 4's chain past
-///   B_4 (and 4's view-change entries for the kick) and no further; the others hold it all.
-/// - 4's entries sent from 4 s reach 3 only at 5.6 s, all at once: 3's acks jump from below f_1 to past all that
-///   replica 1 holds.
-/// Expected: with the ruled final term (named heads capped at B, unmatched) every replica cuts 4 at the same seq (the
-/// rank statistic, the third highest of 1's, 2's, 3's and 5's, is f_2); ALL EQUAL. With PE_OLD_FINAL=1 (references
-/// matched against held entries) replica 1 reads 3's ack from before the jump, so its statistic is f_1: the cuts differ.
-pub fn holdings() {
-    let ids: Vec<MemberId> = (1..=5).collect();
-    let old = std::env::var("PE_OLD_FINAL").is_ok();
-    let label = format!("holdings ({})", if old { "the old final term, PE_OLD_FINAL" } else { "the ruled final term" });
-    let cfg = SimConfig { localize: true, ..SimConfig::default() };
-    let plans = |m: MemberId| {
-        let step = if m == 4 { 6 } else { 30 };
-        let mut v: Vec<(u64, Action)> = (120..1100).step_by(step).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
-        if m == 1 {
-            v.push((270, Action::Kick { target: 4 }));
-            v.sort_by_key(|x| x.0);
-        }
-        plan(&v)
-    };
-    let ps: Vec<Peer> = ids
-        .iter()
-        .map(|&id| {
-            let mut p = Peer::new(id, 0);
-            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
-            p
-        })
-        .collect();
-    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 53);
-    net.batching = true;
-    net.filter = Some(Box::new(|t, _w, _from, to, m| {
-        let Msg::Entry(e) = m else { return Fate::Deliver };
-        if e.member != 4 {
-            return Fate::Deliver;
-        }
-        match to {
-            1 if e.stamp >= 330 => Fate::Drop,
-            1 => Fate::Delay(300_000),
-            2 => Fate::Delay(150_000),
-            3 if (4_000_000..5_600_000).contains(&t) => Fate::Delay(5_600_000 - t),
-            _ => Fate::Deliver,
-        }
-    }));
-    let mut sim = Sim::new(net, ps, 20_000_000);
-    let mut removed: Option<u64> = None;
-    let mut withheld = false;
-    let panic_at = run_to_end(&mut sim, |s| {
-        if !withheld && s.net.now_us >= 4_400_000 {
-            withheld = true;
-            sim_mut(s, 3).withhold_vc = true;
-        }
-        if removed.is_none() && !s.replica(1, 1).sim.members.contains(&4) {
-            removed = Some(s.net.now_us);
-        }
-    });
-    let r1 = &sim.replica(1, 1).sim;
-    println!(
-        "RESULT {label}: n = 5; m4 removed at m1 at {}; members at m1 at the end {:?}; m1's frame {} conf {}",
-        removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
-        r1.members,
-        r1.frame,
-        r1.conf
-    );
-    let survivors: Vec<MemberId> = vec![1, 2, 3, 5];
-    if std::env::var("PE_PB_DEBUG").is_ok() {
-        for &m in &ids {
-            let r = &sim.replica(m, 1).sim;
-            println!("  m{m}: epoch {} conf {} frame {}; kick of 4: {}", r.epoch, r.conf, r.frame, r.kick_trace(4));
-            for e in r.events.iter().filter(|e| e.contains("VIEW CHANGE") || e.contains("carry-over:")).take(8) {
-                println!("  m{m}: {e}");
-            }
-        }
-    }
-    let cuts: Vec<(MemberId, Option<u32>)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.final_cut(4))).collect();
-    let distinct: BTreeSet<Option<u32>> = cuts.iter().map(|c| c.1).collect();
-    println!("RESULT {label}: m4's final cut per replica {cuts:?} -> {}", if distinct.len() == 1 && cuts[0].1.is_some() { "SAME" } else { "DIFFERENT OR NOT FINAL" });
-    for &m in &survivors {
-        let r = &sim.replica(m, 1).sim;
-        if let Some(rec) = r.cut_records.get(&4) {
-            println!("RESULT {label}: m{m}: m4's cut {} at frame {}; (member, read to, evidence, still a member) {:?}", rec.cut, rec.at_frame, rec.voters);
-        }
-        let past = r.counted_past_cut(4);
-        if !past.is_empty() {
-            println!("RESULT {label}: m{m} counted m4's entries past its cut (seq, stamp): {past:?} -> BITES");
-        }
-    }
-    verdict(&sim, &survivors, &label, panic_at);
 }
 
 pub fn stale() {

@@ -153,6 +153,8 @@ pub struct Net {
     client_q: BTreeMap<(MemberId, MemberId), (std::collections::VecDeque<(WorldId, Msg)>, std::collections::VecDeque<(WorldId, Msg)>)>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
+    /// (spike diagnostics, with `tracing`) Every entry posted: (now, from, to, author, seq, kind, to a fed member).
+    pub post_log: Vec<(u64, MemberId, MemberId, MemberId, u32, &'static str, bool)>,
     pub trace: Vec<SendRec>,
 }
 
@@ -173,6 +175,8 @@ pub fn kind(m: &Msg) -> &'static str {
         Msg::Batch(_) => "batch",
         Msg::Feed { .. } => "feed",
         Msg::Ckpts { .. } => "ckpts",
+        Msg::CertReq { .. } => "certreq",
+        Msg::Certs { .. } => "certs",
     }
 }
 
@@ -202,6 +206,7 @@ impl Net {
             outbox: BTreeMap::new(),
             client_q: BTreeMap::new(),
             tracing: false,
+            post_log: Vec::new(),
             trace: Vec::new(),
         }
     }
@@ -390,6 +395,12 @@ impl Net {
 
     /// Send now, or queue for this tick's batch to that peer.
     pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
+        if self.tracing {
+            if let Msg::Entry(e) = m {
+                let filtered = self.fed.contains(&(world, to));
+                self.post_log.push((self.now_us, from, to, e.member, e.seq, kind(m), filtered));
+            }
+        }
         // Thin links Part B, rule 5: no entries to a member on the state feed, but the view change's (revision 21:
         // a fed member votes and takes part in the decision; they are few and small), and every admin entry: a
         // decided change is applied only once each admin entry it lists is held (VCR-8), so without them a fed member
@@ -1024,6 +1035,11 @@ impl Sim {
                         if let Some(m) = pkt {
                             self.net.post(w, ctl.feeder, t, &m);
                         }
+                        // Gap 1: and the epoch certificates the fed member's acks show it lacks.
+                        let push = if self.peers[pf].crashed { None } else { self.peers[pf].worlds.get_mut(&w).and_then(|r| r.sim.cert_push(t)) };
+                        if let Some(m) = push {
+                            self.net.post(w, ctl.feeder, t, &m);
+                        }
                     }
                 }
             }
@@ -1133,6 +1149,21 @@ impl Sim {
                 Msg::Batch(_) => {}
                 Msg::Feed { frame, fed, bodies } => r.sim.on_feed(frame, fed, bodies),
                 Msg::Ckpts { member, after, list, fed, echo } => r.sim.on_ckpts(from, member, after, list, fed, echo),
+                Msg::CertReq { epoch } => {
+                    if let Some(c) = r.sim.on_cert_req(epoch) {
+                        self.net.post(w, to, from, &c);
+                    }
+                }
+                Msg::Certs { packs } => {
+                    for v in r.sim.on_certs(packs) {
+                        broadcast(&mut self.net, w, to, &members, &Msg::Entry(v));
+                    }
+                    for (dest, f) in r.sim.take_fetches(now / 1000) {
+                        if dest != to {
+                            self.net.post(w, to, dest, &f);
+                        }
+                    }
+                }
             }
         }
         // 2. peers tick
@@ -1441,6 +1472,13 @@ impl Sim {
                                 }
                             };
                             broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+                            // What recording it produced (my vote on the target of my own kick) goes right after it, in
+                            // chain order. Sent at the tick's end, behind my ack of the same tick, it reached everyone
+                            // behind a hole, and each asked every member for it, the fed ones too, which answered on their
+                            // thin uplinks (kickliar-fed7: 59 B ahead of member 7's round-1 prevote, 8 frames later).
+                            for v in r.sim.take_self_out() {
+                                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(v));
+                            }
                         }
                     }
                 }
@@ -1508,6 +1546,10 @@ impl Sim {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
             for e in r.sim.view_change_due() {
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+            }
+            // What recording my own entries produced this tick (my vote on the target of my own kick).
+            for e in r.sim.take_self_out() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
