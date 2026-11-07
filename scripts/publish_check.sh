@@ -16,6 +16,11 @@
 # word, or after a digit, _ or punctuation: `start ab` finds abc, X_ABC and ab-c, not cab). Blank
 # lines and lines starting with # are ignored.
 #
+# Allowlist (scripts/publish_allow.py): one exact, reviewed line of one file can be let through, by its
+# path and line hash in scripts/publish_allow.local or PE_PUBLISH_ALLOW (gitignored like the terms;
+# never the term itself). A changed line no longer matches. Allowed hits are printed as `allowed:` and
+# counted in the result line; they don't fail the check. --history honours the same list.
+#
 # --history <range>... (git log revision arguments, e.g. `main` or `origin/main..main`): scans every
 # commit's added lines (git log -p) and its message, author and committer, with
 # scripts/publish_history.py. It reports the hits per term. It fails only on the terms of a second
@@ -43,7 +48,7 @@ case "${1:-}" in
 esac
 git rev-parse -q --verify "$ref^{tree}" > /dev/null || { echo "publish_check: $ref is not a commit or tree here"; exit 2; }
 
-n=0 hits=0
+n=0 hits=0 allowed=0
 while IFS= read -r line || [ -n "$line" ]; do
   line=${line%$'\r'}
   case "$line" in ''|'#'*) continue ;; esac
@@ -57,9 +62,11 @@ while IFS= read -r line || [ -n "$line" ]; do
     *) echo "publish_check: bad line in $terms: $line"; exit 2 ;;
   esac
   n=$((n + 1))
-  out=$(git grep -n -i $how -e "$pat" "$ref" --); rc=$?
+  out=$(git grep -z -n -i $how -e "$pat" "$ref" -- | python -I scripts/publish_allow.py filter "$ref"; exit "${PIPESTATUS[0]}"); rc=$?
   case $rc in
-    0) printf '%s\n' "$out"; hits=$((hits + $(printf '%s\n' "$out" | wc -l))) ;;
+    0) printf '%s\n' "$out"
+       a=$(printf '%s\n' "$out" | grep -c '^allowed: ')
+       allowed=$((allowed + a)); hits=$((hits + $(printf '%s\n' "$out" | wc -l) - a)) ;;
     1) ;;
     *) echo "publish_check: git grep failed (exit $rc) for a term of $terms"; exit 2 ;;
   esac
@@ -67,7 +74,11 @@ done < "$terms"
 
 [ $n -gt 0 ] || { echo "publish_check: $terms lists no terms"; exit 2; }
 if [ $hits -gt 0 ]; then
-  echo "publish_check: FAIL, $hits line(s) of $ref match one of $n terms"
+  echo "publish_check: FAIL, $hits line(s) of $ref match one of $n terms ($allowed allowlisted)"
   exit 1
 fi
-echo "publish_check: PASS, no file of $ref matches any of $n terms"
+if [ $allowed -gt 0 ]; then
+  echo "publish_check: PASS, no file of $ref matches any of $n terms except $allowed allowlisted line(s)"
+else
+  echo "publish_check: PASS, no file of $ref matches any of $n terms"
+fi
