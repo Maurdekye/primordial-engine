@@ -2631,7 +2631,8 @@ and the engager's hand replayed after the gesture had ended.
            member stalled 20, 78 and 661 frames at 16, 12 and 8 kbit/s, against 0, 0 and 217 [V spike
            probes, on v6's controller].
          * At 8 kbit/s with 4 players it did better (135 against 159).
-       * Spike: p2/thin-link. pe-session follows (@world-chunks).
+       * Spike: p2/thin-link. pe-session: main e52c829, with its measured gaps in docs/thin-links-part-a-pe.md
+         (@world-chunks).
      * **Packs (D73(a)).** Under thinning the author keeps every frame's pose. Each stride window
        [m k, m k + k - 1] goes out as one hand entry stamped at the window's first frame, with a target for
        each of its frames (`more`, at most `PACK_MAX` = 8 targets in all). Target j applies at the entry's
@@ -2831,6 +2832,17 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
           docs/p2-3-r18-bytes.md; the mechanism I].
       * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
         plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
+      * **A session-wide pause Part B leaves: the shrink to 2 with a slow member** [V spike p2/thin-link-b,
+        kickliar-fed2]. At 4 players with members 3 and 4 fed at 8 kbit/s, an admin kicks member 2, and fed member
+        4 then leaves by request (S-4), leaving members 1 and 3.
+        * Everyone's confirmation stops, at frame 301 (5 s), for the rest of the 14 s run. Member 3's references to
+          member 1's chain stay at seq 165, so the epoch whose end needs them never becomes final. [I] With the feed
+          ended at 2 players, member 3 catches up on member 1's chain over its 8 kbit/s link.
+        * Member 1's confirmation lag is 259.6 / 520 frames (mean / P95), +7.7% / +14.5% against 241.1 / 454
+          before carry-over. The pause dominates both. Before carry-over the same pause stopped confirmation at
+          frame 361.
+        * It is user-visible and has its own item:
+          @item:primordial-engine/n-2-slow-member-catch-up-holds-finality-and-ever.
 
     * **Four members sharing one 64 kbit/s uplink:** 1,408 stalled frames (the member making the gesture,
       then demoted) and 156 for the others → 0.
@@ -7815,7 +7827,8 @@ entry says so.
       delta-encoded packs) plus floor levels (10.9).
     * Elsewhere the author's hand stays exact.
     * Part A's measured cost to other players is in 10.9's notes: a sweeper sharing a session with a thin
-      watcher backs off. Part B is a protocol plan awaiting the user's confirmation.
+      watcher backs off. Part B, whose rules the user confirmed on 2026-11-01, is built in the spike
+      (p2/thin-link-b) and specified in the thin-link plan (_teams/1827/thin-link-plan.md); pe-session follows.
   * The problem: under congestion the controller thins the hand stream to one entry every k frames, with a
     `span`. Every peer, the author included, applies the same entries, so the author's physics hand trails
     its own controller [V reviewer]:
