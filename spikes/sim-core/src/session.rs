@@ -1027,8 +1027,8 @@ pub enum Msg {
     /// rebuilds the link from its checkpoint state after the entry's prev (`ckpt_link_for`, the rule `validate`
     /// checks), then takes the entry as any other: production checks the id and signature over the rebuilt bytes.
     /// Never to a fed member, and never a fetch reply, a relay, a proof or a certificate: those keep the link,
-    /// since their receiver may lack the state after prev. Decoded, the entry's `link` is 0 and means unknown
-    /// ([`WorldSim::insert_live`]).
+    /// since their receiver may lack the state after prev. Decoded, the entry's `link` is its prev when the flags' bit 2
+    /// says so (the previous entry is the checkpoint it names), and otherwise 0, meaning unknown ([`WorldSim::insert_live`]).
     Live(Entry),
     /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
     Fetch { author: MemberId, from: u32, to: u32 },
@@ -1120,10 +1120,11 @@ impl Wr {
     }
     /// The canonical encoding without the checkpoint link's value (H_rest's input).
     fn entry_rest(&mut self, e: &Entry) {
-        self.entry_rest_with(e, e.link != 0)
+        self.entry_rest_with(e, e.link != 0, 0)
     }
     /// `linked`: the flags' bit 1, whether the entry has a link (a decoded [`Msg::Live`] has, with its value unknown).
-    fn entry_rest_with(&mut self, e: &Entry, linked: bool) {
+    /// `wire_flags`: flag bits the live wire adds (never in the canonical bytes).
+    fn entry_rest_with(&mut self, e: &Entry, linked: bool, wire_flags: u8) {
         self.u32(e.member);
         self.u32(e.seq);
         self.u64(e.prev);
@@ -1221,7 +1222,7 @@ impl Wr {
             }
         }
         // Flags: bit 0 a carried state follows, bit 1 a checkpoint link follows (after it).
-        self.u8(e.carried.is_some() as u8 | (linked as u8) << 1);
+        self.u8(e.carried.is_some() as u8 | (linked as u8) << 1 | wire_flags);
         if let Some((obj, s)) = &e.carried {
             self.u32(*obj);
             self.state(s);
@@ -1268,9 +1269,11 @@ impl Wr {
             Msg::Entry(e) => { self.u8(1); self.entry(e) }
             // The canonical bytes but the link's value: the flags byte keeps bit 1, so H_rest is unchanged. Sent, `e`
             // holds its link; decoded, the link is 0 (unknown) and re-encodes to the same bytes.
+            // Flag bit 2 (live wire only): the link is the prev, which the wire carries. That is every entry of a chain
+            // sparse enough for each entry to start its block (R18 levels 7-8, thin links), so behind a hole too.
             Msg::Live(e) => {
                 self.u8(14);
-                self.entry_rest_with(e, true)
+                self.entry_rest_with(e, true, ((e.link != 0 && e.link == e.prev) as u8) << 2)
             }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
@@ -1502,16 +1505,23 @@ impl Rd<'_> {
             _ => return None,
         };
         let flags = self.u8()?;
-        if flags > 3 {
+        if flags > if live { 7 } else { 3 } {
             return None;
         }
         let carried = if flags & 1 != 0 { Some((self.u32()?, self.state()?)) } else { None };
         if live && flags & 2 == 0 {
             return None;
         }
-        // A link is never 0 on the wire: the flag says there is none.
+        // A link is never 0 on the wire: the flag says there is none. Live: the prev if bit 2 says so, else unknown (0).
         let link = if live {
-            0
+            if flags & 4 != 0 {
+                if prev == 0 {
+                    return None;
+                }
+                prev
+            } else {
+                0
+            }
         } else if flags & 2 != 0 {
             let l = self.u64()?;
             if l == 0 {
@@ -3154,7 +3164,7 @@ impl WorldSim {
         out
     }
 
-    /// Link elision: a [`Msg::Live`] entry from `from` (its author), its link unknown (`e.link` is 0). Rebuilt from
+    /// Link elision: a [`Msg::Live`] entry from `from` (its author), its link the prev (flag bit 2) or unknown (0). Rebuilt from
     /// my checkpoint state after its prev, it goes in as any entry. Behind a hole it waits, as hearing from its author,
     /// and shows the hole (as `insert` does). With the chain held to seq - 1 but no state for its prev (a chain held
     /// from midway, as a joiner or a member just off the feed holds it; or another version of prev), and if the state
@@ -3166,6 +3176,10 @@ impl WorldSim {
             return vec![];
         }
         self.stats.live_rx += 1;
+        // Bit 2 named the link (the prev): in as any entry; `validate` checks it against my state after prev.
+        if e.link != 0 {
+            return self.insert(e);
+        }
         match self.live_link(&e) {
             Some(Some(link)) => {
                 e.link = link;
@@ -7808,6 +7822,30 @@ mod echo_tests {
         assert_eq!(r.by_author.get(&(1, c[j].seq)), Some(&c[j].id()));
         assert_eq!(r.contiguous.get(&1), Some(&c[j].seq));
         assert!(r.live_wait.is_empty());
+    }
+
+    #[test]
+    fn a_sparse_chain_names_each_live_link_as_its_prev_even_behind_holes() {
+        // Every entry starts its block (as at R18 levels 7-8): each link is the prev, flag bit 2, no state needed.
+        let c = chain(30, 40);
+        assert!(c.iter().skip(1).all(|e| e.link == e.prev && e.link != 0));
+        let mut r = WorldSim::new(1, 2, &[1, 2], SceneKind::Empty, SimConfig::default());
+        for (i, e) in c.iter().enumerate() {
+            if i % 3 != 1 {
+                let m = wire(e);
+                if i > 0 {
+                    assert!(matches!(&m, Msg::Live(d) if d.link == e.link), "s{}", e.seq);
+                    assert_eq!(encode_msg(&m), encode_msg(&Msg::Live(e.clone())));
+                }
+                deliver(&mut r, 1, m);
+            }
+        }
+        assert!(r.live_wait.is_empty());
+        for (i, e) in c.iter().enumerate() {
+            if i % 3 != 1 {
+                assert_eq!(r.by_author.get(&(1, e.seq)), Some(&e.id()), "s{}", e.seq);
+            }
+        }
     }
 
     #[test]
