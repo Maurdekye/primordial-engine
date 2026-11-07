@@ -821,7 +821,22 @@ impl SessionCore {
         self.mine.insert(e.id(), None);
         let to = self.audience();
         self.send_live(&to, Class::Live, e.clone());
+        // D80 (fix KICKVOTE): what recording `e` authored (the kicker's own vote) right behind it.
+        self.send_unsent_own(None);
         e
+    }
+
+    /// This member's own entries that inserting another own entry authored (D80), below `seq` if
+    /// given, in chain order, to the audience: each in the tick's runs like any own entry.
+    fn send_unsent_own(&mut self, below: Option<u32>) {
+        let v = self.sim.take_unsent_own(below);
+        if v.is_empty() {
+            return;
+        }
+        let to = self.audience();
+        for x in v {
+            self.send_live(&to, Class::Control, x);
+        }
     }
 
     /// A round-trip sample toward `member`, from the IO's pings (pe-app's clock sync; the harness
@@ -932,6 +947,10 @@ impl SessionCore {
     /// An entry going out live. This member's own entries wait for `outbox`, which sends each
     /// recipient this tick's in runs; anything else goes explicit at once.
     fn send_live(&mut self, to: &[MemberId], class: Class, e: SignedEntry) {
+        // Chain order: an own entry queued by an earlier insert (a direct sim call) goes first.
+        if e.member == self.sim.me {
+            self.send_unsent_own(Some(e.seq));
+        }
         if (!self.sim.lean_wire && !self.sim.run_wire) || e.member != self.sim.me {
             return self.send_to_all(to, class, Msg::Entry(e));
         }
@@ -980,6 +999,7 @@ impl SessionCore {
     }
 
     pub fn outbox(&mut self) -> Vec<Out> {
+        self.send_unsent_own(None);
         self.flush_own();
         std::mem::take(&mut self.out)
     }
@@ -1075,6 +1095,46 @@ mod tests {
         ] {
             let e = a.author(p.clone(), 0).unwrap_or_else(|e| panic!("{p:?} while paused: {e:?}"));
             assert_eq!(e.stamp, present, "stamped at the present, as a vote");
+        }
+    }
+
+    /// D80 (fix KICKVOTE): the kicker's own vote, cast as it records its kick, leaves in the same
+    /// outbox as the kick, so a member that holds the kick holds the vote too, with no fetch. With
+    /// the fix off it stays behind (a hole in 1's chain).
+    #[test]
+    fn the_kickers_own_vote_goes_out_with_the_kick() {
+        use crate::session::fix;
+        for fixed in [true, false] {
+            let scene = SceneKind::Pile { side: 2, layers: 2 };
+            let mut cs: Vec<SessionCore> = (1..=3).map(|m| core(m, &[1, 2, 3], scene)).collect();
+            if !fixed {
+                cs[0].sim.fixes_off |= fix::KICKVOTE;
+            }
+            for c in cs.iter_mut() {
+                c.start(0);
+            }
+            let deliver = |cs: &mut Vec<SessionCore>, now: u64| {
+                let outs: Vec<(MemberId, Vec<Out>)> = cs.iter_mut().map(|c| (c.me(), c.outbox())).collect();
+                for (src, os) in outs {
+                    for o in os {
+                        for &d in &o.to {
+                            cs[(d - 1) as usize].receive(src, o.msg.clone(), now);
+                        }
+                    }
+                }
+            };
+            for ms in 0..500u64 {
+                for c in cs.iter_mut() {
+                    c.tick(ms * 1000);
+                }
+                deliver(&mut cs, ms * 1000);
+            }
+            let kick = cs[0].author(Payload::Kick { epoch: 0, target: 3, rejoin: crate::session::Rejoin::Free }, 0).expect("a kick");
+            let vote = cs[0].sim.id_at(1, kick.seq + 1).expect("1 voted as it recorded its kick");
+            assert!(matches!(cs[0].sim.entry(vote).map(|e| &e.payload), Some(Payload::Vote { target: 3, .. })));
+            deliver(&mut cs, 500_000);
+            assert!(cs[1].sim.entry(kick.id()).is_some(), "2 holds the kick");
+            assert_eq!(cs[1].sim.entry(vote).is_some(), fixed, "2 holds 1's vote with the kick only with the fix");
         }
     }
 
