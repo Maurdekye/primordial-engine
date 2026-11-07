@@ -2837,15 +2837,16 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         with no switch to turn them off; `--localize` is only the spike's switch for measuring them. So at 3 or more
         players the shipped figure is the Part B column, and at 2 players it is Part A alone with the link.
       * Others' stalled frames: Part A as committed (the table above) / Part A alone with the link / Part B on, at 8,
-        12, 16, 24 and 32 kbit/s. Part B starts at 3 players, so 2-player cells have no third figure. "Stops" is a
-        permanent confirmation stop (below).
+        12, 16, 24 and 32 kbit/s. Part B starts at 3 players, so 2-player cells have no third figure. The 3-player
+        watcher row is the feed exit's (below): before it, 12-24 kbit/s stopped confirmation for good and 32 kbit/s cost
+        the others 669 frames.
 
         | Thin member | Players | 8 | 12 | 16 | 24 | 32 |
         |---|---|---|---|---|---|---|
         | sweeper | 2 | 209 / **762** | 0 / **5** | 0 / **0** | 0 / **0** | 0 / **0** |
         | sweeper | 4 | 161 / 159 / **0** | 116 / 80 / **0** | 0 / 0 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
         | sweeper | 8 | 138 / 138 / **0** | 139 / 139 / **0** | 96 / 95 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
-        | watcher | 3 | 618 / 481 / **0** | 35 / 0 / **stops** | 0 / 0 / **stops** | 0 / 0 / **stops** | 0 / 0 / **669** |
+        | watcher | 3 | 618 / 481 / **0** | 35 / 0 / **0** | 0 / 0 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
         | watcher | 4 | 464 / 827 / **0** | 35 / 66 / **0** | 0 / 0 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
         | watcher | 8 | 146 / 147 / **0** | 541 / 1,115 / **0** | 115 / 139 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
 
@@ -2892,20 +2893,94 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
           for that spread.
         * 2-player cells don't spread like this (the sweeper at 8 kbit/s: 762-769 frames with the link at every
           delay).
-      * **A known bug at 3 players (Critical): on 12-24 kbit/s downlinks confirmation stops for good, for the whole
-        session.**
-        * The watcher is fed for about 10 s and then leaves the feed. From the next window on, no window's mode
-          becomes known (member 1 reads "D54 fed fed ? ? ?"), so nothing is confirmed again in the run.
-        * At 32 kbit/s a full member on 256 kbit/s is put on the feed too, for 7 s, and the others stall 669 / 318
-          frames.
-        * The build before carry-over (8b91fa2) does the same: it comes from the 3-player feed as built.
-        * @item:primordial-engine/3-player-feed-exit-window-mode-stays-unknown-and.
-        * It and the 2-player item gate Part B's port to pe-session.
+      * **The 3-player feed exit (Critical; fixed on p2/partb-feed-exit,
+        @item:primordial-engine/3-player-feed-exit-window-mode-stays-unknown-and, which absorbed the 2-player tail).**
+        * **Before:** a watcher on a 12-24 kbit/s downlink was fed for about 10 s and then left the feed. From the next
+          window on, no window's mode became known (member 1 read "D54 fed fed ? ? ?"), so nothing was confirmed again
+          in the run. At 32 kbit/s a full member on 256 kbit/s was put on the feed too, for 7 s, and the others stalled
+          669 / 318 frames. The build before carry-over (8b91fa2) did the same.
+        * **Why** [V, PE_CONF_TRACE, PE_REPAIR_TRACE]: at 3 players echo-stability needs both others' references, and
+          the member that left never caught up. R3-9 skipped most of its fetches behind the live stream (51 of 67), and
+          replies that went out were tail-dropped. kickliar-fed2's 2-player tail has the same cause.
+        * **The 32 kbit/s misfire** [V, PE_FEED_LOG]: the enter test read member 3's own uplink queue (link 3→2) as
+          member 2's downlink. Now a sender's backlog into a member counts only if its link to another member off the
+          feed is clear, and the test reads the (t + 1)-th worst qualifying sender.
+        * **The echo phase** (ruling (D), @coordinator-opus): a member leaving the feed keeps echoing until every chain
+          it holds reaches its echo. Its acks keep their anchor and echo, so the window mode stays fed. Its votes freeze
+          at the later of what it holds and its echo, and it counts as fed for every fed-member rule, its votes too.
+          With full votes instead the others stall 267-283 frames at 12-16 kbit/s [V, the A/B, PE_ECHO_FULL_VOTES=1, 30 s cells].
+        * **Rule (1): the echo must extend the chain held.** A member stops echoing an author whose checkpoint
+          conflicts with its chain. A receiver credits an echo only if the echoer's named head is in its own version.
+          While the echo runs ahead of the held head, the member's acks name no head past the last checkpoint its echo
+          checked out at (the ack cap). Echo conflicts: 0 in every honest cell [V].
+        * **The exit at 3 players is (b)**, the user's choice for now (2026-11-07): the member leaves on the live test
+          (1.3x), with a margin.
+          * The enter test leaves out queue built by its own catch-up answers (to fetches it sent, within the ranges
+            asked).
+          * While it echoes, it goes back on the feed only if the senders' offered live rate fails the 1.3x test for
+            1 s.
+          * No re-entry for 6 s after it leaves or after its echo phase ends.
+          * A no-progress guard puts it back on the feed after 5 s without its hole shrinking. Each guard re-entry
+            doubles its next leave hold, reset when an echo phase ends normally. Forced (a 1.2 s guard, a
+            withholder): the leave after the re-entry comes 10.9 s later, the doubled 10 s hold [V].
+        * **At 4 or more players the exit keeps (a)**, the 2 s catch-up bound, until the user rules on widening (b).
+        * **The catch-up:** while fed, at the lowest priority, below feed and echo. In the echo phase each holder paces
+          its answers into its link's spare: a datagram of at most 200 ms of the link, while the router queue is empty.
+          The requests are striped over every holder, up to two 16-entry ranges each, its own chain first. A holder
+          whose requests draw nothing for 2 s is charged, and one charged twice more than the least is left out (the
+          fetch fallback).
+          * Sent at once, an answer's MTU datagram (0.8 s at 12 kbit/s) met a bucket the live stream keeps near empty
+            and was tail-dropped past the 500 ms queue.
+          * One request per chain at a time left a holder's link idle once its own chain was in.
+          * Either way the 12 kbit/s echo phase never ended on the merged tree [V, before b7abe98]. Echoing members
+            also get explicit checkpoints: under link elision a live checkpoint behind the catch-up's hole waited,
+            capped per author, and was evicted (128 of 293 held at 12 kbit/s).
+        * **Figures** [V, 90 s runs, spike, b7abe98, single samples]. The thin member's freeze is its echo phase,
+          against what the user was quoted. The others stall 0 frames in every honest cell, with no flip-back:
+          * 3 players: 54.5 s at 12 kbit/s (quoted 40-54), 16.9 s at 16 (40-54), 3.6 s at 24 (17), 1.6 s at 32 (7). At
+            8 kbit/s it stays fed.
+          * The datagram cap moves the 12 kbit/s figure: 66.3 s at 100 ms, 47.9 s at 300 ms (but then member 2 stalls 1
+            frame).
+        * **Withholding** (a holder that never answers the echoing member), 3 players at 12 kbit/s [V]. With a cap on each
+          link, the honest holder's link carries the hole alone (about 300 B/s spare), and the echo phase doesn't end
+          within 90 s, so per-link figures are upper bounds. On one shared 24 kbit/s downlink (PE_SHARED_DOWN) it ends
+          after 49.9 s, against 48.3 s honest. The withholder is left out; no guard re-entry, no flip-back.
+        * **4 and 8 players, (b) against (a)** [V, 90 s, (b) measured with PE_EXIT_B_ALL=1]. Time on the feed, the freeze,
+          and the others' mean confirmation lag in frames. The others stall 0 frames everywhere.
+
+          | Players, exit | 12 kbit/s | 16 | 24 | 32 |
+          |---|---|---|---|---|
+          | 4, (a) as built | fed all run, 27.8 | fed all run, 27.8 | 45.3 s, 1.0 s, 22.3 | 11.0 s, 0.2 s, 17.7 |
+          | 4, (b) | fed all run, 27.8 | 9.6 s, 21.6 s, 17.5 | 9.1 s, 4.8 s, 17.3 | 7.8 s, 1.3 s, 17.3 |
+          | 8, (a) as built | fed all run, 27.9 | fed all run, 27.9 | fed all run, 27.9 | fed all run, 27.9 |
+          | 8, (b) | fed all run, 27.9 | fed all run, 27.9 | 9.5 s, 14.4 s, 17.7 | 9.1 s, 3.8 s, 17.3 |
+
+          A withholder at 4 players and 16 kbit/s under (b), per-link caps: 31.9 s.
+        * **Open before landing** (found by the acceptance set on the merged tree, 2026-11-07):
+          * thinlink join-onefed-down fails: the join is never decided and crashed member 2 is never removed. The fed
+            member prevotes nil in every round. The catch-up while fed causes it (PE_NO_CATCHUP=1 passes); holding the
+            catch-up while a view-change instance runs was not enough.
+          * kickliar-fed2's 2-player tail is not bounded: confirmation holds from 12.5 s to the end of a 25 s run, with
+            scoped (B) on or off, and with the repairs paced. Every link into member 3 stays 180-450 ms deep.
+          * r18-thin-partb down-k16-m3 (30 s) ends DIFFER: the run ends on the frame member 3's echo phase ends, and
+            it is EQUAL at 29, 31 and 33 s. Not a pending resimulation (the check limited to resimulated frames reads
+            the same).
+        * **Port gate** (Part B's port to pe-session):
+          * The ack cap's freeze after a conflict is safe only with signed checkpoints acting on the proof. In the spike
+            an unsigned forged checkpoint can freeze an honest author's references.
+          * Rule (1)'s margin leaves catch-up answers out of the enter test, so on a shared downlink a liar's flood dressed
+            as answers must still show in pe-session's delay signal.
+          * Echoing members get explicit checkpoints, and their catch-up answers are paced into the link's spare and
+            striped over the holders, never sent at once.
       * **With Part B on, the measure is the others' stalled frames and confirmation lag, not "back to real time".**
         That column needs every member, the fed one too, within 20 frames of confirmation. A fed member trails by
         design, so a cell with a fed member reads "never" by construction.
-        * With a thin member fed at 4 and 8 players, the others' mean lag is 29.5-35.6 frames (P95 53-61).
-        * At 3 players with an 8 kbit/s watcher it is 36.2-37.2 (P95 52-69).
+        * With a thin member fed at 4 and 8 players, the others' mean lag is 28.9-34.9 frames (P95 51-60).
+          * Since the feed exit, (a) keeps the thin member fed at 16-32 kbit/s too, at 4 and 8 players, where main let
+            it leave the feed and freeze. There the others' lag is 28.9-30.2 frames, against main's 21.7-25.5, and the
+            thin member's own 613-1,100 stalled frames are 0 [V spikes/out/r18-thin-partb].
+        * At 3 players with an 8 kbit/s watcher it is 37.7-37.8 (P95 64), against 36.1-36.3 before the feed exit's
+          catch-up while fed; in the slow-member cell 37.1-37.2 (P95 69-70).
       * **Part B's standing cost with nobody thin** (base-m4, base-m8), from rule 1's echo-stability (one more ack
         round on every entry). It awaits the user's confirmation: nothing the user confirmed covers it at 4 or more
         players. The "about 45-63 frames instead of 13" they were told is for 3 players in fed mode.
