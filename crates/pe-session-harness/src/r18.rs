@@ -92,7 +92,10 @@ pub fn capped(o: &Opts) {
                 p
             })
             .collect();
-        let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 17);
+        // (measurement only: PE_R18_DELAY_US=d replaces the 50 ms one-way delay, for a cell's spread over small changes,
+        // as in the spike's harness; the jitter seed alone moves nothing)
+        let delay_us = std::env::var("PE_R18_DELAY_US").ok().and_then(|v| v.parse().ok()).unwrap_or(50_000);
+        let mut net = Net::new(Link { delay_us, jitter_us: 5_000, loss_pct: 0 }, 17);
         net.default_cap = Some(Cap { rate_bps: o.kbps * 1000 / div, burst_bytes: 4000 / div, max_queue_us: 500_000 });
         if let Some((sm, sk)) = o.slow {
             for &x in &ids {
