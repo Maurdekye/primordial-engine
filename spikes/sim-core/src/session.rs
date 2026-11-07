@@ -957,6 +957,9 @@ pub struct Entry {
 /// Thin links Part B: a checkpoint block is 32 frames.
 pub const CKPT_FRAMES: u64 = 32;
 
+/// Link elision: at most this many live checkpoints wait behind holes (`WorldSim::insert_live`).
+pub const LIVE_WAIT_MAX: usize = 256;
+
 /// Thin links Part B (rule 1's echo, rule 5): what a fed member's ack adds. `anchor`: the frame of its newest
 /// state anchor (on every fed ack). `echo`: per member it echoes, the block of the newest checkpoint of that
 /// member's chain it computed (TLP-23); `digest`: the hash of the echoed (member, block, id) triples, which each
@@ -1019,6 +1022,14 @@ impl Entry {
 pub enum Msg {
     /// Any chain entry: a perturbation, an ack or a vote.
     Entry(Entry),
+    /// Link elision (the R18 controller-cliff item, @design-reviewer's shape): a checkpoint from its author's live
+    /// stream to a full member, with its checkpoint link left out (the flags still say it has one). The receiver
+    /// rebuilds the link from its checkpoint state after the entry's prev (`ckpt_link_for`, the rule `validate`
+    /// checks), then takes the entry as any other: production checks the id and signature over the rebuilt bytes.
+    /// Never to a fed member, and never a fetch reply, a relay, a proof or a certificate: those keep the link,
+    /// since their receiver may lack the state after prev. Decoded, the entry's `link` is 0 and means unknown
+    /// ([`WorldSim::insert_live`]).
+    Live(Entry),
     /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
     Fetch { author: MemberId, from: u32, to: u32 },
     /// Everything one member sends one peer in one tick, in one datagram (R18, viz-4).
@@ -1251,6 +1262,12 @@ impl Wr {
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e) }
+            // The canonical bytes but the link's value: the flags byte keeps bit 1, so H_rest is unchanged.
+            Msg::Live(e) => {
+                assert!(e.link != 0, "only a checkpoint with a link goes live");
+                self.u8(14);
+                self.entry_rest(e)
+            }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
@@ -1378,6 +1395,11 @@ impl Rd<'_> {
         Some(BodyState(s))
     }
     fn entry(&mut self) -> Option<Entry> {
+        self.entry_with(false)
+    }
+    /// `live`: a [`Msg::Live`] entry, whose flags must say it has a link and whose link's value is left out
+    /// (decoded as 0, unknown).
+    fn entry_with(&mut self, live: bool) -> Option<Entry> {
         let member = self.u32()?;
         let seq = self.u32()?;
         let prev = self.u64()?;
@@ -1480,8 +1502,13 @@ impl Rd<'_> {
             return None;
         }
         let carried = if flags & 1 != 0 { Some((self.u32()?, self.state()?)) } else { None };
+        if live && flags & 2 == 0 {
+            return None;
+        }
         // A link is never 0 on the wire: the flag says there is none.
-        let link = if flags & 2 != 0 {
+        let link = if live {
+            0
+        } else if flags & 2 != 0 {
             let l = self.u64()?;
             if l == 0 {
                 return None;
@@ -1535,6 +1562,7 @@ impl Rd<'_> {
     pub fn msg(&mut self) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(self.entry()?),
+            14 => Msg::Live(self.entry_with(true)?),
             3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
             4 => {
                 let n = self.u32()? as usize;
@@ -2272,6 +2300,9 @@ pub struct WorldSim {
     /// Part B (TLP-27): the checkpoint state after each validated entry, by its id. An entry's expected link
     /// follows from its prev's state, so each version of a forked chain is judged on its own line.
     ckpt_after: BTreeMap<EntryId, (u64, EntryId)>,
+    /// Link elision: live checkpoints held behind a hole in their author's chain, by (author, seq): the entry (link
+    /// unknown) and who sent it. Each is rebuilt once the chain reaches seq - 1 (`next_live_ready`).
+    live_wait: BTreeMap<(MemberId, u32), (Entry, MemberId)>,
     /// Part B (TLP-19): my own chain's checkpoint state, kept at publish (a joiner validates its own chain only
     /// once admitted).
     my_ckpt: Option<(u64, EntryId)>,
@@ -2611,6 +2642,7 @@ impl WorldSim {
             fed: None,
             ckpt: BTreeMap::new(),
             ckpt_after: BTreeMap::new(),
+            live_wait: BTreeMap::new(),
             my_ckpt: None,
             ckpt_by_block: BTreeMap::new(),
             echo_refs: BTreeMap::new(),
@@ -3106,6 +3138,84 @@ impl WorldSim {
     /// Store an entry (received, fetched or my own). Returns entries to broadcast: when it proves
     /// equivocation, both versions and this member's vote.
     pub fn insert(&mut self, e: Entry) -> Vec<Entry> {
+        let mut out = self.insert_one(e);
+        // Link elision: live checkpoints the chain has now reached go in behind it.
+        while let Some(x) = self.next_live_ready() {
+            out.extend(self.insert_one(x));
+        }
+        out
+    }
+
+    /// Link elision: a [`Msg::Live`] entry from `from` (its author), its link unknown (`e.link` is 0). Rebuilt from
+    /// my checkpoint state after its prev, it goes in as any entry. Behind a hole it waits, as hearing from its author,
+    /// and shows the hole (as `insert` does). With the chain held to seq - 1 but no state for its prev (a chain held
+    /// from midway, as a joiner or a member just off the feed holds it; or another version of prev), and if the state
+    /// says it isn't a checkpoint, the explicit form is asked from the sender: the rebuilt bytes would not be the
+    /// author's, and production's signature check would fail.
+    pub fn insert_live(&mut self, from: MemberId, mut e: Entry) -> Vec<Entry> {
+        let m = e.member;
+        if m == self.me || (!self.known.contains(&m) && m != LOGIC) {
+            return vec![];
+        }
+        match self.live_link(&e) {
+            Some(Some(link)) => {
+                e.link = link;
+                self.insert(e)
+            }
+            Some(None) => {
+                self.want_from(from, m, e.seq, e.seq);
+                vec![]
+            }
+            None => {
+                let c = self.contiguous.get(&m).copied().unwrap_or(0);
+                if e.seq > c + 1 {
+                    self.heard.insert(m, self.now);
+                    if !matches!(e.payload, Payload::Ack { .. }) {
+                        self.busy_stamp = self.busy_stamp.max(e.stamp);
+                    }
+                    self.want_all(m, c + 1, e.seq - 1);
+                    if self.live_wait.len() >= LIVE_WAIT_MAX {
+                        // The oldest by author and seq goes; the hole rule fetches it explicit once its chain gets there.
+                        self.live_wait.pop_first();
+                    }
+                    self.live_wait.insert((m, e.seq), (e, from));
+                } else {
+                    self.want_from(from, m, e.seq, e.seq);
+                }
+                vec![]
+            }
+        }
+    }
+
+    /// Link elision: the link `e` carries after my checkpoint state for its prev: Some(Some(link)) for a checkpoint,
+    /// Some(None) if the state says it isn't one, None without a state for its prev.
+    fn live_link(&self, e: &Entry) -> Option<Option<EntryId>> {
+        let ck = if e.prev == 0 { None } else { Some(*self.ckpt_after.get(&e.prev)?) };
+        let link = ckpt_link_for(ck, e.stamp);
+        Some((link != 0).then_some(link))
+    }
+
+    /// Link elision: a held live checkpoint whose chain has reached seq - 1, rebuilt; one that still can't be is asked
+    /// explicit from its sender and dropped.
+    fn next_live_ready(&mut self) -> Option<Entry> {
+        loop {
+            let key = self
+                .live_wait
+                .iter()
+                .find(|((m, s), _)| *s <= self.contiguous.get(m).copied().unwrap_or(0) + 1)
+                .map(|(k, _)| *k)?;
+            let (mut e, from) = self.live_wait.remove(&key).unwrap();
+            match self.live_link(&e) {
+                Some(Some(link)) => {
+                    e.link = link;
+                    return Some(e);
+                }
+                _ => self.want_from(from, e.member, e.seq, e.seq),
+            }
+        }
+    }
+
+    fn insert_one(&mut self, e: Entry) -> Vec<Entry> {
         let id = e.id();
         if self.entries.contains_key(&id) || (!self.known.contains(&e.member) && e.member != LOGIC) {
             return vec![];
@@ -7593,6 +7703,92 @@ mod echo_tests {
         for w in ckpts.windows(2) {
             assert_eq!(w[1].link, w[0].id());
         }
+    }
+
+    /// Link elision: what the author's broadcast sends for `e` (live for a checkpoint with a link), through the wire.
+    fn wire(e: &Entry) -> Msg {
+        let m = if e.link != 0 { Msg::Live(e.clone()) } else { Msg::Entry(e.clone()) };
+        decode_msg(&encode_msg(&m)).unwrap()
+    }
+
+    fn deliver(r: &mut WorldSim, from: MemberId, m: Msg) -> Vec<Entry> {
+        match m {
+            Msg::Entry(e) => r.insert(e),
+            Msg::Live(e) => r.insert_live(from, e),
+            x => panic!("{x:?}"),
+        }
+    }
+
+    #[test]
+    fn a_live_checkpoint_leaves_out_its_link_only() {
+        let c = chain(40, 7);
+        for e in c.iter().filter(|e| e.link != 0) {
+            let (full, live) = (encode_msg(&Msg::Entry(e.clone())), encode_msg(&Msg::Live(e.clone())));
+            assert_eq!(full.len(), live.len() + 8);
+            // The same bytes but the tag and the link's value: H_rest's input is unchanged.
+            assert_eq!(&full[1..full.len() - 8], &live[1..]);
+            let Some(Msg::Live(d)) = decode_msg(&live) else { panic!() };
+            assert_eq!(Entry { link: e.link, ..d.clone() }, *e);
+            assert_eq!(d.link, 0);
+        }
+        // A live entry must say it has a link.
+        let plain = c.iter().find(|e| e.link == 0).unwrap();
+        let mut w = Wr(Vec::new());
+        w.u8(14);
+        w.entry_rest(plain);
+        assert_eq!(decode_msg(&w.0), None);
+    }
+
+    #[test]
+    fn a_receiver_rebuilds_live_links_in_order_and_behind_a_hole() {
+        let c = chain(40, 7);
+        // In order: every entry is held under the author's id.
+        let mut r = WorldSim::new(1, 2, &[1, 2], SceneKind::Empty, SimConfig::default());
+        for e in &c {
+            deliver(&mut r, 1, wire(e));
+        }
+        for e in &c {
+            assert_eq!(r.by_author.get(&(1, e.seq)), Some(&e.id()), "s{}", e.seq);
+        }
+        assert!(r.live_wait.is_empty());
+        // Behind a hole: the checkpoint waits, shows the hole, and goes in once the hole is filled.
+        let k = c.iter().position(|e| e.link != 0 && e.seq > 10).unwrap();
+        let mut r = WorldSim::new(1, 2, &[1, 2], SceneKind::Empty, SimConfig::default());
+        for (i, e) in c.iter().enumerate().take(k + 1) {
+            if i != k - 1 {
+                deliver(&mut r, 1, wire(e));
+            }
+        }
+        assert!(r.by_author.get(&(1, c[k].seq)).is_none());
+        assert!(r.live_wait.contains_key(&(1, c[k].seq)));
+        assert!(r.wants.iter().any(|w| w.1 == 1 && w.2 <= c[k - 1].seq && w.3 >= c[k - 1].seq));
+        deliver(&mut r, 1, wire(&c[k - 1]));
+        assert_eq!(r.by_author.get(&(1, c[k].seq)), Some(&c[k].id()));
+        assert_eq!(r.contiguous.get(&1), Some(&c[k].seq));
+        assert!(r.live_wait.is_empty());
+    }
+
+    #[test]
+    fn a_live_checkpoint_without_state_for_its_prev_is_asked_explicit_from_its_sender() {
+        // Another version of prev (or a chain held from midway): no state after prev at seq = contiguous + 1.
+        let c = chain(40, 7);
+        let k = c.iter().position(|e| e.link != 0 && e.seq > 10).unwrap();
+        let mut r = WorldSim::new(1, 2, &[1, 2], SceneKind::Empty, SimConfig::default());
+        for e in c.iter().take(k) {
+            deliver(&mut r, 1, wire(e));
+        }
+        r.wants.clear();
+        let other = Entry { prev: 12345, ..c[k].clone() };
+        assert!(deliver(&mut r, 3, Msg::Live(Entry { link: 0, ..other })).is_empty());
+        assert!(r.by_author.get(&(1, c[k].seq)).is_none());
+        assert!(r.live_wait.is_empty());
+        assert_eq!(r.wants, vec![(3, 1, c[k].seq, c[k].seq)]);
+        // The state says it isn't a checkpoint: asked explicit too.
+        r.wants.clear();
+        // (stamped in the block of seq - 1, which the newest checkpoint already covers)
+        let e = Entry { stamp: c[k - 1].stamp, link: 0, ..c[k].clone() };
+        assert!(deliver(&mut r, 1, Msg::Live(e)).is_empty());
+        assert_eq!(r.wants, vec![(1, 1, c[k].seq, c[k].seq)]);
     }
 
     #[test]
