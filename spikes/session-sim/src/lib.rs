@@ -165,6 +165,12 @@ pub struct Net {
     /// Links whose catch-up is held this tick: its source's next checkpoint (and the Ckpts announcing it) is due within one
     /// catch-up datagram, so the echo doesn't wait behind one (set by the harness before each flush).
     pub catchup_closed: BTreeSet<(MemberId, MemberId)>,
+    /// The feed exit (b): an echoing member's own catch-up, the answers to fetches it sent within the ranges it asked, sent
+    /// at once past R3-9's yield in datagrams of their own (`send_catchup`). Per link, each datagram's departure from the
+    /// bottleneck and its serialization time, and its bytes with when, so the enter test can leave that pull out (margin
+    /// rule 1, @coordinator-opus m360a9ee1d5bb) and test only the live stream (rule 2).
+    catchup_inflight: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
+    catchup_recent: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
     /// (spike diagnostics, with `tracing`) Every entry posted: (now, from, to, author, seq, kind, to a fed member).
@@ -253,6 +259,8 @@ impl Net {
             catchup_q: BTreeMap::new(),
             catchup_sent: (0, 0),
             catchup_closed: BTreeSet::new(),
+            catchup_inflight: BTreeMap::new(),
+            catchup_recent: BTreeMap::new(),
             tracing: false,
             post_log: Vec::new(),
             trace: Vec::new(),
@@ -488,6 +496,57 @@ impl Net {
     /// Whether the link from `from` to `to` still has catch-up entries waiting.
     pub fn catchup_pending(&self, from: MemberId, to: MemberId) -> bool {
         self.catchup_q.get(&(from, to)).is_some_and(|q| !q.is_empty())
+    }
+
+    /// The feed exit (b): an echoing member's own catch-up answer, sent at once (it doesn't yield to the queue) in MTU
+    /// datagrams of its own, each recorded so the enter test can leave it out.
+    pub fn send_catchup(&mut self, world: WorldId, from: MemberId, to: MemberId, msgs: Vec<Msg>) {
+        let mut cur: Vec<Msg> = Vec::new();
+        let mut size = 0;
+        let mut batches: Vec<Vec<Msg>> = Vec::new();
+        for m in msgs {
+            let n = encode_msg(&m).len();
+            if !cur.is_empty() && size + n > MTU {
+                batches.push(std::mem::take(&mut cur));
+                size = 0;
+            }
+            size += n;
+            cur.push(m);
+        }
+        if !cur.is_empty() {
+            batches.push(cur);
+        }
+        let rate = self.caps.get(&(from, to)).copied().or(self.default_cap).map(|c| c.rate_bps);
+        for v in batches {
+            let m = if v.len() == 1 { v.into_iter().next().unwrap() } else { Msg::Batch(v) };
+            let wire = encode_msg(&m).len() as u64 + dgram_overhead();
+            let before = self.shapers.get(&(from, to)).map(|s| s.t_ref_us);
+            self.send(world, from, to, &m);
+            let now = self.now_us;
+            let r = self.catchup_recent.entry((from, to)).or_default();
+            r.push_back((now, wire));
+            while r.front().is_some_and(|&(t, _)| t + 1_000_000 < now) {
+                r.pop_front();
+            }
+            if let (Some(rate), Some(after)) = (rate, self.shapers.get(&(from, to)).map(|s| s.t_ref_us)) {
+                if Some(after) != before {
+                    self.catchup_inflight.entry((from, to)).or_default().push_back((after, (wire as f64 * 8.0 * 1e6 / rate as f64) as u64));
+                }
+            }
+        }
+    }
+
+    /// Margin rule (1): the backlog on a link less what an echoing member's own catch-up still holds in it.
+    pub fn live_backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
+        let pull: u64 = self.catchup_inflight.get(&(from, to)).map_or(0, |q| q.iter().filter(|&&(d, _)| d > self.now_us).map(|&(_, s)| s).sum());
+        self.backlog_us(from, to).saturating_sub(pull)
+    }
+
+    /// Margin rule (2): the bits per second a sender offered on a link over the last second, less its catch-up answers.
+    pub fn live_bps(&self, from: MemberId, to: MemberId) -> u64 {
+        let since = self.now_us.saturating_sub(1_000_000);
+        let pull: u64 = self.catchup_recent.get(&(from, to)).map_or(0, |q| q.iter().filter(|(t, _)| *t >= since).map(|(_, b)| b * 8).sum());
+        self.recent_bps(from, to).saturating_sub(pull)
     }
 
     /// The links with catch-up entries waiting: (from, to, the world of the next one).
@@ -737,7 +796,14 @@ pub struct Acceptance {
 /// * PE_ENTER_ANY_LEVEL=1: senders at any R18 level count (the member-2 test tells a sender's own uplink queue from t's
 ///   downlink queue; the level doesn't: R18 thins a sender for a thin receiver's queue too).
 /// * PE_CLEAR_US: the member-2 test's "clear" threshold for a sender's link to another member (40 ms).
-/// * PE_EXIT_BOUND_MS: the exit bound T (2000); PE_NO_EXIT_BOUND=1 leaves it out, as before the feed-exit fix.
+/// * PE_EXIT_BOUND_MS: an exit bound T in ms. None by default: the user's ruling (b) (m79deb050976c, "go with b for now")
+///   has the member leave on the live test and catch up while its echo covers it; PE_EXIT_BOUND_MS=2000 is option (a).
+/// * PE_NO_PROGRESS_MS: the no-progress guard (5000): an echoing member whose held chains don't advance for this long goes
+///   back on the feed.
+/// * PE_REENTRY_HOLDOFF_MS (3000): no re-entry this long after leaving the feed (margin rule (2)) or after the end of the
+///   echo phase (the enter test): the smallest with no flip-back in down-k12-m3 (1 and 2 s flipped back at 2.8 s, by rule
+///   (2), @coordinator-opus m360a9ee1d5bb). PE_REENTRY_FACTOR (1.3): rule (2)'s
+///   factor (1.0: re-enter only once the live stream alone exceeds the cap, a hysteresis band below the leave test's 1.3).
 /// * PE_NO_CATCHUP=1: no background catch-up while fed, as before the feed-exit fix.
 struct FeedKnobs {
     enter_us: u64,
@@ -749,6 +815,9 @@ struct FeedKnobs {
     clear_us: u64,
     exit_bound_us: Option<u64>,
     catchup: bool,
+    no_progress_us: u64,
+    reentry_holdoff_us: u64,
+    reentry_factor: f64,
 }
 
 fn feed_knobs() -> &'static FeedKnobs {
@@ -764,8 +833,11 @@ fn feed_knobs() -> &'static FeedKnobs {
             any_sender: on("PE_ENTER_ANY_SENDER"),
             any_level: on("PE_ENTER_ANY_LEVEL"),
             clear_us: num("PE_CLEAR_US", 40_000),
-            exit_bound_us: if on("PE_NO_EXIT_BOUND") { None } else { Some(num("PE_EXIT_BOUND_MS", 2000) * 1000) },
+            exit_bound_us: std::env::var("PE_EXIT_BOUND_MS").ok().and_then(|v| v.parse::<u64>().ok()).map(|ms| ms * 1000),
             catchup: !on("PE_NO_CATCHUP"),
+            no_progress_us: num("PE_NO_PROGRESS_MS", 5000) * 1000,
+            reentry_holdoff_us: num("PE_REENTRY_HOLDOFF_MS", 3000) * 1000,
+            reentry_factor: std::env::var("PE_REENTRY_FACTOR").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.3),
         }
     })
 }
@@ -788,6 +860,15 @@ struct FeedCtl {
     /// The exit bound: its catch-up time in seconds as last computed, and when (us); computed at most every 100 ms.
     catchup_s: f64,
     catchup_at: Option<u64>,
+    /// Margin rule (2): since when, while it echoes, some sender's live rate into it has failed the 1.3x test.
+    rate_fail_since_us: Option<u64>,
+    /// The no-progress guard: its held chains' total as last seen while echoing, and since when it stood there.
+    progress: Option<(u64, u64)>,
+    /// Times it left the feed and went back on (flip-backs: re-entries after a leave).
+    entries: u32,
+    /// Whether it was echoing at the last tick, and when its last echo phase ended (the re-entry hold-off).
+    was_echoing: bool,
+    echo_end_us: Option<u64>,
 }
 
 pub struct Sim {
@@ -1083,16 +1164,59 @@ impl Sim {
                 // everyone, a thin downlink only into t (down-k32-m3: member 2, on 256 kbit/s, went on the feed on member
                 // 3's own 32 kbit/s uplink queue while member 3's controller sat at level 0). At n = 3 with one member fed
                 // no such member exists, so nothing counts, and the room (n − q = 1) keeps a second one off the feed anyway.
-                let mut qualifying: Vec<u64> = senders
+                // Margin rule (1) (@coordinator-opus m360a9ee1d5bb, mca39b9f6b726): queue built by an echoing member's own
+                // catch-up (answers to fetches it sent, within the ranges asked) doesn't count; everything else does.
+                let qual: Vec<MemberId> = senders
                     .iter()
-                    .filter(|&&s| knobs.any_level || level.get(&(w, s)) == Some(&0))
-                    .filter(|&&s| knobs.any_sender || members.iter().any(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)) && self.net.backlog_us(s, x) <= knobs.clear_us))
-                    .map(|&s| self.net.backlog_us(s, t))
+                    .copied()
+                    .filter(|&s| knobs.any_level || level.get(&(w, s)) == Some(&0))
+                    .filter(|&s| knobs.any_sender || members.iter().any(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)) && self.net.live_backlog_us(s, x) <= knobs.clear_us))
                     .collect();
+                let mut qualifying: Vec<u64> = qual.iter().map(|&s| self.net.live_backlog_us(s, t)).collect();
                 qualifying.sort_unstable_by(|a, b| b.cmp(a));
                 // The (t + 1)-th worst, so one liar sender alone can't put t on the feed at n >= 4 (spike: PE_ENTER_WORST=1, the worst).
                 let rank = if knobs.rank { pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, members.len()).0 } else { 0 };
                 let backlog = qualifying.get(rank).copied().unwrap_or(0);
+                // Margin rule (2): while it echoes, it goes back on the feed only once the live stream alone fails the 1.3x
+                // test, the senders' offered live rate toward it (not what reaches it), for ENTER_HOLD_US; (t + 1)-th worst.
+                let echoing_t = echoing.contains(&(w, t));
+                let rate_fails = qual.iter().filter(|&&s| (cap_of(&self.net, s, t) as f64) < knobs.reentry_factor * self.net.live_bps(s, t) as f64).count() > rank
+                    && ctl.left_us.is_none_or(|t0| now >= t0 + knobs.reentry_holdoff_us);
+                ctl.rate_fail_since_us = if echoing_t && rate_fails { Some(ctl.rate_fail_since_us.unwrap_or(now)) } else { None };
+                let rate_held = ctl.rate_fail_since_us.is_some_and(|t0| now >= t0 + enter_hold_us);
+                // The no-progress guard (@coordinator-opus mca39b9f6b726): an echoing member whose held chains don't advance
+                // for no_progress_us goes back on the feed, as under (a), whatever the rest says (a withholding holder can
+                // otherwise stretch its freeze).
+                let guard = if echoing_t {
+                    let pt = self.peer_index(t);
+                    let total: u64 = self.peers[pt].worlds.get(&w).map_or(0, |r| senders.iter().map(|&x| r.sim.held_head(x) as u64).sum());
+                    match ctl.progress {
+                        Some((v, since)) if v == total => now >= since + knobs.no_progress_us,
+                        _ => {
+                            ctl.progress = Some((total, now));
+                            false
+                        }
+                    }
+                } else {
+                    ctl.progress = None;
+                    false
+                };
+                // The feed exit (b): an echoing member's catch-up, one request per chain at a time, each chain from its
+                // author first and, unanswered, from the next holder (the fetch fallback); answered at once past R3-9's yield
+                // (`Net::send_catchup`).
+                if echoing_t && knobs.catchup {
+                    let pi = self.peer_index(t);
+                    let fetches = self.peers[pi].worlds.get_mut(&w).map(|r| r.sim.catchup_fetches(now / 1000)).unwrap_or_default();
+                    for (f, attempt) in fetches {
+                        let Msg::Fetch { author, .. } = f else { continue };
+                        let mut holders: Vec<MemberId> = vec![author];
+                        holders.extend(senders.iter().copied().filter(|&s| s != author && !self.net.fed.contains(&(w, s))));
+                        let src = holders[attempt as usize % holders.len()];
+                        if src != t {
+                            self.net.post(w, t, src, &f);
+                        }
+                    }
+                }
                 // (spike diagnostics: PE_FEED_SIGNALS=1) every 250 ms, the enter test's inputs for each member not fed:
                 // per sender (level, backlog into t in ms, bits offered into t over the last second, entries of its chain t
                 // lacks), the qualifying backlog, and t's and member 1's confirmation lag in frames.
@@ -1113,22 +1237,50 @@ impl Sim {
                     let p1 = self.peer_index(members[0]);
                     eprintln!("SIG t={} m{t}: [{}] qualifying {} ms; lag m{t} {} m{} {}", now / 1000, per.join(", "), backlog / 1000, lag_of(pt), members[0], lag_of(p1));
                 }
-                let fed_now = members.iter().filter(|&&m| self.net.fed.contains(&(w, m)) || echoing.contains(&(w, m))).count();
+                let fed_now = members.iter().filter(|&&m| m != t && (self.net.fed.contains(&(w, m)) || echoing.contains(&(w, m)))).count();
                 let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s)) && !echoing.contains(&(w, s))).collect();
                 let caught_up = {
                     let pi = self.peer_index(t);
                     self.peers[pi].worlds.get(&w).is_none_or(|r| r.sim.conf >= ctl.left_frame)
                 };
-                let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US) && caught_up;
+                // The re-entry hold-off (PE_REENTRY_HOLDOFF_MS): none within it of leaving (rule (2), above) or of the end of
+                // its echo phase (the enter test: the tail of its catch-up goes out as ordinary repairs, which count).
+                if ctl.was_echoing && !echoing_t {
+                    ctl.echo_end_us = Some(now);
+                }
+                ctl.was_echoing = echoing_t;
+                let held_off = ctl.echo_end_us.is_some_and(|t0| now < t0 + knobs.reentry_holdoff_us);
+                let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US) && caught_up && !held_off;
                 ctl.over_since_us = if backlog > enter_us { Some(ctl.over_since_us.unwrap_or(now)) } else { None };
                 let held = backlog > enter_now_us || ctl.over_since_us.is_some_and(|t0| now >= t0 + enter_hold_us);
-                if held && settled && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
+                // Echoing, its echo still covers it, so it may go back on the feed before it has caught up: by rule (2), or
+                // by the guard. Otherwise as before.
+                let enter = if echoing_t { (held && rate_held) || guard } else { held && settled };
+                if enter && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
                     let feeder = *feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)).unwrap();
                     if std::env::var("PE_FEED_LOG").is_ok() {
                         let worst = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).max_by_key(|&&s| self.net.backlog_us(s, t)).copied();
-                        eprintln!("FEED t={} ms: {t} goes on the feed, feeder {feeder}; worst level-0 sender {worst:?}; qualifying backlog {} us", now / 1000, backlog);
+                        let why = if guard { "the no-progress guard" } else if echoing_t { "rule (2) while echoing" } else { "the enter test" };
+                        eprintln!("FEED t={} ms: {t} goes on the feed ({why}), feeder {feeder}; worst level-0 sender {worst:?}; qualifying live backlog {} us", now / 1000, backlog);
                     }
-                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us, over_since_us: None, left_frame: ctl.left_frame, catchup_s: 0.0, catchup_at: None };
+                    ctl = FeedCtl {
+                        fed: true,
+                        feeder,
+                        feeder_since_us: now,
+                        leave_ok_since_us: None,
+                        next_send_us: now,
+                        rr: ctl.rr,
+                        left_us: ctl.left_us,
+                        over_since_us: None,
+                        left_frame: ctl.left_frame,
+                        catchup_s: 0.0,
+                        catchup_at: None,
+                        rate_fail_since_us: None,
+                        progress: None,
+                        entries: ctl.entries + 1,
+                        was_echoing: false,
+                        echo_end_us: ctl.echo_end_us,
+                    };
                     self.net.fed.insert((w, t));
                     let pi = self.peer_index(t);
                     if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
@@ -1155,13 +1307,12 @@ impl Sim {
                     let pi = self.peer_index(t);
                     let fetches = self.peers[pi].worlds.get_mut(&w).map(|r| r.sim.catchup_fetches(now / 1000)).unwrap_or_default();
                     if !fetches.is_empty() {
-                        let src = senders
-                            .iter()
-                            .copied()
-                            .filter(|&s| s != ctl.feeder && !self.net.fed.contains(&(w, s)) && !echoing.contains(&(w, s)))
-                            .min_by_key(|&s| (self.net.backlog_us(s, t), s))
-                            .unwrap_or(ctl.feeder);
-                        for f in fetches {
+                        let mut idle: Vec<MemberId> = senders.iter().copied().filter(|&s| s != ctl.feeder && !self.net.fed.contains(&(w, s)) && !echoing.contains(&(w, s))).collect();
+                        idle.sort_by_key(|&s| (self.net.backlog_us(s, t), s));
+                        idle.push(ctl.feeder);
+                        // An unanswered request moves on to the next holder (the fetch fallback).
+                        for (f, attempt) in fetches {
+                            let src = idle[attempt as usize % idle.len()];
                             self.net.post(w, t, src, &f);
                         }
                     }
@@ -1210,7 +1361,12 @@ impl Sim {
                     let fetches = match self.peers[pi].worlds.get_mut(&w) {
                         Some(r) => {
                             r.sim.set_fed(false);
-                            r.sim.recovery_fetches()
+                            // The feed exit (b): in its echo phase the paced catch-up takes over (one request per chain).
+                            if r.sim.in_echo_phase() && knobs.catchup {
+                                Vec::new()
+                            } else {
+                                r.sim.recovery_fetches()
+                            }
                         }
                         None => Vec::new(),
                     };
@@ -1393,6 +1549,20 @@ impl Sim {
                     // on its own hole doesn't wait behind the live stream either (nobound down-k12-m3: 42 of its 55 fetches
                     // skipped). (spike: PE_NO_ECHO_REPAIR_PRIORITY=1 switches the second off)
                     let echo_catchup = echoing.contains(&(w, from)) && std::env::var("PE_NO_ECHO_REPAIR_PRIORITY").is_err();
+                    // (spike: PE_WITHHOLD_CATCHUP=<member>) that member never answers a member in its echo phase: the
+                    // withholding cell (@coordinator-opus mca39b9f6b726).
+                    if echoing.contains(&(w, from)) && std::env::var("PE_WITHHOLD_CATCHUP").ok().and_then(|v| v.parse::<MemberId>().ok()) == Some(to) {
+                        continue;
+                    }
+                    if echo_catchup {
+                        // Its own pull: at once, in datagrams of its own, which the enter test leaves out (margin rule 1).
+                        let reply = r.sim.on_fetch(author, a, b);
+                        if trace {
+                            eprintln!("REPAIR t={} ms m{to} answers m{from}'s fetch of m{author} s{a}..={b} with {} entries (echo phase, own catch-up)", now / 1000, reply.len());
+                        }
+                        self.net.send_catchup(w, to, from, reply);
+                        continue;
+                    }
                     if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US && !r.sim.repair_holds_conf(from, author) && !echo_catchup {
                         if trace {
                             eprintln!("REPAIR t={} ms m{to} skips m{from}'s fetch of m{author} s{a}..={b}: backlog {} us", now / 1000, self.net.backlog_us(to, from));
