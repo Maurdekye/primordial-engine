@@ -1824,6 +1824,8 @@ pub struct Stats {
     pub nonfinite: u64,
     /// Eviction votes found to contradict their voter's own published references (review R3-1).
     pub lying_votes: u64,
+    /// Carry-over (measurement): rule 1's verdict passes (`decide_verdicts` calls).
+    pub verdict_passes: u64,
     /// Members this replica presumed crashed and voted to remove (review R3-2).
     pub suspicions: u64,
     /// Members this replica voted to demote because their link could not keep up (review R3-9).
@@ -2215,6 +2217,15 @@ pub struct WorldSim {
     cut_done: BTreeSet<MemberId>,
     /// (spike diagnostics) Each Part B removal's cut as finalized here: `localize::CutRecord`.
     pub cut_records: BTreeMap<MemberId, localize::CutRecord>,
+    /// Carry-over, hole 2 (rev 22 part 3): each removed member's B, the seq bound its decided removal fixes: the
+    /// highest frozen head of its chain among the votes the change lists (a leave lists its own). Its acks past B never
+    /// count, so its last epoch's acks end in the log. A seq bound only: the version that counts is the echo-stable one.
+    bound: BTreeMap<MemberId, u32>,
+    /// Carry-over (measurement): per-epoch reference lookups (`ref_in` calls), each one range search of a
+    /// referencer's ack history.
+    pub ref_lookups: std::cell::Cell<u64>,
+    /// Carry-over: (member, epoch) -> its vouched prefix in that epoch, once that epoch's acks are all in here.
+    final_vouch: BTreeMap<(MemberId, u32), u32>,
     /// Revision 22: since when my latency leave has deferred to another fed member (at most one window).
     latency_defer_since: Option<u64>,
     /// (diagnostics) Latency leaves a change I built left out, logged once each.
@@ -2503,6 +2514,9 @@ impl WorldSim {
             cut_ids: BTreeMap::new(),
             cut_done: BTreeSet::new(),
             cut_records: BTreeMap::new(),
+            bound: BTreeMap::new(),
+            ref_lookups: std::cell::Cell::new(0),
+            final_vouch: BTreeMap::new(),
             latency_defer_since: None,
             latency_left_out: BTreeSet::new(),
             vc: Vc::default(),
@@ -3357,8 +3371,9 @@ impl WorldSim {
         if !self.pb_pending.is_empty() {
             self.finalize_cuts();
         }
-        // Thin links Part B, rule 1: decide the verdicts whose statuses are known.
-        if self.localized() || self.fed_mode_capable() {
+        // Thin links Part B, rule 1: decide the verdicts whose statuses are known. Also below 3 members while an entry of
+        // an older Part B epoch still waits for its verdict (a removed member's, until its cut is final).
+        if self.localized() || self.fed_mode_capable() || (self.cfg.localize && !self.pending.is_empty()) {
             // Windows 0 and 1 need no data (Q = Q_max). They must exist before the loop below: rule 3's
             // deadline bound reads them, and the loop returns early for a member with neither an echo-stable
             // horizon nor a bound. Initialized after it, a member whose first ack took 2.5 s held conf at 0,
@@ -3381,7 +3396,11 @@ impl WorldSim {
             self.walk_windows(c_b, c_d).map(|c| first.map_or(c, |s| c.min(s)))
         } else {
             let localized = self.localized();
-            self.conf_candidate(localized)
+            // F2 below 3 members: an entry of an older Part B epoch still waiting for its verdict holds conf too,
+            // whichever rules today's frames confirm by. kickliar-fed2's n = 2 tail: D54 confirmed past member 2's
+            // s132 (epoch 0, pending until 2's cut was final), and the final cut then voided it below conf.
+            let first = if self.cfg.localize { self.pending.iter().next().map(|&(s, _)| s) } else { None };
+            self.conf_candidate(localized).map(|c| first.map_or(c, |s| c.min(s)))
         };
         if let Some(c) = c {
             if c > self.conf {
@@ -3497,7 +3516,7 @@ impl WorldSim {
             // x's echo-stable horizon, or rule 3's bound, with its last epoch's members and quorum.
             if self.pb_pending.contains(&x) {
                 let old = self.removed_in.get(&x).and_then(|&e| self.ctx(e - 1));
-                let es = old.as_ref().map_or(0, |o| self.echo_stable_in(x, o));
+                let es = old.as_ref().map_or(0, |o| self.es_in(x, o));
                 let h = self.ack_hist.get(&x).and_then(|a| a.range(..=es).next_back()).map_or(0, |(_, h)| h + 1);
                 let hb = old.as_ref().and_then(|o| self.deadline_bound_in(x, o)).map_or(0, |b| b + 1);
                 c = c.min(h.max(hb));
@@ -4079,6 +4098,13 @@ impl WorldSim {
     /// Revision 22: whether I've asked to leave in this epoch.
     pub fn leaving(&self) -> bool {
         self.leaves.contains_key(&self.me)
+    }
+
+    /// Carry-over, hole 2: a member that has asked to leave authors no ack from its request on (spike:
+    /// PE_LEAVER_ACKS=1 lets it ack as before, to measure what the rule costs).
+    pub fn acks_held(&self) -> bool {
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        self.cfg.localize && self.leaving() && !*V.get_or_init(|| std::env::var("PE_LEAVER_ACKS").is_ok())
     }
 
     pub fn request_leave(&mut self) -> Option<Entry> {
@@ -5248,7 +5274,13 @@ impl WorldSim {
             // Review VCR-8: applying a change runs its admin entries, so every one must be held first;
             // ask those that precommitted it for the ones missing.
             if proved && self.fixes_off & fix::VCR8 == 0 {
-                let missing: Vec<EntryId> = self.vc.changes[&v].admin.iter().map(|(id, _)| *id).filter(|id| !self.entries.contains_key(id)).collect();
+                // Carry-over, hole 2: and with Part B every vote a removal lists, so each replica takes the removed
+                // member's B (the highest frozen head among them) from the same votes. A spectator that applied S-4's
+                // leave without holding the leave vote took B = 0, ended the leaver's acks there and cut it at 0
+                // (leave-s4-rejoin).
+                let votes = self.vc.changes[&v].remove.iter().flat_map(|r| r.votes.iter().copied()).filter(|_| self.cfg.localize);
+                let missing: Vec<EntryId> =
+                    self.vc.changes[&v].admin.iter().map(|(id, _)| *id).chain(votes).filter(|id| !self.entries.contains_key(id)).collect();
                 if !missing.is_empty() {
                     let askers: Vec<MemberId> = self.vc.precommits.get(&rr).map(|ms| ms.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
                     for id in missing {
@@ -5320,6 +5352,17 @@ impl WorldSim {
             self.members.remove(&r.member);
             self.roles.remove(&r.member);
             self.removed_in.insert(r.member, self.epoch + 1);
+            // Carry-over, hole 2: B, the highest frozen head of its chain among the listed votes (validated, so held).
+            let b = r
+                .votes
+                .iter()
+                .filter_map(|id| match self.entries.get(id).map(|e| &e.payload) {
+                    Some(Payload::Vote { frozen, .. }) => Some(frozen.0),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            self.bound.insert(r.member, b);
             if pb_old {
                 self.frozen.insert(r.member, u32::MAX);
                 self.evicted.insert(r.member, (u32::MAX, 0));
@@ -5574,7 +5617,9 @@ impl WorldSim {
         self.recompute_conf();
         // Review VCR-3: ack in the new epoch at once, so this member's acks never skip an epoch (an
         // ack's epoch rises by at most one, VC-5), however many decisions fall between two acks.
-        if self.fixes_off & fix::VCR3 == 0 && !(self.quiet_until_member && !self.members.contains(&self.me)) {
+        // Carry-over, hole 2: a member that has asked to leave authors no ack (and so no fed echo) from its request on;
+        // a void latency leave was dropped above, so its sender acks again in the new epoch.
+        if self.fixes_off & fix::VCR3 == 0 && !(self.quiet_until_member && !self.members.contains(&self.me)) && !self.acks_held() {
             out.push(self.author_ack());
         }
     }

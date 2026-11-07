@@ -29,6 +29,29 @@ fn peers(ids: &[MemberId], localize: bool, plans: impl Fn(MemberId) -> BTreeMap<
 /// member has simulated. The replay reads the live replica's Part B window values and ack heads
 /// (`replay_sim_like`), which every replica derives from the same log.
 fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> bool {
+    // Carry-over (measurement): per-epoch reference lookups, verdict passes, and ack heads kept, per replica.
+    {
+        let w: Vec<String> = ids
+            .iter()
+            .map(|&m| {
+                let r = &sim.replica(m, 1).sim;
+                let (l, p) = (r.ref_lookups.get(), r.stats.verdict_passes);
+                format!("m{m} {l} / {p} = {:.1}, heads {}", l as f64 / p.max(1) as f64, r.ack_heads_kept())
+            })
+            .collect();
+        println!("RESULT {label}: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: {}", w.join("; "));
+        // Rule 1's voids of entries whose authors are still members, per replica (carry-over expects none from a view
+        // change: an entry not vouched before its epoch ends waits for a later epoch's acks).
+        let v: Vec<String> = ids
+            .iter()
+            .map(|&m| {
+                let r = &sim.replica(m, 1).sim;
+                let n = r.events.iter().filter(|e| e.contains("rule 1: m") && r.members.iter().any(|a| e.contains(&format!("rule 1: m{a} s")))).count();
+                format!("m{m} {n}")
+            })
+            .collect();
+        println!("RESULT {label}: rule 1's voids of members' entries (authors still members) per replica: {}", v.join(", "));
+    }
     if let Some(t) = panic_at {
         println!("RESULT {label}: PANIC at t={t} ms -> FAIL");
         return false;
@@ -185,6 +208,65 @@ impl LagSampler {
     }
 }
 
+/// Carry-over, hole 2 (@coordinator-opus m5a80fe024013): a leave's cost while pending. From the leaver's request
+/// (`leaving()` at its own replica) to the decision that ends it (it leaves member 1's members, or its epoch moves on
+/// with it still a member: a void latency leave), each listed member's paused frames, and the acks the leaver authored
+/// meanwhile (none, from its request on) and after (a void leave's sender acks again).
+struct LeaveWatch {
+    leaver: MemberId,
+    members: Vec<MemberId>,
+    req: Option<(u64, u32, Vec<u64>, u64)>,
+    done: Option<(u64, bool, Vec<u64>, u64)>,
+    acks_end: u64,
+}
+
+fn paused_of(s: &Sim, members: &[MemberId]) -> Vec<u64> {
+    members.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect()
+}
+
+impl LeaveWatch {
+    fn new(leaver: MemberId, members: &[MemberId]) -> Self {
+        LeaveWatch { leaver, members: members.to_vec(), req: None, done: None, acks_end: 0 }
+    }
+
+    fn sample(&mut self, s: &Sim) {
+        let r = &s.replica(self.leaver, 1).sim;
+        let acks = s.ack_count.get(&(1, self.leaver)).copied().unwrap_or(0);
+        if self.req.is_none() && r.leaving() {
+            self.req = Some((s.net.now_us, r.epoch, paused_of(s, &self.members), acks));
+        }
+        if let (Some(ep), None) = (self.req.as_ref().map(|q| q.1), self.done.as_ref()) {
+            // Removed, or left out (void): by the leaver's own view once its epoch moves on (it can apply the decision
+            // a few ticks before member 1 does).
+            let gone = !s.replica(1, 1).sim.members.contains(&self.leaver) || (r.epoch > ep && !r.members.contains(&self.leaver));
+            if gone || r.epoch > ep {
+                self.done = Some((s.net.now_us, gone, paused_of(s, &self.members), acks));
+            }
+        }
+        self.acks_end = acks;
+    }
+
+    fn report(&self, label: &str) {
+        let (Some((t0, _, p0, a0)), Some((t1, gone, p1, a1))) = (&self.req, &self.done) else {
+            if self.req.is_some() {
+                println!("RESULT {label}: m{}'s leave never decided", self.leaver);
+            }
+            return;
+        };
+        let d: Vec<String> = self.members.iter().zip(p0.iter().zip(p1)).map(|(m, (a, b))| format!("m{m} {}", b - a)).collect();
+        println!(
+            "RESULT {label}: m{}'s leave pending from {:.2} s to {:.2} s ({}); paused frames meanwhile {}; its acks meanwhile {}, after {}",
+            self.leaver,
+            *t0 as f64 / 1e6,
+            *t1 as f64 / 1e6,
+            if *gone { "removed" } else { "left out, void" },
+            d.join(", "),
+            a1 - a0,
+            self.acks_end - a1
+        );
+    }
+}
+
 /// Revision 22, S-4: at 3 players with member 3 fed (8 kbit/s each way), member 2 drops under the floor (0.5 kbit/s each
 /// way from 5 s). It isn't fed (at most one is, n − q = 1), so no floor test judges it, and its removal would need the
 /// fed member's vote, which a fed member never casts on a floor; its client measures its link and it leaves by request
@@ -213,7 +295,9 @@ pub fn leave_s4() {
     let mut sim = Sim::new(net, ps, 20_000_000);
     sim.feed = true;
     let mut removed: Option<u64> = None;
+    let mut lw = LeaveWatch::new(2, &[1, 3]);
     let panic_at = run_to_end(&mut sim, |s| {
+        lw.sample(s);
         if s.net.now_us == 5_000_000 {
             for &x in &[1, 3] {
                 for pair in [(2, x), (x, 2)] {
@@ -241,6 +325,7 @@ pub fn leave_s4() {
         r1.members,
         sim.is_fed(1, 3)
     );
+    lw.report("leave-s4");
     // Diagnostics (PE_PB_DEBUG): each member's view-change and leave events.
     if std::env::var("PE_PB_DEBUG").is_ok() {
         for m in [1, 2, 3] {
@@ -269,6 +354,140 @@ pub fn leave_s4() {
         ds.iter().map(|(m, d)| format!("m{m}={d:016x}")).collect::<Vec<_>>().join(" "),
         if ok { "ALL EQUAL, NO FALSE CHECKS, LEAVE DECIDED" } else { "FAIL" }
     );
+}
+
+/// S-4's spectator path (item 7, RV16-2; plan section 7: "a second member that needs the feed takes item 7's path to
+/// spectator, as a disconnection would, and rejoins after 10 s above both floors"). leave-s4's run: 3 players, member 3
+/// fed at 8 kbit/s, member 2's link falls to 0.5 kbit/s at 5 s and it leaves by request at 8 s (D-5). Once the leave
+/// decides, member 2 follows at once as a spectator under its next id (102, a new member, 10.8; the spike has no state
+/// transfer, so it follows the log). Its link recovers to 64 kbit/s at 15 s, and its client asks to join once the link
+/// has stayed above both floors for 10 s. `early` is the control: it asks 1 s after the removal, still under the floor.
+pub fn leave_s4_rejoin() {
+    for early in [false, true] {
+        leave_s4_rejoin_run(early);
+    }
+}
+
+fn leave_s4_rejoin_run(early: bool) {
+    const NEXT: MemberId = 102;
+    const FLOOR_BPS: u64 = 2_500;
+    let ids: Vec<MemberId> = vec![1, 2, 3];
+    let others: [MemberId; 2] = [1, 3];
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| plan(&(120..2400).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let mut ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut p = Peer::new(NEXT, 0);
+    p.join(1, &ids, SCENE, cfg, 100_000, BTreeMap::new());
+    {
+        let r = p.worlds.get_mut(&1).unwrap();
+        r.adapt = true;
+        r.sim.quiet_until_member = true;
+    }
+    ps.push(p);
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 33);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    for &x in &[1, 2, NEXT] {
+        for pair in [(3, x), (x, 3)] {
+            net.caps.insert(pair, Cap { rate_bps: 8_000, burst_bytes: 4000, max_queue_us: 500_000 });
+        }
+    }
+    let mut sim = Sim::new(net, ps, 40_000_000);
+    sim.feed = true;
+    // Member 2's link (and its next id's): to and from 1 and 3.
+    let set_link = |s: &mut Sim, bps: u64| {
+        for &x in &others {
+            for a in [2, NEXT] {
+                for pair in [(a, x), (x, a)] {
+                    s.net.caps.insert(pair, Cap { rate_bps: bps, burst_bytes: 4000, max_queue_us: 500_000 });
+                }
+            }
+        }
+    };
+    let (mut removed, mut above, mut asked, mut admitted): (Option<u64>, Option<u64>, Option<u64>, Option<u64>) = (None, None, None, None);
+    let mut paused_at: [Vec<u64>; 2] = [Vec::new(), Vec::new()];
+    let mut spectator_conf: Option<(u64, u64)> = None;
+    let panic_at = run_to_end(&mut sim, |s| {
+        let now = s.net.now_us;
+        if now == 5_000_000 {
+            set_link(s, 500);
+        }
+        if now == 15_000_000 {
+            set_link(s, 64_000);
+        }
+        // leave-s4: its client measures its link and asks to leave at 8 s, sent first (D-5).
+        if now == 8_000_000 {
+            if let Some(e) = sim_mut(s, 2).request_leave() {
+                for to in [1, 3] {
+                    s.net.send_urgent(1, 2, to, &Msg::Entry(e.clone()));
+                }
+            }
+        }
+        let (has2, has_next) = {
+            let r1 = &s.replica(1, 1).sim;
+            (r1.members.contains(&2), r1.members.contains(&NEXT))
+        };
+        if removed.is_none() && !has2 {
+            removed = Some(now);
+            paused_at[0] = others.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect();
+            // It follows at once as a spectator, under its next id (a new member, 10.8).
+            let i2 = s.peers.iter().position(|p| p.id == 2).unwrap();
+            s.peers[i2].crashed = true;
+            for &m in &others {
+                sim_mut(s, m).follow(NEXT);
+            }
+        }
+        // The spectator follows the log: its confirmed frame while it waits (just before it asks).
+        if removed.is_some() && asked.is_none() {
+            let r = &s.replica(NEXT, 1).sim;
+            spectator_conf = Some((now, r.conf));
+        }
+        // Its client measures its link (the spike reads the caps) against both floors.
+        let up = s.net.caps.get(&(NEXT, 1)).is_none_or(|c| c.rate_bps >= FLOOR_BPS) && s.net.caps.get(&(1, NEXT)).is_none_or(|c| c.rate_bps >= FLOOR_BPS);
+        above = if up { Some(above.unwrap_or(now)) } else { None };
+        if let (Some(t0), None) = (removed, asked) {
+            let due = if early { now >= t0 + 1_000_000 } else { above.is_some_and(|a| now >= a + 10_000_000) };
+            if due {
+                for &m in &others {
+                    s.net.send(1, NEXT, m, &join_msg(session_id(1, &ids), NEXT, vec![], u64::MAX));
+                }
+                asked = Some(now);
+            }
+        }
+        if admitted.is_none() && has_next {
+            admitted = Some(now);
+            paused_at[1] = others.iter().map(|&m| s.replica(m, 1).sim.stats.paused_frames).collect();
+        }
+    });
+    let label = format!("leave-s4-rejoin ({})", if early { "control: asks 1 s after the removal, under the floor" } else { "asks after 10 s above both floors" });
+    let secs = |t: Option<u64>| t.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6));
+    let r1 = &sim.replica(1, 1).sim;
+    let paused_end: Vec<u64> = others.iter().map(|&m| sim.replica(m, 1).sim.stats.paused_frames).collect();
+    println!(
+        "RESULT {label}: 2 left at {}; spectator {NEXT} at once (its conf {} at {}); link above both floors from 15 s; join asked at {}; admitted at {}; members at m1 {:?}",
+        secs(removed),
+        spectator_conf.map_or(0, |c| c.1),
+        secs(spectator_conf.map(|c| c.0)),
+        secs(asked),
+        secs(admitted),
+        r1.members
+    );
+    println!(
+        "RESULT {label}: the others' paused frames: to the leave {:?}, leave to admission {:?}, after admission {:?}",
+        paused_at[0],
+        paused_at[0].iter().zip(&paused_at[1]).map(|(a, b)| b.saturating_sub(*a)).collect::<Vec<_>>(),
+        paused_at[1].iter().zip(&paused_end).map(|(a, b)| b.saturating_sub(*a)).collect::<Vec<_>>()
+    );
+    let finals: Vec<MemberId> = r1.members.iter().copied().collect();
+    verdict(&sim, &finals, &label, panic_at);
 }
 
 /// Revision 22 (@coordinator-opus mb10dc8f0e773): a liar can't block a leave request by withholding, since the leaver's
@@ -316,7 +535,9 @@ fn leave_withhold_n(label: &str, thin: &[MemberId], room: Option<usize>) {
     sim_mut(&mut sim, 2).withhold_vc = true;
     let mut removed: Option<u64> = None;
     let mut fed_at_leave: Vec<bool> = Vec::new();
+    let mut lw = LeaveWatch::new(4, &[1, 2, 3]);
     let panic_at = run_to_end(&mut sim, |s| {
+        lw.sample(s);
         if s.net.now_us == 8_000_000 {
             fed_at_leave = thin.iter().map(|&f| s.is_fed(1, f)).collect();
             if let Some(e) = sim_mut(s, 4).request_leave() {
@@ -336,6 +557,7 @@ fn leave_withhold_n(label: &str, thin: &[MemberId], room: Option<usize>) {
         removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
         r1.members,
     );
+    lw.report(label);
     if std::env::var("PE_PB_DEBUG").is_ok() {
         for m in [1, 3, 4] {
             for e in sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("view change") || e.contains("VIEW CHANGE") || e.contains("leave") || e.contains("vote to")).take(12) {
@@ -617,7 +839,11 @@ pub fn leave_race() {
     let mut fed_at_ask: Vec<bool> = Vec::new();
     let mut sent: Vec<MemberId> = Vec::new();
     let mut removed: BTreeMap<MemberId, u64> = BTreeMap::new();
+    let mut lws: Vec<LeaveWatch> = thin.iter().map(|&f| LeaveWatch::new(f, &[1, 2])).collect();
     let panic_at = run_to_end(&mut sim, |s| {
+        for lw in lws.iter_mut() {
+            lw.sample(s);
+        }
         if s.net.now_us == 10_000_000 {
             fed_at_ask = thin.iter().map(|&f| s.is_fed(1, f)).collect();
             for &f in &thin {
@@ -647,6 +873,9 @@ pub fn leave_race() {
         r1.members,
         sim.is_fed(1, 3)
     );
+    for lw in &lws {
+        lw.report(label);
+    }
     let one = removed.len() == 1 && removed.contains_key(&4) && r1.members.contains(&3) && changes.iter().filter(|c| c.contains(&3) || c.contains(&4)).count() == 1;
     let void = r1.void_ids();
     let after: Vec<EntryId> = r1.all_entries().into_iter().filter(|e| e.member == 3 && matches!(e.payload, Payload::Touch { .. }) && e.stamp >= 780).map(|e| e.id()).collect();
@@ -696,8 +925,12 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
     let mut shrunk: Option<(u64, Vec<MemberId>, Vec<u64>)> = None;
     let full: Vec<MemberId> = ids.iter().copied().filter(|m| !thin.contains(m)).collect();
     let mut lag = LagSampler::new(&full);
+    let mut lws: Vec<LeaveWatch> = thin.iter().map(|&f| LeaveWatch::new(f, &full)).collect();
     let panic_at = run_to_end(&mut sim, |s| {
         lag.sample(s);
+        for lw in lws.iter_mut() {
+            lw.sample(s);
+        }
         // The dip: the fed members' links at `bps` from `from` to `to`, then back.
         if let Some((from, to, bps)) = dip {
             if s.net.now_us == from || s.net.now_us == to {
@@ -717,6 +950,9 @@ fn fed_long(label: &str, ids: &[MemberId], thin: &[MemberId], room: Option<usize
         }
     });
     lag.report(label);
+    for lw in &lws {
+        lw.report(label);
+    }
     let leaves: Vec<String> = ids.iter().flat_map(|&m| sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("leaves by request")).cloned().collect::<Vec<_>>()).collect();
     println!("RESULT {label}: leave requests: {}", if leaves.is_empty() { "none".to_string() } else { format!("{leaves:?}") });
     match &shrunk {
@@ -882,6 +1118,15 @@ pub fn e1_roles(case: &str) {
     };
     println!("RESULT {label}: {}", if expect { what.to_string() } else { format!("FAIL (expected: {what})") });
     let finals: Vec<MemberId> = r1.members.iter().copied().filter(|&m| m != 3).collect();
+    if std::env::var("PE_PB_DEBUG").is_ok() {
+        for &m in &ids {
+            let r = &sim.replica(m, 1).sim;
+            println!("  m{m}: epoch {} frame {} conf {} fed {} leaving {}; held of m3's chain {:?}; acks authored {}; vc on 4: {}", r.epoch, r.frame, r.conf, sim.is_fed(1, m), r.leaving(), r.held_of(3), sim.ack_count.get(&(1, m)).copied().unwrap_or(0), r.kick_trace(4));
+            if m == 3 {
+                println!("  m3 vc_debug: {}", r.vc_debug());
+            }
+        }
+    }
     verdict(&sim, &finals, &label, panic_at);
 }
 
@@ -999,12 +1244,12 @@ pub fn cutfix(case: &str) {
     let ids: Vec<MemberId> = (1..=7).collect();
     let label = format!("cutfix-{case}");
     let left = case == "left" || case == "move";
-    let shrink = case == "shrink" || case == "shrink-same";
+    let shrink = case == "shrink" || case == "shrink-same" || case == "shrink-late";
     // The member acting often, whose cut the cell is about.
     let busy: MemberId = if shrink { 7 } else { 2 };
     let (gone, withhold): (Vec<MemberId>, Vec<MemberId>) = match case {
         "same" => (vec![2, 3], vec![2, 3]),
-        "shrink" => (vec![2, 3, 7], vec![]),
+        "shrink" | "shrink-late" => (vec![2, 3, 7], vec![]),
         "shrink-same" => (vec![2, 7], vec![2, 7]),
         _ => (vec![2, 3], vec![]),
     };
@@ -1025,7 +1270,7 @@ pub fn cutfix(case: &str) {
     let cfg = SimConfig { localize: true, seed, ..SimConfig::default() };
     let kicks: Vec<(u64, MemberId)> = match case {
         "same" => vec![(360, 2), (360, 3)],
-        "shrink" => vec![(360, 2), (360, 3), (540, 7)],
+        "shrink" | "shrink-late" => vec![(360, 2), (360, 3), (540, 7)],
         "shrink-same" => vec![(360, 2), (360, 7)],
         _ => vec![(360, 2)],
     };
@@ -1053,7 +1298,11 @@ pub fn cutfix(case: &str) {
     let case_s = case.to_string();
     // Diagnostics (the stuck-kick trace, me6b738e13923): PE_SHRINK_UNTIL_MS moves the end of the shrink cells' delay
     // window (7 s by default).
-    let shrink_until: u64 = std::env::var("PE_SHRINK_UNTIL_MS").ok().and_then(|v| v.parse::<u64>().ok()).map_or(7_000_000, |ms| ms * 1000);
+    // "shrink-late": the window runs to 10 s, past 7's kick at 9 s (me6b738e13923, mdffbecdc9b48).
+    let shrink_until: u64 = std::env::var("PE_SHRINK_UNTIL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(if case == "shrink-late" { 10_000_000 } else { 7_000_000 }, |ms| ms * 1000);
     net.filter = Some(Box::new(move |t, _w, from, to, m| {
         let vc = matches!(m, Msg::Entry(e) if matches!(e.payload, Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }));
         match case_s.as_str() {
@@ -1064,7 +1313,7 @@ pub fn cutfix(case: &str) {
             },
             // 7's entries never reach 5 and 6 from 4 s on, whoever relays them (a delay on 7's own link alone was undone
             // by repair fetches from 1-4).
-            "shrink" | "shrink-same" => {
+            "shrink" | "shrink-same" | "shrink-late" => {
                 // (Dropped for good, 5 and 6 could never follow 7's chain: their conf stopped and 7's kick never decided.)
                 if (to == 5 || to == 6) && (4_000_000..shrink_until).contains(&t) && matches!(m, Msg::Entry(e) if e.member == 7) {
                     Fate::Delay(4_000_000)
@@ -1096,11 +1345,18 @@ pub fn cutfix(case: &str) {
     let mut asked = false;
     // PE_KICK_TRACE=x: every 250 ms from 8.5 s, each live replica's view of the kick of x (`kick_trace`).
     let kick_trace: Option<MemberId> = std::env::var("PE_KICK_TRACE").ok().and_then(|v| v.parse().ok());
+    // Member 1 at the last kick's clock frame: (its frame, its confirmed frame).
+    let last_kick_us = kicks.iter().map(|&(f, _)| f * 1_000_000 / 60 + 1000).max().unwrap_or(0);
+    let mut at_kick: Option<(u64, u64)> = None;
     let panic_at = run_to_end(&mut sim, |s| {
         for &x in &gone {
             if !removed.contains_key(&x) && !s.replica(1, 1).sim.members.contains(&x) {
                 removed.insert(x, s.net.now_us);
             }
+        }
+        if at_kick.is_none() && s.net.now_us >= last_kick_us {
+            let r = &s.replica(1, 1).sim;
+            at_kick = Some((r.frame, r.conf));
         }
         if let Some(x) = kick_trace {
             if s.net.now_us >= 8_500_000 && s.net.now_us % 250_000 == 0 {
@@ -1123,6 +1379,14 @@ pub fn cutfix(case: &str) {
         }
     });
     let survivors: Vec<MemberId> = ids.iter().copied().filter(|m| !gone.contains(m)).collect();
+    if case == "shrink-late" {
+        let (f, c) = at_kick.unwrap_or((0, 0));
+        let gap = f.saturating_sub(c);
+        println!(
+            "RESULT {label}: at 7's kick (clock frame 540) member 1's frame {f}, confirmed {c}: {}",
+            if f < 540 { format!("paused ({gap} frames past conf), the kick authored anyway") } else { "caught up".to_string() }
+        );
+    }
     let r1 = &sim.replica(1, 1).sim;
     let epoch_of = |x: MemberId| r1.decided_changes().position(|c| c.remove.iter().any(|r| r.member == x)).map(|i| i + 1);
     println!(
@@ -1142,8 +1406,8 @@ pub fn cutfix(case: &str) {
             let r = &sim.replica(m, 1).sim;
             if let Some(rec) = r.cut_records.get(&x) {
                 println!(
-                    "RESULT {label}: m{m}: m{x}'s cut {} at frame {} (without members that had left: {}); (voter, read to, evidence, still a member) {:?}",
-                    rec.cut, rec.at_frame, rec.without_left, rec.voters
+                    "RESULT {label}: m{m}: m{x}'s cut {} at frame {}, epoch {}'s vouch (without members that had left: {}; its last epoch alone: {}); (member, read to, evidence, still a member) {:?}",
+                    rec.cut, rec.at_frame, rec.epoch, rec.without_left, rec.last_epoch, rec.voters
                 );
             }
             let past = r.counted_past_cut(x);
@@ -1157,7 +1421,7 @@ pub fn cutfix(case: &str) {
         bites = true;
     }
     match case {
-        "same" | "shrink" | "shrink-same" => println!("RESULT {label}: the gap {}", if bites { "BITES" } else { "does not bite here" }),
+        "same" | "shrink" | "shrink-same" | "shrink-late" => println!("RESULT {label}: the gap {}", if bites { "BITES" } else { "does not bite here" }),
         _ => {
             let used = survivors.iter().all(|&m| sim.replica(m, 1).sim.cut_records.get(&2).is_some_and(|rec| rec.voters.iter().any(|v| v.0 == 3 && !v.3 && v.1.is_some() && v.2 > 0)));
             println!("RESULT {label}: 3's evidence in 2's cut at every replica: {}", if used { "yes" } else { "NO -> FAIL" });
@@ -1806,6 +2070,177 @@ fn pb_run(seed: u64) -> (bool, String) {
 }
 
 /// `partbrand [--seeds N] [--from S]`: Part B's randomized schedules that remove no one.
+/// Carry-over (@coordinator-opus mbdc2c5ae906c): the confirmation delay across view changes, and the cuts, under random
+/// churn. Like partbrand, with every member honest and the membership changing: member 1 (an admin) kicks one member,
+/// another asks to leave, a third crashes (removed on silence) and a non-member asks to join, each at a random time from
+/// 4 s to 12 s. n = 5..7, every member touches its own object every 0.5 s, and in half the seeds one member other than
+/// member 1 is thin (12 kbit/s down) or distant (200 ms each way). Checks: each staying replica over its own confirmed frames against
+/// the offline replay; every removal's cut the same at every staying replica, nothing counted past it; no rollback below
+/// a confirmed frame (the spike panics). Reported: member 1's confirmation lag (mean / P95 frames, every 100 ms from
+/// 4 s) in the 3 s after each view change and elsewhere, and rule 1's voids of members that stayed.
+pub fn pbchurn(args: &[String]) {
+    let get = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u64>().ok());
+    let n = get("--seeds").unwrap_or(12);
+    let from = get("--from").unwrap_or(1);
+    let mut ok = 0;
+    for seed in from..from + n {
+        let (good, line) = churn_run(seed);
+        println!("RESULT pbchurn {line}");
+        if good {
+            ok += 1;
+        }
+    }
+    println!("RESULT pbchurn: {ok} of {n} seeds OK -> {}", if ok == n { "ALL EQUAL, NO FALSE CHECKS" } else { "FAIL" });
+}
+
+fn mean_p95(v: &[u64]) -> String {
+    if v.is_empty() {
+        return "-".to_string();
+    }
+    let mut x = v.to_vec();
+    x.sort_unstable();
+    format!("{:.1} / {}", x.iter().sum::<u64>() as f64 / x.len() as f64, x[(x.len() * 95).div_ceil(100) - 1])
+}
+
+fn churn_run(seed: u64) -> (bool, String) {
+    let mut rng = seed ^ 0x4348_5552_4E43_4855;
+    let n = 5 + pb_below(&mut rng, 3) as u32;
+    let ids: Vec<MemberId> = (1..=n).collect();
+    let joiner: MemberId = n + 1;
+    let mut pool: Vec<MemberId> = ids.iter().copied().filter(|&m| m != 1).collect();
+    let mut pick = |rng: &mut u64| pool.remove(pb_below(rng, pool.len() as u64) as usize);
+    let (kicked, leaver, crasher) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
+    let at = |rng: &mut u64| (4_000 + pb_below(rng, 8_000)) * 1000;
+    let (t_kick, t_leave, t_crash, t_join) = (at(&mut rng), at(&mut rng), at(&mut rng), at(&mut rng));
+    // Not member 1: it's the admin and where the lag is sampled.
+    let shape: Option<(MemberId, bool)> = if pb_below(&mut rng, 2) == 0 { Some((ids[1 + pb_below(&mut rng, n as u64 - 1) as usize], pb_below(&mut rng, 2) == 0)) } else { None };
+    let end_us: u64 = 22_000_000;
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let kick_frame = t_kick * 60 / 1_000_000;
+    let plans = |m: MemberId| {
+        let mut v: Vec<(u64, Action)> = (120..end_us / 1_000_000 * 60 - 120).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        if m == 1 {
+            v.push((kick_frame, Action::Kick { target: kicked }));
+            v.sort_by_key(|x| x.0);
+        }
+        plan(&v)
+    };
+    let mut ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p.worlds.get_mut(&1).unwrap().adapt = true;
+            p
+        })
+        .collect();
+    let mut pj = Peer::new(joiner, 0);
+    pj.join(1, &ids, SCENE, cfg, 100_000, BTreeMap::new());
+    ps.push(pj);
+    for p in ps.iter_mut().filter(|p| p.id != joiner) {
+        p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
+    }
+    let mut net = Net::new(Link { delay_us: 40_000, jitter_us: 5_000, loss_pct: 0 }, 47 ^ seed);
+    net.default_cap = Some(Cap { rate_bps: 256_000, burst_bytes: 4000, max_queue_us: 500_000 });
+    net.batching = true;
+    let everyone: Vec<MemberId> = ids.iter().copied().chain([joiner]).collect();
+    if let Some((m, thin)) = shape {
+        for &x in everyone.iter().filter(|&&x| x != m) {
+            if thin {
+                net.caps.insert((x, m), Cap { rate_bps: 12_000, burst_bytes: 4000, max_queue_us: 500_000 });
+            } else {
+                for pair in [(m, x), (x, m)] {
+                    net.links.insert(pair, Link { delay_us: 200_000, jitter_us: 5_000, loss_pct: 0 });
+                }
+            }
+        }
+    }
+    let mut sim = Sim::new(net, ps, end_us);
+    sim.feed = true;
+    let sid = session_id(1, &ids);
+    let (mut epoch1, mut quiet_from) = (0u32, 0u64);
+    let (mut near, mut far): (Vec<u64>, Vec<u64>) = (Vec::new(), Vec::new());
+    let panic_at = run_to_end(&mut sim, |s| {
+        let now = s.net.now_us;
+        if now == t_leave {
+            if let Some(e) = sim_mut(s, leaver).request_leave() {
+                for &to in everyone.iter().filter(|&&x| x != leaver) {
+                    s.net.send_urgent(1, leaver, to, &Msg::Entry(e.clone()));
+                }
+            }
+        }
+        if now == t_crash {
+            let i = s.peers.iter().position(|p| p.id == crasher).unwrap();
+            s.peers[i].crashed = true;
+        }
+        if now == t_join {
+            let members: Vec<MemberId> = s.replica(1, 1).sim.members.iter().copied().collect();
+            for m in members {
+                s.net.send(1, joiner, m, &join_msg(sid, joiner, vec![], u64::MAX));
+            }
+        }
+        let r1 = &s.replica(1, 1).sim;
+        if r1.epoch != epoch1 {
+            epoch1 = r1.epoch;
+            quiet_from = now + 3_000_000;
+        }
+        if now >= 4_000_000 && now % 100_000 == 0 {
+            let l = r1.now.saturating_sub(r1.conf);
+            if now < quiet_from {
+                near.push(l);
+            } else {
+                far.push(l);
+            }
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    let staying: Vec<MemberId> = ids.iter().copied().filter(|m| r1.members.contains(m) && *m != crasher).collect();
+    let mut fails: Vec<String> = Vec::new();
+    if let Some(t) = panic_at {
+        fails.push(format!("PANIC at {t} ms"));
+    }
+    let mut cuts: Vec<String> = Vec::new();
+    for x in [kicked, leaver, crasher] {
+        if r1.members.contains(&x) {
+            fails.push(format!("m{x} never removed"));
+            continue;
+        }
+        // A replica on the feed at the end holds no log, so it computes no cuts.
+        let per: BTreeSet<Option<u32>> = staying.iter().filter(|&&m| !sim.is_fed(1, m)).map(|&m| sim.replica(m, 1).sim.final_cut(x)).collect();
+        if per.len() != 1 || per.contains(&None) {
+            fails.push(format!("m{x}'s cuts {per:?}"));
+        }
+        cuts.push(format!("m{x} {per:?}"));
+        for &m in &staying {
+            if !sim.replica(m, 1).sim.counted_past_cut(x).is_empty() {
+                fails.push(format!("m{m} counted m{x} past its cut"));
+            }
+        }
+    }
+    let voids: usize = staying.iter().map(|&m| r1.events.iter().filter(|e| e.contains(&format!("rule 1: m{m} s"))).count()).sum();
+    let label = format!("pbchurn seed {seed}");
+    let equal = panic_at.is_none() && verdict(&sim, &staying, &label, None);
+    if !equal {
+        fails.push("replicas differ from the replay".to_string());
+    }
+    let changes: Vec<String> = r1.vc_log.iter().map(|d| format!("{:.2} s {:?}", d.1 as f64 / 60.0, d.3)).collect();
+    let line = format!(
+        "seed {seed} n={n} kick m{kicked} at {:.1} s, leave m{leaver} at {:.1} s, crash m{crasher} at {:.1} s, join m{joiner} at {:.1} s{}: view changes at m1 [{}]; members at the end {:?}; cuts {}; m1's lag in the 3 s after a change {}, elsewhere {}; rule-1 voids of members that stayed {voids} -> {}",
+        t_kick as f64 / 1e6,
+        t_leave as f64 / 1e6,
+        t_crash as f64 / 1e6,
+        t_join as f64 / 1e6,
+        shape.map_or(String::new(), |(m, thin)| format!(", m{m} {}", if thin { "thin 12 kbit/s down" } else { "distant 200 ms" })),
+        changes.join("; "),
+        r1.members,
+        cuts.join(", "),
+        mean_p95(&near),
+        mean_p95(&far),
+        if fails.is_empty() { "OK".to_string() } else { format!("FAIL {fails:?}") }
+    );
+    (fails.is_empty(), line)
+}
+
 pub fn partbrand(args: &[String]) {
     let get = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u64>().ok());
     let n = get("--seeds").unwrap_or(12);

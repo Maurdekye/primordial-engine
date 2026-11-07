@@ -26,6 +26,12 @@ pub fn dgram_overhead() -> u64 {
     static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("PE_DGRAM_OVERHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(DATAGRAM_OVERHEAD))
 }
+/// (spike: PE_DROP_PAUSED_KICKS=1, the harness drops a planned kick while its admin is paused, as before mdffbecdc9b48)
+fn drop_paused_kicks() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_DROP_PAUSED_KICKS").is_ok())
+}
+
 /// (spike: PE_FED_MIN_LEVEL=L replaces `fed_level_floor` for a run, for measuring; 0 is no floor)
 fn fed_min_level_override() -> Option<usize> {
     static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
@@ -385,9 +391,22 @@ impl Net {
     /// Send now, or queue for this tick's batch to that peer.
     pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         // Thin links Part B, rule 5: no entries to a member on the state feed, but the view change's (revision 21:
-        // a fed member votes and takes part in the decision; they are few and small).
+        // a fed member votes and takes part in the decision; they are few and small), and every admin entry: a
+        // decided change is applied only once each admin entry it lists is held (VCR-8), so without them a fed member
+        // never applied a change listing a SetRole and stayed in that epoch for good (e1-same-promote under
+        // carry-over: no ack of it declared a later epoch, so the n = 3 epoch after it could vouch nothing).
         if let Msg::Entry(e) = m {
-            let view_change = matches!(e.payload, Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. } | Payload::Kick { .. });
+            let view_change = matches!(
+                e.payload,
+                Payload::Vote { .. }
+                    | Payload::Propose { .. }
+                    | Payload::Prevote { .. }
+                    | Payload::Precommit { .. }
+                    | Payload::Kick { .. }
+                    | Payload::SetRole { .. }
+                    | Payload::DefineRole { .. }
+                    | Payload::Ownership { .. }
+            );
             if self.fed.contains(&(world, to)) && !view_change {
                 return;
             }
@@ -1294,13 +1313,18 @@ impl Sim {
                 r.sim.advance(clock_frame);
                 // Planned actions for this frame (authored at the start of the frame). Hand poses
                 // stream even while the sim is behind (stamped at the present, R18); anything else
-                // needs a caught-up sim and is dropped otherwise (as in 3d0f98a).
+                // needs a caught-up sim and is dropped otherwise (as in 3d0f98a). A kick too is
+                // authored while its admin is paused (@coordinator-opus mdffbecdc9b48): it is judged on
+                // its signature, epoch and the previous decided ACL ((e1)), not on the sim's state, and
+                // a pause beyond Part B's tolerance ends only by a kick or a recovered link (the user,
+                // 2026-11-01 17:26Z), so dropping it kept such a pause going (cutfix-shrink-late).
                 let ready = r.sim.caught_up() && r.sim.frame == clock_frame;
                 {
                     let actions = r.plan.remove(&clock_frame).unwrap_or_default();
                     {
                         for a in actions {
-                            if !ready && !matches!(a, Action::Hand { .. }) {
+                            // (spike: PE_DROP_PAUSED_KICKS=1 drops them again, to compare a cell with 3d0f98a's rule)
+                            if !ready && !(matches!(a, Action::Hand { .. }) || matches!(a, Action::Kick { .. }) && !drop_paused_kicks()) {
                                 continue;
                             }
                             if let Action::Hand { obj, target_mm, active, ahead } = a {
@@ -1457,7 +1481,8 @@ impl Sim {
                 } else {
                     now >= r.next_ack_us
                 };
-            if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
+            // Carry-over, hole 2: a member that has asked to leave authors no ack from its request on.
+            if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) && !r.sim.acks_held() {
                 r.next_ack_us = now + every * r.dt_us;
                 *self.ack_count.entry((w, pid)).or_default() += 1;
                 r.sim.echo_ack_at = None;
