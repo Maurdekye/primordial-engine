@@ -92,9 +92,11 @@ not:
 | down-k12-m8 | others 182, back 1.8 s; 3 demoted | others 1,531, never (DIFFER, not converged); nobody demoted |
 | down-k16-m8 | others 177, back 1.8 s; 3 demoted | others 1,447, back 23.3 s; nobody demoted |
 
-- Since the unread polka ids left the wire (2026-11-07, 4 B less per precommit), down-k16-m8 reads others 1,526,
-  never, and 15 of the 64 r18-thin-pe cells moved a little, both ways (spikes/out/polka-ids/moved-cells.txt). These
-  cells run view changes, and on the controller cliff a few bytes move them; they are single draws (above).
+- Since the unread polka ids left the wire (2026-11-07, 4 B less per precommit), 15 of the 64 r18-thin-pe cells moved
+  a little, both ways (spikes/out/polka-ids/moved-cells.txt). On 5-delay means (46-54 ms) down-k16-m8's others stall
+  1,512 → 1,485, and pe main never recovered at 3 of the 5 delays either, so its 23.3 s at 50 ms was a lucky draw.
+  These cells run view changes; padding the 4 B back reproduces the old logs exactly, so the moves are the controller's
+  sensitivity to bytes [V @design-reviewer, review of d9629ea].
 
 - Part A thins the watcher's own stream (acks every 16-32 frames at levels 7-8), its acks keep arriving, and nothing
   removes it: the spike's PL-1 effect (design 10.9). Accepted as the cost of the confirmed no-demotion rule for slow
