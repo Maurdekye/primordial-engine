@@ -1257,4 +1257,46 @@ mod exit_tests {
         assert_eq!(w.stats.echo_phase_ends, 1);
         assert!(w.echo_ack_caps().is_empty(), "no cap once the echo phase is over");
     }
+
+    #[test]
+    fn the_echo_catch_up_stripes_over_its_holders() {
+        // Member 3, in its echo phase, holds member 1's chain to seq 10; its echo stands at seq 70.
+        let c = chain(80, u32::MAX);
+        let mut w = replica(3, &c, 10);
+        w.echo_phase = Some(EchoPhase::default());
+        w.echo_seq.insert(1, 70);
+        let holders = [(1, false), (2, false)];
+        let asked = |f: Vec<(MemberId, Msg)>| -> Vec<(MemberId, u32, u32)> {
+            f.into_iter()
+                .map(|(h, m)| match m {
+                    Msg::Fetch { author: 1, from, to } => (h, from, to),
+                    _ => panic!("not a fetch of chain 1"),
+                })
+                .collect()
+        };
+        let hold = |w: &mut WorldSim, r: std::ops::RangeInclusive<u32>| {
+            for s in r {
+                let e = &c[s as usize - 1];
+                w.by_author.insert((1, s), e.id());
+                w.entries.insert(e.id(), e.clone());
+            }
+        };
+        // Two 16-entry ranges per holder, the lowest first, the author first.
+        assert_eq!(asked(w.echo_catchup_fetches(0, &holders)), vec![(1, 11, 26), (1, 27, 42), (2, 43, 58), (2, 59, 70)]);
+        assert!(w.catchup_covers(1, 50) && !w.catchup_covers(1, 71), "the catch-up owns every seq up to the echo");
+        // A later stripe arriving first doesn't fill the hole (the no-progress guard's measure), but counts as its holder's
+        // progress; nothing is left to ask.
+        hold(&mut w, 43..=58);
+        assert_eq!(w.catchup_missing(), 44);
+        assert!(asked(w.echo_catchup_fetches(1000, &holders)).is_empty());
+        // Holder 1 draws nothing for 2 s: charged a turn, its ranges asked again, the lowest of the holder charged least.
+        assert_eq!(asked(w.echo_catchup_fetches(2500, &holders)), vec![(2, 11, 26), (1, 27, 42)]);
+        assert_eq!(w.catchup_fail.get(&1), Some(&1));
+        hold(&mut w, 11..=26);
+        w.contiguous.insert(1, 26);
+        assert!(asked(w.echo_catchup_fetches(4000, &holders)).is_empty());
+        // Charged a second turn, two above the least: holder 1 is left out.
+        assert_eq!(asked(w.echo_catchup_fetches(5000, &holders)), vec![(2, 27, 42)]);
+        assert_eq!(w.catchup_fail.get(&1), Some(&2));
+    }
 }
