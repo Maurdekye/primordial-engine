@@ -54,12 +54,12 @@ RESULT r14 forge: object 40 live in A 0, in B 1, pending escrow 0 -> CONSERVED (
 RESULT r14 forge: A's objects 50 and 51 live in A 1 and 1, object 50 in D 0; copies of A:40 in B 1 -> CONSERVED
 RESULT r14 forge: dishonest-majority W (provenance on): A:52 A 1 B 0 pending 0 (W 0); A:53 A 1 B 0 pending 0 (W 0); A:54 A 1 B 0 pending 0 (W 0); A:55 A 1 B 0 pending 0 (W 1); W:500 A 0 B 0 pending 0 (W 0) -> CONSERVED in the honest worlds
 RESULT r14 forge: world 2 holds a fork proof against world 6: it exported 0x100000034 twice from its entry 14390614540344236993 (transfers 9788776472622668130 and 2370507401260764139); verifies for a third party: true
-  m2 world 6: rollbacks 2 max depth 3 resim frames 9 (0.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 517 frame 533
-  m3 world 6: rollbacks 2 max depth 4 resim frames 10 (0.4 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 520 frame 533
-  m1 world 1: rollbacks 12 max depth 4 resim frames 58 (27.7 ms) overwrites 2 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 516 frame 534
-  m2 world 1: rollbacks 16 max depth 9 resim frames 70 (56.7 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 517 frame 533
-  m1 world 2: rollbacks 12 max depth 3 resim frames 49 (25.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 425 frame 442
-  m3 world 2: rollbacks 5 max depth 3 resim frames 24 (28.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 428 frame 442
+  m2 world 6: rollbacks 2 max depth 3 resim frames 9 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 517 frame 533
+  m3 world 6: rollbacks 2 max depth 4 resim frames 10 (0.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 520 frame 533
+  m1 world 1: rollbacks 12 max depth 4 resim frames 58 (7.9 ms) overwrites 2 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 516 frame 534
+  m2 world 1: rollbacks 16 max depth 9 resim frames 70 (9.3 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 517 frame 533
+  m1 world 2: rollbacks 12 max depth 3 resim frames 49 (5.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 14 bad 0 nonfinite 0 conf 425 frame 442
+  m3 world 2: rollbacks 5 max depth 3 resim frames 24 (2.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 428 frame 442
 RESULT r14 forge A world 1: frames 0..500 digests m1=5e0effa4062bd07e m2=5e0effa4062bd07e | offline replay 5e0effa4062bd07e | ALL EQUAL
 RESULT r14 forge B world 2: frames 0..400 digests m1=52faa0602d57a433 m3=52faa0602d57a433 | offline replay 52faa0602d57a433 | ALL EQUAL
 RESULT r14 forge W world 6: frames 0..480 digests m2=ed98946719d91ef1 m3=ed98946719d91ef1 | offline replay ed98946719d91ef1 | ALL EQUAL

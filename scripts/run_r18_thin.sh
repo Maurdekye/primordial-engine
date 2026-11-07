@@ -61,3 +61,12 @@ run gap15-up-k8-m2 --kbps 256 --slow 1 --slow-kbps 8 --members 2 --gap 15 --gest
 run gap15-up-k16-m2 --kbps 256 --slow 1 --slow-kbps 16 --members 2 --gap 15 --gestures 3 --end 60
 run gap15-down-k8-m4 --kbps 256 --slow 3 --slow-kbps 8 --members 4 --gap 15 --gestures 3 --end 60
 run gap30-up-k8-m2 --kbps 256 --slow 1 --slow-kbps 8 --members 2 --gap 30 --gestures 3 --end 90
+
+# Landing check (@design-reviewer m819c82a9d344): an end state that DIFFERs fails the run, and a replica compared over
+# fewer frames than the others ("still catching up") is listed: r18 allows it only at an echo phase's end.
+grep -H "end state: .*still catching up" "$O"/*.log 2>/dev/null | sed 's/^/NOTE /' || true
+# (pe-session's whole-state row reads DIFFER by design in some transports; its confirmed-prefix line is the check there.)
+if [ "${1:-}" != --pe ]; then
+  bad=$(grep -l "^RESULT .*DIFFER" "$O"/*.log 2>/dev/null || true)
+  if [ -n "$bad" ]; then echo "FLAG: an end state DIFFERs in: $bad"; exit 1; fi
+fi
