@@ -19,19 +19,28 @@ pub(super) fn judged(p: &Payload) -> bool {
     matches!(p, Payload::Touch { .. } | Payload::Hand { .. })
 }
 
-/// (spike diagnostics) A Part B removal's cut as this replica finalized it: when, each other member of the removed
-/// member's last epoch with the seq its evidence was read to (None: no evidence), that evidence, and whether it was
-/// still a member then; and the cut the same evidence gives without the members that had left.
+/// (spike diagnostics) A Part B removal's cut as this replica finalized it: when; the epoch whose vouch is the cut
+/// (carry-over: the largest final vouch over the removed member's epochs); each other member of that epoch with the
+/// seq its evidence was read to (its echo-stable prefix there), that evidence, and whether it was still a member then;
+/// the cut that epoch's evidence gives without the members that had left; and its last epoch's vouch alone (the cut
+/// before carry-over).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CutRecord {
     pub at_frame: u64,
     pub cut: u32,
+    pub epoch: u32,
     pub voters: Vec<(MemberId, Option<u32>, u32, bool)>,
     pub without_left: u32,
+    pub last_epoch: u32,
 }
 
 /// (spike diagnostics: PE_CUT_TRACE=1 prints the evidence behind each Part B cut, and the vouched prefix behind each
 /// counted entry of a removed member or an older epoch)
+fn verdict_author() -> Option<MemberId> {
+    static V: std::sync::OnceLock<Option<MemberId>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_VERDICT_AUTHOR").ok().and_then(|v| v.parse().ok()))
+}
+
 fn cut_trace() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("PE_CUT_TRACE").is_ok())
@@ -253,55 +262,155 @@ impl WorldSim {
         r.max(e)
     }
 
-    /// Revision 21 (RV20-1): the newest seq of x's chain that y references in an echo-stable ack of y (`es_y` is y's
-    /// echo-stable seq), in the version I hold, y's fed echo included likewise. A vote of y against x caps it at the
-    /// vote's frozen head (R3-1). These references, and only these, count for coverage, holder status and the cut.
-    fn evidence_ref(&self, y: MemberId, x: MemberId, es_y: u32) -> u32 {
+    /// Carry-over (rev 22 part 3): `y`'s ack seqs in epoch `e`, [lo, hi]: from its first ack of e (seq 1 in its first
+    /// epoch) to the ack before its first of e + 1; for a member the change ending e removes, to its B (hole 2), and
+    /// likewise for one removed later that I hold no ack of e + 1 from (it crashed in e: its acks end at its B); open
+    /// (u32::MAX) while e is its newest. None before y's first epoch, or while I hold no ack of y declaring e. Acks I
+    /// hold are validated in chain order, and an ack's epoch rises by at most one (VC-5), so without an ack of e + 1
+    /// every ack I hold from lo on is of e.
+    pub(super) fn ack_range(&self, y: MemberId, e: u32) -> Option<(u32, u32)> {
+        let first_epoch = self.admitted_epoch.get(&y).copied().unwrap_or(0);
+        if e < first_epoch {
+            return None;
+        }
+        let from = self.ack_epoch_from.get(&y);
+        let lo = if e == first_epoch { 1 } else { *from?.get(&e)? };
+        let b = || self.bound.get(&y).copied().unwrap_or(0);
+        let hi = match (self.removed_in.get(&y), from.and_then(|a| a.get(&(e + 1)))) {
+            (Some(&r), _) if r == e + 1 => b(),
+            (_, Some(&s)) => s.saturating_sub(1),
+            (Some(_), None) => b(),
+            (None, None) => u32::MAX,
+        };
+        Some((lo, hi))
+    }
+
+    /// Carry-over: the newest seq of `x`'s chain named by `y`'s acks of epoch `e` up to ack seq `upto`, in my
+    /// version, at or below my held head of x; y's fed echo from those acks likewise.
+    fn ref_in(&self, y: MemberId, x: MemberId, e: u32, upto: u32) -> u32 {
+        self.ref_lookups.set(self.ref_lookups.get() + 1);
+        let Some((lo, hi)) = self.ack_range(y, e) else { return 0 };
+        let hi = hi.min(upto);
+        if hi < lo {
+            return 0;
+        }
         let held = self.contiguous.get(&x).copied().unwrap_or(0);
-        // F2: toward a removed member's chain, y's acks from x's last epoch only.
-        let es_y = es_y.min(self.ref_cap(y, x));
         let mine = |s: u32, hid: EntryId| s <= held && self.by_author.get(&(x, s)) == Some(&hid);
-        let r = self
-            .ack_head_hist
-            .get(&(y, x))
-            .and_then(|h| h.range(..=es_y).rev().find(|(_, v)| mine(v.0, v.1)))
-            .map_or(0, |(_, v)| v.0);
-        let e = self
+        let r = self.ack_head_hist.get(&(y, x)).and_then(|h| h.range(lo..=hi).rev().find(|(_, v)| mine(v.0, v.1))).map_or(0, |(_, v)| v.0);
+        let ech = self
             .echo_refs
             .get(&(y, x))
-            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| *aseq <= es_y && mine(**s, *hid)))
+            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| (lo..=hi).contains(aseq) && mine(**s, *hid)))
             .map_or(0, |(s, _)| *s);
-        let v = r.max(e);
-        // A removed member's voters by their chains, in its last epoch (F2).
-        let ep = self.removed_in.get(&x).map_or(self.epoch, |&e| e - 1);
-        match self.vote_on(y, x, ep) {
-            Some((_, f)) => v.min(f),
-            None => v,
+        r.max(ech)
+    }
+
+    /// Carry-over, one level (direction 1): `y`'s echo-stable prefix in epoch `ctx`: the rank statistic of its
+    /// members over their raw references to y's chain in their acks of that epoch.
+    pub(super) fn es_in(&self, y: MemberId, ctx: &Ctx) -> u32 {
+        let mut v: Vec<u32> = ctx.members.iter().filter(|&&z| z != y).map(|&z| self.ref_in(z, y, ctx.epoch, u32::MAX)).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(ctx.rank()).copied().unwrap_or(0)
+    }
+
+    /// Carry-over: `x`'s vouched prefix in epoch `ctx` (vouch_E): the rank statistic of its members over their
+    /// references to x's chain in their acks of that epoch up to their own echo-stable prefix there (`es`), each
+    /// capped at its vote's frozen head in that epoch (R3-1).
+    pub(super) fn vouch_in(&self, x: MemberId, ctx: &Ctx, es: &BTreeMap<MemberId, u32>) -> u32 {
+        let mut v: Vec<u32> = ctx
+            .members
+            .iter()
+            .filter(|&&y| y != x)
+            .map(|&y| {
+                let r = self.ref_in(y, x, ctx.epoch, es.get(&y).copied().unwrap_or(0));
+                match self.vote_on(y, x, ctx.epoch) {
+                    Some((_, f)) => r.min(f),
+                    None => r,
+                }
+            })
+            .collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(ctx.rank()).copied().unwrap_or(0)
+    }
+
+    /// Carry-over: whether epoch `ctx`'s acks are all in here (hole 2): each of its members has a held first ack of the
+    /// next epoch, echo-stable; or a decided removal (by the change ending the epoch, or a later one) with its chain
+    /// held here up to its B. A crashed member that never acks the next epoch holds the epoch open until its removal
+    /// decides. The first ack's echo-stability only fixes where the member's acks of the epoch end (rule 1: one version
+    /// of its chain up to it), so references from any later epoch it was a member of establish it. Read in the next
+    /// epoch alone, a short one (the next change deciding before the others' acks of it reference that first ack)
+    /// never closed the epoch (cutfix-shrink, -left, -move).
+    pub(super) fn epoch_final(&self, ctx: &Ctx) -> bool {
+        if ctx.epoch >= self.epoch {
+            return false;
         }
+        ctx.members.iter().all(|&y| {
+            let removed = self.removed_in.get(&y).copied();
+            let ended_at_b = removed.is_some_and(|r| r > ctx.epoch) && self.bound.get(&y).is_some_and(|&b| self.contiguous.get(&y).copied().unwrap_or(0) >= b);
+            match self.ack_epoch_from.get(&y).and_then(|a| a.get(&(ctx.epoch + 1))) {
+                _ if removed == Some(ctx.epoch + 1) => ended_at_b,
+                Some(&first) => {
+                    ended_at_b || {
+                        let last = removed.map_or(self.epoch, |r| r - 1).min(self.epoch);
+                        (ctx.epoch + 1..=last).rev().any(|k| self.ctx(k).is_some_and(|c| c.members.contains(&y) && self.es_in(y, &c) >= first))
+                    }
+                }
+                None => ended_at_b,
+            }
+        })
     }
 
-    /// Revision 21: x's vouched prefix, the newest seq q − 1 others reference in their echo-stable acks (x being the
-    /// q-th, as for echo-stability). `es` holds every member's echo-stable seq.
-    pub(super) fn vouched(&self, x: MemberId, es: &BTreeMap<MemberId, u32>) -> u32 {
-        let q = self.quorum_q();
-        let mut v: Vec<u32> = self.members.iter().filter(|&&y| y != x).map(|&y| self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0))).collect();
-        v.sort_unstable_by(|a, b| b.cmp(a));
-        let i = if self.members.len() == 3 { 1 } else { q - 2 };
-        v.get(i).copied().unwrap_or(0)
+    /// (spike diagnostics, PE_CUT_TRACE) The members holding epoch `ctx` open, each with why: (removed in, its B, held,
+    /// its first ack of the next epoch, the best echo-stable prefix of it in a later epoch).
+    fn epoch_blockers(&self, ctx: &Ctx) -> Vec<String> {
+        ctx.members
+            .iter()
+            .filter_map(|&y| {
+                let removed = self.removed_in.get(&y).copied();
+                let held = self.contiguous.get(&y).copied().unwrap_or(0);
+                let b = self.bound.get(&y).copied();
+                let ended_at_b = removed.is_some_and(|r| r > ctx.epoch) && b.is_some_and(|b| held >= b);
+                let first = self.ack_epoch_from.get(&y).and_then(|a| a.get(&(ctx.epoch + 1))).copied();
+                let last = removed.map_or(self.epoch, |r| r - 1).min(self.epoch);
+                let es: Vec<(u32, u32)> = (ctx.epoch + 1..=last).filter_map(|k| self.ctx(k).filter(|c| c.members.contains(&y)).map(|c| (k, self.es_in(y, &c)))).collect();
+                let ok = match first {
+                    _ if removed == Some(ctx.epoch + 1) => ended_at_b,
+                    Some(f) => ended_at_b || es.iter().any(|&(_, v)| v >= f),
+                    None => ended_at_b,
+                };
+                (!ok).then(|| format!("m{y} (removed in {removed:?}, B {b:?}, held {held}, first ack of {} {first:?}, es in later epochs {es:?})", ctx.epoch + 1))
+            })
+            .collect()
     }
 
-    /// F2: x's vouched prefix with `ctx`'s members and quorum (a removed member's with its last epoch's).
-    pub(super) fn vouched_in(&self, x: MemberId, es: &BTreeMap<MemberId, u32>, ctx: &Ctx) -> u32 {
-        let mut v: Vec<u32> = ctx.members.iter().filter(|&&y| y != x).map(|&y| self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0))).collect();
-        v.sort_unstable_by(|a, b| b.cmp(a));
-        v.get(ctx.rank()).copied().unwrap_or(0)
-    }
-
-    /// F2: x's echo-stable prefix with `ctx`'s members and quorum.
-    pub(super) fn echo_stable_in(&self, x: MemberId, ctx: &Ctx) -> u32 {
-        let mut v: Vec<u32> = ctx.members.iter().filter(|&&y| y != x).map(|&y| self.matched_ref(y, x)).collect();
-        v.sort_unstable_by(|a, b| b.cmp(a));
-        v.get(ctx.rank()).copied().unwrap_or(0)
+    /// Carry-over: removed member `x`'s cut, the largest final vouch over its epochs, once every one is final (and
+    /// the epoch achieving it, for the record).
+    pub(super) fn carry_cut(&mut self, x: MemberId) -> Option<(u32, u32)> {
+        let first = self.admitted_epoch.get(&x).copied().unwrap_or(0);
+        let last = self.removed_in.get(&x)?.checked_sub(1)?;
+        let mut best = (0, first);
+        for e in first..=last {
+            let v = match self.final_vouch.get(&(x, e)) {
+                Some(&v) => v,
+                None => {
+                    let ctx = self.ctx(e)?;
+                    if !ctx.members.contains(&x) {
+                        continue;
+                    }
+                    if !self.epoch_final(&ctx) {
+                        return None;
+                    }
+                    let es: BTreeMap<MemberId, u32> = ctx.members.iter().map(|&y| (y, self.es_in(y, &ctx))).collect();
+                    let v = self.vouch_in(x, &ctx, &es);
+                    self.final_vouch.insert((x, e), v);
+                    v
+                }
+            };
+            if v > best.0 {
+                best = (v, e);
+            }
+        }
+        Some(best)
     }
 
     /// Rule 1 (TLP-9): the echo-stable prefix of `x`'s chain. Its acks up to this seq have been referenced
@@ -649,12 +758,12 @@ impl WorldSim {
     /// lacker, None while unproven. It comes from x's latest echo-stable ack stamped at or before the
     /// deadline, proven latest by an echo-stable ack stamped after it; x holds the entry if that ack's head of
     /// m's chain reaches `seq` in the version I hold. `newest` is the stamp of x's newest echo-stable ack.
-    fn status(&self, x: MemberId, newest: Option<u64>, m: MemberId, seq: u32, deadline: u64, epoch: u32) -> Option<bool> {
+    fn status(&self, x: MemberId, newest: Option<u64>, own_cap: u32, m: MemberId, seq: u32, deadline: u64, epoch: u32) -> Option<bool> {
         if newest? <= deadline {
             return None;
         }
-        // F2: a removed member's acks count up to its cut.
-        let own_cap = if self.members.contains(&x) { u32::MAX } else { self.evicted.get(&x).map_or(u32::MAX, |c| c.0) };
+        // Carry-over: `own_cap` is u32::MAX for a member; a removed member's acks count up to its echo-stable prefix in
+        // its last epoch, which lies within its B by the overlap (`removed_caps`).
         let Some((_, &k)) = self.ack_by_stamp.get(&x).and_then(|a| a.range(..=deadline).rev().find(|(_, s)| **s <= own_cap)) else {
             return Some(false);
         };
@@ -678,6 +787,12 @@ impl WorldSim {
         }
     }
 
+    /// (measurement) Ack heads kept for rule 1 (`ack_head_hist`): the spike keeps every one; production keeps the newest
+    /// per (referencer, author, epoch) while an entry of that epoch is pending.
+    pub fn ack_heads_kept(&self) -> usize {
+        self.ack_head_hist.values().map(|h| h.len()).sum()
+    }
+
     /// Diagnostics: how much of `m`'s chain I hold contiguously, and the newest seq of it I hold at all.
     pub fn held_of(&self, m: MemberId) -> (u32, u32) {
         (self.contiguous.get(&m).copied().unwrap_or(0), self.by_author.range((m, 0)..=(m, u32::MAX)).next_back().map_or(0, |(&(_, s), _)| s))
@@ -695,15 +810,15 @@ impl WorldSim {
             .members
             .iter()
             .filter(|&&x| x != e.member)
-            .map(|&x| format!("m{x}:{:?}(newest {:?}, es {}, held {:?})", self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline, self.epoch), newest.get(&x), self.echo_stable(x), self.contiguous.get(&x)))
+            .map(|&x| format!("m{x}:{:?}(newest {:?}, es {}, held {:?})", self.status(x, newest.get(&x).copied(), u32::MAX, e.member, e.seq, deadline, self.epoch), newest.get(&x), self.echo_stable(x), self.contiguous.get(&x)))
             .collect();
         format!("m{} s{} stamp {} deadline {}: {}", e.member, e.seq, e.stamp, deadline, st.join(" "))
     }
 
-    /// Rule 1: e's verdict once its statuses decide it: Some(false) void at q proven lackers, Some(true)
-    /// counting at n − q + 1 proven holders (the author holds its own). None while undecided, or while the
-    /// deadline's window isn't final.
-    fn verdict_of(&self, e: &Entry, ctx: &Ctx, newest: &BTreeMap<MemberId, u64>, vouch: &BTreeMap<MemberId, u32>) -> Option<bool> {
+    /// Rule 1: what e's statuses decide: Some(false) void at q proven lackers, Some(true) at n − q + 1 proven holders
+    /// (the author holds its own), which counts once its author's vouched prefix covers it (carry-over, checked by the
+    /// caller). None while undecided, or while the deadline's window isn't final. `caps`: removed members' ack caps.
+    fn verdict_of(&self, e: &Entry, ctx: &Ctx, newest: &BTreeMap<MemberId, u64>, caps: &BTreeMap<MemberId, u32>) -> Option<bool> {
         let v = self.windows.get(&(e.stamp / WINDOW))?;
         let deadline = e.stamp + Self::deadline_offset(v, &self.cfg, e.member);
         // F2: with the members and quorum of the entry's own epoch.
@@ -711,7 +826,7 @@ impl WorldSim {
         let n = ctx.members.len();
         let (mut holders, mut lackers) = (1, 0);
         for &x in ctx.members.iter().filter(|&&x| x != e.member) {
-            match self.status(x, newest.get(&x).copied(), e.member, e.seq, deadline, ctx.epoch) {
+            match self.status(x, newest.get(&x).copied(), caps.get(&x).copied().unwrap_or(u32::MAX), e.member, e.seq, deadline, ctx.epoch) {
                 Some(true) => holders += 1,
                 Some(false) => lackers += 1,
                 None => {}
@@ -719,106 +834,91 @@ impl WorldSim {
         }
         if lackers >= q {
             Some(false)
-        } else if holders + q > n && vouch.get(&e.member).is_some_and(|&v| v >= e.seq) {
-            // Revision 21, (b): and its author's vouched prefix covers it, on my line, so two versions never both count.
+        } else if holders + q > n {
             Some(true)
         } else {
             None
         }
     }
 
-    /// F2, revision 21 (a): apply each Part B removal's cut once final: every remaining member of the removed
-    /// member's last epoch has an echo-stable ack of the new epoch, so the evidence-grade references to its chain are
-    /// fixed. The cut is its vouched prefix with that epoch's members and quorum; entries past it are void (none of
-    /// them counted: coverage).
-    ///
-    /// "That epoch's members" includes one that has left since (removed in a later change): its evidence counted for
-    /// coverage while it was a member, so it counts for the cut too. kickliar-fed2 with the fed level floor: member 2
-    /// was kicked, then fed member 4 left by request (S-4) before 2's cut was final; m1 had counted 2's s132 with 4's
-    /// evidence (vouched 143), and the cut without it fell to 126, voiding a confirmed entry. The rule (@design-reviewer
-    /// m810710f2f4c6 point 3, ruled by @coordinator-opus m6426247221b1): a left member m's evidence toward x is its acks
-    /// up to min(m's first ack of x's new epoch − 1, m's own cut), used once m's own cut is final and I hold m's chain
-    /// up to it (`cut_done`). Every replica then agrees on m's cut, and nothing void counts; x's cut always waits for
-    /// m's. A member removed in the same change as x still gives no evidence here (open: x's own references enter its
-    /// rank).
-    pub(super) fn finalize_cuts(&mut self) {
-        // Not while I'm behind on decisions: more than t members ack an epoch newer than mine (so an honest one has moved
-        // on; one liar's acks can't hold this back). A later removal I haven't applied yet would make me take its member
-        // for a survivor, with evidence read to its echo-stable prefix instead of its own cut (cutfix-left: member 7, its
-        // view-change entries delayed, finalized 2's cut before it had applied 3's leave).
-        let t = quorum(QuorumRule::Bft, self.members.len()).0;
-        let ahead = self.members.iter().filter(|m| self.ack_epoch_from.get(m).and_then(|a| a.keys().next_back()).is_some_and(|&e| e > self.epoch)).count();
-        if ahead > t {
-            return;
+    /// Carry-over: each removed member's ack cap, its echo-stable prefix in its last epoch, and the stamp of its newest
+    /// ack within it: u64::MAX once that epoch's acks are all in here (its last echo-stable ack is then its last).
+    fn removed_caps(&self) -> (BTreeMap<MemberId, u32>, BTreeMap<MemberId, u64>) {
+        let (mut caps, mut newest) = (BTreeMap::new(), BTreeMap::new());
+        for &x in self.evicted.keys().filter(|x| !self.members.contains(x)) {
+            let Some(ctx) = self.removed_in.get(&x).and_then(|&r| self.ctx(r - 1)) else { continue };
+            let cap = self.es_in(x, &ctx);
+            caps.insert(x, cap);
+            if self.epoch_final(&ctx) {
+                newest.insert(x, u64::MAX);
+            } else if let Some((_, &t)) = self.ack_stamps.get(&x).and_then(|a| a.range(..=cap).next_back()) {
+                newest.insert(x, t);
+            }
         }
+        (caps, newest)
+    }
+
+    /// Carry-over (rev 22 part 3; ruled by @coordinator-opus mbdc2c5ae906c, the shape @design-reviewer's): apply each
+    /// Part B removal's cut once final. Removed member x's cut is the largest final vouch over its epochs
+    /// (`carry_cut`): every vouch that counted one of x's entries anywhere is one epoch's statistic over a subset of
+    /// that epoch's acks, so at most that epoch's final value, so at most the cut. No counted entry is voided; entries
+    /// past it are void. It replaces revision 21 (a)'s cut with the last epoch's members, the left-member rule
+    /// (m6426247221b1) and the interim guard: each epoch's acks end in the log (first acks of the next epoch, or B),
+    /// so no term depends on a later change or another member's cut.
+    pub(super) fn finalize_cuts(&mut self) {
         let xs: Vec<MemberId> = self.pb_pending.iter().copied().collect();
         for x in xs {
             // `adopt_cut` recomputes confirmation, which comes back here: one finalized meanwhile is done.
             if !self.pb_pending.contains(&x) {
                 continue;
             }
-            let Some(&e_new) = self.removed_in.get(&x) else { continue };
-            let Some(old) = self.ctx(e_new - 1) else { continue };
-            let mut es: BTreeMap<MemberId, u32> = BTreeMap::new();
-            let mut fin = true;
-            for &m in old.members.iter().filter(|&&m| m != x) {
-                if self.members.contains(&m) {
-                    fin &= self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).is_some_and(|&s| self.echo_stable(m) >= s);
-                    es.insert(m, self.echo_stable(m));
-                } else if self.removed_in.get(&m).is_some_and(|&e_m| e_m > e_new) {
-                    // Left after x's removal: its acks up to its own cut, once that cut is final and held here.
-                    // `evidence_ref` caps them at its first ack of e_new itself (`ref_cap`).
-                    match self.evicted.get(&m) {
-                        Some(&(cut_m, _)) if self.cut_done.contains(&m) => {
-                            es.insert(m, cut_m);
-                        }
-                        _ => fin = false,
-                    }
-                }
-            }
-            if !fin {
+            let Some((cut, at)) = self.carry_cut(x) else {
                 if cut_trace() {
-                    let why: Vec<(MemberId, bool, Option<u32>, Option<u32>, bool)> = old
-                        .members
-                        .iter()
-                        .filter(|&&m| m != x)
-                        .map(|&m| {
-                            let first = self.ack_epoch_from.get(&m).and_then(|a| a.get(&e_new)).copied();
-                            (m, self.members.contains(&m), first, es.get(&m).copied(), self.pb_pending.contains(&m))
-                        })
-                        .collect();
-                    eprintln!(
-                        "CUTWAIT m{} now {} conf {} epoch {}: m{x} (removed in epoch {e_new}) not final; (member, still a member, first ack of epoch {e_new}, es, own cut pending) {why:?}",
-                        self.me, self.now, self.conf, self.epoch
-                    );
+                    let first = self.admitted_epoch.get(&x).copied().unwrap_or(0);
+                    let last = self.removed_in.get(&x).map_or(0, |&r| r - 1);
+                    let open: Vec<u32> = (first..=last).filter(|&e| !self.final_vouch.contains_key(&(x, e)) && self.ctx(e).is_some_and(|c| c.members.contains(&x) && !self.epoch_final(&c))).collect();
+                    let why: Vec<String> = open.iter().filter_map(|&e| self.ctx(e).map(|c| format!("{e}: {}", self.epoch_blockers(&c).join(", ")))).collect();
+                    eprintln!("CUTWAIT m{} now {} conf {} epoch {}: m{x}'s epochs {first}..={last}, not final yet {open:?}; held open by [{}]", self.me, self.now, self.conf, self.epoch, why.join("; "));
                 }
                 continue;
-            }
-            let cut = self.vouched_in(x, &es, &old);
-            // (spike diagnostics: the record, and PE_CUT_TRACE=1 prints each voter's evidence behind a cut)
+            };
+            // (spike diagnostics: the record, and PE_CUT_TRACE=1 prints each member's evidence behind a cut)
             {
-                let per: Vec<(MemberId, Option<u32>, u32, bool)> = old
-                    .members
-                    .iter()
-                    .filter(|&&y| y != x)
-                    .map(|&y| (y, es.get(&y).copied(), self.evidence_ref(y, x, es.get(&y).copied().unwrap_or(0)), self.members.contains(&y)))
-                    .collect();
-                let present: BTreeMap<MemberId, u32> = es.iter().filter(|(m, _)| self.members.contains(m)).map(|(&m, &s)| (m, s)).collect();
-                let without_left = self.vouched_in(x, &present, &old);
+                let (per, without_left) = match self.ctx(at) {
+                    Some(c) => {
+                        let es: BTreeMap<MemberId, u32> = c.members.iter().map(|&y| (y, self.es_in(y, &c))).collect();
+                        let per: Vec<(MemberId, Option<u32>, u32, bool)> = c
+                            .members
+                            .iter()
+                            .filter(|&&y| y != x)
+                            .map(|&y| {
+                                let r = self.ref_in(y, x, at, es[&y]);
+                                let r = self.vote_on(y, x, at).map_or(r, |(_, f)| r.min(f));
+                                (y, Some(es[&y]), r, self.members.contains(&y))
+                            })
+                            .collect();
+                        let mut v: Vec<u32> = per.iter().map(|p| if p.3 { p.2 } else { 0 }).collect();
+                        v.sort_unstable_by(|a, b| b.cmp(a));
+                        let w = v.get(c.rank()).copied().unwrap_or(0);
+                        (per, w)
+                    }
+                    None => (Vec::new(), 0),
+                };
+                let last_epoch = self.removed_in.get(&x).and_then(|&r| self.final_vouch.get(&(x, r - 1))).copied().unwrap_or(0);
                 if cut_trace() {
                     eprintln!(
-                        "CUT m{} now {} conf {}: m{x} removed in epoch {e_new} (old members {:?}, rank {}); (voter, es, evidence, member now) {per:?}; cut {cut} (without members that left: {without_left})",
-                        self.me, self.now, self.conf, old.members, old.rank()
+                        "CUT m{} now {} conf {}: m{x} removed in epoch {:?}: cut {cut}, the vouch of epoch {at}; (member, es, evidence, member now) {per:?}; without members that left {without_left}; its last epoch alone {last_epoch}",
+                        self.me, self.now, self.conf, self.removed_in.get(&x)
                     );
                 }
-                self.cut_records.insert(x, CutRecord { at_frame: self.now, cut, voters: per, without_left });
+                self.cut_records.insert(x, CutRecord { at_frame: self.now, cut, epoch: at, voters: per, without_left, last_epoch });
             }
             let cid = if cut == 0 { 0 } else { self.by_author.get(&(x, cut)).copied().unwrap_or(0) };
             self.pb_pending.remove(&x);
             self.frozen.insert(x, cut);
             self.cut_ids.insert(x, cid);
             self.evicted.insert(x, (cut, 0));
-            self.ev(format!("revision 21 (a): member {x}'s removal is final; its chain is cut at its vouched prefix, seq {cut}"));
+            self.ev(format!("carry-over: member {x}'s removal is final; its chain is cut at seq {cut}, the vouch of epoch {at}"));
             self.adopt_cut(x);
         }
     }
@@ -838,6 +938,7 @@ impl WorldSim {
     /// Rule 1: decide every pending entry whose statuses are known. A void entry leaves the simulation at its
     /// frame, which conf hasn't passed: rule 3 never confirms past an entry without a verdict.
     pub(super) fn decide_verdicts(&mut self) {
+        self.stats.verdict_passes += 1;
         // Each member's newest echo-stable ack stamp. A status is known only for a deadline before it, and
         // a deadline lies past its entry's stamp, so entries stamped past all of them can't be decided yet.
         let newest: BTreeMap<MemberId, u64> = self
@@ -849,16 +950,14 @@ impl WorldSim {
             })
             .collect();
         let horizon = newest.values().copied().max().unwrap_or(0);
-        // F2: a removed member whose cut is final: its last ack within the cut is proven its latest (revision 21 (a)).
+        // Carry-over: a removed member's acks count up to its echo-stable prefix in its last epoch, known for good once
+        // that epoch's acks are all in here.
         let mut newest = newest;
-        for &x in self.evicted.keys() {
-            if self.cut_done.contains(&x) {
-                newest.insert(x, u64::MAX);
-            }
-        }
-        // Revision 21: every member's echo-stable seq, then every member's vouched prefix.
-        let es: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.echo_stable(x))).collect();
-        let mut vouch: BTreeMap<MemberId, u32> = self.members.iter().map(|&x| (x, self.vouched(x, &es))).collect();
+        let (caps, rnewest) = self.removed_caps();
+        newest.extend(rnewest);
+        // Carry-over: per epoch, each member's echo-stable prefix there (one level), and each author's vouch there.
+        let mut es_at: BTreeMap<u32, BTreeMap<MemberId, u32>> = BTreeMap::new();
+        let mut vouch_at: BTreeMap<(MemberId, u32), u32> = BTreeMap::new();
         let mut ctxs: BTreeMap<u32, Option<Ctx>> = BTreeMap::new();
         let pend: Vec<(u64, EntryId)> = self.pending.iter().copied().collect();
         for (stamp, id) in pend {
@@ -898,17 +997,11 @@ impl WorldSim {
                 ctxs.insert(ep, c);
             }
             let Some(ctx) = ctxs[&ep].clone() else { continue };
-            if !self.members.contains(&e.member) {
-                // A removed member's entry (revision 21 (a)): judged as any, vouched with its last epoch's members.
-                // A non-member that was never one isn't validated.
-                if !self.evicted.contains_key(&e.member) {
-                    self.pending.remove(&(stamp, id));
-                    continue;
-                }
-                if !vouch.contains_key(&e.member) {
-                    let v = self.vouched_in(e.member, &es, &ctx);
-                    vouch.insert(e.member, v);
-                }
+            // A removed member's entry: judged as any (carry-over: vouched in its epochs up to its last). A non-member
+            // that was never one isn't validated.
+            if !self.members.contains(&e.member) && !self.evicted.contains_key(&e.member) {
+                self.pending.remove(&(stamp, id));
+                continue;
             }
             // An epoch of 2 members (or Part B off) keeps D54: rule 1 voids nothing there.
             if !self.cfg.localize || ctx.members.len() < 3 {
@@ -937,15 +1030,55 @@ impl WorldSim {
             } else if stamp >= horizon {
                 None
             } else {
-                self.verdict_of(&e, &ctx, &newest, &vouch)
+                match self.verdict_of(&e, &ctx, &newest, &caps) {
+                    // Carry-over: it counts once vouch_E covers it for some epoch E from its own to mine (its author's
+                    // last, if removed), its author a member of E. Otherwise it waits: a later epoch's acks can vouch it.
+                    Some(true) => {
+                        let last = self.removed_in.get(&e.member).map_or(self.epoch, |&r| r - 1).min(self.epoch);
+                        let mut by = None;
+                        for ee in ep..=last {
+                            let v = match self.final_vouch.get(&(e.member, ee)).or_else(|| vouch_at.get(&(e.member, ee))) {
+                                Some(&v) => Some(v),
+                                None => {
+                                    let c = if ee == ep { Some(ctx.clone()) } else { self.ctx(ee) };
+                                    match c {
+                                        Some(c) if c.members.contains(&e.member) => {
+                                            if !es_at.contains_key(&ee) {
+                                                let m: BTreeMap<MemberId, u32> = c.members.iter().map(|&y| (y, self.es_in(y, &c))).collect();
+                                                es_at.insert(ee, m);
+                                            }
+                                            let v = self.vouch_in(e.member, &c, &es_at[&ee]);
+                                            vouch_at.insert((e.member, ee), v);
+                                            Some(v)
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                            };
+                            if v.is_some_and(|v| v >= e.seq) {
+                                by = Some(ee);
+                                break;
+                            }
+                        }
+                        if cut_trace() && by.is_some() && verdict_author() == Some(e.member) {
+                            let ee = by.unwrap();
+                            let evid: Vec<(MemberId, u32)> = es_at.get(&ee).map(|m| m.iter().map(|(&y, &v)| (y, self.ref_in(y, e.member, ee, v))).collect()).unwrap_or_default();
+                            eprintln!(
+                                "VERDICT m{} now {} conf {} epoch {}: m{} s{} stamp {} (epoch {}) counts, vouched in epoch {ee} by {:?}; es there {:?}; evidence {evid:?}",
+                                self.me, self.now, self.conf, self.epoch, e.member, e.seq, stamp, ctx.epoch, vouch_at.get(&(e.member, ee)).or(self.final_vouch.get(&(e.member, ee))), es_at.get(&ee)
+                            );
+                        } else if cut_trace() && by.is_some() && (self.evicted.contains_key(&e.member) || ctx.epoch < self.epoch || by != Some(ep)) {
+                            eprintln!(
+                                "VERDICT m{} now {} conf {} epoch {}: m{} s{} stamp {} (epoch {}) counts, vouched in epoch {:?}",
+                                self.me, self.now, self.conf, self.epoch, e.member, e.seq, stamp, ctx.epoch, by
+                            );
+                        }
+                        by.map(|_| true)
+                    }
+                    x => x,
+                }
             };
             let Some(counts) = decided else { continue };
-            if counts && cut_trace() && (self.evicted.contains_key(&e.member) || ctx.epoch < self.epoch) {
-                eprintln!(
-                    "VERDICT m{} now {} conf {} epoch {}: m{} s{} stamp {} (epoch {}) counts; vouch {:?}, es {es:?}",
-                    self.me, self.now, self.conf, self.epoch, e.member, e.seq, stamp, ctx.epoch, vouch.get(&e.member)
-                );
-            }
             self.pending.remove(&(stamp, id));
             self.verdicts.insert(id, counts);
             if !counts && !self.is_void(id) {
@@ -979,10 +1112,13 @@ impl WorldSim {
             .filter_map(|&x| {
                 let (es, last) = if self.members.contains(&x) {
                     (self.echo_stable(x), None)
-                } else if self.cut_done.contains(&x) {
-                    (self.evicted.get(&x).map_or(0, |c| c.0), Some(u64::MAX))
                 } else {
-                    return None;
+                    // Carry-over: a removed member counts once its last epoch's acks are all in here: its acks up to its
+                    // echo-stable prefix there, the last of them its latest.
+                    match self.removed_in.get(&x).and_then(|&r| self.ctx(r - 1)) {
+                        Some(c) if self.epoch_final(&c) => (self.es_in(x, &c), Some(u64::MAX)),
+                        _ => return None,
+                    }
                 };
                 let cap = es.min(self.ref_cap(x, j));
                 let head = self.ack_head_hist.get(&(x, j)).and_then(|h| h.range(..=cap).next_back()).map(|(_, &hh)| hh);
