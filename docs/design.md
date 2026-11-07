@@ -1841,6 +1841,15 @@ is fixed once the author's chain is contiguous up to it.
   only the voter, for an entry it lacks [V selfkickhead: admin 1 kicks 4, and 4's own vote names a
   head it never signed; 4 is removed at 2.28 s. Before the fix the kick never went through and
   confirmation stopped at frame 116].
+* **The kicker's own vote goes out with its kick** (fix KICKVOTE; found by @engine-architect in the
+  spike's carry-over, b397443). Recording its own kick, an admin's replica votes on the target at once.
+  pe-session kept that vote in the admin's chain but never sent it: `publish` dropped what inserting
+  the kick authored, so the others got the vote only by fetching the hole it left. It now goes out right
+  behind the kick, in the same tick's run, never behind a later ack (in the spike, sending it at the
+  tick's end made every member see a hole and fetch). [V d80-kickvote-nofetch: 4 members on 40 ms links,
+  every fetch to or from 3 dropped, admin 1 kicks 8 at 2 s: all three decide at frame 132 and
+  confirmation reaches 282 of 293; without the fix 3 never decides, and confirmation stops at 118 (110
+  at 3) to the end. V d80-kickvote, no fault: decided at frame 132 instead of 133, 9 fewer messages.]
 * **Applying a decision.**
   * Epoch e + 1 starts. Removed members leave the list. Entries after each cut are void, and a removed
     member stops counting from the frame after the last horizon inside its cut.
