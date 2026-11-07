@@ -107,7 +107,6 @@ Now pe-app runs the core's defaults (lean, signed-once runs):
   and sends a run holding A to the other group as its remaining entries, each explicit.
 - [V] m1-loopback ALL EQUAL, and m1-equivocate late, split and split-held ALL EQUAL. In split-held, member 4 sees
   version B first and A only through the delayed relays; every honest member counts A.
-- Single-entry runs of the author's own entries are the common case on a LAN.
 
 Single gesture, batched + adaptive, member 1 (explicit = pe-session before option 1, set by `PE_LEAN=0`;
 what-if 3 = the earlier byte charge):
