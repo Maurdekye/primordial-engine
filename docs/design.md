@@ -1927,11 +1927,13 @@ is fixed once the author's chain is contiguous up to it.
     Before the fix 3's precommit was void and nothing was decided].
   * Once some member's acks are capped at or below B, others may precommit late, without a cap: every
     reader then confirms nothing from B on before the decision, whoever holds the cap (review VC-3).
-  * A capped precommit carries the ids of the prevotes whose quorum it followed (review VC4R-1). They
+  * A capped precommit carried the ids of the prevotes whose quorum it followed (review VC4R-1). They
     served one rule only: voting out the author of a cap no quorum explains, with a fetch of the named
     prevotes counted in any version and a fetch budget (reviews VC4R-1, VC6R-1, VC7R-2). Trust survey #4
-    retired that rule, so **nothing reads the ids any more**; they stay on the wire for now, and removing
-    them (with `MAX_POLKA` and the prevote-id index) is a follow-up wire change. Locks, re-proposals and
+    retired that rule, so nothing read the ids any more, and **they are off the wire** (2026-11-07, spike and
+    pe-session, with `MAX_POLKA` and the prevote-id index; capfake, which differed from capstale only in a
+    fake id, folded into it). A precommit is its epoch, round, value and boundary (and in pe-session its
+    fact signature). Locks, re-proposals and
     decisions count a proven forker's prevotes and precommits in any version (PF-1 and VC8R-1, under
     Agreement), which the ids never affected [V prevotefork: proposer 1 sends its prevote for the join to
     capper 2 and nil to observer 3; 3 casts no vote against 2, every member decides the join and 1 is
@@ -1945,8 +1947,8 @@ is fixed once the author's chain is contiguous up to it.
     bogusprecommit: a precommit with boundary 1 is void; one just ahead of its author's horizon holds
     confirmation (lag 210 frames when admin 1 kicks 9 at 6 s), 9 is removed at 6.17 s, no reset. Before
     the VC-4 fix confirmation stopped for good, at frames 112 and 143. V capstale: 9 signs such a
-    precommit in every epoch; no reset, the same lag and removal. V capfake: the precommit also names a
-    polka id that exists nowhere, now dead bytes; the same].
+    precommit in every epoch; no reset, the same lag and removal. capfake (the precommit also named a polka
+    id that exists nowhere) folded into capstale when the ids left the wire].
   * **Nothing counts against a member whose vote a reset overruled** (review VC3R-2). Round 3 counted it:
     overruled in 3 of the last 8 epochs, a member was voted out. But suspicion by timing cannot tell the
     voter's fault from the suspect's: a member that controls when each other member hears from it can
