@@ -72,6 +72,13 @@ fn cut_trace() -> bool {
     *V.get_or_init(|| std::env::var("PE_CUT_TRACE").is_ok())
 }
 
+/// (spike diagnostics: PE_MODE_TRACE=<window>) Once a second, while that 3-member window's mode is unknown here: the
+/// member whose first ack in it blocks the mode, and each other member's matched reference to its chain.
+fn mode_trace() -> Option<u64> {
+    static V: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_MODE_TRACE").ok().and_then(|v| v.parse().ok()))
+}
+
 /// F2: one epoch's membership, as rule 1 judges that epoch's entries (revision 21 (a): a removed member's entries
 /// with the members and quorum of the epoch it was last a member of).
 #[derive(Clone, Debug)]
@@ -201,11 +208,27 @@ impl WorldSim {
                     // the later windows' modes unknown for good: leave-s4-rejoin's conf stopped at 603.)
                     let stable = members.iter().filter(|&&y| y != m && !self.silent_removed(y, m, first_after)).map(|&y| self.matched_ref(y, m)).min().unwrap_or(0);
                     if first_after > stable {
+                        if mode_trace() == Some(k) && self.now % 60 == 0 {
+                            let refs: Vec<(MemberId, u32, bool)> = members.iter().filter(|&&y| y != m).map(|&y| (y, self.matched_ref(y, m), self.silent_removed(y, m, first_after))).collect();
+                            eprintln!(
+                                "MODE m{} now {} conf {} window {k}: m{m}'s first ack at or after {start} is s{first_after}, past what both others reference; (member, matched ref to m{m}, silent-removed) {refs:?}; I hold m{m} to s{}",
+                                self.me,
+                                self.now,
+                                self.conf,
+                                self.contiguous.get(&m).copied().unwrap_or(0)
+                            );
+                        }
                         return None;
                     }
                 }
                 (_, Some(_)) => {}
-                _ => return None,
+                _ => {
+                    if mode_trace() == Some(k) && self.now % 60 == 0 {
+                        let last = acks.iter().next_back().map(|(&st, &s)| (s, st));
+                        eprintln!("MODE m{} now {} conf {} window {k}: m{m} has no ack at or after {start} that I hold; its newest (seq, stamp) {last:?}; I hold m{m} to s{}", self.me, self.now, self.conf, self.contiguous.get(&m).copied().unwrap_or(0));
+                    }
+                    return None;
+                }
             }
             if let Some((_, &last_before)) = acks.range(..start).rev().find(|&(_, &s)| ended.is_none_or(|b| s <= b)) {
                 fed |= self.anchored_acks.get(&m).is_some_and(|a| a.contains(&last_before));
