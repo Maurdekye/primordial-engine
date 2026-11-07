@@ -2336,6 +2336,12 @@ pub struct WorldSim {
     /// The feed exit's catch-up (while fed, and in the echo phase): per author, the start of my last request, when (ms),
     /// and its attempt at that start.
     catchup_asked: BTreeMap<MemberId, (u32, u64, u32)>,
+    /// The feed exit (b): the echo phase's striped catch-up (`echo_catchup_fetches`). Per request out, keyed by (author,
+    /// first seq): its last seq, when it went (ms), its holder, and how many of its seqs I held at the last look. Per
+    /// holder: when one of its requests last gained an entry (or it was first asked), and its turns that drew nothing.
+    catchup_out: BTreeMap<(MemberId, u32), (u32, u64, MemberId, u32)>,
+    catchup_progress: BTreeMap<MemberId, u64>,
+    catchup_fail: BTreeMap<MemberId, u32>,
     /// Part B (TLP-27): per author, the checkpoint state after the newest entry of its chain I validated: the
     /// newest checkpoint's block and id.
     ckpt: BTreeMap<MemberId, (u64, EntryId)>,
@@ -2687,6 +2693,9 @@ impl WorldSim {
             echo_stopped: BTreeMap::new(),
             echo_verified: BTreeMap::new(),
             catchup_asked: BTreeMap::new(),
+            catchup_out: BTreeMap::new(),
+            catchup_progress: BTreeMap::new(),
+            catchup_fail: BTreeMap::new(),
             ckpt: BTreeMap::new(),
             ckpt_after: BTreeMap::new(),
             live_wait: BTreeMap::new(),
