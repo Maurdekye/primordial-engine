@@ -1944,8 +1944,14 @@ pub struct Stats {
     /// those that didn't (production asks for the full signed heads, 7.6).
     pub echoes_matched: u64,
     pub echo_mismatches: u64,
+    /// The feed exit's echo-credit rule: echoes not credited because the echoer's named head of that chain isn't in my
+    /// version.
+    pub echo_head_refused: u64,
     /// Thin links Part B, rule 4's exception: fed members this replica voted out below the floors.
     pub floor_removals: u64,
+    /// The feed exit (D): echo phases this replica ended; rule (1): authors whose checkpoints conflicted with my chain.
+    pub echo_phase_ends: u64,
+    pub echo_conflicts: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -2266,6 +2272,20 @@ pub struct WorldSim {
     window_data_cache: BTreeMap<u64, localize::WindowData>,
     /// Part B, rule 5: this replica is on the state feed (set by the harness, never logged).
     fed: Option<feed::Fed>,
+    /// The feed exit (D): off the feed, still echoing until its held chains reach its echo (never logged).
+    echo_phase: Option<feed::EchoPhase>,
+    /// Rule (1) of the feed exit: each checkpoint my echo computed past my held prefix, by (author, block): its seq and
+    /// id, checked against the entry I come to hold there.
+    echo_chain: BTreeMap<(MemberId, u64), (u32, EntryId)>,
+    /// Rule (1): authors whose checkpoints conflicted with the chain I hold, with the claim (block, seq, claimed id, held
+    /// id). My echo of their chains stays where it stood.
+    echo_stopped: BTreeMap<MemberId, (u64, u32, EntryId, EntryId)>,
+    /// Rule (1)'s ack cap: per author, the newest seq of its chain I hold that is a checkpoint my echo chain checked
+    /// out at (the echo's start, or one it passed and I came to hold). While my echo is ahead of my held head, or after
+    /// a conflict, my acks name no new head past it.
+    echo_verified: BTreeMap<MemberId, u32>,
+    /// The feed exit's background catch-up: per author, the start of my last catch-up request while fed, and when (ms).
+    catchup_asked: BTreeMap<MemberId, (u32, u64)>,
     /// Part B (TLP-27): per author, the checkpoint state after the newest entry of its chain I validated: the
     /// newest checkpoint's block and id.
     ckpt: BTreeMap<MemberId, (u64, EntryId)>,
@@ -2609,6 +2629,11 @@ impl WorldSim {
             windows: BTreeMap::new(),
             window_data_cache: BTreeMap::new(),
             fed: None,
+            echo_phase: None,
+            echo_chain: BTreeMap::new(),
+            echo_stopped: BTreeMap::new(),
+            echo_verified: BTreeMap::new(),
+            catchup_asked: BTreeMap::new(),
             ckpt: BTreeMap::new(),
             ckpt_after: BTreeMap::new(),
             my_ckpt: None,
@@ -3054,12 +3079,15 @@ impl WorldSim {
     /// hash (reviews NEW-1, H4).
     pub fn author_ack(&mut self) -> Entry {
         let mut heads = Vec::new();
+        let caps = self.echo_ack_caps();
         for (&q, &held) in &self.contiguous {
             // A vote's frozen head is this replica's last word on that chain in the epoch (R3-1).
             let s = match self.frozen.get(&q) {
                 Some(&f) if !self.evicted.contains_key(&q) => held.min(f),
                 _ => held,
             };
+            // Rule (1)'s ack cap (feed exit): no new head past what my echo checked out at while it runs ahead.
+            let s = caps.get(&q).map_or(s, |&c| s.min(c));
             if s > 0 && q != self.me && self.cfg.ack_heads {
                 match (self.hidden.as_ref().and_then(|h| h.get(&q)), self.fake_refs) {
                     (_, Some((f, n))) if f == q => heads.push((q, s + n, fnv_u64s([41, q as u64, (s + n) as u64]))),
@@ -3340,6 +3368,10 @@ impl WorldSim {
             self.ckpt.insert(m, a);
             if a.1 == id {
                 self.ckpt_by_block.insert((m, a.0), (e.seq, id, e.rest_hash()));
+                // Rule (1) of the feed exit: a checkpoint my echo passed before I held it must be the one I now hold.
+                if !self.echo_chain.is_empty() {
+                    self.check_echo_block(m, a.0, e.seq, id);
+                }
                 if !self.echo_pending.is_empty() {
                     self.retry_echoes();
                 }
@@ -3808,8 +3840,9 @@ impl WorldSim {
         }
         let f = self.contiguous.get(&m).copied().unwrap_or(0);
         // Rev 22 (TLP-24): a fed member's frozen head is its last echoed checkpoint of m: it echoed that far, so its
-        // held prefix (stale while fed) would drop references it published.
-        if self.fed.is_some() {
+        // held prefix (stale while fed) would drop references it published. The feed exit (D): in its echo phase too, so
+        // it freezes at max(held, echo).
+        if self.fed_like() {
             if let (Some(&s), Some(&(_, id))) = (self.echo_seq.get(&m), self.echo_last.get(&m)) {
                 if s > f {
                     self.frozen.insert(m, s);
@@ -4386,7 +4419,7 @@ impl WorldSim {
     pub fn s4_leave_due(&mut self) -> Option<Entry> {
         // (Not a member any more, e.g. after my own leave decided: nothing to leave. Before this guard the event was logged
         // on every tick, though `request_leave` sent nothing.)
-        if !self.cfg.localize || self.members.len() != 3 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
+        if !self.cfg.localize || self.members.len() != 3 || !self.fed_like() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
             return None;
         }
         let fed: Vec<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m) && *m != self.me).collect();
@@ -4407,7 +4440,7 @@ impl WorldSim {
     /// The fed members are myself and the fed peers I know of (TLP-23); the votes reach me by value (`record_vc`).
     pub fn latency_leave_due(&mut self) -> Option<Entry> {
         let n = self.members.len();
-        if !self.cfg.localize || n < 4 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
+        if !self.cfg.localize || n < 4 || !self.fed_like() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
             self.latency_defer_since = None;
             return None;
         }
