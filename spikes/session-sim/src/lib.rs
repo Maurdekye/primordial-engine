@@ -155,6 +155,16 @@ pub struct Net {
     outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
     /// Rev 22, ack priority: a fed member's client queue per directed link, (protocol, own inputs), each (world, msg).
     client_q: BTreeMap<(MemberId, MemberId), (std::collections::VecDeque<(WorldId, Msg)>, std::collections::VecDeque<(WorldId, Msg)>)>,
+    /// The feed exit's background catch-up (@coordinator-opus m5eeeaff3c105): per directed link to a fed member, the
+    /// entries of fetch answers waiting at the lowest priority, below feed and echo. A datagram of them leaves only while
+    /// the link's router queue and client queues are empty, and holds at most what the link carries in 100 ms (one entry
+    /// at least), so a feed packet or a Ckpts waits behind at most that.
+    catchup_q: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(WorldId, Msg)>>,
+    /// Entries sent through `catchup_q`, and their wire bytes.
+    pub catchup_sent: (u64, u64),
+    /// Links whose catch-up is held this tick: its source's next checkpoint (and the Ckpts announcing it) is due within one
+    /// catch-up datagram, so the echo doesn't wait behind one (set by the harness before each flush).
+    pub catchup_closed: BTreeSet<(MemberId, MemberId)>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
     /// (spike diagnostics, with `tracing`) Every entry posted: (now, from, to, author, seq, kind, to a fed member).
@@ -240,6 +250,9 @@ impl Net {
             batching: false,
             outbox: BTreeMap::new(),
             client_q: BTreeMap::new(),
+            catchup_q: BTreeMap::new(),
+            catchup_sent: (0, 0),
+            catchup_closed: BTreeSet::new(),
             tracing: false,
             post_log: Vec::new(),
             trace: Vec::new(),
@@ -435,6 +448,51 @@ impl Net {
                 self.send_batch(w, from, to, cur);
             }
         }
+        // The feed exit's background catch-up: the lowest priority, one datagram at a time while the link is idle.
+        let keys: Vec<(MemberId, MemberId)> = self.catchup_q.iter().filter(|(_, q)| !q.is_empty()).map(|(k, _)| *k).collect();
+        for (from, to) in keys {
+            let busy = self.router_backlog_us(from, to) > 0
+                || self.client_q.get(&(from, to)).is_some_and(|(h, l)| !h.is_empty() || !l.is_empty())
+                || self.catchup_closed.contains(&(from, to));
+            if busy {
+                continue;
+            }
+            let budget = match self.caps.get(&(from, to)).copied().or(self.default_cap) {
+                Some(cap) => ((cap.rate_bps / 8 / 10) as usize).saturating_sub(dgram_overhead() as usize).min(MTU),
+                None => MTU,
+            };
+            let q = self.catchup_q.get_mut(&(from, to)).unwrap();
+            let w = q.front().unwrap().0;
+            let mut cur: Vec<Msg> = Vec::new();
+            let mut size = 0;
+            while let Some((w2, m)) = q.front() {
+                let n = encode_msg(m).len();
+                if *w2 != w || (!cur.is_empty() && size + n > budget) {
+                    break;
+                }
+                size += n;
+                cur.push(q.pop_front().unwrap().1);
+            }
+            self.catchup_sent.0 += cur.len() as u64;
+            self.catchup_sent.1 += size as u64 + dgram_overhead();
+            self.send_batch(w, from, to, cur);
+        }
+    }
+
+    /// The feed exit's background catch-up: queue `m` (an entry answering a fed member's fetch) at the lowest priority on
+    /// the link from `from` to `to`, past the rule-5 filter (the fed member asked for it).
+    pub fn post_catchup(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
+        self.catchup_q.entry((from, to)).or_default().push_back((world, m.clone()));
+    }
+
+    /// Whether the link from `from` to `to` still has catch-up entries waiting.
+    pub fn catchup_pending(&self, from: MemberId, to: MemberId) -> bool {
+        self.catchup_q.get(&(from, to)).is_some_and(|q| !q.is_empty())
+    }
+
+    /// The links with catch-up entries waiting: (from, to, the world of the next one).
+    pub fn catchup_links(&self) -> Vec<(MemberId, MemberId, WorldId)> {
+        self.catchup_q.iter().filter_map(|(&(f, t), q)| q.front().map(|(w, _)| (f, t, *w))).collect()
     }
 
     /// Send now, or queue for this tick's batch to that peer.
@@ -670,6 +728,47 @@ pub struct Acceptance {
     pub receiver_hash: u64,
 }
 
+/// (spike) The feed controller's knobs, read once:
+/// * PE_ENTER_US, PE_ENTER_HOLD_US, PE_ENTER_NOW_US: the enter test's thresholds (40 ms, 1 s, 400 ms).
+/// * PE_ENTER_RANK=1: the enter test reads the (t + 1)-th worst qualifying sender's backlog, not the worst, so one liar
+///   sender alone can't put a member on the feed at n >= 4 (t = 0 at n = 3: no change there).
+/// * PE_ENTER_ANY_SENDER=1: every level-0 sender's backlog counts, as before the member-2 fix.
+/// * PE_ENTER_ANY_LEVEL=1: senders at any R18 level count (the member-2 test tells a sender's own uplink queue from t's
+///   downlink queue; the level doesn't: R18 thins a sender for a thin receiver's queue too).
+/// * PE_CLEAR_US: the member-2 test's "clear" threshold for a sender's link to another member (40 ms).
+/// * PE_EXIT_BOUND_MS: the exit bound T (2000); PE_NO_EXIT_BOUND=1 leaves it out, as before the feed-exit fix.
+/// * PE_NO_CATCHUP=1: no background catch-up while fed, as before the feed-exit fix.
+struct FeedKnobs {
+    enter_us: u64,
+    hold_us: u64,
+    now_us: u64,
+    rank: bool,
+    any_sender: bool,
+    any_level: bool,
+    clear_us: u64,
+    exit_bound_us: Option<u64>,
+    catchup: bool,
+}
+
+fn feed_knobs() -> &'static FeedKnobs {
+    static K: std::sync::OnceLock<FeedKnobs> = std::sync::OnceLock::new();
+    K.get_or_init(|| {
+        let num = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(d);
+        let on = |k: &str| std::env::var(k).is_ok();
+        FeedKnobs {
+            enter_us: num("PE_ENTER_US", 40_000),
+            hold_us: num("PE_ENTER_HOLD_US", 1_000_000),
+            now_us: num("PE_ENTER_NOW_US", 400_000),
+            rank: on("PE_ENTER_RANK"),
+            any_sender: on("PE_ENTER_ANY_SENDER"),
+            any_level: on("PE_ENTER_ANY_LEVEL"),
+            clear_us: num("PE_CLEAR_US", 40_000),
+            exit_bound_us: if on("PE_NO_EXIT_BOUND") { None } else { Some(num("PE_EXIT_BOUND_MS", 2000) * 1000) },
+            catchup: !on("PE_NO_CATCHUP"),
+        }
+    })
+}
+
 /// Thin links Part B, rule 5: one receiver's feed controller.
 #[derive(Clone, Debug, Default)]
 struct FeedCtl {
@@ -685,6 +784,9 @@ struct FeedCtl {
     over_since_us: Option<u64>,
     /// The frame it came off the feed at: no re-entry before its confirmed frame passes it (it has caught up).
     left_frame: u64,
+    /// The exit bound: its catch-up time in seconds as last computed, and when (us); computed at most every 100 ms.
+    catchup_s: f64,
+    catchup_at: Option<u64>,
 }
 
 pub struct Sim {
@@ -895,17 +997,22 @@ impl Sim {
     /// * The feeder is its best-linked peer (smallest backlog toward it), rotated every 10 s; it sends the
     ///   bodies' states every 50 ms, within 70% of its link to the member.
     fn run_feeds(&mut self, now: u64) {
-        const ENTER_US: u64 = 40_000;
+        let knobs = feed_knobs();
+        let enter_us = knobs.enter_us;
         const LEAVE_US: u64 = 5_000_000;
         const ROTATE_US: u64 = 10_000_000;
         const PERIOD_US: u64 = 50_000;
         // Thin links Part B: the full stream "doesn't fit" only if the backlog stays over ENTER_US this long. One
         // 16-entry fetch reply is about 50 ms on a 256 kbit/s link, and put clean members on the feed; at 300 ms a
         // slow sender's catch-up burst after GST still did (partbrand seed 11). A thin link's backlog grows for good.
-        const ENTER_HOLD_US: u64 = 1_000_000;
+        let enter_hold_us = knobs.hold_us;
         // ... unless it is clearly thin: a backlog this deep enters at once (an 8-16 kbit/s downlink under the full
         // stream gets there in tens of ms; the catch-up bursts seen on fat links peaked at 43-212 ms).
-        const ENTER_NOW_US: u64 = 400_000;
+        let enter_now_us = knobs.now_us;
+        // The feed exit (D): members in their echo phase count as fed for the room (S-4) and never feed (their view
+        // waits on the catch-up).
+        let echoing: BTreeSet<(WorldId, MemberId)> =
+            self.peers.iter().filter(|p| !p.crashed).flat_map(|p| p.worlds.iter().filter(|(_, r)| r.sim.in_echo_phase()).map(move |(w, _)| (*w, p.id))).collect();
         let mut todo: Vec<(WorldId, MemberId, Vec<MemberId>)> = Vec::new();
         // Each member's R18 level and quorum, per world.
         let mut level: BTreeMap<(WorldId, MemberId), usize> = BTreeMap::new();
@@ -970,23 +1077,57 @@ impl Sim {
             }
             let mut ctl = self.feeds.get(&(w, t)).cloned().unwrap_or_default();
             if !ctl.fed {
-                let backlog = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).map(|&s| self.net.backlog_us(s, t)).max().unwrap_or(0);
-                let fed_now = members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
-                let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
+                // The member-2 fix (@coordinator-opus m9c4af4baeb36, provisional): a level-0 sender's backlog into t counts
+                // only if its link to some other member not on the feed is clear (under ENTER_US). A thin uplink queues to
+                // everyone, a thin downlink only into t (down-k32-m3: member 2, on 256 kbit/s, went on the feed on member
+                // 3's own 32 kbit/s uplink queue while member 3's controller sat at level 0). At n = 3 with one member fed
+                // no such member exists, so nothing counts, and the room (n − q = 1) keeps a second one off the feed anyway.
+                let mut qualifying: Vec<u64> = senders
+                    .iter()
+                    .filter(|&&s| knobs.any_level || level.get(&(w, s)) == Some(&0))
+                    .filter(|&&s| knobs.any_sender || members.iter().any(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)) && self.net.backlog_us(s, x) <= knobs.clear_us))
+                    .map(|&s| self.net.backlog_us(s, t))
+                    .collect();
+                qualifying.sort_unstable_by(|a, b| b.cmp(a));
+                // (spike: PE_ENTER_RANK) the (t + 1)-th worst, so one liar sender alone can't put t on the feed at n >= 4.
+                let rank = if knobs.rank { pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, members.len()).0 } else { 0 };
+                let backlog = qualifying.get(rank).copied().unwrap_or(0);
+                // (spike diagnostics: PE_FEED_SIGNALS=1) every 250 ms, the enter test's inputs for each member not fed:
+                // per sender (level, backlog into t in ms, bits offered into t over the last second, entries of its chain t
+                // lacks), the qualifying backlog, and t's and member 1's confirmation lag in frames.
+                if now % 250_000 == 0 && std::env::var("PE_FEED_SIGNALS").is_ok() {
+                    let pt = self.peer_index(t);
+                    let lag_of = |pi: usize| self.peers[pi].worlds.get(&w).map_or(0, |r| r.sim.frame.saturating_sub(r.sim.conf));
+                    let per: Vec<String> = senders
+                        .iter()
+                        .map(|&s| {
+                            let ps = self.peer_index(s);
+                            let lacks = match (self.peers[ps].worlds.get(&w), self.peers[pt].worlds.get(&w)) {
+                                (Some(rs), Some(rt)) => rs.sim.held_head(s).saturating_sub(rt.sim.held_head(s)),
+                                _ => 0,
+                            };
+                            format!("m{s}:L{} {}ms {}b/s -{}", level.get(&(w, s)).copied().unwrap_or(0), self.net.backlog_us(s, t) / 1000, self.net.recent_bps(s, t), lacks)
+                        })
+                        .collect();
+                    let p1 = self.peer_index(members[0]);
+                    eprintln!("SIG t={} m{t}: [{}] qualifying {} ms; lag m{t} {} m{} {}", now / 1000, per.join(", "), backlog / 1000, lag_of(pt), members[0], lag_of(p1));
+                }
+                let fed_now = members.iter().filter(|&&m| self.net.fed.contains(&(w, m)) || echoing.contains(&(w, m))).count();
+                let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s)) && !echoing.contains(&(w, s))).collect();
                 let caught_up = {
                     let pi = self.peer_index(t);
                     self.peers[pi].worlds.get(&w).is_none_or(|r| r.sim.conf >= ctl.left_frame)
                 };
                 let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US) && caught_up;
-                ctl.over_since_us = if backlog > ENTER_US { Some(ctl.over_since_us.unwrap_or(now)) } else { None };
-                let held = backlog > ENTER_NOW_US || ctl.over_since_us.is_some_and(|t0| now >= t0 + ENTER_HOLD_US);
+                ctl.over_since_us = if backlog > enter_us { Some(ctl.over_since_us.unwrap_or(now)) } else { None };
+                let held = backlog > enter_now_us || ctl.over_since_us.is_some_and(|t0| now >= t0 + enter_hold_us);
                 if held && settled && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
                     let feeder = *feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)).unwrap();
                     if std::env::var("PE_FEED_LOG").is_ok() {
                         let worst = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).max_by_key(|&&s| self.net.backlog_us(s, t)).copied();
-                        eprintln!("FEED t={} ms: {t} goes on the feed, feeder {feeder}; worst level-0 sender {worst:?} backlog {} us", now / 1000, backlog);
+                        eprintln!("FEED t={} ms: {t} goes on the feed, feeder {feeder}; worst level-0 sender {worst:?}; qualifying backlog {} us", now / 1000, backlog);
                     }
-                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us, over_since_us: None, left_frame: ctl.left_frame };
+                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us, over_since_us: None, left_frame: ctl.left_frame, catchup_s: 0.0, catchup_at: None };
                     self.net.fed.insert((w, t));
                     let pi = self.peer_index(t);
                     if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
@@ -996,8 +1137,8 @@ impl Sim {
             } else {
                 // A feeder that went on the feed itself, or isn't a member any more, can't feed: re-pick at once (the
                 // n = 4 two-fed cell: member 4 was picked as member 3's feeder, then went on the feed and kept feeding).
-                if self.net.fed.contains(&(w, ctl.feeder)) || !senders.contains(&ctl.feeder) {
-                    let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
+                if self.net.fed.contains(&(w, ctl.feeder)) || echoing.contains(&(w, ctl.feeder)) || !senders.contains(&ctl.feeder) {
+                    let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s)) && !echoing.contains(&(w, s))).collect();
                     if let Some(&f) = feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)) {
                         if std::env::var("PE_FEED_LOG").is_ok() {
                             eprintln!("FEED t={} ms: {t}'s feeder {} re-picked: {f}", now / 1000, ctl.feeder);
@@ -1006,11 +1147,42 @@ impl Sim {
                         ctl.feeder_since_us = now;
                     }
                 }
+                // The feed exit's background catch-up (@coordinator-opus m5eeeaff3c105): the fed member fetches every other
+                // chain from what it holds, from an idle link (a member neither fed, echoing nor feeding, the least queued
+                // toward it; the feeder only if there is none). The answers go at the lowest priority (`Net::post_catchup`).
+                if knobs.catchup {
+                    let pi = self.peer_index(t);
+                    let fetches = self.peers[pi].worlds.get_mut(&w).map(|r| r.sim.catchup_fetches(now / 1000)).unwrap_or_default();
+                    if !fetches.is_empty() {
+                        let src = senders
+                            .iter()
+                            .copied()
+                            .filter(|&s| s != ctl.feeder && !self.net.fed.contains(&(w, s)) && !echoing.contains(&(w, s)))
+                            .min_by_key(|&s| (self.net.backlog_us(s, t), s))
+                            .unwrap_or(ctl.feeder);
+                        for f in fetches {
+                            self.net.post(w, t, src, &f);
+                        }
+                    }
+                }
                 let ok = senders.iter().all(|&s| {
                     let reference = members.iter().copied().find(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)));
                     let stream = reference.map_or(0, |x| self.net.recent_bps(s, x));
                     cap_of(&self.net, s, t) as f64 >= 1.3 * stream as f64
                 });
+                // The exit bound (@coordinator-opus m9c4af4baeb36, T = 2 s): and its catch-up fits in T. Over the authors,
+                // the wire bytes of each one's chain it lacks over the spare rate of that author's link into it (cap − the
+                // stream that author offers a member not on the feed); the links run in parallel. Read at most every 100 ms.
+                let ok = match knobs.exit_bound_us {
+                    Some(bound) if ok => {
+                        if ctl.catchup_at.is_none_or(|t0| now >= t0 + 100_000) {
+                            ctl.catchup_s = self.catchup_secs(w, t, &members);
+                            ctl.catchup_at = Some(now);
+                        }
+                        ctl.catchup_s * 1e6 <= bound as f64
+                    }
+                    _ => ok,
+                };
                 if std::env::var("PE_FEED_LOG").is_ok() && now % 2_000_000 == 0 {
                     let v: Vec<(MemberId, u64, u64)> = senders
                         .iter()
@@ -1019,10 +1191,13 @@ impl Sim {
                             (s, cap_of(&self.net, s, t), reference.map_or(0, |x| self.net.recent_bps(s, x)))
                         })
                         .collect();
-                    eprintln!("FEED t={} ms: {t} fed; leave test (sender, cap, stream) {v:?} ok {ok}", now / 1000);
+                    eprintln!("FEED t={} ms: {t} fed; leave test (sender, cap, stream) {v:?} catch-up {:.2} s, ok {ok}", now / 1000, ctl.catchup_s);
                 }
                 ctl.leave_ok_since_us = if ok { Some(ctl.leave_ok_since_us.unwrap_or(now)) } else { None };
                 if ctl.leave_ok_since_us.is_some_and(|t0| now >= t0 + LEAVE_US) {
+                    if std::env::var("PE_FEED_LOG").is_ok() {
+                        eprintln!("FEED t={} ms: {t} leaves the feed; catch-up {:.2} s", now / 1000, ctl.catchup_s);
+                    }
                     ctl.fed = false;
                     ctl.left_us = Some(now);
                     ctl.left_frame = {
@@ -1089,6 +1264,31 @@ impl Sim {
             }
             self.feeds.insert((w, t), ctl);
         }
+    }
+
+    /// The exit bound: fed member `t`'s catch-up time in seconds if it left the feed now. For each other member a: the wire
+    /// bytes of a's chain from what t holds to what a holds (16-entry answers in MTU datagrams), over the spare rate of
+    /// a's link into t (its cap less the stream a offers a member not on the feed). The links run in parallel: the worst.
+    fn catchup_secs(&self, w: WorldId, t: MemberId, members: &[MemberId]) -> f64 {
+        let pt = self.peer_index(t);
+        let Some(rt) = self.peers[pt].worlds.get(&w) else { return 0.0 };
+        let mut worst: f64 = 0.0;
+        for &a in members.iter().filter(|&&a| a != t) {
+            let pa = self.peer_index(a);
+            let Some(ra) = self.peers[pa].worlds.get(&w) else { continue };
+            let (from, to) = (rt.sim.held_head(a) + 1, ra.sim.held_head(a));
+            if to < from {
+                continue;
+            }
+            let (bytes, _) = ra.sim.chain_bytes(a, from, to);
+            let wire = bytes + (bytes / MTU as u64 + 1) * dgram_overhead();
+            let reference = members.iter().copied().find(|&x| x != a && x != t && !self.net.fed.contains(&(w, x)));
+            let stream = reference.map_or(0, |x| self.net.recent_bps(a, x));
+            let cap = self.net.caps.get(&(a, t)).copied().or(self.net.default_cap).map_or(u64::MAX, |c| c.rate_bps);
+            let spare = cap as f64 - stream as f64;
+            worst = worst.max(if spare <= 0.0 { f64::INFINITY } else { wire as f64 * 8.0 / spare });
+        }
+        worst
     }
 
     /// Thin links Part B (TLP-23): every member sends each member its log shows fed its checkpoints since that
@@ -1174,11 +1374,25 @@ impl Sim {
                     // makes the queue, and the requester's next round trip, longer.
                     // (spike diagnostics: PE_REPAIR_TRACE=<requester>) each fetch from that member, answered or skipped.
                     let trace = std::env::var("PE_REPAIR_TRACE").ok().and_then(|v| v.parse::<MemberId>().ok()) == Some(from);
-                    if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US {
+                    // The feed exit's background catch-up: a fed member's fetch is answered at the lowest priority (below
+                    // feed and echo), one answer at a time per link (a repeated request while one waits is dropped).
+                    if self.net.fed.contains(&(w, from)) && feed_knobs().catchup {
+                        if !self.net.catchup_pending(to, from) {
+                            for e in r.sim.on_fetch(author, a, b) {
+                                self.net.post_catchup(w, to, from, &e);
+                            }
+                        }
+                        continue;
+                    }
+                    // Scoped (B): at 2 members, my own chain's repair while I'm paused at my window doesn't yield.
+                    if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US && !r.sim.repair_holds_conf(from, author) {
                         if trace {
                             eprintln!("REPAIR t={} ms m{to} skips m{from}'s fetch of m{author} s{a}..={b}: backlog {} us", now / 1000, self.net.backlog_us(to, from));
                         }
                         continue;
+                    }
+                    if trace && self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US {
+                        eprintln!("REPAIR t={} ms m{to} answers m{from}'s fetch of m{author} s{a}..={b} past its backlog {} us (scoped B)", now / 1000, self.net.backlog_us(to, from));
                     }
                     let reply = r.sim.on_fetch(author, a, b);
                     if trace {
@@ -1230,6 +1444,20 @@ impl Sim {
         }
         // 3. acceptance checks whose receiver is caught up and whose author has the frame
         self.resolve_acceptance();
+        // The feed exit's background catch-up, below echo: a source holds its catch-up while its next checkpoint block
+        // starts within 7 frames (one catch-up datagram, at most 100 ms of its link), so the Ckpts announcing the new
+        // checkpoint don't wait behind one (down-k8-m3: the catch-up raised the others' fed-mode lag 36.3 -> 42.1 frames).
+        let closed: BTreeSet<(MemberId, MemberId)> = self
+            .net
+            .catchup_links()
+            .into_iter()
+            .filter(|&(f, _, w)| {
+                let pi = self.peer_index(f);
+                self.peers[pi].worlds.get(&w).is_some_and(|r| r.sim.frame % CKPT_FRAMES >= CKPT_FRAMES - 7)
+            })
+            .map(|(f, t, _)| (f, t))
+            .collect();
+        self.net.catchup_closed = closed;
         self.net.flush();
     }
 

@@ -57,6 +57,38 @@ impl FeedBody {
     }
 }
 
+/// The feed exit (@coordinator-opus me3f6f2d96958, (D)): a member just off the feed whose held chains don't reach its
+/// echo yet. Its acks keep their anchor and echo, it keeps taking the authors' checkpoints, and its votes freeze at
+/// max(held, echo), until its held copy of every other member's chain reaches the seq it echoes. Every fed-member rule
+/// reads it as fed, since its acks carry an anchor. Never logged.
+#[derive(Clone, Debug, Default)]
+pub struct EchoPhase {
+    /// The anchor its acks keep carrying: its last feed packet's frame (only its presence is read).
+    pub anchor: u64,
+    /// The digest of the echo its last ack carried.
+    pub echoed: u64,
+    /// The frame it came off the feed at.
+    pub since: u64,
+}
+
+/// (spike) PE_NO_ECHO_PHASE=1: a member coming off the feed drops its echo at once, as before the feed-exit fix.
+fn no_echo_phase() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_ECHO_PHASE").is_ok())
+}
+
+/// (spike) PE_NO_ECHO_ACK_CAP=1: a fed or echoing member's acks name its held heads uncapped (`echo_ack_caps`).
+fn no_echo_ack_cap() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_ECHO_ACK_CAP").is_ok())
+}
+
+/// (spike) PE_NO_ECHO_HEAD_CHECK=1: receivers credit an echo without checking the echoer's named head of that chain.
+pub(super) fn no_echo_head_check() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_ECHO_HEAD_CHECK").is_ok())
+}
+
 /// The fed member's state (never logged, never hashed into the world).
 #[derive(Clone, Debug, Default)]
 pub struct Fed {
@@ -78,6 +110,86 @@ impl WorldSim {
         self.fed.is_some()
     }
 
+    /// The feed exit (D): whether this replica is off the feed but still echoing, until its held chains reach its echo.
+    pub fn in_echo_phase(&self) -> bool {
+        self.echo_phase.is_some()
+    }
+
+    /// The feed exit (D): fed for every fed-member rule: on the feed, or in its echo phase after it.
+    pub(super) fn fed_like(&self) -> bool {
+        self.fed.is_some() || self.echo_phase.is_some()
+    }
+
+    /// The feed exit (D): end the echo phase once my held copy of every other member's chain reaches the seq I echo of it
+    /// (a chain whose echo stopped on a conflict stands at its last checked checkpoint), or once Part B's echo no longer
+    /// applies (below 3 members). Called before each ack, so the first ack without an anchor shows the switch in my chain.
+    fn end_echo_phase_if_caught_up(&mut self) {
+        let Some(since) = self.echo_phase.as_ref().map(|p| p.since) else { return };
+        let applies = self.cfg.localize && self.members.len() >= 3 && self.members.contains(&self.me);
+        let behind = self.members.iter().filter(|&&x| x != self.me).any(|x| self.echo_seq.get(x).is_some_and(|&s| self.contiguous.get(x).copied().unwrap_or(0) < s));
+        if applies && behind {
+            return;
+        }
+        self.echo_phase = None;
+        self.stats.echo_phase_ends += 1;
+        let why = if applies { "my held chains reach my echo" } else { "Part B's echo no longer applies" };
+        self.ev(format!("feed exit: member {} ends its echo phase at frame {} (off the feed since frame {since}): {why}", self.me, self.frame));
+    }
+
+    /// Rule (1)'s ack cap (feed exit): per author whose chain my echo runs ahead of my held head (fed, or in my echo
+    /// phase), or whose checkpoints conflicted with my chain, the newest head my acks may name: the newest checkpoint my
+    /// echo checked out at, or the newest head I named already, whichever is later. A held entry past that, before I hold
+    /// my echo's next checkpoint, may lie on another version than my echo: named, it could get me counted on two versions
+    /// at once (my echo credited on one, my head on the other). (spike: PE_NO_ECHO_ACK_CAP=1 switches it off)
+    pub(super) fn echo_ack_caps(&self) -> BTreeMap<MemberId, u32> {
+        let mut out = BTreeMap::new();
+        if no_echo_ack_cap() {
+            return out;
+        }
+        let fed_like = self.fed_like();
+        for (&x, &es) in &self.echo_seq {
+            let held = self.contiguous.get(&x).copied().unwrap_or(0);
+            if !(self.echo_stopped.contains_key(&x) || (fed_like && es > held)) {
+                continue;
+            }
+            let named = self.ack_head_hist.get(&(self.me, x)).and_then(|h| h.values().next_back()).map_or(0, |v| v.0);
+            out.insert(x, self.echo_verified.get(&x).copied().unwrap_or(0).max(named));
+        }
+        out
+    }
+
+    /// Rule (1) of the feed exit (@coordinator-opus me3f6f2d96958): `x`'s checkpoint of block `b` as my echo computed it,
+    /// seq `s` with id `claimed`, isn't the entry I hold at that seq. I stop echoing x's chain (my echo of it stands at
+    /// its last checked checkpoint) and keep the claim. Spike: Ckpts aren't signed, so the claim is counted and logged
+    /// only; production signs them, which makes it a proof of equivocation.
+    fn echo_conflict(&mut self, x: MemberId, b: u64, s: u32, claimed: EntryId) {
+        if self.echo_stopped.contains_key(&x) {
+            return;
+        }
+        let held = self.by_author.get(&(x, s)).copied().unwrap_or(0);
+        self.stats.echo_conflicts += 1;
+        self.ev(format!(
+            "echo: member {x}'s checkpoint of block {b} (s{s}, id {claimed:#x}) isn't the entry I hold there ({held:#x}): I stop echoing its chain and keep the claim"
+        ));
+        self.echo_stopped.insert(x, (b, s, claimed, held));
+    }
+
+    /// Rule (1): an entry of `x`'s chain I now hold is the checkpoint of block `b` in my version (seq `s`, id `id`):
+    /// check it against my echo of that block, if my echo passed it before I held it (the catch-up after the feed).
+    pub(super) fn check_echo_block(&mut self, x: MemberId, b: u64, s: u32, id: EntryId) {
+        if let Some(&(es, eid)) = self.echo_chain.get(&(x, b)) {
+            if (es, eid) != (s, id) {
+                self.echo_conflict(x, b, es, eid);
+            } else {
+                self.echo_chain.remove(&(x, b));
+                if !self.echo_stopped.contains_key(&x) {
+                    let v = self.echo_verified.entry(x).or_insert(0);
+                    *v = (*v).max(s);
+                }
+            }
+        }
+    }
+
     /// Go on the feed or come off it (the harness decides). Coming off drops the anchors and re-simulates
     /// from the first of them, so the replica follows the log again as the fetched entries arrive. The caller
     /// fetches the log (`recovery_fetches`).
@@ -86,7 +198,9 @@ impl WorldSim {
             (true, false) => {
                 self.ev(format!("feed: member {} goes on the state feed at frame {}", self.me, self.frame));
                 let heard: BTreeMap<MemberId, u64> = self.members.iter().map(|&m| (m, self.now)).collect();
-                self.fed = Some(Fed { anchors: BTreeMap::new(), since: self.frame, echoed: 0, ckpt_heard: heard, delay_frames: 0 });
+                // The feed exit (D): back on the feed from its echo phase, the echo goes on from where it stands.
+                let echoed = self.echo_phase.take().map_or(0, |p| p.echoed);
+                self.fed = Some(Fed { anchors: BTreeMap::new(), since: self.frame, echoed, ckpt_heard: heard, delay_frames: 0 });
                 // TLP-24: each chain's echo starts at the newest checkpoint my own last references cover (I held
                 // that log), unless I echo a newer one already (a re-entry).
                 let others: Vec<MemberId> = self.members.iter().copied().filter(|&x| x != self.me).collect();
@@ -100,6 +214,9 @@ impl WorldSim {
                             self.echo_last.insert(x, c);
                             if let Some(&(s, _, _)) = self.ckpt_by_block.get(&(x, c.0)) {
                                 self.echo_seq.insert(x, s);
+                                // Rule (1): the echo starts at a checkpoint I hold.
+                                let v = self.echo_verified.entry(x).or_insert(0);
+                                *v = (*v).max(s);
                             }
                         }
                     }
@@ -122,6 +239,22 @@ impl WorldSim {
                 let f = fed.since.max(self.conf);
                 if f < self.frame && !fed.anchors.is_empty() {
                     self.mark_dirty(f);
+                }
+                // The feed exit (D): until its held chains reach its echo, it keeps echoing (below 3 members the echo
+                // counts for nothing, rev 22, so there it ends here).
+                if self.cfg.localize && self.members.len() >= 3 && !no_echo_phase() {
+                    let anchor = fed.anchors.keys().next_back().copied().unwrap_or(fed.since);
+                    self.echo_phase = Some(EchoPhase { anchor, echoed: fed.echoed, since: self.frame });
+                    self.end_echo_phase_if_caught_up();
+                    if self.echo_phase.is_some() {
+                        let behind: Vec<(MemberId, u32, u32)> = self
+                            .members
+                            .iter()
+                            .filter(|&&x| x != self.me)
+                            .filter_map(|&x| Some((x, self.contiguous.get(&x).copied().unwrap_or(0), *self.echo_seq.get(&x)?)))
+                            .collect();
+                        self.ev(format!("feed exit: member {} keeps echoing until its held chains reach its echo, (member, held, echoed) {behind:?}", self.me));
+                    }
                 }
             }
             _ => {}
@@ -192,6 +325,67 @@ impl WorldSim {
         }
         *rr = (*rr + n) % k;
         Some(Msg::Feed { frame, fed, bodies: picked })
+    }
+
+    /// The newest seq of `author`'s chain this replica holds without a gap.
+    pub fn held_head(&self, author: MemberId) -> u32 {
+        if author == self.me {
+            return self.my_seq;
+        }
+        self.contiguous.get(&author).copied().unwrap_or(0)
+    }
+
+    /// The bytes of `author`'s entries `from..=to` as this replica holds them, encoded as single messages, and how many
+    /// it holds (the feed controller's catch-up debt, read at an author).
+    pub fn chain_bytes(&self, author: MemberId, from: u32, to: u32) -> (u64, u32) {
+        let (mut bytes, mut n) = (0, 0);
+        for s in from..=to {
+            let Some(e) = self.by_author.get(&(author, s)).and_then(|id| self.entries.get(id)) else { break };
+            bytes += super::encode_msg(&Msg::Entry(e.clone())).len() as u64;
+            n += 1;
+        }
+        (bytes, n)
+    }
+
+    /// The feed exit's background catch-up (@coordinator-opus m5eeeaff3c105): while fed, fetch every other chain from
+    /// what this replica holds, so the debt it leaves the feed with is small. Only a chain my echo shows ahead of what I
+    /// hold (its newest checkpoint I echo lies past my held head), so a caught-up member asks nothing over its uplink.
+    /// One request per chain at a time: asked again once the last answer is in (what it holds reached the end of the 16
+    /// entries asked), or after 2 s (an answer lost). The harness sends them to an idle link; the answers go at the lowest
+    /// priority, below feed and echo.
+    pub fn catchup_fetches(&mut self, now_ms: u64) -> Vec<Msg> {
+        let mut out = Vec::new();
+        if self.fed.is_none() {
+            self.catchup_asked.clear();
+            return out;
+        }
+        let others: Vec<MemberId> = self.members.iter().copied().filter(|&m| m != self.me).collect();
+        for a in others {
+            let held = self.contiguous.get(&a).copied().unwrap_or(0);
+            if self.echo_seq.get(&a).is_none_or(|&s| s <= held) {
+                continue;
+            }
+            let from = held + 1;
+            if self.catchup_asked.get(&a).is_some_and(|&(f, t)| held < f + 15 && now_ms < t + 2000) {
+                continue;
+            }
+            self.catchup_asked.insert(a, (from, now_ms));
+            out.push(Msg::Fetch { author: a, from, to: u32::MAX });
+        }
+        out
+    }
+
+    /// Scoped (B) (@coordinator-opus m4c1990b4b6d5, definition m9c4af4baeb36): at 2 members, a repair of my own chain
+    /// while I'm paused at my window (frame >= conf + W). My chain's stability then rests on the other member's
+    /// references alone, so its hole in my chain is what holds confirmation, and the session is stalled anyway: the reply
+    /// doesn't yield to my queue (review R3-9). Every other repair yields as before. (spike: PE_NO_SCOPED_B=1 switches it
+    /// off)
+    pub fn repair_holds_conf(&self, requester: MemberId, author: MemberId) -> bool {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var("PE_NO_SCOPED_B").is_ok()) {
+            return false;
+        }
+        self.members.len() == 2 && author == self.me && requester != self.me && self.members.contains(&requester) && self.frame >= self.conf + self.cfg.window
     }
 
     /// Coming off the feed: fetch every chain from what this replica holds, from `holder`.
@@ -366,15 +560,22 @@ impl WorldSim {
     /// What a fed replica's ack adds (rule 5, rule 1's echo): its newest anchor frame, and its echo of every
     /// other member's chain if that changed since my previous ack. None when not fed.
     pub(super) fn fed_ack(&mut self) -> Option<FedAck> {
+        // The feed exit (D): in the echo phase too, until its held chains reach its echo.
+        if self.fed.is_none() {
+            self.end_echo_phase_if_caught_up();
+        }
         let echoed: Vec<(MemberId, u64, EntryId)> =
             self.echo_last.iter().filter(|(x, _)| **x != self.me && self.members.contains(x)).map(|(&x, &(b, id))| (x, b, id)).collect();
         let digest = echo_digest(echoed.iter().copied());
-        let f = self.fed.as_mut()?;
-        let anchor = f.anchors.keys().next_back().copied().unwrap_or(f.since);
-        if echoed.is_empty() || f.echoed == digest {
+        let (anchor, last) = match (self.fed.as_mut(), self.echo_phase.as_mut()) {
+            (Some(f), _) => (f.anchors.keys().next_back().copied().unwrap_or(f.since), &mut f.echoed),
+            (None, Some(p)) => (p.anchor, &mut p.echoed),
+            (None, None) => return None,
+        };
+        if echoed.is_empty() || *last == digest {
             return Some(FedAck { anchor, echo: Vec::new(), digest: 0 });
         }
-        f.echoed = digest;
+        *last = digest;
         Some(FedAck { anchor, echo: echoed.iter().map(|&(x, b, _)| (x, b)).collect(), digest })
     }
 
@@ -382,7 +583,8 @@ impl WorldSim {
     /// chain is computed forward from the checkpoint I echo: each id from the previous one and the rest-hash.
     /// A list that doesn't link up with mine (it starts past it) is ignored; the author resends from my echo.
     pub fn on_ckpts(&mut self, from: MemberId, member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>, fed: bool, echo: Option<u64>) {
-        if self.fed.is_none() || from != member || member == self.me {
+        // The feed exit (D): in the echo phase too.
+        if !self.fed_like() || from != member || member == self.me {
             return;
         }
         let now = self.now;
@@ -391,7 +593,7 @@ impl WorldSim {
         }
         // Rev 22 delta (proposal) with the tightening: a peer whose own Ckpts say it is fed is fed on my own evidence,
         // until they stop for the silence threshold; the echo of my chain it reports is where my checkpoints to it start.
-        if fed && self.members.contains(&member) {
+        if fed && self.fed.is_some() && self.members.contains(&member) {
             self.fed_heard.insert(member, now);
             self.fed_echo_of_me.insert(member, echo);
             self.refresh_fed_peers();
@@ -402,6 +604,11 @@ impl WorldSim {
         if self.frozen.contains_key(&member) && self.members.contains(&member) {
             return;
         }
+        // Rule (1) of the feed exit: after a conflict with the chain I hold, my echo of this author stays where it stood.
+        if self.echo_stopped.contains_key(&member) {
+            return;
+        }
+        let held = self.contiguous.get(&member).copied().unwrap_or(0);
         let mut cur = self.echo_last.get(&member).copied();
         let mut it = list.into_iter().peekable();
         if after != cur.map(|(b, _)| b) {
@@ -426,7 +633,26 @@ impl WorldSim {
             if cur.is_some_and(|(b0, _)| b <= b0) {
                 break;
             }
-            cur = Some((b, entry_id(cur.map_or(0, |(_, id)| id), rest)));
+            let id = entry_id(cur.map_or(0, |(_, id)| id), rest);
+            // Rule (1) of the feed exit (@coordinator-opus me3f6f2d96958): the echo must extend the chain I hold. A
+            // checkpoint within my held prefix must be the entry I hold there; on a conflict I stop echoing this author.
+            // A checkpoint past it is checked when I come to hold it (`check_echo_block`, the catch-up).
+            let mine = self.ckpt_by_block.get(&(member, b)).map(|&(hs, hid, _)| (hs, hid));
+            let conflict = match mine {
+                Some(m) => m != (s, id),
+                None => s <= held && self.by_author.get(&(member, s)) != Some(&id),
+            };
+            if conflict {
+                self.echo_conflict(member, b, s, id);
+                break;
+            }
+            if mine.is_none() && s > held {
+                self.echo_chain.insert((member, b), (s, id));
+            } else if mine.is_some() {
+                let v = self.echo_verified.entry(member).or_insert(0);
+                *v = (*v).max(s);
+            }
+            cur = Some((b, id));
             seq = Some(s);
         }
         if let Some(c) = cur {
@@ -532,6 +758,26 @@ impl WorldSim {
                     None => wait = true,
                 }
             }
+            // The echo-credit rule (feed exit, @design-reviewer m9940148cd19e): an echo of x's chain counts only if the
+            // echoer's newest head of x named by its acks up to this one is in my version. Its acks can name held entries
+            // past the checkpoint its echo starts from, which the checkpoints alone can't check: without this a lying author
+            // got one echoer counted on two versions (its echo on one, its named head on the other). Pending until I hold
+            // that head, so every replica on one version decides alike.
+            let mut refused: BTreeSet<MemberId> = BTreeSet::new();
+            if !no_echo_head_check() {
+                for &(x, _) in &echo {
+                    match self.ack_head_hist.get(&(f, x)).and_then(|h| h.range(..=aseq).next_back()).map(|(_, &v)| v) {
+                        Some((hs, hid)) if hs > 0 => match self.by_author.get(&(x, hs)) {
+                            Some(&mine) if mine == hid => {}
+                            Some(_) => {
+                                refused.insert(x);
+                            }
+                            None => wait = true,
+                        },
+                        _ => {}
+                    }
+                }
+            }
             if wait && !differ {
                 continue;
             }
@@ -545,6 +791,10 @@ impl WorldSim {
                 self.stats.echo_mismatches += 1;
                 continue;
             }
+            if !refused.is_empty() {
+                self.stats.echo_head_refused += 1;
+                self.ev(format!("echo: member {f}'s echo in its s{aseq} not counted for {refused:?}: the head of that chain its acks name isn't in my version"));
+            }
             self.stats.echoes_matched += 1;
             if !self.cfg.echo {
                 continue;
@@ -555,7 +805,7 @@ impl WorldSim {
             // between replicas. Each echoed seq keeps the first ack that carried it (an echo stands until a newer one).
             let ep = self.entry_epoch(f, aseq);
             for (x, _, s, id) in triples {
-                if self.vote_on(f, x, ep).is_some_and(|(vs, _)| vs < aseq) {
+                if self.vote_on(f, x, ep).is_some_and(|(vs, _)| vs < aseq) || refused.contains(&x) {
                     continue;
                 }
                 self.echo_refs.entry((f, x)).or_default().entry(s).and_modify(|v| v.1 = v.1.min(aseq)).or_insert((id, aseq));
