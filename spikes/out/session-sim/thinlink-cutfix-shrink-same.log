@@ -1,0 +1,13 @@
+RESULT cutfix-shrink-same: session seed 2: epoch 0's round-0 proposer is mSome(2); [2, 7] out of view changes
+DIRTY at m5 (conf 355, frame 473): m7 s110 stamp 259 Discriminant(0): eff Some(259) -> None; violation false disputed true late_void false verdict Some(true) pending false evicted Some((92, 0))
+
+thread 'main' (25360) panicked at spikes\sim-core\src\session.rs:2806:9:
+protocol invariant violated: member 5 would roll back to frame 259, below its confirmed frame 355
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+RESULT cutfix-shrink-same: n = 7; removals at m1: m2 at 7.87 s (epoch Some(1)), m7 at 7.87 s (epoch Some(1)); members at m1 at the end {1, 3, 4, 5, 6}
+RESULT cutfix-shrink-same: m2's final cut per replica [(1, None), (3, None), (4, None), (5, Some(146)), (6, None)] -> DIFFERENT OR NOT FINAL
+RESULT cutfix-shrink-same: m5: m2's cut 146 at frame 473 (without members that had left: 146); (voter, read to, evidence, still a member) [(1, Some(217), 145, true), (3, Some(213), 147, true), (4, Some(212), 146, true), (5, Some(210), 146, true), (6, Some(209), 146, true), (7, None, 0, false)]
+RESULT cutfix-shrink-same: m7's final cut per replica [(1, None), (3, None), (4, None), (5, None), (6, None)] -> DIFFERENT OR NOT FINAL
+RESULT cutfix-shrink-same: m5: m7's cut 92 at frame 473 (without members that had left: 92); (voter, read to, evidence, still a member) [(1, Some(217), 175, true), (2, None, 0, false), (3, Some(213), 181, true), (4, Some(212), 181, true), (5, Some(210), 92, true), (6, Some(209), 92, true)]
+RESULT cutfix-shrink-same: the gap BITES
+RESULT cutfix-shrink-same: PANIC at t=7987 ms -> FAIL

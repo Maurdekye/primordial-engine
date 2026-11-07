@@ -13,6 +13,7 @@ TRACE kickliar-fed t=11 s m3: fed true level 5 ack every 8 fr | acks/s 3 | uplin
 TRACE kickliar-fed t=12 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t=13 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed t=14 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+RESULT kickliar-fed: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 62.7 / 88, m4 62.7 / 88
 TRACE kickliar-fed m3 uplink by kind, kbit/s per link from 4 s: total 5.85 | (batch framing) 10x 0.01, (datagram overhead) 130x 1.80, ack 73x 2.52, entry/touch 45x 1.34, fetch 13x 0.05, vote 9x 0.13
 RESULT kickliar-fed: m3's touches at m1: 24 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed: m3 latency floor at m1: 1 windows with n - f < q, 1 over; smallest margin -1 frames (window 3: E_T 32, U_T 6, C_floor 32); margins [-1]

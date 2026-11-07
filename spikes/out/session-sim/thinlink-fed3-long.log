@@ -1,3 +1,4 @@
+RESULT fed3-long: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 61.0 / 86, m2 61.2 / 86
 RESULT fed3-long: leave requests: none
 RESULT fed3-long: m1's members never shrank
 RESULT fed3-long: m3 uplink 7.4 kbit/s per link from 8 s, 3.8 acks/s per link, 5.8 datagrams/s per link

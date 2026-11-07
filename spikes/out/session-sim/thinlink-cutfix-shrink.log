@@ -1,0 +1,22 @@
+RESULT cutfix-shrink: n = 7; removals at m1: m2 at 6.38 s (epoch Some(1)), m3 at 6.97 s (epoch Some(2)), m7 at 9.37 s (epoch Some(3)); members at m1 at the end {1, 4, 5, 6}
+RESULT cutfix-shrink: m2's final cut per replica [(1, Some(146)), (4, Some(146)), (5, Some(146)), (6, Some(146))] -> SAME
+RESULT cutfix-shrink: m1: m2's cut 146 at frame 477 (without members that had left: 146); (voter, read to, evidence, still a member) [(1, Some(219), 145, true), (3, Some(158), 147, false), (4, Some(216), 146, true), (5, Some(210), 146, true), (6, Some(210), 146, true), (7, Some(261), 147, true)]
+RESULT cutfix-shrink: m4: m2's cut 146 at frame 477 (without members that had left: 146); (voter, read to, evidence, still a member) [(1, Some(220), 145, true), (3, Some(158), 147, false), (4, Some(217), 146, true), (5, Some(211), 146, true), (6, Some(211), 146, true), (7, Some(263), 147, true)]
+RESULT cutfix-shrink: m5: m2's cut 146 at frame 474 (without members that had left: 146); (voter, read to, evidence, still a member) [(1, Some(218), 145, true), (3, Some(158), 147, false), (4, Some(215), 146, true), (5, Some(209), 146, true), (6, Some(209), 146, true), (7, Some(260), 147, true)]
+RESULT cutfix-shrink: m6: m2's cut 146 at frame 474 (without members that had left: 146); (voter, read to, evidence, still a member) [(1, Some(218), 145, true), (3, Some(158), 147, false), (4, Some(215), 146, true), (5, Some(209), 146, true), (6, Some(209), 146, true), (7, Some(260), 147, true)]
+RESULT cutfix-shrink: m3's final cut per replica [(1, Some(158)), (4, Some(158)), (5, Some(158)), (6, Some(158))] -> SAME
+RESULT cutfix-shrink: m1: m3's cut 158 at frame 477 (without members that had left: 158); (voter, read to, evidence, still a member) [(1, Some(219), 158, true), (4, Some(216), 158, true), (5, Some(210), 210, true), (6, Some(210), 210, true), (7, Some(261), 158, true)]
+RESULT cutfix-shrink: m4: m3's cut 158 at frame 477 (without members that had left: 158); (voter, read to, evidence, still a member) [(1, Some(220), 158, true), (4, Some(217), 158, true), (5, Some(211), 210, true), (6, Some(211), 210, true), (7, Some(263), 158, true)]
+RESULT cutfix-shrink: m5: m3's cut 158 at frame 474 (without members that had left: 158); (voter, read to, evidence, still a member) [(1, Some(218), 158, true), (4, Some(215), 158, true), (5, Some(209), 210, true), (6, Some(209), 210, true), (7, Some(260), 158, true)]
+RESULT cutfix-shrink: m6: m3's cut 158 at frame 474 (without members that had left: 158); (voter, read to, evidence, still a member) [(1, Some(218), 158, true), (4, Some(215), 158, true), (5, Some(209), 210, true), (6, Some(209), 210, true), (7, Some(260), 158, true)]
+RESULT cutfix-shrink: m7's final cut per replica [(1, Some(308)), (4, Some(308)), (5, Some(308)), (6, Some(308))] -> SAME
+RESULT cutfix-shrink: m1: m7's cut 308 at frame 563 (without members that had left: 308); (voter, read to, evidence, still a member) [(1, Some(271), 307, true), (4, Some(267), 308, true), (5, Some(261), 308, true), (6, Some(261), 309, true)]
+RESULT cutfix-shrink: m4: m7's cut 308 at frame 563 (without members that had left: 308); (voter, read to, evidence, still a member) [(1, Some(271), 307, true), (4, Some(267), 308, true), (5, Some(261), 308, true), (6, Some(261), 309, true)]
+RESULT cutfix-shrink: m5: m7's cut 308 at frame 563 (without members that had left: 308); (voter, read to, evidence, still a member) [(1, Some(271), 307, true), (4, Some(267), 308, true), (5, Some(261), 308, true), (6, Some(261), 309, true)]
+RESULT cutfix-shrink: m6: m7's cut 308 at frame 563 (without members that had left: 308); (voter, read to, evidence, still a member) [(1, Some(271), 307, true), (4, Some(267), 308, true), (5, Some(261), 308, true), (6, Some(261), 309, true)]
+RESULT cutfix-shrink: the gap does not bite here
+  m1: conf 1141 frame 1193 rollbacks 203 max depth 109 paused frames 0 checks ok 159 bad 0
+  m4: conf 1141 frame 1193 rollbacks 198 max depth 109 paused frames 0 checks ok 159 bad 0
+  m5: conf 1141 frame 1193 rollbacks 165 max depth 117 paused frames 119 checks ok 159 bad 0
+  m6: conf 1141 frame 1193 rollbacks 166 max depth 117 paused frames 121 checks ok 159 bad 0
+RESULT cutfix-shrink: frames 0..1140 (replay from m1; each replica over its own confirmed frames: m1 0..1140 949edb796e3e579e, m4 0..1140 949edb796e3e579e, m5 0..1140 949edb796e3e579e, m6 0..1140 949edb796e3e579e) | offline replay 949edb796e3e579e | ALL EQUAL, NO FALSE CHECKS
