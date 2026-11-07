@@ -679,7 +679,7 @@ fn drain(net: &mut Net, w: WorldId, from: MemberId, core: &mut SessionCore) {
     // rests on the other member's references alone, and the session is stalled anyway.
     static SCOPED_B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let scoped = *SCOPED_B.get_or_init(|| std::env::var("PE_SCOPED_B").is_ok())
-        && core.sim.members.len() == 2
+        && core.sim.vcm.members.len() == 2
         && core.sim.frame >= core.sim.conf + core.sim.cfg.window;
     let me = core.sim.me;
     for o in out {
