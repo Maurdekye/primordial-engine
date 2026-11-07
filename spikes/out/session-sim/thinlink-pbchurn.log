@@ -1,0 +1,83 @@
+RESULT pbchurn seed 1: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 37043 / 1931 = 19.2, heads 8939; m4 37057 / 1931 = 19.2, heads 8939
+RESULT pbchurn seed 1: rule 1's voids of members' entries (authors still members) per replica: m1 0, m4 0
+  m1: conf 1296 frame 1313 rollbacks 67 max depth 7 paused frames 0 checks ok 127 bad 0
+  m4: conf 1296 frame 1313 rollbacks 67 max depth 7 paused frames 0 checks ok 127 bad 0
+RESULT pbchurn seed 1: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 64aac870610d59fc, m4 0..1295 64aac870610d59fc) | offline replay 64aac870610d59fc | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 1 n=5 kick m3 at 4.9 s, leave m2 at 7.3 s, crash m5 at 8.0 s, join m6 at 5.6 s: view changes at m1 [5.05 s [3]; 5.65 s []; 7.43 s [2]; 11.13 s [5]]; members at the end {1, 4, 6}; cuts m3 {Some(110)}, m2 {Some(194)}, m5 {Some(220)}; m1's lag in the 3 s after a change 36.0 / 52, elsewhere 18.2 / 52; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 2: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 93714 / 2877 = 32.6, heads 15919; m3 93678 / 2876 = 32.6, heads 15914; m6 93691 / 2877 = 32.6, heads 15919
+RESULT pbchurn seed 2: rule 1's voids of members' entries (authors still members) per replica: m1 0, m3 0, m6 0
+  m1: conf 1296 frame 1313 rollbacks 103 max depth 14 paused frames 0 checks ok 168 bad 0
+  m3: conf 1296 frame 1313 rollbacks 103 max depth 14 paused frames 0 checks ok 167 bad 0
+  m6: conf 1296 frame 1313 rollbacks 103 max depth 14 paused frames 0 checks ok 168 bad 0
+RESULT pbchurn seed 2: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 426cc565d0a6eb8a, m3 0..1295 426cc565d0a6eb8a, m6 0..1295 426cc565d0a6eb8a) | offline replay 426cc565d0a6eb8a | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 2 n=6 kick m4 at 4.5 s, leave m2 at 4.8 s, crash m5 at 11.1 s, join m7 at 9.2 s, m4 distant 200 ms: view changes at m1 [4.70 s [4]; 4.95 s [2]; 9.23 s []; 14.13 s [5]]; members at the end {1, 3, 6, 7}; cuts m4 {Some(99)}, m2 {Some(115)}, m5 {Some(319)}; m1's lag in the 3 s after a change 43.4 / 54, elsewhere 40.6 / 54; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 3: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 84103 / 2905 = 29.0, heads 15894; m4 84031 / 2905 = 28.9, heads 15894; m6 83993 / 2905 = 28.9, heads 15894
+RESULT pbchurn seed 3: rule 1's voids of members' entries (authors still members) per replica: m1 0, m4 0, m6 0
+  m1: conf 1296 frame 1313 rollbacks 114 max depth 45 paused frames 0 checks ok 170 bad 0
+  m4: conf 1296 frame 1313 rollbacks 114 max depth 45 paused frames 0 checks ok 170 bad 0
+  m6: conf 1296 frame 1313 rollbacks 114 max depth 45 paused frames 0 checks ok 170 bad 0
+RESULT pbchurn seed 3: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 2d74937d73fcfa63, m4 0..1295 2d74937d73fcfa63, m6 0..1295 2d74937d73fcfa63) | offline replay 2d74937d73fcfa63 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 3 n=6 kick m5 at 11.1 s, leave m3 at 6.1 s, crash m2 at 8.3 s, join m7 at 11.2 s, m3 thin 12 kbit/s down: view changes at m1 [6.25 s [3]; 11.27 s [5]; 11.83 s [2]]; members at the end {1, 4, 6, 7}; cuts m5 {Some(311)}, m3 {Some(38)}, m2 {Some(221)}; m1's lag in the 3 s after a change 47.0 / 78, elsewhere 41.6 / 53; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 4: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 126759 / 2853 = 44.4, heads 16517; m3 126622 / 2852 = 44.4, heads 16511; m6 126645 / 2854 = 44.4, heads 16523
+RESULT pbchurn seed 4: rule 1's voids of members' entries (authors still members) per replica: m1 0, m3 0, m6 0
+  m1: conf 1296 frame 1313 rollbacks 103 max depth 8 paused frames 0 checks ok 169 bad 0
+  m3: conf 1296 frame 1313 rollbacks 103 max depth 8 paused frames 0 checks ok 169 bad 0
+  m6: conf 1296 frame 1313 rollbacks 103 max depth 8 paused frames 0 checks ok 169 bad 0
+RESULT pbchurn seed 4: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 e2efb0b1d9c188e4, m3 0..1295 e2efb0b1d9c188e4, m6 0..1295 e2efb0b1d9c188e4) | offline replay e2efb0b1d9c188e4 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 4 n=6 kick m2 at 5.9 s, leave m4 at 4.5 s, crash m5 at 9.9 s, join m7 at 4.0 s: view changes at m1 [4.08 s []; 4.62 s [4]; 6.07 s [2]; 12.97 s [5]]; members at the end {1, 3, 6, 7}; cuts m2 {Some(149)}, m4 {Some(100)}, m5 {Some(279)}; m1's lag in the 3 s after a change 41.9 / 53, elsewhere 39.2 / 53; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 5: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 36019 / 2033 = 17.7, heads 9280; m2 36076 / 2033 = 17.7, heads 9280
+RESULT pbchurn seed 5: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0
+  m1: conf 1296 frame 1313 rollbacks 74 max depth 33 paused frames 72 checks ok 123 bad 0
+  m2: conf 1296 frame 1313 rollbacks 74 max depth 33 paused frames 72 checks ok 123 bad 0
+RESULT pbchurn seed 5: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 cd53cfafbcae9df4, m2 0..1295 cd53cfafbcae9df4) | offline replay cd53cfafbcae9df4 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 5 n=5 kick m5 at 4.9 s, leave m3 at 9.5 s, crash m4 at 8.7 s, join m6 at 7.0 s: view changes at m1 [5.15 s [5]; 7.03 s []; 9.62 s [3]; 11.80 s [4]]; members at the end {1, 2, 6}; cuts m5 {Some(112)}, m3 {Some(264)}, m4 {Some(239)}; m1's lag in the 3 s after a change 51.9 / 167, elsewhere 16.4 / 46; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 6: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 83903 / 2809 = 29.9, heads 15813; m5 83946 / 2808 = 29.9, heads 15807; m6 83874 / 2808 = 29.9, heads 15807
+RESULT pbchurn seed 6: rule 1's voids of members' entries (authors still members) per replica: m1 0, m5 0, m6 0
+  m1: conf 1296 frame 1313 rollbacks 103 max depth 120 paused frames 39 checks ok 158 bad 0
+  m5: conf 1296 frame 1313 rollbacks 104 max depth 120 paused frames 39 checks ok 158 bad 0
+  m6: conf 1296 frame 1313 rollbacks 105 max depth 120 paused frames 39 checks ok 158 bad 0
+RESULT pbchurn seed 6: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 899efbe4732e0faa, m5 0..1295 899efbe4732e0faa, m6 0..1295 899efbe4732e0faa) | offline replay 899efbe4732e0faa | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 6 n=6 kick m4 at 11.8 s, leave m3 at 4.7 s, crash m2 at 4.6 s, join m7 at 7.9 s, m3 thin 12 kbit/s down: view changes at m1 [4.83 s [3]; 7.70 s [2]; 7.97 s []; 12.03 s [4]]; members at the end {1, 5, 6, 7}; cuts m4 {Some(342)}, m3 {Some(33)}, m2 {Some(99)}; m1's lag in the 3 s after a change 54.6 / 134, elsewhere 36.7 / 52; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 7: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 110245 / 3069 = 35.9, heads 17603; m3 109925 / 3067 = 35.8, heads 17591; m4 110087 / 3068 = 35.9, heads 17597
+RESULT pbchurn seed 7: rule 1's voids of members' entries (authors still members) per replica: m1 0, m3 0, m4 0
+  m1: conf 1296 frame 1313 rollbacks 113 max depth 120 paused frames 50 checks ok 169 bad 0
+  m3: conf 1296 frame 1313 rollbacks 113 max depth 120 paused frames 50 checks ok 169 bad 0
+  m4: conf 1296 frame 1313 rollbacks 114 max depth 120 paused frames 50 checks ok 169 bad 0
+RESULT pbchurn seed 7: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 ac797792f0ae78e7, m3 0..1295 ac797792f0ae78e7, m4 0..1295 ac797792f0ae78e7) | offline replay ac797792f0ae78e7 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 7 n=6 kick m2 at 6.8 s, leave m6 at 8.9 s, crash m5 at 8.9 s, join m7 at 5.2 s: view changes at m1 [5.23 s []; 7.02 s [2]; 9.02 s [6]; 11.93 s [5]]; members at the end {1, 3, 4, 7}; cuts m2 {Some(175)}, m6 {Some(246)}, m5 {Some(242)}; m1's lag in the 3 s after a change 54.2 / 143, elsewhere 35.1 / 52; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 8: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 82159 / 2791 = 29.4, heads 15328; m2 82108 / 2789 = 29.4, heads 15318; m4 82127 / 2790 = 29.4, heads 15323
+RESULT pbchurn seed 8: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m4 0
+  m1: conf 1296 frame 1313 rollbacks 100 max depth 9 paused frames 0 checks ok 166 bad 0
+  m2: conf 1296 frame 1313 rollbacks 100 max depth 9 paused frames 0 checks ok 166 bad 0
+  m4: conf 1296 frame 1313 rollbacks 100 max depth 9 paused frames 0 checks ok 166 bad 0
+RESULT pbchurn seed 8: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 ec28d812e38053a9, m2 0..1295 ec28d812e38053a9, m4 0..1295 ec28d812e38053a9) | offline replay ec28d812e38053a9 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 8 n=6 kick m5 at 4.4 s, leave m6 at 9.6 s, crash m3 at 5.0 s, join m7 at 10.7 s: view changes at m1 [4.63 s [5]; 8.13 s [3]; 9.68 s [6]; 10.70 s []]; members at the end {1, 2, 4, 7}; cuts m5 {Some(96)}, m6 {Some(268)}, m3 {Some(117)}; m1's lag in the 3 s after a change 39.5 / 52, elsewhere 36.5 / 52; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 9: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 163168 / 3671 = 44.4, heads 23551; m2 163325 / 3672 = 44.5, heads 23557; m3 163185 / 3671 = 44.5, heads 23551; m7 163153 / 3671 = 44.4, heads 23551
+RESULT pbchurn seed 9: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m3 0, m7 0
+  m1: conf 1296 frame 1313 rollbacks 150 max depth 120 paused frames 5 checks ok 219 bad 0
+  m2: conf 1296 frame 1313 rollbacks 152 max depth 120 paused frames 5 checks ok 219 bad 0
+  m3: conf 1296 frame 1313 rollbacks 150 max depth 120 paused frames 5 checks ok 219 bad 0
+  m7: conf 1296 frame 1313 rollbacks 151 max depth 120 paused frames 5 checks ok 219 bad 0
+RESULT pbchurn seed 9: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 a386db8313756aad, m2 0..1295 a386db8313756aad, m3 0..1295 a386db8313756aad, m7 0..1295 a386db8313756aad) | offline replay a386db8313756aad | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 9 n=7 kick m6 at 6.3 s, leave m5 at 9.8 s, crash m4 at 9.6 s, join m8 at 11.9 s: view changes at m1 [6.53 s [6]; 10.30 s [5]; 11.93 s []; 12.67 s [4]]; members at the end {1, 2, 3, 7, 8}; cuts m6 {Some(157)}, m5 {Some(271)}, m4 {Some(262)}; m1's lag in the 3 s after a change 51.9 / 96, elsewhere 40.5 / 52; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 10: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 37487 / 2028 = 18.5, heads 9437; m4 37266 / 2028 = 18.4, heads 9437
+RESULT pbchurn seed 10: gap 1: 1 certificate messages, 472 B; 0 requests, 0 B; at fed replicas: none applied
+RESULT pbchurn seed 10: rule 1's voids of members' entries (authors still members) per replica: m1 0, m4 0
+  m1: conf 1296 frame 1313 rollbacks 83 max depth 13 paused frames 0 checks ok 125 bad 0
+  m4: conf 1296 frame 1313 rollbacks 83 max depth 13 paused frames 0 checks ok 125 bad 0
+RESULT pbchurn seed 10: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 be466a362710e8b1, m4 0..1295 be466a362710e8b1) | offline replay be466a362710e8b1 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 10 n=5 kick m3 at 10.0 s, leave m2 at 7.5 s, crash m5 at 10.8 s, join m6 at 6.2 s, m5 thin 12 kbit/s down: view changes at m1 [6.25 s []; 7.57 s [2]; 10.17 s [3]; 13.80 s [5]]; members at the end {1, 4, 6}; cuts m3 {Some(279)}, m2 {Some(194)}, m5 {Some(71)}; m1's lag in the 3 s after a change 36.7 / 55, elsewhere 23.9 / 54; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 11: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 44378 / 2033 = 21.8, heads 9472; m2 44327 / 2034 = 21.8, heads 9477
+RESULT pbchurn seed 11: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0
+  m1: conf 1296 frame 1313 rollbacks 73 max depth 22 paused frames 0 checks ok 126 bad 0
+  m2: conf 1296 frame 1313 rollbacks 73 max depth 22 paused frames 0 checks ok 126 bad 0
+RESULT pbchurn seed 11: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 ec0643e1f2490d93, m2 0..1295 ec0643e1f2490d93) | offline replay ec0643e1f2490d93 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 11 n=5 kick m4 at 4.8 s, leave m5 at 7.3 s, crash m3 at 9.7 s, join m6 at 4.9 s, m3 distant 200 ms: view changes at m1 [5.02 s [4]; 7.37 s [5]; 12.93 s [3]]; members at the end {1, 2, 6}; cuts m4 {Some(111)}, m5 {Some(192)}, m3 {Some(277)}; m1's lag in the 3 s after a change 31.6 / 52, elsewhere 28.6 / 64; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn seed 12: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 98160 / 3259 = 30.1, heads 18653; m3 98215 / 3259 = 30.1, heads 18653; m4 98051 / 3260 = 30.1, heads 18659
+RESULT pbchurn seed 12: rule 1's voids of members' entries (authors still members) per replica: m1 0, m3 0, m4 0
+  m1: conf 1296 frame 1313 rollbacks 128 max depth 120 paused frames 22 checks ok 185 bad 0
+  m3: conf 1296 frame 1313 rollbacks 128 max depth 120 paused frames 22 checks ok 185 bad 0
+  m4: conf 1296 frame 1313 rollbacks 128 max depth 120 paused frames 22 checks ok 185 bad 0
+RESULT pbchurn seed 12: frames 0..1295 (replay from m1; each replica over its own confirmed frames: m1 0..1295 59223238642ac358, m3 0..1295 59223238642ac358, m4 0..1295 59223238642ac358) | offline replay 59223238642ac358 | ALL EQUAL, NO FALSE CHECKS
+RESULT pbchurn seed 12 n=6 kick m2 at 8.3 s, leave m6 at 11.6 s, crash m5 at 11.4 s, join m7 at 5.7 s: view changes at m1 [5.73 s []; 8.52 s [2]; 11.75 s [6]; 14.47 s [5]]; members at the end {1, 3, 4, 7}; cuts m2 {Some(224)}, m6 {Some(333)}, m5 {Some(323)}; m1's lag in the 3 s after a change 49.2 / 107, elsewhere 33.7 / 52; rule-1 voids of members that stayed 0 -> OK
+RESULT pbchurn: 12 of 12 seeds OK -> ALL EQUAL, NO FALSE CHECKS

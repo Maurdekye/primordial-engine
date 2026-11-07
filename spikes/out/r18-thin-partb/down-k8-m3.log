@@ -1,0 +1,16 @@
+PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
+RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
+RESULT r18 capped: member 3 is on a slow link: 8 kbit/s to and from every peer
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   batched+adaptive |  80.2 /  43.8 /  18.5 |  418 /    0 /    0 |    0 |   0 /   0 /   0 |  96 /  96 / 1651 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 7d62ffe8729da53c / m2 7d62ffe8729da53c replay 7d62ffe8729da53c EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 96.3 / 43.0, m2 96.3 / 43.0, m3 11.3 / 9.0 (200 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 88.2, m2 88.2, m3 10.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 36.3 / 36.2 / 814.8
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 52 / 52 / 1568
+RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     time on the state feed per member: 0 / 0 / 27400 ms
+RESULT     3 players, window modes at member 1 (300 frames each): D54 fed fed fed fed fed
+RESULT     rule 1's echo, per member: echoes matched/mismatched 53/0 53/0 0/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [29902, 0, 0, 0, 0, 0, 0, 0, 0] ms
+RESULT     controller on member 3, the slow member: time at each level: [29901, 0, 0, 0, 0, 0, 0, 0, 0] ms

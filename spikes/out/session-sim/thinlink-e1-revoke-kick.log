@@ -1,0 +1,10 @@
+RESULT e1-revoke-kick: epoch 1 change: remove [] admin ["\"SetRole\" by 1 stamp 360 -> applied"]
+RESULT e1-revoke-kick: 3 fed at the kick true; members at m1 {1, 2, 3, 4}; roles {1: 0, 2: 1, 3: 1, 4: 1}; first change with admin entries: epoch Some(1); member 4 removed by: None
+RESULT e1-revoke-kick: the backdated kick of a revoked admin is refused; 4 stays
+RESULT e1-revoke-kick: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 1077 / 1186 = 0.9, heads 3531; m2 993 / 1186 = 0.8, heads 3531; m4 1044 / 1186 = 0.9, heads 3531
+RESULT e1-revoke-kick: gap 1: 2 certificate messages, 344 B; 1 requests, 5 B; at fed replicas: none applied
+RESULT e1-revoke-kick: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m4 0
+  m1: conf 901 frame 953 rollbacks 66 max depth 34 paused frames 0 checks ok 73 bad 0
+  m2: conf 901 frame 953 rollbacks 66 max depth 34 paused frames 0 checks ok 73 bad 0
+  m4: conf 901 frame 953 rollbacks 66 max depth 36 paused frames 0 checks ok 73 bad 0
+RESULT e1-revoke-kick: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 249c6d905aaa6dfa, m2 0..900 249c6d905aaa6dfa, m4 0..900 249c6d905aaa6dfa) | offline replay 249c6d905aaa6dfa | ALL EQUAL, NO FALSE CHECKS

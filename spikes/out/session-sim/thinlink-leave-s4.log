@@ -1,0 +1,3 @@
+RESULT leave-s4: member 2 removed at 11.87 s; members at m1 {1, 3}; 3 fed false
+RESULT leave-s4: m2's leave pending from 8.00 s to 11.87 s (removed); paused frames meanwhile m1 233, m3 0; its acks meanwhile 0, after 0
+RESULT leave-s4: confirmed frames 0..248 m1=db32c6ca5b795960 m3=db32c6ca5b795960 | offline replay db32c6ca5b795960 | ALL EQUAL, NO FALSE CHECKS, LEAVE DECIDED

@@ -290,6 +290,9 @@ fn main() {
                     }
                     // The UDP spike sends one message per datagram; it never batches.
                     Msg::Batch(_) => {}
+                    // Thin links Part B (the state feed, fed members' checkpoints, gap 1's epoch certificates): sessions
+                    // of 3 or more players only, so a two-member session never sends them.
+                    Msg::Feed { .. } | Msg::Ckpts { .. } | Msg::CertReq { .. } | Msg::Certs { .. } => {}
                 },
             }
         }

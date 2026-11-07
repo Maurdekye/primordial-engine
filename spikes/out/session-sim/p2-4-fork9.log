@@ -1,3 +1,4 @@
+DIRTY (control run: fixes 0x1 switched off, the behaviour before them) at m3 (conf 124, frame 132): m9 s22 stamp 120 Discriminant(0): eff None -> Some(120); violation false disputed false late_void false verdict None pending false evicted Some((24, 0))
   fork9 (9 forks: A with its touch to 1 and 2, a longer B without it to 3) with VC-2's fix switched off (the behaviour before the fix): the run stopped at t=2310 ms: a replica hit an assertion or a panic; m1 conf 116 of frame 132, m2 conf 108 of frame 132, m3 conf 124 of frame 132; at m1: members {1, 2, 3}, evicted [9]
   fork at 9's seq 21, t=1935 ms; branch B 21 entries plus 10 extra acks
 RESULT fork9: m1 members {1, 2, 3} evicted {9: (24, 122)} conf 454 frame 473 paused frames 0 lying votes found 0

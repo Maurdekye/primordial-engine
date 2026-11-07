@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 mod history;
+mod partb;
 mod r18;
 mod review2;
 mod p24r;
@@ -21,6 +22,17 @@ mod p24r4;
 mod randsched;
 mod review3;
 mod viewchange;
+
+/// A payload's kind, for cell reports.
+pub(crate) fn kind_short(p: &Payload) -> &'static str {
+    match p {
+        Payload::Kick { .. } => "Kick",
+        Payload::SetRole { .. } => "SetRole",
+        Payload::DefineRole { .. } => "DefineRole",
+        Payload::Ownership { .. } => "Ownership",
+        _ => "other",
+    }
+}
 
 use pe_session_sim::*;
 use pe_sim_core::session::*;
@@ -1395,7 +1407,20 @@ fn main() {
             gap_s: get("--gap").map(|v| v.parse().unwrap()),
             gestures: get("--gestures").map_or(2, |v| v.parse().unwrap()),
             by_kind: args.iter().any(|a| a == "--by-kind"),
+            localize: args.iter().any(|a| a == "--localize"),
+            slow_until_ms: get("--slow-until").map(|v| v.parse().unwrap()),
+            no_echo: args.iter().any(|a| a == "--no-echo"),
+            crash: get("--crash").map(|v| {
+                let (a, b) = v.split_once(':').expect("--crash M:T");
+                (a.parse().unwrap(), b.parse().unwrap())
+            }),
+            freeze: get("--freeze").map(|v| {
+                let (a, b) = v.split_once(':').expect("--freeze M:T");
+                (a.parse().unwrap(), b.parse().unwrap())
+            }),
             adaptive_only: args.iter().any(|a| a == "--adaptive-only"),
+            count_all: args.iter().any(|a| a == "--count-all"),
+            count_from_ms: get("--count-from-ms").map(|v| v.parse().unwrap()),
         }),
         Some("ackfork") => review2::ackfork(),
         Some("lateequiv") => review2::lateequiv(),
@@ -1413,6 +1438,39 @@ fn main() {
         Some("join") => viewchange::join(),
         Some("refwithhold") => viewchange::refwithhold(),
         Some("handowner") => handowner(),
+        Some("stale") => partb::stale(),
+        Some("late") => partb::late(),
+        Some("rejoin") => partb::rejoin(),
+        Some("leave-s4") => partb::leave_s4(),
+        Some("leave-withhold") => partb::leave_withhold(),
+        Some("leave-withhold2") => partb::leave_withhold2(),
+        Some("leave-s4-rejoin") => partb::leave_s4_rejoin(),
+        Some("kickliar-fed") => partb::kickliar_fed(),
+        Some("kickliar-fed2") => partb::kickliar_fed2(),
+        Some("kickliar-fed7") => partb::kickliar_fed7(),
+        Some("twofed-long") => partb::twofed_long(),
+        Some("fed3-long") => partb::fed3_long(),
+        Some("twofed-dip") => partb::twofed_dip(),
+        Some("leave-race") => partb::leave_race(),
+        Some("e1-revoke-kick") => partb::e1_roles("revoke-kick"),
+        Some("e1-same-revoke") => partb::e1_roles("same-revoke"),
+        Some("e1-same-promote") => partb::e1_roles("same-promote"),
+        Some("e1-kick-owner") => partb::e1_roles("kick-owner"),
+        Some("join-beyond-withhold") => partb::join_fed("beyond-withhold"),
+        Some("join-beyond") => partb::join_fed("beyond"),
+        Some("join-onefed-down") => partb::join_fed("onefed-down"),
+        Some("cutfix-left") => partb::cutfix("left"),
+        Some("cutfix-same") => partb::cutfix("same"),
+        Some("cutfix-move") => partb::cutfix("move"),
+        Some("cutfix-shrink") => partb::cutfix("shrink"),
+        Some("cutfix-shrink-same") => partb::cutfix("shrink-same"),
+        Some("cutfix-shrink-late") => partb::cutfix("shrink-late"),
+        Some("premise1") => partb::premise1("premise1"),
+        Some("q1corner") => partb::premise1("q1corner"),
+        Some("window1") => partb::window1(),
+        Some("fedcatch") => partb::fedcatch(),
+        Some("partbrand") => partb::partbrand(&args),
+        Some("pbchurn") => partb::pbchurn(&args),
         Some("fork9") => p24r::fork9(),
         Some("jointiming") => p24r::jointiming(),
         Some("bogusprecommit") => p24r::bogusprecommit(),
@@ -1436,6 +1494,10 @@ fn main() {
         Some("aheadlink") => p24r3::aheadlink(),
         Some("aheadlink-long") => p24r3::aheadlink_long(),
         Some("aheadlink-cut") => p24r3::aheadlink_cut(),
+        Some("aheadlink-long-b4") => p24r3::aheadlink_b(false, 4),
+        Some("aheadlink-cut-b4") => p24r3::aheadlink_b(true, 4),
+        Some("aheadlink-long-b8") => p24r3::aheadlink_b(false, 8),
+        Some("aheadlink-cut-b8") => p24r3::aheadlink_b(true, 8),
         Some("strikeframe") => p24r4::strikeframe(),
         Some("aheadshield") => p24r4::aheadshield(),
         Some("fakeref") => p24r4::fakeref(),

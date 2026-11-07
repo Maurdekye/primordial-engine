@@ -1,34 +1,34 @@
   m1: t=2766ms depart authored in world 1 at frame 160
   m1: t=3004ms depart confirmed in world 1 (frame 160); arrive authored in world 2 at frame 142
   m1: t=3247ms arrival confirmed in world 2 (frame 142, accepted=true); verdict authored in world 1 at frame 188 (its sim there at frame 188)
-  m1: t=3399ms verdict confirmed in world 1; transfer 6136982039534202300 resolved
+  m1: t=3399ms verdict confirmed in world 1; transfer 2268468382753746115 resolved
   m1: t=3511ms commit certified in world 1; hop relayed into world 2 at frame 168
-  m1: transfer 6136982039534202300 world 1 -> 2: phase Done accepted Some(true)
+  m1: transfer 2268468382753746115 world 1 -> 2: phase Done accepted Some(true)
   m1: t=4489ms depart authored in world 2 at frame 217
   m1: t=4729ms depart confirmed in world 2 (frame 217); arrive authored in world 3 at frame 276
   m1: t=5104ms arrival confirmed in world 3 (frame 276, accepted=true); verdict authored in world 2 at frame 247 (its sim there at frame 247)
-  m1: t=5290ms verdict confirmed in world 2; transfer 4147942026440713057 resolved
+  m1: t=5290ms verdict confirmed in world 2; transfer 3855643221999731581 resolved
   m1: t=5331ms commit certified in world 2; hop relayed into world 3 at frame 312
-  m1: transfer 4147942026440713057 world 2 -> 3: phase Done accepted Some(true)
+  m1: transfer 3855643221999731581 world 2 -> 3: phase Done accepted Some(true)
   m1: t=6296ms depart authored in world 3 at frame 370
   m1: t=6547ms depart confirmed in world 3 (frame 370); arrive authored in world 1 at frame 386
   m1: t=6793ms arrival confirmed in world 1 (frame 386, accepted=true); verdict authored in world 3 at frame 399 (its sim there at frame 399)
-  m1: t=7050ms verdict confirmed in world 3; transfer 2631865601392433782 resolved
+  m1: t=7050ms verdict confirmed in world 3; transfer 10976633861146085071 resolved
   m1: t=7051ms commit certified in world 3; hop relayed into world 1 at frame 417
-  m1: transfer 2631865601392433782 world 3 -> 1: phase Done accepted Some(true)
-RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
+  m1: transfer 10976633861146085071 world 3 -> 1: phase Done accepted Some(true)
 RESULT r14 chain: departure of local 40 from A to world 2 (hop in carried: false) -> Some(Accepted)
-RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
+RESULT r14 chain: arrival into A with a chain of 2 hops [1->2, 2->3] -> Some(Accepted)
 RESULT r14 chain: departure of local 75 from B to world 3 (hop in carried: true) -> Some(Accepted)
-RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
+RESULT r14 chain: arrival into B with a chain of 0 hops [] -> Some(Accepted)
 RESULT r14 chain: departure of local 48 from C to world 1 (hop in carried: true) -> Some(Accepted)
+RESULT r14 chain: arrival into C with a chain of 1 hops [1->2] -> Some(Accepted)
 RESULT r14 chain (reverse order): A:40 live copies A 1 (Some("here, chain 2 hops, settled false")), B 0 (Some("left for 3")), C 0 (Some("left for 1")) ; pending escrows 0 -> CONSERVED (back in A, nothing in limbo)
   m1 world 1: rollbacks 2 max depth 3 resim frames 8 (0.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 515 frame 534
-  m2 world 1: rollbacks 15 max depth 4 resim frames 65 (8.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 517 frame 533
+  m2 world 1: rollbacks 15 max depth 4 resim frames 65 (8.9 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 517 frame 533
   m1 world 2: rollbacks 2 max depth 3 resim frames 6 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 433 frame 442
-  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 430 frame 442
-  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 512 frame 532
+  m3 world 2: rollbacks 3 max depth 3 resim frames 14 (1.3 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 430 frame 442
+  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 512 frame 532
   m4 world 3: rollbacks 3 max depth 4 resim frames 14 (0.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 512 frame 532
-RESULT r14 chain A world 1: frames 0..500 digests m1=0831615c19c015dc m2=0831615c19c015dc | offline replay 0831615c19c015dc | ALL EQUAL
-RESULT r14 chain B world 2: frames 0..400 digests m1=231028c72b217c49 m3=231028c72b217c49 | offline replay 231028c72b217c49 | ALL EQUAL
-RESULT r14 chain C world 3: frames 0..480 digests m1=55c2636560f17ffa m4=55c2636560f17ffa | offline replay 55c2636560f17ffa | ALL EQUAL
+RESULT r14 chain A world 1: frames 0..500 digests m1=8dfec809f0d720b9 m2=8dfec809f0d720b9 | offline replay 8dfec809f0d720b9 | ALL EQUAL
+RESULT r14 chain B world 2: frames 0..400 digests m1=dd0acb80faafaf10 m3=dd0acb80faafaf10 | offline replay dd0acb80faafaf10 | ALL EQUAL
+RESULT r14 chain C world 3: frames 0..480 digests m1=b2b18eb62b85facb m4=b2b18eb62b85facb | offline replay b2b18eb62b85facb | ALL EQUAL

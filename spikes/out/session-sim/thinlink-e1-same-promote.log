@@ -1,0 +1,10 @@
+RESULT e1-same-promote: epoch 1 change: remove [] admin ["\"SetRole\" by 1 stamp 360 -> applied"]
+RESULT e1-same-promote: epoch 2 change: remove [(4, 12060614798992748822)] admin ["\"Kick\" by 2 stamp 369 -> applied"]
+RESULT e1-same-promote: 3 fed at the kick true; members at m1 {1, 2, 3}; roles {1: 0, 2: 0, 3: 1}; first change with admin entries: epoch Some(1); member 4 removed by: Some((2, [1, 2, 4]))
+RESULT e1-same-promote: the guest's kick is refused on arrival; sent again after the promotion decides, it decides
+RESULT e1-same-promote: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 9786 / 980 = 10.0, heads 2907; m2 9959 / 983 = 10.1, heads 2916
+RESULT e1-same-promote: gap 1: 4 certificate messages, 1509 B; 1 requests, 5 B; at fed replicas: none applied
+RESULT e1-same-promote: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0
+  m1: conf 901 frame 953 rollbacks 48 max depth 87 paused frames 29 checks ok 51 bad 0
+  m2: conf 901 frame 953 rollbacks 48 max depth 87 paused frames 48 checks ok 51 bad 0
+RESULT e1-same-promote: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 d6d8ebf8ada2d80f, m2 0..900 d6d8ebf8ada2d80f) | offline replay d6d8ebf8ada2d80f | ALL EQUAL, NO FALSE CHECKS
