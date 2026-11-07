@@ -184,6 +184,11 @@ pub struct Net {
     /// rule 1, @coordinator-opus m360a9ee1d5bb) and test only the live stream (rule 2).
     catchup_inflight: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
     catchup_recent: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
+    /// The feed exit: members in their echo phase this tick (set by the harness). Like fed members, they get explicit
+    /// checkpoints, never live ones: behind the hole an echoing member catches up on, live checkpoints waited (capped per
+    /// author, the farthest evicted), and each evicted one then held its chain until fetched again, so the catch-up walked
+    /// to the live head in 16-entry answers (merged down-k12-m3: still frozen at 90 s; 128 of 293 live checkpoints held).
+    pub echoing: BTreeSet<(WorldId, MemberId)>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
     /// (spike diagnostics, with `tracing`) Every entry posted: (now, from, to, author, seq, kind, to a fed member).
@@ -274,6 +279,7 @@ impl Net {
             catchup_closed: BTreeSet::new(),
             catchup_inflight: BTreeMap::new(),
             catchup_recent: BTreeMap::new(),
+            echoing: BTreeSet::new(),
             tracing: false,
             post_log: Vec::new(),
             trace: Vec::new(),
@@ -990,8 +996,11 @@ fn broadcast(net: &mut Net, w: WorldId, from: MemberId, members: &[MemberId], m:
     };
     for &to in members {
         if to != from {
-            // A fed member gets no live checkpoint (it holds no state after prev); `post` filters it as the entry.
-            net.post(w, from, to, live.as_ref().unwrap_or(m));
+            // A fed member gets no live checkpoint (it holds no state after prev); `post` filters it as the entry. Nor does
+            // a member in its echo phase (`Net::echoing`): it gets the explicit one.
+            static ECHO_LIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let explicit = net.echoing.contains(&(w, to)) && !*ECHO_LIVE.get_or_init(|| std::env::var("PE_ECHO_LIVE").is_ok());
+            net.post(w, from, to, if explicit { m } else { live.as_ref().unwrap_or(m) });
         }
     }
 }
@@ -1627,9 +1636,11 @@ impl Sim {
             flatten(m, &mut v);
             due.extend(v.into_iter().map(|x| (to, w, from, x)));
         }
-        // The feed exit: members in their echo phase, whose own catch-up doesn't yield (below).
+        // The feed exit: members in their echo phase, whose own catch-up doesn't yield (below) and who get explicit
+        // checkpoints (`broadcast`).
         let echoing: BTreeSet<(WorldId, MemberId)> =
             self.peers.iter().filter(|p| !p.crashed).flat_map(|p| p.worlds.iter().filter(|(_, r)| r.sim.in_echo_phase()).map(move |(w, _)| (*w, p.id))).collect();
+        self.net.echoing = echoing.clone();
         for (to, w, from, m) in due {
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
