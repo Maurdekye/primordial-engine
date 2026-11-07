@@ -69,6 +69,17 @@ pub struct EchoPhase {
     pub echoed: u64,
     /// The frame it came off the feed at.
     pub since: u64,
+    /// Its fed votes go on (RV20-3, on evidence it can check without the log it lacks): when each member's checkpoints
+    /// last reached it, and its downlink delay as last measured on the feed.
+    pub ckpt_heard: BTreeMap<MemberId, u64>,
+    pub delay_frames: u64,
+}
+
+/// (spike) PE_ECHO_FULL_VOTES=1: a member in its echo phase votes as a full member (silence and R3-9 from the log it
+/// holds), as the first build did; by default it votes as a fed member.
+pub(super) fn echo_full_votes() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_ECHO_FULL_VOTES").is_ok())
 }
 
 /// (spike) PE_NO_ECHO_PHASE=1: a member coming off the feed drops its echo at once, as before the feed-exit fix.
@@ -259,7 +270,7 @@ impl WorldSim {
                 // counts for nothing, rev 22, so there it ends here).
                 if self.cfg.localize && self.members.len() >= 3 && !no_echo_phase() {
                     let anchor = fed.anchors.keys().next_back().copied().unwrap_or(fed.since);
-                    self.echo_phase = Some(EchoPhase { anchor, echoed: fed.echoed, since: self.frame });
+                    self.echo_phase = Some(EchoPhase { anchor, echoed: fed.echoed, since: self.frame, ckpt_heard: fed.ckpt_heard.clone(), delay_frames: fed.delay_frames });
                     self.end_echo_phase_if_caught_up();
                     if self.echo_phase.is_some() {
                         let behind: Vec<(MemberId, u32, u32)> = self
@@ -610,6 +621,9 @@ impl WorldSim {
         if let Some(f) = self.fed.as_mut() {
             f.ckpt_heard.insert(member, now);
         }
+        if let Some(p) = self.echo_phase.as_mut() {
+            p.ckpt_heard.insert(member, now);
+        }
         // Rev 22 delta (proposal) with the tightening: a peer whose own Ckpts say it is fed is fed on my own evidence,
         // until they stop for the silence threshold; the echo of my chain it reports is where my checkpoints to it start.
         if fed && self.fed.is_some() && self.members.contains(&member) {
@@ -841,10 +855,16 @@ impl WorldSim {
         if !self.members.contains(&self.me) || self.closed_at.is_some() || self.members.len() < 3 || self.withhold_vc {
             return out;
         }
-        let Some(f) = self.fed.as_ref() else { return out };
-        let limit = self.cfg.suspect_after + super::CKPT_FRAMES + f.delay_frames;
-        let silent: Vec<(MemberId, u64)> = f
-            .ckpt_heard
+        // The feed exit (D): in the echo phase too. Its log still has the hole, so silence and R3-9 read from it would vote
+        // out live members (nobound down-k12-m3: off the feed at frame 792, it voted to remove members 2 and 1, its votes
+        // froze its references to their chains, and at 3 players confirmation stopped for 12 s).
+        let (heard, delay) = match (self.fed.as_ref(), self.echo_phase.as_ref()) {
+            (Some(f), _) => (&f.ckpt_heard, f.delay_frames),
+            (None, Some(p)) => (&p.ckpt_heard, p.delay_frames),
+            (None, None) => return out,
+        };
+        let limit = self.cfg.suspect_after + super::CKPT_FRAMES + delay;
+        let silent: Vec<(MemberId, u64)> = heard
             .iter()
             .filter(|(m, _)| **m != self.me && self.members.contains(m))
             .filter(|(_, t)| self.now >= **t + limit)
@@ -1068,7 +1088,7 @@ mod exit_tests {
         assert_eq!(w.echo_ack_caps().get(&1), Some(&c1[0].1.max(22)));
         // Off the feed it keeps echoing, anchor and all, until its held chains reach its echo.
         w.fed = None;
-        w.echo_phase = Some(EchoPhase { anchor: 400, echoed: 0, since: 500 });
+        w.echo_phase = Some(EchoPhase { anchor: 400, echoed: 0, since: 500, ..Default::default() });
         assert!(w.fed_ack().is_some_and(|fa| fa.anchor == 400), "still echoing");
         w.contiguous.insert(1, newest.1);
         assert!(w.fed_ack().is_none(), "caught up: the next ack carries no anchor");

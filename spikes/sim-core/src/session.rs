@@ -3897,7 +3897,7 @@ impl WorldSim {
         if self.leaving() {
             return vec![];
         }
-        if self.fed.is_some() {
+        if self.fed.is_some() || (self.echo_phase.is_some() && !feed::echo_full_votes()) {
             return self.fed_suspects();
         }
         if !self.members.contains(&self.me) || self.closed_at.is_some() {
