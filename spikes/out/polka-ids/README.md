@@ -18,3 +18,7 @@ Measured on c85fea7, Windows, release (target/pol.sh) [V]:
   main 21d69ae's own binaries reproduce every committed log, so all of the moves are this change. The cells run view
   changes (a temporary print counted 7 precommits in r18-thin up-k8-m4, 12 in down-k8-m3), and a 4 B change per
   precommit moves them both ways: `moved-cells.txt`.
+- After the bless (9bd5527): pe suite ALL EQUAL, 93 logs, 0 differ; regress 114 of 114 identical; m1-loopback (pe-app)
+  ALL EQUAL; Linux (scripts/p2-3/run_linux.sh, WSL musl): pe-session tests pass, 96 logs identical, 0 different; the 14
+  it lists as missing are session-sim-tool scenarios (bans-, ind-, d80-kickvote, d80-pausedkick) that
+  run_session_sim.sh doesn't write, covered by regress (`linux.txt`).
