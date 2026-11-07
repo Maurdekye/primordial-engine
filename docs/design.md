@@ -2874,8 +2874,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
       * **Part B's standing cost with nobody thin** (base-m4, base-m8), from rule 1's echo-stability (one more ack
         round on every entry):
         * the full members' mean confirmation lag is 20.0-20.2 frames, against 13.7-13.9 under Part A;
-        * their max is 54, against 19;
-        * the return after a gesture takes 926-929 ms, against 0.
+        * their max is 54, against 19. This is inside what the user was told for 4 or more players: confirmation lag
+          of about 45-63 frames instead of 13;
+        * the return after a gesture takes 926-929 ms, against 0. This is the same cost, read through r18's 20-frame
+          threshold.
 
     * **Since trust survey #4 (f)** (main 1233ef4, the user's rulings of 2026-11-01), the withholding rule is gone,
       and with it what removed a thin watcher whose downlink clogs [I: its uplink is thin too, but once Part A
