@@ -431,6 +431,15 @@ pub fn capped(o: &Opts) {
         if !ev.is_empty() {
             println!("RESULT     removed from the session (cut, from frame): {ev:?}");
         }
+        // Link elision (printed only when a live checkpoint went out, so runs with every link are as before).
+        let live: Vec<(u64, u64, u64)> =
+            (1..=n as u32).map(|m| sim.replica(m, 1).sim.stats).map(|s| (s.live_rx, s.live_held, s.live_explicit)).collect();
+        if live.iter().any(|x| x.0 > 0) {
+            println!(
+                "RESULT     live checkpoints per member, received / held behind a hole / asked explicit: {}",
+                live.iter().map(|x| format!("{}/{}/{}", x.0, x.1, x.2)).collect::<Vec<_>>().join("  ")
+            );
+        }
         if adapt {
             let l = sim.replica(1, 1).level_ms;
             if o.localize {
