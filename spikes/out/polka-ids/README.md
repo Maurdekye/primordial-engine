@@ -22,3 +22,7 @@ Measured on c85fea7, Windows, release (target/pol.sh) [V]:
   ALL EQUAL; Linux (scripts/p2-3/run_linux.sh, WSL musl): pe-session tests pass, 96 logs identical, 0 different; the 14
   it lists as missing are session-sim-tool scenarios (bans-, ind-, d80-kickvote, d80-pausedkick) that
   run_session_sim.sh doesn't write, covered by regress (`linux.txt`).
+- @design-reviewer's review of d9629ea [V]: writing the 4 B count back reproduces main's logs exactly in nine moved
+  cells, so the moves are bytes only. Its 5-delay sweep (46-54 ms), main -> branch, mean of the largest stalled count
+  per run: spike down-k8-m4 679 -> 793 (+17 %), down-k8-m3 524 -> 507, down-k12-m8 768 -> 762; pe down-k16-m8
+  1,512 -> 1,485. @coordinator-opus: not a blocker (the cliff is the retune item's).

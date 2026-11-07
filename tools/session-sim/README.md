@@ -291,8 +291,6 @@ behaviour `x` has fired.
 - `precommit`: from `from_ms`, `member` signs a precommit for no proposal with `boundary` (or `ahead`
   frames past its clock) and sends it to `to`: once, or with `every_epoch = true` once per epoch
   (value `value ^ epoch`). `while_member_at = 1`: only while member 1 still has it as a member.
-  `polka = ["0xDEADBEEF00000001"]`: the prevote ids it names, as hex strings (TOML integers stop
-  at i64).
 - `fake_ack_epoch`: from `from_ms`, `member`'s acks claim `epoch`, or `ahead` epochs past its own.
 - `admin_kick` (not a cheater; trust survey #4): at `at_ms` honest admin `member` signs a kick of
   `target` and sends it to `to`, as session-sim p24r.rs `AdminKick` (signed directly: a planned action

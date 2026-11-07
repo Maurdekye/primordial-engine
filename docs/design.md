@@ -2870,8 +2870,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
             frames are back to 0.
           * r18's slow member (3 players, member 3 at 8 kbit/s, Part A only) moves the other way at 50 ms. The others
             stall 481 → 697 frames and are back after 7.5 → 11.1 s. (Since the polka ids left the wire, 4 B less per
-            precommit, it reads 612 frames and 10.5 s: the cell runs view changes, and it moves with a few bytes
-            either way [V spikes/out/polka-ids/moved-cells.txt].)
+            precommit, the cell's mean over the five delays 46-54 ms moves 524 → 507; the same 4 B move r18-thin
+            down-k8-m4 679 → 793 and down-k12-m8 768 → 762. These cells run view changes, and padding the 4 B back
+            reproduces the old logs exactly, so the moves are the controller's sensitivity to bytes [V @design-reviewer,
+            review of d9629ea; spikes/out/polka-ids].)
             * In the same cell as a thin watcher (r18-thin down-k8-m3), over the five delays 46-54 ms, the mean is
               462 with the link, 490 with only elision's bytes saved (`PE_WHATIF_LIVE=1`), and 523 with elision.
             * So +6% comes from the bytes moving the controller. The extra 7% is one delay, 50 ms (512 against
