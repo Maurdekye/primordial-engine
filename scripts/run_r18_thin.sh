@@ -5,15 +5,26 @@
 # (its downlink). Batched + adaptive only. Logs go to spikes/out/r18-thin/. Run it at low priority.
 set -eu
 cd "$(dirname "$0")/.."
-[ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim
-B=${PE_BIN:-./target/release}/pe-spike-session-sim
-O=${PE_OUT:-spikes/out}/r18-thin
+# --pe: the same cells on pe-session (thin links Part A's port), logs in spikes/out/r18-thin-pe/.
+if [ "${1:-}" = "--pe" ]; then
+  [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-session-harness
+  B=${PE_BIN:-./target/release}/pe-session-harness
+  O=${PE_OUT:-spikes/out}/r18-thin-pe
+  SRCDIRS="crates/pe-session/src crates/pe-session-harness/src"
+  DIRTYPATHS="crates/pe-session crates/pe-session-harness"
+else
+  [ -n "${PE_BIN:-}" ] || cargo build --release -q -p pe-spike-session-sim
+  B=${PE_BIN:-./target/release}/pe-spike-session-sim
+  O=${PE_OUT:-spikes/out}/r18-thin
+  SRCDIRS="spikes/session-sim/src spikes/sim-core/src"
+  DIRTYPATHS="spikes :(exclude)spikes/out"
+fi
 mkdir -p "$O"
 # Provenance: the commit (and whether the spikes' sources differ from it, tracked or not; outputs under
 # spikes/out don't count, since a re-run overwrites them), the sources' and the binary's hashes. Each log also
 # prints the linked sim-core's encoding of a fixed pack.
-SRC=$(find spikes/session-sim/src spikes/sim-core/src -name '*.rs' | LC_ALL=C sort | xargs cat | sha256sum | cut -c1-16)
-DIRTY=$(git status --porcelain -- spikes ':(exclude)spikes/out' | head -1)
+SRC=$(find $SRCDIRS -name '*.rs' | LC_ALL=C sort | xargs cat | sha256sum | cut -c1-16)
+DIRTY=$(git status --porcelain -- $DIRTYPATHS | head -1)
 PROV="commit $(git rev-parse --short=12 HEAD)${DIRTY:+ + uncommitted changes}, sources $SRC, binary $(sha256sum "$([ -f "$B" ] && echo "$B" || echo "$B.exe")" | cut -c1-16)"
 echo "$PROV" > "$O/PROVENANCE"
 run() { local name=$1; shift; { echo "PROVENANCE $PROV"; "$B" capped "$@" --adaptive-only; } > "$O/$name.log"; grep "batched+adaptive" "$O/$name.log" | cut -c1-120; }
