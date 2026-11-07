@@ -48,3 +48,12 @@ if [ "${1:-}" = --pe ]; then
   "$B" capped --kbps 32 --gap 310 --end 335 > "$O"/capped-32kbps-after-5min.log
   grep RESULT "$O"/capped-32kbps-after-5min.log
 fi
+
+# Landing check (@design-reviewer m819c82a9d344): an end state that DIFFERs fails the run, and a replica compared over
+# fewer frames than the others ("still catching up") is listed: r18 allows it only at an echo phase's end.
+grep -H "end state: .*still catching up" "$O"/*.log 2>/dev/null | sed 's/^/NOTE /' || true
+# (pe-session's whole-state row reads DIFFER by design in some transports; its confirmed-prefix line is the check there.)
+if [ "${1:-}" != --pe ]; then
+  bad=$(grep -l "^RESULT .*DIFFER" "$O"/*.log 2>/dev/null || true)
+  if [ -n "$bad" ]; then echo "FLAG: an end state DIFFERs in: $bad"; exit 1; fi
+fi
