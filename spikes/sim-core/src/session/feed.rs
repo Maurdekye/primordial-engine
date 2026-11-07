@@ -381,11 +381,14 @@ impl WorldSim {
     /// what this replica holds, so the debt it leaves the feed with is small. Only a chain my echo shows ahead of what I
     /// hold (its newest checkpoint I echo lies past my held head), so a caught-up member asks nothing over its uplink.
     /// One request per chain at a time: asked again once the last answer is in (what it holds reached the end of the 16
-    /// entries asked), or after 2 s (an answer lost). The harness sends them to an idle link; the answers go at the lowest
-    /// priority, below feed and echo.
-    pub fn catchup_fetches(&mut self, now_ms: u64) -> Vec<Msg> {
+    /// entries asked), or after 2 s (an answer lost or withheld). The harness sends them to an idle link; the answers go at
+    /// the lowest priority, below feed and echo. The feed exit (b): in the echo phase the same pacing, so one request per
+    /// chain is out at a time (asked of every holder by every ack, a 16 kbit/s catch-up carried each entry two or three
+    /// times). Each request comes with its attempt at that start (0, then 1, 2, ... after each 2 s without an answer), so
+    /// the harness moves an unanswered one to another holder (the fetch fallback, @coordinator-opus mca39b9f6b726).
+    pub fn catchup_fetches(&mut self, now_ms: u64) -> Vec<(Msg, u32)> {
         let mut out = Vec::new();
-        if self.fed.is_none() {
+        if !self.fed_like() {
             self.catchup_asked.clear();
             return out;
         }
@@ -393,16 +396,25 @@ impl WorldSim {
         for a in others {
             let held = self.contiguous.get(&a).copied().unwrap_or(0);
             if self.echo_seq.get(&a).is_none_or(|&s| s <= held) {
+                self.catchup_asked.remove(&a);
                 continue;
             }
             let from = held + 1;
-            if self.catchup_asked.get(&a).is_some_and(|&(f, t)| held < f + 15 && now_ms < t + 2000) {
-                continue;
-            }
-            self.catchup_asked.insert(a, (from, now_ms));
-            out.push(Msg::Fetch { author: a, from, to: u32::MAX });
+            let attempt = match self.catchup_asked.get(&a) {
+                Some(&(f, t, _)) if held < f + 15 && now_ms < t + 2000 => continue,
+                Some(&(f, _, n)) if f == from => n + 1,
+                _ => 0,
+            };
+            self.catchup_asked.insert(a, (from, now_ms, attempt));
+            out.push((Msg::Fetch { author: a, from, to: u32::MAX }, attempt));
         }
         out
+    }
+
+    /// The feed exit (b): whether a want of `author`'s chain from `from` is the catch-up's own range, which a fed or echoing
+    /// member asks for once at a time (`catchup_fetches`) rather than of every holder whose ack shows more.
+    pub(super) fn catchup_covers(&self, author: MemberId, from: u32) -> bool {
+        self.fed_like() && self.catchup_asked.contains_key(&author) && from == self.contiguous.get(&author).copied().unwrap_or(0) + 1
     }
 
     /// Scoped (B) (@coordinator-opus m4c1990b4b6d5, definition m9c4af4baeb36): at 2 members, a repair of my own chain
