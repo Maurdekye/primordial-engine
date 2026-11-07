@@ -673,12 +673,27 @@ impl Peer {
 /// (P2-3 stall diagnosis: at 36 kbit/s on one link every member paused about 160 frames).
 fn drain(net: &mut Net, w: WorldId, from: MemberId, core: &mut SessionCore) {
     let mut reply: Option<(MemberId, bool)> = None;
-    for o in core.outbox() {
+    let out = core.outbox();
+    // Scoped (B) (the spike's feed-exit fix, @coordinator-opus m4c1990b4b6d5; opt-in here with PE_SCOPED_B=1 until Part B's
+    // port): at 2 members, a repair of my own chain while I'm paused at my window doesn't yield. My chain's stability then
+    // rests on the other member's references alone, and the session is stalled anyway.
+    static SCOPED_B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let scoped = *SCOPED_B.get_or_init(|| std::env::var("PE_SCOPED_B").is_ok())
+        && core.sim.members.len() == 2
+        && core.sim.frame >= core.sim.conf + core.sim.cfg.window;
+    let me = core.sim.me;
+    for o in out {
+        let own = scoped
+            && match &o.msg {
+                Msg::Entry(se) => se.entry.member == me,
+                Msg::Run { entries, .. } => entries.first().is_some_and(|se| se.entry.member == me),
+                _ => false,
+            };
         for to in o.to {
             if o.class == Class::Repair {
                 let send = match reply {
                     Some((t, send)) if t == to => send,
-                    _ => net.backlog_us(from, to) <= REPAIR_MAX_BACKLOG_US,
+                    _ => own || net.backlog_us(from, to) <= REPAIR_MAX_BACKLOG_US,
                 };
                 reply = Some((to, send));
                 if !send {

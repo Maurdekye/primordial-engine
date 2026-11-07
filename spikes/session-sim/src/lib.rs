@@ -730,8 +730,9 @@ pub struct Acceptance {
 
 /// (spike) The feed controller's knobs, read once:
 /// * PE_ENTER_US, PE_ENTER_HOLD_US, PE_ENTER_NOW_US: the enter test's thresholds (40 ms, 1 s, 400 ms).
-/// * PE_ENTER_RANK=1: the enter test reads the (t + 1)-th worst qualifying sender's backlog, not the worst, so one liar
-///   sender alone can't put a member on the feed at n >= 4 (t = 0 at n = 3: no change there).
+/// * The enter test reads the (t + 1)-th worst qualifying sender's backlog, not the worst, so one liar sender alone can't
+///   put a member on the feed at n >= 4 (t = 0 at n = 3: no change there; adopted, @coordinator-opus mcad9ec6a4a45).
+///   PE_ENTER_WORST=1 reads the worst, as before.
 /// * PE_ENTER_ANY_SENDER=1: every level-0 sender's backlog counts, as before the member-2 fix.
 /// * PE_ENTER_ANY_LEVEL=1: senders at any R18 level count (the member-2 test tells a sender's own uplink queue from t's
 ///   downlink queue; the level doesn't: R18 thins a sender for a thin receiver's queue too).
@@ -759,7 +760,7 @@ fn feed_knobs() -> &'static FeedKnobs {
             enter_us: num("PE_ENTER_US", 40_000),
             hold_us: num("PE_ENTER_HOLD_US", 1_000_000),
             now_us: num("PE_ENTER_NOW_US", 400_000),
-            rank: on("PE_ENTER_RANK"),
+            rank: !on("PE_ENTER_WORST"),
             any_sender: on("PE_ENTER_ANY_SENDER"),
             any_level: on("PE_ENTER_ANY_LEVEL"),
             clear_us: num("PE_CLEAR_US", 40_000),
@@ -1089,7 +1090,7 @@ impl Sim {
                     .map(|&s| self.net.backlog_us(s, t))
                     .collect();
                 qualifying.sort_unstable_by(|a, b| b.cmp(a));
-                // (spike: PE_ENTER_RANK) the (t + 1)-th worst, so one liar sender alone can't put t on the feed at n >= 4.
+                // The (t + 1)-th worst, so one liar sender alone can't put t on the feed at n >= 4 (spike: PE_ENTER_WORST=1, the worst).
                 let rank = if knobs.rank { pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, members.len()).0 } else { 0 };
                 let backlog = qualifying.get(rank).copied().unwrap_or(0);
                 // (spike diagnostics: PE_FEED_SIGNALS=1) every 250 ms, the enter test's inputs for each member not fed:

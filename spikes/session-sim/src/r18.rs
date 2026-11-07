@@ -459,8 +459,10 @@ pub fn capped(o: &Opts) {
                     println!("RESULT     3 players, window modes at member 1 (300 frames each): {}", modes.join(" "));
                 }
                 println!(
-                    "RESULT     rule 1's echo, per member: echoes matched/mismatched {}",
-                    ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" ")
+                    "RESULT     rule 1's echo, per member: echoes matched/mismatched {}; feed exit: echo conflicts {}, echo phases ended {}",
+                    ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" "),
+                    ids.iter().map(|&m| sim.replica(m, 1).sim.stats.echo_conflicts.to_string()).collect::<Vec<_>>().join(" / "),
+                    ids.iter().map(|&m| sim.replica(m, 1).sim.stats.echo_phase_ends.to_string()).collect::<Vec<_>>().join(" / ")
                 );
             }
             println!(

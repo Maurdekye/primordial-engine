@@ -40,6 +40,10 @@ fn verdict(sim: &Sim, ids: &[MemberId], label: &str, panic_at: Option<u64>) -> b
             })
             .collect();
         println!("RESULT {label}: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: {}", w.join("; "));
+        // The feed exit (ack cap condition 1, @coordinator-opus m3e1292851af3): rule (1)'s conflicts per replica, 0 in every
+        // honest cell; and the echo phases each replica ended.
+        let ex: Vec<String> = ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("m{m} {}/{}", s.echo_conflicts, s.echo_phase_ends) }).collect();
+        println!("RESULT {label}: feed exit: echo conflicts / echo phases ended per replica: {}", ex.join(", "));
         // Gap 1 (measurement): epoch certificates sent to fed members (pushed and pulled), requests, and what fed
         // replicas applied; printed only when there were any.
         let by_kind = |k: &str| sim.net.kinds_from.iter().filter(|((_, kk), _)| *kk == k).fold((0u64, 0u64), |a, (_, v)| (a.0 + v.0, a.1 + v.1));
@@ -671,7 +675,9 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
             _ => Fate::Deliver,
         }));
     }
-    let mut sim = Sim::new(net, ps, 14_000_000);
+    // (spike: PE_KF_END_S) the run's end in seconds (14): the feed exit's n = 2 catch-up runs past 14 s.
+    let end_s = std::env::var("PE_KF_END_S").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(14);
+    let mut sim = Sim::new(net, ps, end_s * 1_000_000);
     sim.net.tracing = std::env::var("PE_NET_TRACE").is_ok();
     sim.feed = true;
     sim.feed_room = room;
@@ -686,8 +692,17 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
     let mut acks_before: BTreeMap<MemberId, u64> = BTreeMap::new();
     let full: Vec<MemberId> = ids.iter().copied().filter(|m| !thin.contains(m) && !withhold.contains(m)).collect();
     let mut lag = LagSampler::new(&full);
+    // The feed exit: m1's longest confirmation stop, (its length in us, the frame conf stood at, from when).
+    let mut stop: (u64, u64) = (0, 0);
+    let mut longest: (u64, u64, u64) = (0, 0, 0);
     let panic_at = run_to_end(&mut sim, |s| {
         lag.sample(s);
+        let c1 = s.replica(1, 1).sim.conf;
+        if c1 != stop.0 {
+            stop = (c1, s.net.now_us);
+        } else if s.net.now_us - stop.1 > longest.0 {
+            longest = (s.net.now_us - stop.1, stop.0, stop.1);
+        }
         // Rev 22 cadence trace: each fed-candidate's R18 level, ack interval, acks in the last second, uplink offered
         // (mean over its links) and deepest uplink queue, once a second.
         if s.net.now_us % 1_000_000 == 0 && s.net.now_us > 0 {
@@ -721,6 +736,13 @@ fn kickliar_fed_n(label: &str, n: u32, thin: &[MemberId], withhold: &[MemberId],
         }
     });
     lag.report(label);
+    println!(
+        "RESULT {label}: m1's longest confirmation stop: {} ms (conf held at frame {} from {:.2} s{})",
+        longest.0 / 1000,
+        longest.1,
+        longest.2 as f64 / 1e6,
+        if longest.2 + longest.0 >= sim.end_us.saturating_sub(1000) { ", to the end of the run" } else { "" }
+    );
     // What fills a fed member's uplink: bytes by kind it offered from 4 s on, per link (n − 1 links).
     let secs = (sim.end_us.saturating_sub(4_000_000)) as f64 / 1e6;
     for &f in thin {
