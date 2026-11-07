@@ -1,7 +1,7 @@
 RESULT state-frame acceptance, uncontended checks: 40/40 equal at that instant and 40/40 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 16
 RESULT state-frame acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 56/56 equal to the author's copy at that instant, 56/56 equal to the author's final history
-  m1 world 1: rollbacks 9 max depth 4 resim frames 44 (179.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 773
-  m2 world 1: rollbacks 9 max depth 4 resim frames 41 (82.8 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 774
-  m3 world 1: rollbacks 12 max depth 4 resim frames 53 (461.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 773
+  m1 world 1: rollbacks 9 max depth 4 resim frames 44 (28.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 773
+  m2 world 1: rollbacks 9 max depth 4 resim frames 41 (25.7 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 774
+  m3 world 1: rollbacks 12 max depth 4 resim frames 53 (28.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 773
   bytes: entries 56 msgs 6272 B (avg 112 B), acks 960 msgs 83360 B, dropped 0
 RESULT state-frame world 1: frames 0..700 digests m1=ca0e82b9098761f4 m2=ca0e82b9098761f4 m3=ca0e82b9098761f4 | offline replay ca0e82b9098761f4 | ALL EQUAL

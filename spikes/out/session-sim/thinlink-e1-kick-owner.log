@@ -1,8 +1,9 @@
 RESULT e1-kick-owner: 3 fed at the kick true; members at m1 {1, 2, 3, 4}; roles {1: 0, 2: 0, 3: 1, 4: 1}; first change with admin entries: epoch None; member 4 removed by: None
 RESULT e1-kick-owner: a non-owner admin's kick of the owner is refused; 1 stays
-RESULT e1-kick-owner: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 1032 / 1181 = 0.9, heads 3519; m2 960 / 1181 = 0.8, heads 3519; m4 1032 / 1181 = 0.9, heads 3519
+RESULT e1-kick-owner: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 1008 / 1183 = 0.9, heads 3525; m2 960 / 1183 = 0.8, heads 3525; m4 1008 / 1183 = 0.9, heads 3525
+RESULT e1-kick-owner: feed exit: echo conflicts / echo phases ended per replica: m1 0/0, m2 0/0, m4 0/0
 RESULT e1-kick-owner: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m4 0
-  m1: conf 901 frame 953 rollbacks 66 max depth 25 paused frames 0 checks ok 73 bad 0
-  m2: conf 901 frame 953 rollbacks 66 max depth 25 paused frames 0 checks ok 73 bad 0
-  m4: conf 901 frame 953 rollbacks 66 max depth 27 paused frames 0 checks ok 73 bad 0
-RESULT e1-kick-owner: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 ace04e85e043d150, m2 0..900 ace04e85e043d150, m4 0..900 ace04e85e043d150) | offline replay ace04e85e043d150 | ALL EQUAL, NO FALSE CHECKS
+  m1: conf 901 frame 953 rollbacks 66 max depth 34 paused frames 0 checks ok 73 bad 0
+  m2: conf 901 frame 953 rollbacks 66 max depth 34 paused frames 0 checks ok 73 bad 0
+  m4: conf 901 frame 953 rollbacks 66 max depth 30 paused frames 0 checks ok 73 bad 0
+RESULT e1-kick-owner: frames 0..900 (replay from m1; each replica over its own confirmed frames: m1 0..900 f21dbc876f4353a8, m2 0..900 f21dbc876f4353a8, m4 0..900 f21dbc876f4353a8) | offline replay f21dbc876f4353a8 | ALL EQUAL, NO FALSE CHECKS
