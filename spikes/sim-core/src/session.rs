@@ -5783,6 +5783,60 @@ impl WorldSim {
         self.hidden = None;
     }
 
+    /// Diagnostics (the stuck-kick trace, @coordinator-opus me6b738e13923), without side effects: this replica's
+    /// round and step, the round's proposal and what it lists, its own prevote and precommit in the round, the round's
+    /// prevote counts, and each vote it holds on `x` (frozen seq, `k` for a kick vote, `unheld` if it can't walk x's
+    /// chain down from that head).
+    pub fn kick_trace(&self, x: MemberId) -> String {
+        let r = self.vc.round;
+        let held = self.contiguous.get(&x).copied().unwrap_or(0);
+        let kicks: Vec<String> = self
+            .admin_pending
+            .iter()
+            .filter_map(|id| self.entries.get(id).map(|e| (id, e)))
+            .filter(|(_, e)| matches!(e.payload, Payload::Kick { target, .. } if target == x))
+            .map(|(id, e)| format!("m{} s{} {:x}", e.member, e.seq, id & 0xffff))
+            .collect();
+        let votes: Vec<String> = self
+            .votes
+            .get(&x)
+            .map(|v| {
+                v.iter()
+                    .map(|(m, rec)| format!("{m}:{}{}{}", rec.frozen.0, if rec.kick != 0 { "k" } else { "" }, if self.head_held(x, rec.frozen) { "" } else { " unheld" }))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let prop = self.vc.proposals.get(&r).map(|&(v, vr)| {
+            let c = self.vc.changes.get(&v);
+            format!(
+                "{:x} vr {} remove {:?} admin {}",
+                v & 0xffff,
+                if vr == NO_ROUND { "-".to_string() } else { vr.to_string() },
+                c.map(|c| c.remove.iter().map(|x| (x.member, x.cut.0, x.votes.len())).collect::<Vec<_>>()),
+                c.map_or(0, |c| c.admin.len())
+            )
+        });
+        let mine = |b: &BTreeMap<u32, BTreeMap<MemberId, u64>>| match b.get(&r).and_then(|m| m.get(&self.me)) {
+            None => "-".to_string(),
+            Some(0) => "nil".to_string(),
+            Some(v) => format!("{:x}", v & 0xffff),
+        };
+        let counts = self.vc.prevotes.get(&r).map(|m| (m.values().filter(|&&v| v != 0).count(), m.values().filter(|&&v| v == 0).count()));
+        format!(
+            "epoch {} round {r} step {:?} proposer m{} since {:?} locked {:?}; holds x to {held}; kick pending {kicks:?}; votes [{}]; proposal {}; my prevote {} precommit {}; prevotes (value, nil) {:?}",
+            self.epoch,
+            self.vc.step,
+            self.proposer(self.epoch, r),
+            self.vc.since,
+            self.vc.locked.map(|(v, lr)| (v & 0xffff, lr)),
+            votes.join(", "),
+            prop.unwrap_or_else(|| "none".to_string()),
+            mine(&self.vc.prevotes),
+            mine(&self.vc.precommits),
+            counts
+        )
+    }
+
     /// Diagnostics: this replica's view-change state and how much of each chain it holds.
     pub fn vc_debug(&self) -> String {
         let pv: Vec<String> = self.vc.prevotes.iter().map(|(r, m)| format!("r{r}:{:?}", m.iter().map(|(k, v)| (*k, *v != 0)).collect::<Vec<_>>())).collect();
