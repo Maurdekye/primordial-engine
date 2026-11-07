@@ -1925,6 +1925,10 @@ struct Keyframe {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Stats {
+    /// Link elision: live checkpoints received, held behind a hole, and asked explicit from their sender.
+    pub live_rx: u64,
+    pub live_held: u64,
+    pub live_explicit: u64,
     pub rollbacks: u64,
     pub resim_frames: u64,
     pub max_depth: u64,
@@ -3161,17 +3165,29 @@ impl WorldSim {
         if m == self.me || (!self.known.contains(&m) && m != LOGIC) {
             return vec![];
         }
+        self.stats.live_rx += 1;
         match self.live_link(&e) {
             Some(Some(link)) => {
                 e.link = link;
                 self.insert(e)
             }
             Some(None) => {
+                self.stats.live_explicit += 1;
                 self.want_from(from, m, e.seq, e.seq);
                 vec![]
             }
             None => {
                 let c = self.contiguous.get(&m).copied().unwrap_or(0);
+                // Behind a hole that can't hold a checkpoint, the link is known: stamped in the block after the newest
+                // checkpoint of my contiguous prefix, `e` is the first entry in its block, so every entry in the hole lies
+                // in that checkpoint's block or earlier and is no checkpoint (an honest author's would sit in a block in
+                // between). Then `e` goes in past the hole at once, as an explicit one does; only a hole spanning a block
+                // waits. A wrong rebuild (a lying author) fails the signature in production and is fetched explicit.
+                let head = if c == 0 { None } else { self.by_author.get(&(m, c)).and_then(|id| self.ckpt_after.get(id)).copied() };
+                if let Some((_, link)) = head.filter(|&(b, _)| e.seq > c + 1 && e.stamp / CKPT_FRAMES == b + 1) {
+                    e.link = link;
+                    return self.insert(e);
+                }
                 if e.seq > c + 1 {
                     self.heard.insert(m, self.now);
                     if !matches!(e.payload, Payload::Ack { .. }) {
@@ -3182,8 +3198,10 @@ impl WorldSim {
                         // The oldest by author and seq goes; the hole rule fetches it explicit once its chain gets there.
                         self.live_wait.pop_first();
                     }
+                    self.stats.live_held += 1;
                     self.live_wait.insert((m, e.seq), (e, from));
                 } else {
+                    self.stats.live_explicit += 1;
                     self.want_from(from, m, e.seq, e.seq);
                 }
                 vec![]
@@ -3214,7 +3232,10 @@ impl WorldSim {
                     e.link = link;
                     return Some(e);
                 }
-                _ => self.want_from(from, e.member, e.seq, e.seq),
+                _ => {
+                    self.stats.live_explicit += 1;
+                    self.want_from(from, e.member, e.seq, e.seq)
+                }
             }
         }
     }
@@ -7756,7 +7777,7 @@ mod echo_tests {
             assert_eq!(r.by_author.get(&(1, e.seq)), Some(&e.id()), "s{}", e.seq);
         }
         assert!(r.live_wait.is_empty());
-        // Behind a hole: the checkpoint waits, shows the hole, and goes in once the hole is filled.
+        // Behind a hole that can't hold a checkpoint (the entry just before): rebuilt and in past the hole at once.
         let k = c.iter().position(|e| e.link != 0 && e.seq > 10).unwrap();
         let mut r = WorldSim::new(1, 2, &[1, 2], SceneKind::Empty, SimConfig::default());
         for (i, e) in c.iter().enumerate().take(k + 1) {
@@ -7764,12 +7785,28 @@ mod echo_tests {
                 deliver(&mut r, 1, wire(e));
             }
         }
-        assert!(r.by_author.get(&(1, c[k].seq)).is_none());
-        assert!(r.live_wait.contains_key(&(1, c[k].seq)));
+        assert_eq!(r.by_author.get(&(1, c[k].seq)), Some(&c[k].id()));
+        assert!(r.live_wait.is_empty());
         assert!(r.wants.iter().any(|w| w.1 == 1 && w.2 <= c[k - 1].seq && w.3 >= c[k - 1].seq));
         deliver(&mut r, 1, wire(&c[k - 1]));
-        assert_eq!(r.by_author.get(&(1, c[k].seq)), Some(&c[k].id()));
         assert_eq!(r.contiguous.get(&1), Some(&c[k].seq));
+        // Behind a hole spanning the checkpoint before it: the checkpoint waits, shows the hole, and goes in once the
+        // hole is filled.
+        let j = c.iter().position(|e| e.link != 0 && e.seq > c[k].seq).unwrap();
+        let mut r = WorldSim::new(1, 2, &[1, 2], SceneKind::Empty, SimConfig::default());
+        for (i, e) in c.iter().enumerate().take(j + 1) {
+            if !(k..j).contains(&i) {
+                deliver(&mut r, 1, wire(e));
+            }
+        }
+        assert!(r.by_author.get(&(1, c[j].seq)).is_none());
+        assert!(r.live_wait.contains_key(&(1, c[j].seq)));
+        assert!(r.wants.iter().any(|w| w.1 == 1 && w.2 <= c[k].seq && w.3 >= c[j - 1].seq));
+        for e in &c[k..j] {
+            deliver(&mut r, 1, wire(e));
+        }
+        assert_eq!(r.by_author.get(&(1, c[j].seq)), Some(&c[j].id()));
+        assert_eq!(r.contiguous.get(&1), Some(&c[j].seq));
         assert!(r.live_wait.is_empty());
     }
 

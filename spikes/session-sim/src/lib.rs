@@ -259,10 +259,12 @@ impl Net {
 
     pub fn send(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         let bytes = encode_msg(m);
+        // (spike, measurement only: PE_WHATIF_LIVE=1 with PE_NO_LIVE=1 charges every link elision would leave out as free)
+        let charged = bytes.len() as u64 - whatif_live_saving(from, m);
         {
             let now = self.now_us;
             let q = self.recent.entry((from, to)).or_default();
-            q.push_back((now, bytes.len() as u64 + dgram_overhead()));
+            q.push_back((now, charged + dgram_overhead()));
             while q.front().is_some_and(|&(t, _)| t + 1_000_000 < now) {
                 q.pop_front();
             }
@@ -335,7 +337,7 @@ impl Net {
             }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
-        let depart = match self.shape(from, to, bytes.len() as u64) {
+        let depart = match self.shape(from, to, charged) {
             Some(d) => d,
             None => {
                 self.dropped += 1;
@@ -796,6 +798,27 @@ pub fn goes_live(from: MemberId, e: &Entry) -> bool {
         && !*OFF.get_or_init(|| std::env::var("PE_NO_LIVE").is_ok_and(|v| v == "1"))
 }
 
+/// Measurement only (PE_WHATIF_LIVE=1, with PE_NO_LIVE=1): the bytes link elision would leave out of `m` from `from`, so
+/// the shaper and the controllers see elision's bytes on the explicit wire, with no live entries held behind holes.
+pub fn whatif_live_saving(from: MemberId, m: &Msg) -> u64 {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("PE_WHATIF_LIVE").is_ok_and(|v| v == "1")) {
+        return 0;
+    }
+    fn walk(from: MemberId, m: &Msg) -> u64 {
+        match m {
+            Msg::Entry(e) if e.member == from && e.link != 0 && e.carried.is_none() && !matches!(
+                e.payload,
+                Payload::Vote { .. } | Payload::Propose { .. } | Payload::Prevote { .. } | Payload::Precommit { .. }
+                    | Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. }
+            ) => 8,
+            Msg::Batch(v) => v.iter().map(|x| walk(from, x)).sum(),
+            _ => 0,
+        }
+    }
+    walk(from, m)
+}
+
 /// `m` with every live entry as the explicit one (its link is held in memory on the sending side), for fault filters
 /// written for `Msg::Entry`.
 pub fn explicit_view(m: &Msg) -> std::borrow::Cow<'_, Msg> {
@@ -1177,7 +1200,7 @@ impl Sim {
         let mut due = Vec::new();
         for (to, w, from, m) in self.net.due() {
             // Rule 4 (D): each datagram's size, as it arrives directly from its sender.
-            let bytes = encode_msg(&m).len() as u64 + dgram_overhead();
+            let bytes = encode_msg(&m).len() as u64 + dgram_overhead() - whatif_live_saving(from, &m);
             let pi = self.peer_index(to);
             if !self.peers[pi].crashed {
                 if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
