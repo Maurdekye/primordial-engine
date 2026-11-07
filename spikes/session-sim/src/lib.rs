@@ -1172,10 +1172,19 @@ impl Sim {
                 Msg::Fetch { author, from: a, to: b } => {
                     // Review R3-9: repairs yield to the queue. Answering into a full uplink only
                     // makes the queue, and the requester's next round trip, longer.
+                    // (spike diagnostics: PE_REPAIR_TRACE=<requester>) each fetch from that member, answered or skipped.
+                    let trace = std::env::var("PE_REPAIR_TRACE").ok().and_then(|v| v.parse::<MemberId>().ok()) == Some(from);
                     if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US {
+                        if trace {
+                            eprintln!("REPAIR t={} ms m{to} skips m{from}'s fetch of m{author} s{a}..={b}: backlog {} us", now / 1000, self.net.backlog_us(to, from));
+                        }
                         continue;
                     }
-                    for e in r.sim.on_fetch(author, a, b) {
+                    let reply = r.sim.on_fetch(author, a, b);
+                    if trace {
+                        eprintln!("REPAIR t={} ms m{to} answers m{from}'s fetch of m{author} s{a}..={b} with {} entries", now / 1000, reply.len());
+                    }
+                    for e in reply {
                         self.net.post(w, to, from, &e);
                     }
                 }

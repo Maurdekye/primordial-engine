@@ -3590,7 +3590,8 @@ impl WorldSim {
                 .map(|&j| {
                     let es = self.echo_stable(j);
                     let h = self.ack_hist.get(&j).and_then(|a| a.range(..=es).next_back()).map(|(_, h)| *h);
-                    format!("m{j}: es {es} held {} h {:?} bound {:?}", self.contiguous.get(&j).copied().unwrap_or(0), h, self.deadline_bound(j))
+                    let newest = self.by_author.range((j, 0)..=(j, u32::MAX)).next_back().map_or(0, |(&(_, s), _)| s);
+                    format!("m{j}: es {es} held {} newest {newest} h {:?} bound {:?}", self.contiguous.get(&j).copied().unwrap_or(0), h, self.deadline_bound(j))
                 })
                 .collect();
             eprintln!("CONF m{} now {} conf {} pending {} first {:?} | {}", self.me, self.now, self.conf, self.pending.len(), first, per.join(" | "));
