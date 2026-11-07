@@ -1120,6 +1120,10 @@ impl Wr {
     }
     /// The canonical encoding without the checkpoint link's value (H_rest's input).
     fn entry_rest(&mut self, e: &Entry) {
+        self.entry_rest_with(e, e.link != 0)
+    }
+    /// `linked`: the flags' bit 1, whether the entry has a link (a decoded [`Msg::Live`] has, with its value unknown).
+    fn entry_rest_with(&mut self, e: &Entry, linked: bool) {
         self.u32(e.member);
         self.u32(e.seq);
         self.u64(e.prev);
@@ -1217,7 +1221,7 @@ impl Wr {
             }
         }
         // Flags: bit 0 a carried state follows, bit 1 a checkpoint link follows (after it).
-        self.u8(e.carried.is_some() as u8 | ((e.link != 0) as u8) << 1);
+        self.u8(e.carried.is_some() as u8 | (linked as u8) << 1);
         if let Some((obj, s)) = &e.carried {
             self.u32(*obj);
             self.state(s);
@@ -1262,11 +1266,11 @@ impl Wr {
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e) }
-            // The canonical bytes but the link's value: the flags byte keeps bit 1, so H_rest is unchanged.
+            // The canonical bytes but the link's value: the flags byte keeps bit 1, so H_rest is unchanged. Sent, `e`
+            // holds its link; decoded, the link is 0 (unknown) and re-encodes to the same bytes.
             Msg::Live(e) => {
-                assert!(e.link != 0, "only a checkpoint with a link goes live");
                 self.u8(14);
-                self.entry_rest(e)
+                self.entry_rest_with(e, true)
             }
             Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
@@ -7730,6 +7734,7 @@ mod echo_tests {
             let Some(Msg::Live(d)) = decode_msg(&live) else { panic!() };
             assert_eq!(Entry { link: e.link, ..d.clone() }, *e);
             assert_eq!(d.link, 0);
+            assert_eq!(encode_msg(&Msg::Live(d)), live);
         }
         // A live entry must say it has a link.
         let plain = c.iter().find(|e| e.link == 0).unwrap();
