@@ -112,6 +112,26 @@ impl Shaper {
     pub fn backlog_us(&self, now_us: u64) -> u64 {
         self.t_ref_us.saturating_sub(now_us)
     }
+
+    /// The bucket's level (bytes) if a datagram were offered now: what passes at once.
+    pub fn tokens_at(&self, cap: &Cap, now_us: u64) -> f64 {
+        if !self.started {
+            return cap.burst_bytes as f64;
+        }
+        let t0 = now_us.max(self.t_ref_us);
+        (self.tokens + (t0 - self.t_ref_us) as f64 * cap.rate_bps as f64 / 8.0 / 1e6).min(cap.burst_bytes as f64)
+    }
+}
+
+/// The feed exit's catch-up (both queues) leaves a link only while its bucket would keep this many bytes after the datagram
+/// (PE_CATCHUP_RESERVE_B, default 1000): a burst of protocol traffic then still passes at once. Filling every idle moment,
+/// the catch-up kept the bucket empty, and a view change's burst on the feeder's 8 kbit/s link (feed packet, Ckpts, a
+/// prevote: about 370 B) queued up to 378 ms (join-onefed-down: the fed member's prevote came 31 frames late, it voted nil
+/// in every round, and neither the join nor the removal of a crashed member was decided). In steady state the catch-up
+/// still gets the whole spare; the bucket idles at the reserve instead of at zero.
+fn catchup_reserve() -> f64 {
+    static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_CATCHUP_RESERVE_B").ok().and_then(|v| v.parse().ok()).unwrap_or(1000.0))
 }
 
 /// One send attempt, for per-peer traffic metrics.
@@ -452,6 +472,18 @@ impl Net {
         router + client
     }
 
+    /// The feed exit's catch-up: whether a datagram of `payload` bytes on the link from `from` to `to` leaves its bucket
+    /// at least `catchup_reserve()` (an uncapped link: always).
+    fn catchup_fits(&self, from: MemberId, to: MemberId, payload: usize) -> bool {
+        let (key, cap) = match shared_down().filter(|&(m, _)| m == to) {
+            Some((m, c)) => ((0, m), Some(c)),
+            None => ((from, to), self.caps.get(&(from, to)).copied().or(self.default_cap)),
+        };
+        let Some(cap) = cap else { return true };
+        let tokens = self.shapers.get(&key).map_or(cap.burst_bytes as f64, |s| s.tokens_at(&cap, self.now_us));
+        tokens - (payload as u64 + dgram_overhead()) as f64 >= catchup_reserve().min(cap.burst_bytes as f64 / 2.0)
+    }
+
     /// The router queue alone (what a datagram offered now would wait at the bottleneck).
     fn router_backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
         let key = if shared_down().is_some_and(|(m, _)| m == to) { (0, to) } else { (from, to) };
@@ -514,6 +546,22 @@ impl Net {
                 Some(c) => ((c.rate_bps / 8 * echo_dgram_ms() / 1000) as usize).saturating_sub(dgram_overhead() as usize).min(MTU),
                 None => MTU,
             };
+            let size = {
+                let q = &self.echo_q[&(from, to)];
+                let w = q.front().unwrap().0;
+                let mut size = 0;
+                for (w2, m) in q.iter() {
+                    let n = encode_msg(m).len();
+                    if *w2 != w || (size > 0 && size + n > budget) {
+                        break;
+                    }
+                    size += n;
+                }
+                size
+            };
+            if !self.catchup_fits(from, to, size) {
+                continue;
+            }
             let q = self.echo_q.get_mut(&(from, to)).unwrap();
             let w = q.front().unwrap().0;
             let mut cur: Vec<Msg> = Vec::new();
@@ -541,6 +589,10 @@ impl Net {
                 Some(cap) => ((cap.rate_bps / 8 / 10) as usize).saturating_sub(dgram_overhead() as usize).min(MTU),
                 None => MTU,
             };
+            let first = self.catchup_q[&(from, to)].front().map_or(0, |(_, m)| encode_msg(m).len());
+            if !self.catchup_fits(from, to, first.max(budget)) {
+                continue;
+            }
             let q = self.catchup_q.get_mut(&(from, to)).unwrap();
             let w = q.front().unwrap().0;
             let mut cur: Vec<Msg> = Vec::new();
