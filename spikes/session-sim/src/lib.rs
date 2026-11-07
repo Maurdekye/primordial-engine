@@ -1341,6 +1341,9 @@ impl Sim {
             flatten(m, &mut v);
             due.extend(v.into_iter().map(|x| (to, w, from, x)));
         }
+        // The feed exit: members in their echo phase, whose own catch-up doesn't yield (below).
+        let echoing: BTreeSet<(WorldId, MemberId)> =
+            self.peers.iter().filter(|p| !p.crashed).flat_map(|p| p.worlds.iter().filter(|(_, r)| r.sim.in_echo_phase()).map(move |(w, _)| (*w, p.id))).collect();
         for (to, w, from, m) in due {
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
@@ -1385,8 +1388,12 @@ impl Sim {
                         }
                         continue;
                     }
-                    // Scoped (B): at 2 members, my own chain's repair while I'm paused at my window doesn't yield.
-                    if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US && !r.sim.repair_holds_conf(from, author) {
+                    // Scoped (B): at 2 members, my own chain's repair while I'm paused at my window doesn't yield. And
+                    // (@coordinator-opus mc7179a848c6e, extended to the echo phase): a member in its echo phase catching up
+                    // on its own hole doesn't wait behind the live stream either (nobound down-k12-m3: 42 of its 55 fetches
+                    // skipped). (spike: PE_NO_ECHO_REPAIR_PRIORITY=1 switches the second off)
+                    let echo_catchup = echoing.contains(&(w, from)) && std::env::var("PE_NO_ECHO_REPAIR_PRIORITY").is_err();
+                    if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US && !r.sim.repair_holds_conf(from, author) && !echo_catchup {
                         if trace {
                             eprintln!("REPAIR t={} ms m{to} skips m{from}'s fetch of m{author} s{a}..={b}: backlog {} us", now / 1000, self.net.backlog_us(to, from));
                         }
