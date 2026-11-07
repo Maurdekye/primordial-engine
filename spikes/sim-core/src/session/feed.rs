@@ -384,8 +384,8 @@ impl WorldSim {
     /// entries asked), or after 2 s (an answer lost or withheld). The harness sends them to an idle link; the answers go at
     /// the lowest priority, below feed and echo. The feed exit (b): in the echo phase the same pacing, so one request per
     /// chain is out at a time (asked of every holder by every ack, a 16 kbit/s catch-up carried each entry two or three
-    /// times). Each request comes with its attempt at that start (0, then 1, 2, ... after each 2 s without an answer), so
-    /// the harness moves an unanswered one to another holder (the fetch fallback, @coordinator-opus mca39b9f6b726).
+    /// times). Each request comes with its attempt, the count of 2 s timeouts on that chain so far, so the harness moves an
+    /// unanswered one to another holder and stays there (the fetch fallback, @coordinator-opus mca39b9f6b726).
     pub fn catchup_fetches(&mut self, now_ms: u64) -> Vec<(Msg, u32)> {
         let mut out = Vec::new();
         if !self.fed_like() {
@@ -400,10 +400,19 @@ impl WorldSim {
                 continue;
             }
             let from = held + 1;
+            // The attempt counts this chain's requests that drew nothing at all within 2 s (withheld or lost), kept across
+            // progress, so the harness moves on from a holder that doesn't answer and stays with one that does. Short of
+            // that, the next request goes to the same holder from what it holds (pipelined, as before): rotating on a slow
+            // answer moved both chains onto one link, and waiting for a partly lost one stalled the catch-up.
+            // (spike: PE_CATCHUP_ROTATE_MS, 2000) how long a request may draw nothing before it moves to the next holder.
+            static ROT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+            let rotate_ms = *ROT.get_or_init(|| std::env::var("PE_CATCHUP_ROTATE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000));
             let attempt = match self.catchup_asked.get(&a) {
+                Some(&(f, t, _)) if held + 1 == f && now_ms < t + rotate_ms.max(2000) => continue,
                 Some(&(f, t, _)) if held < f + 15 && now_ms < t + 2000 => continue,
-                Some(&(f, _, n)) if f == from => n + 1,
-                _ => 0,
+                Some(&(f, _, n)) if held + 1 == f => n + 1,
+                Some(&(_, _, n)) => n,
+                None => 0,
             };
             self.catchup_asked.insert(a, (from, now_ms, attempt));
             out.push((Msg::Fetch { author: a, from, to: u32::MAX }, attempt));

@@ -504,9 +504,17 @@ impl Net {
         let mut cur: Vec<Msg> = Vec::new();
         let mut size = 0;
         let mut batches: Vec<Vec<Msg>> = Vec::new();
+        // (spike: PE_CATCHUP_DGRAM_MS caps each datagram at that much of the link; 0, the default, sends MTU datagrams. A
+        // 200 ms cap was slower at every rate measured, with more drops: down-k12-m3 120 against 50.)
+        static DG: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let dg_ms = *DG.get_or_init(|| std::env::var("PE_CATCHUP_DGRAM_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        let budget = match self.caps.get(&(from, to)).copied().or(self.default_cap) {
+            Some(cap) if dg_ms > 0 => ((cap.rate_bps / 8 * dg_ms / 1000) as usize).saturating_sub(dgram_overhead() as usize).min(MTU),
+            _ => MTU,
+        };
         for m in msgs {
             let n = encode_msg(&m).len();
-            if !cur.is_empty() && size + n > MTU {
+            if !cur.is_empty() && size + n > budget {
                 batches.push(std::mem::take(&mut cur));
                 size = 0;
             }
@@ -800,9 +808,9 @@ pub struct Acceptance {
 ///   has the member leave on the live test and catch up while its echo covers it; PE_EXIT_BOUND_MS=2000 is option (a).
 /// * PE_NO_PROGRESS_MS: the no-progress guard (5000): an echoing member whose held chains don't advance for this long goes
 ///   back on the feed.
-/// * PE_REENTRY_HOLDOFF_MS (3000): no re-entry this long after leaving the feed (margin rule (2)) or after the end of the
-///   echo phase (the enter test): the smallest with no flip-back in down-k12-m3 (1 and 2 s flipped back at 2.8 s, by rule
-///   (2), @coordinator-opus m360a9ee1d5bb). PE_REENTRY_FACTOR (1.3): rule (2)'s
+/// * PE_REENTRY_HOLDOFF_MS (4000): no re-entry this long after leaving the feed (margin rule (2)) or after the end of the
+///   echo phase (the enter test): the smallest with no flip-back in down-k12-m3 (3 s flipped back by rule (2) at 17.9 s;
+///   4, 5, 10 and 20 s didn't; @coordinator-opus m360a9ee1d5bb). PE_REENTRY_FACTOR (1.3): rule (2)'s
 ///   factor (1.0: re-enter only once the live stream alone exceeds the cap, a hysteresis band below the leave test's 1.3).
 /// * PE_NO_CATCHUP=1: no background catch-up while fed, as before the feed-exit fix.
 struct FeedKnobs {
@@ -836,7 +844,7 @@ fn feed_knobs() -> &'static FeedKnobs {
             exit_bound_us: std::env::var("PE_EXIT_BOUND_MS").ok().and_then(|v| v.parse::<u64>().ok()).map(|ms| ms * 1000),
             catchup: !on("PE_NO_CATCHUP"),
             no_progress_us: num("PE_NO_PROGRESS_MS", 5000) * 1000,
-            reentry_holdoff_us: num("PE_REENTRY_HOLDOFF_MS", 3000) * 1000,
+            reentry_holdoff_us: num("PE_REENTRY_HOLDOFF_MS", 4000) * 1000,
             reentry_factor: std::env::var("PE_REENTRY_FACTOR").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.3),
         }
     })
