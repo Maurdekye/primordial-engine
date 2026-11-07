@@ -25,8 +25,9 @@ pub const MTU: usize = 1200;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
-    /// A session protocol message: an entry (with its author's signature) or a fetch request or
-    /// answer. Joins, batches and state transfer (joiners only) are not part of M1.
+    /// A session protocol message: an entry (with its author's signature), a run of one author's
+    /// entries (signed once), or a fetch request or answer. Joins, batches and state transfer
+    /// (joiners only) are not part of M1.
     Msg(Msg),
     /// Clock sync (design 10.4): my send time; the reply carries it back with the replier's session
     /// time, its raw local clock (the frequency ratio reads it: no correction moves it) and its applied
@@ -169,7 +170,9 @@ pub fn unpack(session: u64, buf: &[u8], key_of: impl Fn(MemberId) -> Option<Veri
             1 => {
                 let len = u16::from_le_bytes(take(&mut p, 2)?.try_into().unwrap()) as usize;
                 match decode_msg(&take(&mut p, len)?).ok_or(Reject::Malformed)? {
-                    m @ (Msg::Entry(_) | Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. }) => Item::Msg(m),
+                    // Msg::Run: an author's consecutive entries signed once, lean (implicit ids) or not (the R18
+                    // below-20 item, options 1 and 2); the core rebuilds and verifies them.
+                    m @ (Msg::Entry(_) | Msg::Run { .. } | Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. }) => Item::Msg(m),
                     _ => return Err(Reject::Malformed),
                 }
             }
@@ -237,6 +240,17 @@ mod tests {
         // Joins and state transfer are not part of M1.
         let fetch_state = pack(9, 1, &[Item::Msg(Msg::FetchState)], &key(1), Stamp::default).remove(0);
         assert_eq!(unpack(9, &fetch_state, keys), Err(Reject::Malformed));
+    }
+
+    #[test]
+    fn a_run_passes_the_allowlist() {
+        // Options 1 and 2: an author's entries as one run, lean and signed once; the wire takes it as encoded.
+        let Msg::Entry(a) = entry(2, 1) else { unreachable!() };
+        let Msg::Entry(b) = entry(2, 2) else { unreachable!() };
+        let run = Msg::Run { lean: true, heads: true, signed: true, entries: vec![a, b] };
+        let d = pack(9, 2, &[Item::Msg(run.clone())], &key(2), Stamp::default).remove(0);
+        let (_, _, got) = unpack(9, &d, keys).unwrap();
+        assert_eq!(got, vec![Item::Msg(decode_msg(&encode_msg(&run)).unwrap())]);
     }
 
     #[test]
