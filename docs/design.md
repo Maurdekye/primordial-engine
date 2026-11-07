@@ -1839,8 +1839,9 @@ is fixed once the author's chain is contiguous up to it.
   its previous entry: no reference of its own can check any other head. A proposer computes a cut only
   from votes whose frozen heads it can walk down to the prefix it holds, and asks every member, not
   only the voter, for an entry it lacks [V selfkickhead: admin 1 kicks 4, and 4's own vote names a
-  head it never signed; 4 is removed at 2.28 s. Before the fix the kick never went through and
-  confirmation stopped at frame 116].
+  head it never signed; 4 is removed at 2.27 s. Before the fix the kick never went through and
+  confirmation stopped at frame 110 (pe-session, since KICKVOTE; the spike's runs stopped at 116 and
+  108)].
 * **The kicker's own vote goes out with its kick** (fix KICKVOTE; found by @engine-architect in the
   spike's carry-over, b397443). Recording its own kick, an admin's replica votes on the target at once.
   pe-session kept that vote in the admin's chain but never sent it: `publish` dropped what inserting
