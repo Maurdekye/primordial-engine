@@ -1,6 +1,6 @@
-RESULT fault-partition-evict: m1 members {1, 2} evicted {3: (21, 108)} conf 703 frame 713 paused frames 76 lying votes found 0
-RESULT fault-partition-evict: m2 members {1, 2} evicted {3: (21, 108)} conf 703 frame 714 paused frames 78 lying votes found 0
+RESULT fault-partition-evict: m1 members {1, 2} evicted {3: (21, 106)} conf 697 frame 713 paused frames 77 lying votes found 0
+RESULT fault-partition-evict: m2 members {1, 2} evicted {3: (21, 106)} conf 697 frame 714 paused frames 79 lying votes found 0
 RESULT fault-partition-evict (minority member 3): m3 world 1 conf 98 members {1, 2, 3} evicted {} -> OK
-  m1: conf 703 frame 713 members {1, 2} evicted {3: (21, 108)} rollbacks 6 max depth 2 violations 0 equivocations 0 checks ok 24 bad 0
-  m2: conf 703 frame 714 members {1, 2} evicted {3: (21, 108)} rollbacks 5 max depth 6 violations 0 equivocations 0 checks ok 24 bad 0
-RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=72d33d2da21c359a m2=72d33d2da21c359a | offline replay 72d33d2da21c359a | ALL EQUAL, NO FALSE CHECKS ; checks ok 48 bad 0
+  m1: conf 697 frame 713 members {1, 2} evicted {3: (21, 106)} rollbacks 6 max depth 5 violations 0 equivocations 0 checks ok 23 bad 0
+  m2: conf 697 frame 714 members {1, 2} evicted {3: (21, 106)} rollbacks 5 max depth 8 violations 0 equivocations 0 checks ok 23 bad 0
+RESULT fault-partition-evict (members 1 and 2): frames 0..712 honest m1=72d33d2da21c359a m2=72d33d2da21c359a | offline replay 72d33d2da21c359a | ALL EQUAL, NO FALSE CHECKS ; checks ok 46 bad 0

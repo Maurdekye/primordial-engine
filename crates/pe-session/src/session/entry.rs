@@ -52,11 +52,59 @@ impl std::fmt::Debug for EntryId {
 /// and never take claims (review M3).
 pub const LOGIC: MemberId = 0;
 
-/// D73(a): the most targets one hand entry packs, the largest R18 hand stride (`peer::HAND_STRIDE`).
+/// D73(a): the most targets one hand entry packs, the stride of the coarsest packed R18 level
+/// (`peer::HAND_STRIDE[peer::PACKED_LEVELS]`).
 /// It also bounds how far a pack's stamp may lie behind its author's present (k - 1 frames).
 pub const PACK_MAX: u64 = 8;
 
+/// Thin links, Part A: the width a pack's extra targets travel in, as deltas from the target before:
+/// 1 (i8) if every axis of every step is within 127 mm, 2 (i16) within 32767 mm, else 0 (whole i32).
+pub fn pack_delta_mode(target_mm: &[i32; 3], more: &[[i32; 3]]) -> u8 {
+    let mut prev = *target_mm;
+    let mut maxd = 0i64;
+    for t in more {
+        for i in 0..3 {
+            maxd = maxd.max((t[i] as i64 - prev[i] as i64).abs());
+        }
+        prev = *t;
+    }
+    if maxd <= 127 {
+        1
+    } else if maxd <= 32767 {
+        2
+    } else {
+        0
+    }
+}
+
 impl Payload {
+    /// View-change and admin entries (review O2-1): always signed on themselves, never only covered by
+    /// a later entry's signature: inside a run each carries its own signature on the wire (option (4)),
+    /// so each can be held, relayed and judged on its own (Part B's fed members hold them by value and
+    /// signature, without the acks and perturbations around them).
+    pub fn signs_itself(&self) -> bool {
+        matches!(
+            self,
+            Payload::Vote { .. }
+                | Payload::Propose { .. }
+                | Payload::Prevote { .. }
+                | Payload::Precommit { .. }
+                | Payload::Kick { .. }
+                | Payload::SetRole { .. }
+                | Payload::DefineRole { .. }
+                | Payload::Ownership { .. }
+                | Payload::Ban { .. }
+                // R14's transfer records and the portal: rare, and shown outside their author's chain
+                // (relays into another world, saves, provenance), so also standalone (review O2-1 question).
+                | Payload::Depart { .. }
+                | Payload::Arrive { .. }
+                | Payload::Verdict { .. }
+                | Payload::Attest { .. }
+                | Payload::Provenance { .. }
+                | Payload::Portal { .. }
+        )
+    }
+
     /// The frames after its stamp that an entry also acts on: a hand pack's extra targets (D73(a)).
     pub fn extra_frames(&self) -> u64 {
         match self {
@@ -276,8 +324,10 @@ impl Entry {
 pub enum Msg {
     /// Any chain entry: a perturbation, an ack or a vote, with its author's signature (S3).
     Entry(SignedEntry),
-    /// Ask for `author`'s entries `from..=to` (gap or conflict detection).
-    Fetch { author: MemberId, from: u32, to: u32 },
+    /// Ask for `author`'s entries `from..=to` (gap or conflict detection). `held` ([`HELD_BELOW`],
+    /// [`HELD_ABOVE`]): what the requester holds around the range, which lets the reply leave out what
+    /// it can rebuild (the R18 below-20 item, option 2 and the lean hole-fill reply).
+    Fetch { author: MemberId, from: u32, to: u32, held: u8 },
     /// Everything one member sends one peer in one tick, in one datagram (R18, viz-4).
     Batch(Vec<Msg>),
     /// View change: ask for the proposal entry carrying `value` (a member that saw a quorum of
@@ -295,15 +345,27 @@ pub enum Msg {
     FetchEntry { id: EntryId, back: u8 },
     /// Design 9.5: a joiner asks a member for its newest confirmed check-frame state.
     FetchState,
-    /// The R18 below-20 item, option 1 (@coordinator-opus, 2026-11-01): an author's own entry, live,
-    /// without the ids its receiver rebuilds from what it holds: `prev` (its entry at `(member, seq -
-    /// 1)`) and an ack's head ids (its entry at each `(q, s)`). They decode as `EntryId::NONE`. The
-    /// signature still covers the full entry, so a receiver whose ids differ (a fork) fails to verify
-    /// it and fetches the explicit form from the author ([`WorldSim::insert_lean`]).
-    Lean(SignedEntry),
+    /// The R18 below-20 item (@coordinator-opus, 2026-11-01): consecutive entries of one author,
+    /// each naming the one before it, signed once, on the top entry (option 2: the prev links
+    /// authenticate the rest; design 10.8). On the wire an entry's `prev` inside the run is left out
+    /// (the receiver links them); with `lean` (option 1) so is the first entry's `prev`, and with
+    /// `heads` every ack's head ids, which the receiver rebuilds from what it holds. A fetch reply
+    /// never leaves out heads: the requester states only what it holds of the author's chain. Only the top entry's signature
+    /// travels, and only if `signed`: an unsigned run is a hole-fill reply to a member that holds a
+    /// later entry of the author, which authenticates it ([`WorldSim::insert_run`]). In process the
+    /// sender keeps every entry's own signature (a fault fixture may split the run); decoded, the
+    /// others are zero.
+    Run { lean: bool, heads: bool, signed: bool, entries: Vec<SignedEntry> },
     /// The answer: a state transfer, which the joiner restores only after its checks (P22S-1).
     State(Box<StateTransfer>),
 }
+
+/// [`Msg::Fetch`]'s `held`: the requester holds the author's entry `from - 1`, so the reply may be
+/// lean (its first `prev` and its acks' heads rebuilt by the requester).
+pub const HELD_BELOW: u8 = 1;
+/// The requester holds (or holds waiting) a later entry of the author that names the top of the range
+/// through its prev links, so the reply needs no signature.
+pub const HELD_ABOVE: u8 = 2;
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -344,13 +406,13 @@ impl Wr {
         for x in a { self.u8(x.rel.tag()); self.u32(x.with); self.sig(&x.sig_with); self.sig(&x.sig_joiner) }
     }
     pub(super) fn entry(&mut self, e: &Entry) {
-        self.entry_opt(e, false)
+        self.entry_opt(e, false, false)
     }
-    /// `lean`: without the rebuilt ids ([`Msg::Lean`]).
-    pub(super) fn entry_opt(&mut self, e: &Entry, lean: bool) {
+    /// Without `prev`, or without an ack's head ids ([`Msg::Run`]).
+    pub(super) fn entry_opt(&mut self, e: &Entry, no_prev: bool, no_heads: bool) {
         self.u32(e.member);
         self.u32(e.seq);
-        if !lean {
+        if !no_prev {
             self.id(e.prev);
         }
         self.u64(e.stamp);
@@ -362,8 +424,24 @@ impl Wr {
                 self.u8(if more.is_empty() { 2 } else { 21 });
                 self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
                 if !more.is_empty() {
+                    // Thin links, Part A (the spike's 11c20c1): a pack's extra targets as deltas from the
+                    // previous target, in the narrowest width that holds every axis of every step
+                    // ([`pack_delta_mode`]: 1 i8, 2 i16, 0 whole i32). A stride-8 pack falls by 62 bytes.
                     self.u8(more.len() as u8);
-                    for t in more { for c in t { self.i32(*c) } }
+                    let mode = pack_delta_mode(target_mm, more);
+                    self.u8(mode);
+                    let mut prev = *target_mm;
+                    for t in more {
+                        for i in 0..3 {
+                            let d = t[i].wrapping_sub(prev[i]);
+                            match mode {
+                                1 => self.u8(d as i8 as u8),
+                                2 => self.0.extend_from_slice(&(d as i16).to_le_bytes()),
+                                _ => self.i32(t[i]),
+                            }
+                        }
+                        prev = *t;
+                    }
                 }
             }
             Payload::Depart { obj, dest, deadline, hop } => {
@@ -387,7 +465,7 @@ impl Wr {
                 self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads {
                     self.u32(*q); self.u32(*s);
-                    if !lean { self.id(*id) }
+                    if !no_heads { self.id(*id) }
                 }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.0.extend_from_slice(&h.0) } None => self.u8(0) }
                 if *epoch != 0 { self.u32(*epoch) }
@@ -472,8 +550,26 @@ impl Wr {
     pub fn msg(&mut self, m: &Msg) {
         match m {
             Msg::Entry(e) => { self.u8(1); self.entry(e); self.0.extend_from_slice(&e.sig) }
-            Msg::Lean(e) => { self.u8(12); self.entry_opt(e, true); self.0.extend_from_slice(&e.sig) }
-            Msg::Fetch { author, from, to } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
+            Msg::Run { lean, heads, signed, entries } => {
+                assert!(!entries.is_empty() && entries.len() <= 255, "a run holds 1 to 255 entries");
+                self.u8(12);
+                self.u8(*lean as u8 | (*signed as u8) << 1 | (*heads as u8) << 2);
+                self.u8(entries.len() as u8);
+                let n = entries.len();
+                for (i, e) in entries.iter().enumerate() {
+                    self.entry_opt(e, i > 0 || *lean, *heads);
+                    // Review O2-1 (4): a view-change or admin entry carries its own signature inside the
+                    // run (the signed top's comes once, at the end).
+                    if e.payload.signs_itself() && !(*signed && i + 1 == n) {
+                        self.0.extend_from_slice(&e.sig);
+                    }
+                }
+                if *signed {
+                    self.0.extend_from_slice(&entries.last().expect("non-empty").sig);
+                }
+            }
+            Msg::Fetch { author, from, to, held: 0 } => { self.u8(3); self.u32(*author); self.u32(*from); self.u32(*to) }
+            Msg::Fetch { author, from, to, held } => { self.u8(13); self.u32(*author); self.u32(*from); self.u32(*to); self.u8(*held) }
             Msg::Batch(v) => { self.u8(4); self.u32(v.len() as u32); for m in v { self.msg(m) } }
             Msg::FetchValue { value } => { self.u8(5); self.u64(*value) }
             Msg::Join { member, attests, sig, expires } => {
@@ -579,12 +675,12 @@ impl<'a> Rd<'a> {
         Some(BodyState(s))
     }
     pub(super) fn entry(&mut self) -> Option<Entry> {
-        self.entry_opt(false)
+        self.entry_opt(false, false)
     }
-    pub(super) fn entry_opt(&mut self, lean: bool) -> Option<Entry> {
+    pub(super) fn entry_opt(&mut self, no_prev: bool, no_heads: bool) -> Option<Entry> {
         let member = self.u32()?;
         let seq = self.u32()?;
-        let prev = if lean { EntryId::NONE } else { self.id()? };
+        let prev = if no_prev { EntryId::NONE } else { self.id()? };
         let stamp = self.u64()?;
         let payload = match self.u8()? {
             1 => Payload::Touch { obj: self.u32()?, impulse: [self.f32()?, self.f32()?, self.f32()?], grab: self.u8()? != 0 },
@@ -597,8 +693,25 @@ impl<'a> Rd<'a> {
                     if n == 0 || n + 1 > PACK_MAX {
                         return None;
                     }
+                    let mode = self.u8()?;
+                    let mut prev = target_mm;
                     for _ in 0..n {
-                        more.push([self.i32()?, self.i32()?, self.i32()?]);
+                        let mut t = [0i32; 3];
+                        for (i, c) in t.iter_mut().enumerate() {
+                            *c = match mode {
+                                1 => prev[i].wrapping_add(self.u8()? as i8 as i32),
+                                2 => prev[i].wrapping_add(i16::from_le_bytes(self.take(2)?.try_into().ok()?) as i32),
+                                0 => self.i32()?,
+                                _ => return None,
+                            };
+                        }
+                        more.push(t);
+                        prev = t;
+                    }
+                    // Only the narrowest width has a canonical encoding: any other is refused, so an entry
+                    // has one encoding on the wire (the spike decodes any).
+                    if mode != pack_delta_mode(&target_mm, &more) {
+                        return None;
                     }
                 }
                 Payload::Hand { obj, target_mm, active, span, more }
@@ -624,7 +737,7 @@ impl<'a> Rd<'a> {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
-                for _ in 0..n { heads.push((self.u32()?, self.u32()?, if lean { EntryId::NONE } else { self.id()? })) }
+                for _ in 0..n { heads.push((self.u32()?, self.u32()?, if no_heads { EntryId::NONE } else { self.id()? })) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, CheckHash(self.take(32)?.try_into().ok()?))) } else { None };
                 let epoch = if tag == 14 { self.u32()? } else { 0 };
                 Payload::Ack { horizon, heads, check, epoch }
@@ -729,8 +842,35 @@ impl<'a> Rd<'a> {
     fn msg_in(&mut self, in_batch: bool) -> Option<Msg> {
         Some(match self.u8()? {
             1 => Msg::Entry(SignedEntry { entry: self.entry()?, sig: self.take(64)?.try_into().ok()? }),
-            12 => Msg::Lean(SignedEntry { entry: self.entry_opt(true)?, sig: self.take(64)?.try_into().ok()? }),
-            3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()? },
+            12 => {
+                let flags = self.u8()?;
+                let (lean, signed, heads) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+                if flags > 7 {
+                    return None;
+                }
+                let n = self.u8()? as usize;
+                if n == 0 {
+                    return None;
+                }
+                let mut entries = Vec::with_capacity(n);
+                for i in 0..n {
+                    let entry = self.entry_opt(i > 0 || lean, heads)?;
+                    let sig = if entry.payload.signs_itself() && !(signed && i + 1 == n) { self.take(64)?.try_into().ok()? } else { [0; 64] };
+                    entries.push(SignedEntry { entry, sig });
+                }
+                if signed {
+                    entries.last_mut().expect("n > 0").sig = self.take(64)?.try_into().ok()?;
+                }
+                // Entries past the first are of the same author, one seq apart; their prev links are
+                // the receiver's to fill.
+                let (m, s0) = (entries[0].member, entries[0].seq);
+                if entries.iter().enumerate().any(|(i, e)| e.member != m || e.seq as u64 != s0 as u64 + i as u64) {
+                    return None;
+                }
+                Msg::Run { lean, heads, signed, entries }
+            }
+            3 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()?, held: 0 },
+            13 => Msg::Fetch { author: self.u32()?, from: self.u32()?, to: self.u32()?, held: self.u8()? },
             4 if !in_batch => {
                 let n = self.u32()? as usize;
                 let mut v = Vec::with_capacity(n.min(256));

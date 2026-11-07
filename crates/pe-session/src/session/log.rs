@@ -103,9 +103,65 @@ impl WorldSim {
         self.by_author.get(&(member, seq)).copied()
     }
 
-    /// The entry `id` with its author's signature, for relaying.
+    /// The entry `id` with its author's signature on it, if this member holds one (its own entries,
+    /// and entries that came signed; option 2: the others are covered by a later entry's: `run_of`).
     pub fn signed_entry(&self, id: EntryId) -> Option<SignedEntry> {
-        self.entries.get(&id).map(|e| self.signed(e.clone()))
+        let sig = *self.sigs.get(&id)?;
+        self.entries.get(&id).map(|e| SignedEntry { entry: e.clone(), sig })
+    }
+
+    /// Entry `id` and its author's entries above it up to the first one signed on itself (its cover),
+    /// bottom up: an authenticated run (option 2; design 10.8). The others' signatures are zero.
+    pub fn run_of(&self, id: EntryId) -> Option<Vec<SignedEntry>> {
+        let mut out = Vec::new();
+        let mut cur = id;
+        loop {
+            let e = self.entries.get(&cur)?.clone();
+            if let Some(&sig) = self.sigs.get(&cur) {
+                out.push(SignedEntry { entry: e, sig });
+                return Some(out);
+            }
+            out.push(SignedEntry { entry: e, sig: [0; 64] });
+            cur = *self.run_next.get(&cur)?;
+            if out.len() >= Self::RUN_MAX {
+                return None;
+            }
+        }
+    }
+
+    /// [`Self::run_of`]'s length, without building it.
+    fn run_len(&self, id: EntryId) -> Option<usize> {
+        let mut cur = id;
+        for n in 1..=Self::RUN_MAX {
+            if !self.entries.contains_key(&cur) {
+                return None;
+            }
+            if self.sigs.contains_key(&cur) {
+                return Some(n);
+            }
+            cur = *self.run_next.get(&cur)?;
+        }
+        None
+    }
+
+    /// The message that relays entry `id` with its authentication: the entry if it is signed on
+    /// itself, else its run up to its cover (explicit).
+    pub fn relay(&self, id: EntryId) -> Option<Msg> {
+        let mut run = self.run_of(id)?;
+        Some(if run.len() == 1 { Msg::Entry(run.pop().expect("one")) } else { Msg::Run { lean: false, heads: false, signed: true, entries: run } })
+    }
+
+    pub(super) fn relay_all(&self, v: Vec<Entry>) -> Vec<Msg> {
+        v.iter().filter_map(|e| self.relay(e.id())).collect()
+    }
+
+    /// One run, or the entry alone if it is a single entry signed on itself and not lean.
+    pub(super) fn run_msg(mut run: Vec<SignedEntry>, lean: bool, signed: bool) -> Msg {
+        if run.len() == 1 && signed && !lean {
+            Msg::Entry(run.pop().expect("one"))
+        } else {
+            Msg::Run { lean, heads: false, signed, entries: run }
+        }
     }
 
     /// Author an entry at the current frame. With `carry`, the entry carries the touched object's
@@ -242,13 +298,13 @@ impl WorldSim {
         // noted.
         self.busy_stamp.is_none_or(|s| s < self.conf)
             && self.hold_horizon_below.is_none()
-            && self.lean_wait.values().all(|w| matches!(w.se.payload, Payload::Ack { .. }))
+            && self.lean_wait.values().all(|w| w.entries.iter().all(|e| matches!(e.payload, Payload::Ack { .. })))
     }
 
     /// Store a received or fetched entry, once its signature verifies (S3; a bad one is dropped and
     /// counted). Returns entries to broadcast: when it proves equivocation, both versions and this
     /// member's vote.
-    pub fn insert(&mut self, se: SignedEntry) -> Vec<SignedEntry> {
+    pub fn insert(&mut self, se: SignedEntry) -> Vec<Msg> {
         let id = se.id();
         if self.entries.contains_key(&id) {
             return vec![];
@@ -257,7 +313,7 @@ impl WorldSim {
             self.stats.bad_sigs += 1;
             return vec![];
         }
-        self.insert_verified(se)
+        self.insert_auth(se.entry, Auth::Sig(se.sig))
     }
 
     /// Whether this member's own entry `e` goes to `p` lean: always, unless it is an ack naming
@@ -274,36 +330,62 @@ impl WorldSim {
     }
     pub const LEAN_HEAD_SLACK: u32 = 32;
 
-    /// Whether a lean entry of `member` at `seq` is waiting for an entry it names.
+    /// Whether a lean entry of `member` at `seq` is waiting (in a run) for an entry it names.
     pub fn lean_waiting(&self, member: MemberId, seq: u32) -> bool {
-        self.lean_wait.contains_key(&(member, seq))
+        self.lean_wait.range((member, 0)..=(member, seq)).next_back().is_some_and(|(k, w)| k.1 + w.entries.len() as u32 > seq)
     }
 
-    /// At most this many lean entries wait for entries they name.
+    /// At most this many runs wait for entries they name.
     const LEAN_WAIT_MAX: usize = 1024;
-    /// A lean entry waits this long before its explicit form is asked for too: well inside half the
+    /// A run waits this long before its signed, explicit form is asked for too: well inside half the
     /// speculation window (condition (c)); a hole or a head in flight usually arrives sooner.
     pub const LEAN_HOLD_FRAMES: u64 = 15;
+    /// The longest run (its count is one byte on the wire).
+    pub const RUN_MAX: usize = 255;
 
-    /// A lean entry from `from` ([`Msg::Lean`]): rebuild its ids from what this member holds, verify,
-    /// insert. One that names an entry this member does not hold yet (its author's previous entry,
-    /// or an ack's head) waits for it, and asks for it as an explicit entry would (the hole from all,
-    /// a head from the acker, who holds it). One still missing a head after
-    /// [`Self::LEAN_HOLD_FRAMES`] also asks the sender for its explicit form. One whose rebuilt form does not verify (this member holds another
-    /// version: a fork) is fetched explicit from the sender at once, so the explicit path sees what it
-    /// would have seen (review conditions (b) and (c), @engine-architect, 2026-11-01).
-    pub fn insert_lean(&mut self, from: MemberId, se: SignedEntry) -> Vec<SignedEntry> {
-        self.stats.lean_in += 1;
-        let (m, seq) = (se.member, se.seq);
-        let (prev_missing, heads_missing) = self.lean_missing(&se);
-        if !prev_missing && heads_missing.is_empty() {
-            return self.insert_rebuilt(from, se);
-        }
-        if m != self.me && self.known.contains(&m) {
-            if prev_missing {
-                let c = self.contiguous.get(&m).copied().unwrap_or(0);
-                self.want_all(m, c + 1, seq - 1);
+    /// A run from `from` ([`Msg::Run`]): consecutive entries of one author, signed on the top one (or
+    /// unsigned: a hole-fill reply). Rebuild what the wire left out, verify, insert. A run that names
+    /// an entry this member does not hold (its author's entry below it, or an ack's head) waits for
+    /// it and asks for it (the hole from all, a head from the acker, who holds it); an unsigned one
+    /// waits for the entry above it that authenticates it. One still missing a head, or still
+    /// unauthenticated, after [`Self::LEAN_HOLD_FRAMES`] also asks the sender for its signed, explicit
+    /// form. One whose rebuilt form does not verify (this member holds another version: a fork) is
+    /// fetched that way at once, so the explicit path sees what it would have seen (review conditions
+    /// (b) and (c), @engine-architect, 2026-11-01).
+    pub fn insert_run(&mut self, from: MemberId, lean: bool, heads: bool, signed: bool, entries: Vec<SignedEntry>) -> Vec<Msg> {
+        let Some(top) = entries.last() else { return vec![] };
+        let sig = signed.then_some(top.sig);
+        let (m, s0) = (entries[0].member, entries[0].seq);
+        self.note_answer(from, m, s0);
+        // O2-1: a view-change or admin entry must carry its own signature in the run (verified once its
+        // ids are rebuilt); one without it is refused and the range asked for again from the sender.
+        let n = entries.len();
+        let own: Vec<Option<Sig>> =
+            entries.iter().enumerate().map(|(i, e)| (e.entry.payload.signs_itself() && !(signed && i + 1 == n)).then_some(e.sig)).collect();
+        if own.iter().any(|s| s.is_some_and(|s| s == [0; 64])) {
+            self.stats.covered_refused += 1;
+            if m != self.me {
+                self.want_from(from, m, s0, s0 + n as u32 - 1);
             }
+            return vec![];
+        }
+        if lean || heads {
+            self.stats.lean_in += entries.len() as u64;
+        }
+        let w = LeanWait {
+            from,
+            first_prev: !lean,
+            lean_heads: heads,
+            entries: entries.into_iter().map(|e| e.entry).collect(),
+            own,
+            sig,
+            since: self.now,
+            asked: false,
+            asked_all: false,
+        };
+        let (prev_missing, heads_missing) = self.lean_missing(&w);
+        let wants_gap = m != self.me && self.known.contains(&m) && (prev_missing || sig.is_none());
+        if m != self.me && self.known.contains(&m) {
             for (q, s) in heads_missing {
                 if q != self.me {
                     let c = self.contiguous.get(&q).copied().unwrap_or(0);
@@ -317,120 +399,277 @@ impl WorldSim {
                 self.heard.insert(m, self.now);
             }
         }
-        // Design 7.6's idle predicate counts waiting entries without trusting their stamps (`idle`,
-        // review LN-2).
-        self.lean_wait.insert((m, seq), LeanWait { from, se, since: self.now, asked: false });
-        // Bounded: the longest-waiting entries go first (review LN-3; the hole fetch brings them back
-        // explicit).
+        // Design 7.6's idle predicate counts waiting runs without trusting their stamps (`idle`,
+        // review LN-2). A newer copy of a run already waiting replaces it.
+        self.lean_wait.insert((m, s0), w);
         while self.lean_wait.len() > Self::LEAN_WAIT_MAX {
             let oldest = *self.lean_wait.iter().min_by_key(|(k, w)| (w.since, **k)).map(|(k, _)| k).expect("non-empty");
             self.lean_wait.remove(&oldest);
         }
-        vec![]
+        if wants_gap {
+            // The hole rule (option 2): the missing entries from everyone, and the whole range from the
+            // author's verified prefix, held entries included, from the sender. Answers to the whole
+            // range bring any other version of a held entry, a fork's proof (triage group L). A sender
+            // that is the forker, or that withholds the other version, cannot stop that: a run still
+            // waiting after LEAN_HOLD_FRAMES asks everyone for the whole range (resolve_lean), as
+            // option 1 did at once.
+            self.want_gap(m, from);
+            if sig.is_some() && m != self.me {
+                let c = self.contiguous.get(&m).copied().unwrap_or(0);
+                self.want_from(from, m, c + 1, s0 - 1);
+            }
+        }
+        self.resolve_lean()
     }
 
-    /// What a lean entry names that this member does not hold: its author's previous entry, and the
-    /// (q, s) of each ack head.
-    fn lean_missing(&self, se: &Entry) -> (bool, Vec<(MemberId, u32)>) {
-        let prev = se.seq > 1 && !self.by_author.contains_key(&(se.member, se.seq - 1));
-        let heads = match &se.payload {
-            Payload::Ack { heads, .. } => heads.iter().filter(|&&(q, s, _)| s > 0 && !self.by_author.contains_key(&(q, s))).map(|&(q, s, _)| (q, s)).collect(),
-            _ => Vec::new(),
-        };
+    /// Ask for `m`'s first missing range: from its verified prefix up past the runs that wait, to
+    /// below the next entry held or waiting. The requester holds what is above the range (waiting,
+    /// or verified past a hole), so the reply needs no signature; and it may be lean if the requester
+    /// holds the entry below verified.
+    fn want_gap(&mut self, m: MemberId, sender: MemberId) {
+        // Review O2-3: every gap up to the newest waiting or held entry, not only the first. Under loss
+        // several holes are open at once, and asking one per round trip made a 10 %-loss wait several
+        // round trips long. Bounded per call; each gap has its own backoff (`take_fetches`). The first gap
+        // is asked of everyone, the later ones of the sender only (with every gap of every author asked of
+        // every member, vcscale's 256 members took 3.7 times as long); the fallback still asks everyone.
+        let known: Vec<MemberId> = self.known.iter().copied().collect();
+        let mut s = self.contiguous.get(&m).copied().unwrap_or(0) + 1;
+        let mut below_verified = true;
+        let mut first = true;
+        for _ in 0..if self.congested { 1 } else { Self::GAPS_MAX } {
+            loop {
+                if self.by_author.contains_key(&(m, s)) {
+                    s += 1;
+                    below_verified = true;
+                } else if let Some(x) = self.lean_wait.get(&(m, s)) {
+                    s += x.entries.len() as u32;
+                    below_verified = false;
+                } else {
+                    break;
+                }
+            }
+            let waiting = self.lean_wait.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
+            let held = self.by_author.range((m, s)..=(m, u32::MAX)).next().map(|(k, _)| k.1);
+            let Some(end) = [waiting, held].into_iter().flatten().min() else { return };
+            let mut bits = 0;
+            if self.lean_wire && below_verified {
+                bits |= HELD_BELOW;
+            }
+            // Review O2-4: an unsigned answer is covered by the entry above it, so it is asked for only
+            // if the chain from the hole up to that entry's own cover fits one run (`run_of` stays whole
+            // for relays and proofs). A waiting run above is joined within RUN_MAX (`resolve_lean`).
+            let fits = held != Some(end)
+                || self.by_author.get(&(m, end)).and_then(|id| self.run_len(*id)).is_some_and(|n| n + (end - s) as usize <= Self::RUN_MAX);
+            if self.run_wire && fits {
+                bits |= HELD_ABOVE;
+            }
+            if first {
+                for &j in &known {
+                    self.want_from_held(j, m, s, end - 1, bits);
+                }
+            } else if sender != self.me {
+                self.want_from_held(sender, m, s, end - 1, bits);
+            }
+            first = false;
+            s = end;
+        }
+    }
+
+    /// At most this many gaps of one author are asked for per call ([`Self::want_gap`]).
+    pub const GAPS_MAX: usize = 8;
+
+    /// What a waiting run names that this member does not hold: its author's entry below it (when
+    /// left out), and the (q, s) of each ack head left out.
+    fn lean_missing(&self, w: &LeanWait) -> (bool, Vec<(MemberId, u32)>) {
+        let e0 = &w.entries[0];
+        let prev = !w.first_prev && e0.seq > 1 && !self.by_author.contains_key(&(e0.member, e0.seq - 1));
+        let mut heads = Vec::new();
+        if w.lean_heads {
+            for e in &w.entries {
+                if let Payload::Ack { heads: hs, .. } = &e.payload {
+                    heads.extend(hs.iter().filter(|&&(q, s, _)| s > 0 && !self.by_author.contains_key(&(q, s))).map(|&(q, s, _)| (q, s)));
+                }
+            }
+        }
         (prev, heads)
     }
 
-    /// Lean entries whose missing entries have arrived since; and, for those still waiting past
-    /// [`Self::LEAN_HOLD_FRAMES`] on a head, a request for their explicit form. Called on every
-    /// receipt and tick.
-    pub fn resolve_lean(&mut self) -> Vec<SignedEntry> {
+    /// Whether a waiting run is authenticated: signed, or its author's entry above it is held.
+    fn lean_authenticated(&self, w: &LeanWait) -> bool {
+        let top = w.entries.last().expect("non-empty");
+        w.sig.is_some() || self.by_author.contains_key(&(top.member, top.seq + 1))
+    }
+
+    /// Waiting runs that can go in now; unsigned runs joined to the run above them; and, for runs
+    /// still waiting past [`Self::LEAN_HOLD_FRAMES`] on a head or on authentication, a request for
+    /// their signed, explicit form. Called on every receipt and tick. Returns what to broadcast.
+    pub fn resolve_lean(&mut self) -> Vec<Msg> {
         let mut out = Vec::new();
         loop {
-            let ready: Vec<(MemberId, u32)> = self
-                .lean_wait
-                .iter()
-                .filter(|(_, w)| {
-                    let (p, h) = self.lean_missing(&w.se);
-                    !p && h.is_empty()
-                })
-                .map(|(k, _)| *k)
-                .collect();
-            if ready.is_empty() {
+            let mut progress = false;
+            let keys: Vec<(MemberId, u32)> = self.lean_wait.keys().copied().collect();
+            for k in keys {
+                let Some(w) = self.lean_wait.get(&k) else { continue };
+                let (p, h) = self.lean_missing(w);
+                if !p && h.is_empty() && self.lean_authenticated(w) {
+                    let w = self.lean_wait.remove(&k).expect("listed");
+                    if w.since < self.now {
+                        self.stats.lean_waited += w.entries.len() as u64;
+                        self.stats.lean_wait_frames += (self.now - w.since) * w.entries.len() as u64;
+                        self.stats.lean_wait_max = self.stats.lean_wait_max.max(self.now - w.since);
+                    }
+                    out.extend(self.insert_rebuilt(w));
+                    progress = true;
+                    continue;
+                }
+                // An unsigned run is authenticated by the run above it: join them.
+                if w.sig.is_none() {
+                    let top = w.entries.last().expect("non-empty");
+                    let up = (top.member, top.seq + 1);
+                    let n = w.entries.len();
+                    if self.lean_wait.get(&up).is_some_and(|u| u.entries.len() + n <= Self::RUN_MAX) {
+                        let u = self.lean_wait.remove(&up).expect("checked");
+                        let w = self.lean_wait.get_mut(&k).expect("listed");
+                        w.entries.extend(u.entries);
+                        w.own.extend(u.own);
+                        w.sig = u.sig;
+                        w.from = u.from;
+                        w.lean_heads |= u.lean_heads;
+                        w.since = w.since.min(u.since);
+                        w.asked = false;
+                        progress = true;
+                    }
+                }
+            }
+            if !progress {
                 break;
             }
-            for k in ready {
-                let w = self.lean_wait.remove(&k).expect("listed");
-                self.stats.lean_waited += 1;
-                self.stats.lean_wait_frames += self.now.saturating_sub(w.since);
-                self.stats.lean_wait_max = self.stats.lean_wait_max.max(self.now.saturating_sub(w.since));
-                out.extend(self.insert_rebuilt(w.from, w.se));
-            }
         }
-        // Only for a head this member still lacks: a missing previous entry is already asked for, and
-        // the explicit form could not extend the chain past it either (extend_chain). Review LN-1
-        // (ruled 2026-11-01): no fallback for a hole; on a link that keeps up the wait is one refetch,
-        // and on a saturated one the explicit form only adds bytes (docs/p2-3-r18-bytes.md).
+        // A missing entry below is already asked for, and the explicit form could not extend the
+        // chain past it either (extend_chain); only a missing head or authentication falls back.
+        // Review LN-1 (ruled 2026-11-01): no fallback for a hole; on a link that keeps up the wait is
+        // one refetch, and on a saturated one the explicit form only adds bytes (docs/p2-3-r18-bytes.md).
         let now = self.now;
         let late: Vec<(MemberId, u32)> = self
             .lean_wait
             .iter()
-            .filter(|(_, w)| !w.asked && now >= w.since + Self::LEAN_HOLD_FRAMES && !self.lean_missing(&w.se).1.is_empty())
+            .filter(|(_, w)| !w.asked && now >= w.since + Self::LEAN_HOLD_FRAMES && (!self.lean_missing(w).1.is_empty() || !self.lean_authenticated(w)))
             .map(|(k, _)| *k)
             .collect();
-        let due: Vec<(MemberId, MemberId, u32)> = late
-            .into_iter()
-            .map(|k| {
-                let w = self.lean_wait.get_mut(&k).expect("listed");
-                w.asked = true;
-                (w.from, w.se.member, w.se.seq)
-            })
-            .collect();
-        for (from, m, seq) in due {
+        for k in late {
+            let w = self.lean_wait.get_mut(&k).expect("listed");
+            w.asked = true;
+            let (from, top) = (w.from, w.entries.last().expect("non-empty").seq);
             self.stats.lean_fallbacks += 1;
-            self.want_from(from, m, seq, seq);
+            self.want_from_held(from, k.0, k.1, top, 0);
+        }
+        // The hole rule's fallback: a run still waiting on its author's entry below after the hold
+        // asks everyone, once, for the whole range from the verified prefix.
+        let hole_rule = self.fixes_off & fix::HOLE == 0;
+        let hold = self.hole_hold();
+        let stuck: Vec<(MemberId, u32)> = self
+            .lean_wait
+            .iter()
+            .filter(|(k, w)| hole_rule && !w.asked_all && k.0 != self.me && now >= w.since + hold && self.lean_missing(w).0)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in stuck {
+            self.lean_wait.get_mut(&k).expect("listed").asked_all = true;
+            let c = self.contiguous.get(&k.0).copied().unwrap_or(0);
+            self.want_all(k.0, c + 1, k.1 - 1);
         }
         out
     }
 
-    fn insert_rebuilt(&mut self, from: MemberId, mut se: SignedEntry) -> Vec<SignedEntry> {
-        let (m, seq) = (se.member, se.seq);
-        let mut ok = true;
-        se.entry.prev = if seq <= 1 { EntryId::NONE } else { self.by_author.get(&(m, seq - 1)).copied().unwrap_or(EntryId::NONE) };
-        if let Payload::Ack { heads, .. } = &mut se.entry.payload {
-            for (q, s, id) in heads.iter_mut() {
-                match self.by_author.get(&(*q, *s)) {
-                    Some(&h) => *id = h,
-                    None if *s == 0 => *id = EntryId::NONE,
-                    None => ok = false,
+    /// Rebuild a run's ids from what this member holds, link its entries, verify, and insert it.
+    fn insert_rebuilt(&mut self, mut w: LeanWait) -> Vec<Msg> {
+        let (m, s0) = (w.entries[0].member, w.entries[0].seq);
+        let top_seq = w.entries.last().expect("non-empty").seq;
+        if !w.first_prev {
+            w.entries[0].prev = if s0 <= 1 { EntryId::NONE } else { self.by_author[&(m, s0 - 1)] };
+        }
+        if w.lean_heads {
+            for e in w.entries.iter_mut() {
+                if let Payload::Ack { heads, .. } = &mut e.payload {
+                    for (q, s, id) in heads.iter_mut() {
+                        *id = if *s == 0 { EntryId::NONE } else { self.by_author[&(*q, *s)] };
+                    }
                 }
             }
         }
-        let id = se.id();
-        if ok && self.entries.contains_key(&id) {
-            return vec![];
+        let mut ids: Vec<EntryId> = Vec::with_capacity(w.entries.len());
+        for i in 0..w.entries.len() {
+            if i > 0 {
+                w.entries[i].prev = ids[i - 1];
+            }
+            ids.push(w.entries[i].id());
         }
-        if !ok || !self.keys.verify(self.world_id, &se) {
+        let top_id = *ids.last().expect("non-empty");
+        let above = self.by_author.get(&(m, top_seq + 1)).copied();
+        let ok = match w.sig {
+            Some(sig) => self.keys.verify(self.world_id, &SignedEntry { entry: w.entries.last().expect("non-empty").clone(), sig }),
+            None => above.and_then(|a| self.entries.get(&a)).is_some_and(|e| e.prev == top_id),
+        } && w.own.iter().zip(&w.entries).zip(&ids).all(|((s, e), id)| {
+            // A copy already held signed on itself needs no second check (votes arrive from many holders).
+            s.is_none_or(|sig| self.sigs.contains_key(id) || self.keys.verify(self.world_id, &SignedEntry { entry: e.clone(), sig }))
+        });
+        if !ok {
             self.stats.lean_fallbacks += 1;
-            self.want_from(from, m, seq, seq);
-            // Most likely its author holds another version of seq - 1 (a fork): ask everyone for
-            // theirs now, as the explicit form would make this member ask (extend_chain), so the
+            self.want_from_held(w.from, m, s0, top_seq, 0);
+            // Most likely its author holds another version of the entry below (a fork): ask everyone
+            // for theirs now, as the explicit form would make this member ask (extend_chain), so the
             // proof does not wait a round trip more.
-            if ok && seq > 1 && m != self.me {
-                self.want_all(m, seq - 1, seq - 1);
+            if !w.first_prev && s0 > 1 && m != self.me {
+                self.want_all(m, s0 - 1, s0 - 1);
             }
             return vec![];
         }
-        self.insert_verified(se)
+        let mut out = Vec::new();
+        let n = w.entries.len();
+        let own = std::mem::take(&mut w.own);
+        for (i, e) in w.entries.into_iter().enumerate() {
+            let auth = if let Some(sig) = own.get(i).copied().flatten() {
+                Auth::Sig(sig)
+            } else if i + 1 < n {
+                Auth::Next(ids[i + 1])
+            } else {
+                match w.sig {
+                    Some(sig) => Auth::Sig(sig),
+                    None => Auth::Next(above.expect("authenticated by the entry above")),
+                }
+            };
+            out.extend(self.insert_auth(e, auth));
+        }
+        out
     }
 
-    fn insert_verified(&mut self, se: SignedEntry) -> Vec<SignedEntry> {
-        let id = se.id();
-        self.sigs.insert(id, se.sig);
-        let out = self.insert_entry(se.entry);
+    /// Store an authenticated entry: signed on itself, or covered by the next entry of its run.
+    fn insert_auth(&mut self, e: Entry, auth: Auth) -> Vec<Msg> {
+        let id = e.id();
+        let had = self.entries.contains_key(&id);
+        match auth {
+            Auth::Sig(sig) => {
+                // Review O2-5: a signature already held stays. Only verified signatures are stored, and
+                // `insert_rebuilt` skips the check of an own signature for an id held signed, so a
+                // replayed run must not replace a good one with the unchecked copy it carries.
+                self.sigs.entry(id).or_insert(sig);
+                self.run_next.remove(&id);
+            }
+            Auth::Next(n) => {
+                if !self.sigs.contains_key(&id) {
+                    self.run_next.entry(id).or_insert(n);
+                }
+            }
+        }
+        if had {
+            return vec![];
+        }
+        let out = self.insert_entry(e);
         if !self.entries.contains_key(&id) {
             self.sigs.remove(&id);
+            self.run_next.remove(&id);
         }
-        self.signed_all(out)
+        self.relay_all(out)
     }
 
     /// Store an entry whose signature is verified, or this replica's own.
@@ -460,12 +699,6 @@ impl WorldSim {
             self.disputed.insert(id);
             // Another version of a proposal still names a value someone may decide (P2-4).
             self.note_proposal(id);
-            // Review VC4R-1: another version of a prevote may be the one a capped precommit counted.
-            if let Payload::Prevote { epoch, round, value } = e.payload {
-                if epoch == self.vcm.epoch && self.vcm.members.contains(&e.member) {
-                    self.vcm.vc.any_prevotes.entry((round, value)).or_default().insert(e.member);
-                }
-            }
             let mut out = vec![self.entries[&other].clone(), e.clone()];
             out.extend(self.on_proof(e.member, e.seq, other, id));
             // Review VC-2: the version a removed member's cut names may arrive as a duplicate.
@@ -632,10 +865,6 @@ impl WorldSim {
                     // word on q's chain in this epoch; later references never count toward stability.
                     if self.membership().voted_against(m, q) {
                         continue;
-                    }
-                    let newer = self.refs.get(&(m, q)).and_then(|r| r.keys().next_back()).is_none_or(|&old| s > old);
-                    if newer {
-                        self.vcm.ref_advanced.insert((m, q), self.now);
                     }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
                 }

@@ -1,12 +1,17 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 8 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   per message      | 111.6 /  37.9 |  500 /  500 | 1473 | 1538 / 1542 | 1658 / 1662 | 0 (own entries moved: 0) |  4.6/s,  21 | never | m1 032628d2e1f7e07d / m2 637081a8764751f1 replay 032628d2e1f7e07d DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 37.0 / 13.3 (206 of 222 unconfirmed), m2 37.4 / 15.4 (211 of 222 unconfirmed)
+RESULT   per message      | 114.5 /  43.7 |  500 /  500 | 1652 | 1538 / 1542 | 1658 / 1662 | 0 (own entries moved: 0) |  4.9/s,  30 | never | m1 032628d2e1f7e07d / m2 88133d88778451b0 replay 032628d2e1f7e07d DIFFER
+RESULT     confirmed prefixes (end state DIFFER): each live replica's confirmed frames against a replay of its own log: m1 136 EQUAL, m2 131 EQUAL; the 131 frames all have confirmed, across replicas: EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 29.0 / 12.3 (206 of 222 unconfirmed), m2 11.4 / 9.6 (211 of 222 unconfirmed)
+RESULT     mean confirmation lag per member from the gesture's start, frames: 820.8 / 825.6
 RESULT     member 1's own hand against its target, over 136 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched          | 100.6 /  38.4 |  500 /  500 | 1403 | 1536 / 1539 | 1656 / 1659 | 0 (own entries moved: 0) |  5.5/s,  24 | never | m1 8b469f90fb53845d / m2 4961115f83624ed7 replay 8b469f90fb53845d DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 23.3 / 10.4 (204 of 222 unconfirmed), m2 22.9 / 10.9 (208 of 222 unconfirmed)
-RESULT     member 1's own hand against its target, over 138 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT   batched+adaptive |  35.3 /  19.4 |  499 /  500 |  118 | 1537 / 1539 | 1656 / 1659 | 23 (own entries moved: 0) |  5.5/s,  24 | never | m1 8b469f90fb53845d / m2 4961115f83624ed7 replay 8b469f90fb53845d DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 23.3 / 10.4 (37 of 55 unconfirmed), m2 22.9 / 10.9 (41 of 55 unconfirmed)
-RESULT     member 1's own hand against its target, over 138 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2302, 100, 100, 100, 100, 27200] ms
+RESULT   batched          |  86.3 /  41.6 |  500 /  500 | 1511 | 1532 / 1535 | 1652 / 1655 | 0 (own entries moved: 0) |  6.6/s,  24 | never | m1 3ad7546872f839b5 / m2 60214a4dc87a80f4 replay 3ad7546872f839b5 DIFFER
+RESULT     confirmed prefixes (end state DIFFER): each live replica's confirmed frames against a replay of its own log: m1 142 EQUAL, m2 138 EQUAL; the 138 frames all have confirmed, across replicas: EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 23.2 / 10.1 (200 of 222 unconfirmed), m2 22.7 / 10.4 (204 of 222 unconfirmed)
+RESULT     mean confirmation lag per member from the gesture's start, frames: 814.9 / 818.7
+RESULT     member 1's own hand against its target, over 142 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched+adaptive |  22.3 /  18.1 |  500 /  483 |   23 | 196 / 171 | 298 / 281 | 12 (own entries moved: 0) |  6.6/s, 116 | 2394 ms | m1 bce55bc6941a244b / m2 bce55bc6941a244b replay bce55bc6941a244b EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 298.1 / 106.5, m2 279.6 / 109.9
+RESULT     mean confirmation lag per member from the gesture's start, frames: 47.6 / 44.4
+RESULT     member 1's own hand against its target, over 146 gesture frames: mean 316.26 mm, max 861.69 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2352, 100, 100, 100, 100, 9205, 5234, 5857, 6854] ms

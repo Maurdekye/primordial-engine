@@ -1,4 +1,4 @@
-RESULT bans-session: m1 epoch 4 members {1, 2} view changes 4 (resets 0, highest round 4) | epoch 1 at frame 131 (t=2.28 s) round 0 removed [3]; epoch 2 at frame 166 (t=2.87 s) round 0 removed []; epoch 3 at frame 186 (t=3.20 s) round 0 removed []; epoch 4 at frame 228 (t=3.90 s) round 0 removed [4]
+RESULT bans-session: m1 epoch 4 members {1, 2} view changes 4 (resets 0, highest round 4) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [3]; epoch 2 at frame 166 (t=2.87 s) round 0 removed []; epoch 3 at frame 186 (t=3.20 s) round 0 removed []; epoch 4 at frame 228 (t=3.90 s) round 0 removed [4]
 RESULT bans-session: m2 epoch 4 members {1, 2} view changes 4 (resets 0, highest round 4) | epoch 1 at frame 130 (t=2.27 s) round 0 removed [3]; epoch 2 at frame 166 (t=2.87 s) round 0 removed []; epoch 3 at frame 186 (t=3.20 s) round 0 removed []; epoch 4 at frame 228 (t=3.90 s) round 0 removed [4]
 RESULT bans-session: m1: 2 kicks and bans 3 @120: applied; 2 bans k6 @160: applied; 1 bans (perma) k5 @180: applied; 1 kicks and perma-bans 4 @220: applied
   m1: members {1, 2} roles {1: 0, 2: 0} admins [1, 2] closed at None
@@ -6,6 +6,6 @@ RESULT bans-session: m1: 2 kicks and bans 3 @120: applied; 2 bans k6 @160: appli
 RESULT bans-session: m2: 2 kicks and bans 3 @120: applied; 2 bans k6 @160: applied; 1 bans (perma) k5 @180: applied; 1 kicks and perma-bans 4 @220: applied
   m2: members {1, 2} roles {1: 0, 2: 0} admins [1, 2] closed at None
   m2: session bans {3, 6}, rejoin roles [], perma-bans {4, 5}
-RESULT bans-session: 3 and 4 kicked; 13 (key 3), 14 (key 4), 5 and 6 refused: m1 world 1 conf 461 members {1, 2} evicted {3: (19, 118), 4: (61, 210)} -> OK
-RESULT bans-session: member 2 agrees: m2 world 1 conf 461 members {1, 2} evicted {3: (19, 118), 4: (61, 210)} -> OK
+RESULT bans-session: 3 and 4 kicked; 13 (key 3), 14 (key 4), 5 and 6 refused: m1 world 1 conf 459 members {1, 2} evicted {3: (19, 118), 4: (60, 210)} -> OK
+RESULT bans-session: member 2 agrees: m2 world 1 conf 457 members {1, 2} evicted {3: (19, 118), 4: (60, 210)} -> OK
 RESULT bans-session world 1: frames 0..420 digests m1=c5d11fa2b4960c18 m2=c5d11fa2b4960c18 m5=c5d11fa2b4960c18 m6=c5d11fa2b4960c18 m13=c5d11fa2b4960c18 m14=c5d11fa2b4960c18 | offline replay c5d11fa2b4960c18 | ALL EQUAL

@@ -1,11 +1,11 @@
-RESULT diverged acceptance, uncontended checks: 40/42 equal at that instant and 42/42 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 12
-RESULT diverged acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 50/54 equal to the author's copy at that instant, 52/54 equal to the author's final history
-  differs at that instant: world 1 receiver m1 author m2 obj 50 frame 122; equal to the author's final history: true
+RESULT diverged acceptance, uncontended checks: 24/26 equal at that instant and 26/26 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 9
+RESULT diverged acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 31/35 equal to the author's copy at that instant, 34/35 equal to the author's final history
+  differs at that instant: world 1 receiver m2 author m1 obj 50 frame 122; equal to the author's final history: true
   differs at that instant: world 1 receiver m1 author m2 obj 50 frame 127; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m2 obj 5 frame 332; equal to the author's final history: true
   differs at that instant: world 1 receiver m1 author m2 obj 5 frame 333; equal to the author's final history: true
-  differs at that instant: world 1 receiver m3 author m2 obj 5 frame 333; equal to the author's final history: true
-  m1 world 1: rollbacks 9 max depth 4 resim frames 42 (28.5 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 773
-  m2 world 1: rollbacks 9 max depth 39 resim frames 106 (67.7 ms) overwrites 6 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 774
-  m3 world 1: rollbacks 12 max depth 4 resim frames 53 (31.5 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 757 frame 773
-  bytes: entries 57 msgs 10440 B (avg 183 B), acks 1145 msgs 150064 B, dropped 7
+  m1 world 1: rollbacks 9 max depth 4 resim frames 45 (20.2 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 755 frame 773
+  m2 world 1: rollbacks 8 max depth 38 resim frames 69 (26.7 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 755 frame 774
+  m3 world 1: rollbacks 11 max depth 4 resim frames 49 (19.6 ms) overwrites 4 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 755 frame 773
+  bytes: entries 10 msgs 1572 B (avg 157 B), acks 975 msgs 117454 B, dropped 5
 RESULT diverged world 1: frames 0..700 digests m1=39d9b394f7d30b86 m2=39d9b394f7d30b86 m3=39d9b394f7d30b86 | offline replay 39d9b394f7d30b86 | ALL EQUAL

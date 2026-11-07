@@ -6,3 +6,4 @@
 # P2-3: scenarios of pe-session's harness (scripts/run_session_sim.sh --pe) with no tool behaviour yet.
 grabrace            # S4, D72: grab races (losers first see their grab accepted, then undone)
 p2-3-statejoin      # S5g, 9.5: a joiner restores a state transfer; a tampered one is refused
+p2-4-holeforker     # R18 below 20, option 2: plainfork's fork where the sender asked first is the forker (fix::HOLE)

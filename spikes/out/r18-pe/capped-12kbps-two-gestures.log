@@ -1,7 +1,8 @@
 RESULT r18 capped: 500-ball pit, 2 members, member 1 sweeps, 50+-5 ms one-way, cap 12 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 66 s
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  35.4 /  21.9 |  499 /  496 |  133 | 3689 / 3703 | 3673 / 3745 | 23 (own entries moved: 0) |  6.6/s, 114 | never | m1 1e1e8496f7944751 / m2 1a11098734e6e403 replay 1e1e8496f7944751 DIFFER
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 2467.5 / 741.2 (9 of 56 unconfirmed), m2 1979.9 / 477.7 (18 of 56 unconfirmed)
-RESULT     second gesture (40 s after the first): level at its start 5; max queue ms per member 498 / 103; stalled frames during it 1213 / 1214; back to real time after it never; hand entries' latency (max / mean) m1 none of 30 confirmed, m2 none of 30 confirmed
-RESULT     member 1's own hand against its target, over 147 gesture frames: mean 0.00 mm, max 0.00 mm
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2352, 100, 100, 100, 100, 63150] ms
+RESULT   batched+adaptive |  23.9 /  20.9 |  496 /  473 |   14 |  47 /  28 | 160 / 139 | 38 (own entries moved: 0) |  9.3/s, 112 | 0 ms | m1 d1200a296af2050e / m2 d1200a296af2050e replay d1200a296af2050e EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 160.3 / 50.6, m2 139.7 / 51.4
+RESULT     second gesture (40 s after the first): level at its start 5; max queue ms per member 209 / 0; stalled frames during it 0 / 0; back to real time after it 183 ms; hand entries' latency (max / mean) m1 27.5 / 20.1, m2 31.2 / 16.9
+RESULT     mean confirmation lag per member from the gesture's start, frames: 18.1 / 17.7
+RESULT     member 1's own hand against its target, over 396 gesture frames: mean 161.83 mm, max 861.69 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2435, 100, 100, 100, 100, 58573, 833, 901, 2760] ms

@@ -1,7 +1,8 @@
 description = """
-P2-4 review round 3, VCR-4: from 2 s, while it is a member, 9 signs a capped precommit for no \
-proposal in every epoch it enters, and its acks claim the next epoch. Part 1 runs with VCR-4's fix \
-switched off, part 2 as shipped."""
+P2-4 review round 3, VCR-4: from 2 s, 9 signs a capped precommit for no proposal in every epoch, \
+and its acks claim the next epoch. Since trust survey #4 neither the cap (VC3R-2) nor the climbing \
+acks (VC-5) get 9 voted out: no reset, and confirmation is held until admin 1 kicks 9 at 6 s, \
+which ends it. (Its VCR-4 control is dropped with VC-5's vote.)"""
 include = ["../common/review.toml"]
 end_ms = 14000
 quiet_panics = true
@@ -11,6 +12,15 @@ members = [1, 2, 3, 9]
 
 [world.1.plan]
 1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 700, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+# Trust survey #4: admin 1 kicks 9 at 6 s (listed first, as the spike steps it first).
+[[byzantine]]
+kind = "admin_kick"
+member = 1
+target = 9
+at_ms = 6000
+honest = [1, 2, 3]
+to = [2, 3, 9]
 
 [[byzantine]]
 kind = "fake_ack_epoch"
@@ -29,18 +39,30 @@ every_epoch = true
 while_member_at = 1
 to = [1, 2, 3]
 
-[[part]]
-# Round 4's cap rule (VC3R-2) would vote 9 out as well.
-world.1.fixes_off = ["VCR4", "VC3R2"]
-report = [
-    { kind = "line", text = "  9 removed: {removed@1:9} s; resets {resets@1}" },
-    { kind = "before_fix", honest = [1, 2, 3], label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one)", fix = "VCR-4's fix" },
-]
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3]
+label = "capchurn"
 
-[[part]]
-report = [
-    { kind = "view_changes", honest = [1, 2, 3], label = "capchurn" },
-    { kind = "check", case = "capchurn", label = "capchurn", at = 1, target = 9 },
-    { kind = "confs", honest = [1, 2, 3], label = "capchurn" },
-    { kind = "verdict", honest = [1, 2, 3], label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one)" },
-]
+[[report]]
+kind = "check"
+case = "capchurn"
+label = "capchurn"
+at = 1
+target = 9
+
+[[report]]
+kind = "confs"
+honest = [1, 2, 3]
+label = "capchurn"
+
+[[report]]
+kind = "check"
+case = "admin_kick"
+label = "capchurn"
+honest = [1, 2, 3]
+
+[[report]]
+kind = "verdict"
+honest = [1, 2, 3]
+label = "capchurn (from 2 s, 9 signs a capped precommit for no proposal in every epoch; its acks claim the next one; admin 1 kicks 9 at 6 s)"

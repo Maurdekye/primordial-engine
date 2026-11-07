@@ -106,6 +106,9 @@ pub enum Fate {
 }
 
 pub type Filter = Box<dyn FnMut(u64, WorldId, MemberId, MemberId, &Msg) -> Fate>;
+/// What a scripted fault does to a ping (time, from, to): only faults that apply to every message
+/// on a link reach pings; it has no state, so asking changes nothing (admin indicators, design 10.8).
+pub type PingFilter = Box<dyn Fn(u64, MemberId, MemberId) -> Fate>;
 
 pub struct Net {
     pub now_us: u64,
@@ -115,6 +118,7 @@ pub struct Net {
     pub default_link: Link,
     rng: u64,
     pub filter: Option<Filter>,
+    pub ping_filter: Option<PingFilter>,
     /// (world, kind) -> (messages, payload bytes)
     pub sent: BTreeMap<(WorldId, &'static str), (u64, u64)>,
     pub dropped: u64,
@@ -132,6 +136,10 @@ pub struct Net {
     /// The same bytes by message kind (inside batches too), per sender: (messages, bytes). Batch
     /// framing and the per-datagram overhead are their own kinds, so the kinds sum to `wire_from`.
     pub kinds_from: BTreeMap<(MemberId, &'static str), (u64, u64)>,
+    /// Measurement only (`--by-kind`): each sender's entries by kind, split by part ([`entry_parts`]).
+    pub parts_from: BTreeMap<(MemberId, &'static str), [u64; 6]>,
+    /// The rest of each sender's bytes: message, run and batch framing, and messages other than entries.
+    pub framing_from: BTreeMap<MemberId, u64>,
     /// Measurement only (the R18 below-20 item): bytes the shaper and the counters leave out of each
     /// message, as if the wire omitted fields its receiver could rebuild. Bits: 1 an entry's prev id,
     /// 2 an ack's head ids, 4 an entry's signature, 8 the signature of every entry in a batch but the
@@ -145,18 +153,39 @@ pub struct Net {
     pub trace: Vec<SendRec>,
 }
 
+/// Peers joined while set send no runs (option 2): every entry signed on itself, as on the explicit
+/// wire. For fix-off controls whose bug only the explicit form reaches (fetch replies and pe-app stay
+/// explicit, so the fix still matters there).
+static NO_RUNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// See [`NO_RUNS`].
+pub fn set_no_runs(on: bool) {
+    NO_RUNS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Replicas made while set: no lean entries either (the fully explicit wire, pe-app's). fork9's fix-off
+/// control needs it since option 2's faster gap repair (review O2-3) heals its fork before the bug's path.
+static NO_LEAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// See [`NO_LEAN`].
+pub fn set_no_lean(on: bool) {
+    NO_LEAN.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn has_lean(m: &Msg) -> bool {
     match m {
-        Msg::Lean(_) => true,
+        Msg::Run { .. } => true,
         Msg::Batch(v) => v.iter().any(has_lean),
         _ => false,
     }
 }
 
-/// `m` with every lean entry as an explicit one (for fault filters and fixtures).
+/// `m` with every run's entries as explicit ones (for fault filters and fixtures; each entry in a run
+/// still holds its own signature in memory, the wire carries only the top one).
 pub fn as_explicit(m: &Msg) -> Msg {
     match m {
-        Msg::Lean(e) => Msg::Entry(e.clone()),
+        Msg::Run { entries, .. } if entries.len() == 1 => Msg::Entry(entries[0].clone()),
+        Msg::Run { entries, .. } => Msg::Batch(entries.iter().cloned().map(Msg::Entry).collect()),
         Msg::Batch(v) => Msg::Batch(v.iter().map(as_explicit).collect()),
         _ => m.clone(),
     }
@@ -172,14 +201,14 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
             };
             (bits & 1 != 0) as u64 * 32 + (bits & 2 != 0) as u64 * 32 * heads + (bits & 4 != 0) as u64 * 64
         }
-        // Already without its ids.
-        Msg::Lean(_) => (bits & 4 != 0) as u64 * 64,
+        // Already without its ids (lean) and signed once (option 2).
+        Msg::Run { signed, .. } => (bits & 4 != 0 && *signed) as u64 * 64,
         Msg::Batch(v) => {
             let chained = if bits & 8 != 0 && bits & 4 == 0 {
                 // Entries of an author followed later in the same batch by another of theirs.
                 v.iter()
                     .enumerate()
-                    .filter(|(i, x)| matches!(x, Msg::Entry(e) | Msg::Lean(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) | Msg::Lean(f) if f.member == e.member))))
+                    .filter(|(i, x)| matches!(x, Msg::Entry(e) if v[i + 1..].iter().any(|y| matches!(y, Msg::Entry(f) if f.member == e.member))))
                     .count() as u64
                     * 64
             } else {
@@ -191,9 +220,51 @@ pub fn what_if_saving(bits: u8, m: &Msg) -> u64 {
     }
 }
 
+/// Measurement only (`--by-kind`): the entries of `m` by part, as (entry kind, [entries, header
+/// (member, seq, stamp), prev id, ack head ids, payload, signatures]) in bytes on the wire; returns the
+/// rest of `m`'s bytes (message, run and batch framing; all of a message that carries no entry).
+pub fn entry_parts(m: &Msg, out: &mut Vec<(&'static str, [u64; 6])>) -> u64 {
+    let one = |e: &SignedEntry, prev: bool, heads: bool, sig: u64| -> [u64; 6] {
+        // The explicit form's entry bytes: a lone message less its tag and signature.
+        let full = encode_msg(&Msg::Entry(e.clone())).len() as u64 - 1 - 64;
+        let nh = match &e.payload {
+            Payload::Ack { heads, .. } => heads.len() as u64,
+            _ => 0,
+        };
+        [1, 16, prev as u64 * 32, heads as u64 * 32 * nh, full - 16 - 32 - 32 * nh, sig]
+    };
+    let total = encode_msg(m).len() as u64;
+    let mut inner = 0;
+    let mut push = |e: &SignedEntry, p: [u64; 6], inner: &mut u64| {
+        *inner += p[1..].iter().sum::<u64>();
+        out.push((kind(&Msg::Entry(e.clone())), p));
+    };
+    match m {
+        Msg::Entry(e) => push(e, one(e, true, true, 64), &mut inner),
+        Msg::Run { lean, heads, signed, entries } => {
+            let n = entries.len();
+            for (i, e) in entries.iter().enumerate() {
+                let sig = ((e.payload.signs_itself() && !(*signed && i + 1 == n)) || (*signed && i + 1 == n)) as u64 * 64;
+                push(e, one(e, i == 0 && !lean, !heads, sig), &mut inner);
+            }
+        }
+        Msg::Batch(v) => {
+            for x in v {
+                let before = out.len();
+                entry_parts(x, out);
+                inner += out[before..].iter().map(|(_, p)| p[1..].iter().sum::<u64>()).sum::<u64>();
+            }
+        }
+        _ => {}
+    }
+    total - inner
+}
+
 pub fn kind(m: &Msg) -> &'static str {
     match m {
-        Msg::Entry(e) | Msg::Lean(e) => match e.payload {
+        Msg::Run { entries, .. } if entries.len() > 1 => "run2+",
+        Msg::Run { entries, .. } => kind(&Msg::Entry(entries[0].clone())),
+        Msg::Entry(e) => match e.payload {
             Payload::Touch { .. } => "entry/touch",
             Payload::Hand { .. } => "entry/hand",
             Payload::Ack { .. } => "ack",
@@ -220,6 +291,7 @@ impl Net {
             default_link,
             rng: seed,
             filter: None,
+            ping_filter: None,
             sent: BTreeMap::new(),
             dropped: 0,
             count_from_us: 0,
@@ -230,6 +302,8 @@ impl Net {
             cap_dropped: 0,
             wire_from: BTreeMap::new(),
             kinds_from: BTreeMap::new(),
+            parts_from: BTreeMap::new(),
+            framing_from: BTreeMap::new(),
             what_if: 0,
             // The test IO sends one datagram per message unless a run opts into R18's batching (the
             // scenario suite reproduces protocol situations under the spike's transport; R18 runs,
@@ -266,7 +340,25 @@ impl Net {
             } else {
                 m
             };
-            match f(self.now_us, world, from, to, seen) {
+            let fate = match m {
+                // Option 2: a run of two or more entries meets the filter entry by entry, as each did
+                // when it was its own message (a filter written for entries would otherwise let every
+                // relayed run past it). One datagram: dropped if any entry is, else the longest delay.
+                Msg::Run { entries, .. } if entries.len() > 1 => {
+                    let mut fate = Fate::Deliver;
+                    for e in entries {
+                        match (f(self.now_us, world, from, to, &Msg::Entry(e.clone())), &fate) {
+                            (Fate::Drop, _) => fate = Fate::Drop,
+                            (Fate::Delay(d), Fate::Deliver) => fate = Fate::Delay(d),
+                            (Fate::Delay(d), Fate::Delay(x)) if d > *x => fate = Fate::Delay(d),
+                            _ => {}
+                        }
+                    }
+                    fate
+                }
+                _ => f(self.now_us, world, from, to, seen),
+            };
+            match fate {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
@@ -295,6 +387,17 @@ impl Net {
                     count("(batch framing)", bytes.len() as u64 - inner);
                 }
                 _ => count(kind(m), bytes.len() as u64 - saved),
+            }
+            if self.what_if == 0 {
+                let mut v = Vec::new();
+                let rest = entry_parts(m, &mut v);
+                *self.framing_from.entry(from).or_default() += rest;
+                for (k, p) in v {
+                    let c = self.parts_from.entry((from, k)).or_default();
+                    for i in 0..6 {
+                        c[i] += p[i];
+                    }
+                }
             }
         }
         // Bandwidth cap: the datagram leaves the bottleneck queue at `depart` (or is tail-dropped).
@@ -329,6 +432,21 @@ impl Net {
     /// Current queue backlog of a capped link, in microseconds (0 if uncapped).
     pub fn backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
         self.shapers.get(&(from, to)).map_or(0, |s| s.backlog_us(self.now_us))
+    }
+
+    /// What a small ping offered now would take from `a` to `b` and back through the links'
+    /// queues and delays, without loss (mean jitter): the harness's stand-in for clock sync's pings,
+    /// for the admin indicators' late-acks hint (design 10.8). A scripted fault on the whole link
+    /// reaches it (`ping_filter`); one that picks messages doesn't. None: the ping is lost.
+    pub fn ping_rtt_us(&self, a: MemberId, b: MemberId) -> Option<u64> {
+        let ab = self.links.get(&(a, b)).copied().unwrap_or(self.default_link);
+        let ba = self.links.get(&(b, a)).copied().unwrap_or(self.default_link);
+        let fault = |from, to| match self.ping_filter.as_ref().map_or(Fate::Deliver, |f| f(self.now_us, from, to)) {
+            Fate::Deliver => Some(0),
+            Fate::Drop => None,
+            Fate::Delay(d) => Some(d),
+        };
+        Some(self.backlog_us(a, b) + ab.delay_us + ab.jitter_us / 2 + fault(a, b)? + self.backlog_us(b, a) + ba.delay_us + ba.jitter_us / 2 + fault(b, a)?)
     }
 
     /// Send now, or queue for this tick's batch to that peer.
@@ -537,7 +655,9 @@ impl Peer {
         };
         let mut core = SessionCore::new(WorldSim::new(world, self.id, members, scene, cfg, keys));
         // Measurement A/B only: PE_LEAN=0 sends every entry explicit, as before option 1.
-        core.lean_wire = std::env::var("PE_LEAN").map_or(true, |v| v != "0");
+        core.sim.lean_wire = !NO_LEAN.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("PE_LEAN").map_or(true, |v| v != "0");
+        // A/B for the option 2 triage: PE_RUNS=0 sends no runs (every entry signed on itself).
+        core.sim.run_wire = !NO_RUNS.load(std::sync::atomic::Ordering::Relaxed) && std::env::var("PE_RUNS").map_or(true, |v| v != "0");
         core.start(epoch_us);
         // R18's controller is on by default in pe-session; the test IO opts in per run (`adapt`).
         core.adapt = false;
@@ -648,13 +768,19 @@ impl Sim {
         }
         for (to, w, from, m) in due {
             // A carried touch's id; a lean one's ids are not on the wire, so its author's id for it.
-            let accept = match &m {
-                Msg::Entry(e) => e.carried.map(|(obj, _)| (Some(e.id()), e.member, obj)),
-                Msg::Lean(e) => e.carried.map(|(obj, _)| {
-                    let ai = self.peer_index(e.member);
-                    (self.peers[ai].worlds.get(&w).and_then(|r| r.sim.id_at(e.member, e.seq)), e.member, obj)
-                }),
-                _ => None,
+            // In a run, an entry's id is its author's id for it (a lean one's ids are not on the wire).
+            let accept: Vec<(Option<EntryId>, MemberId, u32)> = match &m {
+                Msg::Entry(e) => e.carried.map(|(obj, _)| (Some(e.id()), e.member, obj)).into_iter().collect(),
+                Msg::Run { entries, .. } => entries
+                    .iter()
+                    .filter_map(|e| {
+                        e.carried.map(|(obj, _)| {
+                            let ai = self.peer_index(e.member);
+                            (self.peers[ai].worlds.get(&w).and_then(|r| r.sim.id_at(e.member, e.seq)), e.member, obj)
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
             };
             let pi = self.peer_index(to);
             let peer = &mut self.peers[pi];
@@ -662,8 +788,8 @@ impl Sim {
                 continue;
             }
             let Some(r) = peer.worlds.get_mut(&w) else { continue };
-            if let Some((Some(id), member, obj)) = accept {
-                if member != to {
+            for (id, member, obj) in accept {
+                if let (Some(id), true) = (id, member != to) {
                     r.pending_accept.push((id, member, obj));
                 }
             }
@@ -705,6 +831,16 @@ impl Sim {
                 r.core.set_link(Some(b));
             }
             r.core.ack_on_frames = self.net.batching;
+            // Admin indicators (design 10.8): round-trip samples, as clock sync's pings would give.
+            if now.is_multiple_of(250_000) {
+                for m in r.sim.audience() {
+                    if m != pid
+                        && let Some(rtt) = self.net.ping_rtt_us(pid, m)
+                    {
+                        r.core.rtt_sample(m, rtt, now);
+                    }
+                }
+            }
             let clock_frame = r.core.clock_frame(now);
             // A background world catches up before its member authors anything that carries state
             // (design 22.3 rule 2): a due action forces a burst.

@@ -1,0 +1,13 @@
+RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT r18 capped: member 1 is on a slow link: 16 kbit/s to and from every peer
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   per message      | 346.8 / 155.2 / 152.0 / 152.0 |  500 /  500 /  498 /  500 | 2421 | 1532 / 161 / 161 / 161 | 1652 / 281 / 281 / 281 | 0 (own entries moved: 0) |  6.6/s,  31 | never | m1 03c952abbbe6e5ca / m2 9f43aaac837720dc / m3 9f43aaac837720dc / m4 9f43aaac837720dc replay 03c952abbbe6e5ca DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 37.5 / 13.9 (200 of 222 unconfirmed), m2 281.2 / 166.6, m3 281.3 / 166.8, m4 281.3 / 166.7
+RESULT     member 1's own hand against its target, over 142 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched          | 268.3 / 148.7 / 149.1 / 149.1 |  500 /  500 /  499 /  498 | 2109 | 1524 / 160 / 160 / 160 | 1644 / 280 / 280 / 279 | 0 (own entries moved: 0) |  8.7/s,  28 | never | m1 c7a1f80621492d88 / m2 0067de328d5490bf / m3 0067de328d5490bf / m4 0067de328d5490bf replay c7a1f80621492d88 DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 31.4 / 11.5 (192 of 222 unconfirmed), m2 280.2 / 162.7, m3 280.3 / 162.7, m4 280.1 / 162.6
+RESULT     member 1's own hand against its target, over 150 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT   batched+adaptive | 110.4 /  73.2 /  73.2 /  73.2 |  500 /  497 /  496 /  496 |  110 | 1522 / 160 / 160 / 160 | 1642 / 280 / 280 / 280 | 22 (own entries moved: 0) |  8.2/s,  28 | never | m1 ed94506b7fe0509a / m2 e9964894bbfa314b / m3 e9964894bbfa314b / m4 e9964894bbfa314b replay ed94506b7fe0509a DIFFER
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 37.4 / 11.6 (31 of 61 unconfirmed), m2 280.2 / 115.5, m3 280.2 / 115.5, m4 280.1 / 115.5
+RESULT     member 1's own hand against its target, over 152 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8], acks every [2, 2, 3, 4, 6, 8] frames): [2435, 100, 100, 100, 100, 27067] ms

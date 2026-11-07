@@ -1,14 +1,14 @@
-RESULT loss acceptance, uncontended checks: 42/42 equal at that instant and 42/42 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 19
-RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 54/61 equal to the author's copy at that instant, 55/61 equal to the author's final history
+RESULT loss acceptance, uncontended checks: 21/21 equal at that instant and 21/21 equal to the author's final history; contended checks (another member touched the object in the previous 10 frames): 12
+RESULT loss acceptance (after re-sim to its present frame, the receiver's copy of the touched object vs the author's copy at that frame): 26/33 equal to the author's copy at that instant, 31/33 equal to the author's final history
   differs at that instant: world 1 receiver m1 author m2 obj 50 frame 121; equal to the author's final history: true
-  differs at that instant: world 1 receiver m1 author m2 obj 50 frame 126; equal to the author's final history: true
-  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 127; equal to the author's final history: false
+  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 122; equal to the author's final history: false
   differs at that instant: world 1 receiver m1 author m2 obj 50 frame 127; equal to the author's final history: true
-  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 128; equal to the author's final history: false
-  differs at that instant: world 1 receiver m2 author m1 obj 50 frame 128; equal to the author's final history: false
-  differs at that instant: world 1 receiver m2 author m1 obj 50 frame 128; equal to the author's final history: false
-  m1 world 1: rollbacks 9 max depth 10 resim frames 49 (39.0 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 49 bad 0 nonfinite 0 conf 744 frame 773
-  m2 world 1: rollbacks 9 max depth 9 resim frames 43 (33.3 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 744 frame 774
-  m3 world 1: rollbacks 12 max depth 4 resim frames 42 (38.1 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 49 bad 0 nonfinite 0 conf 744 frame 773
-  bytes: entries 66 msgs 12240 B (avg 185 B), acks 1566 msgs 231632 B, dropped 189
+  differs at that instant: world 1 receiver m3 author m1 obj 50 frame 127; equal to the author's final history: false
+  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 127; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 133; equal to the author's final history: true
+  differs at that instant: world 1 receiver m3 author m2 obj 50 frame 134; equal to the author's final history: true
+  m1 world 1: rollbacks 9 max depth 10 resim frames 48 (21.9 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 50 bad 0 nonfinite 0 conf 753 frame 773
+  m2 world 1: rollbacks 9 max depth 10 resim frames 46 (21.3 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 753 frame 774
+  m3 world 1: rollbacks 12 max depth 8 resim frames 47 (20.8 ms) overwrites 3 paused frames 0 violations 0 equivocations 0 checks ok 51 bad 0 nonfinite 0 conf 756 frame 773
+  bytes: entries 8 msgs 1232 B (avg 154 B), acks 1289 msgs 158274 B, dropped 172
 RESULT loss world 1: frames 0..700 digests m1=a97112baf49e9c4b m2=a97112baf49e9c4b m3=a97112baf49e9c4b | offline replay a97112baf49e9c4b | ALL EQUAL

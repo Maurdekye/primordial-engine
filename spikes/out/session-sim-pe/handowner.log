@@ -5,5 +5,5 @@
   m2: member 2's grab and carry of member 1's hand: [("carry", Some(RejectedNotOwner)), ("grab", Some(RejectedNotOwner))]; member 1's own touch of it: Some(Accepted)
   m2: member 2's touch of a ball carrying a state for member 1's hand: [Some(RejectedInvalid)]
   handowner with HO-1's round-2 fix switched off (the behaviour before the fix): member 1's history differs from the run without member 2's entries
-RESULT handowner: member 2's entries for member 1's hand refused at every replica: true; frames 0..336 with them 92302cef2872cd82, without them 92302cef2872cd82 -> SAME HISTORY
-RESULT handowner (member 2 also sends hand entries for member 1's hand) world 1: frames 0..336 digests m1=92302cef2872cd82 m2=92302cef2872cd82 | offline replay 92302cef2872cd82 | ALL EQUAL
+RESULT handowner: member 2's entries for member 1's hand refused at every replica: true; frames 0..340 with them fd8d050e6e04c168, without them fd8d050e6e04c168 -> SAME HISTORY
+RESULT handowner (member 2 also sends hand entries for member 1's hand) world 1: frames 0..340 digests m1=fd8d050e6e04c168 m2=fd8d050e6e04c168 | offline replay fd8d050e6e04c168 | ALL EQUAL

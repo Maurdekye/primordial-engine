@@ -1,9 +1,9 @@
-  slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first) with VCR-8's fix switched off (the behaviour before the fix): the run stopped at t=2342 ms: a replica hit an assertion or a panic; m1 conf 126 of frame 134, m2 conf 126 of frame 134, m3 conf 128 of frame 134, m4 conf 126 of frame 134, m6 conf 92 of frame 134; at m1: members {1, 2, 3, 4}, evicted []
+  slowadmin (an admin's entries reach follower 6 2.5 s late on every path, so it sees the precommits first) with VCR-8's fix switched off (the behaviour before the fix): the run stopped at t=2315 ms: a replica hit an assertion or a panic; m1 conf 126 of frame 132, m2 conf 126 of frame 132, m3 conf 126 of frame 132, m4 conf 126 of frame 132, m6 conf 92 of frame 132; at m1: members {1, 2, 3, 4}, evicted []
 RESULT slowadmin: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
 RESULT slowadmin: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
 RESULT slowadmin: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
 RESULT slowadmin: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 128 (t=2.23 s) round 0 removed []
-RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 215 (t=3.68 s) round 0 removed []
+RESULT slowadmin: m6 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 213 (t=3.65 s) round 0 removed []
 RESULT slowadmin: role definitions m1 {1: 0}, m2 {1: 0}, m3 {1: 0}, m4 {1: 0}, m6 {1: 0}
   m1: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 54 bad 0
   m2: conf 520 frame 533 members {1, 2, 3, 4} evicted {} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 54 bad 0

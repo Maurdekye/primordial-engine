@@ -244,3 +244,15 @@ pub fn sync(s: &WorldSim) -> SyncStatus {
         nonfinite: s.stats.nonfinite,
     }
 }
+
+/// Admin indicators (design 10.8) as the tools report them; None unless `me` holds Kick.
+pub fn indicators(core: &pe_session::peer::SessionCore, me: MemberId, now_us: u64) -> Option<Indicators> {
+    let i = core.indicators(me, now_us)?;
+    Some(Indicators {
+        me,
+        lag_frames: i.lag_frames,
+        lag_secs: i.lag_secs,
+        holding: i.holding.iter().map(|h| h.describe()).collect(),
+        late_acks: i.late.iter().map(|l| LateAcks { member: l.member, late: l.late, eligible: l.eligible, flagged: l.flagged }).collect(),
+    })
+}

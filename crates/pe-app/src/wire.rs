@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn roundtrip_and_relay() {
         // Member 1 relays member 2's entry: its author signature travels inside the message.
-        let items = vec![Item::Ping(5), Item::Msg(entry(2, 1)), Item::Msg(Msg::Fetch { author: 2, from: 1, to: 3 }), Item::Start(77), Item::Ready];
+        let items = vec![Item::Ping(5), Item::Msg(entry(2, 1)), Item::Msg(Msg::Fetch { author: 2, from: 1, to: 3, held: 0 }), Item::Start(77), Item::Ready];
         let st = Stamp { ts: 0xDEAD_BEEF, seq: 65535, qrep: 41 };
         let d = pack(9, 1, &items, &key(1), || st);
         assert_eq!(d.len(), 1);
