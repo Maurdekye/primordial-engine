@@ -13,8 +13,13 @@ than grep: msys grep aborts on input as large as `git log -p`.
   --blobs            also scan every blob reachable from the range, byte for byte, binary ones
                      included (the diff scan reads text diffs only), and every file and folder path.
 Term kinds: `fixed` anywhere, `word` as a whole word, `start` with no letter right before it.
+Allowlist (scripts/publish_allow.py; scripts/publish_allow.local next to this script, or
+PE_PUBLISH_ALLOW): an added line, or every matching line of a blob, whose path and line hash are
+listed is reported as allowed and doesn't fail. Messages, identities and paths have no allowlist.
 """
 
+import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -65,6 +70,37 @@ def bytes_matcher(kind, text):
     return lambda b: pattern.search(b) is not None
 
 
+def load_allow():
+    """{(path, sha256 hex of the line)}, as scripts/publish_allow.py reads it; empty when missing."""
+    path = os.environ.get("PE_PUBLISH_ALLOW",
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)), "publish_allow.local"))
+    entries = set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return entries
+    for line in lines:
+        line = line.rstrip("\r")
+        if not line.strip() or line.startswith("#"):
+            continue
+        digest, _, p = line.partition(" ")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not p:
+            print(f"publish_history: bad line in {path}: {line}")
+            sys.exit(2)
+        entries.add((p, digest))
+    return entries
+
+
+def line_hash(line):
+    """SHA-256 hex of one line's bytes, without its \n and a trailing \r (publish_allow.py)."""
+    if line.endswith(b"\n"):
+        line = line[:-1]
+    if line.endswith(b"\r"):
+        line = line[:-1]
+    return hashlib.sha256(line).hexdigest()
+
+
 def git(args):
     r = subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if r.returncode != 0:
@@ -73,9 +109,10 @@ def git(args):
     return r.stdout.decode("utf-8", "replace")
 
 
-def scan_blobs(revs, terms):
-    """{term: [(path, binary)]} over every blob reachable from revs (each blob once, first path), and
-    {term: [path]} over every file and folder path in their trees."""
+def scan_blobs(revs, terms, allow):
+    """{term: [(path, binary)]} over every blob reachable from revs (each blob once, first path),
+    {term: [path]} of the blobs whose every matching line is allowlisted, and {term: [path]} over
+    every file and folder path in their trees."""
     paths = {}
     names = set()
     for line in git(["rev-list", "--objects", *revs]).split("\n"):
@@ -87,6 +124,7 @@ def scan_blobs(revs, terms):
     path_hits = {t: sorted(n for n in names if name_match[t](n)) for t in terms}
     match = {t: bytes_matcher(*t) for t in terms}
     hits = {t: [] for t in terms}
+    allowed = {t: [] for t in terms}
     p = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     count = 0
     for sha, path in paths.items():
@@ -101,12 +139,16 @@ def scan_blobs(revs, terms):
         binary = b"\0" in data[:8192]
         for t in terms:
             if match[t](data):
-                hits[t].append((path, binary))
+                lines = [l for l in data.split(b"\n") if match[t](l)]
+                if lines and all((path, line_hash(l)) in allow for l in lines):
+                    allowed[t].append(path)
+                else:
+                    hits[t].append((path, binary))
     p.stdin.close()
     if p.wait() != 0:
         print("publish_history: git cat-file failed")
         sys.exit(2)
-    return count, hits, path_hits
+    return count, hits, allowed, path_hits
 
 
 def main():
@@ -128,7 +170,9 @@ def main():
     terms = list(dict.fromkeys(report + fail))
     failing = set(fail)
     match = {t: matcher(*t) for t in terms}
+    allow = load_allow()
     added = {t: [] for t in terms}  # (commit, path, line)
+    allowed = {t: [] for t in terms}  # (commit or "blob", path)
     meta = {t: [] for t in terms}  # (commit, field)
 
     # Messages, authors and committers.
@@ -165,9 +209,17 @@ def main():
             text = line[width:]
             for t in terms:
                 if match[t](text):
-                    added[t].append((sha, path, text))
+                    if (path, line_hash(text.encode("utf-8", "surrogateescape"))) in allow:
+                        allowed[t].append((sha, path))
+                    else:
+                        added[t].append((sha, path, text))
 
-    nblobs, bhits, phits = scan_blobs(revs, terms) if blobs else (0, {t: [] for t in terms}, {t: [] for t in terms})
+    if blobs:
+        nblobs, bhits, ballowed, phits = scan_blobs(revs, terms, allow)
+        for t in terms:
+            allowed[t] += [("blob", p) for p in ballowed[t]]
+    else:
+        nblobs, bhits, phits = 0, {t: [] for t in terms}, {t: [] for t in terms}
 
     print(f"publish_history: {commits} commits in {' '.join(revs)}" + (f", {nblobs} blobs" if blobs else ""))
     failed = 0
@@ -184,7 +236,10 @@ def main():
         print(f"  [{tag}] {kind} {text!r}: {len(added[t])} added line(s) in {len(shas)} commit(s)"
               + (f" ({listed})" if shas else "")
               + (f"; in the {'/'.join(fields)} of {len(mshas)} commit(s)" if mshas else "")
-              + (f"; in {len(bhits[t])} blob(s), {nbin} binary; in {len(phits[t])} path(s)" if blobs else ""))
+              + (f"; in {len(bhits[t])} blob(s), {nbin} binary; in {len(phits[t])} path(s)" if blobs else "")
+              + (f"; {len(allowed[t])} allowlisted" if allowed[t] else ""))
+        for c, p in allowed[t]:
+            print(f"    allowed: {c[:10]}:{p}")
         if t in failing:
             for c, p, line in added[t]:
                 print(f"    {c[:10]}:{p}: {line.strip()[:200]}")
