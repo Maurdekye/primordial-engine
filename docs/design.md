@@ -2923,7 +2923,9 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
           * A no-progress guard puts it back on the feed after 5 s without its hole shrinking. Each guard re-entry
             doubles its next leave hold, reset when an echo phase ends normally. Forced (a 1.2 s guard, a
             withholder): the leave after the re-entry comes 10.9 s later, the doubled 10 s hold [V b7abe98].
-        * **At 4 or more players the exit keeps (a)**, the 2 s catch-up bound, until the user rules on widening (b).
+        * **At 4 or more players the exit keeps (a)**, the 2 s catch-up bound: the user ruled "a" (2026-11-07) after the
+          side by side below. (b) is 3-player only; PE_EXIT_B_ALL=1 applies it at every size for measuring, off by
+          default.
         * **The catch-up:** while fed, at the lowest priority, below feed and echo. In the echo phase each holder paces
           its answers into its link's spare: a datagram of at most 200 ms of the link, while the router queue is empty.
           The requests are striped over every holder, up to two 16-entry ranges each, its own chain first. A holder
@@ -2964,6 +2966,8 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
 
           A withholder at 4 players and 16 kbit/s under (b), per-link caps: 30.7 s. Under (a) the exit's timing moves
           with the catch-up: before the reserve, 4 players left the feed after 45.3 s at 24 kbit/s and 11.0 s at 32.
+          **The user's ruling on these figures (2026-11-07): "a".** Sessions of 4 or more keep the stay-fed-until-caught-up
+          exit; (b) stays 3-player only.
         * **Found by the acceptance set on the merged tree, and settled** (2026-11-07):
           * thinlink join-onefed-down failed: the fed member prevoted nil in every round, so the join and the removal of
             crashed member 2 were never decided. The catch-up's empty bucket on the feeder's link delayed member 4's
@@ -2983,6 +2987,10 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
             as answers must still show in pe-session's delay signal.
           * Echoing members get explicit checkpoints, and their catch-up answers are paced into the link's spare and
             striped over the holders, never sent at once.
+          * The catch-up, fed or echoing, leaves room for protocol bursts: here it sends only while the link's bucket
+            keeps 1,000 B (PE_CATCHUP_RESERVE_B). Without it a fed member's view-change traffic queued behind the
+            catch-up's empty bucket and the join in thinlink join-onefed-down was never decided; pe-session's catch-up
+            needs the equivalent headroom.
       * **With Part B on, the measure is the others' stalled frames and confirmation lag, not "back to real time".**
         That column needs every member, the fed one too, within 20 frames of confirmation. A fed member trails by
         design, so a cell with a fed member reads "never" by construction.

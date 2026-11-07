@@ -948,9 +948,9 @@ pub struct Acceptance {
 ///   has the member leave on the live test and catch up while its echo covers it; PE_EXIT_BOUND_MS=2000 is option (a).
 /// * PE_NO_PROGRESS_MS: the no-progress guard (5000): an echoing member whose held chains don't advance for this long goes
 ///   back on the feed, and each guard re-entry doubles its next leave test's hold (reset when an echo phase ends normally).
-/// * (b) applies at 3 members only (@liaison-opus m81715c78c902, via @coordinator-opus mc2af3d524792): at 4 or more the
-///   exit keeps option (a), the 2 s catch-up bound, until the user rules on the widening. PE_EXIT_B_ALL=1 applies (b) at
-///   every size, for measuring.
+/// * (b) applies at 3 members only: at 4 or more the exit keeps option (a), the 2 s catch-up bound, as the user ruled
+///   ("a", 2026-11-07, via @coordinator-opus m09ac56a27f87). PE_EXIT_B_ALL=1 applies (b) at every size, for measuring
+///   only; it is off by default.
 /// * PE_REENTRY_HOLDOFF_MS (6000): no re-entry this long after leaving the feed (margin rule (2)) or after the end of the
 ///   echo phase (the enter test). 4 s was the smallest with no flip-back in down-k12-m3 (3 s flipped back by rule (2) at
 ///   17.9 s); 6 s is @coordinator-opus's ruling (m89c5dcd4adb0) for margin, which costs only the member itself, since (D)
