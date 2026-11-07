@@ -10,7 +10,9 @@ scripts/publish_replacements.example). Each rule is `regex:<python regex>==><rep
 file order to every text blob (--replace-text) and every commit message (--replace-message). In a
 binary blob (a NUL in its first 8 KiB, which filter-repo's text replacement skips), each match is
 overwritten with as many 'x' bytes, so lengths and length-prefixed formats stay intact. File paths
-get the same rules (a result that is no valid Windows file name stops the run). Every commit is
+get the same rules (a result that is no valid Windows file name stops the run). A text line listed in
+the allowlist (scripts/publish_allow.py; scripts/publish_allow.local or PE_PUBLISH_ALLOW, matched by
+its hash) is kept verbatim; the rest of its blob gets the rules as --replace-text would apply them. Every commit is
 kept, empty or not, and author and committer fields are not touched.
 
 Then it verifies the copy, and exits 1 if any check fails (2 on an error):
@@ -24,6 +26,7 @@ Then it verifies the copy, and exits 1 if any check fails (2 on an error):
 It reports the commits whose ids, trees, own changes or messages changed.
 """
 
+import hashlib
 import os
 import re
 import subprocess
@@ -43,6 +46,28 @@ def git(args, cwd, check=True):
     if check and r.returncode != 0:
         die(f"git {' '.join(args[:2])} failed in {cwd}: {r.stderr.decode('utf-8', 'replace').strip()}")
     return r.stdout.decode("utf-8", "replace")
+
+
+def line_hash(line):
+    """SHA-256 hex of one line's bytes, without a trailing \\r (scripts/publish_allow.py)."""
+    return hashlib.sha256(line[:-1] if line.endswith(b"\r") else line).hexdigest()
+
+
+def read_allow(path):
+    """The line hashes of the allowlist (scripts/publish_allow.py's format); empty when missing."""
+    hashes = set()
+    if not os.path.isfile(path):
+        return hashes
+    with open(path, encoding="utf-8") as f:
+        for line in f.read().splitlines():
+            line = line.rstrip("\r")
+            if not line.strip() or line.startswith("#"):
+                continue
+            digest, _, p = line.partition(" ")
+            if not re.fullmatch(r"[0-9a-f]{64}", digest) or not p:
+                die(f"bad line in {path}: {line}")
+            hashes.add(digest)
+    return hashes
 
 
 def read_rules(path):
@@ -149,10 +174,44 @@ def main():
     with open(stripped, "wb") as f:
         f.write(b"".join(line + b"\n" for _, _, line in rules))
 
-    def mask_binary(blob, _metadata):
+    # Allowlisted lines (scripts/publish_allow.py) stay verbatim: a reviewed line whose number only
+    # happens to equal a term must reach the copy unchanged, or the tip would differ from the source.
+    # A blob callback has no path, so here a line is matched by its hash alone.
+    allow_path = os.environ.get("PE_PUBLISH_ALLOW", os.path.join(HERE, "publish_allow.local"))
+    allowed = read_allow(allow_path)
+
+    def replace(data):
+        # As filter-repo's --replace-text: each rule over the whole text, in file order.
+        for rx, replacement, _ in rules:
+            data = rx.sub(replacement, data)
+        return data
+
+    def clean_blob(blob, _metadata):
         if b"\0" in blob.data[:8192]:
             for rx, _, _ in rules:
                 blob.data = rx.sub(lambda m: b"x" * len(m.group(0)), blob.data)
+            return
+        pieces = blob.data.split(b"\n")
+        keep = [allowed and line_hash(p) in allowed for p in pieces]
+        if not any(keep):
+            blob.data = replace(blob.data)
+            return
+        # Each run of other lines gets the rules as one text; the allowlisted lines between stay.
+        out, run = [], []
+        for p, k in zip(pieces, keep):
+            if k:
+                if run:
+                    out.append(replace(b"\n".join(run)))
+                    run = []
+                out.append(p)
+                kept_lines.append(line_hash(p)[:12])
+            else:
+                run.append(p)
+        if run:
+            out.append(replace(b"\n".join(run)))
+        blob.data = b"\n".join(out)
+
+    kept_lines = []
 
     # Paths get the same rules (filter-repo's text replacement never renames files). A renamed path
     # must still be a valid file name on Windows, so a rule meant for text can't break a checkout.
@@ -170,13 +229,17 @@ def main():
         return new
 
     os.chdir(out_dir)
+    # Text blobs get the rules in clean_blob (as --replace-text would, but for allowlisted lines);
+    # messages through filter-repo's --replace-message.
     options = fr.FilteringOptions.parse_args([
-        "--replace-text", stripped, "--replace-message", stripped,
+        "--replace-message", stripped,
         "--prune-empty", "never", "--prune-degenerate", "never", "--quiet"])
-    fr.RepoFilter(options, blob_callback=mask_binary, filename_callback=rename_path).run()
+    fr.RepoFilter(options, blob_callback=clean_blob, filename_callback=rename_path).run()
     os.remove(stripped)
     os.chdir(REPO)
     print(f"  paths renamed: {len(renamed)}")
+    print(f"  allowlisted lines kept verbatim: {len(kept_lines)}"
+          + (f" ({', '.join(sorted(set(kept_lines)))})" if kept_lines else ""))
     for old, new in sorted(renamed.items()):
         print(f"    {old.decode('utf-8', 'replace')} -> {new.decode('utf-8', 'replace')}")
 
