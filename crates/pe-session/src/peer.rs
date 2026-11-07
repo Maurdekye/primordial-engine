@@ -976,9 +976,6 @@ mod tests {
         SessionCore::new(WorldSim::new(1, me, members, scene, SimConfig::default(), KeyRing::test(me)))
     }
 
-    /// Two cores wired back to back with no loss: they start, exchange acks, confirm frames, and a
-    /// touch by member 1 reaches member 2 with equal history.
-    #[test]
     /// Admin entries are authored while the replica is paused (design 12.4, "Admin entries while
     /// paused"); a touch is not. Member 2 never reaches member 1, so 1's confirmation stalls and its
     /// sim pauses at the speculation limit.
@@ -1012,6 +1009,9 @@ mod tests {
         }
     }
 
+    /// Two cores wired back to back with no loss: they start, exchange acks, confirm frames, and a
+    /// touch by member 1 reaches member 2 with equal history.
+    #[test]
     fn two_cores_confirm_and_agree() {
         let scene = SceneKind::Pile { side: 2, layers: 2 };
         let (mut a, mut b) = (core(1, &[1, 2], scene), core(2, &[1, 2], scene));

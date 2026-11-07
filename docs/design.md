@@ -3142,7 +3142,11 @@ entries that the view change commits (10.8).
     * **Its epoch** is the author's latest decided epoch. A replica that is behind on decisions signs an
       older one, which is still judged; only a later epoch than the decider's is refused.
     * [V `admin_entries_are_authored_while_paused`: a replica paused with no word from its peer authors
-      all four, stamped at the present, and its touch is refused NotReady; V d80-pausedkick, below.]
+      all four, stamped at the present, and its touch is refused NotReady. V d80-pausedkick: 8 withholds
+      references from 2 s and every honest replica pauses (at 5.9 s: frame 230, confirmation 110);
+      admin 1's role definition, role grant and ban (stamped 270, 285, 300) and its kick of 8 (360)
+      are authored while paused and applied, 8 is removed and confirmation reaches 520, ALL EQUAL; with
+      the old gate none is authored and confirmation stays at 110 to the end.]
   * There is always at least one admin: the last cannot give the role up without handing it on (22:11Z).
   * When no admin is left, by leaving, a kick, a crash or a timeout, the session closes (22:13Z). Closing
     removes every other player, tells everyone that the session has closed, and allows no further change
