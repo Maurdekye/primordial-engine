@@ -27,8 +27,22 @@ pub struct Opts {
     pub gestures: u32,
     /// Also print each member's offered bytes in the gesture window by message kind.
     pub by_kind: bool,
+    /// Thin links Part B on (sessions of 4 or more): localized verdicts and the state feed.
+    pub localize: bool,
+    /// The slow member's link recovers at this many ms (its caps are lifted).
+    pub slow_until_ms: Option<u64>,
+    /// Thin links Part B: member M freezes its references at T ms (a liar referencing stale versions).
+    pub freeze: Option<(MemberId, u64)>,
+    /// Receivers don't credit fed members' echoes (to measure what the echo carries).
+    pub no_echo: bool,
+    /// Member M crashes at T ms (it stops for good).
+    pub crash: Option<(MemberId, u64)>,
     /// Only the adaptive transport (the thin-link cells), not the per-message and batched ones.
     pub adaptive_only: bool,
+    /// Count offered bytes over the whole run instead of the first gesture's window.
+    pub count_all: bool,
+    /// Count offered bytes from this many ms to the end instead (a steady state after the controller settles).
+    pub count_from_ms: Option<u64>,
 }
 
 pub fn capped(o: &Opts) {
@@ -51,7 +65,7 @@ pub fn capped(o: &Opts) {
         prev: 0,
         stamp: 0,
         payload: Payload::Hand { obj: 500, target_mm: [0, 200, 500], active: true, span: 1, more: (1..8).map(|i| [10 * i, 200, 500]).collect() },
-        carried: None,
+        carried: None, link: 0,
     };
     println!("RESULT r18 capped: build: a stride-8 pack is {} bytes on the wire", encode_msg(&Msg::Entry(pack)).len());
     if let Some((sm, sk)) = o.slow {
@@ -91,7 +105,7 @@ pub fn capped(o: &Opts) {
         })
         .collect();
     for (label, batching, adapt) in transports {
-        let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, ..SimConfig::default() };
+        let cfg = SimConfig { dt: 1.0 / hz as f32, window: 2 * hz, hand_predict: 6, localize: o.localize, echo: !o.no_echo, ..SimConfig::default() };
         let scene = SceneKind::BallPit { balls: 500, hands: 2 };
         let ids: Vec<MemberId> = (1..=o.members).collect();
         let peers: Vec<Peer> = ids
@@ -116,15 +130,20 @@ pub fn capped(o: &Opts) {
             }
         }
         net.batching = batching;
-        net.count_from_us = w0;
-        net.count_to_us = w1;
+        net.count_from_us = if let Some(ms) = o.count_from_ms { ms * 1000 } else if o.count_all { 0 } else { w0 };
+        net.count_to_us = if o.count_all || o.count_from_ms.is_some() { u64::MAX } else { w1 };
         let mut sim = Sim::new(net, peers, o.end_s * 1_000_000);
+        sim.feed = o.localize;
+        // Thin links Part B: each member's time on the state feed (ms).
+        let mut fed_ms = vec![0u64; n];
         let mut qmax = vec![0u64; n];
         let mut lag_max = vec![0u64; n];
         // Thin links: each member's mean confirmation lag (frames, its present minus its confirmed frame)
         // from the gesture's start to the end of the run, to compare with the same cell uncapped.
         let mut lag_sum = vec![0u64; n];
         let mut lag_n = 0u64;
+        // The same samples kept, for a P95 (@coordinator-opus m6ffc48c88e9e).
+        let mut lag_samples: Vec<Vec<u64>> = vec![Vec::new(); n];
         // When each frame became confirmed at each member (wall clock, us), for the hand entries'
         // confirmation latency below.
         let mut conf_at: Vec<Vec<u64>> = vec![Vec::new(); n];
@@ -145,8 +164,29 @@ pub fn capped(o: &Opts) {
                     sim.net.default_cap = Some(Cap { rate_bps: sk * 1000 / div, burst_bytes: 4000 / div, max_queue_us: 500_000 });
                 }
             }
+            if let Some((cm, ms)) = o.crash {
+                if sim.net.now_us == ms * 1000 {
+                    let i = sim.peers.iter().position(|p| p.id == cm).unwrap();
+                    sim.peers[i].crashed = true;
+                }
+            }
+            if let Some((fm, ms)) = o.freeze {
+                if sim.net.now_us == ms * 1000 {
+                    crate::p24r::sim_mut(&mut sim, fm).freeze_others();
+                }
+            }
+            if let (Some(ms), Some((sm, _))) = (o.slow_until_ms, o.slow) {
+                if sim.net.now_us == ms * 1000 {
+                    sim.net.caps.retain(|&(a, b), _| a != sm && b != sm);
+                }
+            }
             sim.step_ms();
             let now = sim.net.now_us;
+            for (i, &m) in ids.iter().enumerate() {
+                if sim.is_fed(1, m) {
+                    fed_ms[i] += 1;
+                }
+            }
             let mut all_lag_ok = true;
             let mut q_now = 0u64;
             // Real time is judged over the members still in the session (a demoted one follows).
@@ -166,6 +206,7 @@ pub fn capped(o: &Opts) {
                 lag_max[i] = lag_max[i].max(l);
                 if now >= w0 {
                     lag_sum[i] += l;
+                    lag_samples[i].push(l);
                 }
                 while (conf_at[i].len() as u64) < r.conf.min(r.now + 1) {
                     conf_at[i].push(now);
@@ -217,16 +258,23 @@ pub fn capped(o: &Opts) {
             sim.net.now_us += 1000;
         }
         let secs = (w1 - w0) as f64 / 1e6;
-        let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / secs;
+        // Offered bytes are counted over the whole run with --count-all.
+        let bsecs = if let Some(ms) = o.count_from_ms { o.end_s as f64 - ms as f64 / 1000.0 } else if o.count_all { o.end_s as f64 } else { secs };
+        let kbps = |m: MemberId| sim.net.wire_from.get(&m).copied().unwrap_or(0) as f64 * 8.0 / 1000.0 / bsecs;
         // A member demoted (removed) from the session no longer counts: compare the others.
         let live: Vec<MemberId> = ids.iter().copied().filter(|m| sim.replica(1, 1).sim.members.contains(m)).collect();
-        let last = live.iter().map(|&m| sim.replica(m, 1).sim.frame).min().unwrap().saturating_sub(1);
-        let hs: Vec<u64> = live.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
+        // Confirmed frames only, and fed members skipped (@coordinator-opus m721ec7943321, @design-reviewer): a fed
+        // replica's state comes from the feed, and speculative frames may still roll back, so comparing either read
+        // DIFFER whenever someone was fed, which would hide a real difference.
+        let cmp: Vec<MemberId> = live.iter().copied().filter(|&m| !sim.is_fed(1, m)).collect();
+        let cmp = if cmp.is_empty() { live.clone() } else { cmp };
+        let last = cmp.iter().map(|&m| sim.replica(m, 1).sim.conf).min().unwrap().saturating_sub(1);
+        let hs: Vec<u64> = cmp.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, last)).collect();
         let r1 = &sim.replica(1, 1).sim;
         // The offline replay is built from a live member's log, and keeps that replica's hand owners, as
         // the suite's check does: a demoted member's log stops at its removal, and its hand entries
         // before it still count (D73 made member 1 removable here, on the shared uplink).
-        let rl = &sim.replica(live[0], 1).sim;
+        let rl = &sim.replica(cmp[0], 1).sim;
         let members: Vec<MemberId> = rl.members.iter().copied().collect();
         let rd = digest(&replay_sim_like(rl, scene, &members, &final_log(rl), last).hashes, last);
         let restamped = r1.all_entries().iter().filter(|e| e.member == 1 && r1.effective_frame(e.id()).is_some_and(|f| f != e.stamp)).count();
@@ -243,7 +291,7 @@ pub fn capped(o: &Opts) {
             (rb1 - rb0) as f64 / secs,
             s2.max_depth,
             back.map_or("never".to_string(), |t| format!("{} ms", t / 1000)),
-            join(live.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
+            join(cmp.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
             if hs.iter().all(|h| *h == rd) { "EQUAL" } else { "DIFFER" }
         );
         // Each of member 1's hand entries, from the frame it is stamped at until each member confirms it
@@ -266,6 +314,20 @@ pub fn capped(o: &Opts) {
             })
             .collect();
         println!("RESULT     hand entries' confirmation latency, frames (max / mean): {}", lat.join(", "));
+        // The same entries' P95 (@coordinator-opus m6ffc48c88e9e), on its own line so the line above stays comparable.
+        let p95s: Vec<String> = conf_at
+            .iter()
+            .zip(&ids)
+            .map(|(c, m)| {
+                let mut l: Vec<f64> = stamps.iter().filter(|&&s| (s as usize) < c.len()).map(|&s| (c[s as usize] as f64 - (100_000 + s * dt_us) as f64) / dt_us as f64).collect();
+                if l.is_empty() {
+                    return format!("m{m} -");
+                }
+                l.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                format!("m{m} {:.1}", l[(l.len() * 95).div_ceil(100) - 1])
+            })
+            .collect();
+        println!("RESULT     hand entries' confirmation latency P95, frames: {}", p95s.join(", "));
         if o.by_kind {
             // Where each member's offered bytes went during the gesture (kbit/s, messages/s, mean bytes).
             for &m in &ids {
@@ -273,7 +335,7 @@ pub fn capped(o: &Opts) {
                 v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
                 let parts: Vec<String> = v
                     .iter()
-                    .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / secs, *n as f64 / secs, b / (*n).max(1)))
+                    .map(|(k, (n, b))| format!("{k} {:.1} kbit/s ({:.1}/s x {} B)", *b as f64 * 8.0 / 1000.0 / bsecs, *n as f64 / bsecs, b / (*n).max(1)))
                     .collect();
                 println!("RESULT     member {m}'s offered bytes by kind: {}", parts.join(", "));
                 // Entries by kind and part (measurement only): entries/s, then mean bytes per entry:
@@ -305,6 +367,18 @@ pub fn capped(o: &Opts) {
         println!(
             "RESULT     mean confirmation lag per member from the gesture's start, frames: {}",
             join(lag_sum.iter().map(|s| format!("{:.1}", *s as f64 / lag_n.max(1) as f64)).collect())
+        );
+        println!(
+            "RESULT     P95 confirmation lag per member from the gesture's start, frames: {}",
+            join(
+                lag_samples
+                    .iter_mut()
+                    .map(|v| {
+                        v.sort_unstable();
+                        if v.is_empty() { "-".to_string() } else { v[(v.len() * 95).div_ceil(100) - 1].to_string() }
+                    })
+                    .collect()
+            )
         );
         println!(
             "RESULT     member 1's own hand against its target, over {} gesture frames: mean {:.2} mm, max {:.2} mm",
@@ -359,6 +433,36 @@ pub fn capped(o: &Opts) {
         }
         if adapt {
             let l = sim.replica(1, 1).level_ms;
+            if o.localize {
+                println!("RESULT     time on the state feed per member: {} ms", fed_ms.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "));
+                {
+                    let r1 = &sim.replica(1, 1).sim;
+                    let vcs: Vec<String> = r1.vc_log.iter().map(|d| format!("epoch {} at frame {} ({:.2} s) removed {:?}", d.0, d.1, d.1 as f64 / hz as f64, d.3)).collect();
+                    if !vcs.is_empty() {
+                        println!("RESULT     view changes at member 1: {}", vcs.join("; "));
+                    }
+                    // (spike diagnostics, on stderr so the committed logs keep their lines) each decision's round at
+                    // member 1, and gap 1's round fallbacks per member.
+                    let rounds: Vec<String> = r1.vc_log.iter().map(|d| format!("epoch {} round {}", d.0, d.2)).collect();
+                    let fb: Vec<String> = ids.iter().map(|&m| sim.replica(m, 1).sim.stats.round_fallbacks.to_string()).collect();
+                    eprintln!("DIAG view changes at member 1 {rounds:?}; round fallbacks per member {}", fb.join(" / "));
+                    if o.crash.is_some() {
+                        println!(
+                            "RESULT     removal votes cast per member (silence): {}",
+                            ids.iter().map(|&m| sim.replica(m, 1).sim.stats.suspicions.to_string()).collect::<Vec<_>>().join(" / ")
+                        );
+                    }
+                }
+                if n == 3 {
+                    let r1 = &sim.replica(1, 1).sim;
+                    let modes: Vec<String> = (0..(o.end_s * hz / 300)).map(|k| match r1.window_mode(k) { Some(true) => "fed", Some(false) => "D54", None => "?" }.to_string()).collect();
+                    println!("RESULT     3 players, window modes at member 1 (300 frames each): {}", modes.join(" "));
+                }
+                println!(
+                    "RESULT     rule 1's echo, per member: echoes matched/mismatched {}",
+                    ids.iter().map(|&m| { let s = &sim.replica(m, 1).sim.stats; format!("{}/{}", s.echoes_matched, s.echo_mismatches) }).collect::<Vec<_>>().join(" ")
+                );
+            }
             println!(
                 "RESULT     controller on member 1: time at each level (hand stride {:?}, acks every {:?} frames): {:?} ms",
                 HAND_STRIDE, ACK_FRAMES, l

@@ -114,17 +114,20 @@ pub fn ackfork() {
     let mut sim = Sim::new(net, ps, 8_000_000);
     // 9 signs a second chain for member 2: acks with honest horizons, and no touch.
     let mut forged: (u32, EntryId) = (0, 0);
+    let mut forged_ck: Option<(u64, EntryId)> = None;
     let panic_at = run_to_end(&mut sim, |sim| {
         if sim.net.now_us % 33_000 == 0 {
             let now = sim.replica(9, 1).sim.now;
-            let e = Entry {
+            let mut e = Entry {
                 member: 9,
                 seq: forged.0 + 1,
                 prev: forged.1,
                 stamp: now,
-                payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None, epoch: 0 },
-                carried: None,
+                payload: Payload::Ack { horizon: now.saturating_sub(1), heads: vec![], check: None, epoch: 0, fed: None },
+                carried: None, link: 0,
             };
+            e.link = ckpt_link_for(forged_ck, e.stamp);
+            forged_ck = ckpt_step(forged_ck, &e);
             forged = (e.seq, e.id());
             forged_ids.borrow_mut().insert(e.id());
             sim.net.send(1, 9, 2, &Msg::Entry(e));

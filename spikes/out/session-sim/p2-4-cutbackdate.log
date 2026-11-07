@@ -1,3 +1,4 @@
+DIRTY (control run: fixes 0x200 switched off, the behaviour before them) at m3 (conf 100, frame 130): m9 s21 stamp 26 Discriminant(0): eff None -> Some(26); violation false disputed false late_void false verdict None pending false evicted Some((25, 0))
   cutbackdate (fork9 with a touch backdated 90 frames on the cut branch, which 3 does not hold) with VCR-6's fix switched off (the behaviour before the fix): the run stopped at t=2278 ms: a replica hit an assertion or a panic; m1 conf 116 of frame 130, m2 conf 100 of frame 130, m3 conf 100 of frame 130; at m1: members {1, 2, 3}, evicted [9]
   fork at 9's seq 21, t=1935 ms; branch B 22 entries plus 10 extra acks
 RESULT cutbackdate: m1 members {1, 2, 3} evicted {9: (25, 122)} conf 454 frame 473 paused frames 0 lying votes found 0

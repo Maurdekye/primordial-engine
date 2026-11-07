@@ -37,6 +37,11 @@ use box3d_rust::types::{default_body_def, default_shape_def, BodyType};
 use box3d_rust::world::World;
 
 use crate::ownership::{Book, Cert, Change as OwnChange, Insert, Key, OwnError, MAX_CERT_WORDS};
+
+mod feed;
+mod localize;
+pub use feed::FeedBody;
+pub use localize::{CutRecord, WindowVals, WINDOW};
 use crate::{fnv_u64s, pos, splitmix64, CLAIM_FRAMES, SUBSTEPS};
 pub use crate::provenance::{
     birth_world, chain_hash, check_chain, fact_committed, fork_proof, ChainError, EpochBook, EpochCerts, EpochProof, Export, ForkProof, Hop, ImportPolicy, Seen,
@@ -205,7 +210,9 @@ pub enum Payload {
     /// id; its newest confirmed check frame and full-state hash (review H4); the membership epoch
     /// its author is in (design 10.8: an ack from a newer epoch than the reader's never counts
     /// toward the reader's confirmation).
-    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32 },
+    /// Thin links Part B: `fed` is set while its author is on the state feed (rule 5): its newest anchor frame
+    /// and its echo (rule 1).
+    Ack { horizon: u64, heads: Vec<(MemberId, u32, EntryId)>, check: Option<(u64, u64)>, epoch: u32, fed: Option<FedAck> },
     /// Vote, in membership epoch `epoch`, to remove `target`: it signed two versions of its entry
     /// `seq` (or another proof), or (`seq` = 0) it has gone silent or cannot keep up (reviews
     /// R3-2, R3-9). `frozen` is the head of target's chain this voter holds and will ever
@@ -431,9 +438,15 @@ pub struct Change {
     pub add_reqs: Vec<(u64, u64)>,
 }
 
-/// Commit order of admin entries (D80): stamp, then author, then seq.
-fn admin_key(e: &Entry) -> (u64, MemberId, u32) {
-    (e.stamp, e.member, e.seq)
+/// Commit order of admin entries (D80, rev 22 (e1)): the stamp-effective ones (role entries, ownership) first, by stamp,
+/// author, seq; then kicks, by a hash of `seed` (the previous decided change's value: unknown until it decides, so no
+/// author can grind a key that sorts first; @coordinator-opus m67ddf30d63ad, @design-reviewer m4b209491ab0b) and the
+/// author, then seq. No kick's stamp is read.
+fn admin_key(e: &Entry, seed: u64) -> (u8, u64, MemberId, u32) {
+    match e.payload {
+        Payload::Kick { .. } => (1, fnv_u64s([0x5045_4b49_434b_4f52, seed, e.member as u64]), e.member, e.seq),
+        _ => (0, e.stamp, e.member, e.seq),
+    }
 }
 
 /// A member's ownership key (12.5). In the spike a member id is its identity (10.3); production
@@ -459,6 +472,30 @@ struct AdminRun {
     /// The world's ownership chain (12.5), if it has one, and the session lineage that commits to it.
     book: Option<Book>,
     lineage: u32,
+    /// Rev 22 (e1): the ACL as of the previous decided change (members, roles, role definitions, owners), against which
+    /// a kick is judged, whatever this decision's role entries (which run first) changed.
+    acl0: Option<Box<(BTreeSet<MemberId>, BTreeMap<MemberId, RoleId>, BTreeMap<RoleId, u64>, BTreeSet<Key>)>>,
+}
+
+/// Revision 22, plan (A) (@coordinator-opus, 2026-11-06 22:13Z): a latency leave carries the fed set its sender saw. Spike
+/// encoding: a mask in the leave vote's `seq` (0 on every other leave), bit m − 1 for member m, the top bit set. A lying
+/// leaver can only affect its own leave.
+pub const LATENCY_LEAVE: u32 = 1 << 31;
+
+pub fn latency_leave_mask(fed: &BTreeSet<MemberId>) -> u32 {
+    fed.iter().filter(|&&m| (1..=31).contains(&m)).fold(LATENCY_LEAVE, |a, &m| a | 1 << (m - 1))
+}
+
+/// The fed set a leave vote's `seq` carries: None for a plain leave.
+pub fn latency_leave_fed(seq: u32) -> Option<BTreeSet<MemberId>> {
+    (seq & LATENCY_LEAVE != 0).then(|| (1..=31u32).filter(|&m| seq & (1 << (m - 1)) != 0).collect())
+}
+
+/// The two-fed region for a latency leave at commit: n − f < q with `members`, f the carried fed set among them.
+fn latency_region(members: &BTreeSet<MemberId>, fed: &BTreeSet<MemberId>) -> bool {
+    let n = members.len();
+    let f = fed.iter().filter(|m| members.contains(m)).count();
+    f > 0 && n - f < quorum(QuorumRule::Bft, n).1
 }
 
 impl AdminRun {
@@ -501,7 +538,15 @@ impl AdminRun {
         let p = self.perms(a);
         match e.payload {
             Payload::Kick { target, .. } => {
-                if !self.kick_allowed(a, target) {
+                // Rev 22 (e1): judged against the previous decided ACL; the target must still be a member here.
+                let allowed = match &self.acl0 {
+                    Some(b) => {
+                        let v = AdminRun { members: b.0.clone(), roles: b.1.clone(), defs: b.2.clone(), excluded: BTreeSet::new(), owners: b.3.clone(), book: None, lineage: self.lineage, acl0: None };
+                        v.kick_allowed(a, target) && self.members.contains(&target)
+                    }
+                    None => self.kick_allowed(a, target),
+                };
+                if !allowed {
                     return false;
                 }
                 self.members.remove(&target);
@@ -563,6 +608,9 @@ impl AdminRun {
 /// subsets of the permission set. Admins are equal: none is above another.
 pub type RoleId = u16;
 pub const ADMIN: RoleId = 0;
+
+/// Thin links Part B, rule 5: the longest a fed member's ack period P can be (P <= 32 frames).
+pub const FED_ACK_MAX_FRAMES: u64 = 32;
 
 /// The permissions a role grants. The catalogue grows with the engine; these are the ones the
 /// membership protocol checks. Admin holds them all.
@@ -745,6 +793,44 @@ pub enum QuorumRule {
     Bft,
 }
 
+/// (spike: PE_NO_ROUND_FALLBACK=1) No round fallback timeout, as before gap 1 (to measure it).
+fn no_round_fallback() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_ROUND_FALLBACK").is_ok())
+}
+
+/// (spike: PE_FALLBACK_ALONE=1) The round fallback times a round from its start, so it also ends one no other member has
+/// entries in yet (to measure it).
+fn fallback_alone() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FALLBACK_ALONE").is_ok())
+}
+
+/// (spike: PE_FALLBACK_ALL=1) The round fallback at every member, not only a fed one (to measure it).
+fn fallback_all() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FALLBACK_ALL").is_ok())
+}
+
+/// (spike: PE_NO_SELF_OUT=1) What recording my own entries produces is dropped again, as before (to measure it).
+fn no_self_out() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_NO_SELF_OUT").is_ok())
+}
+
+/// (spike diagnostics: PE_VC_TRACE=<member>) The member whose recorded view-change entries are traced.
+fn vc_trace() -> Option<MemberId> {
+    static V: std::sync::OnceLock<Option<MemberId>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_VC_TRACE").ok().and_then(|v| v.parse().ok()))
+}
+
+/// (spike: PE_JUDGE_BY_NOW=1) An arriving entry waits for its verdict by the receiver's membership now, as before F2
+/// on arrival.
+fn judge_by_now() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_JUDGE_BY_NOW").is_ok())
+}
+
 /// `(t, q)` for `m` members not excluded by proof: unproven faulty members tolerated, and the
 /// quorum size. Any two quorums then share an honest member while at most t of the m are faulty.
 pub fn quorum(rule: QuorumRule, m: usize) -> (usize, usize) {
@@ -862,13 +948,69 @@ pub struct Entry {
     pub payload: Payload,
     /// User ruling 09:30Z: the resulting state of the touched object after frame `stamp`.
     pub carried: Option<(u32, BodyState)>,
+    /// Thin links Part B (TLP-19, TLP-31): the checkpoint link. A member's first entry stamped in any non-empty
+    /// 32-frame block is its checkpoint, and carries the id of that member's most recent earlier checkpoint;
+    /// every other entry carries 0 (as does a member's first checkpoint).
+    pub link: EntryId,
+}
+
+/// Thin links Part B: a checkpoint block is 32 frames.
+pub const CKPT_FRAMES: u64 = 32;
+
+/// Thin links Part B (rule 1's echo, rule 5): what a fed member's ack adds. `anchor`: the frame of its newest
+/// state anchor (on every fed ack). `echo`: per member it echoes, the block of the newest checkpoint of that
+/// member's chain it computed (TLP-23); `digest`: the hash of the echoed (member, block, id) triples, which each
+/// receiver recomputes from its own version (production: 32 bytes, DS-4). The echo rides only on an ack after
+/// it changed (empty: as before); it is cumulative, and acks are read in chain order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FedAck {
+    pub anchor: u64,
+    pub echo: Vec<(MemberId, u64)>,
+    pub digest: u64,
+}
+
+/// H_id (TLP-22, TLP-31): an entry's id from its checkpoint link and its rest-hash.
+pub fn entry_id(link: EntryId, rest: u64) -> EntryId {
+    fnv_u64s([0x5045_5f49_445f_5631, link, rest])
+}
+
+/// Rule 1's echo: the digest over the echoed (member, block, id) triples, in member order.
+pub fn echo_digest(triples: impl IntoIterator<Item = (MemberId, u64, EntryId)>) -> u64 {
+    fnv_u64s(std::iter::once(0x5045_5f45_4348_4f31).chain(triples.into_iter().flat_map(|(m, b, id)| [m as u64, b, id])))
+}
+
+/// Thin links Part B (TLP-19): a chain's checkpoint state after `e`, from its state before it: the newest
+/// checkpoint's block and id (None before the chain's first entry). `e` is a checkpoint if it is stamped in a
+/// later block than the newest checkpoint's.
+pub fn ckpt_step(ck: Option<(u64, EntryId)>, e: &Entry) -> Option<(u64, EntryId)> {
+    match ck {
+        Some((b, _)) if e.stamp / CKPT_FRAMES <= b => ck,
+        _ => Some((e.stamp / CKPT_FRAMES, e.id())),
+    }
+}
+
+/// The link an entry stamped `stamp` carries after the chain state `ck`: the newest checkpoint's id if the
+/// entry is a checkpoint, and 0 if it is not (or is the chain's first).
+pub fn ckpt_link_for(ck: Option<(u64, EntryId)>, stamp: u64) -> EntryId {
+    match ck {
+        Some((b, id)) if stamp / CKPT_FRAMES > b => id,
+        _ => 0,
+    }
 }
 
 impl Entry {
-    /// Spike: 64-bit FNV of the encoding. Production: BLAKE3 of the signed bytes.
+    /// Spike: H_id(link || H_rest(rest)), two FNV variants under distinct domain prefixes (TLP-22, TLP-31), so a
+    /// fed member computes a checkpoint's id from the link it holds and the rest-hash it is sent. Production:
+    /// domain-separated SHA-256 / BLAKE3 over the signed bytes.
     pub fn id(&self) -> EntryId {
-        let mut w = Wr(Vec::with_capacity(96));
-        w.entry(self);
+        entry_id(self.link, self.rest_hash())
+    }
+
+    /// H_rest: the hash of everything but the link's value (the encoding's flags still say whether there is one).
+    pub fn rest_hash(&self) -> u64 {
+        let mut w = Wr(Vec::with_capacity(104));
+        w.0.extend_from_slice(b"pe-rest\0");
+        w.entry_rest(self);
         fnv_bytes(&w.0)
     }
 }
@@ -893,6 +1035,29 @@ pub enum Msg {
     /// (review VC3R-7) up to `back` of its predecessors down its prev links, so the reply is exactly
     /// that branch of a forked chain.
     FetchEntry { id: EntryId, back: u8 },
+    /// Thin links Part B, rule 5: the state feed to a fed member, from its feeder. The bodies' states
+    /// after `frame`, quantized (`FeedBody`). Rev 22 delta (proposal): `fed`, the members the feeder's log shows
+    /// fed, so a fed member knows whom to send its own checkpoints (contact only). Never logged.
+    Feed { frame: u64, fed: Vec<MemberId>, bodies: Vec<FeedBody> },
+    /// Thin links Part B (TLP-23): `member`'s checkpoints for a fed member, block and rest-hash each, from the
+    /// one after block `after` (the checkpoint the first one links to; None: the first is the chain's first).
+    /// Only from the chain's own author. Never logged. Rev 22 delta (proposal): `fed`, the sender is fed itself, and
+    /// `echo`, its own last echo of the recipient's chain (a block), from which the recipient sends its checkpoints.
+    Ckpts { member: MemberId, after: Option<u64>, list: Vec<(u64, u32, u64)>, fed: bool, echo: Option<u64> },
+    /// Gap 1 (ruled m0813b922e026): a fed member asks for the epoch certificates after `epoch`, having seen an entry of
+    /// an epoch it hasn't decided. Never logged.
+    CertReq { epoch: u32 },
+    /// Gap 1: epoch certificates for a fed member that missed decisions (it holds no log to follow them by), each with
+    /// the admin entries and removal votes its change lists, by value. Never logged.
+    Certs { packs: Vec<CertPack> },
+}
+
+/// Gap 1: an epoch certificate and the entries its change lists that a decision needs held (VCR-8, and with Part B the
+/// removal votes): its admin entries and removal votes, and its exclusions' proofs (in the certificate).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CertPack {
+    pub cert: EpochCert,
+    pub entries: Vec<Entry>,
 }
 
 pub fn fnv_bytes(b: &[u8]) -> u64 {
@@ -911,6 +1076,7 @@ impl Wr {
     fn u32(&mut self, v: u32) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn u64(&mut self, v: u64) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn i32(&mut self, v: i32) { self.0.extend_from_slice(&v.to_le_bytes()) }
+    fn i16(&mut self, v: i16) { self.0.extend_from_slice(&v.to_le_bytes()) }
     fn state(&mut self, s: &BodyState) { for b in s.0 { self.u32(b) } }
     fn cert(&mut self, c: &[(MemberId, u64)]) { self.u32(c.len() as u32); for (m, s) in c { self.u32(*m); self.u64(*s) } }
     fn hop(&mut self, h: &Hop) {
@@ -936,6 +1102,13 @@ impl Wr {
         for x in a { self.u8(x.rel.tag()); self.u32(x.with); self.u64(x.sig_with); self.u64(x.sig_joiner) }
     }
     fn entry(&mut self, e: &Entry) {
+        self.entry_rest(e);
+        if e.link != 0 {
+            self.u64(e.link);
+        }
+    }
+    /// The canonical encoding without the checkpoint link's value (H_rest's input).
+    fn entry_rest(&mut self, e: &Entry) {
         self.u32(e.member);
         self.u32(e.seq);
         self.u64(e.prev);
@@ -996,13 +1169,19 @@ impl Wr {
                 assert!(w.len() <= MAX_CERT_WORDS, "an ownership certificate is at most {MAX_CERT_WORDS} words");
                 self.u8(20); self.u32(*epoch); self.u32(w.len() as u32); for x in w { self.u64(x) }
             }
-            Payload::Ack { horizon, heads, check, epoch } => {
+            Payload::Ack { horizon, heads, check, epoch, fed } => {
                 // Epoch 0 keeps the phase-1 layout (tag 7), so runs without a view change keep
-                // their entry ids; a later epoch is tag 14 with the epoch appended.
-                self.u8(if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
+                // their entry ids; a later epoch is tag 14 with the epoch appended. A fed member's ack
+                // (Part B) is tag 22: the epoch, then its anchor and echo.
+                self.u8(if fed.is_some() { 22 } else if *epoch == 0 { 7 } else { 14 }); self.u64(*horizon); self.u32(heads.len() as u32);
                 for (q, s, id) in heads { self.u32(*q); self.u32(*s); self.u64(*id) }
                 match check { Some((f, h)) => { self.u8(1); self.u64(*f); self.u64(*h) } None => self.u8(0) }
-                if *epoch != 0 { self.u32(*epoch) }
+                if *epoch != 0 || fed.is_some() { self.u32(*epoch) }
+                if let Some(fa) = fed {
+                    self.u64(fa.anchor); self.u32(fa.echo.len() as u32);
+                    for (m, b) in &fa.echo { self.u32(*m); self.u64(*b) }
+                    if !fa.echo.is_empty() { self.u64(fa.digest) }
+                }
             }
             Payload::Vote { epoch, target, seq, frozen, kick } => {
                 // A vote that answers no kick keeps tag 8 (and so its id); a kick vote is tag 15.
@@ -1026,9 +1205,11 @@ impl Wr {
                 for id in polka { self.u64(*id) }
             }
         }
-        match &e.carried {
-            Some((obj, s)) => { self.u8(1); self.u32(*obj); self.state(s) }
-            None => self.u8(0),
+        // Flags: bit 0 a carried state follows, bit 1 a checkpoint link follows (after it).
+        self.u8(e.carried.is_some() as u8 | ((e.link != 0) as u8) << 1);
+        if let Some((obj, s)) = &e.carried {
+            self.u32(*obj);
+            self.state(s);
         }
     }
     fn change(&mut self, c: &Change) {
@@ -1081,6 +1262,43 @@ impl Wr {
             }
             Msg::FetchEntry { id, back: 0 } => { self.u8(8); self.u64(*id) }
             Msg::FetchEntry { id, back } => { self.u8(9); self.u64(*id); self.u8(*back) }
+            Msg::Ckpts { member, after, list, fed, echo } => {
+                self.u8(11); self.u32(*member);
+                match after { Some(b) => { self.u8(1); self.u64(*b) } None => self.u8(0) }
+                self.u32(list.len() as u32);
+                for (b, s, r) in list { self.u64(*b); self.u32(*s); self.u64(*r) }
+                self.u8(u8::from(*fed) | if echo.is_some() { 2 } else { 0 });
+                if let Some(b) = echo { self.u64(*b) }
+            }
+            Msg::Feed { frame, fed, bodies } => {
+                self.u8(10); self.u64(*frame);
+                self.u8(fed.len() as u8);
+                for m in fed { self.u32(*m) }
+                self.u32(bodies.len() as u32);
+                for b in bodies {
+                    self.u32(b.obj);
+                    for &x in &b.pos { self.i32(x) }
+                    for &x in &b.rot { self.i16(x) }
+                    for &x in &b.lin { self.i16(x) }
+                }
+            }
+            Msg::CertReq { epoch } => { self.u8(12); self.u32(*epoch) }
+            Msg::Certs { packs } => {
+                self.u8(13);
+                self.u32(packs.len() as u32);
+                for p in packs {
+                    let c = &p.cert;
+                    self.u32(c.world); self.u32(c.epoch); self.change(&c.change); self.u32(c.round);
+                    self.u32(c.members.len() as u32);
+                    for m in &c.members { self.u32(*m) }
+                    self.u32(c.precommits.len() as u32);
+                    for (m, s) in &c.precommits { self.u32(*m); self.u64(*s) }
+                    self.u32(c.proofs.len() as u32);
+                    for e in &c.proofs { self.entry(e) }
+                    self.u32(p.entries.len() as u32);
+                    for e in &p.entries { self.entry(e) }
+                }
+            }
         }
     }
 }
@@ -1096,6 +1314,7 @@ impl Rd<'_> {
     fn u32(&mut self) -> Option<u32> { Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
     fn u64(&mut self) -> Option<u64> { Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?)) }
     fn i32(&mut self) -> Option<i32> { Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?)) }
+    fn i16(&mut self) -> Option<i16> { Some(i16::from_le_bytes(self.take(2)?.try_into().ok()?)) }
     fn f32(&mut self) -> Option<f32> { Some(f32::from_bits(self.u32()?)) }
     fn cert(&mut self) -> Option<Vec<(MemberId, u64)>> {
         let n = self.u32()? as usize;
@@ -1217,14 +1436,24 @@ impl Rd<'_> {
                 for _ in 0..n { w.push(self.u64()?) }
                 Payload::Ownership { epoch, cert: Cert::from_words(&w)? }
             }
-            tag @ (7 | 14) => {
+            tag @ (7 | 14 | 22) => {
                 let horizon = self.u64()?;
                 let n = self.u32()? as usize;
                 let mut heads = Vec::with_capacity(n.min(256));
                 for _ in 0..n { heads.push((self.u32()?, self.u32()?, self.u64()?)) }
                 let check = if self.u8()? == 1 { Some((self.u64()?, self.u64()?)) } else { None };
-                let epoch = if tag == 14 { self.u32()? } else { 0 };
-                Payload::Ack { horizon, heads, check, epoch }
+                let epoch = if tag != 7 { self.u32()? } else { 0 };
+                let fed = if tag == 22 {
+                    let anchor = self.u64()?;
+                    let k = self.u32()? as usize;
+                    let mut echo = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { echo.push((self.u32()?, self.u64()?)) }
+                    let digest = if k > 0 { self.u64()? } else { 0 };
+                    Some(FedAck { anchor, echo, digest })
+                } else {
+                    None
+                };
+                Payload::Ack { horizon, heads, check, epoch, fed }
             }
             tag @ (8 | 15) => {
                 let (epoch, target, seq, frozen) = (self.u32()?, self.u32()?, self.u32()?, (self.u32()?, self.u64()?));
@@ -1246,11 +1475,22 @@ impl Rd<'_> {
             }
             _ => return None,
         };
-        let carried = match self.u8()? {
-            1 => Some((self.u32()?, self.state()?)),
-            _ => None,
+        let flags = self.u8()?;
+        if flags > 3 {
+            return None;
+        }
+        let carried = if flags & 1 != 0 { Some((self.u32()?, self.state()?)) } else { None };
+        // A link is never 0 on the wire: the flag says there is none.
+        let link = if flags & 2 != 0 {
+            let l = self.u64()?;
+            if l == 0 {
+                return None;
+            }
+            l
+        } else {
+            0
         };
-        Some(Entry { member, seq, prev, stamp, payload, carried })
+        Some(Entry { member, seq, prev, stamp, payload, carried, link })
     }
     fn change(&mut self) -> Option<Change> {
         let raw = self.u32()?;
@@ -1312,6 +1552,56 @@ impl Rd<'_> {
             }
             8 => Msg::FetchEntry { id: self.u64()?, back: 0 },
             9 => Msg::FetchEntry { id: self.u64()?, back: self.u8()? },
+            11 => {
+                let member = self.u32()?;
+                let after = if self.u8()? == 1 { Some(self.u64()?) } else { None };
+                let n = self.u32()? as usize;
+                let mut list = Vec::with_capacity(n.min(256));
+                for _ in 0..n { list.push((self.u64()?, self.u32()?, self.u64()?)) }
+                let flags = self.u8()?;
+                let echo = if flags & 2 != 0 { Some(self.u64()?) } else { None };
+                Msg::Ckpts { member, after, list, fed: flags & 1 != 0, echo }
+            }
+            10 => {
+                let frame = self.u64()?;
+                let k = self.u8()? as usize;
+                let mut fed = Vec::with_capacity(k);
+                for _ in 0..k { fed.push(self.u32()?) }
+                let n = self.u32()? as usize;
+                let mut bodies = Vec::with_capacity(n.min(256));
+                for _ in 0..n {
+                    let obj = self.u32()?;
+                    let pos = [self.i32()?, self.i32()?, self.i32()?];
+                    let rot = [self.i16()?, self.i16()?, self.i16()?, self.i16()?];
+                    let lin = [self.i16()?, self.i16()?, self.i16()?];
+                    bodies.push(FeedBody { obj, pos, rot, lin });
+                }
+                Msg::Feed { frame, fed, bodies }
+            }
+            12 => Msg::CertReq { epoch: self.u32()? },
+            13 => {
+                let n = self.u32()? as usize;
+                let mut packs = Vec::with_capacity(n.min(64));
+                for _ in 0..n {
+                    let (world, epoch) = (self.u32()?, self.u32()?);
+                    let change = self.change()?;
+                    let round = self.u32()?;
+                    let k = self.u32()? as usize;
+                    let mut members = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { members.push(self.u32()?) }
+                    let k = self.u32()? as usize;
+                    let mut precommits = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { precommits.push((self.u32()?, self.u64()?)) }
+                    let k = self.u32()? as usize;
+                    let mut proofs = Vec::with_capacity(k.min(64));
+                    for _ in 0..k { proofs.push(self.entry()?) }
+                    let k = self.u32()? as usize;
+                    let mut entries = Vec::with_capacity(k.min(256));
+                    for _ in 0..k { entries.push(self.entry()?) }
+                    packs.push(CertPack { cert: EpochCert { world, epoch, change, round, members, precommits, proofs }, entries });
+                }
+                Msg::Certs { packs }
+            }
             _ => return None,
         })
     }
@@ -1590,6 +1880,9 @@ pub struct Tables {
     /// Active hands: frames since the hand's last entry, that entry's `span`, and whether it continues
     /// a stream, so the hand may coast past its span (dead reckoning, `SimConfig::hand_predict`).
     pub hand_idle: BTreeMap<u32, (u64, u8, bool)>,
+    /// Thin links Part B, rule 2: per object, per author, the carried-state writes applied to it (seq ->
+    /// stamp), the last 2 speculation windows of them.
+    pub writes: BTreeMap<u32, BTreeMap<MemberId, BTreeMap<u32, u64>>>,
 }
 
 #[derive(Clone)]
@@ -1624,6 +1917,8 @@ pub struct Stats {
     pub nonfinite: u64,
     /// Eviction votes found to contradict their voter's own published references (review R3-1).
     pub lying_votes: u64,
+    /// Carry-over (measurement): rule 1's verdict passes (`decide_verdicts` calls).
+    pub verdict_passes: u64,
     /// Members this replica presumed crashed and voted to remove (review R3-2).
     pub suspicions: u64,
     /// Members this replica voted to demote because their link could not keep up (review R3-9).
@@ -1633,9 +1928,24 @@ pub struct Stats {
     pub view_changes: u64,
     pub resets: u64,
     pub max_round: u32,
+    /// Gap 1: epoch certificates a fed member applied by value, and ones it refused (a signature or the member list
+    /// didn't check against the members it held).
+    pub certs_applied: u64,
+    pub certs_refused: u64,
+    /// Gap 1: rounds this replica ended with no proposal and fewer than q precommits (the round fallback).
+    pub round_fallbacks: u64,
     /// D80: kicks and role entries the decided changes applied, and those they refused.
     pub admin_applied: u64,
     pub admin_refused: u64,
+    /// Thin links Part B, rule 2: carried-state writes skipped as stale (counted at every simulation of
+    /// their frame, re-simulations included).
+    pub stale_skips: u64,
+    /// Thin links Part B, rule 1's echo: fed members' echoes whose digest matched my version (credited), and
+    /// those that didn't (production asks for the full signed heads, 7.6).
+    pub echoes_matched: u64,
+    pub echo_mismatches: u64,
+    /// Thin links Part B, rule 4's exception: fed members this replica voted out below the floors.
+    pub floor_removals: u64,
 }
 
 /// Which world images a member keeps between the base and its present (design 6.7). Purely local:
@@ -1705,6 +2015,21 @@ pub struct SimConfig {
     pub ack_heads: bool,
     /// How far ahead of its present a proposer puts a join's boundary frame (P2-4).
     pub join_lead: u64,
+    /// Thin links, Part B (thin-link plan revision 17): localized verdicts and stale-write skips for
+    /// sessions of 4 or more members. Off keeps today's rules; the spike switches it on per scenario
+    /// while Part B is built.
+    pub localize: bool,
+    /// Part B, rule 1's echo: receivers credit a fed member's echo (on by default; off only to measure what
+    /// it carries).
+    pub echo: bool,
+    /// Part B, section 3, in frames: Q's limits (admin entries in production), the floor F under every
+    /// deadline, and an acceptable connection's jitter and delay limits and its re-fetch allowance R.
+    pub q_min: u64,
+    pub q_max: u64,
+    pub floor_f: u64,
+    pub j_acc: u64,
+    pub y_acc: u64,
+    pub refetch_r: u64,
 }
 
 impl Default for SimConfig {
@@ -1723,6 +2048,14 @@ impl Default for SimConfig {
             vc_timeout_step: 10,
             ack_heads: true,
             join_lead: 60,
+            localize: false,
+            echo: true,
+            q_min: 4,
+            q_max: 45,
+            floor_f: 32,
+            j_acc: 3,
+            y_acc: 9,
+            refetch_r: 16,
         }
     }
 }
@@ -1807,6 +2140,9 @@ struct Vc {
     step: Step,
     /// Clock frame at which the current round began (the propose timeout runs from it).
     round_at: u64,
+    /// Gap 1's round fallback: clock frame at which this replica first held another member's prevote or precommit
+    /// of the current round or a later one (None until then).
+    joined_at: Option<u64>,
     proposed: bool,
     /// (value, round) this replica is locked on, and the latest value it saw a quorum prevote.
     locked: Option<(u64, u32)>,
@@ -1903,6 +2239,69 @@ pub struct WorldSim {
     /// Per author: the highest seq ever found stable. Stability is permanent (chains only grow), so
     /// a later conflicting reference can never shrink it (review R3-1).
     stable_hi: BTreeMap<MemberId, u32>,
+    /// Part B, section 3: (referrer, author) -> head seq -> (the referrer's first ack that reached it:
+    /// its seq and stamp; the head's id). First write wins, where `refs` keeps the latest.
+    first_ref: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (u32, u64, EntryId)>>,
+    /// Part B, rules 1 and 2: (acker, author) -> ack seq -> the head of the author's chain that ack named,
+    /// with its id.
+    ack_head_hist: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (u32, EntryId)>>,
+    /// Part B, rule 1: per acker, ack stamp -> the highest seq of its acks with that stamp.
+    ack_by_stamp: BTreeMap<MemberId, BTreeMap<u64, u32>>,
+    /// Part B, rule 1: the verdict of each judged entry, once decided (true: it counts), and the entries
+    /// still without one, by stamp.
+    pub verdicts: BTreeMap<EntryId, bool>,
+    pending: BTreeSet<(u64, EntryId)>,
+    /// Part B, rule 1: entries void because q members provably lacked them at their deadline.
+    late_void: BTreeSet<EntryId>,
+    /// Part B: windows whose values a decision used before they were final (rule 2 at speculation).
+    provisional: BTreeMap<u64, WindowVals>,
+    /// Part B: an offline replay, which reads the live replica's window values and computes none.
+    replaying: bool,
+    /// Part B, rule 2: each carried-state entry's decision at its frame's latest simulation (true: skipped).
+    pub rule2: BTreeMap<EntryId, bool>,
+    /// Part B, section 3: (window, author) -> the seqs of the author's entries stamped in that window.
+    win_seqs: BTreeMap<(u64, MemberId), BTreeSet<u32>>,
+    /// Part B, section 3: each window's values, once final, and each settled window's data.
+    windows: BTreeMap<u64, WindowVals>,
+    window_data_cache: BTreeMap<u64, localize::WindowData>,
+    /// Part B, rule 5: this replica is on the state feed (set by the harness, never logged).
+    fed: Option<feed::Fed>,
+    /// Part B (TLP-27): per author, the checkpoint state after the newest entry of its chain I validated: the
+    /// newest checkpoint's block and id.
+    ckpt: BTreeMap<MemberId, (u64, EntryId)>,
+    /// Part B (TLP-27): the checkpoint state after each validated entry, by its id. An entry's expected link
+    /// follows from its prev's state, so each version of a forked chain is judged on its own line.
+    ckpt_after: BTreeMap<EntryId, (u64, EntryId)>,
+    /// Part B (TLP-19): my own chain's checkpoint state, kept at publish (a joiner validates its own chain only
+    /// once admitted).
+    my_ckpt: Option<(u64, EntryId)>,
+    /// Part B (TLP-23): every checkpoint in my version, by author and block: its seq, id and rest-hash.
+    ckpt_by_block: BTreeMap<(MemberId, u64), (u32, EntryId, u64)>,
+    /// Part B, rule 1's echo: the checkpoints a fed member's echo credits as its references, once its digest
+    /// matched my version. Read only by echo-stability (`matched_ref`): never holders, D54 stability or votes.
+    echo_refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (EntryId, u32)>>,
+    /// Ruling 2: each fed member's echoes as its acks carry them, unresolved: (fed member, chain) -> ack seq -> the
+    /// checkpoint block echoed (mine too). The final term reads them without matching them to held entries.
+    echo_named: BTreeMap<(MemberId, MemberId), BTreeMap<u32, u64>>,
+    /// Each fed member's echoes not yet checked (I don't hold every checkpoint they name yet), by the seq of the ack that
+    /// carried each (every one is checked: keeping
+    /// only the newest left a replica that caught up in a burst without the older ones, so the final term's references
+    /// differed between replicas; leave-s4-rejoin's spectator cut member 2 at 58, the members at 96).
+    echo_pending: BTreeMap<MemberId, BTreeMap<u32, (Vec<(MemberId, u64)>, u64)>>,
+    /// Members my log shows on the feed (their newest ack carries an anchor), with the block of their echo
+    /// of my chain (TLP-23).
+    fed_peers: BTreeMap<MemberId, Option<u64>>,
+    /// TLP-23: per fed member, the newest of my checkpoint blocks I sent it and the frame I sent it at.
+    ckpt_sent: BTreeMap<MemberId, (u64, u64)>,
+    /// Rule 4's floor test: the frame I first sent each of my checkpoint blocks to each fed member.
+    ckpt_first_sent: BTreeMap<(MemberId, u64), u64>,
+    /// Part B at 3 players (S-1): per member, the seqs of its acks that carry an anchor (it was fed).
+    anchored_acks: BTreeMap<MemberId, BTreeSet<u32>>,
+    /// The fed side (TLP-24): per member, the newest checkpoint of its chain I echo, its block and id. Kept
+    /// across leaving and re-entering the feed.
+    echo_last: BTreeMap<MemberId, (u64, EntryId)>,
+    /// Rev 22 (TLP-24): the seq of each chain's last echoed checkpoint, so a fed member's vote can freeze it.
+    echo_seq: BTreeMap<MemberId, u32>,
     /// Per member: my present frame when a new entry of its chain last reached me (review R3-2).
     heard: BTreeMap<MemberId, u64>,
     /// Per member: my present frame since when its newest validated horizon has trailed my present
@@ -1924,6 +2323,21 @@ pub struct WorldSim {
     cut_ids: BTreeMap<MemberId, EntryId>,
     /// Evicted members whose prefix up to the cut this replica holds and has reconciled.
     cut_done: BTreeSet<MemberId>,
+    /// (spike diagnostics) Each Part B removal's cut as finalized here: `localize::CutRecord`.
+    pub cut_records: BTreeMap<MemberId, localize::CutRecord>,
+    /// Carry-over, hole 2 (rev 22 part 3): each removed member's B, the seq bound its decided removal fixes: the
+    /// highest frozen head of its chain among the votes the change lists (a leave lists its own). Its acks past B never
+    /// count, so its last epoch's acks end in the log. A seq bound only: the version that counts is the echo-stable one.
+    bound: BTreeMap<MemberId, u32>,
+    /// Carry-over (measurement): per-epoch reference lookups (`ref_in` calls), each one range search of a
+    /// referencer's ack history.
+    pub ref_lookups: std::cell::Cell<u64>,
+    /// Carry-over: (member, epoch) -> its vouched prefix in that epoch, once that epoch's acks are all in here.
+    final_vouch: BTreeMap<(MemberId, u32), u32>,
+    /// Revision 22: since when my latency leave has deferred to another fed member (at most one window).
+    latency_defer_since: Option<u64>,
+    /// (diagnostics) Latency leaves a change I built left out, logged once each.
+    latency_left_out: BTreeSet<EntryId>,
     /// The view change of the current epoch.
     vc: Vc,
     /// View-change entries (votes, proposals, prevotes, precommits) of later epochs, processed on
@@ -1950,6 +2364,14 @@ pub struct WorldSim {
     pub vc_log: Vec<(u32, u64, u32, Vec<MemberId>)>,
     /// Test fixture: author no vote, proposal, prevote or precommit (a member that withholds them).
     pub withhold_vc: bool,
+    /// Rev 22 delta (proposal), a fed member's: the fed set in its feeder's latest packet (contact only); when each
+    /// peer's own fed Ckpts last reached it, and the echo of my chain that peer last reported in them.
+    feeder_fed: BTreeSet<MemberId>,
+    /// Spike measurement (option 2, m9d40b0d9a9d7): when a fed member's next echo ack is due after a Ckpts advanced
+    /// its echo (PE_ECHO_ACK=B batches B frames); the harness clears it when it authors an ack.
+    pub echo_ack_at: Option<u64>,
+    fed_heard: BTreeMap<MemberId, u64>,
+    fed_echo_of_me: BTreeMap<MemberId, Option<u64>>,
     /// Non-members this replica sends its entries to: members that asked to join, or followers.
     pub followers: BTreeSet<MemberId>,
     /// Members that asked to join and are not admitted yet.
@@ -1965,6 +2387,29 @@ pub struct WorldSim {
     join_caps: BTreeMap<MemberId, (u32, u64)>,
     /// Per member: the first seq of its chain whose ack declares each epoch after 0.
     ack_epoch_from: BTreeMap<MemberId, BTreeMap<u32, u32>>,
+    /// F2 (revision 21 (a)): each removed member's first epoch as a non-member.
+    removed_in: BTreeMap<MemberId, u32>,
+    /// How each removed member was removed (ruling 1: Q1's finality leaves out only members removed on suspicion).
+    removed_kind: BTreeMap<MemberId, localize::RemovalKind>,
+    /// Gap 1, the feeder's side: the frame I last pushed certificates to a fed member lagging in an epoch.
+    cert_pushed: BTreeMap<(MemberId, u32), u64>,
+    /// Gap 1, the fed side: the frame I last asked for the certificates after an epoch, and the asks to send.
+    cert_asked: BTreeMap<u32, u64>,
+    cert_wants: Vec<(MemberId, u32)>,
+    /// Entries recording my own entries produced, to send (`publish`).
+    self_out: Vec<Entry>,
+    /// F2: removed members whose Part B cut isn't final yet (`finalize_cuts`).
+    pb_pending: BTreeSet<MemberId>,
+    /// Diagnostics: the last second of my present traced (PE_CONF_TRACE).
+    dbg_conf_at: u64,
+    /// Rev 22: each member's leave request in this epoch, taken by value (a vote on itself without a kick).
+    leaves: BTreeMap<MemberId, EntryId>,
+    /// Rule 4 (D): bytes reaching me directly from each member, by my present's frame (`note_rx`).
+    rx_bytes: BTreeMap<MemberId, BTreeMap<u64, u64>>,
+    /// Rule 4 (D): when I first saw each fed member's ack say it is fed (cleared when it leaves the feed).
+    fed_seen: BTreeMap<MemberId, u64>,
+    /// F2: every validated vote by (target, voter): (its epoch, its seq, its frozen head's seq), the first per epoch.
+    vote_hist: BTreeMap<(MemberId, MemberId), Vec<(u32, u32, u32)>>,
     /// Test fixture (D80 bridge): heads this member's acks and votes report at most.
     hidden: Option<BTreeMap<MemberId, (u32, EntryId)>>,
     /// Test fixture (D80 bridge): a faulty member that backs every vote another member casts,
@@ -2151,6 +2596,32 @@ impl WorldSim {
             ack_stamps: BTreeMap::new(),
             refs: BTreeMap::new(),
             stable_hi: BTreeMap::new(),
+            first_ref: BTreeMap::new(),
+            ack_head_hist: BTreeMap::new(),
+            ack_by_stamp: BTreeMap::new(),
+            verdicts: BTreeMap::new(),
+            pending: BTreeSet::new(),
+            late_void: BTreeSet::new(),
+            provisional: BTreeMap::new(),
+            replaying: false,
+            rule2: BTreeMap::new(),
+            win_seqs: BTreeMap::new(),
+            windows: BTreeMap::new(),
+            window_data_cache: BTreeMap::new(),
+            fed: None,
+            ckpt: BTreeMap::new(),
+            ckpt_after: BTreeMap::new(),
+            my_ckpt: None,
+            ckpt_by_block: BTreeMap::new(),
+            echo_refs: BTreeMap::new(),
+            echo_named: BTreeMap::new(),
+            echo_pending: BTreeMap::new(),
+            fed_peers: BTreeMap::new(),
+            ckpt_sent: BTreeMap::new(),
+            ckpt_first_sent: BTreeMap::new(),
+            anchored_acks: BTreeMap::new(),
+            echo_last: BTreeMap::new(),
+            echo_seq: BTreeMap::new(),
             heard: BTreeMap::new(),
             lagging: BTreeMap::new(),
             proofs: BTreeMap::new(),
@@ -2160,6 +2631,12 @@ impl WorldSim {
             evicted: BTreeMap::new(),
             cut_ids: BTreeMap::new(),
             cut_done: BTreeSet::new(),
+            cut_records: BTreeMap::new(),
+            bound: BTreeMap::new(),
+            ref_lookups: std::cell::Cell::new(0),
+            final_vouch: BTreeMap::new(),
+            latency_defer_since: None,
+            latency_left_out: BTreeSet::new(),
             vc: Vc::default(),
             vc_later: BTreeMap::new(),
             proposal_ids: BTreeMap::new(),
@@ -2170,6 +2647,10 @@ impl WorldSim {
             decided: Vec::new(),
             vc_log: Vec::new(),
             withhold_vc: false,
+            feeder_fed: BTreeSet::new(),
+            echo_ack_at: None,
+            fed_heard: BTreeMap::new(),
+            fed_echo_of_me: BTreeMap::new(),
             byz_ally: false,
             byz_no_precommit: false,
             hidden: None,
@@ -2180,6 +2661,18 @@ impl WorldSim {
             admitted: BTreeMap::new(),
             join_caps: BTreeMap::new(),
             ack_epoch_from: BTreeMap::new(),
+            removed_in: BTreeMap::new(),
+            removed_kind: BTreeMap::new(),
+            cert_pushed: BTreeMap::new(),
+            cert_asked: BTreeMap::new(),
+            cert_wants: Vec::new(),
+            self_out: Vec::new(),
+            pb_pending: BTreeSet::new(),
+            dbg_conf_at: u64::MAX,
+            rx_bytes: BTreeMap::new(),
+            leaves: BTreeMap::new(),
+            fed_seen: BTreeMap::new(),
+            vote_hist: BTreeMap::new(),
             genesis: members.to_vec(),
             roles: members.iter().map(|&m| (m, ADMIN)).collect(),
             role_defs: BTreeMap::new(),
@@ -2345,6 +2838,14 @@ impl WorldSim {
         for (o, (n, span, stream)) in &self.t.hand_idle {
             v.extend([*o as u64, *n, *span as u64, *stream as u64, 11]);
         }
+        // Thin links Part B, rule 2's write index (empty with Part B off).
+        for (o, ws) in &self.t.writes {
+            for (m, seqs) in ws {
+                for (s, st) in seqs {
+                    v.extend([*o as u64, *m as u64, *s as u64, *st, 13]);
+                }
+            }
+        }
         fnv_u64s(v)
     }
 
@@ -2378,7 +2879,7 @@ impl WorldSim {
     }
 
     fn is_void(&self, id: EntryId) -> bool {
-        self.violations.contains(&id) || self.disputed.contains(&id)
+        self.violations.contains(&id) || self.disputed.contains(&id) || self.late_void.contains(&id)
     }
 
     /// Apply or withdraw an entry's effect on the sim according to its current verdict.
@@ -2393,6 +2894,32 @@ impl WorldSim {
         let old = self.eff.get(&id).copied();
         if old == new {
             return;
+        }
+        // Diagnostics: the entry whose change of effect is about to break the confirmed-frame invariant. In a control run
+        // (a review fix switched off, `fixes_off`) that is the behaviour before the fix, which the run's own report and the
+        // rollback assertion show: the line says so, so it can't be read as the fixed run's (fork9's and cutbackdate's
+        // controls print one each, @coordinator-opus me38be4a2a30d).
+        if old.is_some_and(|o| o < self.conf) || new.is_some_and(|n| n < self.conf) {
+            let e = &self.entries[&id];
+            let control = if self.fixes_off != 0 { format!(" (control run: fixes {:#x} switched off, the behaviour before them)", self.fixes_off) } else { String::new() };
+            eprintln!(
+                "DIRTY{control} at m{} (conf {}, frame {}): m{} s{} stamp {} {:?}: eff {:?} -> {:?}; violation {} disputed {} late_void {} verdict {:?} pending {} evicted {:?}",
+                self.me,
+                self.conf,
+                self.frame,
+                e.member,
+                e.seq,
+                e.stamp,
+                std::mem::discriminant(&e.payload),
+                old,
+                new,
+                self.violations.contains(&id),
+                self.disputed.contains(&id),
+                self.late_void.contains(&id),
+                self.verdicts.get(&id),
+                self.pending.contains(&(e.stamp, id)),
+                self.evicted.get(&e.member)
+            );
         }
         // D73(a): a hand pack acts at every frame it covers.
         let extra = e.payload.extra_frames();
@@ -2428,11 +2955,41 @@ impl WorldSim {
         }
     }
 
-    fn publish(&mut self, e: Entry) -> Entry {
+    /// The checkpoint state of `m`'s chain in my version (mine: as I authored it): its newest checkpoint's block
+    /// and id.
+    pub fn chain_ckpt(&self, m: MemberId) -> Option<(u64, EntryId)> {
+        if m == self.me {
+            self.my_ckpt
+        } else {
+            self.ckpt.get(&m).copied()
+        }
+    }
+
+    fn publish(&mut self, mut e: Entry) -> Entry {
+        // Thin links Part B: a checkpoint carries the link to this member's previous checkpoint.
+        e.link = ckpt_link_for(self.my_ckpt, e.stamp);
+        self.my_ckpt = ckpt_step(self.my_ckpt, &e);
         self.my_seq += 1;
         self.my_last = e.id();
-        let _ = self.insert(e.clone());
+        // What recording my own entry produces is sent too (`take_self_out`): recording my own kick casts my vote on its
+        // target (D80, `record_vc`), and dropped here that vote was never sent. Others fetched it on a hole in my chain;
+        // a fed member only once a decision listing it needed it held (VCR-8 with Part B): in kickliar-fed2 member 4
+        // held its precommits at frame 394 and member 1's kick vote only at 413.
+        let out = self.insert(e.clone());
+        if !no_self_out() {
+            self.self_out.extend(out);
+        }
         e
+    }
+
+    /// Entries that recording my own entries produced (my vote on the target of my own kick), to send.
+    pub fn take_self_out(&mut self) -> Vec<Entry> {
+        if vc_trace() == Some(self.me) {
+            for e in &self.self_out {
+                eprintln!("SELFOUT m{} now {} frame {}: m{} s{} stamp {}: {:?}", self.me, self.now, self.frame, e.member, e.seq, e.stamp, std::mem::discriminant(&e.payload));
+            }
+        }
+        std::mem::take(&mut self.self_out)
     }
 
     /// Author an entry at the current frame. With `carry`, the entry carries the touched object's
@@ -2444,7 +3001,7 @@ impl WorldSim {
         } else {
             self.frame.max(self.now)
         };
-        let mut e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let mut e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         if let Some(obj) = carry {
             let scratch = self.save();
             let tmp_id = e.id();
@@ -2467,28 +3024,28 @@ impl WorldSim {
     /// Author a state-free entry stamped `ahead` frames after the present (opt-in input delay).
     pub fn author_ahead(&mut self, payload: Payload, ahead: u64) -> Entry {
         let stamp = self.frame.max(self.now) + ahead;
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         self.publish(e)
     }
 
     /// Author an entry at `stamp` (D73(a): a hand pack, stamped at its first frame, up to k - 1 frames
     /// before the present; its author's horizon has stayed below it).
     pub fn author_stamped(&mut self, payload: Payload, stamp: u64) -> Entry {
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         self.publish(e)
     }
 
     /// Test fixture (review HO-1, round 2): author `payload` carrying a chosen object state.
     pub fn author_carrying(&mut self, payload: Payload, carried: (u32, BodyState)) -> Entry {
         let stamp = self.frame.max(self.now);
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: Some(carried) };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: Some(carried), link: 0 };
         self.publish(e)
     }
 
     /// Test fixture for review H5: author with an arbitrary (backdated) stamp.
     pub fn author_backdated(&mut self, payload: Payload, back: u64) -> Entry {
         let stamp = self.frame.max(self.now).saturating_sub(back);
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload, carried: None, link: 0 };
         self.publish(e)
     }
 
@@ -2511,7 +3068,8 @@ impl WorldSim {
                 }
             }
         }
-        let check = if self.dirty_from.is_none() {
+        // Part B, rule 5: a fed replica's state is its view, not the log's, so it signs no check hash.
+        let check = if self.dirty_from.is_none() && self.fed.is_none() {
             self.check_hashes.range(..self.conf.min(self.frame)).next_back().map(|(f, h)| (*f, *h))
         } else {
             None
@@ -2522,14 +3080,26 @@ impl WorldSim {
         if let Some(p0) = self.hold_horizon_below {
             horizon = horizon.min(p0.saturating_sub(1));
         }
-        let e = Entry {
-            member: self.me,
-            seq: self.my_seq + 1,
-            prev: self.my_last,
-            stamp,
-            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch) },
-            carried: None,
-        };
+        let fed = self.fed_ack();
+        let epoch = self.fake_ack_epoch.unwrap_or(self.epoch);
+        // Part B: my own echo is my reference too, as every receiver records it once it checks out (`retry_echoes`, with
+        // the same R3-1 rule by chain order), so a fed member's copy of the final term reads the references the others'
+        // do (leave-s4-rejoin: member 3 cut 2 at 58 from its stale ack heads alone, the others at 96).
+        if let Some(fa) = fed.as_ref().filter(|fa| !fa.echo.is_empty()) {
+            let aseq = self.my_seq + 1;
+            for &(x, b) in &fa.echo {
+                self.echo_named.entry((self.me, x)).or_default().insert(aseq, b);
+            }
+            for &(x, _) in &fa.echo {
+                if let (Some(&s), Some(&(_, id))) = (self.echo_seq.get(&x), self.echo_last.get(&x)) {
+                    if self.vote_on(self.me, x, epoch).is_some_and(|(vs, _)| vs < aseq) {
+                        continue;
+                    }
+                    self.echo_refs.entry((self.me, x)).or_default().entry(s).and_modify(|v| v.1 = v.1.min(aseq)).or_insert((id, aseq));
+                }
+            }
+        }
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload: Payload::Ack { horizon, heads, check, epoch, fed }, carried: None, link: 0 };
         self.publish(e)
     }
 
@@ -2590,6 +3160,21 @@ impl WorldSim {
             self.disputed.insert(id);
         }
         let (member, seq) = (e.member, e.seq);
+        // Part B, rule 1: a judged entry waits for its verdict from its arrival, held behind a hole in its author's
+        // chain or not (rule 1 can decide such an entry void; it counts only once validated and vouched).
+        // F2 at arrival too: an entry of an earlier epoch waits for its verdict whatever my membership is now, since it is
+        // judged with its own epoch's (`decide_verdicts`: an epoch of 2 keeps D54). Keyed on my current membership, a
+        // replica that took an n = 3 epoch's entries only after moving to n = 2 (a fed member replaying the log after a
+        // leave) counted them all, while those that held them pending voided some by rule 1 (leave-s4-rejoin: member 1's
+        // s107 to s155, void at 1 and 102, counted at 3).
+        let judged_now = self.cfg.localize
+            && (self.localized() || self.fed_mode_capable() || (self.entry_epoch(e.member, e.seq) < self.epoch && !judge_by_now()))
+            && localize::judged(&e.payload)
+            && (self.members.contains(&e.member) || self.evicted.contains_key(&e.member))
+            && !self.verdicts.contains_key(&id);
+        if judged_now {
+            self.pending.insert((e.stamp, id));
+        }
         self.entries.insert(id, e);
         self.set_eff(id);
         // Review PF-1: a proposal of a member proven to have forked may never link here; keep it by
@@ -2598,6 +3183,42 @@ impl WorldSim {
             self.note_proposal(id);
         }
         let mut out = Vec::new();
+        // Revision 22: a leave request (its author's vote on itself, no kick) is taken by value by every replica: it is
+        // evidence for its author's removal on its own, and it may arrive ahead of its author's queued entries (D-5).
+        // It stands until its author is removed: a reset decided meanwhile doesn't clear it (leave-s4: member 2 asked in
+        // epoch 0 while the others had just reset into epoch 1, and its request was dropped).
+        if let Payload::Vote { epoch, target, kick: 0, seq, .. } = self.entries[&id].payload {
+            // Revision 22, plan (A): a latency leave is conditional and counts only in its own epoch; one from an earlier
+            // epoch is void (its region may have ended at the decision that came between).
+            let conditional = latency_leave_fed(seq).is_some();
+            if target == member && (epoch == self.epoch || (epoch < self.epoch && !conditional)) && self.members.contains(&member) {
+                self.leaves.entry(member).or_insert(id);
+            }
+        }
+        // Revision 22: a fed member takes part in the view change outside its log. It holds votes, proposals,
+        // prevotes and precommits by value (each signed on itself, O2-1), as PF-1 holds precommits, since it can't
+        // place them in chain order without the log. A kick needs the kicker's chain segment (D73-1, not built): a
+        // fed member gives it its nil.
+        if self.fed.is_some() && member != self.me && self.members.contains(&member) {
+            let ep = match &self.entries[&id].payload {
+                Payload::Vote { epoch, .. }
+                | Payload::Propose { epoch, .. }
+                | Payload::Prevote { epoch, .. }
+                | Payload::Precommit { epoch, .. }
+                | Payload::Kick { epoch, .. } => Some(*epoch),
+                _ => None,
+            };
+            match ep {
+                Some(ep) if ep > self.epoch => {
+                    self.vc_later.entry(ep).or_default().push(id);
+                    // Gap 1: an entry of an epoch I haven't decided: ask its author for the certificates I lack, at most
+                    // every 30 frames per epoch, rather than wait for my feeder to notice.
+                    self.want_certs(member);
+                }
+                Some(ep) if ep == self.epoch => self.record_vc(member, id, &mut out),
+                _ => {}
+            }
+        }
         self.extend_chain(member, &mut out);
         // An entry past a hole in its author's chain shows the hole: ask for it.
         let c = self.contiguous.get(&member).copied().unwrap_or(0);
@@ -2651,6 +3272,12 @@ impl WorldSim {
     /// * any other entry is void if stamped at or before a horizon its author declared earlier.
     fn validate(&mut self, m: MemberId, id: EntryId, out: &mut Vec<Entry>) {
         let e = self.entries[&id].clone();
+        // Part B, section 3: d(e) is measured for every entry, void or not, so verdicts can't censor it.
+        self.win_seqs.entry((e.stamp / WINDOW, m)).or_default().insert(e.seq);
+        // Part B, rule 1: a perturbation or hand entry waits for its verdict.
+        if (self.localized() || self.fed_mode_capable()) && localize::judged(&e.payload) && !self.verdicts.contains_key(&id) {
+            self.pending.insert((e.stamp, id));
+        }
         // D80: an admin entry stays pending across epochs until a decision judges it.
         let admin_entry = matches!(e.payload, Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. });
         let (max_h, last_ack) = self.chain_state.get(&m).copied().unwrap_or((None, 0));
@@ -2677,7 +3304,8 @@ impl WorldSim {
             // horizon like any entry: no backdating past what its author has declared.
             // D73(a): and within horizon_slack of its author's last ack stamp, so only packs get the
             // wider window the ack lag allows.
-            Payload::Kick { .. } | Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
+            // Rev 22 (e1): not kicks: a kick is valid on its signature, epoch and the previous decided ACL, never its stamp.
+            Payload::SetRole { .. } | Payload::DefineRole { .. } | Payload::Ownership { .. } if self.fixes_off & fix::VCR9 == 0 => {
                 max_h.is_none_or(|h| e.stamp > h) && e.stamp + self.cfg.horizon_slack > last_ack
             }
             Payload::Vote { .. }
@@ -2699,6 +3327,25 @@ impl WorldSim {
                     && self.admitted.get(&m).is_none_or(|&b| e.stamp >= b)
             }
         };
+        // Part B (TLP-27): the checkpoint link, a chain-local rule. The expected link follows from the state after
+        // e's prev in my version. A chain I hold from midway (no state for its prev) is taken on trust from its
+        // next checkpoint on.
+        let before = if e.prev == 0 { Some(None) } else { self.ckpt_after.get(&e.prev).map(|&c| Some(c)) };
+        let (link_ok, after) = match before {
+            Some(ck) => (e.link == ckpt_link_for(ck, e.stamp), ckpt_step(ck, &e)),
+            None => (true, if e.link != 0 { Some((e.stamp / CKPT_FRAMES, id)) } else { None }),
+        };
+        if let Some(a) = after {
+            self.ckpt_after.insert(id, a);
+            self.ckpt.insert(m, a);
+            if a.1 == id {
+                self.ckpt_by_block.insert((m, a.0), (e.seq, id, e.rest_hash()));
+                if !self.echo_pending.is_empty() {
+                    self.retry_echoes();
+                }
+            }
+        }
+        let valid = valid && link_ok;
         if !valid {
             self.stats.entries_rejected_violation += 1;
             self.ev(format!("violation: m{m} s{} stamped {} breaks its chain's horizon rules: void for every member", e.seq, e.stamp));
@@ -2706,8 +3353,17 @@ impl WorldSim {
             self.set_eff(id);
             return;
         }
+        // F2: votes by their chains, so an ended epoch's votes stay readable (`vote_on`).
+        if let Payload::Vote { epoch, target, frozen, .. } = e.payload {
+            if target != m {
+                let v = self.vote_hist.entry((target, m)).or_default();
+                if !v.iter().any(|r| r.0 == epoch) {
+                    v.push((epoch, e.seq, frozen.0));
+                }
+            }
+        }
         match e.payload {
-            Payload::Ack { horizon, heads, check, epoch } => {
+            Payload::Ack { horizon, heads, check, epoch, fed } => {
                 if epoch > 0 {
                     self.ack_epoch_from.entry(m).or_default().entry(epoch).or_insert(e.seq);
                 }
@@ -2715,6 +3371,7 @@ impl WorldSim {
                 self.chain_state.insert(m, (Some(h), e.stamp));
                 self.ack_hist.entry(m).or_default().insert(e.seq, h);
                 self.ack_stamps.entry(m).or_default().insert(e.seq, e.stamp);
+                self.ack_by_stamp.entry(m).or_default().insert(e.stamp, e.seq);
                 for &(q, s, hid) in &heads {
                     if m != self.me {
                         let mine = self.contiguous.get(&q).copied().unwrap_or(0);
@@ -2724,16 +3381,50 @@ impl WorldSim {
                             self.want_from(m, q, s, s);
                         }
                     }
+                    self.ack_head_hist.entry((m, q)).or_default().insert(e.seq, (s, hid));
                     // Review R3-1: once m has voted against q, its vote's frozen head is its last
                     // word on q's chain in this epoch; later references never count toward stability.
                     if self.votes.get(&q).is_some_and(|v| v.contains_key(&m)) {
                         continue;
                     }
                     self.refs.entry((m, q)).or_default().insert(s, (hid, id));
+                    self.note_first_ref(m, e.seq, e.stamp, q, s, hid);
+                }
+                if fed.is_some() {
+                    self.anchored_acks.entry(m).or_default().insert(e.seq);
                 }
                 if m != self.me {
                     if let Some((f, hh)) = check {
                         self.remote_checks.entry(f).or_default().insert(m, hh);
+                    }
+                    // Part B: whether m is fed (TLP-23), and its echo (rule 1, TLP-15).
+                    match fed {
+                        Some(fa) if !fa.echo.is_empty() => {
+                            self.fed_peers.insert(m, fa.echo.iter().find(|&&(x, _)| x == self.me).map(|&(_, b)| b));
+                            let now = self.now;
+                            self.fed_seen.entry(m).or_insert(now);
+                            for &(x, b) in &fa.echo {
+                                self.echo_named.entry((m, x)).or_default().insert(e.seq, b);
+                            }
+                            self.echo_pending.entry(m).or_default().insert(e.seq, (fa.echo, fa.digest));
+                            self.retry_echoes();
+                        }
+                        // The same echo as m's previous ack.
+                        Some(_) => {
+                            self.fed_peers.entry(m).or_insert(None);
+                            let now = self.now;
+                            self.fed_seen.entry(m).or_insert(now);
+                        }
+                        None => {
+                            self.fed_seen.remove(&m);
+                            if self.fed_peers.remove(&m).is_some() {
+                                // Off the feed: a later stay starts its checkpoint clocks afresh.
+                                self.ckpt_sent.remove(&m);
+                                self.ckpt_first_sent.retain(|&(f, _), _| f != m);
+                            }
+                            // (Its echoes still pending stay: each is checked once I hold what it names, whenever that is,
+                            // so every replica ends with the same references.)
+                        }
                     }
                 }
                 self.recompute_conf();
@@ -2800,6 +3491,16 @@ impl WorldSim {
                 for rs in unmatched {
                     self.want_from(j, m, rs, rs);
                 }
+                // Part B at 3 players (S-2): a fed member's echo counts as its reference, so entries pending across its
+                // switch-in complete under D54.
+                if self.fed_mode_capable() {
+                    let e = self
+                        .echo_refs
+                        .get(&(j, m))
+                        .and_then(|r| r.range(..=mine).rev().find(|(es, (hid, _))| self.by_author.get(&(m, **es)) == Some(hid)))
+                        .map(|(es, _)| *es);
+                    matched = matched.max(e);
+                }
                 match matched {
                     Some(rs) => s = s.min(rs),
                     None => {
@@ -2830,19 +3531,139 @@ impl WorldSim {
     /// every member, a stable prefix of its chain declares a horizon at or after f. No decision
     /// depends on it except finality (SCM, ACL, R14 relays) and trimming.
     fn recompute_conf(&mut self) {
-        if self.adopting {
+        // Part B, rule 5: a fed replica holds no log, so it confirms nothing and computes no window or verdict until
+        // it is back on the log. While fed, rule 3's deadline bound moved its conf over entries it never received,
+        // and on recovery every one of them stamped below that conf was taken for a horizon violation.
+        if self.adopting || self.fed.is_some() {
             return;
         }
+        // F2, revision 21 (a): a Part B removal's cut, once final.
+        if !self.pb_pending.is_empty() {
+            self.finalize_cuts();
+        }
+        // Thin links Part B, rule 1: decide the verdicts whose statuses are known. Also below 3 members while an entry of
+        // an older Part B epoch still waits for its verdict (a removed member's, until its cut is final).
+        if self.localized() || self.fed_mode_capable() || (self.cfg.localize && !self.pending.is_empty()) {
+            // Windows 0 and 1 need no data (Q = Q_max). They must exist before the loop below: rule 3's
+            // deadline bound reads them, and the loop returns early for a member with neither an echo-stable
+            // horizon nor a bound. Initialized after it, a member whose first ack took 2.5 s held conf at 0,
+            // and every member paused from frame W until that ack was echo-stable.
+            if self.windows.is_empty() {
+                self.window_vals(1);
+            }
+            self.decide_verdicts();
+        }
+        // F2: at 3 players, or with conf in an earlier epoch, frames confirm by their epoch's rules (`walk_windows`).
+        let n = self.members.len();
+        let walk = self.cfg.localize && n >= 3 && (n == 3 || self.epoch_at(self.conf) < self.epoch);
+        let c = if walk {
+            // Part B at 3 players (step 2): fed windows close by rule 3, the others by D54.
+            let c_b = self.conf_candidate(true);
+            let c_d = self.conf_candidate(false);
+            // F2: and every judged entry below conf has its verdict, whichever rules its frames confirm by (an entry of
+            // an older epoch can be stamped in a D54 window of mine).
+            let first = self.pending.iter().next().map(|&(s, _)| s);
+            self.walk_windows(c_b, c_d).map(|c| first.map_or(c, |s| c.min(s)))
+        } else {
+            let localized = self.localized();
+            // F2 below 3 members: an entry of an older Part B epoch still waiting for its verdict holds conf too,
+            // whichever rules today's frames confirm by. kickliar-fed2's n = 2 tail: D54 confirmed past member 2's
+            // s132 (epoch 0, pending until 2's cut was final), and the final cut then voided it below conf.
+            let first = if self.cfg.localize { self.pending.iter().next().map(|&(s, _)| s) } else { None };
+            self.conf_candidate(localized).map(|c| first.map_or(c, |s| c.min(s)))
+        };
+        if let Some(c) = c {
+            if c > self.conf {
+                self.conf = c;
+            }
+        }
+        // Diagnostics (PE_CONF_TRACE=<member>): once a second of my present, what bounds my confirmation.
+        if self.now / 60 != self.dbg_conf_at && std::env::var("PE_CONF_TRACE").ok().and_then(|v| v.parse::<MemberId>().ok()) == Some(self.me) {
+            self.dbg_conf_at = self.now / 60;
+            let first = self.pending.iter().next().map(|&(s, id)| {
+                let e = &self.entries[&id];
+                (s, e.member, e.seq, e.seq <= self.contiguous.get(&e.member).copied().unwrap_or(0))
+            });
+            let per: Vec<String> = self
+                .members
+                .iter()
+                .map(|&j| {
+                    let es = self.echo_stable(j);
+                    let h = self.ack_hist.get(&j).and_then(|a| a.range(..=es).next_back()).map(|(_, h)| *h);
+                    format!("m{j}: es {es} held {} h {:?} bound {:?}", self.contiguous.get(&j).copied().unwrap_or(0), h, self.deadline_bound(j))
+                })
+                .collect();
+            eprintln!("CONF m{} now {} conf {} pending {} first {:?} | {}", self.me, self.now, self.conf, self.pending.len(), first, per.join(" | "));
+        }
+    }
+
+    /// Part B at 3 players (step 2): the combined frontier. From my confirmed frame, window by window: a fed window
+    /// closes up to rule 3's candidate, a D54 window up to D54's; a window whose mode isn't known yet stops it.
+    fn walk_windows(&self, c_b: Option<u64>, c_d: Option<u64>) -> Option<u64> {
+        let mut f = self.conf;
+        loop {
+            let k = f / WINDOW;
+            // F2: segments end at a window's end or at the boundary of the change that ends their epoch. An epoch of
+            // 4 or more members confirms by rule 3, one of 3 by its windows' modes (an older one by both rules), one
+            // of 2 by D54.
+            let e = self.epoch_at(f);
+            let mut end = (k + 1) * WINDOW;
+            if let Some(d) = self.decided.get(e as usize) {
+                end = end.min(d.0.boundary);
+            }
+            let n_e = if e == self.epoch { self.members.len() } else { self.members_at(e).map_or(0, |m| m.len()) };
+            let limit = if n_e >= 4 {
+                c_b
+            } else if n_e == 3 && e == self.epoch {
+                match self.window_mode(k) {
+                    None => return Some(f),
+                    Some(true) => c_b,
+                    Some(false) => c_d,
+                }
+            } else if n_e == 3 {
+                c_b.zip(c_d).map(|(a, b)| a.min(b))
+            } else {
+                c_d
+            };
+            let Some(limit) = limit else { return Some(f) };
+            if limit < end {
+                return Some(f.max(limit));
+            }
+            f = end;
+        }
+    }
+
+    /// The confirmed frame one rule set allows: Part B's rule 3 (`part_b`) or D54. None if a member has neither.
+    fn conf_candidate(&mut self, localized: bool) -> Option<u64> {
         let mut c = u64::MAX;
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for j in members {
-            let mut s = self.stable_seq(j);
+            // Part B, rule 3: a prefix is evidence once echo-stable; D54's stability for 2-3 members.
+            let mut s = if localized { self.echo_stable(j) } else { self.stable_seq(j) };
             // An ack from an epoch newer than mine never counts toward my confirmation (10.8): its
             // author may know of members I do not.
             if let Some(&first) = self.ack_epoch_from.get(&j).and_then(|a| a.range(self.epoch + 1..).map(|(_, s)| s).min()) {
                 s = s.min(first.saturating_sub(1));
             }
             let mut h = self.ack_hist.get(&j).and_then(|a| a.range(..=s).next_back()).map(|(_, h)| *h);
+            // Part B, rule 3: or the frames for which anything j could still author would be past its
+            // deadline at q members.
+            if localized {
+                let mut hb = self.deadline_bound(j);
+                // F2: while j's echo-stable prefix hasn't reached its first ack of my epoch, it may still author
+                // entries of its older epoch, judged with that epoch's members and quorum: the bound must hold there
+                // too (an older epoch of 3 or fewer members gives none: D54 windows void nothing).
+                let ej = self.entry_epoch(j, s);
+                if ej < self.epoch {
+                    hb = match self.ctx(ej) {
+                        Some(old) if old.members.len() >= 4 => hb.zip(self.deadline_bound_in(j, &old)).map(|(a, b)| a.min(b)),
+                        _ => None,
+                    };
+                }
+                if let Some(hb) = hb {
+                    h = Some(h.map_or(hb, |x| x.max(hb)));
+                }
+            }
             // After precommitting a join, its author's acks count only below the join's boundary.
             if let (Some(hh), Some(&(at, b))) = (h, self.join_caps.get(&j)) {
                 if s > at {
@@ -2853,7 +3674,7 @@ impl WorldSim {
                 (Some(h), Some(&b)) => c = c.min((h + 1).max(b)),
                 (None, Some(&b)) => c = c.min(b),
                 (Some(h), None) => c = c.min(h + 1),
-                (None, None) => return,
+                (None, None) => return None,
             }
         }
         // P2-4: a removed member's entries up to its cut count, and a replica that did not vote
@@ -2861,20 +3682,65 @@ impl WorldSim {
         // holds of that prefix cover: an entry stamped at or before a declared horizon must come
         // before that ack in the chain (8.2).
         for (&x, &(cut, _)) in &self.evicted {
+            // F2, revision 21 (a): a removal whose cut isn't final: what of x isn't vouched yet may still be. Bound by
+            // x's echo-stable horizon, or rule 3's bound, with its last epoch's members and quorum.
+            if self.pb_pending.contains(&x) {
+                let old = self.removed_in.get(&x).and_then(|&e| self.ctx(e - 1));
+                let es = old.as_ref().map_or(0, |o| self.es_in(x, o));
+                let h = self.ack_hist.get(&x).and_then(|a| a.range(..=es).next_back()).map_or(0, |(_, h)| h + 1);
+                let hb = old.as_ref().and_then(|o| self.deadline_bound_in(x, o)).map_or(0, |b| b + 1);
+                c = c.min(h.max(hb));
+                continue;
+            }
             let held = self.contiguous.get(&x).copied().unwrap_or(0);
             let right = self.cut_ids.get(&x).is_none_or(|&cid| cut == 0 || self.by_author.get(&(x, cut)) == Some(&cid));
             if held < cut || !right {
                 // Review VC-2: past the prefix verified against every member's references, my copy may
                 // be another branch of a fork, so only that prefix's acks bound confirmation; the
                 // robust cut contains it.
-                let upto = if self.fixes_off & fix::VC2 == 0 { self.stable_hi.get(&x).copied().unwrap_or(0).min(cut) } else { held.min(cut) };
+                // Part B, rule 3: there the verified prefix is the echo-stable one (stable_hi isn't kept).
+                let upto = if localized {
+                    self.echo_stable(x).min(cut)
+                } else if self.fixes_off & fix::VC2 == 0 {
+                    self.stable_hi.get(&x).copied().unwrap_or(0).min(cut)
+                } else {
+                    held.min(cut)
+                };
                 let h = self.ack_hist.get(&x).and_then(|a| a.range(..=upto).next_back()).map_or(0, |(_, h)| h + 1);
                 c = c.min(h);
             }
         }
-        if c != u64::MAX && c > self.conf {
-            self.conf = c;
+        // Thin links Part B, section 3: nothing is confirmed in a window before its values are final, so a
+        // decision taken with provisional values can still be re-simulated (`finalize_windows`).
+        // Part B, rule 3: and every judged entry stamped below conf has its verdict.
+        if localized && c != u64::MAX {
+            if let Some(&(s, _)) = self.pending.iter().next() {
+                c = c.min(s);
+            }
+            // So does a judged entry I hold but haven't validated yet, behind a hole in its author's chain: it acts
+            // already and has no verdict. The rejoin cell: rule 3's bound passed one (member 3's touch, stamped 243,
+            // behind a hole), and its verdict later voided it below conf.
+            let authors: Vec<MemberId> = self.members.iter().chain(self.evicted.keys()).copied().collect();
+            for j in authors {
+                let held = self.contiguous.get(&j).copied().unwrap_or(0);
+                for (_, id) in self.by_author.range((j, held.saturating_add(1))..=(j, u32::MAX)) {
+                    if let Some(e) = self.entries.get(id) {
+                        if localize::judged(&e.payload) && !self.verdicts.contains_key(id) {
+                            c = c.min(e.stamp);
+                        }
+                    }
+                }
+            }
         }
+        if localized && c != u64::MAX {
+            self.finalize_windows();
+            let next = self.windows.keys().next_back().map_or(0, |&k| k + 1);
+            c = c.min(next * WINDOW);
+            if let Some(&j) = self.provisional.keys().next() {
+                c = c.min(j * WINDOW);
+            }
+        }
+        (c != u64::MAX).then_some(c)
     }
 
     /// Two signed entries of `m` contradict each other (`a` at seq `k`, `b` another version of it
@@ -2912,6 +3778,27 @@ impl WorldSim {
         self.votes.get(&m).is_some_and(|v| v.contains_key(&self.me))
     }
 
+    /// Carry-over, gap 2 (b) (@coordinator-opus m0813b922e026): a leave's B comes from the others' votes on it, each
+    /// frozen at the voter's head of the leaver's chain, which it holds; not from the leaver's own head, which a dead
+    /// uplink may never deliver (leave-s4: the members held member 2's chain to 107, its leave froze 166). So with Part
+    /// B I vote on every leave I hold, once per epoch (a leave stands across a reset; votes don't).
+    /// Ruling 3 (@coordinator-opus m5b983ab01446, @design-reviewer m3a3ca7b15bac): the vote is typed, naming the leave
+    /// entry in its kick field, so it never counts toward a suspicion removal (which takes only votes answering no
+    /// kick); a validator checks the listed votes' types from the change itself.
+    pub(super) fn leave_votes_due(&mut self) -> Vec<Entry> {
+        if !self.cfg.localize || self.withhold_vc || !self.members.contains(&self.me) {
+            return Vec::new();
+        }
+        let leavers: Vec<(MemberId, EntryId)> = self.leaves.iter().map(|(&x, &id)| (x, id)).filter(|&(x, _)| x != self.me && self.members.contains(&x)).collect();
+        let mut out = Vec::new();
+        for (x, id) in leavers {
+            if !self.voted(x) {
+                out.extend(self.freeze_and_vote(x, 0, id));
+            }
+        }
+        out
+    }
+
     /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
     /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
     fn freeze_and_vote(&mut self, m: MemberId, k0: u32, kick: EntryId) -> Option<Entry> {
@@ -2919,6 +3806,25 @@ impl WorldSim {
             return None;
         }
         let f = self.contiguous.get(&m).copied().unwrap_or(0);
+        // Rev 22 (TLP-24): a fed member's frozen head is its last echoed checkpoint of m: it echoed that far, so its
+        // held prefix (stale while fed) would drop references it published.
+        if self.fed.is_some() {
+            if let (Some(&s), Some(&(_, id))) = (self.echo_seq.get(&m), self.echo_last.get(&m)) {
+                if s > f {
+                    self.frozen.insert(m, s);
+                    let e = Entry {
+                        member: self.me,
+                        seq: self.my_seq + 1,
+                        prev: self.my_last,
+                        stamp: self.frame.max(self.now),
+                        payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (s, id), kick },
+                        carried: None,
+                        link: 0,
+                    };
+                    return Some(self.publish(e));
+                }
+            }
+        }
         // A faulty member (fixture) votes without freezing: it keeps processing that chain.
         if !self.byz_ally {
             self.frozen.insert(m, f);
@@ -2935,6 +3841,7 @@ impl WorldSim {
             stamp: self.frame.max(self.now),
             payload: Payload::Vote { epoch: self.epoch, target: m, seq: k0, frozen: (f, fid), kick },
             carried: None,
+            link: 0,
         };
         Some(self.publish(v))
     }
@@ -2947,6 +3854,18 @@ impl WorldSim {
     /// vote stands until its epoch ends; a member heard from again is kept by a reset (P2-4).
     /// Returns the votes to broadcast.
     pub fn suspects_due(&mut self) -> Vec<Entry> {
+        // Part B, rule 5: a fed replica receives no entries; it votes only on what it can check without a log
+        // (revision 21, RV20-3).
+        // Rev 22 delta (proposal): a member that has asked to leave casts no new votes. Its view is the one it declared
+        // unfit (leave-s4: the leaving thin member's R3-9 votes against both others, at its request's frame, gave the
+        // full member's marginal vote against the fed member its q at n = 3, and the leave never decided). It still
+        // takes part in the view change, and its precommit counts toward its own leave's q.
+        if self.leaving() {
+            return vec![];
+        }
+        if self.fed.is_some() {
+            return self.fed_suspects();
+        }
         if !self.members.contains(&self.me) || self.closed_at.is_some() {
             return vec![];
         }
@@ -2972,6 +3891,7 @@ impl WorldSim {
                 }
             }
         }
+        out.extend(self.leave_votes_due());
         // A proof outlives an epoch that did not remove its member: vote again.
         let proven: Vec<(MemberId, u32)> = self
             .proofs
@@ -3072,15 +3992,24 @@ impl WorldSim {
             // silent member is given, is voted out the same way. Its link cannot carry the session;
             // it can follow as a spectator. A short congestion (c1: about 2 s) does not qualify.
             let h = self.chain_state.get(&j).and_then(|c| c.0).unwrap_or(0);
-            let since = if self.now > h + self.cfg.window / 2 {
+            // Rev 22 (@coordinator-opus m4ec1d459d82b, (a)): a fed member's horizon trails by its ack period by design
+            // (P <= 32), so that part isn't slowness: its threshold is W/2 + P. R3-9 still applies at n = 3, and a
+            // hopeless fed member stays removable.
+            let limit = self.cfg.window / 2 + if self.fed_peers.contains_key(&j) { FED_ACK_MAX_FRAMES } else { 0 };
+            let since = if self.now > h + limit {
                 *self.lagging.entry(j).or_insert(self.now)
             } else {
                 self.lagging.remove(&j);
                 self.now
             };
             let silent = self.now >= heard + self.cfg.suspect_after;
-            let slow = self.now >= since + self.cfg.suspect_after;
-            if !silent && !slow {
+            // Thin links Part B, rule 4: no demotion for a slow link in sessions of 4 or more; its late actions
+            // are void instead (rule 1). Silence is still removed.
+            let slow = !self.localized() && self.now >= since + self.cfg.suspect_after;
+            // Part B, rule 4's exception (TLP-25, TLP-29): a fed member that can't carry even the echo is treated
+            // like a disconnection.
+            let floor = if self.localized() { self.floor_breach(j).or_else(|| self.latency_breach(j)) } else { None };
+            if !silent && !slow && floor.is_none() {
                 self.suspect_since.remove(&j);
                 continue;
             }
@@ -3112,9 +4041,12 @@ impl WorldSim {
             if silent {
                 self.stats.suspicions += 1;
                 self.ev(format!("member {j} silent for {} frames: presumed crashed; vote to remove it", self.now - heard));
+            } else if let Some(why) = floor {
+                self.stats.floor_removals += 1;
+                self.ev(format!("member {j} is fed and {why}: below the floors; vote to remove it"));
             } else {
                 self.stats.demotions += 1;
-                self.ev(format!("member {j}'s horizon has trailed the present by over {} frames for {} frames: vote to demote it", self.cfg.window / 2, self.now - since));
+                self.ev(format!("member {j}'s horizon has trailed the present by over {limit} frames for {} frames: vote to demote it", self.now - since));
             }
             out.extend(self.freeze_and_vote(j, 0, 0));
         }
@@ -3187,6 +4119,17 @@ impl WorldSim {
             return;
         }
         let e = self.entries[&id].clone();
+        // (spike diagnostics) PE_VC_TRACE=<member>: each view-change entry that member records, when.
+        if vc_trace() == Some(self.me) {
+            let kind = match &e.payload {
+                Payload::Vote { target, .. } => format!("vote on {target}"),
+                Payload::Propose { round, .. } => format!("propose r{round}"),
+                Payload::Prevote { round, value, .. } => format!("prevote r{round} {}", if *value == 0 { "nil" } else { "value" }),
+                Payload::Precommit { round, value, .. } => format!("precommit r{round} {}", if *value == 0 { "nil" } else { "value" }),
+                _ => "other".to_string(),
+            };
+            eprintln!("VC m{} now {} frame {} epoch {}: from m{m} s{} stamp {}: {kind}", self.me, self.now, self.frame, self.epoch, e.seq, e.stamp);
+        }
         match e.payload {
             Payload::Vote { target, frozen, kick, .. } => {
                 if (target == m && kick == 0) || !self.members.contains(&target) || self.votes.get(&target).is_some_and(|v| v.contains_key(&m)) {
@@ -3298,15 +4241,23 @@ impl WorldSim {
         self.members.iter().copied().filter(|m| self.roles.get(m) == Some(&ADMIN)).collect()
     }
 
+    /// Rev 22 (e1): the seed of this decision's kick order: the previous decided change's value (the session id before
+    /// the first decision).
+    pub(super) fn kick_seed(&self) -> u64 {
+        self.decided.last().map_or(self.session, |d| d.0.value())
+    }
+
     fn admin_run(&self) -> AdminRun {
+        let owners = self.owner_keys();
         AdminRun {
             members: self.members.clone(),
             roles: self.roles.clone(),
             defs: self.role_defs.clone(),
             excluded: BTreeSet::new(),
-            owners: self.owner_keys(),
+            owners: owners.clone(),
             book: self.book.clone(),
             lineage: self.world_id,
+            acl0: Some(Box::new((self.members.clone(), self.roles.clone(), self.role_defs.clone(), owners))),
         }
     }
 
@@ -3345,6 +4296,154 @@ impl WorldSim {
 
     /// D80: kick `target` (the harness or an admin's UI). Authored whatever this member's role;
     /// every replica judges it.
+    /// Revision 22: ask to leave (a member under a floor whose removal needs a fed member's vote leaves on its own,
+    /// path 4): a vote on myself without a kick, freezing my own head. Sent first, ahead of queued entries (D-5).
+    /// Revision 22: whether I've asked to leave in this epoch.
+    pub fn leaving(&self) -> bool {
+        self.leaves.contains_key(&self.me)
+    }
+
+    /// Carry-over, hole 2: a member that has asked to leave authors no ack from its request on (spike:
+    /// PE_LEAVER_ACKS=1 lets it ack as before, to measure what the rule costs).
+    pub fn acks_held(&self) -> bool {
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        self.cfg.localize && self.leaving() && !*V.get_or_init(|| std::env::var("PE_LEAVER_ACKS").is_ok())
+    }
+
+    pub fn request_leave(&mut self) -> Option<Entry> {
+        self.request_leave_with(0)
+    }
+
+    /// A leave request whose vote carries `seq`: 0 for a plain leave, `latency_leave_mask` for a latency leave.
+    fn request_leave_with(&mut self, seq: u32) -> Option<Entry> {
+        if !self.members.contains(&self.me) || self.leaves.contains_key(&self.me) {
+            return None;
+        }
+        let e = Entry {
+            member: self.me,
+            seq: self.my_seq + 1,
+            prev: self.my_last,
+            stamp: self.frame.max(self.now),
+            payload: Payload::Vote { epoch: self.epoch, target: self.me, seq, frozen: (self.my_seq, self.my_last), kick: 0 },
+            carried: None,
+            link: 0,
+        };
+        let e = self.publish(e);
+        self.leaves.insert(self.me, e.id());
+        self.ev(format!("member {} asks to leave", self.me));
+        Some(e)
+    }
+
+    /// (spike fixture) A latency leave now, carrying the fed set I see, whatever the votes: the race cell has two fed
+    /// members ask at once.
+    pub fn force_latency_leave(&mut self) -> Option<Entry> {
+        let fed: BTreeSet<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m)).chain([self.me]).collect();
+        self.ev(format!("latency floor (fixture): member {} leaves by request, fed {fed:?}", self.me));
+        self.request_leave_with(latency_leave_mask(&fed))
+    }
+
+    /// Revision 22, plan (A): the fed set a held leave carries, if it is a latency leave.
+    fn leave_fed(&self, id: EntryId) -> Option<BTreeSet<MemberId>> {
+        match self.entries.get(&id)?.payload {
+            Payload::Vote { seq, kick: 0, .. } => latency_leave_fed(seq),
+            _ => None,
+        }
+    }
+
+    /// Revision 22, plan (A): whether `c`'s latency leaves all apply. With the change's members after its other removals,
+    /// highest id first, each needs n − f < q, f the fed set it carries among the members left after the ones before
+    /// it, and it must be of this epoch. Every replica (and a fed member, by value) reads the same.
+    pub(crate) fn latency_leaves_ok(&self, c: &Change) -> bool {
+        let mut lat: Vec<(MemberId, BTreeSet<MemberId>, u32)> = c
+            .remove
+            .iter()
+            .filter(|r| r.kick == 0 && !r.votes.is_empty())
+            .filter_map(|r| match self.entries.get(&r.votes[0]).map(|e| (e.member, &e.payload)) {
+                Some((m, Payload::Vote { target, seq, epoch, kick: 0, .. })) if m == r.member && *target == r.member => latency_leave_fed(*seq).map(|f| (r.member, f, *epoch)),
+                _ => None,
+            })
+            .collect();
+        if lat.is_empty() {
+            return true;
+        }
+        let lat_ids: BTreeSet<MemberId> = lat.iter().map(|x| x.0).collect();
+        let mut members: BTreeSet<MemberId> = self.members.iter().copied().filter(|m| !c.remove.iter().any(|r| r.member == *m && !lat_ids.contains(m))).collect();
+        lat.sort_by(|a, b| b.0.cmp(&a.0));
+        for (x, fed, epoch) in lat {
+            if epoch != self.epoch || !latency_region(&members, &fed) {
+                return false;
+            }
+            members.remove(&x);
+        }
+        true
+    }
+
+    /// Revision 22, S-4 on the transition (@coordinator-opus m5c7b7e5c860e): at most one member is fed at n = 3, so
+    /// when a removal leaves n = 3 with two fed, one fed member leaves by request at once: the higher id among the fed
+    /// members I know of (myself, and the fed peers the TLP-23 contact rule gives me). The spectator path that follows
+    /// (item 7, RV16-2's rejoin after 10 s above both floors) isn't built.
+    pub fn s4_leave_due(&mut self) -> Option<Entry> {
+        // (Not a member any more, e.g. after my own leave decided: nothing to leave. Before this guard the event was logged
+        // on every tick, though `request_leave` sent nothing.)
+        if !self.cfg.localize || self.members.len() != 3 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
+            return None;
+        }
+        let fed: Vec<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m) && *m != self.me).collect();
+        let top = fed.iter().copied().max()?;
+        if top > self.me {
+            return None;
+        }
+        self.ev(format!("S-4: n = 3 with members {fed:?} and {} fed: member {} leaves by request", self.me, self.me));
+        self.request_leave()
+    }
+
+    /// Revision 22, the latency floor's leave (@coordinator-opus m18d29a6faa0b, 2026-11-02 03:40Z): in the two-fed region
+    /// (n − f < q) the full members alone are no quorum and a fed member doesn't judge floors, so a vote to remove a fed
+    /// member over rule 3's latency floor can't decide. That member leaves by request instead, sent first (D-5), once it
+    /// holds removal votes against itself from at least t + 1 distinct full members: never on a liar's vote alone, and a
+    /// withholding liar can't keep it in. One fed member leaves (the user's confirmed text, "one of the fed players drops
+    /// to watching"): not while another fed member's leave is held, nor if a higher fed id qualifies too (S-4's order).
+    /// The fed members are myself and the fed peers I know of (TLP-23); the votes reach me by value (`record_vc`).
+    pub fn latency_leave_due(&mut self) -> Option<Entry> {
+        let n = self.members.len();
+        if !self.cfg.localize || n < 4 || self.fed.is_none() || self.leaving() || self.closed_at.is_some() || !self.members.contains(&self.me) {
+            self.latency_defer_since = None;
+            return None;
+        }
+        let fed: BTreeSet<MemberId> = self.fed_peers.keys().copied().filter(|m| self.members.contains(m)).chain([self.me]).collect();
+        let (t, q) = quorum(QuorumRule::Bft, n);
+        if n - fed.len() >= q {
+            self.latency_defer_since = None;
+            return None;
+        }
+        let full_voters = |x: MemberId| -> Vec<MemberId> {
+            self.votes.get(&x).map_or(Vec::new(), |v| v.keys().copied().filter(|&y| y != x && self.members.contains(&y) && !fed.contains(&y)).collect())
+        };
+        let mine = full_voters(self.me);
+        if mine.len() < t + 1 {
+            self.latency_defer_since = None;
+            return None;
+        }
+        // Deference, bounded (@coordinator-opus me915f2726556): while another fed member's leave is held, or a higher fed id
+        // qualifies in my view, I wait at most one window, then ask anyway; the commit rule (`latency_leaves_ok`) keeps one.
+        let defer = fed.iter().any(|&o| o != self.me && self.leaves.contains_key(&o)) || fed.iter().any(|&o| o > self.me && full_voters(o).len() >= t + 1);
+        if defer {
+            let since = *self.latency_defer_since.get_or_insert(self.now);
+            if self.now < since + localize::WINDOW {
+                return None;
+            }
+        }
+        self.latency_defer_since = None;
+        self.ev(format!(
+            "latency floor: n = {n}, fed {fed:?} (n - f < q = {q}); removal votes against me from full members {mine:?} (t + 1 = {}){}: member {} leaves by request",
+            t + 1,
+            if defer { ", after deferring a window" } else { "" },
+            self.me
+        ));
+        let mask = latency_leave_mask(&fed);
+        self.request_leave_with(mask)
+    }
+
     pub fn kick(&mut self, target: MemberId) -> Entry {
         let epoch = self.epoch;
         self.author_vc(Payload::Kick { epoch, target })
@@ -3376,6 +4475,7 @@ impl WorldSim {
             stamp: self.frame.max(self.now),
             payload: Payload::Vote { epoch: self.epoch, target: self.me, seq: 0, frozen: (self.my_seq, self.my_last), kick },
             carried: None,
+            link: 0,
         };
         Some(self.publish(v))
     }
@@ -3422,7 +4522,10 @@ impl WorldSim {
     /// Review VCR-1: whether `kick` is a held, pending kick of `target`, so a vote naming it freezes
     /// the target's chain for that kick's cut.
     fn kick_live(&self, target: MemberId, kick: EntryId) -> bool {
-        self.admin_pending.contains(&kick) && matches!(self.entries.get(&kick).map(|e| &e.payload), Some(Payload::Kick { target: t, .. }) if *t == target)
+        (self.admin_pending.contains(&kick) && matches!(self.entries.get(&kick).map(|e| &e.payload), Some(Payload::Kick { target: t, .. }) if *t == target))
+            // Ruling 3: a typed leave vote names its target's standing leave, as live as a pending kick (it is no ghost
+            // for a reset, and no strike against its voter, VCR-4).
+            || (self.cfg.localize && self.leaves.get(&target) == Some(&kick))
     }
 
     /// Review VCR-2: whether this replica can walk `x`'s chain down from `head` to the prefix it holds,
@@ -3671,8 +4774,8 @@ impl WorldSim {
         // A kick waits, unlisted, until a quorum has frozen its target's chain for the cut.
         let mut run = self.admin_run();
         run.excluded = proven.clone();
-        let mut order: Vec<((u64, MemberId, u32), EntryId)> =
-            self.admin_pending.iter().filter_map(|id| self.entries.get(id).map(|e| (admin_key(e), *id))).collect();
+        let mut order: Vec<((u8, u64, MemberId, u32), EntryId)> =
+            self.admin_pending.iter().filter_map(|id| self.entries.get(id).map(|e| (admin_key(e, self.kick_seed()), *id))).collect();
         order.sort_unstable();
         let mut admin = Vec::new();
         for (_, id) in order {
@@ -3713,7 +4816,12 @@ impl WorldSim {
             }
             admin.push((id, ok));
         }
-        let targets: Vec<MemberId> = self.votes.keys().copied().filter(|x| run.members.contains(x)).collect();
+        // Carry-over, gap 2 (b): with Part B a leaver is removed by its leave alone (below). The others' votes on it are
+        // cast because it asked (`leave_votes_due`); listed as suspicion votes they would skip plan (A)'s order and
+        // region check. (A latency leave left out shares its change with the removal that ended its region, and is void
+        // once that decides, so a crashed one is then voted out as any other member.)
+        let targets: Vec<MemberId> =
+            self.votes.keys().copied().filter(|x| run.members.contains(x) && !(self.cfg.localize && self.leaves.contains_key(x))).collect();
         // Review VC3R-1/2 (round 4): a removal a quorum has voted for, which waits only for entries this
         // replica is still fetching, must not be overtaken by a reset.
         let mut waiting = false;
@@ -3736,6 +4844,49 @@ impl WorldSim {
                 continue;
             };
             remove.push(Removal { member: x, votes: usable.iter().map(|(_, r)| r.id).collect(), cut, kick: 0 });
+            run.members.remove(&x);
+            run.roles.remove(&x);
+        }
+        // Revision 22: a member's own leave request removes it on its own, cut at the head it froze.
+        // Revision 22, plan (A): latency leaves after every other removal, highest id first, each only while the two-fed
+        // region still holds with the members left and the fed set it carries; one left out is void (`latency_leaves_ok`).
+        let mut leavers: Vec<(MemberId, EntryId)> = self.leaves.iter().map(|(&x, &id)| (x, id)).filter(|(x, _)| run.members.contains(x)).collect();
+        leavers.sort_by_key(|&(x, id)| match self.leave_fed(id) {
+            None => (0, x as i64),
+            Some(_) => (1, -(x as i64)),
+        });
+        for (x, id) in leavers {
+            if remove.iter().any(|r: &Removal| r.member == x) {
+                continue;
+            }
+            let Some(Payload::Vote { frozen, epoch, .. }) = self.entries.get(&id).map(|e| e.payload.clone()) else { continue };
+            if let Some(fed) = self.leave_fed(id) {
+                if epoch != self.epoch || !latency_region(&run.members, &fed) {
+                    if self.latency_left_out.insert(id) {
+                        self.ev(format!("plan (A): member {x}'s latency leave left out (fed {fed:?}, members then {:?}): the region has ended", run.members));
+                    }
+                    continue;
+                }
+            }
+            // Carry-over, gap 2 (b): with Part B, and q - 1 of the others' votes on it, whose frozen heads give its B. With
+            // the leave they make q; a member both among an echo-stable ack's q - 1 referencers and among the voters froze
+            // at or past it (its vote can't drop its own reference, R3-1), and the two sets share 2q - n - 1 >= 1 of the
+            // n - 1 others at n >= 4 (both others at n = 3). So a withholding liar still can't block a leave.
+            // Ruling 3: votes naming this leave (typed), and votes answering no kick (a member that suspected the leaver
+            // before its leave arrived votes once per epoch; its vote freezes the chain all the same).
+            let votes = if self.cfg.localize {
+                let mut usable = self.removal_votes(x, &base, true);
+                usable.retain(|(v, r)| *v != x && (r.kick == 0 || r.kick == id) && self.head_held(x, r.frozen));
+                if usable.len() + 1 < q {
+                    let raw = self.votes.get(&x).map_or(0, |v| v.keys().filter(|&&m| m != x && base.contains(&m)).count());
+                    waiting |= raw + 1 >= q;
+                    continue;
+                }
+                std::iter::once(id).chain(usable.iter().map(|(_, r)| r.id)).collect()
+            } else {
+                vec![id]
+            };
+            remove.push(Removal { member: x, votes, cut: frozen, kick: 0 });
             run.members.remove(&x);
             run.roles.remove(&x);
         }
@@ -3784,7 +4935,9 @@ impl WorldSim {
             let ghosts = round3 && self.fixes_off & fix::VCR1 == 0;
             let reset = stale_caps || self.votes.iter().any(|(y, vs)| {
                 let heard = self.heard.get(y).copied().unwrap_or(0);
+                // Carry-over, gap 2 (b): votes on a member that has asked to leave wait for its leave, not a reset.
                 !proven.contains(y)
+                    && !(self.cfg.localize && self.leaves.contains_key(y))
                     && now < heard + self.cfg.suspect_after
                     && vs.values().any(|r| r.kick == 0 || (ghosts && !self.kick_live(*y, r.kick) && now >= r.at + self.cfg.suspect_after))
                     && vs.get(&self.me).is_none_or(|r| heard > r.stamp)
@@ -3818,6 +4971,10 @@ impl WorldSim {
     /// missing (it is fetched).
     fn valid_on_own_branch(&mut self, id: EntryId) -> Option<bool> {
         let e = self.entries.get(&id)?.clone();
+        // Rev 22 (e1): a kick is valid without its chain.
+        if matches!(e.payload, Payload::Kick { .. }) {
+            return Some(true);
+        }
         let m = e.member;
         let linked = if m == self.me { self.my_seq } else { self.contiguous.get(&m).copied().unwrap_or(0) };
         let mut seg: Vec<Entry> = Vec::new();
@@ -3852,6 +5009,10 @@ impl WorldSim {
     }
 
     fn change_valid(&mut self, c: &Change) -> Option<bool> {
+        // Revision 22: a fed member checks only what it can from what it holds.
+        if self.fed.is_some() {
+            return self.fed_change_valid(c);
+        }
         let last = self.decided.last().map_or(0, |d| d.0.boundary);
         let timed = self.fixes_off & fix::VC3 != 0;
         if c.epoch != self.epoch || c.boundary < last || (timed && c.boundary > self.now + 2 * self.cfg.join_lead) {
@@ -3946,7 +5107,7 @@ impl WorldSim {
                 Payload::Kick { epoch, .. } | Payload::SetRole { epoch, .. } | Payload::DefineRole { epoch, .. } | Payload::Ownership { epoch, .. } => epoch,
                 _ => return Some(false),
             };
-            let key = admin_key(&e);
+            let key = admin_key(&e, self.kick_seed());
             if epoch > self.epoch || self.admin_outcomes.contains_key(&id) || prev.is_some_and(|p| p >= key) || run.apply(&e) != ok {
                 return Some(false);
             }
@@ -3955,9 +5116,55 @@ impl WorldSim {
                 kicked.insert(id, *target);
             }
         }
+        // Revision 22, plan (A): every latency leave listed applies (the region holds for it at commit).
+        if !self.latency_leaves_ok(c) {
+            return Some(false);
+        }
         let mut seen = BTreeSet::new();
         for r in &c.remove {
             let x = r.member;
+            // Revision 22: a member's own leave request removes it on its own, cut at the head it froze.
+            if r.kick == 0 && r.votes.first().is_some_and(|v| self.leaves.get(&x) == Some(v)) && (r.votes.len() == 1 || self.cfg.localize) {
+                let frozen = match self.entries.get(&r.votes[0]).map(|e| &e.payload) {
+                    Some(Payload::Vote { frozen, .. }) => *frozen,
+                    _ => return Some(false),
+                };
+                if !self.members.contains(&x) || !seen.insert(x) || !run.members.contains(&x) || r.cut != frozen {
+                    return Some(false);
+                }
+                // Carry-over, gap 2 (b): with Part B, q - 1 votes of the others on it, each checked as a removal's vote.
+                if self.cfg.localize {
+                    if r.votes.len() < q {
+                        return Some(false);
+                    }
+                    let mut voters = BTreeSet::new();
+                    for &vid in &r.votes[1..] {
+                        let e = self.entries.get(&vid)?.clone();
+                        let Payload::Vote { epoch, target, frozen, kick, .. } = e.payload else { return Some(false) };
+                        // Ruling 3: a vote naming this leave, or one answering no kick.
+                        if epoch != self.epoch || target != x || e.member == x || (kick != 0 && kick != r.votes[0]) || !base.contains(&e.member) || !voters.insert(e.member) {
+                            return Some(false);
+                        }
+                        match self.votes.get(&x).and_then(|v| v.get(&e.member)) {
+                            Some(rec) if rec.id == vid => {}
+                            Some(_) => return Some(false),
+                            None => return None,
+                        }
+                        match self.vote_check(x, e.member, frozen) {
+                            VoteCheck::Valid => {}
+                            VoteCheck::Missing => return None,
+                            VoteCheck::Lie(ack) => {
+                                self.on_lie(e.member, ack, vid);
+                                return Some(false);
+                            }
+                        }
+                        if self.fixes_off & fix::VCR2 == 0 && !self.head_held(x, frozen) {
+                            return None;
+                        }
+                    }
+                }
+                continue;
+            }
             if !self.members.contains(&x) || !seen.insert(x) || r.votes.len() < q {
                 return Some(false);
             }
@@ -4019,7 +5226,7 @@ impl WorldSim {
     }
 
     fn author_vc(&mut self, payload: Payload) -> Entry {
-        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp: self.frame.max(self.now), payload, carried: None };
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp: self.frame.max(self.now), payload, carried: None, link: 0 };
         self.publish(e)
     }
 
@@ -4027,6 +5234,7 @@ impl WorldSim {
         self.vc.round = r;
         self.vc.step = Step::Propose;
         self.vc.round_at = self.now;
+        self.vc.joined_at = None;
         self.vc.proposed = false;
         self.stats.max_round = self.stats.max_round.max(r);
     }
@@ -4123,6 +5331,8 @@ impl WorldSim {
             let busy = joins
                 || (self.fixes_off & fix::VC4 == 0 && !self.join_caps.is_empty())
                 || !self.votes.is_empty()
+                // Revision 22: a member's leave request starts a view change on its own.
+                || self.leaves.keys().any(|m| self.members.contains(m))
                 || !self.admin_pending.is_empty()
                 || !self.vc.proposals.is_empty()
                 || !self.vc.prevotes.is_empty()
@@ -4195,6 +5405,15 @@ impl WorldSim {
                     Some(c) => self.change_valid(&c),
                     None => Some(false),
                 };
+                // Rev 22 (c): a value a fed member can't fully check gets its prevote once t + 1 distinct members (any,
+                // fed or not) have prevoted it in this round: the first honest prevote is a full member's, which checked
+                // it against the whole chain.
+                let ok = if ok.is_none() && self.fed.is_some() {
+                    let n = self.vc.prevotes.get(&r).map_or(0, |ms| ms.iter().filter(|&(m, &x)| x == v && any_base.contains(m)).count());
+                    if n > t_any { Some(true) } else { None }
+                } else {
+                    ok
+                };
                 // Review VC-3: validity never changes with time (a Tendermint lock relies on it); a
                 // fresh proposal must also bring its boundary in time, a re-proposal need not.
                 let fresh_in_time = match self.vc.changes.get(&v) {
@@ -4235,7 +5454,12 @@ impl WorldSim {
                     let ahead = c.boundary > self.now;
                     let capped = self.join_caps.values().any(|&(_, b)| b <= c.boundary);
                     let in_time = !leads || ahead || (self.fixes_off & fix::VC3 == 0 && capped);
-                    if self.vc.changes.contains_key(&v) && in_time && self.change_valid(&c) == Some(true) {
+                    // Rev 22 (c): a polka (q >= t + 1 prevotes) settles what a fed member can't check.
+                    let valid = match self.change_valid(&c) {
+                        None if self.fed.is_some() => Some(true),
+                        x => x,
+                    };
+                    if self.vc.changes.contains_key(&v) && in_time && valid == Some(true) {
                         self.vc.polka_done.insert(r);
                         if self.vc.step == Step::Prevote {
                             self.vc.locked = Some((v, r));
@@ -4269,6 +5493,41 @@ impl WorldSim {
         }
         if self.vc.precommit_timer.get(&r).is_some_and(|&a| self.now >= a + to) {
             self.start_round(r + 1);
+            return;
+        }
+        // Gap 1 (m0813b922e026, m97fecece8a41; form ruled m8ee59d49cf74, ma3fd4b7c6f68): a fed member can't fetch a
+        // view-change entry it lost (it holds no log), so a round with no proposal and fewer than q precommits armed no
+        // timer that ends it there (a member holding fewer than q prevotes never precommits nil): a fed member that lost
+        // the round's entries waited in it for good. Its round ends three timeouts after it first holds another member's
+        // prevote or precommit of that round or a later one. A round change is always safe (a lock carries over); only
+        // liveness depends on it.
+        // - Fed members only: a full member fetches whatever it lost on the hole in its author's chain, so Tendermint's
+        //   own timers end its rounds. At every member the fallback moved 4 suite cells: d80-kickpartition decided a round
+        //   later (26 frames), since members lacking round 1's proposal during the partition moved on, though it would
+        //   have reached them.
+        // - From the first other member's entry, not the round's start: a member alone in its view change gains nothing
+        //   by moving on alone, and each nil round it churns costs an entry on its link (r18 n = 8 fed: member 1, on
+        //   8 kbit/s, alone from frame 369 to about 700, churned 3 rounds; lag 48.4 / 59 -> 51.3 / 81 frames).
+        // (spike: PE_FALLBACK_ALONE=1 times it from the round's start, PE_FALLBACK_ALL=1 applies it at every member.)
+        if self.fed.is_some() || fallback_all() {
+            if self.vc.joined_at.is_none() {
+                let me = self.me;
+                if [&self.vc.prevotes, &self.vc.precommits].iter().any(|v| v.range(r..).any(|(_, ms)| ms.keys().any(|m| *m != me && any_base.contains(m)))) {
+                    self.vc.joined_at = Some(self.now);
+                }
+            }
+            let from = if fallback_alone() { Some(self.vc.round_at) } else { self.vc.joined_at };
+            if from.is_some_and(|a| self.now >= a + 3 * to)
+                && !self.vc.proposals.contains_key(&r)
+                && !self.vc.precommit_timer.contains_key(&r)
+                && !no_round_fallback()
+            {
+                self.stats.round_fallbacks += 1;
+                if vc_trace() == Some(self.me) {
+                    eprintln!("VC m{} t={} epoch {} round {r} ended with no proposal and fewer than q precommits", self.me, self.now, self.epoch);
+                }
+                self.start_round(r + 1);
+            }
         }
         let _ = t_any;
     }
@@ -4313,7 +5572,13 @@ impl WorldSim {
             // Review VCR-8: applying a change runs its admin entries, so every one must be held first;
             // ask those that precommitted it for the ones missing.
             if proved && self.fixes_off & fix::VCR8 == 0 {
-                let missing: Vec<EntryId> = self.vc.changes[&v].admin.iter().map(|(id, _)| *id).filter(|id| !self.entries.contains_key(id)).collect();
+                // Carry-over, hole 2: and with Part B every vote a removal lists, so each replica takes the removed
+                // member's B (the highest frozen head among them) from the same votes. A spectator that applied S-4's
+                // leave without holding the leave vote took B = 0, ended the leaver's acks there and cut it at 0
+                // (leave-s4-rejoin).
+                let votes = self.vc.changes[&v].remove.iter().flat_map(|r| r.votes.iter().copied()).filter(|_| self.cfg.localize);
+                let missing: Vec<EntryId> =
+                    self.vc.changes[&v].admin.iter().map(|(id, _)| *id).chain(votes).filter(|id| !self.entries.contains_key(id)).collect();
                 if !missing.is_empty() {
                     let askers: Vec<MemberId> = self.vc.precommits.get(&rr).map(|ms| ms.iter().filter(|&(_, &x)| x == v).map(|(&m, _)| m).collect()).unwrap_or_default();
                     for id in missing {
@@ -4378,9 +5643,42 @@ impl WorldSim {
                 self.stats.admin_refused += 1;
             }
         }
+        // F2, revision 21 (a): removing from a Part B epoch, the cut is the final vouched prefix (`finalize_cuts`);
+        // until then the removed chain keeps linking and nothing of it past its vouched prefix counts.
+        let pb_old = self.cfg.localize && self.members.len() >= 3;
         for r in &c.remove {
             self.members.remove(&r.member);
             self.roles.remove(&r.member);
+            self.removed_in.insert(r.member, self.epoch + 1);
+            // Ruling 1: how the change removed it, from the change itself (its kick, or its own leave listed first).
+            let own_leave = r.votes.first().and_then(|id| self.entries.get(id)).is_some_and(|e| e.member == r.member && matches!(e.payload, Payload::Vote { target, kick: 0, .. } if target == r.member));
+            let kind = if r.kick != 0 {
+                localize::RemovalKind::Kick
+            } else if own_leave {
+                localize::RemovalKind::Leave
+            } else {
+                localize::RemovalKind::Suspicion
+            };
+            self.removed_kind.insert(r.member, kind);
+            // Carry-over, hole 2: B, the highest frozen head of its chain among the listed votes (held, `try_decide`), the
+            // voters' only (gap 2 (b)): never its own vote's (a leave's or a self-kick's), its own head, which a dead
+            // uplink may never deliver.
+            let b = r
+                .votes
+                .iter()
+                .filter_map(|id| match self.entries.get(id).map(|e| (e.member, &e.payload)) {
+                    Some((voter, Payload::Vote { frozen, .. })) if voter != r.member => Some(frozen.0),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            self.bound.insert(r.member, b);
+            if pb_old {
+                self.frozen.insert(r.member, u32::MAX);
+                self.evicted.insert(r.member, (u32::MAX, 0));
+                self.pb_pending.insert(r.member);
+                continue;
+            }
             self.frozen.insert(r.member, r.cut.0);
             self.cut_ids.insert(r.member, r.cut.1);
             self.evicted.insert(r.member, (r.cut.0, 0));
@@ -4559,6 +5857,12 @@ impl WorldSim {
         ));
         // A new epoch: the old one's votes, freezes and view-change state end.
         self.votes.clear();
+        // A leave request stands until its author is removed (it is its author's standing wish, not a vote).
+        let members_now = self.members.clone();
+        // Revision 22, plan (A): a latency leave the decision didn't apply is void; its sender asks again if it qualifies
+        // again.
+        let latency: BTreeSet<MemberId> = self.leaves.iter().filter(|(_, id)| self.leave_fed(**id).is_some()).map(|(m, _)| *m).collect();
+        self.leaves.retain(|m, _| members_now.contains(m) && !latency.contains(m));
         self.vc = Vc::default();
         self.pc_held.retain(|&(e, _, _), _| e >= self.epoch);
         self.pv_held.retain(|&(e, _, _), _| e >= self.epoch);
@@ -4569,6 +5873,19 @@ impl WorldSim {
         let members: Vec<MemberId> = self.members.iter().copied().collect();
         for m in members {
             self.extend_chain(m, out);
+        }
+        // F2: rule 2 is decided by an entry's own epoch (`part_b_entry`), which I couldn't read for an entry of this epoch
+        // that I simulated before deciding it. Re-simulate from the earliest such entry: its verdict waited for the epoch,
+        // so it lies above my confirmed frame (cutfix-move: member 6 confirmed member 1's touch at frame 421 simulated
+        // without rule 2 and diverged from every other replica). One below my confirmed frame would change a confirmed
+        // frame, so it is a hard failure (@coordinator-opus m63b968ceb600), not a log line.
+        if self.cfg.localize {
+            let first = self.eff.iter().filter(|(id, _)| self.entries.get(id).is_some_and(|e| self.entry_epoch(e.member, e.seq) == self.epoch)).map(|(_, &f)| f).min();
+            match first {
+                Some(f) if f >= self.conf => self.mark_dirty(f),
+                Some(f) => panic!("F2: m{} entered epoch {} with an entry of it acting at frame {f}, below its confirmed frame {}", self.me, self.epoch, self.conf),
+                None => {}
+            }
         }
         for x in removed {
             self.adopt_cut(x);
@@ -4610,7 +5927,9 @@ impl WorldSim {
         self.recompute_conf();
         // Review VCR-3: ack in the new epoch at once, so this member's acks never skip an epoch (an
         // ack's epoch rises by at most one, VC-5), however many decisions fall between two acks.
-        if self.fixes_off & fix::VCR3 == 0 && !(self.quiet_until_member && !self.members.contains(&self.me)) {
+        // Carry-over, hole 2: a member that has asked to leave authors no ack (and so no fed echo) from its request on;
+        // a void latency leave was dropped above, so its sender acks again in the new epoch.
+        if self.fixes_off & fix::VCR3 == 0 && !(self.quiet_until_member && !self.members.contains(&self.me)) && !self.acks_held() {
             out.push(self.author_ack());
         }
     }
@@ -4702,6 +6021,102 @@ impl WorldSim {
             proofs.push(self.entries.get(&p.b)?.clone());
         }
         Some(EpochCert { world: self.world_id, epoch, change: c.clone(), round: *round, members: self.members_at(epoch)?, precommits: sigs.clone(), proofs })
+    }
+
+    /// Gap 1, the fed side: ask `from` for the certificates after my epoch (rate-limited per epoch).
+    fn want_certs(&mut self, from: MemberId) {
+        if self.fed.is_none() || from == self.me {
+            return;
+        }
+        let now = self.now;
+        if self.cert_asked.get(&self.epoch).is_some_and(|&at| now < at + 30) {
+            return;
+        }
+        self.cert_asked.insert(self.epoch, now);
+        self.cert_wants.push((from, self.epoch));
+    }
+
+    /// Gap 1: the certificates for epochs `from + 1 ..= mine`, each with the admin entries and removal votes its change
+    /// lists, by value; None if I am not past `from` or don't hold one of them.
+    pub fn certs_after(&self, from: u32) -> Option<Msg> {
+        if from >= self.epoch {
+            return None;
+        }
+        let mut packs = Vec::new();
+        for e in from + 1..=self.epoch {
+            let cert = self.epoch_cert(e)?;
+            let mut entries = Vec::new();
+            for (id, _) in &cert.change.admin {
+                entries.push(self.entries.get(id)?.clone());
+            }
+            for r in &cert.change.remove {
+                for id in &r.votes {
+                    entries.push(self.entries.get(id)?.clone());
+                }
+            }
+            packs.push(CertPack { cert, entries });
+        }
+        Some(Msg::Certs { packs })
+    }
+
+    /// Gap 1: a fed member's request for the certificates after `epoch`.
+    pub fn on_cert_req(&self, epoch: u32) -> Option<Msg> {
+        self.certs_after(epoch)
+    }
+
+    /// Gap 1, the feeder's side: the certificates fed member `f` lacks, if its newest ack I hold declares an older epoch
+    /// than mine; at most every 60 frames per epoch of f's, while it lags.
+    pub fn cert_push(&mut self, f: MemberId) -> Option<Msg> {
+        let fe = self.ack_epoch_from.get(&f).and_then(|a| a.keys().next_back()).copied().unwrap_or(0).max(self.admitted_epoch.get(&f).copied().unwrap_or(0));
+        if fe >= self.epoch || !self.members.contains(&f) {
+            return None;
+        }
+        let now = self.now;
+        if self.cert_pushed.get(&(f, fe)).is_some_and(|&at| now < at + 60) {
+            return None;
+        }
+        self.cert_pushed.insert((f, fe), now);
+        self.certs_after(fe)
+    }
+
+    /// Gap 1, the fed side: follow decisions I missed by value. A certificate for my current epoch is checked by its
+    /// precommit signatures against the members I hold (`epoch_cert_ok`); its entries (the admin entries and removal
+    /// votes the change lists) and proofs are taken by value, and its signers' precommits stand for the precommit
+    /// entries I never received. The decision then runs as if they had arrived (`try_decide`). Returns entries to send.
+    pub fn on_certs(&mut self, packs: Vec<CertPack>) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if self.fed.is_none() {
+            return out;
+        }
+        let mut packs = packs;
+        packs.sort_by_key(|p| p.cert.epoch);
+        for p in packs {
+            let c = &p.cert;
+            if c.world != self.world_id || c.change.epoch != self.epoch {
+                continue;
+            }
+            let prev: Vec<MemberId> = self.members.iter().copied().collect();
+            if !epoch_cert_ok(self.cfg.quorum, &prev, c) {
+                self.stats.certs_refused += 1;
+                continue;
+            }
+            let value = c.change.value();
+            let (round, world, epoch) = (c.round, c.world, c.change.epoch);
+            let signers: Vec<MemberId> = c.precommits.iter().filter(|(m, s)| *s == vc_sig(world, *m, epoch, round, value)).map(|(m, _)| *m).collect();
+            let change = c.change.clone();
+            for e in p.cert.proofs.iter().cloned().chain(p.entries) {
+                out.extend(self.insert(e));
+            }
+            self.vc.changes.entry(value).or_insert(change);
+            let pcs = self.vc.precommits.entry(round).or_default();
+            for m in signers {
+                pcs.entry(m).or_insert(value);
+            }
+            self.stats.certs_applied += 1;
+            self.ev(format!("gap 1: epoch {}'s certificate (round {round}) applied by value", epoch + 1));
+            self.try_decide(&mut out);
+        }
+        out
     }
 
     /// This world's certificates for epochs 1..=`epoch`: what a fact signed in `epoch` carries so
@@ -4819,6 +6234,60 @@ impl WorldSim {
         self.hidden = None;
     }
 
+    /// Diagnostics (the stuck-kick trace, @coordinator-opus me6b738e13923), without side effects: this replica's
+    /// round and step, the round's proposal and what it lists, its own prevote and precommit in the round, the round's
+    /// prevote counts, and each vote it holds on `x` (frozen seq, `k` for a kick vote, `unheld` if it can't walk x's
+    /// chain down from that head).
+    pub fn kick_trace(&self, x: MemberId) -> String {
+        let r = self.vc.round;
+        let held = self.contiguous.get(&x).copied().unwrap_or(0);
+        let kicks: Vec<String> = self
+            .admin_pending
+            .iter()
+            .filter_map(|id| self.entries.get(id).map(|e| (id, e)))
+            .filter(|(_, e)| matches!(e.payload, Payload::Kick { target, .. } if target == x))
+            .map(|(id, e)| format!("m{} s{} {:x}", e.member, e.seq, id & 0xffff))
+            .collect();
+        let votes: Vec<String> = self
+            .votes
+            .get(&x)
+            .map(|v| {
+                v.iter()
+                    .map(|(m, rec)| format!("{m}:{}{}{}", rec.frozen.0, if rec.kick != 0 { "k" } else { "" }, if self.head_held(x, rec.frozen) { "" } else { " unheld" }))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let prop = self.vc.proposals.get(&r).map(|&(v, vr)| {
+            let c = self.vc.changes.get(&v);
+            format!(
+                "{:x} vr {} remove {:?} admin {}",
+                v & 0xffff,
+                if vr == NO_ROUND { "-".to_string() } else { vr.to_string() },
+                c.map(|c| c.remove.iter().map(|x| (x.member, x.cut.0, x.votes.len())).collect::<Vec<_>>()),
+                c.map_or(0, |c| c.admin.len())
+            )
+        });
+        let mine = |b: &BTreeMap<u32, BTreeMap<MemberId, u64>>| match b.get(&r).and_then(|m| m.get(&self.me)) {
+            None => "-".to_string(),
+            Some(0) => "nil".to_string(),
+            Some(v) => format!("{:x}", v & 0xffff),
+        };
+        let counts = self.vc.prevotes.get(&r).map(|m| (m.values().filter(|&&v| v != 0).count(), m.values().filter(|&&v| v == 0).count()));
+        format!(
+            "epoch {} round {r} step {:?} proposer m{} since {:?} locked {:?}; holds x to {held}; kick pending {kicks:?}; votes [{}]; proposal {}; my prevote {} precommit {}; prevotes (value, nil) {:?}",
+            self.epoch,
+            self.vc.step,
+            self.proposer(self.epoch, r),
+            self.vc.since,
+            self.vc.locked.map(|(v, lr)| (v & 0xffff, lr)),
+            votes.join(", "),
+            prop.unwrap_or_else(|| "none".to_string()),
+            mine(&self.vc.prevotes),
+            mine(&self.vc.precommits),
+            counts
+        )
+    }
+
     /// Diagnostics: this replica's view-change state and how much of each chain it holds.
     pub fn vc_debug(&self) -> String {
         let pv: Vec<String> = self.vc.prevotes.iter().map(|(r, m)| format!("r{r}:{:?}", m.iter().map(|(k, v)| (*k, *v != 0)).collect::<Vec<_>>())).collect();
@@ -4924,6 +6393,9 @@ impl WorldSim {
         for (to, value) in std::mem::take(&mut self.value_wants) {
             out.push((to, Msg::FetchValue { value }));
         }
+        for (to, epoch) in std::mem::take(&mut self.cert_wants) {
+            out.push((to, Msg::CertReq { epoch }));
+        }
         let mut asked_now = BTreeSet::new();
         for (to, id, back) in std::mem::take(&mut self.entry_wants) {
             if self.fixes_off & fix::VC4R4 == 0 {
@@ -5019,6 +6491,7 @@ impl WorldSim {
                     stamp: self.frame.max(self.now),
                     payload: Payload::Attest { fact, sig: member_sig(self.world_id, self.me, fact) },
                     carried: None,
+                    link: 0,
                 };
                 out.push(self.publish(e));
             }
@@ -5197,6 +6670,13 @@ impl WorldSim {
     ) -> Outcome {
         match &e.payload {
             Payload::Touch { obj, impulse, grab } => {
+                // Part B, rule 2, by the entry's own epoch (F2).
+                let pb = self.part_b_entry(e);
+                // Part B, rule 2: this simulation's decision replaces any earlier one; a touch refused below
+                // never reaches it.
+                if pb {
+                    self.rule2.remove(&id);
+                }
                 // Review HO-1: an object a member owns (a hand) is touched by no one else: refused,
                 // so no claim is taken that would block the owner.
                 if self.not_owner(*obj, e.member) {
@@ -5237,7 +6717,23 @@ impl WorldSim {
                 }
                 if let Some((cobj, st)) = e.carried {
                     if self.eff.get(&id) == Some(&e.stamp) {
-                        carry.push((cobj, st));
+                        // Thin links Part B, rule 2: a write its author made without having seen an older
+                        // one by another member is skipped; the push above still acts.
+                        let stale = pb && self.stale_write(e, cobj);
+                        if pb {
+                            self.rule2.insert(id, stale);
+                        }
+                        if stale {
+                            self.stats.stale_skips += 1;
+                            if record_effects {
+                                self.ev(format!("rule 2: m{} s{} stamped {}: carried state for {cobj} skipped (stale)", e.member, e.seq, e.stamp));
+                            }
+                        } else {
+                            carry.push((cobj, st));
+                            if pb {
+                                self.note_write(cobj, e.member, e.seq, e.stamp);
+                            }
+                        }
                     }
                 }
                 Outcome::Accepted
@@ -5581,6 +7077,10 @@ impl WorldSim {
                 st.write(&mut self.world, o.body);
             }
         }
+        // Part B, rule 5: a fed replica writes the feed's states for this frame into its own view.
+        if self.fed.is_some() {
+            self.write_anchors(f);
+        }
         // Expire claims; their holders enter a short cooldown on that object.
         let next = f + 1;
         let expired: Vec<(u32, MemberId)> = self.t.claims.iter().filter(|(_, c)| c.until <= next).map(|(o, c)| (*o, c.member)).collect();
@@ -5661,7 +7161,8 @@ impl WorldSim {
         self.trim_ring();
         let mut n = 0;
         while self.frame < target {
-            if self.frame >= self.conf + self.cfg.window {
+            // Part B, rule 5: a fed replica can't confirm (it holds no log), and doesn't stall at its own W.
+            if self.frame >= self.conf + self.cfg.window && self.fed.is_none() {
                 self.stats.paused_frames += 1;
                 break;
             }
@@ -5800,6 +7301,18 @@ pub fn replay_sim_like(like: &WorldSim, scene: SceneKind, members: &[MemberId], 
     s.provenance = like.provenance;
     s.import_policy = like.import_policy.clone();
     s.hand_owners = like.hand_owners.clone();
+    // Thin links Part B: the replay holds no acks, so rule 2 reads the live replica's window values and the
+    // heads its acks named. Every replica derives them from the same log, which the digests compare.
+    s.windows = like.windows.clone();
+    s.provisional = like.provisional.clone();
+    s.ack_head_hist = like.ack_head_hist.clone();
+    // F2: and the epochs, so rule 2 applies by each entry's own epoch as it did live.
+    s.genesis = like.genesis.clone();
+    s.decided = like.decided.clone();
+    s.epoch = like.epoch;
+    s.ack_epoch_from = like.ack_epoch_from.clone();
+    s.admitted_epoch = like.admitted_epoch.clone();
+    s.replaying = true;
     s.run_log(log, frames)
 }
 
@@ -5843,7 +7356,7 @@ mod round3_tests {
         // have panicked the old encoder (asserted at 64); now it round-trips, and a decode claiming
         // more than MAX_POLKA is refused.
         let polka: Vec<EntryId> = (1..=300).collect();
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka }, carried: None };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka }, carried: None, link: 0 };
         assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
         // A precommit payload whose polka count exceeds MAX_POLKA is refused (never read in part).
         let mut w = Wr(Vec::new());
@@ -5875,7 +7388,7 @@ mod round3_tests {
         assert_ne!(join_sig_in(a, 5, 900), join_sig_in(a, 5, 901));
         // A change that adds a member carries its request, in the extended layout.
         let c = Change { epoch: 2, add: vec![5], add_roles: vec![ADMIN], add_attests: vec![vec![]], add_reqs: vec![(join_sig_in(a, 5, 900), 900)], boundary: 7, ..Default::default() };
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Propose { epoch: 2, round: 0, valid_round: NO_ROUND, change: c }, carried: None };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Propose { epoch: 2, round: 0, valid_round: NO_ROUND, change: c }, carried: None, link: 0 };
         assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
     }
 
@@ -5912,7 +7425,7 @@ mod round3_tests {
 
     #[test]
     fn wide_role_ids_are_refused() {
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::SetRole { epoch: 0, member: 2, role: 7 }, carried: None };
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::SetRole { epoch: 0, member: 2, role: 7 }, carried: None, link: 0 };
         let mut bytes = encode_msg(&Msg::Entry(e.clone()));
         assert_eq!(decode_msg(&bytes), Some(Msg::Entry(e)));
         // The role is the u32 after tag 18, epoch and member: set its high half.
@@ -6044,5 +7557,206 @@ mod ownership_tests {
         w.u8(0); // carried: none
         assert_eq!(decode_msg(&w.0), None);
         assert_eq!(Cert::from_words(&vec![0; MAX_CERT_WORDS + 1]), None);
+    }
+}
+
+#[cfg(test)]
+mod echo_tests {
+    //! Thin links Part B, rule 1's echo: checkpoint links, the ids a fed member computes, and the encodings.
+    use super::*;
+
+    /// A chain of acks of member 1 stamped every `step` frames, with honest checkpoint links.
+    fn chain(n: u32, step: u64) -> Vec<Entry> {
+        let (mut out, mut ck, mut prev): (Vec<Entry>, Option<(u64, EntryId)>, EntryId) = (Vec::new(), None, 0);
+        for s in 1..=n {
+            let stamp = 3 + s as u64 * step;
+            let mut e = Entry { member: 1, seq: s, prev, stamp, payload: Payload::Ack { horizon: stamp - 1, heads: vec![(2, s, 7)], check: None, epoch: 0, fed: None }, carried: None, link: 0 };
+            e.link = ckpt_link_for(ck, stamp);
+            ck = ckpt_step(ck, &e);
+            prev = e.id();
+            out.push(e);
+        }
+        out
+    }
+
+    #[test]
+    fn checkpoint_links_round_trip_and_ids_split() {
+        let c = chain(40, 7);
+        let ckpts: Vec<&Entry> = c.iter().filter(|e| e.link != 0).collect();
+        // Blocks of 32 frames at 7 frames per entry: a checkpoint in nearly every block after the first.
+        assert!(ckpts.len() >= 7, "{}", ckpts.len());
+        for e in &c {
+            assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e.clone())));
+            assert_eq!(entry_id(e.link, e.rest_hash()), e.id());
+        }
+        // Each checkpoint links to the previous one.
+        for w in ckpts.windows(2) {
+            assert_eq!(w[1].link, w[0].id());
+        }
+    }
+
+    #[test]
+    fn a_fed_member_computes_checkpoint_ids_forward() {
+        // TLP-22/23: from a checkpoint id it holds and each later checkpoint's rest-hash, a fed member gets
+        // every later checkpoint's id; a rest-hash of another fork gives an id no one holds.
+        let c = chain(40, 7);
+        let mut ck: Option<(u64, EntryId)> = None;
+        let mut firsts: Vec<(u64, EntryId, u64)> = Vec::new();
+        for e in &c {
+            let before = ck;
+            ck = ckpt_step(ck, e);
+            if ck != before {
+                firsts.push((e.stamp / CKPT_FRAMES, e.id(), e.rest_hash()));
+            }
+        }
+        let (_, mut id, _) = firsts[0];
+        for &(_, real, rest) in &firsts[1..] {
+            id = entry_id(id, rest);
+            assert_eq!(id, real);
+        }
+        let forged = Entry { payload: Payload::Attest { fact: 1, sig: 0 }, ..c[39].clone() };
+        assert_ne!(entry_id(firsts[firsts.len() - 2].1, forged.rest_hash()), c[39].id());
+    }
+
+    #[test]
+    fn fed_acks_and_checkpoint_lists_round_trip() {
+        for fed in [
+            Some(FedAck { anchor: 900, echo: vec![(1, 12), (2, 11), (4, 12)], digest: 0xabcd }),
+            Some(FedAck { anchor: 901, echo: vec![], digest: 0 }),
+            None,
+        ] {
+            for epoch in [0, 3] {
+                let e = Entry { member: 3, seq: 9, prev: 5, stamp: 400, payload: Payload::Ack { horizon: 399, heads: vec![(1, 4, 8)], check: Some((300, 6)), epoch, fed: fed.clone() }, carried: None, link: 0 };
+                assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
+            }
+        }
+        for m in [
+            Msg::Ckpts { member: 2, after: Some(11), list: vec![(12, 40, 5), (13, 41, 6)], fed: false, echo: None },
+            Msg::Ckpts { member: 2, after: None, list: vec![(0, 1, 5)], fed: true, echo: Some(9) },
+            Msg::Ckpts { member: 2, after: None, list: vec![], fed: true, echo: None },
+            Msg::Feed { frame: 7, fed: vec![3, 4], bodies: vec![] },
+        ] {
+            assert_eq!(decode_msg(&encode_msg(&m)), Some(m));
+        }
+    }
+
+    #[test]
+    fn the_decoder_refuses_unknown_flags_and_a_flagged_zero_link() {
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Attest { fact: 1, sig: 0 }, carried: None, link: 0 };
+        let mut b = encode_msg(&Msg::Entry(e));
+        let flags = b.len() - 1;
+        assert_eq!(b[flags], 0);
+        b[flags] = 4;
+        assert_eq!(decode_msg(&b), None);
+        b[flags] = 2;
+        b.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(decode_msg(&b), None);
+        let n = b.len();
+        b[n - 8] = 1;
+        assert!(decode_msg(&b).is_some());
+    }
+}
+
+/// Rev 22 (e1), @coordinator-opus m15aed3d58263 ruling 2: the commit order of one decision's admin entries,
+/// deterministically. Stamp-effective entries run first; a kick is judged on the ACL as of the previous decided change
+/// (acl0), whatever this decision's role entries changed.
+#[cfg(test)]
+mod e1_commit_order {
+    use super::*;
+
+    const GUEST: RoleId = 1;
+
+    fn entry(member: MemberId, stamp: u64, payload: Payload) -> Entry {
+        Entry { member, seq: 5, prev: 0, stamp, payload, carried: None, link: 0 }
+    }
+
+    fn run(admins: &[MemberId]) -> AdminRun {
+        let members: BTreeSet<MemberId> = [1, 2, 3, 4].into_iter().collect();
+        let roles: BTreeMap<MemberId, RoleId> = members.iter().map(|&m| (m, if admins.contains(&m) { ADMIN } else { GUEST })).collect();
+        let defs: BTreeMap<RoleId, u64> = [(GUEST, 0)].into_iter().collect();
+        AdminRun {
+            members: members.clone(),
+            roles: roles.clone(),
+            defs: defs.clone(),
+            excluded: BTreeSet::new(),
+            owners: BTreeSet::new(),
+            book: None,
+            lineage: 1,
+            acl0: Some(Box::new((members, roles, defs, BTreeSet::new()))),
+        }
+    }
+
+    fn decide(r: &mut AdminRun, mut es: Vec<Entry>) -> Vec<(bool, Entry)> {
+        es.sort_by_key(|e| admin_key(e, 7));
+        es.into_iter().map(|e| (r.apply(&e), e)).collect()
+    }
+
+    #[test]
+    fn same_decision_revocation_then_kick_stands() {
+        let mut r = run(&[1, 2]);
+        let out = decide(&mut r, vec![entry(2, 361, Payload::Kick { epoch: 0, target: 4 }), entry(1, 360, Payload::SetRole { epoch: 0, member: 2, role: GUEST })]);
+        assert!(matches!(out[0].1.payload, Payload::SetRole { .. }), "stamp-effective entries run first");
+        assert_eq!(out.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, true]);
+        assert_eq!(r.roles.get(&2), Some(&GUEST));
+        assert!(!r.members.contains(&4), "the kick is judged on acl0, where 2 was an admin");
+    }
+
+    #[test]
+    fn same_decision_promotion_then_kick_refused() {
+        let mut r = run(&[1]);
+        let out = decide(&mut r, vec![entry(2, 361, Payload::Kick { epoch: 0, target: 4 }), entry(1, 360, Payload::SetRole { epoch: 0, member: 2, role: ADMIN })]);
+        assert_eq!(out.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, false]);
+        assert_eq!(r.roles.get(&2), Some(&ADMIN));
+        assert!(r.members.contains(&4), "on acl0 2 was a guest");
+    }
+
+    /// F never accepts what a full member rejects (@design-reviewer mf9870e4051a7, m912db9fb4df1): on one decision's
+    /// list, the full member's commit-order apply has the demotion apply and the kick, judged on acl0, stand; a fed
+    /// member's check of the same change (fed_change_valid) can't check the stamp-effective demotion, so it answers
+    /// "can't tell" (None, which falls to rule (c): a prevote once t + 1 have), never Some(true) where the full member
+    /// rejects; a change marking the standing kick refused gets its nil (Some(false)).
+    #[test]
+    fn fed_never_accepts_what_full_rejects() {
+        let mut f = WorldSim::new(1, 3, &[1, 2, 3, 4], SceneKind::Empty, SimConfig { localize: true, ..SimConfig::default() });
+        f.role_defs.insert(GUEST, 0);
+        f.roles.insert(3, GUEST);
+        f.roles.insert(4, GUEST);
+        f.set_fed(true);
+        let demote = entry(1, 360, Payload::SetRole { epoch: 0, member: 2, role: GUEST });
+        let kick = entry(2, 361, Payload::Kick { epoch: 0, target: 4 });
+        let (did, kid) = (demote.id(), kick.id());
+        f.entries.insert(did, demote.clone());
+        f.entries.insert(kid, kick.clone());
+        // The full member's path.
+        let mut full = run(&[1, 2]);
+        let applied = decide(&mut full, vec![kick.clone(), demote.clone()]);
+        let order: Vec<(EntryId, bool)> = applied.iter().map(|(ok, e)| (e.id(), *ok)).collect();
+        assert_eq!(order, vec![(did, true), (kid, true)]);
+        // The fed member's path, on the same list.
+        let change = |admin: Vec<(EntryId, bool)>, kick_ok: bool| Change {
+            epoch: 0,
+            remove: if kick_ok { vec![Removal { member: 4, votes: vec![], cut: (0, 0), kick: kid }] } else { vec![] },
+            add: vec![],
+            boundary: 600,
+            excluded: vec![],
+            admin,
+            add_roles: vec![],
+            add_attests: vec![],
+            add_reqs: vec![],
+        };
+        assert_eq!(f.fed_change_valid(&change(order.clone(), true)), None, "agrees, but can't check the demotion: can't tell");
+        assert_eq!(f.fed_change_valid(&change(vec![(did, true), (kid, false)], false)), Some(false), "a refused kick that should stand gets its nil");
+    }
+
+    #[test]
+    fn kick_order_by_hash_not_stamp() {
+        // Two admins kick each other in one decision: the order is hash(seed, author), then seq, never the stamp, so a
+        // backdated kick doesn't come first by backdating.
+        let mut a = run(&[1, 2]);
+        let out_a = decide(&mut a, vec![entry(1, 400, Payload::Kick { epoch: 0, target: 2 }), entry(2, 100, Payload::Kick { epoch: 0, target: 1 })]);
+        let mut b = run(&[1, 2]);
+        let out_b = decide(&mut b, vec![entry(1, 400, Payload::Kick { epoch: 0, target: 2 }), entry(2, 399, Payload::Kick { epoch: 0, target: 1 })]);
+        assert_eq!(out_a[0].1.member, out_b[0].1.member, "the stamp doesn't change the order");
+        assert_eq!(out_a.iter().map(|x| x.0).collect::<Vec<_>>(), vec![true, false], "the second kick's author is gone");
     }
 }

@@ -1,0 +1,17 @@
+PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
+RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
+RESULT r18 capped: member 3 is on a slow link: 16 kbit/s to and from every peer
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   batched+adaptive |  84.0 /  49.5 /  21.6 |  499 /  499 /  472 |  457 | 906 / 905 / 1012 | 1026 / 1025 / 1585 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 b3d3816de1f3b957 / m2 b3d3816de1f3b957 / m3 b3d3816de1f3b957 replay b3d3816de1f3b957 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 96.1 / 41.4, m2 96.1 / 41.4, m3 771.2 / 459.6 (134 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 88.1, m2 88.1, m3 767.2
+RESULT     mean confirmation lag per member from the gesture's start, frames: 329.3 / 329.2 / 775.0
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 942 / 942 / 1502
+RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     time on the state feed per member: 0 / 0 / 10402 ms
+RESULT     view changes at member 1: epoch 1 at frame 987 (16.45 s) removed []
+RESULT     3 players, window modes at member 1 (300 frames each): D54 fed fed ? ? ?
+RESULT     rule 1's echo, per member: echoes matched/mismatched 21/0 21/0 0/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [29902, 0, 0, 0, 0, 0, 0, 0, 0] ms
+RESULT     controller on member 3, the slow member: time at each level: [14635, 200, 500, 2114, 5500, 5851, 400, 701, 0] ms

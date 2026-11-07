@@ -20,6 +20,23 @@ pub struct Link {
 
 /// Wire overhead per datagram (IP/UDP/AEAD/session), as in the ball-pit wire estimate.
 pub const DATAGRAM_OVERHEAD: u64 = 52;
+/// The per-datagram overhead in use: DATAGRAM_OVERHEAD (phase 3, Noise), or PE_DGRAM_OVERHEAD for a run (today's
+/// signed datagrams: 117).
+pub fn dgram_overhead() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_DGRAM_OVERHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(DATAGRAM_OVERHEAD))
+}
+/// (spike: PE_DROP_PAUSED_KICKS=1, the harness drops a planned kick while its admin is paused, as before mdffbecdc9b48)
+fn drop_paused_kicks() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_DROP_PAUSED_KICKS").is_ok())
+}
+
+/// (spike: PE_FED_MIN_LEVEL=L replaces `fed_level_floor` for a run, for measuring; 0 is no floor)
+fn fed_min_level_override() -> Option<usize> {
+    static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FED_MIN_LEVEL").ok().and_then(|v| v.parse().ok()))
+}
 /// Largest datagram payload a batch may fill (review R3-9).
 pub const MTU: usize = 1200;
 /// A member answers a fetch only while its uplink to the requester holds less than this; the
@@ -101,6 +118,10 @@ pub enum Fate {
 pub type Filter = Box<dyn FnMut(u64, WorldId, MemberId, MemberId, &Msg) -> Fate>;
 
 pub struct Net {
+    /// Thin links Part B, rule 5: the receivers on the state feed, per world. No entries are sent to them.
+    pub fed: BTreeSet<(WorldId, MemberId)>,
+    /// Bytes offered per directed link, with when, over the last second (the feed controller's leave test).
+    recent: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
     pub now_us: u64,
     seq: u64,
     queue: BinaryHeap<Reverse<(u64, u64, MemberId, WorldId, MemberId, Vec<u8>)>>,
@@ -132,8 +153,12 @@ pub struct Net {
     /// R18 (viz-4): merge everything one member sends one peer in one tick into one datagram.
     pub batching: bool,
     outbox: BTreeMap<(WorldId, MemberId, MemberId), Vec<Msg>>,
+    /// Rev 22, ack priority: a fed member's client queue per directed link, (protocol, own inputs), each (world, msg).
+    client_q: BTreeMap<(MemberId, MemberId), (std::collections::VecDeque<(WorldId, Msg)>, std::collections::VecDeque<(WorldId, Msg)>)>,
     /// Every send attempt, when `tracing` is on.
     pub tracing: bool,
+    /// (spike diagnostics, with `tracing`) Every entry posted: (now, from, to, author, seq, kind, to a fed member).
+    pub post_log: Vec<(u64, MemberId, MemberId, MemberId, u32, &'static str, bool)>,
     pub trace: Vec<SendRec>,
 }
 
@@ -181,12 +206,18 @@ pub fn kind(m: &Msg) -> &'static str {
         Msg::Fetch { .. } | Msg::FetchValue { .. } | Msg::FetchEntry { .. } => "fetch",
         Msg::Join { .. } => "join",
         Msg::Batch(_) => "batch",
+        Msg::Feed { .. } => "feed",
+        Msg::Ckpts { .. } => "ckpts",
+        Msg::CertReq { .. } => "certreq",
+        Msg::Certs { .. } => "certs",
     }
 }
 
 impl Net {
     pub fn new(default_link: Link, seed: u64) -> Self {
         Net {
+            fed: BTreeSet::new(),
+            recent: BTreeMap::new(),
             now_us: 0,
             seq: 0,
             queue: BinaryHeap::new(),
@@ -208,7 +239,9 @@ impl Net {
             framing_from: BTreeMap::new(),
             batching: false,
             outbox: BTreeMap::new(),
+            client_q: BTreeMap::new(),
             tracing: false,
+            post_log: Vec::new(),
             trace: Vec::new(),
         }
     }
@@ -218,8 +251,22 @@ impl Net {
         self.rng
     }
 
+    /// Bits per second offered on the link from `from` to `to` over the last second.
+    pub fn recent_bps(&self, from: MemberId, to: MemberId) -> u64 {
+        let since = self.now_us.saturating_sub(1_000_000);
+        self.recent.get(&(from, to)).map_or(0, |q| q.iter().filter(|(t, _)| *t >= since).map(|(_, b)| b * 8).sum())
+    }
+
     pub fn send(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
         let bytes = encode_msg(m);
+        {
+            let now = self.now_us;
+            let q = self.recent.entry((from, to)).or_default();
+            q.push_back((now, bytes.len() as u64 + dgram_overhead()));
+            while q.front().is_some_and(|&(t, _)| t + 1_000_000 < now) {
+                q.pop_front();
+            }
+        }
         if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
             let c = self.sent.entry((world, kind(m))).or_default();
             c.0 += 1;
@@ -228,7 +275,26 @@ impl Net {
         let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
         let mut extra = 0;
         if let Some(f) = self.filter.as_mut() {
-            match f(self.now_us, world, from, to, m) {
+            // c6e564f's rule (as in the crate harness for option 2's runs): a datagram of two or more messages meets
+            // the filter message by message, as each would alone. A filter written for entries otherwise let every
+            // batched datagram past it (partbrand's Split and Rotate faults). One datagram: dropped if any part is,
+            // else delayed by the longest delay.
+            let fate = match m {
+                Msg::Batch(v) if v.len() > 1 => {
+                    let mut fate = Fate::Deliver;
+                    for x in v {
+                        match (f(self.now_us, world, from, to, x), &fate) {
+                            (Fate::Drop, _) => fate = Fate::Drop,
+                            (Fate::Delay(d), Fate::Deliver) => fate = Fate::Delay(d),
+                            (Fate::Delay(d), Fate::Delay(e)) if d > *e => fate = Fate::Delay(d),
+                            _ => {}
+                        }
+                    }
+                    fate
+                }
+                _ => f(self.now_us, world, from, to, m),
+            };
+            match fate {
                 Fate::Deliver => {}
                 Fate::Drop => {
                     self.dropped += 1;
@@ -239,13 +305,13 @@ impl Net {
             }
         }
         if self.now_us >= self.count_from_us && self.now_us < self.count_to_us {
-            *self.wire_from.entry(from).or_default() += bytes.len() as u64 + DATAGRAM_OVERHEAD;
+            *self.wire_from.entry(from).or_default() += bytes.len() as u64 + dgram_overhead();
             let mut count = |k: &'static str, n: u64| {
                 let c = self.kinds_from.entry((from, k)).or_default();
                 c.0 += 1;
                 c.1 += n;
             };
-            count("(datagram overhead)", DATAGRAM_OVERHEAD);
+            count("(datagram overhead)", dgram_overhead());
             match m {
                 Msg::Batch(v) => {
                     let mut inner = 0;
@@ -290,20 +356,116 @@ impl Net {
         self.queue.push(Reverse((at, self.seq, to, world, from, bytes)));
     }
 
+    /// Revision 22, D-5: a leave request goes first, ahead of the sender's queued datagrams (its client puts it at the
+    /// head of its send queue): it leaves after its own serialization time and is never tail-dropped. Not batched.
+    pub fn send_urgent(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
+        let bytes = encode_msg(m);
+        let link = self.links.get(&(from, to)).copied().unwrap_or(self.default_link);
+        let ser = match self.caps.get(&(from, to)).copied().or(self.default_cap) {
+            Some(cap) => ((bytes.len() as u64 + dgram_overhead()) as f64 * 8.0 * 1e6 / cap.rate_bps as f64).ceil() as u64,
+            None => 0,
+        };
+        let jitter = if link.jitter_us > 0 { self.rand() % (link.jitter_us + 1) } else { 0 };
+        let at = self.now_us + ser + link.delay_us + jitter;
+        self.record(from, to, bytes.len() as u64, 0, at);
+        self.seq += 1;
+        self.queue.push(Reverse((at, self.seq, to, world, from, bytes)));
+    }
+
     /// Departure time through the link's bandwidth cap for a payload of `payload` bytes (now, if
     /// the link is uncapped), or None if its queue is full.
     pub fn shape(&mut self, from: MemberId, to: MemberId, payload: u64) -> Option<u64> {
         let Some(cap) = self.caps.get(&(from, to)).copied().or(self.default_cap) else { return Some(self.now_us) };
-        self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + DATAGRAM_OVERHEAD)
+        self.shapers.entry((from, to)).or_default().offer(&cap, self.now_us, payload + dgram_overhead())
     }
 
-    /// Current queue backlog of a capped link, in microseconds (0 if uncapped).
+    /// Current queue backlog of a capped link, in microseconds (0 if uncapped): the router queue plus, for a fed
+    /// member, its client queue (rev 22 ack priority), so the R18 controller still climbs when its inputs back up.
     pub fn backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
+        let router = self.router_backlog_us(from, to);
+        let client = match (self.client_q.get(&(from, to)), self.caps.get(&(from, to)).copied().or(self.default_cap)) {
+            (Some((hi, lo)), Some(cap)) if !hi.is_empty() || !lo.is_empty() => {
+                let bytes: u64 = hi.iter().chain(lo.iter()).map(|(_, m)| encode_msg(m).len() as u64).sum();
+                let datagrams = bytes / MTU as u64 + 1;
+                ((bytes + datagrams * dgram_overhead()) as f64 * 8.0 * 1e6 / cap.rate_bps as f64) as u64
+            }
+            _ => 0,
+        };
+        router + client
+    }
+
+    /// The router queue alone (what a datagram offered now would wait at the bottleneck).
+    fn router_backlog_us(&self, from: MemberId, to: MemberId) -> u64 {
         self.shapers.get(&(from, to)).map_or(0, |s| s.backlog_us(self.now_us))
+    }
+
+    /// Rev 22 ack priority: a fed member's client sends its protocol messages ahead of its own inputs. Each tick it
+    /// releases datagrams, protocol first, while the router queue is empty (the harness stand-in for pacing at its
+    /// estimated rate; production: R18's delay-gradient capacity estimate). Inputs wait in the client queue and run late; rule 1
+    /// voids what arrives past its deadline ("a spectator in effect"), and the echo stays timely.
+    fn release_client_queues(&mut self) {
+        let keys: Vec<(MemberId, MemberId)> = self.client_q.iter().filter(|(_, (hi, lo))| !hi.is_empty() || !lo.is_empty()).map(|(k, _)| *k).collect();
+        for (from, to) in keys {
+            if self.caps.get(&(from, to)).copied().or(self.default_cap).is_none() {
+                continue;
+            }
+            // Pacing at the link rate: the next datagram goes only once the router queue is empty (the bucket's burst
+            // still passes at once). One full datagram's worth of queue is over a second at 8 kbit/s.
+            loop {
+                if self.router_backlog_us(from, to) > 0 {
+                    break;
+                }
+                let (hi, lo) = self.client_q.get_mut(&(from, to)).unwrap();
+                let Some(w) = hi.front().or(lo.front()).map(|x| x.0) else { break };
+                let mut cur: Vec<Msg> = Vec::new();
+                let mut size = 0;
+                for q in [&mut *hi, &mut *lo] {
+                    while let Some((w2, m)) = q.front() {
+                        let n = encode_msg(m).len();
+                        if *w2 != w || (!cur.is_empty() && size + n > MTU) {
+                            break;
+                        }
+                        size += n;
+                        cur.push(q.pop_front().unwrap().1);
+                    }
+                }
+                if cur.is_empty() {
+                    break;
+                }
+                self.send_batch(w, from, to, cur);
+            }
+        }
     }
 
     /// Send now, or queue for this tick's batch to that peer.
     pub fn post(&mut self, world: WorldId, from: MemberId, to: MemberId, m: &Msg) {
+        if self.tracing {
+            if let Msg::Entry(e) = m {
+                let filtered = self.fed.contains(&(world, to));
+                self.post_log.push((self.now_us, from, to, e.member, e.seq, kind(m), filtered));
+            }
+        }
+        // Thin links Part B, rule 5: no entries to a member on the state feed, but the view change's (revision 21:
+        // a fed member votes and takes part in the decision; they are few and small), and every admin entry: a
+        // decided change is applied only once each admin entry it lists is held (VCR-8), so without them a fed member
+        // never applied a change listing a SetRole and stayed in that epoch for good (e1-same-promote under
+        // carry-over: no ack of it declared a later epoch, so the n = 3 epoch after it could vouch nothing).
+        if let Msg::Entry(e) = m {
+            let view_change = matches!(
+                e.payload,
+                Payload::Vote { .. }
+                    | Payload::Propose { .. }
+                    | Payload::Prevote { .. }
+                    | Payload::Precommit { .. }
+                    | Payload::Kick { .. }
+                    | Payload::SetRole { .. }
+                    | Payload::DefineRole { .. }
+                    | Payload::Ownership { .. }
+            );
+            if self.fed.contains(&(world, to)) && !view_change {
+                return;
+            }
+        }
         if self.batching {
             self.outbox.entry((world, from, to)).or_default().push(m.clone());
         } else {
@@ -315,7 +477,23 @@ impl Net {
     /// Review R3-9: unsplit, a tick's repairs became one multi-kilobyte datagram, which a full
     /// router queue dropped whole.
     pub fn flush(&mut self) {
+        // (spike: PE_NO_ACK_PRIORITY switches rev 22's ack priority off, for comparison)
+        let prio = std::env::var("PE_NO_ACK_PRIORITY").is_err();
         for ((w, from, to), v) in std::mem::take(&mut self.outbox) {
+            // A fed member's datagrams go through its client queue; so do a member's just off the feed while the queue
+            // still holds older ones (in order).
+            let queued = self.client_q.get(&(from, to)).is_some_and(|(h, l)| !h.is_empty() || !l.is_empty());
+            if prio && (self.fed.contains(&(w, from)) || queued) && self.caps.get(&(from, to)).or(self.default_cap.as_ref()).is_some() {
+                let (hi, lo) = self.client_q.entry((from, to)).or_default();
+                for m in v {
+                    let protocol = match &m {
+                        Msg::Entry(e) => is_protocol(&e.payload),
+                        _ => true,
+                    };
+                    if protocol { hi.push_back((w, m)) } else { lo.push_back((w, m)) }
+                }
+                continue;
+            }
             let mut cur: Vec<Msg> = Vec::new();
             let mut size = 0;
             for m in v {
@@ -331,6 +509,7 @@ impl Net {
                 self.send_batch(w, from, to, cur);
             }
         }
+        self.release_client_queues();
     }
 
     fn send_batch(&mut self, w: WorldId, from: MemberId, to: MemberId, mut v: Vec<Msg>) {
@@ -340,7 +519,7 @@ impl Net {
 
     fn record(&mut self, from: MemberId, to: MemberId, payload: u64, fate: u8, arrive_us: u64) {
         if self.tracing {
-            self.trace.push(SendRec { at_us: self.now_us, from, to, wire: payload + DATAGRAM_OVERHEAD, fate, arrive_us });
+            self.trace.push(SendRec { at_us: self.now_us, from, to, wire: payload + dgram_overhead(), fate, arrive_us });
         }
     }
 
@@ -376,6 +555,8 @@ pub enum Action {
     Backdated { obj: u32, impulse: [f32; 3], back: u64 },
     /// D80: kick a member, give a member a role, define a role (admin entries).
     Kick { target: MemberId },
+    /// Revision 22: ask to leave (a vote on oneself without a kick).
+    Leave,
     SetRole { member: MemberId, role: RoleId },
     DefineRole { role: RoleId, perms: u64 },
     /// World ownership: publish a certificate for `change` on this replica's ownership head,
@@ -489,7 +670,27 @@ pub struct Acceptance {
     pub receiver_hash: u64,
 }
 
+/// Thin links Part B, rule 5: one receiver's feed controller.
+#[derive(Clone, Debug, Default)]
+struct FeedCtl {
+    fed: bool,
+    feeder: MemberId,
+    feeder_since_us: u64,
+    leave_ok_since_us: Option<u64>,
+    next_send_us: u64,
+    rr: usize,
+    /// When it last came off the feed: no re-entry for LEAVE_US, while it catches up on the log.
+    left_us: Option<u64>,
+    /// Since when the level-0 backlog into it has stayed over ENTER_US.
+    over_since_us: Option<u64>,
+    /// The frame it came off the feed at: no re-entry before its confirmed frame passes it (it has caught up).
+    left_frame: u64,
+}
+
 pub struct Sim {
+    /// Thin links Part B, rule 5: run the per-receiver feed controller (sessions where Part B applies).
+    pub feed: bool,
+    feeds: BTreeMap<(WorldId, MemberId), FeedCtl>,
     pub net: Net,
     pub peers: Vec<Peer>,
     pub acceptance: Vec<Acceptance>,
@@ -498,6 +699,13 @@ pub struct Sim {
     pub reverse_order: bool,
     /// R14: a carrier's deadline, in frames of the destination after its present (review R3-6).
     pub carry_deadline_frames: u64,
+    /// Thin links Part B (plan section 6): feeders that lie, sending every body 0.2 m higher than it is.
+    pub lying_feeders: BTreeSet<MemberId>,
+    /// Fixture: the feed controller's room (how many members it may feed) instead of n − q, for cells beyond the
+    /// scope (two fed at n = 4).
+    pub feed_room: Option<usize>,
+    /// Acks each member authored (traces).
+    pub ack_count: BTreeMap<(WorldId, MemberId), u64>,
 }
 
 impl Peer {
@@ -608,6 +816,27 @@ fn flush_pack(r: &mut Replica, obj: u32) -> Option<Entry> {
 pub const ACK_FRAMES: [u64; 9] = [2, 2, 3, 4, 6, 8, 8, 16, 32];
 /// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
 pub const IDLE_ACK_FRAMES: u64 = 8;
+/// Part B, rule 5: a fed member acks every P frames (P <= 32; the spike uses 16, or its level's interval if longer), from the moment it is fed, whatever
+/// its level. By level alone it acked every 2 frames at level 0 until its controller stepped down, flooding a thin
+/// uplink (r18 capped n = 4, 8 kbit/s: about 62 acks a second offered in the first gesture's window).
+pub const FED_ACK_FRAMES: u64 = 16;
+/// Revision 22 (@coordinator-opus m26541fc023df): P = 32 for a fed member at n >= 4, 16 at n = 3. At n = 4 the lag
+/// didn't change (53.7 / 53.8 frames at both) and the fed member's uplink dropped 29.3 -> 22.6 kbit/s; at n = 3 the fed
+/// echo is always needed and 32 cost 13 frames (43.0 -> 56.4).
+pub const FED_ACK_FRAMES_N4: u64 = 32;
+/// Revision 22: whether `n` members with `f` of them fed are in scope (n − f >= q). Outside it at n >= 4 is the two-fed
+/// region, where rule 3's latency floor applies and P = 16.
+pub fn fed_in_scope(n: usize, f: usize) -> bool {
+    n.saturating_sub(f) >= pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, n).1
+}
+/// Revision 22, the start transient (@coordinator-opus mbe5278d26bae): the lowest R18 level a fed member may be at, matching
+/// its ack period P. Level 8 (hand stride and acks 32) while n − f >= q, level 7 (16, as P = 16) in the two-fed region,
+/// and no floor at n = 3 (today's levels). Measured at 64433b2, r18 capped with 8 members and member 1 fed at 8 kbit/s and
+/// sweeping: without a floor its gesture starts at stride 1, offers 93.3 kbit/s of 56 and the others stall 233 frames; at
+/// level 8 they stall 0 (7 changed little there).
+pub fn fed_level_floor(n: usize, f: usize) -> Option<usize> {
+    (n >= 4).then(|| if fed_in_scope(n, f) { 8 } else { 7 })
+}
 /// D56 (@coordinator-opus, 2026-10-31): after congestion begins at level L, the controller lowers into L
 /// or any finer level only after this much calm instead of 300 ms, and forgets L after
 /// `CONGESTED_MEMORY_US` with no congestion [proposal: 5 s and 30 s]. Without it a stream at twice the
@@ -650,11 +879,240 @@ impl Sim {
                 r.sim.epochs = epochs.clone();
             }
         }
-        Sim { net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600 }
+        Sim { feed: false, feeds: BTreeMap::new(), net, peers, acceptance: Vec::new(), end_us, reverse_order: false, carry_deadline_frames: 600, lying_feeders: BTreeSet::new(), feed_room: None, ack_count: BTreeMap::new() }
     }
 
     fn peer_index(&self, id: MemberId) -> usize {
         self.peers.iter().position(|p| p.id == id).expect("peer")
+    }
+
+    /// Thin links Part B, rule 5: each member's feed controller, and the feeders' packets.
+    /// * Enter when the backlog on the links into the member from senders at level 0 is over 40 ms: the full
+    ///   stream doesn't fit its downlink. A thinned sender's backlog is its own uplink's, not the receiver's.
+    ///   At most n − q members are fed (the plan's scope; beyond it, P1 (a)'s fed C_max would be needed).
+    /// * Leave once every sender's link into it carries 1.3x the stream that sender offers a member not on the
+    ///   feed, for 5 s; then it fetches the log again.
+    /// * The feeder is its best-linked peer (smallest backlog toward it), rotated every 10 s; it sends the
+    ///   bodies' states every 50 ms, within 70% of its link to the member.
+    fn run_feeds(&mut self, now: u64) {
+        const ENTER_US: u64 = 40_000;
+        const LEAVE_US: u64 = 5_000_000;
+        const ROTATE_US: u64 = 10_000_000;
+        const PERIOD_US: u64 = 50_000;
+        // Thin links Part B: the full stream "doesn't fit" only if the backlog stays over ENTER_US this long. One
+        // 16-entry fetch reply is about 50 ms on a 256 kbit/s link, and put clean members on the feed; at 300 ms a
+        // slow sender's catch-up burst after GST still did (partbrand seed 11). A thin link's backlog grows for good.
+        const ENTER_HOLD_US: u64 = 1_000_000;
+        // ... unless it is clearly thin: a backlog this deep enters at once (an 8-16 kbit/s downlink under the full
+        // stream gets there in tens of ms; the catch-up bursts seen on fat links peaked at 43-212 ms).
+        const ENTER_NOW_US: u64 = 400_000;
+        let mut todo: Vec<(WorldId, MemberId, Vec<MemberId>)> = Vec::new();
+        // Each member's R18 level and quorum, per world.
+        let mut level: BTreeMap<(WorldId, MemberId), usize> = BTreeMap::new();
+        let mut room: BTreeMap<WorldId, usize> = BTreeMap::new();
+        let room_fixture = self.feed_room;
+        for p in &self.peers {
+            if p.crashed {
+                continue;
+            }
+            for (w, r) in &p.worlds {
+                level.insert((*w, p.id), r.level);
+                if (r.sim.localized() || r.sim.fed_mode_capable()) && r.sim.members.contains(&p.id) {
+                    todo.push((*w, p.id, r.sim.members.iter().copied().collect()));
+                    // The fixture lifts the room only at n >= 4 (S-4: at most one fed at n = 3).
+                    room.entry(*w).or_insert_with(|| {
+                        room_fixture
+                            .filter(|_| r.sim.members.len() >= 4)
+                            .unwrap_or_else(|| r.sim.members.len().saturating_sub(pe_sim_core::session::quorum(pe_sim_core::session::QuorumRule::Bft, r.sim.members.len()).1))
+                    });
+                }
+            }
+        }
+        // Revision 22: below 3 members a fed member's echo counts for nothing (2 players keep D54), so its feed ends, as a
+        // leave would (leave-s4: after the second thin member left by request, the fed one stalled the 2-player session).
+        let ended: Vec<(WorldId, MemberId)> = self
+            .net
+            .fed
+            .iter()
+            .copied()
+            .filter(|&(w, m)| {
+                let pi = self.peer_index(m);
+                self.peers[pi].worlds.get(&w).is_none_or(|r| !(r.sim.localized() || r.sim.fed_mode_capable()))
+            })
+            .collect();
+        for (w, t) in ended {
+            self.net.fed.remove(&(w, t));
+            if let Some(ctl) = self.feeds.get_mut(&(w, t)) {
+                ctl.fed = false;
+                ctl.left_us = Some(now);
+            }
+            let pi = self.peer_index(t);
+            let fetches = match self.peers[pi].worlds.get_mut(&w) {
+                Some(r) => {
+                    r.sim.set_fed(false);
+                    r.sim.recovery_fetches()
+                }
+                None => Vec::new(),
+            };
+            for f in fetches {
+                if let Msg::Fetch { author, .. } = f {
+                    if author != t {
+                        self.net.post(w, t, author, &f);
+                    }
+                }
+            }
+        }
+        let cap_of = |net: &Net, a: MemberId, b: MemberId| net.caps.get(&(a, b)).copied().or(net.default_cap).map_or(u64::MAX, |c| c.rate_bps);
+        for (w, t, members) in todo {
+            let senders: Vec<MemberId> = members.iter().copied().filter(|&s| s != t).collect();
+            if senders.is_empty() {
+                continue;
+            }
+            let mut ctl = self.feeds.get(&(w, t)).cloned().unwrap_or_default();
+            if !ctl.fed {
+                let backlog = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).map(|&s| self.net.backlog_us(s, t)).max().unwrap_or(0);
+                let fed_now = members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
+                let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
+                let caught_up = {
+                    let pi = self.peer_index(t);
+                    self.peers[pi].worlds.get(&w).is_none_or(|r| r.sim.conf >= ctl.left_frame)
+                };
+                let settled = ctl.left_us.is_none_or(|t0| now >= t0 + LEAVE_US) && caught_up;
+                ctl.over_since_us = if backlog > ENTER_US { Some(ctl.over_since_us.unwrap_or(now)) } else { None };
+                let held = backlog > ENTER_NOW_US || ctl.over_since_us.is_some_and(|t0| now >= t0 + ENTER_HOLD_US);
+                if held && settled && fed_now < room.get(&w).copied().unwrap_or(0) && !feeders.is_empty() {
+                    let feeder = *feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)).unwrap();
+                    if std::env::var("PE_FEED_LOG").is_ok() {
+                        let worst = senders.iter().filter(|&&s| level.get(&(w, s)) == Some(&0)).max_by_key(|&&s| self.net.backlog_us(s, t)).copied();
+                        eprintln!("FEED t={} ms: {t} goes on the feed, feeder {feeder}; worst level-0 sender {worst:?} backlog {} us", now / 1000, backlog);
+                    }
+                    ctl = FeedCtl { fed: true, feeder, feeder_since_us: now, leave_ok_since_us: None, next_send_us: now, rr: ctl.rr, left_us: ctl.left_us, over_since_us: None, left_frame: ctl.left_frame };
+                    self.net.fed.insert((w, t));
+                    let pi = self.peer_index(t);
+                    if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
+                        r.sim.set_fed(true);
+                    }
+                }
+            } else {
+                // A feeder that went on the feed itself, or isn't a member any more, can't feed: re-pick at once (the
+                // n = 4 two-fed cell: member 4 was picked as member 3's feeder, then went on the feed and kept feeding).
+                if self.net.fed.contains(&(w, ctl.feeder)) || !senders.contains(&ctl.feeder) {
+                    let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
+                    if let Some(&f) = feeders.iter().min_by_key(|&&s| (self.net.backlog_us(s, t), s)) {
+                        if std::env::var("PE_FEED_LOG").is_ok() {
+                            eprintln!("FEED t={} ms: {t}'s feeder {} re-picked: {f}", now / 1000, ctl.feeder);
+                        }
+                        ctl.feeder = f;
+                        ctl.feeder_since_us = now;
+                    }
+                }
+                let ok = senders.iter().all(|&s| {
+                    let reference = members.iter().copied().find(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)));
+                    let stream = reference.map_or(0, |x| self.net.recent_bps(s, x));
+                    cap_of(&self.net, s, t) as f64 >= 1.3 * stream as f64
+                });
+                if std::env::var("PE_FEED_LOG").is_ok() && now % 2_000_000 == 0 {
+                    let v: Vec<(MemberId, u64, u64)> = senders
+                        .iter()
+                        .map(|&s| {
+                            let reference = members.iter().copied().find(|&x| x != s && x != t && !self.net.fed.contains(&(w, x)));
+                            (s, cap_of(&self.net, s, t), reference.map_or(0, |x| self.net.recent_bps(s, x)))
+                        })
+                        .collect();
+                    eprintln!("FEED t={} ms: {t} fed; leave test (sender, cap, stream) {v:?} ok {ok}", now / 1000);
+                }
+                ctl.leave_ok_since_us = if ok { Some(ctl.leave_ok_since_us.unwrap_or(now)) } else { None };
+                if ctl.leave_ok_since_us.is_some_and(|t0| now >= t0 + LEAVE_US) {
+                    ctl.fed = false;
+                    ctl.left_us = Some(now);
+                    ctl.left_frame = {
+                        let pi = self.peer_index(t);
+                        self.peers[pi].worlds.get(&w).map_or(0, |r| r.sim.frame)
+                    };
+                    self.net.fed.remove(&(w, t));
+                    let pi = self.peer_index(t);
+                    let fetches = match self.peers[pi].worlds.get_mut(&w) {
+                        Some(r) => {
+                            r.sim.set_fed(false);
+                            r.sim.recovery_fetches()
+                        }
+                        None => Vec::new(),
+                    };
+                    // Each chain from its own author, so the catch-up spreads over the links.
+                    for f in fetches {
+                        let to = match f {
+                            Msg::Fetch { author, .. } => author,
+                            _ => ctl.feeder,
+                        };
+                        self.net.post(w, t, to, &f);
+                    }
+                } else {
+                    if now >= ctl.feeder_since_us + ROTATE_US {
+                        let feeders: Vec<MemberId> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).collect();
+                        if !feeders.is_empty() {
+                            let i = feeders.iter().position(|&s| s == ctl.feeder).map_or(0, |i| i + 1);
+                            ctl.feeder = feeders[i % feeders.len()];
+                        }
+                        ctl.feeder_since_us = now;
+                    }
+                    if now >= ctl.next_send_us {
+                        // Within 70% of the feeder's link to the member, datagram overhead included: packets of at
+                        // least 4 bodies, as often as that rate allows, at most every 50 ms.
+                        let rate = cap_of(&self.net, ctl.feeder, t) as f64 * 0.7 / 8.0;
+                        let header = dgram_overhead() as f64 + 13.0;
+                        let size = (rate * PERIOD_US as f64 / 1e6).clamp(header + 4.0 * 30.0, 1200.0);
+                        ctl.next_send_us = now + ((size / rate * 1e6) as u64).max(PERIOD_US);
+                        let budget = (size - dgram_overhead() as f64) as usize;
+                        let pf = self.peer_index(ctl.feeder);
+                        let mut rr = ctl.rr;
+                        let pkt = if self.peers[pf].crashed { None } else { self.peers[pf].worlds.get(&w).and_then(|r| r.sim.feed_packet(budget, &mut rr)) };
+                        ctl.rr = rr;
+                        let pkt = match pkt {
+                            Some(Msg::Feed { frame, fed, mut bodies }) if self.lying_feeders.contains(&ctl.feeder) => {
+                                for b in &mut bodies {
+                                    b.pos[1] += 2000;
+                                }
+                                Some(Msg::Feed { frame, fed, bodies })
+                            }
+                            p => p,
+                        };
+                        if let Some(m) = pkt {
+                            self.net.post(w, ctl.feeder, t, &m);
+                        }
+                        // Gap 1: and the epoch certificates the fed member's acks show it lacks.
+                        let push = if self.peers[pf].crashed { None } else { self.peers[pf].worlds.get_mut(&w).and_then(|r| r.sim.cert_push(t)) };
+                        if let Some(m) = push {
+                            self.net.post(w, ctl.feeder, t, &m);
+                        }
+                    }
+                }
+            }
+            self.feeds.insert((w, t), ctl);
+        }
+    }
+
+    /// Thin links Part B (TLP-23): every member sends each member its log shows fed its checkpoints since that
+    /// member's echo of its chain.
+    fn send_ckpts(&mut self) {
+        let mut out = Vec::new();
+        for p in &mut self.peers {
+            if p.crashed {
+                continue;
+            }
+            for (w, r) in p.worlds.iter_mut() {
+                for (to, m) in r.sim.ckpt_msgs() {
+                    out.push((*w, p.id, to, m));
+                }
+            }
+        }
+        for (w, from, to, m) in out {
+            self.net.post(w, from, to, &m);
+        }
+    }
+
+    /// Thin links Part B, rule 5: whether `m` is on the state feed in world `w` now.
+    pub fn is_fed(&self, w: WorldId, m: MemberId) -> bool {
+        self.net.fed.contains(&(w, m))
     }
 
     /// Run until `end_us` in 1 ms steps.
@@ -670,6 +1128,14 @@ impl Sim {
         // 1. deliveries (a batch is its messages, in order)
         let mut due = Vec::new();
         for (to, w, from, m) in self.net.due() {
+            // Rule 4 (D): each datagram's size, as it arrives directly from its sender.
+            let bytes = encode_msg(&m).len() as u64 + dgram_overhead();
+            let pi = self.peer_index(to);
+            if !self.peers[pi].crashed {
+                if let Some(r) = self.peers[pi].worlds.get_mut(&w) {
+                    r.sim.note_rx(from, bytes);
+                }
+            }
             let mut v = Vec::new();
             flatten(m, &mut v);
             due.extend(v.into_iter().map(|x| (to, w, from, x)));
@@ -725,12 +1191,33 @@ impl Sim {
                     }
                 }
                 Msg::Batch(_) => {}
+                Msg::Feed { frame, fed, bodies } => r.sim.on_feed(frame, fed, bodies),
+                Msg::Ckpts { member, after, list, fed, echo } => r.sim.on_ckpts(from, member, after, list, fed, echo),
+                Msg::CertReq { epoch } => {
+                    if let Some(c) = r.sim.on_cert_req(epoch) {
+                        self.net.post(w, to, from, &c);
+                    }
+                }
+                Msg::Certs { packs } => {
+                    for v in r.sim.on_certs(packs) {
+                        broadcast(&mut self.net, w, to, &members, &Msg::Entry(v));
+                    }
+                    for (dest, f) in r.sim.take_fetches(now / 1000) {
+                        if dest != to {
+                            self.net.post(w, to, dest, &f);
+                        }
+                    }
+                }
             }
         }
         // 2. peers tick
         let order: Vec<usize> = if self.reverse_order { (0..self.peers.len()).rev().collect() } else { (0..self.peers.len()).collect() };
         for pi in order {
             self.tick_peer(pi, now);
+        }
+        if self.feed {
+            self.send_ckpts();
+            self.run_feeds(now);
         }
         // 3. acceptance checks whose receiver is caught up and whose author has the frame
         self.resolve_acceptance();
@@ -766,7 +1253,14 @@ impl Sim {
                 // reads the bottleneck directly; production estimates a LEDBAT-style one-way queueing
                 // delay, 10.9). Up fast, down slowly, and slower still into the level where congestion
                 // began or a finer one.
-                let b = members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0);
+                let b = if self.feed && (r.sim.localized() || r.sim.fed_mode_capable()) {
+                    // Thin links Part B, rule 5: the smallest backlog over receivers not on the feed. Congestion on
+                    // this member's own uplink shows toward every receiver; a backlog toward one receiver is that
+                    // receiver's downlink, which its feed controller takes care of.
+                    members.iter().filter(|&&m| m != pid && !self.net.fed.contains(&(w, m))).map(|&m| self.net.backlog_us(pid, m)).min().unwrap_or(0)
+                } else {
+                    members.iter().filter(|&&m| m != pid).map(|&m| self.net.backlog_us(pid, m)).max().unwrap_or(0)
+                };
                 // 7.6 reduction 2's idle state: idle calm says nothing about whether the link can carry a
                 // gesture (@coordinator-opus, 2026-11-01).
                 let idle_now = r.sim.idle();
@@ -864,6 +1358,17 @@ impl Sim {
                     r.level_b = b;
                     r.calm_since = now;
                 }
+                // Revision 22, the start transient: a fed member never goes below `fed_level_floor`, so a gesture that
+                // starts on a thin fed uplink starts coarse. (spike: PE_FED_MIN_LEVEL=L overrides the floor for measuring;
+                // 0 turns it off)
+                if self.net.fed.contains(&(w, pid)) {
+                    let n = r.sim.members.len();
+                    let f = r.sim.members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
+                    let floor = fed_min_level_override().or_else(|| fed_level_floor(n, f));
+                    if let Some(l) = floor {
+                        r.level = r.level.max(l.min(HAND_STRIDE.len() - 1));
+                    }
+                }
                 r.ack_every_us = ACK_FRAMES[r.level] * r.dt_us;
                 r.level_ms[r.level] += 1;
             }
@@ -883,13 +1388,18 @@ impl Sim {
                 r.sim.advance(clock_frame);
                 // Planned actions for this frame (authored at the start of the frame). Hand poses
                 // stream even while the sim is behind (stamped at the present, R18); anything else
-                // needs a caught-up sim and is dropped otherwise (as in 3d0f98a).
+                // needs a caught-up sim and is dropped otherwise (as in 3d0f98a). A kick too is
+                // authored while its admin is paused (@coordinator-opus mdffbecdc9b48): it is judged on
+                // its signature, epoch and the previous decided ACL ((e1)), not on the sim's state, and
+                // a pause beyond Part B's tolerance ends only by a kick or a recovered link (the user,
+                // 2026-11-01 17:26Z), so dropping it kept such a pause going (cutfix-shrink-late).
                 let ready = r.sim.caught_up() && r.sim.frame == clock_frame;
                 {
                     let actions = r.plan.remove(&clock_frame).unwrap_or_default();
                     {
                         for a in actions {
-                            if !ready && !matches!(a, Action::Hand { .. }) {
+                            // (spike: PE_DROP_PAUSED_KICKS=1 drops them again, to compare a cell with 3d0f98a's rule)
+                            if !ready && !(matches!(a, Action::Hand { .. }) || matches!(a, Action::Kick { .. }) && !drop_paused_kicks()) {
                                 continue;
                             }
                             if let Action::Hand { obj, target_mm, active, ahead } = a {
@@ -946,6 +1456,23 @@ impl Sim {
                                 }
                                 continue;
                             }
+                            // Revision 22: a member that has asked to leave acts no more (its entries past the head its
+                            // request froze are cut at the decision; counted meanwhile, their withdrawal would roll back
+                            // confirmed frames).
+                            if r.sim.leaving() && !matches!(a, Action::Leave) {
+                                continue;
+                            }
+                            // Revision 22, D-5: a leave request is sent first, ahead of queued entries.
+                            if matches!(a, Action::Leave) {
+                                if let Some(e) = r.sim.request_leave() {
+                                    for &to in &members {
+                                        if to != pid {
+                                            self.net.send_urgent(w, pid, to, &Msg::Entry(e.clone()));
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             let e = match a {
                                 Action::Touch { obj, impulse, grab } => {
                                     r.sim.author(Payload::Touch { obj, impulse, grab }, Some(obj))
@@ -960,6 +1487,10 @@ impl Sim {
                                     r.sim.author_backdated(Payload::Touch { obj, impulse, grab: false }, back)
                                 }
                                 Action::Kick { target } => r.sim.kick(target),
+                                Action::Leave => match r.sim.request_leave() {
+                                    Some(e) => e,
+                                    None => continue,
+                                },
                                 Action::SetRole { member, role } => r.sim.set_role(member, role),
                                 Action::DefineRole { role, perms } => r.sim.define_role(role, perms),
                                 Action::Carry { obj, dest, .. } => {
@@ -985,6 +1516,13 @@ impl Sim {
                                 }
                             };
                             broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+                            // What recording it produced (my vote on the target of my own kick) goes right after it, in
+                            // chain order. Sent at the tick's end, behind my ack of the same tick, it reached everyone
+                            // behind a hole, and each asked every member for it, the fed ones too, which answered on their
+                            // thin uplinks (kickliar-fed7: 59 B ahead of member 7's round-1 prevote, 8 frames later).
+                            for v in r.sim.take_self_out() {
+                                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(v));
+                            }
                         }
                     }
                 }
@@ -997,26 +1535,65 @@ impl Sim {
             let leaving = r.was_idle && !idle && !r.ack_grid_only;
             r.was_idle = idle;
             let base = (r.ack_every_us / r.dt_us).max(1);
-            let every = if idle { base.max(IDLE_ACK_FRAMES) } else { base };
+            let fed = self.net.fed.contains(&(w, pid));
+            let every = if fed {
+                // (spike: PE_FED_ACK_FRAMES overrides P, for measuring)
+                // Revision 22 (@coordinator-opus mfdac6071ad92): 32 only while n − f >= q; in the two-fed region (n − f < q),
+                // where the latency floor applies and E_T's P95 is about P, 16 until settled.
+                let n = r.sim.members.len();
+                let f = r.sim.members.iter().filter(|&&m| self.net.fed.contains(&(w, m))).count();
+                let in_scope = fed_in_scope(n, f);
+                let p =std::env::var("PE_FED_ACK_FRAMES").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(if n >= 4 && in_scope { FED_ACK_FRAMES_N4 } else { FED_ACK_FRAMES });
+                base.max(p)
+            } else if idle {
+                base.max(IDLE_ACK_FRAMES)
+            } else {
+                base
+            };
+            // (spike: PE_FED_ACK_PHASE=1 offsets a fed member's ack ticks by half a period from the 32-frame checkpoint
+            // blocks, so the ack after a block's end isn't always ahead of that block's checkpoint; measuring E_T)
+            let phase = if fed && std::env::var("PE_FED_ACK_PHASE").is_ok() { every / 2 } else { 0 };
+            // (spike measurement, option 2 of m9d40b0d9a9d7: PE_ECHO_ACK=B, a fed member acks within B frames of a Ckpts
+            // that advanced its echo, besides its tick)
+            let echo_ack = fed && new_frame && r.sim.echo_ack_at.is_some_and(|t| r.sim.now >= t);
             let ack_due = leaving
+                || echo_ack
                 || if self.net.batching {
-                    new_frame && clock_frame % every == 0
+                    new_frame && (clock_frame + phase) % every == 0
                 } else {
                     now >= r.next_ack_us
                 };
-            if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) {
+            // Carry-over, hole 2: a member that has asked to leave authors no ack from its request on.
+            if ack_due && !(r.sim.quiet_until_member && !r.sim.members.contains(&pid)) && !r.sim.acks_held() {
                 r.next_ack_us = now + every * r.dt_us;
+                *self.ack_count.entry((w, pid)).or_default() += 1;
+                r.sim.echo_ack_at = None;
                 let a = r.sim.author_ack();
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(a));
             }
             for e in r.sim.attest_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
+            // Revision 22, S-4 on the transition: a removal that left n = 3 with two fed sends one fed member out by
+            // request, first, ahead of queued datagrams (D-5).
+            // Revision 22, the latency floor's leave: a fed member over it in the two-fed region, with removal votes from
+            // t + 1 distinct full members, leaves by request, sent first too (D-5).
+            if let Some(e) = r.sim.s4_leave_due().or_else(|| r.sim.latency_leave_due()) {
+                for &to in &members {
+                    if to != pid {
+                        self.net.send_urgent(w, pid, to, &Msg::Entry(e.clone()));
+                    }
+                }
+            }
             // Review R3-2: vote out members that have gone silent; P2-4: decide removals.
             for e in r.sim.suspects_due() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
             for e in r.sim.view_change_due() {
+                broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
+            }
+            // What recording my own entries produced this tick (my vote on the target of my own kick).
+            for e in r.sim.take_self_out() {
                 broadcast(&mut self.net, w, pid, &members, &Msg::Entry(e));
             }
             for (dest, f) in r.sim.take_fetches(now / 1000) {
