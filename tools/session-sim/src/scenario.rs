@@ -692,10 +692,6 @@ pub enum Byzantine {
         #[serde(default)]
         every_epoch: bool,
         while_member_at: Option<u32>,
-        /// The precommit's polka (prevote ids), as hex strings ("0xDEADBEEF00000001": TOML integers
-        /// stop at i64): ids that need not exist (review VC6R-1).
-        #[serde(default)]
-        polka: Vec<String>,
     },
     /// From `from_ms` (while `member` is a member at `while_member_at`, if given), `member`'s acks
     /// claim epoch `epoch`, or `ahead` epochs past its own (session.rs `fake_ack_epoch`).

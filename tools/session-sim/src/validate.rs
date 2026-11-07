@@ -619,7 +619,7 @@ pub fn validate(s: &Scenario, sim: &Sim) -> Result<(), String> {
                     "fakemix" => at.is_some() && target.is_some() && event.is_some() && !honest.is_empty(),
                     "prevotefork" => at.is_some() && target.is_some() && event.is_some() && !members.is_empty() && !honest.is_empty(),
                     "prevotefork_pf" => !members.is_empty() && !honest.is_empty(),
-                    "capfake" | "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
+                    "fakeadmin" => at.is_some() && target.is_some() && !honest.is_empty(),
                     "adminwedge" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::AdminWedge { member, .. } if Some(*member) == *target)),
                     "voidfork" | "plainfork" => !honest.is_empty() && s.byzantine.iter().any(|b| matches!(b, Byzantine::ForkSegment { .. })),
                     // The label's segment and fix mask must be the part's own (the report reads the

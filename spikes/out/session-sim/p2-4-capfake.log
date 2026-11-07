@@ -1,6 +1,0 @@
-REPRO capfake: 9 removed at 6.17 s; live at the end: true; m1 conf 822 of frame 833, m2 conf 821 of frame 833, m3 conf 821 of frame 833
-RESULT capfake: worst confirmation lag when admin 1 kicks 9 at 6.00 s: 210 frames (window 120); 9 removed at 6.17 s; lag at the end 12 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 822 frame 833 members {1, 2, 3} evicted {9: (137, 352)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 51 bad 0
-  m2: conf 821 frame 833 members {1, 2, 3} evicted {9: (137, 352)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 51 bad 0
-  m3: conf 821 frame 833 members {1, 2, 3} evicted {9: (137, 352)} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 51 bad 0
-RESULT capfake: frames 0..832 honest m1=99d8231bd919ca9a m2=99d8231bd919ca9a m3=99d8231bd919ca9a | offline replay 99d8231bd919ca9a | ALL EQUAL, NO FALSE CHECKS ; checks ok 153 bad 0

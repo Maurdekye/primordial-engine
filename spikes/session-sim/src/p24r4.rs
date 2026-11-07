@@ -227,7 +227,7 @@ pub fn capstale() {
             let epoch = r9.epoch;
             if capped.insert(epoch) {
                 let boundary = r9.now + 30;
-                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka: vec![] }, None);
+                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary }, None);
                 send_all(sim, 9, &ids, &e);
             }
         });
@@ -873,38 +873,6 @@ fn live(sim: &Sim, honest: &[MemberId]) -> bool {
 fn repro_verdict(name: &str, fixed: bool, ok: bool, pass: &str, control: &str) {
     let what = if fixed { pass } else { control };
     println!("RESULT {name} fixed={fixed}: -> {}", if ok { what } else { "FAIL" });
-}
-
-/// capstale, but 9's capped precommit names a polka id that exists nowhere (review VC6R-1, round 7).
-/// Trust survey #4 retired the cap rule and its fetch budget, so the ids a capped precommit carries are
-/// dead bytes that nothing reads (their removal, a wire change, is a follow-up; capfake then folds into
-/// capstale). The cap holds confirmation until admin 1 kicks 9 at 6 s.
-pub fn capfake() {
-    {
-        let ids = [1, 2, 3, 9];
-        let ps = peers_of(&ids, |m| if m == 1 { plan(&[(60, touch(10, 6.0)), (700, touch(33, 3.0))]) } else { BTreeMap::new() });
-        let mut sim = Sim::new(Net::new(link(30, 10, 0), 7), ps, 14_000_000);
-        let mut capped: BTreeSet<u32> = BTreeSet::new();
-        let mut kick = AdminKick::new(1, 9, 6_000_000);
-        let stopped = run_quiet(&mut sim, |sim| {
-            kick.step(sim, &[1, 2, 3], &ids);
-            if sim.net.now_us < 2_000_000 || !sim.replica(1, 1).sim.members.contains(&9) {
-                return;
-            }
-            let r9 = sim_mut(sim, 9);
-            let epoch = r9.epoch;
-            if capped.insert(epoch) {
-                let boundary = r9.now + 30;
-                let polka = vec![0xDEAD_BEEF_0000_0001];
-                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka }, None);
-                send_all(sim, 9, &ids, &e);
-            }
-        });
-        let honest = [1, 2, 3];
-        println!("REPRO capfake: 9 removed at {}; live at the end: {}; {}", secs(removed_at(&sim, 1, 9)), live(&sim, &honest), confs(&sim, &honest));
-        kick.report(&sim, &honest, "capfake");
-        verdict(&sim, &honest, "capfake", stopped);
-    }
 }
 
 /// fakemix's pure fake, but 8 also authors a no-op SetRole every 2 s, so a decision comes every 2 s

@@ -76,11 +76,6 @@ impl Actor {
                 return Err(format!("equivocate: entry must be `first` or `first_touch`, not `{entry}`"));
             }
         }
-        if let Byzantine::Precommit { polka, .. } = &spec {
-            for p in polka {
-                hex_id(p)?;
-            }
-        }
         if let Byzantine::GoSilent { holds_own, .. } = &spec {
             if holds_own != "prevote" && holds_own != "nonnil_prevote" {
                 return Err(format!("go_silent: holds_own must be `prevote` or `nonnil_prevote`, not `{holds_own}`"));
@@ -429,7 +424,7 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 act.fired = true;
             }
             Byzantine::ForkBranch { member, at_frame, a_to, b_to, live_ms, backdate, .. } => fork_branch(sim, (&mut act.fork, &act.forged_ids), *member, *at_frame, a_to, *b_to, live_ms * 1000, *backdate),
-            Byzantine::Precommit { member, from_ms, value, boundary, ahead, to, every_epoch, while_member_at, polka } => {
+            Byzantine::Precommit { member, from_ms, value, boundary, ahead, to, every_epoch, while_member_at } => {
                 if !due(sim, *member, *from_ms, *while_member_at) || (!every_epoch && act.fired) {
                     continue;
                 }
@@ -440,9 +435,8 @@ pub fn before_step(sim: &mut Sim, actors: &mut [Actor]) {
                 }
                 let b = boundary.unwrap_or_else(|| r.now + ahead.unwrap_or(0));
                 let v = if *every_epoch { value ^ epoch as u64 } else { *value };
-                let polka = polka.iter().map(|p| hex_id(p).unwrap()).collect();
                 let sig = test_fact_sig(r.me, r.world_id, vc_fact(epoch, 0, v));
-                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b, polka, sig }, None);
+                let e = r.author(Payload::Precommit { epoch, round: 0, value: v, boundary: b, sig }, None);
                 send_to(sim, *member, to, &e);
                 act.fired = true;
             }
@@ -743,10 +737,6 @@ fn due(sim: &Sim, member: MemberId, from_ms: u64, while_member_at: Option<Member
 }
 
 /// Send `e` from `from` to each of `to` but itself, in order.
-/// An entry id written as "0x..." hex (TOML integers stop at i64).
-fn hex_id(s: &str) -> Result<EntryId, String> {
-    s.strip_prefix("0x").and_then(|h| u64::from_str_radix(&h.replace('_', ""), 16).ok()).map(id_of).ok_or_else(|| format!("precommit: polka id `{s}` is not 0x-prefixed hex"))
-}
 
 fn send_to(sim: &mut Sim, from: MemberId, to: &[MemberId], e: &Entry) {
     for &m in to {

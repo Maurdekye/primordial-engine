@@ -222,7 +222,7 @@ pub fn capchurn() {
                 let boundary = r9.now + 30;
                 let value = 0xBAD0 ^ epoch as u64;
                 let sig = test_fact_sig(9, 1, vc_fact(epoch, 0, value));
-                let e = r9.author(Payload::Precommit { epoch, round: 0, value, boundary, polka: vec![], sig }, None);
+                let e = r9.author(Payload::Precommit { epoch, round: 0, value, boundary, sig }, None);
                 send_all(sim, 9, &ids, &e);
             }
         });

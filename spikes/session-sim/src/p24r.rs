@@ -395,7 +395,7 @@ pub fn bogusprecommit() {
                 if !sent && sim.net.now_us >= 2_000_000 {
                     let r9 = sim_mut(sim, 9);
                     let boundary = if part == 1 { 1 } else { r9.now + 30 };
-                    let e = r9.author(Payload::Precommit { epoch: 0, round: 0, value: 0xBAD0, boundary, polka: vec![] }, None);
+                    let e = r9.author(Payload::Precommit { epoch: 0, round: 0, value: 0xBAD0, boundary }, None);
                     for m in [1, 2, 3] {
                         sim.net.send(1, 9, m, &Msg::Entry(e.clone()));
                     }

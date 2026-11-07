@@ -220,7 +220,7 @@ pub fn capchurn() {
             r9.fake_ack_epoch = Some(epoch + 1);
             if capped.insert(epoch) {
                 let boundary = r9.now + 30;
-                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary, polka: vec![] }, None);
+                let e = r9.author(Payload::Precommit { epoch, round: 0, value: 0xBAD0 ^ epoch as u64, boundary }, None);
                 send_all(sim, 9, &ids, &e);
             }
         });

@@ -229,7 +229,7 @@ pub enum Payload {
     /// View change: this member's second-phase vote; a quorum of them decides the value. A value
     /// that adds members states their first frame, `boundary` (0 if none): from this entry on, the
     /// author's acks count toward no reader's confirmation at or past it until a later epoch (10.8).
-    Precommit { epoch: u32, round: u32, value: u64, boundary: u64, polka: Vec<EntryId> },
+    Precommit { epoch: u32, round: u32, value: u64, boundary: u64 },
     /// D80 (user 22:13Z): a kick of `target` by a member holding the KICK permission, for the view
     /// change that ends `epoch`. It authorises the removal alone: members vote only to freeze the
     /// target's chain for the cut, never to approve it. The view change commits it in order with
@@ -362,10 +362,6 @@ pub mod fix {
 
 /// The most attestations a join request or a change carries per joiner (review VCR-11).
 pub const MAX_ATTESTS: usize = 64;
-
-/// Review VC6R-2: the most prevote ids a capped precommit carries (its polka). At least the largest
-/// quorum, so honest code never exceeds it; a decode of more is refused.
-pub const MAX_POLKA: usize = 512;
 
 /// Review P25E-3: the most epoch certificates a hop or an epoch proof carries; a decode of more is
 /// refused. The spike sends every certificate from the partner's genesis; production sends only the
@@ -1212,14 +1208,10 @@ impl Wr {
                 self.u8(11); self.u32(*epoch); self.u32(*round); self.u32(*valid_round); self.change(change)
             }
             Payload::Prevote { epoch, round, value } => { self.u8(12); self.u32(*epoch); self.u32(*round); self.u64(*value) }
-            Payload::Precommit { epoch, round, value, boundary, polka } => {
-                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary);
-                // Review VC4R-1: a capped precommit carries the prevote ids of the polka that justifies
-                // it, so a member that did not receive them (an equivocated prevote) can fetch them
-                // before it votes the capper out. At most `MAX_ATTESTS` so the size is bounded.
-                assert!(polka.len() <= MAX_POLKA, "a precommit carries at most {MAX_POLKA} prevote ids");
-                self.u32(polka.len() as u32);
-                for id in polka { self.u64(*id) }
+            // A capped precommit no longer carries its polka's prevote ids (VC4R-1's list): trust survey #4
+            // retired the cap rule that read them, so they were dead bytes (removed 2026-11-07).
+            Payload::Precommit { epoch, round, value, boundary } => {
+                self.u8(13); self.u32(*epoch); self.u32(*round); self.u64(*value); self.u64(*boundary)
             }
         }
         // Flags: bit 0 a carried state follows, bit 1 a checkpoint link follows (after it).
@@ -1495,14 +1487,7 @@ impl Rd<'_> {
             19 => Payload::DefineRole { epoch: self.u32()?, role: self.role()?, perms: self.u64()? },
             11 => Payload::Propose { epoch: self.u32()?, round: self.u32()?, valid_round: self.u32()?, change: self.change()? },
             12 => Payload::Prevote { epoch: self.u32()?, round: self.u32()?, value: self.u64()? },
-            13 => {
-                let (epoch, round, value, boundary) = (self.u32()?, self.u32()?, self.u64()?, self.u64()?);
-                let n = self.u32()? as usize;
-                if n > MAX_POLKA { return None; }
-                let mut polka = Vec::with_capacity(n);
-                for _ in 0..n { polka.push(self.u64()?) }
-                Payload::Precommit { epoch, round, value, boundary, polka }
-            }
+            13 => Payload::Precommit { epoch: self.u32()?, round: self.u32()?, value: self.u64()?, boundary: self.u64()? },
             _ => return None,
         };
         let flags = self.u8()?;
@@ -2217,9 +2202,6 @@ struct Vc {
     precommit_timer: BTreeMap<u32, u64>,
     /// Review VC3R-2: value -> my present when its proposal by the round's proposer first reached me.
     seen_at: BTreeMap<u64, u64>,
-    /// Review VC4R-1: (round, member) -> the id of that member's first prevote this replica holds, so a
-    /// precommitter can name the prevote ids of the polka it saw.
-    prevote_id: BTreeMap<(u32, MemberId), EntryId>,
 }
 
 pub struct WorldSim {
@@ -4387,7 +4369,6 @@ impl WorldSim {
             }
             Payload::Prevote { round, value, .. } => {
                 self.vc.prevotes.entry(round).or_default().entry(m).or_insert(value);
-                self.vc.prevote_id.entry((round, m)).or_insert(id);
             }
             Payload::Precommit { round, value, boundary, .. } => {
                 self.vc.precommits.entry(round).or_default().entry(m).or_insert(value);
@@ -5479,27 +5460,7 @@ impl WorldSim {
         self.vc.step = Step::Precommit;
         if !self.withhold_vc {
             let (epoch, round) = (self.epoch, self.vc.round);
-            // Review VC4R-1: a capped precommit names the prevote ids of the polka this replica saw for
-            // `v` in `round`, so a member that lacks one (an equivocated prevote sent only to me) can
-            // fetch it before it holds my cap unjustified.
-            // Review VC6R-2: at most a quorum of prevote ids; more is never needed to justify the cap,
-            // and listing every prevoting member overran the encoding in a large session. Capped at
-            // MAX_POLKA as well (review 6.1 low): a quorum passes MAX_POLKA only past ~768 members (3x
-            // the 256-player target), where the proof is truncated rather than overrunning the encoding.
-            let polka = if boundary > 0 {
-                let (_, q) = quorum(self.cfg.quorum, self.members.len());
-                let mut ids: Vec<EntryId> = self
-                    .vc
-                    .prevotes
-                    .get(&round)
-                    .map(|ms| ms.iter().filter(|&(_, &x)| x == v).filter_map(|(k, _)| self.vc.prevote_id.get(&(round, *k)).copied()).collect())
-                    .unwrap_or_default();
-                ids.truncate(q.min(MAX_POLKA));
-                ids
-            } else {
-                Vec::new()
-            };
-            out.push(self.author_vc(Payload::Precommit { epoch, round, value: v, boundary, polka }));
+            out.push(self.author_vc(Payload::Precommit { epoch, round, value: v, boundary }));
         }
     }
 
@@ -5527,7 +5488,7 @@ impl WorldSim {
                     out.push(self.author_vc(Payload::Prevote { epoch, round: r, value: v }));
                     if !self.byz_no_precommit {
                         let boundary = self.vc.changes.get(&v).filter(|c| self.change_leads(c)).map_or(0, |c| c.boundary);
-                        out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary, polka: vec![] }));
+                        out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: v, boundary }));
                     }
                 }
             }
@@ -5545,7 +5506,7 @@ impl WorldSim {
             }
             for r in nil_in(&self.vc.precommits) {
                 if !self.vc.proposals.contains_key(&r) && !self.byz_no_precommit {
-                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: 0, boundary: 0, polka: vec![] }));
+                    out.push(self.author_vc(Payload::Precommit { epoch, round: r, value: 0, boundary: 0 }));
                 }
             }
             return out;
@@ -7579,22 +7540,15 @@ mod round3_tests {
     use super::*;
 
     #[test]
-    fn large_polka_round_trips() {
-        // Review VC6R-2: a capped precommit carries up to MAX_POLKA prevote ids. A polka of 300 would
-        // have panicked the old encoder (asserted at 64); now it round-trips, and a decode claiming
-        // more than MAX_POLKA is refused.
-        let polka: Vec<EntryId> = (1..=300).collect();
-        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7, polka }, carried: None, link: 0 };
-        assert_eq!(decode_msg(&encode_msg(&Msg::Entry(e.clone()))), Some(Msg::Entry(e)));
-        // A precommit payload whose polka count exceeds MAX_POLKA is refused (never read in part).
+    fn precommit_carries_no_polka() {
+        // The polka's prevote ids (VC4R-1, VC6R-2) were removed with the cap rule that read them: a
+        // precommit round-trips as its epoch, round, value and boundary alone (25 B after the tag).
+        let e = Entry { member: 1, seq: 1, prev: 0, stamp: 5, payload: Payload::Precommit { epoch: 0, round: 0, value: 9, boundary: 7 }, carried: None, link: 0 };
+        let bytes = encode_msg(&Msg::Entry(e.clone()));
+        assert_eq!(decode_msg(&bytes), Some(Msg::Entry(e)));
         let mut w = Wr(Vec::new());
-        w.u8(1); // Msg::Entry
-        w.u32(1); w.u32(1); w.u64(0); w.u64(5); // member, seq, prev, stamp
-        w.u8(13); w.u32(0); w.u32(0); w.u64(9); w.u64(7); // Precommit epoch, round, value, boundary
-        w.u32(MAX_POLKA as u32 + 1);
-        for i in 0..=MAX_POLKA as u64 { w.u64(i) }
-        w.u8(0); // carried: none
-        assert_eq!(decode_msg(&w.0), None);
+        w.u8(13); w.u32(0); w.u32(0); w.u64(9); w.u64(7);
+        assert!(bytes.windows(w.0.len()).any(|x| x == &w.0[..]));
     }
 
     #[test]
