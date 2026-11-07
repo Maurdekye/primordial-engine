@@ -1,0 +1,9 @@
+PROVENANCE commit 874e2a168816, sources 54dca850a4bd142c, binary 54e97e960bca8125
+RESULT r18 capped: 500-ball pit, 8 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT r18 capped: member 1 is on a slow link: 32 kbit/s to and from every peer
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   batched+adaptive | 234.9 / 235.0 / 235.3 / 267.8 / 235.3 / 235.2 / 267.8 / 235.3 |  489 /  152 /  152 /  152 /  151 /  150 /  151 /  152 |   14 |   0 /   0 /   0 /   0 /   0 /   0 /   0 /   0 |  54 /  51 /  51 /  51 /  51 /  51 /  51 /  51 | 19 (own entries moved: 0) | 14.8/s,  47 | 0 ms | m1 8ea8b1331d608126 / m2 8ea8b1331d608126 / m3 8ea8b1331d608126 / m4 8ea8b1331d608126 / m5 8ea8b1331d608126 / m6 8ea8b1331d608126 / m7 8ea8b1331d608126 / m8 8ea8b1331d608126 replay 8ea8b1331d608126 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 54.4 / 19.5, m2 51.4 / 20.3, m3 51.3 / 20.3, m4 51.4 / 20.3, m5 51.3 / 20.3, m6 51.3 / 20.3, m7 51.2 / 20.3, m8 51.4 / 20.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 16.1 / 15.8 / 15.9 / 15.9 / 16.0 / 15.8 / 15.9 / 15.9
+RESULT     member 1's own hand against its target, over 221 gesture frames: mean 186.10 mm, max 780.22 mm
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2502, 100, 100, 100, 100, 25308, 400, 400, 892] ms

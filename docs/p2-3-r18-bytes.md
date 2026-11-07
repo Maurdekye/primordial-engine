@@ -259,6 +259,7 @@ on the wire; framing is message, run and batch framing plus messages that carry 
     targets).
   - **Levels 6-8 and their climb rule.** At 16 kbit/s pe-session sits at level 5 (stride 8) for 27.0 s; the spike
     before Part A did too (26.9 s); the spike with Part A spends 24.0 s at level 1 and visits 6-8.
+- **Part A in pe-session** (2026-11-07): ported, with its cells against the spike, in `docs/thin-links-part-a-pe.md`.
 - **So the gap this item was opened for is closed** against the spike it was measured against (before Part A). The
   Part A port to pe-session belongs to @item:primordial-engine/localize-congestion-to-the-thin-link-player-othe; the
   per-entry savings are a backlogged item (signatures, with pe-app's lean wire and the unread polka ids).
