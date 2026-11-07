@@ -1,9 +1,11 @@
-PROVENANCE commit c067e337e553, sources f8abce3c686b2880, binary 2469cdc70c93d18a
+PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
 RESULT r18 capped: 500-ball pit, 8 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive | 617.7 / 370.3 / 370.3 / 370.3 / 370.3 / 370.3 / 370.3 / 370.3 |    0 /    0 /    0 /    0 /    0 /    0 /    0 /    0 |    0 |   0 /   0 /   0 /   0 /   0 /   0 /   0 /   0 |  19 /  19 /  19 /  19 /  19 /  19 /  19 /  19 | 0 (own entries moved: 0) | 59.3/s,   3 | 0 ms | m1 2e258cfc62052980 / m2 2e258cfc62052980 / m3 2e258cfc62052980 / m4 2e258cfc62052980 / m5 2e258cfc62052980 / m6 2e258cfc62052980 / m7 2e258cfc62052980 / m8 2e258cfc62052980 replay 2e258cfc62052980 EQUAL
+RESULT   batched+adaptive | 618.5 / 371.1 / 371.1 / 371.1 / 371.1 / 371.1 / 371.1 / 371.1 |    0 /    0 /    0 /    0 /    0 /    0 /    0 /    0 |    0 |   0 /   0 /   0 /   0 /   0 /   0 /   0 /   0 |  19 /  19 /  19 /  19 /  19 /  19 /  19 /  19 | 0 (own entries moved: 0) | 59.3/s,   3 | 0 ms | m1 cdcbd51e320d3e3b / m2 cdcbd51e320d3e3b / m3 cdcbd51e320d3e3b / m4 cdcbd51e320d3e3b / m5 cdcbd51e320d3e3b / m6 cdcbd51e320d3e3b / m7 cdcbd51e320d3e3b / m8 cdcbd51e320d3e3b replay cdcbd51e320d3e3b EQUAL
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 11.3 / 8.9, m2 11.3 / 8.9, m3 11.3 / 8.9, m4 11.3 / 8.9, m5 11.4 / 8.9, m6 11.3 / 8.9, m7 11.3 / 8.9, m8 11.4 / 8.9
+RESULT     hand entries' confirmation latency P95, frames: m1 9.4, m2 9.4, m3 9.4, m4 9.4, m5 9.4, m6 9.4, m7 9.4, m8 9.4
 RESULT     mean confirmation lag per member from the gesture's start, frames: 13.9 / 13.8 / 13.9 / 13.8 / 13.9 / 13.8 / 13.9 / 13.8
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 18 / 18 / 18 / 18 / 18 / 18 / 18 / 18
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [29902, 0, 0, 0, 0, 0, 0, 0, 0] ms
