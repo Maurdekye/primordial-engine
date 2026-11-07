@@ -18,12 +18,12 @@ RESULT     P95 confirmation lag per member from the gesture's start, frames: 233
 RESULT     member 1's own hand against its target, over 154 gesture frames: mean 0.00 mm, max 0.00 mm
 RESULT     removed from the session (cut, from frame): {3: (55, 192)}
 RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 49/6/0  52/9/0  12/2/0
-RESULT   batched+adaptive |  49.4 /  35.8 /  31.4 |  490 /  480 /  489 |   46 | 697 / 696 / 692 | 795 / 794 / 789 | 10 (own entries moved: 0) | 11.7/s,  10 | 11062 ms | m1 f924007a2457e784 / m2 f924007a2457e784 / m3 f924007a2457e784 replay f924007a2457e784 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 795.3 / 271.3, m2 795.1 / 271.3, m3 788.8 / 294.7
-RESULT     hand entries' confirmation latency P95, frames: m1 779.3, m2 779.1, m3 777.8
-RESULT     mean confirmation lag per member from the gesture's start, frames: 310.9 / 311.0 / 307.6
-RESULT     P95 confirmation lag per member from the gesture's start, frames: 741 / 741 / 735
+RESULT   batched+adaptive |  49.4 /  35.8 /  31.4 |  496 /  480 /  489 |   44 | 612 / 612 / 615 | 710 / 710 / 707 | 10 (own entries moved: 0) | 11.7/s,  10 | 10528 ms | m1 f924007a2457e784 / m2 f924007a2457e784 / m3 f924007a2457e784 replay f924007a2457e784 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 710.5 / 252.1, m2 710.5 / 252.1, m3 707.2 / 275.1
+RESULT     hand entries' confirmation latency P95, frames: m1 694.5, m2 694.5, m3 698.3
+RESULT     mean confirmation lag per member from the gesture's start, frames: 255.7 / 255.1 / 256.8
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 656 / 656 / 657
 RESULT     member 1's own hand against its target, over 155 gesture frames: mean 290.00 mm, max 780.22 mm
-RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 74/0/0  74/0/0  72/23/0
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2468, 100, 100, 100, 100, 6188, 1083, 6158, 3605] ms
-RESULT     controller on member 3, the slow member: time at each level: [2934, 100, 100, 100, 100, 7293, 1027, 7143, 1104] ms
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 74/0/0  74/0/0  70/18/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2468, 100, 100, 100, 100, 5904, 1516, 4010, 5604] ms
+RESULT     controller on member 3, the slow member: time at each level: [2934, 100, 100, 100, 100, 7570, 967, 6926, 1104] ms

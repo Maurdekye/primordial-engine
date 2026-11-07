@@ -1,12 +1,12 @@
   m1: t=5099ms depart authored in world 1 at frame 300
   m1: t=5336ms depart confirmed in world 1 (frame 300); arrive authored in world 2 at frame 259
   m1: t=5688ms arrival confirmed in world 2 (frame 259, accepted=true); verdict authored in world 1 at frame 335 (its sim there at frame 335)
-  m1: t=5871ms verdict confirmed in world 1; transfer 1147224211940100971 resolved
+  m1: t=5871ms verdict confirmed in world 1; transfer 11028584543779377146 resolved
   m1: t=5872ms commit certified in world 1; hop relayed into world 2 at frame 286
   m1: t=8149ms depart authored in world 2 at frame 400
   m1: t=8494ms depart confirmed in world 2 (frame 400); arrive authored in world 3 at frame 501
   m1: t=8747ms arrival confirmed in world 3 (frame 501, accepted=true); verdict authored in world 2 at frame 429 (its sim there at frame 429)
-  m1: t=8910ms verdict confirmed in world 2; transfer 6965856874945305607 resolved
+  m1: t=8910ms verdict confirmed in world 2; transfer 9480727162186123127 resolved
   m1: t=8982ms commit certified in world 2; hop relayed into world 3 at frame 531
 RESULT r14 chain-epoch: A at m2: epoch 1 members {1, 2} decisions [(1, 244, 0, [5])]
 RESULT r14 chain-epoch: hop 1->2 relayed into B: signed by epoch 1 at frame 335, carrying 1 epoch certificate(s)
@@ -14,13 +14,13 @@ RESULT r14 chain-epoch: arrival into B with chain [] -> Some(Accepted)
 RESULT r14 chain-epoch: hop 2->3 relayed into C: signed by epoch 0 at frame 429, carrying 0 epoch certificate(s)
 RESULT r14 chain-epoch: arrival into C with chain [1->2 (epoch 1, 1 certs)] -> Some(Accepted)
 RESULT r14 chain-epoch: A:40 live copies A 0, B 0, C 1 ; pending escrows 0 -> CONSERVED (in C, nothing in limbo)
-  m1 world 1: rollbacks 2 max depth 3 resim frames 8 (1.0 ms) overwrites 0 paused frames 81 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 695 frame 714
-  m2 world 1: rollbacks 13 max depth 4 resim frames 60 (7.0 ms) overwrites 0 paused frames 84 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 696 frame 713
+  m1 world 1: rollbacks 2 max depth 3 resim frames 8 (1.3 ms) overwrites 0 paused frames 81 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 695 frame 714
+  m2 world 1: rollbacks 13 max depth 4 resim frames 60 (8.4 ms) overwrites 0 paused frames 84 violations 0 equivocations 0 checks ok 21 bad 0 nonfinite 0 conf 696 frame 713
   m5 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 553 violations 0 equivocations 0 checks ok 4 bad 0 nonfinite 0 conf 40 frame 160
   m1 world 2: rollbacks 2 max depth 11 resim frames 13 (1.6 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 574 frame 592
-  m3 world 2: rollbacks 3 max depth 3 resim frames 13 (1.3 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 574 frame 592
-  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (0.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 23 bad 0 nonfinite 0 conf 700 frame 712
+  m3 world 2: rollbacks 3 max depth 3 resim frames 13 (1.9 ms) overwrites 1 paused frames 0 violations 0 equivocations 0 checks ok 19 bad 0 nonfinite 0 conf 574 frame 592
+  m1 world 3: rollbacks 2 max depth 3 resim frames 8 (1.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 23 bad 0 nonfinite 0 conf 700 frame 712
   m4 world 3: rollbacks 1 max depth 4 resim frames 5 (0.5 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 698 frame 712
-RESULT r14 chain-epoch A world 1: frames 0..600 digests m1=16f02f8a2e5ba1aa m2=16f02f8a2e5ba1aa | offline replay 16f02f8a2e5ba1aa | ALL EQUAL
-RESULT r14 chain-epoch B world 2: frames 0..500 digests m1=a8d30b4c60db9963 m3=a8d30b4c60db9963 | offline replay a8d30b4c60db9963 | ALL EQUAL
-RESULT r14 chain-epoch C world 3: frames 0..600 digests m1=faed5009e5856924 m4=faed5009e5856924 | offline replay faed5009e5856924 | ALL EQUAL
+RESULT r14 chain-epoch A world 1: frames 0..600 digests m1=8a613ace6f983150 m2=8a613ace6f983150 | offline replay 8a613ace6f983150 | ALL EQUAL
+RESULT r14 chain-epoch B world 2: frames 0..500 digests m1=4ba217e14cadeea6 m3=4ba217e14cadeea6 | offline replay 4ba217e14cadeea6 | ALL EQUAL
+RESULT r14 chain-epoch C world 3: frames 0..600 digests m1=444de4f0cd598070 m4=444de4f0cd598070 | offline replay 444de4f0cd598070 | ALL EQUAL

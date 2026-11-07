@@ -1,8 +1,8 @@
-PROVENANCE commit 874e2a168816, sources 54dca850a4bd142c, binary 54e97e960bca8125
+PROVENANCE commit c85fea7d7b1f, sources c9a063e954feee5c, binary 38c7727ab5456715
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 110 s
 RESULT r18 capped: member 3 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  85.9 /  50.5 /  56.5 /  55.7 |  499 /  488 /  496 /  483 |  174 | 167 / 166 / 6335 / 166 | 284 / 284 / 6453 / 284 | 68 (own entries moved: 0) | 10.1/s,  17 | 2130 ms | m1 c0281ba9d8014bad / m2 c0281ba9d8014bad / m4 c0281ba9d8014bad replay c0281ba9d8014bad EQUAL
+RESULT   batched+adaptive |  85.9 /  50.5 /  56.5 /  55.7 |  498 /  488 /  496 /  483 |  174 | 167 / 166 / 6335 / 166 | 284 / 284 / 6453 / 284 | 68 (own entries moved: 0) | 10.1/s,  17 | 2130 ms | m1 c0281ba9d8014bad / m2 c0281ba9d8014bad / m4 c0281ba9d8014bad replay c0281ba9d8014bad EQUAL
 RESULT     hand entries' confirmation latency, frames (max / mean): m1 285.0 / 122.5, m2 285.0 / 123.6, m3 103.3 / 22.4 (21 of 41 unconfirmed), m4 284.9 / 123.0
 RESULT     second gesture (40 s after the first): level at its start 5; max queue ms per member 0 / 0 / 417 / 0; stalled frames during it 0 / 0 / 3854 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 19.6 / 19.3, m2 19.6 / 19.3, m3 none of 30 confirmed, m4 19.6 / 19.3
 RESULT     gesture 3 (40 s after the one before): level at its start 5; max queue ms per member 0 / 0 / 322 / 0; stalled frames during it 0 / 0 / 1234 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 19.7 / 19.5, m2 19.7 / 19.4, m3 none of 29 confirmed, m4 19.7 / 19.4; member 1's own hand during it: mean 0.00 mm, max 0.00 mm over 221 frames
