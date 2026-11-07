@@ -799,10 +799,17 @@ fn no_round_fallback() -> bool {
     *V.get_or_init(|| std::env::var("PE_NO_ROUND_FALLBACK").is_ok())
 }
 
-/// (spike: PE_FALLBACK_ALONE=1) The round fallback also ends a round no other member has entries in yet (to measure it).
+/// (spike: PE_FALLBACK_ALONE=1) The round fallback times a round from its start, so it also ends one no other member has
+/// entries in yet (to measure it).
 fn fallback_alone() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("PE_FALLBACK_ALONE").is_ok())
+}
+
+/// (spike: PE_FALLBACK_ALL=1) The round fallback at every member, not only a fed one (to measure it).
+fn fallback_all() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_FALLBACK_ALL").is_ok())
 }
 
 /// (spike: PE_NO_SELF_OUT=1) What recording my own entries produces is dropped again, as before (to measure it).
@@ -5484,33 +5491,39 @@ impl WorldSim {
             self.start_round(r + 1);
             return;
         }
-        // Gap 1 (m0813b922e026, m97fecece8a41): a round with no proposal and fewer than q precommits arms no timer that
-        // ends it (a member holding fewer than q prevotes never precommits nil), so it never ended: a fed member that
-        // lost the round's entries waited in it for good. Such a round ends three timeouts after it started. A round
-        // change is always safe (a lock carries over); only liveness depends on it.
-        // (To be ruled) the three timeouts run from the moment this replica first holds another member's prevote or
-        // precommit of this round or a later one: a member alone in its view change (the others not busy yet) gains
-        // nothing by moving on alone, and each nil round it churns costs an entry on its link (r18 n = 8 fed: member
-        // 1, on 8 kbit/s, alone from frame 369 to about 700, churned 3 rounds; the others held its votes 68 frames
-        // later and decided 14 frames later; lag 48.4 / 59 -> 51.3 / 81 frames). PE_FALLBACK_ALONE=1: from the round's
-        // start, as ruled.
-        if self.vc.joined_at.is_none() {
-            let me = self.me;
-            if [&self.vc.prevotes, &self.vc.precommits].iter().any(|v| v.range(r..).any(|(_, ms)| ms.keys().any(|m| *m != me && any_base.contains(m)))) {
-                self.vc.joined_at = Some(self.now);
+        // Gap 1 (m0813b922e026, m97fecece8a41; form ruled m8ee59d49cf74, ma3fd4b7c6f68): a fed member can't fetch a
+        // view-change entry it lost (it holds no log), so a round with no proposal and fewer than q precommits armed no
+        // timer that ends it there (a member holding fewer than q prevotes never precommits nil): a fed member that lost
+        // the round's entries waited in it for good. Its round ends three timeouts after it first holds another member's
+        // prevote or precommit of that round or a later one. A round change is always safe (a lock carries over); only
+        // liveness depends on it.
+        // - Fed members only: a full member fetches whatever it lost on the hole in its author's chain, so Tendermint's
+        //   own timers end its rounds. At every member the fallback moved 4 suite cells: d80-kickpartition decided a round
+        //   later (26 frames), since members lacking round 1's proposal during the partition moved on, though it would
+        //   have reached them.
+        // - From the first other member's entry, not the round's start: a member alone in its view change gains nothing
+        //   by moving on alone, and each nil round it churns costs an entry on its link (r18 n = 8 fed: member 1, on
+        //   8 kbit/s, alone from frame 369 to about 700, churned 3 rounds; lag 48.4 / 59 -> 51.3 / 81 frames).
+        // (spike: PE_FALLBACK_ALONE=1 times it from the round's start, PE_FALLBACK_ALL=1 applies it at every member.)
+        if self.fed.is_some() || fallback_all() {
+            if self.vc.joined_at.is_none() {
+                let me = self.me;
+                if [&self.vc.prevotes, &self.vc.precommits].iter().any(|v| v.range(r..).any(|(_, ms)| ms.keys().any(|m| *m != me && any_base.contains(m)))) {
+                    self.vc.joined_at = Some(self.now);
+                }
             }
-        }
-        let from = if fallback_alone() { Some(self.vc.round_at) } else { self.vc.joined_at };
-        if from.is_some_and(|a| self.now >= a + 3 * to)
-            && !self.vc.proposals.contains_key(&r)
-            && !self.vc.precommit_timer.contains_key(&r)
-            && !no_round_fallback()
-        {
-            self.stats.round_fallbacks += 1;
-            if vc_trace() == Some(self.me) {
-                eprintln!("VC m{} t={} epoch {} round {r} ended with no proposal and fewer than q precommits", self.me, self.now, self.epoch);
+            let from = if fallback_alone() { Some(self.vc.round_at) } else { self.vc.joined_at };
+            if from.is_some_and(|a| self.now >= a + 3 * to)
+                && !self.vc.proposals.contains_key(&r)
+                && !self.vc.precommit_timer.contains_key(&r)
+                && !no_round_fallback()
+            {
+                self.stats.round_fallbacks += 1;
+                if vc_trace() == Some(self.me) {
+                    eprintln!("VC m{} t={} epoch {} round {r} ended with no proposal and fewer than q precommits", self.me, self.now, self.epoch);
+                }
+                self.start_round(r + 1);
             }
-            self.start_round(r + 1);
         }
         let _ = t_any;
     }
