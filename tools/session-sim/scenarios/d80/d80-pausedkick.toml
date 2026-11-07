@@ -3,8 +3,10 @@ Admin entries while paused (design 12.4): member 8 withholds references from 2 s
 cheater), so confirmation stalls and every honest replica pauses at its speculation limit. Nothing \
 removes 8 automatically (trust survey #4). While paused, admin 1's planned entries are authored: it \
 defines role 7 at 4.5 s, gives it to 3 at 4.75 s, bans test key 9 for the session at 5 s, and kicks 8 \
-at 6 s. The kick is decided, 8 is removed and confirmation resumes; every replica agrees. Before the \
-fix the planned entries were dropped while paused, and the stall lasted to the end."""
+at 6 s. At 5.9 s every honest replica is at frame 230 with confirmation at 110, and the entries are \
+stamped at the present (270, 285, 300). The kick is decided, 8 is removed and confirmation resumes; \
+every replica agrees. With the old gate (acbb39d) none of the four is authored and confirmation stays \
+at 110 to the end."""
 include = ["../common/review.toml"]
 end_ms = 9000
 
