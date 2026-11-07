@@ -48,6 +48,13 @@ pub struct CutRecord {
 
 /// (spike diagnostics: PE_CUT_TRACE=1 prints the evidence behind each Part B cut, and the vouched prefix behind each
 /// counted entry of a removed member or an older epoch)
+/// (spike) PE_WINDOW_NOW=1: a 3-member window's mode is read for the current epoch only, and an earlier epoch's entry
+/// is judged by rule 1, as before the window-mode note's fix (m5b983ab01446).
+fn window_now() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_WINDOW_NOW").is_ok())
+}
+
 /// (spike) PE_OLD_FINAL=1: the final term reads each member's acks up to its final raw prefix and matches references
 /// against held entries, as the build before Q2's rulings did (with one level, that build: the premise-1 cell bites).
 fn old_final() -> bool {
@@ -1219,7 +1226,7 @@ impl WorldSim {
             // At 3 players: an entry in a D54 window counts (D54 voids nothing; it waits for stability), one in a
             // fed window is judged by rule 1, and one whose window's mode isn't known yet waits; the mode of the
             // entry's own epoch, whatever mine is now (the window-mode note, m5b983ab01446).
-            if ctx.members.len() == 3 {
+            if ctx.members.len() == 3 && !(window_now() && ep != self.epoch) {
                 match self.window_mode_in(stamp / WINDOW, &ctx.members) {
                     None => continue,
                     Some(false) => {

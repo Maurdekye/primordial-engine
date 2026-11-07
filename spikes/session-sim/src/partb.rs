@@ -1596,6 +1596,169 @@ pub fn premise1(case: &str) {
     verdict(&sim, &survivors, &label, panic_at);
 }
 
+/// The window-mode note's cell (@design-reviewer m3a3ca7b15bac, ruled m5b983ab01446): an entry authored at the end of a
+/// 3-member D54 epoch reaches one replica only after the next change decides, with a lacker at its deadline. n = 3, no
+/// thin link, so every window is a D54 window. Member 1's touch at frame 241 (4.0 s) reaches 2 two seconds late and 3
+/// four seconds late, from anyone; member 4 asks to join at 4.3 s, and the change that admits it ends epoch 0 before
+/// either holds the touch. Member 1 judged it in epoch 0, under D54: it counts. Expected: read with its own epoch's
+/// window mode it counts at every replica; ALL EQUAL. With PE_WINDOW_NOW=1 (the old rule: an earlier epoch's entry by
+/// rule 1) 2 and 3, both lackers at its deadline, void it: the replicas differ.
+pub fn window1() {
+    let ids: Vec<MemberId> = (1..=3).collect();
+    let joiner: MemberId = 4;
+    let old = std::env::var("PE_WINDOW_NOW").is_ok();
+    let label = format!("window1 ({})", if old { "the old rule, PE_WINDOW_NOW" } else { "its own epoch's window mode" });
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| plan(&(120..900).step_by(30).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect::<Vec<_>>());
+    let mut ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p
+        })
+        .collect();
+    let mut pj = Peer::new(joiner, 0);
+    pj.join(1, &ids, SCENE, cfg, 100_000, BTreeMap::new());
+    ps.push(pj);
+    for p in ps.iter_mut().filter(|p| p.id != joiner) {
+        p.worlds.get_mut(&1).unwrap().sim.follow(joiner);
+    }
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 51);
+    net.batching = true;
+    net.filter = Some(Box::new(|_t, _w, _from, to, m| {
+        let Msg::Entry(e) = m else { return Fate::Deliver };
+        if e.member == 1 && e.stamp == 241 && matches!(e.payload, Payload::Touch { .. }) {
+            match to {
+                2 => Fate::Delay(2_000_000),
+                3 => Fate::Delay(4_000_000),
+                _ => Fate::Deliver,
+            }
+        } else {
+            Fate::Deliver
+        }
+    }));
+    let mut sim = Sim::new(net, ps, 14_000_000);
+    let sid = session_id(1, &ids);
+    let mut asked = false;
+    let panic_at = run_to_end(&mut sim, |s| {
+        if !asked && s.net.now_us >= 4_300_000 {
+            asked = true;
+            for m in [1, 2, 3] {
+                s.net.send(1, joiner, m, &join_msg(sid, joiner, vec![], u64::MAX));
+            }
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    let touch_id = r1.all_entries().into_iter().find(|e| e.member == 1 && e.stamp == 241 && matches!(e.payload, Payload::Touch { .. })).map(|e| e.id());
+    let verdicts: Vec<(MemberId, Option<bool>)> = [1, 2, 3].iter().map(|&m| (m, touch_id.and_then(|id| sim.replica(m, 1).sim.verdicts.get(&id).copied()))).collect();
+    let changes: Vec<String> = r1.vc_log.iter().map(|d| format!("epoch {} -> {} at {:.2} s", d.0, d.0 + 1, d.1 as f64 / 60.0)).collect();
+    println!("RESULT {label}: n = 3, then 4 asks to join: view changes at m1 {changes:?}; members at m1 at the end {:?}", r1.members);
+    let same = verdicts.iter().all(|v| v.1 == verdicts[0].1);
+    println!("RESULT {label}: member 1's touch at frame 241, verdict per replica {verdicts:?} -> {}", if same { "SAME" } else { "DIFFERENT" });
+    let finals: Vec<MemberId> = r1.members.iter().copied().filter(|&m| m != joiner).collect();
+    verdict(&sim, &finals, &label, panic_at);
+}
+
+/// Ruling 2's holdings cell (@coordinator-opus m5b983ab01446, @design-reviewer m3a3ca7b15bac): the final term must not
+/// depend on how much of the removed chain a replica holds. NOT WORKING YET (kept out of the regression): as built the
+/// kick never decides at replica 1. The replica holding less must still decide the removal, which needs the removed
+/// member's view-change entries, so its copy can't stop short before the decision; and a non-voter's acks after it
+/// applies the decision are of the next epoch, so its jump has to fall before that. The timings below don't meet both. n = 5, member 4 acts every 6 frames, member 1 kicks it at
+/// 4.5 s; member 3 casts no view-change entries from 4.4 s (a non-voter), and the decision doesn't need it (q = 4 of 1,
+/// 2, 5 and 4's own vote; precommits from 1, 2, 4 and 5).
+/// - 4's entries reach 1 300 ms late and 2 150 ms late, so the voters freeze increasing heads: f_1 < f_2 < f_5 = B_4
+///   (B never takes 4's own vote).
+/// - Replica 1 never receives 4's entries stamped from frame 330 (5.5 s), whoever sends them: it holds 4's chain past
+///   B_4 (and 4's view-change entries for the kick) and no further; the others hold it all.
+/// - 4's entries sent from 4 s reach 3 only at 5.6 s, all at once: 3's acks jump from below f_1 to past all that
+///   replica 1 holds.
+/// Expected: with the ruled final term (named heads capped at B, unmatched) every replica cuts 4 at the same seq (the
+/// rank statistic, the third highest of 1's, 2's, 3's and 5's, is f_2); ALL EQUAL. With PE_OLD_FINAL=1 (references
+/// matched against held entries) replica 1 reads 3's ack from before the jump, so its statistic is f_1: the cuts differ.
+pub fn holdings() {
+    let ids: Vec<MemberId> = (1..=5).collect();
+    let old = std::env::var("PE_OLD_FINAL").is_ok();
+    let label = format!("holdings ({})", if old { "the old final term, PE_OLD_FINAL" } else { "the ruled final term" });
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| {
+        let step = if m == 4 { 6 } else { 30 };
+        let mut v: Vec<(u64, Action)> = (120..1100).step_by(step).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        if m == 1 {
+            v.push((270, Action::Kick { target: 4 }));
+            v.sort_by_key(|x| x.0);
+        }
+        plan(&v)
+    };
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 53);
+    net.batching = true;
+    net.filter = Some(Box::new(|t, _w, _from, to, m| {
+        let Msg::Entry(e) = m else { return Fate::Deliver };
+        if e.member != 4 {
+            return Fate::Deliver;
+        }
+        match to {
+            1 if e.stamp >= 330 => Fate::Drop,
+            1 => Fate::Delay(300_000),
+            2 => Fate::Delay(150_000),
+            3 if (4_000_000..5_600_000).contains(&t) => Fate::Delay(5_600_000 - t),
+            _ => Fate::Deliver,
+        }
+    }));
+    let mut sim = Sim::new(net, ps, 20_000_000);
+    let mut removed: Option<u64> = None;
+    let mut withheld = false;
+    let panic_at = run_to_end(&mut sim, |s| {
+        if !withheld && s.net.now_us >= 4_400_000 {
+            withheld = true;
+            sim_mut(s, 3).withhold_vc = true;
+        }
+        if removed.is_none() && !s.replica(1, 1).sim.members.contains(&4) {
+            removed = Some(s.net.now_us);
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    println!(
+        "RESULT {label}: n = 5; m4 removed at m1 at {}; members at m1 at the end {:?}; m1's frame {} conf {}",
+        removed.map_or("never".to_string(), |t| format!("{:.2} s", t as f64 / 1e6)),
+        r1.members,
+        r1.frame,
+        r1.conf
+    );
+    let survivors: Vec<MemberId> = vec![1, 2, 3, 5];
+    if std::env::var("PE_PB_DEBUG").is_ok() {
+        for &m in &ids {
+            let r = &sim.replica(m, 1).sim;
+            println!("  m{m}: epoch {} conf {} frame {}; kick of 4: {}", r.epoch, r.conf, r.frame, r.kick_trace(4));
+            for e in r.events.iter().filter(|e| e.contains("VIEW CHANGE") || e.contains("carry-over:")).take(8) {
+                println!("  m{m}: {e}");
+            }
+        }
+    }
+    let cuts: Vec<(MemberId, Option<u32>)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.final_cut(4))).collect();
+    let distinct: BTreeSet<Option<u32>> = cuts.iter().map(|c| c.1).collect();
+    println!("RESULT {label}: m4's final cut per replica {cuts:?} -> {}", if distinct.len() == 1 && cuts[0].1.is_some() { "SAME" } else { "DIFFERENT OR NOT FINAL" });
+    for &m in &survivors {
+        let r = &sim.replica(m, 1).sim;
+        if let Some(rec) = r.cut_records.get(&4) {
+            println!("RESULT {label}: m{m}: m4's cut {} at frame {}; (member, read to, evidence, still a member) {:?}", rec.cut, rec.at_frame, rec.voters);
+        }
+        let past = r.counted_past_cut(4);
+        if !past.is_empty() {
+            println!("RESULT {label}: m{m} counted m4's entries past its cut (seq, stamp): {past:?} -> BITES");
+        }
+    }
+    verdict(&sim, &survivors, &label, panic_at);
+}
+
 pub fn stale() {
     let ids = [1, 2, 3, 4];
     // (frame, member, object, impulse): who writes which object when.
