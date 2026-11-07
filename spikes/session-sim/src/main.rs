@@ -1465,6 +1465,8 @@ fn main() {
         Some("cutfix-shrink") => partb::cutfix("shrink"),
         Some("cutfix-shrink-same") => partb::cutfix("shrink-same"),
         Some("cutfix-shrink-late") => partb::cutfix("shrink-late"),
+        Some("premise1") => partb::premise1("premise1"),
+        Some("q1corner") => partb::premise1("q1corner"),
         Some("partbrand") => partb::partbrand(&args),
         Some("pbchurn") => partb::pbchurn(&args),
         Some("fork9") => p24r::fork9(),
