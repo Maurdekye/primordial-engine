@@ -313,7 +313,7 @@ impl WorldSim {
             }
             let mine = self.votes.get(&r.member).is_some_and(|v| v.contains_key(&self.me));
             let proof = self.proofs.contains_key(&r.member) || self.liars.contains_key(&r.member);
-            let leave = self.leaves.get(&r.member).is_some_and(|id| r.votes == [*id]);
+            let leave = self.leaves.get(&r.member).is_some_and(|id| r.votes.first() == Some(id));
             if !mine && !proof && !leave {
                 return Some(false);
             }
@@ -519,9 +519,9 @@ impl WorldSim {
     /// references, for echo-stability only. A mismatch (my version has another checkpoint there, or none) is
     /// counted; production asks for the full signed heads (7.6).
     pub(super) fn retry_echoes(&mut self) {
-        let fs: Vec<MemberId> = self.echo_pending.keys().copied().collect();
-        for f in fs {
-            let (echo, digest, aseq) = self.echo_pending[&f].clone();
+        let keys: Vec<(MemberId, u32)> = self.echo_pending.iter().flat_map(|(&f, p)| p.keys().map(move |&a| (f, a))).collect();
+        for (f, aseq) in keys {
+            let (echo, digest) = self.echo_pending[&f][&aseq].clone();
             let mut triples: Vec<(MemberId, u64, u32, EntryId)> = Vec::with_capacity(echo.len());
             let (mut wait, mut differ) = (false, false);
             for &(x, b) in &echo {
@@ -535,7 +535,12 @@ impl WorldSim {
             if wait && !differ {
                 continue;
             }
-            self.echo_pending.remove(&f);
+            if let Some(p) = self.echo_pending.get_mut(&f) {
+                p.remove(&aseq);
+                if p.is_empty() {
+                    self.echo_pending.remove(&f);
+                }
+            }
             if differ || echo_digest(triples.iter().map(|&(x, b, _, id)| (x, b, id))) != digest {
                 self.stats.echo_mismatches += 1;
                 continue;
@@ -544,12 +549,16 @@ impl WorldSim {
             if !self.cfg.echo {
                 continue;
             }
+            // Review R3-1, by chain order: a member's vote against x is its last word on x's chain in that epoch, so an
+            // echo carried after the vote adds nothing (a fed voter's echo stays at its frozen checkpoint anyway). Read
+            // from the chain, not from whether I've recorded the vote by the time the echo checks out, which differed
+            // between replicas. Each echoed seq keeps the first ack that carried it (an echo stands until a newer one).
+            let ep = self.entry_epoch(f, aseq);
             for (x, _, s, id) in triples {
-                // Review R3-1: a member's vote against x is its last word on x's chain in this epoch.
-                if self.votes.get(&x).is_some_and(|v| v.contains_key(&f)) {
+                if self.vote_on(f, x, ep).is_some_and(|(vs, _)| vs < aseq) {
                     continue;
                 }
-                self.echo_refs.entry((f, x)).or_default().insert(s, (id, aseq));
+                self.echo_refs.entry((f, x)).or_default().entry(s).and_modify(|v| v.1 = v.1.min(aseq)).or_insert((id, aseq));
             }
         }
     }
@@ -580,6 +589,8 @@ impl WorldSim {
             self.ev(format!("fed: member {j}'s checkpoints haven't reached me for {quiet} frames (limit {limit}): presumed crashed; vote to remove it"));
             out.extend(self.freeze_and_vote(j, 0, 0));
         }
+        // Carry-over, gap 2 (b): a fed member votes on each leave it holds too (its vote freezes its echoed checkpoint).
+        out.extend(self.leave_votes_due());
         out
     }
 

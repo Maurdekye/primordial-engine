@@ -487,6 +487,14 @@ fn leave_s4_rejoin_run(early: bool) {
         paused_at[1].iter().zip(&paused_end).map(|(a, b)| b.saturating_sub(*a)).collect::<Vec<_>>()
     );
     let finals: Vec<MemberId> = r1.members.iter().copied().collect();
+    // (spike diagnostics, PE_PB_DEBUG) Each replica's rule 1 voids and its removal and view-change events.
+    if std::env::var("PE_PB_DEBUG").is_ok() {
+        for &m in &finals {
+            for e in sim.replica(m, 1).sim.events.iter().filter(|e| e.contains("rule 1: m") || e.contains("VIEW CHANGE") || e.contains("carry-over:")) {
+                println!("  m{m}: {e}");
+            }
+        }
+    }
     verdict(&sim, &finals, &label, panic_at);
 }
 
@@ -1431,6 +1439,147 @@ pub fn cutfix(case: &str) {
                 println!("RESULT {label}: 2's cut and the cut without 3 per replica {moved:?} -> {}", if all { "3's evidence moves the cut" } else { "NOT MOVED -> FAIL" });
             }
         }
+    }
+    verdict(&sim, &survivors, &label, panic_at);
+}
+
+/// Carry-over, Q2's premise-1 shape (@design-reviewer mdda9e1fc9de6, ruled by @coordinator-opus m0813b922e026): slow
+/// member 4 has a fast link to replica 1, and 4's raw ack past its B is one of the q - 1 echoes of member 2's acks at
+/// replica 1. n = 4; member 4 acts every 6 frames; member 1 kicks it at 4.5 s.
+/// - 2's entries sent from 4 s reach 4 only at 4.6 s, after 1's kick vote has frozen 4's chain, so 4's first ack naming
+///   them (alpha) lies past every voter's frozen head, past B_4 (gap 2 (b): the voters' heads only). It reaches 1 at
+///   once, and with 1's own acks makes 2's acks from 4 s echo-stable at 1 in one level.
+/// - Those acks of 2 reference 4's entries from 4 s, which 3 doesn't hold when it votes (4's entries sent from 4 s reach
+///   it at 4.7 s), so 3's references to them are capped at its vote; and 2's entries from 4 s reach 3 6 s late, after its
+///   first ack of epoch 1. So 4's final vouch in epoch 0 has only 1's references past 4 s: those entries are void at its
+///   cut.
+/// - Member 2 casts no view-change entries from 4.4 s to 6.5 s, so B_4 comes from 1's and 3's votes, and 3's vote reaches
+///   the others 1 s late, so the kick decides near 6 s.
+/// Expected: in one level (PE_ONE_LEVEL=1, the build before Q2) replica 1 counts 4's entries from 4 s once alpha arrives,
+/// and they are void at 4's cut (BITES, or a panic). With two levels it counts none of them before the cut; ALL EQUAL.
+///
+/// "q1corner" (Q1's liveness corner, ruled m0813b922e026): the same session without the filters, and member 3 crashes as
+/// it enters epoch 1. Epoch 1 = {1, 2, 3} then has a member that never references the others' first acks of epoch 1,
+/// and at n = 3 the rank needs both others: epoch 0 never closes and 4's cut never finalizes (reported, not judged).
+pub fn premise1(case: &str) {
+    let ids: Vec<MemberId> = (1..=4).collect();
+    let corner = case == "q1corner";
+    let one = std::env::var("PE_ONE_LEVEL").is_ok();
+    let label = if corner { "q1corner".to_string() } else { format!("premise1 ({})", if one { "one level, PE_ONE_LEVEL" } else { "two levels" }) };
+    let cfg = SimConfig { localize: true, ..SimConfig::default() };
+    let plans = |m: MemberId| {
+        let step = if m == 4 { 6 } else { 30 };
+        let mut v: Vec<(u64, Action)> = (120..1100).step_by(step).map(|f| (f + m as u64, touch(10 + m, 2.0))).collect();
+        if m == 1 {
+            v.push((270, Action::Kick { target: 4 }));
+            v.sort_by_key(|x| x.0);
+        }
+        plan(&v)
+    };
+    let ps: Vec<Peer> = ids
+        .iter()
+        .map(|&id| {
+            let mut p = Peer::new(id, 0);
+            p.join(1, &ids, SCENE, cfg, 100_000, plans(id));
+            p
+        })
+        .collect();
+    let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 43);
+    net.batching = true;
+    if !corner {
+        net.filter = Some(Box::new(move |t, _w, _from, to, m| {
+            let Msg::Entry(e) = m else { return Fate::Deliver };
+            let a = e.member;
+            if a == 2 && to == 4 && (4_000_000..4_550_000).contains(&t) {
+                Fate::Delay(4_600_000 - t)
+            } else if a == 4 && to == 2 && (4_500_000..4_700_000).contains(&t) {
+                Fate::Delay(400_000)
+            } else if a == 4 && to == 3 && (4_000_000..4_650_000).contains(&t) {
+                Fate::Delay(4_700_000 - t)
+            } else if a == 2 && to == 3 && (4_000_000..10_000_000).contains(&t) {
+                Fate::Delay(6_000_000)
+            } else if a == 3 && matches!(e.payload, Payload::Vote { .. }) && (4_500_000..5_500_000).contains(&t) {
+                Fate::Delay(1_000_000)
+            } else {
+                Fate::Deliver
+            }
+        }));
+    }
+    let mut sim = Sim::new(net, ps, 20_000_000);
+    let mut removed: BTreeMap<MemberId, u64> = BTreeMap::new();
+    let (mut withheld, mut released, mut crashed) = (false, false, None::<u64>);
+    // Replica 1's counted prefix of 4's chain, each time it moves from 4.4 s to 7 s.
+    let mut counted: Vec<(u64, u32)> = Vec::new();
+    let panic_at = run_to_end(&mut sim, |s| {
+        let now = s.net.now_us;
+        if !corner && !withheld && now >= 4_400_000 {
+            withheld = true;
+            sim_mut(s, 2).withhold_vc = true;
+        }
+        if !corner && !released && now >= 6_500_000 {
+            released = true;
+            sim_mut(s, 2).withhold_vc = false;
+        }
+        if corner && crashed.is_none() && s.replica(3, 1).sim.epoch >= 1 {
+            crashed = Some(now);
+            let i = s.peers.iter().position(|p| p.id == 3).unwrap();
+            s.peers[i].crashed = true;
+        }
+        for x in [3, 4] {
+            if !removed.contains_key(&x) && !s.replica(1, 1).sim.members.contains(&x) {
+                removed.insert(x, now);
+            }
+        }
+        if (4_400_000..7_000_000).contains(&now) {
+            let c = s.replica(1, 1).sim.counted_upto(4, 0).0;
+            if counted.last().is_none_or(|&(_, v)| v != c) {
+                counted.push((now, c));
+            }
+        }
+    });
+    let r1 = &sim.replica(1, 1).sim;
+    let epoch_of = |x: MemberId| r1.decided_changes().position(|c| c.remove.iter().any(|r| r.member == x)).map(|i| i + 1);
+    let at = |x: MemberId| removed.get(&x).map_or("never".to_string(), |t| format!("{:.2} s (epoch {:?})", *t as f64 / 1e6, epoch_of(x)));
+    println!(
+        "RESULT {label}: n = 4; m4 removed at m1 at {}; m3 {}{}; members at m1 at the end {:?}; m1's frame {} conf {}",
+        at(4),
+        if corner { "removed at ".to_string() + &at(3) } else { "stays".to_string() },
+        crashed.map_or(String::new(), |t| format!(" (crashed at {:.2} s, entering epoch 1)", t as f64 / 1e6)),
+        r1.members,
+        r1.frame,
+        r1.conf
+    );
+    let survivors: Vec<MemberId> = if corner { vec![1, 2] } else { vec![1, 2, 3] };
+    let cuts: Vec<(MemberId, Option<u32>)> = survivors.iter().map(|&m| (m, sim.replica(m, 1).sim.final_cut(4))).collect();
+    let distinct: BTreeSet<Option<u32>> = cuts.iter().map(|c| c.1).collect();
+    println!("RESULT {label}: m4's final cut per replica {cuts:?} -> {}", if distinct.len() == 1 && cuts[0].1.is_some() { "SAME" } else { "DIFFERENT OR NOT FINAL" });
+    let (_, from4) = r1.counted_upto(4, 240);
+    let mut bites = panic_at.is_some();
+    for &m in &survivors {
+        let past = sim.replica(m, 1).sim.counted_past_cut(4);
+        if !past.is_empty() {
+            bites = true;
+            println!("RESULT {label}: m{m} counted m4's entries past its cut (seq, stamp): {past:?} -> BITES");
+        }
+    }
+    if corner {
+        for &m in &survivors {
+            let r = &sim.replica(m, 1).sim;
+            println!("RESULT {label}: m{m}: epoch 0 {}", match r.epoch_open(0) {
+                None => "not ended".to_string(),
+                Some(v) if v.is_empty() => "final".to_string(),
+                Some(v) => format!("OPEN: {v:?}"),
+            });
+        }
+        let open = survivors.iter().any(|&m| sim.replica(m, 1).sim.epoch_open(0).is_some_and(|v| !v.is_empty()));
+        println!("RESULT {label}: the corner {}", if open { "ARISES (epoch 0 never closes: 4's cut never finalizes)" } else { "does not arise here" });
+    } else {
+        println!(
+            "RESULT {label}: m4's first entry stamped from 4 s: s{}; m1's counted prefix of m4's chain over time {:?}",
+            from4.unwrap_or(0),
+            counted.iter().map(|&(t, c)| format!("{:.2} s: s{c}", t as f64 / 1e6)).collect::<Vec<_>>()
+        );
+        println!("RESULT {label}: the hole {}", if bites { "BITES" } else { "does not bite" });
     }
     verdict(&sim, &survivors, &label, panic_at);
 }

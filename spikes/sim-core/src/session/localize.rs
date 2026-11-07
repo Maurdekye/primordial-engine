@@ -36,6 +36,11 @@ pub struct CutRecord {
 
 /// (spike diagnostics: PE_CUT_TRACE=1 prints the evidence behind each Part B cut, and the vouched prefix behind each
 /// counted entry of a removed member or an older epoch)
+fn one_level() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_ONE_LEVEL").is_ok())
+}
+
 fn verdict_author() -> Option<MemberId> {
     static V: std::sync::OnceLock<Option<MemberId>> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("PE_VERDICT_AUTHOR").ok().and_then(|v| v.parse().ok()))
@@ -288,47 +293,89 @@ impl WorldSim {
     /// Carry-over: the newest seq of `x`'s chain named by `y`'s acks of epoch `e` up to ack seq `upto`, in my
     /// version, at or below my held head of x; y's fed echo from those acks likewise.
     fn ref_in(&self, y: MemberId, x: MemberId, e: u32, upto: u32) -> u32 {
-        self.ref_lookups.set(self.ref_lookups.get() + 1);
         let Some((lo, hi)) = self.ack_range(y, e) else { return 0 };
-        let hi = hi.min(upto);
+        self.refs_between(y, x, lo, hi.min(upto))
+    }
+
+    /// Carry-over, finality (Q1): the newest seq of `x`'s chain named by `y`'s acks from its first ack of epoch `e` on,
+    /// of that epoch or any later one; a removed member's up to its B.
+    fn ref_from(&self, y: MemberId, x: MemberId, e: u32) -> u32 {
+        let Some((lo, _)) = self.ack_range(y, e) else { return 0 };
+        let hi = if self.removed_in.contains_key(&y) { self.bound.get(&y).copied().unwrap_or(0) } else { u32::MAX };
+        self.refs_between(y, x, lo, hi)
+    }
+
+    /// The newest seq of `x`'s chain named by `y`'s acks with seq in [lo, hi], in my version, at or below my held head
+    /// of x; y's fed echo from those acks likewise.
+    fn refs_between(&self, y: MemberId, x: MemberId, lo: u32, hi: u32) -> u32 {
+        self.ref_lookups.set(self.ref_lookups.get() + 1);
         if hi < lo {
             return 0;
         }
         let held = self.contiguous.get(&x).copied().unwrap_or(0);
         let mine = |s: u32, hid: EntryId| s <= held && self.by_author.get(&(x, s)) == Some(&hid);
         let r = self.ack_head_hist.get(&(y, x)).and_then(|h| h.range(lo..=hi).rev().find(|(_, v)| mine(v.0, v.1))).map_or(0, |(_, v)| v.0);
+        // An echo stands until a newer one (a fed member's ack repeats its echo by saying nothing new), so one first
+        // carried by an ack at or before hi is still y's reference in [lo, hi] (lo is an ack of y's own).
         let ech = self
             .echo_refs
             .get(&(y, x))
-            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| (lo..=hi).contains(aseq) && mine(**s, *hid)))
+            .and_then(|r| r.range(..=held).rev().find(|(s, (hid, aseq))| *aseq <= hi && mine(**s, *hid)))
             .map_or(0, |(s, _)| *s);
         r.max(ech)
     }
 
+    /// R3-1: `z`'s references to `y`'s chain in epoch `e` (its acks up to `upto`), capped at the frozen head of z's vote
+    /// on y there, in echo-stability as in vouching. An honest voter never references past its freeze, so this changes
+    /// nothing for one. A faulty voter's acks after its vote can't raise y's prefix past what its vote, and so y's B,
+    /// covers; before its vote they can't either, since a vote dropping them is a provable lie. Gap 2 (b) needs it: a
+    /// leave's B comes from q - 1 of the others' votes, which share 2q - n - 1 members with an echo-stable ack's q - 1
+    /// referencers, one at n = 4, possibly the faulty one (a kick listing its target's own vote likewise).
+    fn capped_ref(&self, z: MemberId, y: MemberId, e: u32, upto: u32) -> u32 {
+        let r = self.ref_in(z, y, e, upto);
+        match self.vote_on(z, y, e) {
+            Some((_, f)) => r.min(f),
+            None => r,
+        }
+    }
+
     /// Carry-over, one level (direction 1): `y`'s echo-stable prefix in epoch `ctx`: the rank statistic of its
-    /// members over their raw references to y's chain in their acks of that epoch.
+    /// members over their raw references to y's chain in their acks of that epoch (each capped at its vote, R3-1).
     pub(super) fn es_in(&self, y: MemberId, ctx: &Ctx) -> u32 {
-        let mut v: Vec<u32> = ctx.members.iter().filter(|&&z| z != y).map(|&z| self.ref_in(z, y, ctx.epoch, u32::MAX)).collect();
+        let mut v: Vec<u32> = ctx.members.iter().filter(|&&z| z != y).map(|&z| self.capped_ref(z, y, ctx.epoch, u32::MAX)).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
         v.get(ctx.rank()).copied().unwrap_or(0)
+    }
+
+    /// Carry-over, two levels (Q2, ruled m0813b922e026, @design-reviewer mdda9e1fc9de6): `y`'s echo-stable prefix in
+    /// epoch `ctx` for a vouch that counts entries now: its members' references to y's chain, each member u's acks read
+    /// only up to u's raw prefix there (`esr`, from the others' raw acks: `es_in`). A member removed later can't push y's
+    /// prefix past the final one with raw acks beyond its B: an ack of u echo-stable in E has q - 1 referencers, u's
+    /// removal >= q voters, and 2q - n >= t + 1 of them are shared, an honest one among them, whose frozen head covers
+    /// the ack. So every input used now is in the final term's, which caps a removed member at its B and the others at
+    /// their end of E (never at a final raw prefix, which can still fall).
+    pub(super) fn es_two(&self, y: MemberId, ctx: &Ctx, esr: &BTreeMap<MemberId, u32>) -> u32 {
+        let mut v: Vec<u32> = ctx.members.iter().filter(|&&u| u != y).map(|&u| self.capped_ref(u, y, ctx.epoch, esr.get(&u).copied().unwrap_or(0))).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(ctx.rank()).copied().unwrap_or(0)
+    }
+
+    /// Carry-over, finality (Q1, ruled m0813b922e026): `y`'s first ack of epoch `next` is fixed once `next`'s members,
+    /// with `next`'s quorum, reference y's chain at or past it, read from their acks of `next` or any later epoch (a
+    /// removed member's up to its B). One membership keeps rule 1's one-version argument (two quorums of it share an
+    /// honest member, which references one version); later epochs' acks still close a short epoch. Read with a later
+    /// epoch's membership instead, an equivocator could be fixed on two versions at two replicas.
+    fn es_from(&self, y: MemberId, next: &Ctx) -> u32 {
+        let mut v: Vec<u32> = next.members.iter().filter(|&&z| z != y).map(|&z| self.ref_from(z, y, next.epoch)).collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.get(next.rank()).copied().unwrap_or(0)
     }
 
     /// Carry-over: `x`'s vouched prefix in epoch `ctx` (vouch_E): the rank statistic of its members over their
     /// references to x's chain in their acks of that epoch up to their own echo-stable prefix there (`es`), each
     /// capped at its vote's frozen head in that epoch (R3-1).
     pub(super) fn vouch_in(&self, x: MemberId, ctx: &Ctx, es: &BTreeMap<MemberId, u32>) -> u32 {
-        let mut v: Vec<u32> = ctx
-            .members
-            .iter()
-            .filter(|&&y| y != x)
-            .map(|&y| {
-                let r = self.ref_in(y, x, ctx.epoch, es.get(&y).copied().unwrap_or(0));
-                match self.vote_on(y, x, ctx.epoch) {
-                    Some((_, f)) => r.min(f),
-                    None => r,
-                }
-            })
-            .collect();
+        let mut v: Vec<u32> = ctx.members.iter().filter(|&&y| y != x).map(|&y| self.capped_ref(y, x, ctx.epoch, es.get(&y).copied().unwrap_or(0))).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
         v.get(ctx.rank()).copied().unwrap_or(0)
     }
@@ -341,20 +388,13 @@ impl WorldSim {
     /// epoch alone, a short one (the next change deciding before the others' acks of it reference that first ack)
     /// never closed the epoch (cutfix-shrink, -left, -move).
     pub(super) fn epoch_final(&self, ctx: &Ctx) -> bool {
-        if ctx.epoch >= self.epoch {
-            return false;
-        }
+        let Some(next) = (ctx.epoch < self.epoch).then(|| self.ctx(ctx.epoch + 1)).flatten() else { return false };
         ctx.members.iter().all(|&y| {
             let removed = self.removed_in.get(&y).copied();
             let ended_at_b = removed.is_some_and(|r| r > ctx.epoch) && self.bound.get(&y).is_some_and(|&b| self.contiguous.get(&y).copied().unwrap_or(0) >= b);
             match self.ack_epoch_from.get(&y).and_then(|a| a.get(&(ctx.epoch + 1))) {
                 _ if removed == Some(ctx.epoch + 1) => ended_at_b,
-                Some(&first) => {
-                    ended_at_b || {
-                        let last = removed.map_or(self.epoch, |r| r - 1).min(self.epoch);
-                        (ctx.epoch + 1..=last).rev().any(|k| self.ctx(k).is_some_and(|c| c.members.contains(&y) && self.es_in(y, &c) >= first))
-                    }
-                }
+                Some(&first) => ended_at_b || self.es_from(y, &next) >= first,
                 None => ended_at_b,
             }
         })
@@ -371,16 +411,30 @@ impl WorldSim {
                 let b = self.bound.get(&y).copied();
                 let ended_at_b = removed.is_some_and(|r| r > ctx.epoch) && b.is_some_and(|b| held >= b);
                 let first = self.ack_epoch_from.get(&y).and_then(|a| a.get(&(ctx.epoch + 1))).copied();
-                let last = removed.map_or(self.epoch, |r| r - 1).min(self.epoch);
-                let es: Vec<(u32, u32)> = (ctx.epoch + 1..=last).filter_map(|k| self.ctx(k).filter(|c| c.members.contains(&y)).map(|c| (k, self.es_in(y, &c)))).collect();
+                let es = self.ctx(ctx.epoch + 1).map(|c| self.es_from(y, &c));
                 let ok = match first {
                     _ if removed == Some(ctx.epoch + 1) => ended_at_b,
-                    Some(f) => ended_at_b || es.iter().any(|&(_, v)| v >= f),
+                    Some(f) => ended_at_b || es.is_some_and(|v| v >= f),
                     None => ended_at_b,
                 };
-                (!ok).then(|| format!("m{y} (removed in {removed:?}, B {b:?}, held {held}, first ack of {} {first:?}, es in later epochs {es:?})", ctx.epoch + 1))
+                (!ok).then(|| format!("m{y} (removed in {removed:?}, B {b:?}, held {held}, first ack of {} {first:?}, referenced to {es:?} with {}'s quorum)", ctx.epoch + 1, ctx.epoch + 1))
             })
             .collect()
+    }
+
+    /// Carry-over, the final term (Q2, ruled m0813b922e026): how far each member's acks of epoch `ctx` are read: all of
+    /// them, to its B if removed and to its end of the epoch otherwise (`ack_range`), never to a final raw prefix. Every
+    /// input a vouch used before (two levels: up to es_two, at most es_raw, at most B by the voter overlap) is among
+    /// these, so no counted entry falls past the cut; and at 3 players an entry D54 counted and confirmed (both others'
+    /// raw acks name it) stays within it (leave-s4-rejoin: read to the final raw prefix, the cut fell below one, since
+    /// the leaver's acks up to its B made the fed member's later acks unstable). (spike: PE_ONE_LEVEL=1 reads to the
+    /// final raw prefix, as the build before Q2 did.)
+    pub(super) fn final_reads(&self, ctx: &Ctx) -> BTreeMap<MemberId, u32> {
+        if one_level() {
+            ctx.members.iter().map(|&y| (y, self.es_in(y, ctx))).collect()
+        } else {
+            ctx.members.iter().map(|&y| (y, u32::MAX)).collect()
+        }
     }
 
     /// Carry-over: removed member `x`'s cut, the largest final vouch over its epochs, once every one is final (and
@@ -400,7 +454,7 @@ impl WorldSim {
                     if !self.epoch_final(&ctx) {
                         return None;
                     }
-                    let es: BTreeMap<MemberId, u32> = ctx.members.iter().map(|&y| (y, self.es_in(y, &ctx))).collect();
+                    let es = self.final_reads(&ctx);
                     let v = self.vouch_in(x, &ctx, &es);
                     self.final_vouch.insert((x, e), v);
                     v
@@ -886,7 +940,7 @@ impl WorldSim {
             {
                 let (per, without_left) = match self.ctx(at) {
                     Some(c) => {
-                        let es: BTreeMap<MemberId, u32> = c.members.iter().map(|&y| (y, self.es_in(y, &c))).collect();
+                        let es = self.final_reads(&c);
                         let per: Vec<(MemberId, Option<u32>, u32, bool)> = c
                             .members
                             .iter()
@@ -930,6 +984,24 @@ impl WorldSim {
         self.entries.iter().filter(|(id, e)| e.member == x && e.seq > cut && self.verdicts.get(id) == Some(&true)).map(|(_, e)| (e.seq, e.stamp)).collect()
     }
 
+    /// (spike diagnostics) The newest seq of `x`'s chain counted here (rule 1's verdict true), and the first seq of it
+    /// stamped at or after `frame`.
+    pub fn counted_upto(&self, x: MemberId, frame: u64) -> (u32, Option<u32>) {
+        let counted = self.entries.iter().filter(|(id, e)| e.member == x && self.verdicts.get(id) == Some(&true)).map(|(_, e)| e.seq).max().unwrap_or(0);
+        let from = self.entries.values().filter(|e| e.member == x && e.stamp >= frame).map(|e| e.seq).min();
+        (counted, from)
+    }
+
+    /// (spike diagnostics) Whether epoch `e` is final here: None before it ends, else the members holding it open (empty
+    /// once final), each with why (`epoch_blockers`).
+    pub fn epoch_open(&self, e: u32) -> Option<Vec<String>> {
+        let ctx = self.ctx(e)?;
+        if e >= self.epoch {
+            return None;
+        }
+        Some(if self.epoch_final(&ctx) { Vec::new() } else { self.epoch_blockers(&ctx) })
+    }
+
     /// (spike diagnostics) A removed member's final cut here, once held (`cut_done`).
     pub fn final_cut(&self, x: MemberId) -> Option<u32> {
         self.evicted.get(&x).filter(|_| self.cut_done.contains(&x)).map(|&(c, _)| c)
@@ -955,7 +1027,10 @@ impl WorldSim {
         let mut newest = newest;
         let (caps, rnewest) = self.removed_caps();
         newest.extend(rnewest);
-        // Carry-over: per epoch, each member's echo-stable prefix there (one level), and each author's vouch there.
+        // Carry-over: per epoch, each member's echo-stable prefix there, two levels (Q2: each referencer's acks up to its
+        // raw prefix), and each author's vouch there from them. (spike: PE_ONE_LEVEL=1 counts with the raw prefixes
+        // instead, as the build before Q2 did, to show what the premise-1 cell does without the fix.)
+        let one_level = one_level();
         let mut es_at: BTreeMap<u32, BTreeMap<MemberId, u32>> = BTreeMap::new();
         let mut vouch_at: BTreeMap<(MemberId, u32), u32> = BTreeMap::new();
         let mut ctxs: BTreeMap<u32, Option<Ctx>> = BTreeMap::new();
@@ -1017,6 +1092,9 @@ impl WorldSim {
                 match self.window_mode(stamp / WINDOW) {
                     None => continue,
                     Some(false) => {
+                        if cut_trace() && verdict_author() == Some(e.member) {
+                            eprintln!("VERDICT m{} now {} conf {} epoch {}: m{} s{} stamp {} counts in a D54 window ({})", self.me, self.now, self.conf, self.epoch, e.member, e.seq, stamp, stamp / WINDOW);
+                        }
                         self.pending.remove(&(stamp, id));
                         self.verdicts.insert(id, !self.is_void(id));
                         continue;
@@ -1044,7 +1122,9 @@ impl WorldSim {
                                     match c {
                                         Some(c) if c.members.contains(&e.member) => {
                                             if !es_at.contains_key(&ee) {
-                                                let m: BTreeMap<MemberId, u32> = c.members.iter().map(|&y| (y, self.es_in(y, &c))).collect();
+                                                let esr: BTreeMap<MemberId, u32> = c.members.iter().map(|&y| (y, self.es_in(y, &c))).collect();
+                                                let m: BTreeMap<MemberId, u32> =
+                                                    if one_level { esr } else { c.members.iter().map(|&y| (y, self.es_two(y, &c, &esr))).collect() };
                                                 es_at.insert(ee, m);
                                             }
                                             let v = self.vouch_in(e.member, &c, &es_at[&ee]);

@@ -2179,7 +2179,10 @@ pub struct WorldSim {
     /// matched my version. Read only by echo-stability (`matched_ref`): never holders, D54 stability or votes.
     echo_refs: BTreeMap<(MemberId, MemberId), BTreeMap<u32, (EntryId, u32)>>,
     /// A fed member's newest echo not yet checked (I don't hold every checkpoint it names yet).
-    echo_pending: BTreeMap<MemberId, (Vec<(MemberId, u64)>, u64, u32)>,
+    /// Each fed member's echoes not yet checked, by the seq of the ack that carried each (every one is checked: keeping
+    /// only the newest left a replica that caught up in a burst without the older ones, so the final term's references
+    /// differed between replicas; leave-s4-rejoin's spectator cut member 2 at 58, the members at 96).
+    echo_pending: BTreeMap<MemberId, BTreeMap<u32, (Vec<(MemberId, u64)>, u64)>>,
     /// Members my log shows on the feed (their newest ack carries an anchor), with the block of their echo
     /// of my chain (TLP-23).
     fed_peers: BTreeMap<MemberId, Option<u64>>,
@@ -2936,15 +2939,23 @@ impl WorldSim {
         if let Some(p0) = self.hold_horizon_below {
             horizon = horizon.min(p0.saturating_sub(1));
         }
-        let e = Entry {
-            member: self.me,
-            seq: self.my_seq + 1,
-            prev: self.my_last,
-            stamp,
-            payload: Payload::Ack { horizon, heads, check, epoch: self.fake_ack_epoch.unwrap_or(self.epoch), fed: self.fed_ack() },
-            carried: None,
-            link: 0,
-        };
+        let fed = self.fed_ack();
+        let epoch = self.fake_ack_epoch.unwrap_or(self.epoch);
+        // Part B: my own echo is my reference too, as every receiver records it once it checks out (`retry_echoes`, with
+        // the same R3-1 rule by chain order), so a fed member's copy of the final term reads the references the others'
+        // do (leave-s4-rejoin: member 3 cut 2 at 58 from its stale ack heads alone, the others at 96).
+        if let Some(fa) = fed.as_ref().filter(|fa| !fa.echo.is_empty()) {
+            let aseq = self.my_seq + 1;
+            for &(x, _) in &fa.echo {
+                if let (Some(&s), Some(&(_, id))) = (self.echo_seq.get(&x), self.echo_last.get(&x)) {
+                    if self.vote_on(self.me, x, epoch).is_some_and(|(vs, _)| vs < aseq) {
+                        continue;
+                    }
+                    self.echo_refs.entry((self.me, x)).or_default().entry(s).and_modify(|v| v.1 = v.1.min(aseq)).or_insert((id, aseq));
+                }
+            }
+        }
+        let e = Entry { member: self.me, seq: self.my_seq + 1, prev: self.my_last, stamp, payload: Payload::Ack { horizon, heads, check, epoch, fed }, carried: None, link: 0 };
         self.publish(e)
     }
 
@@ -3007,7 +3018,13 @@ impl WorldSim {
         let (member, seq) = (e.member, e.seq);
         // Part B, rule 1: a judged entry waits for its verdict from its arrival, held behind a hole in its author's
         // chain or not (rule 1 can decide such an entry void; it counts only once validated and vouched).
-        let judged_now = (self.localized() || self.fed_mode_capable())
+        // F2 at arrival too: an entry of an earlier epoch waits for its verdict whatever my membership is now, since it is
+        // judged with its own epoch's (`decide_verdicts`: an epoch of 2 keeps D54). Keyed on my current membership, a
+        // replica that took an n = 3 epoch's entries only after moving to n = 2 (a fed member replaying the log after a
+        // leave) counted them all, while those that held them pending voided some by rule 1 (leave-s4-rejoin: member 1's
+        // s107 to s155, void at 1 and 102, counted at 3).
+        let judged_now = self.cfg.localize
+            && (self.localized() || self.fed_mode_capable() || self.entry_epoch(e.member, e.seq) < self.epoch)
             && localize::judged(&e.payload)
             && (self.members.contains(&e.member) || self.evicted.contains_key(&e.member))
             && !self.verdicts.contains_key(&id);
@@ -3237,7 +3254,7 @@ impl WorldSim {
                             self.fed_peers.insert(m, fa.echo.iter().find(|&&(x, _)| x == self.me).map(|&(_, b)| b));
                             let now = self.now;
                             self.fed_seen.entry(m).or_insert(now);
-                            self.echo_pending.insert(m, (fa.echo, fa.digest, e.seq));
+                            self.echo_pending.entry(m).or_default().insert(e.seq, (fa.echo, fa.digest));
                             self.retry_echoes();
                         }
                         // The same echo as m's previous ack.
@@ -3253,7 +3270,8 @@ impl WorldSim {
                                 self.ckpt_sent.remove(&m);
                                 self.ckpt_first_sent.retain(|&(f, _), _| f != m);
                             }
-                            self.echo_pending.remove(&m);
+                            // (Its echoes still pending stay: each is checked once I hold what it names, whenever that is,
+                            // so every replica ends with the same references.)
                         }
                     }
                 }
@@ -3608,6 +3626,24 @@ impl WorldSim {
         self.votes.get(&m).is_some_and(|v| v.contains_key(&self.me))
     }
 
+    /// Carry-over, gap 2 (b) (@coordinator-opus m0813b922e026): a leave's B comes from the others' votes on it, each
+    /// frozen at the voter's head of the leaver's chain, which it holds; not from the leaver's own head, which a dead
+    /// uplink may never deliver (leave-s4: the members held member 2's chain to 107, its leave froze 166). So with Part
+    /// B I vote on every leave I hold, once per epoch (a leave stands across a reset; votes don't).
+    pub(super) fn leave_votes_due(&mut self) -> Vec<Entry> {
+        if !self.cfg.localize || self.withhold_vc || !self.members.contains(&self.me) {
+            return Vec::new();
+        }
+        let leavers: Vec<MemberId> = self.leaves.keys().copied().filter(|&x| x != self.me && self.members.contains(&x)).collect();
+        let mut out = Vec::new();
+        for x in leavers {
+            if !self.voted(x) {
+                out.extend(self.freeze_and_vote(x, 0, 0));
+            }
+        }
+        out
+    }
+
     /// Freeze what this member will ever reference of m's chain in this epoch, and say so in a
     /// vote. `k0` is the disputed seq of a proof, or 0 for a member presumed crashed or too slow.
     fn freeze_and_vote(&mut self, m: MemberId, k0: u32, kick: EntryId) -> Option<Entry> {
@@ -3700,6 +3736,7 @@ impl WorldSim {
                 }
             }
         }
+        out.extend(self.leave_votes_due());
         // A proof outlives an epoch that did not remove its member: vote again.
         let proven: Vec<(MemberId, u32)> = self
             .proofs
@@ -4154,7 +4191,7 @@ impl WorldSim {
         let mut lat: Vec<(MemberId, BTreeSet<MemberId>, u32)> = c
             .remove
             .iter()
-            .filter(|r| r.kick == 0 && r.votes.len() == 1)
+            .filter(|r| r.kick == 0 && !r.votes.is_empty())
             .filter_map(|r| match self.entries.get(&r.votes[0]).map(|e| (e.member, &e.payload)) {
                 Some((m, Payload::Vote { target, seq, epoch, kick: 0, .. })) if m == r.member && *target == r.member => latency_leave_fed(*seq).map(|f| (r.member, f, *epoch)),
                 _ => None,
@@ -4610,7 +4647,12 @@ impl WorldSim {
             }
             admin.push((id, ok));
         }
-        let targets: Vec<MemberId> = self.votes.keys().copied().filter(|x| run.members.contains(x)).collect();
+        // Carry-over, gap 2 (b): with Part B a leaver is removed by its leave alone (below). The others' votes on it are
+        // cast because it asked (`leave_votes_due`); listed as suspicion votes they would skip plan (A)'s order and
+        // region check. (A latency leave left out shares its change with the removal that ended its region, and is void
+        // once that decides, so a crashed one is then voted out as any other member.)
+        let targets: Vec<MemberId> =
+            self.votes.keys().copied().filter(|x| run.members.contains(x) && !(self.cfg.localize && self.leaves.contains_key(x))).collect();
         // Review VC3R-1/2 (round 4): a removal a quorum has voted for, which waits only for entries this
         // replica is still fetching, must not be overtaken by a reset.
         let mut waiting = false;
@@ -4657,7 +4699,23 @@ impl WorldSim {
                     continue;
                 }
             }
-            remove.push(Removal { member: x, votes: vec![id], cut: frozen, kick: 0 });
+            // Carry-over, gap 2 (b): with Part B, and q - 1 of the others' votes on it, whose frozen heads give its B. With
+            // the leave they make q; a member both among an echo-stable ack's q - 1 referencers and among the voters froze
+            // at or past it (its vote can't drop its own reference, R3-1), and the two sets share 2q - n - 1 >= 1 of the
+            // n - 1 others at n >= 4 (both others at n = 3). So a withholding liar still can't block a leave.
+            let votes = if self.cfg.localize {
+                let mut usable = self.removal_votes(x, &base, false);
+                usable.retain(|(v, r)| *v != x && self.head_held(x, r.frozen));
+                if usable.len() + 1 < q {
+                    let raw = self.votes.get(&x).map_or(0, |v| v.keys().filter(|&&m| m != x && base.contains(&m)).count());
+                    waiting |= raw + 1 >= q;
+                    continue;
+                }
+                std::iter::once(id).chain(usable.iter().map(|(_, r)| r.id)).collect()
+            } else {
+                vec![id]
+            };
+            remove.push(Removal { member: x, votes, cut: frozen, kick: 0 });
             run.members.remove(&x);
             run.roles.remove(&x);
         }
@@ -4706,7 +4764,9 @@ impl WorldSim {
             let ghosts = round3 && self.fixes_off & fix::VCR1 == 0;
             let reset = stale_caps || self.votes.iter().any(|(y, vs)| {
                 let heard = self.heard.get(y).copied().unwrap_or(0);
+                // Carry-over, gap 2 (b): votes on a member that has asked to leave wait for its leave, not a reset.
                 !proven.contains(y)
+                    && !(self.cfg.localize && self.leaves.contains_key(y))
                     && now < heard + self.cfg.suspect_after
                     && vs.values().any(|r| r.kick == 0 || (ghosts && !self.kick_live(*y, r.kick) && now >= r.at + self.cfg.suspect_after))
                     && vs.get(&self.me).is_none_or(|r| heard > r.stamp)
@@ -4893,13 +4953,43 @@ impl WorldSim {
         for r in &c.remove {
             let x = r.member;
             // Revision 22: a member's own leave request removes it on its own, cut at the head it froze.
-            if r.kick == 0 && r.votes.len() == 1 && self.leaves.get(&x) == Some(&r.votes[0]) {
+            if r.kick == 0 && r.votes.first().is_some_and(|v| self.leaves.get(&x) == Some(v)) && (r.votes.len() == 1 || self.cfg.localize) {
                 let frozen = match self.entries.get(&r.votes[0]).map(|e| &e.payload) {
                     Some(Payload::Vote { frozen, .. }) => *frozen,
                     _ => return Some(false),
                 };
                 if !self.members.contains(&x) || !seen.insert(x) || !run.members.contains(&x) || r.cut != frozen {
                     return Some(false);
+                }
+                // Carry-over, gap 2 (b): with Part B, q - 1 votes of the others on it, each checked as a removal's vote.
+                if self.cfg.localize {
+                    if r.votes.len() < q {
+                        return Some(false);
+                    }
+                    let mut voters = BTreeSet::new();
+                    for &vid in &r.votes[1..] {
+                        let e = self.entries.get(&vid)?.clone();
+                        let Payload::Vote { epoch, target, frozen, kick, .. } = e.payload else { return Some(false) };
+                        if epoch != self.epoch || target != x || e.member == x || kick != 0 || !base.contains(&e.member) || !voters.insert(e.member) {
+                            return Some(false);
+                        }
+                        match self.votes.get(&x).and_then(|v| v.get(&e.member)) {
+                            Some(rec) if rec.id == vid => {}
+                            Some(_) => return Some(false),
+                            None => return None,
+                        }
+                        match self.vote_check(x, e.member, frozen) {
+                            VoteCheck::Valid => {}
+                            VoteCheck::Missing => return None,
+                            VoteCheck::Lie(ack) => {
+                                self.on_lie(e.member, ack, vid);
+                                return Some(false);
+                            }
+                        }
+                        if self.fixes_off & fix::VCR2 == 0 && !self.head_held(x, frozen) {
+                            return None;
+                        }
+                    }
                 }
                 continue;
             }
@@ -5352,12 +5442,14 @@ impl WorldSim {
             self.members.remove(&r.member);
             self.roles.remove(&r.member);
             self.removed_in.insert(r.member, self.epoch + 1);
-            // Carry-over, hole 2: B, the highest frozen head of its chain among the listed votes (validated, so held).
+            // Carry-over, hole 2: B, the highest frozen head of its chain among the listed votes (held, `try_decide`), the
+            // voters' only (gap 2 (b)): never its own vote's (a leave's or a self-kick's), its own head, which a dead
+            // uplink may never deliver.
             let b = r
                 .votes
                 .iter()
-                .filter_map(|id| match self.entries.get(id).map(|e| &e.payload) {
-                    Some(Payload::Vote { frozen, .. }) => Some(frozen.0),
+                .filter_map(|id| match self.entries.get(id).map(|e| (e.member, &e.payload)) {
+                    Some((voter, Payload::Vote { frozen, .. })) if voter != r.member => Some(frozen.0),
                     _ => None,
                 })
                 .max()
