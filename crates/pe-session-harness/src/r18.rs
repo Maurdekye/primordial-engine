@@ -358,6 +358,9 @@ pub fn capped(o: &Opts) {
                 "RESULT     controller on member 1: time at each level (hand stride {:?}, acks every {:?} frames): {:?} ms",
                 HAND_STRIDE, ACK_FRAMES, l
             );
+            if let Some((sm, _)) = o.slow.filter(|&(sm, _)| sm != 1) {
+                println!("RESULT     controller on member {sm}, the slow member: time at each level: {:?} ms", sim.replica(sm, 1).level_ms);
+            }
         }
     }
 }
