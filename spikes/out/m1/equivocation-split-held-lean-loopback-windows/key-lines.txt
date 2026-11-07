@@ -1,0 +1,31 @@
+[m1 t=8252ms f=495] SEEN member 3 touch seq 234 version 2 (e256ac57a598a81a), stamped 479, at my conf 476, frame 495
+[m1 t=8254ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 1, max depth 16) hashes 479=122e38f2 480=c9170ba4 481=ffb73a2b 482=1a47d920 483=2c61cc31 484=c54ce1d7 485=b7
+[m1 t=8254ms f=495] [w1 m1 f495 c476] EQUIVOCATION proof: member 3 signed two versions of seq 234 (e4754e902f923477 / 98d8522d647c7a03)
+[m1 t=8262ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 2, max depth 16) hashes 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485=be
+[m1 t=8724ms f=523] TRACE at frame 523 conf 478: rollback (resimulated 27 frames; rollbacks 3, max depth 26) hashes 497=71791b59 498=12471949 499=8499f253 500=4929cf89 | obj 0 velocity [4.401, -1.077,
+[m1 t=8742ms f=524] TRACE at frame 524 conf 478: rollback (resimulated 8 frames; rollbacks 4, max depth 26) | obj 0 velocity [4.401, -1.243, -0.745]
+[m1 t=33146ms f=1988] FINAL: member Some(3) touch seq 234: version 1 counts, version 2 withdrawn (removed with its chain cut at seq 243, from frame 494)
+[m1 t=33146ms f=1988] TRACE FINAL (conf 1976): hashes 474=3d99a3f4 475=a7947d4e 476=f62445b7 477=650420e3 478=474c2ca9 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485
+[m2 t=8253ms f=495] SEEN member 3 touch seq 234 version 2 (e256ac57a598a81a), stamped 479, at my conf 476, frame 495
+[m2 t=8254ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 1, max depth 16) hashes 479=122e38f2 480=c9170ba4 481=ffb73a2b 482=1a47d920 483=2c61cc31 484=c54ce1d7 485=b7
+[m2 t=8254ms f=495] [w1 m2 f495 c476] EQUIVOCATION proof: member 3 signed two versions of seq 234 (e4754e902f923477 / 98d8522d647c7a03)
+[m2 t=8263ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 2, max depth 16) hashes 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485=be
+[m2 t=8909ms f=534] TRACE at frame 534 conf 520: rollback (resimulated 38 frames; rollbacks 3, max depth 37) hashes 497=71791b59 498=12471949 499=8499f253 500=4929cf89 | obj 0 velocity [4.401, -2.910,
+[m2 t=33145ms f=1988] FINAL: member Some(3) touch seq 234: version 1 counts, version 2 withdrawn (removed with its chain cut at seq 243, from frame 494)
+[m2 t=33145ms f=1988] TRACE FINAL (conf 1976): hashes 474=3d99a3f4 475=a7947d4e 476=f62445b7 477=650420e3 478=474c2ca9 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485
+[m3 t=7986ms f=479] EQUIVOCATE (scripted split): my seq 234 at frame 479 (my conf 476): version A e4754e902f923477 to the others, version B 98d8522d647c7a03 to members {4}
+[m3 t=8251ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 18 frames; rollbacks 1, max depth 15) hashes 479=122e38f2 480=c9170ba4 481=ffb73a2b 482=1a47d920 483=2c61cc31 484=c54ce1d7 485=b7
+[m3 t=8251ms f=495] [w1 m3 f494 c476] EQUIVOCATION proof: member 3 signed two versions of seq 234 (e4754e902f923477 / 98d8522d647c7a03)
+[m3 t=8256ms f=495] SEEN member 3 touch seq 234 version 2 (af2245f268ffc5a1), stamped 479, at my conf 476, frame 495
+[m3 t=8264ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 2, max depth 16) hashes 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485=be
+[m3 t=8394ms f=503] TRACE at frame 503 conf 476: rollback (resimulated 7 frames; rollbacks 3, max depth 16) hashes 497=71791b59 498=12471949 499=8499f253 500=4929cf89 | obj 0 velocity [4.401, 2.257, -
+[m4 t=8248ms f=494] TRACE at frame 494 conf 476: rollback (resimulated 18 frames; rollbacks 1, max depth 15) hashes 479=122e38f2 480=c9170ba4 481=ffb73a2b 482=1a47d920 483=2c61cc31 484=c54ce1d7 485=b7
+[m4 t=8248ms f=494] [w1 m4 f494 c476] EQUIVOCATION proof: member 3 signed two versions of seq 234 (98d8522d647c7a03 / 6528ae7b313c2667)
+[m4 t=8371ms f=502] SEEN member 3 touch seq 234 version 2 (af2245f268ffc5a1), stamped 479, at my conf 476, frame 502
+[m4 t=8416ms f=504] TRACE at frame 504 conf 476: rollback (resimulated 16 frames; rollbacks 2, max depth 16) hashes 488=90b0d461 489=ed1a6d5c 490=5b70929d 491=80b8cbf5 492=9016cbb4 493=e3041b76 494=a4
+[m4 t=8484ms f=509] TRACE at frame 509 conf 476: rollback (resimulated 20 frames; rollbacks 3, max depth 17) hashes 491=1db9dbec 492=c782bcff 493=c4452c60 494=279c0d2a 495=f0645c47 496=50d4e64b 497=88
+[m4 t=8573ms f=514] TRACE at frame 514 conf 480: rollback (resimulated 38 frames; rollbacks 4, max depth 35) hashes 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485=be
+[m4 t=8592ms f=515] TRACE at frame 515 conf 484: rollback (resimulated 7 frames; rollbacks 5, max depth 35) | obj 0 velocity [4.401, 0.257, -0.745]
+[m4 t=8641ms f=518] TRACE at frame 518 conf 484: rollback (resimulated 10 frames; rollbacks 6, max depth 35) | obj 0 velocity [4.401, -0.243, -0.745]
+[m4 t=33146ms f=1988] FINAL: member Some(3) touch seq 234: version 1 withdrawn, version 2 counts (removed with its chain cut at seq 243, from frame 494)
+[m4 t=33146ms f=1988] TRACE FINAL (conf 1976): hashes 474=3d99a3f4 475=a7947d4e 476=f62445b7 477=650420e3 478=474c2ca9 479=22d79413 480=29cd64c9 481=3d9828f8 482=2db78835 483=0c19e2c4 484=4281b90f 485
