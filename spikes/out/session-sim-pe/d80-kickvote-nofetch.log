@@ -1,0 +1,20 @@
+RESULT d80-kickvote-nofetch: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 132 (t=2.30 s) round 0 removed [8]
+RESULT d80-kickvote-nofetch: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 132 (t=2.30 s) round 0 removed [8]
+RESULT d80-kickvote-nofetch: m3 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 132 (t=2.30 s) round 0 removed [8]
+RESULT d80-kickvote-nofetch: removed from the session (cut, from frame): {8: (19, 118)}
+RESULT d80-kickvote-nofetch: 8 kicked, confirmation goes on: m2 world 1 conf 282 members {1, 2, 3} evicted {8: (19, 118)} -> OK
+  bytes: entries 0 msgs 0 B (avg 0 B), acks 703 msgs 90822 B, dropped 34
+  m1 world 1: rollbacks 1 max depth 2 resim frames 2 (1.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 282 frame 293
+  m2 world 1: rollbacks 1 max depth 2 resim frames 2 (1.2 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 282 frame 293
+  m3 world 1: rollbacks 2 max depth 2 resim frames 4 (3.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 24 bad 0 nonfinite 0 conf 282 frame 293
+  m8 world 1: rollbacks 1 max depth 2 resim frames 2 (1.3 ms) overwrites 0 paused frames 45 violations 0 equivocations 0 checks ok 15 bad 0 nonfinite 0 conf 128 frame 248
+RESULT d80-kickvote-nofetch world 1: frames 0..240 digests m1=f492a98437b3d4b6 m2=f492a98437b3d4b6 m3=f492a98437b3d4b6 | offline replay f492a98437b3d4b6 | ALL EQUAL
+  d80-kickvote-nofetch (the kicker's own vote dropped) with KICKVOTE switched off (the behaviour before the fix): every replica equals the replay; m1 conf 118 of frame 238, m2 conf 118 of frame 238, m3 conf 110 of frame 230; at m1: members {1, 2, 3}, evicted [8]
+RESULT d80-kickvote-nofetch without the fix: m1 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 133 (t=2.32 s) round 0 removed [8]
+RESULT d80-kickvote-nofetch without the fix: m2 epoch 1 members {1, 2, 3} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 133 (t=2.32 s) round 0 removed [8]
+RESULT d80-kickvote-nofetch without the fix: m3 epoch 0 members {1, 2, 3, 8} view changes 0 (resets 0, highest round 0) | no decision
+  bytes: entries 0 msgs 0 B (avg 0 B), acks 1103 msgs 164786 B, dropped 212
+  m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 55 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 118 frame 238
+  m2 world 1: rollbacks 1 max depth 2 resim frames 2 (1.4 ms) overwrites 0 paused frames 55 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 118 frame 238
+  m3 world 1: rollbacks 1 max depth 2 resim frames 2 (1.2 ms) overwrites 0 paused frames 63 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 110 frame 230
+  m8 world 1: rollbacks 1 max depth 2 resim frames 2 (1.4 ms) overwrites 0 paused frames 55 violations 0 equivocations 0 checks ok 12 bad 0 nonfinite 0 conf 118 frame 238

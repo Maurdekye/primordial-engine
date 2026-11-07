@@ -1,0 +1,59 @@
+description = """
+D80, the kicker's own vote (fix KICKVOTE): admin 1 kicks 8 at 2 s on 40 ms links. Recording its own \
+kick, 1 votes on 8 at once. With the fix that vote goes out right behind the kick; without it \
+(part 2) it was dropped, and 2, 3 and 8 got it only by fetching the hole it leaves in 1's chain, \
+so the kick was decided later and more fetches were sent."""
+include = ["../common/review.toml"]
+end_ms = 5000
+
+[world.1]
+members = [1, 2, 3, 8]
+
+[world.1.plan]
+1 = [{ at = 60, touch = { obj = 10, impulse = [0.0, 6.0, 0.0] } }, { at = 120, kick = { target = 8 } }]
+2 = [{ at = 240, touch = { obj = 33, impulse = [0.0, 3.0, 0.0] } }]
+
+[net]
+link = { delay_ms = 40, jitter_ms = 5 }
+
+[[report]]
+kind = "view_changes"
+honest = [1, 2, 3]
+label = "d80-kickvote"
+
+[[report]]
+kind = "evicted"
+at = 1
+label = "d80-kickvote"
+
+[[report]]
+kind = "expect"
+at = 2
+members = [1, 2, 3]
+conf_min = 240
+label = "d80-kickvote: 8 kicked, confirmation goes on"
+
+[[report]]
+kind = "traffic"
+
+[[report]]
+kind = "stats"
+
+[[report]]
+kind = "check_world"
+frames = 240
+label = "d80-kickvote"
+skip_evicted_at = 1
+
+# With the fix.
+[[part]]
+
+# Control: the fix off (the vote is dropped, as on main e52c829).
+[[part]]
+world.1.fixes_off = ["KICKVOTE"]
+report = [
+    { kind = "before_fix", honest = [1, 2, 3], label = "d80-kickvote (the kicker's own vote dropped)", fix = "KICKVOTE" },
+    { kind = "view_changes", honest = [1, 2, 3], label = "d80-kickvote without the fix" },
+    { kind = "traffic" },
+    { kind = "stats" },
+]
