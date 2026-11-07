@@ -1,0 +1,50 @@
+RESULT r18 capped: 500-ball pit, 8 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT r18 capped: member 3 is on a slow link: 12 kbit/s to and from every peer
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   batched+adaptive | 204.8 / 127.7 / 184.3 / 103.7 / 155.5 / 137.6 / 125.3 / 117.4 |  493 /  477 /  499 /  477 /  477 /  477 /  477 /  496 |  326 | 180 / 179 / 1518 / 179 / 180 / 179 / 179 / 179 | 299 / 299 / 1625 / 299 / 299 / 299 / 299 / 299 | 12 (own entries moved: 0) | 14.2/s,  10 | 2057 ms | m1 f3f0cf7a00bee1f2 / m2 f3f0cf7a00bee1f2 / m4 f3f0cf7a00bee1f2 / m5 f3f0cf7a00bee1f2 / m6 f3f0cf7a00bee1f2 / m7 f3f0cf7a00bee1f2 / m8 f3f0cf7a00bee1f2 replay f3f0cf7a00bee1f2 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 300.0 / 84.0, m2 299.9 / 84.0, m3 283.1 / 42.0 (13 of 56 unconfirmed), m4 299.9 / 84.0, m5 300.0 / 84.0, m6 300.0 / 84.0, m7 299.9 / 84.0, m8 300.0 / 84.0
+RESULT     member 1's offered bytes by kind: run2+ 117.9 kbit/s (50.0/s x 294 B), (datagram overhead) 53.1 kbit/s (127.6/s x 52 B), entry/hand 18.8 kbit/s (57.4/s x 41 B), ack 14.6 kbit/s (16.4/s x 111 B), fetch 0.4 kbit/s (3.8/s x 14 B)
+RESULT     member 1's entries by part: 
+RESULT     member 1's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 24284.0 (127.6 datagrams/s); total 24284.0
+RESULT     member 1's lean entries received: 2508, explicit form asked for: 0; waited: 14 (mean 142.4, max 280 frames); fetch requests sent (whole run): 112
+RESULT     member 1's rollbacks: 12, max depth 8 frames, frames resimulated 40
+RESULT     member 2's offered bytes by kind: ack 63.3 kbit/s (77.6/s x 102 B), (datagram overhead) 34.4 kbit/s (82.8/s x 52 B), run2+ 29.4 kbit/s (1.6/s x 2244 B), fetch 0.5 kbit/s (4.1/s x 14 B), (batch framing) 0.0 kbit/s (0.5/s x 5 B)
+RESULT     member 2's entries by part: 
+RESULT     member 2's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 15756.0 (82.8 datagrams/s); total 15756.0
+RESULT     member 2's lean entries received: 2482, explicit form asked for: 0; waited: 24 (mean 137.0, max 234 frames); fetch requests sent (whole run): 120
+RESULT     member 2's rollbacks: 52, max depth 10 frames, frames resimulated 205
+RESULT     member 3's offered bytes by kind: (datagram overhead) 90.8 kbit/s (218.3/s x 52 B), ack 68.7 kbit/s (93.7/s x 91 B), fetch 23.7 kbit/s (212.8/s x 13 B), (batch framing) 1.2 kbit/s (29.0/s x 5 B)
+RESULT     member 3's entries by part: 
+RESULT     member 3's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 41548.0 (218.3 datagrams/s); total 41548.0
+RESULT     member 3's lean entries received: 523, explicit form asked for: 143; waited: 53 (mean 119.7, max 244 frames); fetch requests sent (whole run): 1050
+RESULT     member 3's rollbacks: 43, max depth 115 frames, frames resimulated 587
+RESULT     member 4's offered bytes by kind: ack 64.1 kbit/s (77.9/s x 102 B), (datagram overhead) 34.2 kbit/s (82.2/s x 52 B), run2+ 4.9 kbit/s (0.8/s x 754 B), fetch 0.5 kbit/s (4.1/s x 14 B), (batch framing) 0.0 kbit/s (0.5/s x 5 B)
+RESULT     member 4's entries by part: 
+RESULT     member 4's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 15652.0 (82.2 datagrams/s); total 15652.0
+RESULT     member 4's lean entries received: 2485, explicit form asked for: 0; waited: 20 (mean 106.9, max 214 frames); fetch requests sent (whole run): 113
+RESULT     member 4's rollbacks: 52, max depth 10 frames, frames resimulated 205
+RESULT     member 5's offered bytes by kind: ack 63.3 kbit/s (77.6/s x 102 B), run2+ 56.8 kbit/s (2.7/s x 2599 B), (datagram overhead) 34.9 kbit/s (83.9/s x 52 B), fetch 0.5 kbit/s (4.1/s x 14 B), (batch framing) 0.0 kbit/s (0.5/s x 5 B)
+RESULT     member 5's entries by part: 
+RESULT     member 5's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 15964.0 (83.9 datagrams/s); total 15964.0
+RESULT     member 5's lean entries received: 2483, explicit form asked for: 0; waited: 24 (mean 135.0, max 235 frames); fetch requests sent (whole run): 113
+RESULT     member 5's rollbacks: 52, max depth 10 frames, frames resimulated 218
+RESULT     member 6's offered bytes by kind: ack 62.6 kbit/s (77.3/s x 101 B), run2+ 39.9 kbit/s (2.5/s x 2027 B), (datagram overhead) 34.7 kbit/s (83.3/s x 52 B), fetch 0.5 kbit/s (4.1/s x 14 B), (batch framing) 0.0 kbit/s (0.5/s x 5 B)
+RESULT     member 6's entries by part: 
+RESULT     member 6's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 15860.0 (83.3 datagrams/s); total 15860.0
+RESULT     member 6's lean entries received: 2482, explicit form asked for: 0; waited: 24 (mean 140.2, max 235 frames); fetch requests sent (whole run): 120
+RESULT     member 6's rollbacks: 52, max depth 10 frames, frames resimulated 205
+RESULT     member 7's offered bytes by kind: ack 63.3 kbit/s (77.6/s x 102 B), (datagram overhead) 35.2 kbit/s (84.7/s x 52 B), run2+ 26.0 kbit/s (1.6/s x 1985 B), fetch 0.7 kbit/s (6.0/s x 14 B), (batch framing) 0.0 kbit/s (0.5/s x 5 B)
+RESULT     member 7's entries by part: 
+RESULT     member 7's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 16120.0 (84.7 datagrams/s); total 16120.0
+RESULT     member 7's lean entries received: 2458, explicit form asked for: 0; waited: 22 (mean 132.4, max 233 frames); fetch requests sent (whole run): 114
+RESULT     member 7's rollbacks: 52, max depth 10 frames, frames resimulated 210
+RESULT     member 8's offered bytes by kind: ack 64.1 kbit/s (77.9/s x 102 B), (datagram overhead) 35.0 kbit/s (84.2/s x 52 B), run2+ 17.6 kbit/s (1.4/s x 1610 B), fetch 0.7 kbit/s (6.0/s x 14 B), (batch framing) 0.0 kbit/s (1.1/s x 5 B)
+RESULT     member 8's entries by part: 
+RESULT     member 8's entries: 0.0/s; per entry, B: header 0.0, prev 0.0, head ids 0.0, payload 0.0, sigs 0.0, framing and other messages 0.0, datagram overhead 16016.0 (84.2 datagrams/s); total 16016.0
+RESULT     member 8's lean entries received: 2472, explicit form asked for: 0; waited: 20 (mean 146.3, max 386 frames); fetch requests sent (whole run): 106
+RESULT     member 8's rollbacks: 52, max depth 10 frames, frames resimulated 206
+RESULT     mean confirmation lag per member from the gesture's start, frames: 39.1 / 38.9 / 791.1 / 39.0 / 39.1 / 39.0 / 39.0 / 39.0
+RESULT     member 1's own hand against its target, over 160 gesture frames: mean 298.78 mm, max 829.62 mm
+RESULT     removed from the session (cut, from frame): {3: (58, 208)}
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2602, 100, 100, 100, 100, 21434, 400, 400, 4666] ms
+RESULT     controller on member 3, the slow member: time at each level: [3168, 100, 100, 100, 100, 1717, 2340, 7483, 14793] ms
