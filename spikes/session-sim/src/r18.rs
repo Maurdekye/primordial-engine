@@ -118,7 +118,10 @@ pub fn capped(o: &Opts) {
                 p
             })
             .collect();
-        let mut net = Net::new(Link { delay_us: 50_000, jitter_us: 5_000, loss_pct: 0 }, 17);
+        // (spike, measurement only: PE_R18_DELAY_US=d replaces the 50 ms one-way delay, for the spread of a cell over
+        // small changes; the jitter seed alone moves nothing)
+        let delay_us = std::env::var("PE_R18_DELAY_US").ok().and_then(|v| v.parse().ok()).unwrap_or(50_000);
+        let mut net = Net::new(Link { delay_us, jitter_us: 5_000, loss_pct: 0 }, 17);
         net.default_cap = Some(Cap { rate_bps: o.kbps * 1000 / div, burst_bytes: 4000 / div, max_queue_us: 500_000 });
         if let Some((sm, sk)) = o.slow {
             for &x in &ids {
@@ -430,6 +433,15 @@ pub fn capped(o: &Opts) {
         let ev = sim.replica(1, 1).sim.members_evicted().clone();
         if !ev.is_empty() {
             println!("RESULT     removed from the session (cut, from frame): {ev:?}");
+        }
+        // Link elision (printed only when a live checkpoint went out, so runs with every link are as before).
+        let live: Vec<(u64, u64, u64)> =
+            (1..=n as u32).map(|m| sim.replica(m, 1).sim.stats).map(|s| (s.live_rx, s.live_held, s.live_explicit)).collect();
+        if live.iter().any(|x| x.0 > 0) {
+            println!(
+                "RESULT     live checkpoints per member, received / held behind a hole / asked explicit: {}",
+                live.iter().map(|x| format!("{}/{}/{}", x.0, x.1, x.2)).collect::<Vec<_>>().join("  ")
+            );
         }
         if adapt {
             let l = sim.replica(1, 1).level_ms;

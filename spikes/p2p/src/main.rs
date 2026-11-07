@@ -270,6 +270,19 @@ fn main() {
                             pending_accept.push((id, obj));
                         }
                     }
+                    // Link elision: this spike sends every link, but takes a live checkpoint as session-sim does.
+                    Msg::Live(e) => {
+                        if e.member != sender {
+                            p.forged += 1;
+                            continue;
+                        }
+                        for v in sim.insert_live(sender, e) {
+                            p.send(&Ctl::Session(Msg::Entry(v)));
+                        }
+                        for (_, fm) in sim.take_fetches(now_us() / 1000) {
+                            p.send(&Ctl::Session(fm));
+                        }
+                    }
                     Msg::Fetch { author, from, to } => {
                         let reply = sim.on_fetch(author, from, to);
                         log(format!("fetch request for member {author} seq {from}..={to}: replying with {} entries", reply.len()), sim.frame);

@@ -1,14 +1,15 @@
-PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
+PROVENANCE commit 5b607a96360e, sources fdb5567cafe0f6f0, binary ebc6168c98c8cc73
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 110 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 1 is on a slow link: 8 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  80.6 /  71.3 /  71.3 /  71.3 |  500 /  499 /  499 /  499 |  129 | 6327 / 159 / 159 / 159 | 6447 / 278 / 278 / 278 | 11 (own entries moved: 0) |  9.3/s, 111 | never | m1 52d95ac41dc4639a / m2 52d95ac41dc4639a / m3 52d95ac41dc4639a / m4 52d95ac41dc4639a replay 52d95ac41dc4639a EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 29.3 / 11.1 (50 of 76 unconfirmed), m2 278.2 / 76.6, m3 278.2 / 76.6, m4 278.2 / 76.7
-RESULT     hand entries' confirmation latency P95, frames: m1 28.3, m2 274.2, m3 274.2, m4 274.2
-RESULT     mean confirmation lag per member from the gesture's start, frames: 3210.6 / 20.1 / 20.2 / 20.1
+RESULT   batched+adaptive |  64.3 /  60.7 /  63.2 /  52.9 |  484 /  498 /  499 /  499 |  103 | 6327 / 160 / 160 / 160 | 6447 / 279 / 280 / 279 | 11 (own entries moved: 0) |  8.7/s, 114 | never | m1 52d95ac41dc4639a / m2 52d95ac41dc4639a / m3 52d95ac41dc4639a / m4 52d95ac41dc4639a replay 52d95ac41dc4639a EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 27.2 / 10.8 (47 of 73 unconfirmed), m2 280.1 / 84.1, m3 280.1 / 84.1, m4 280.1 / 84.1
+RESULT     hand entries' confirmation latency P95, frames: m1 26.2, m2 277.1, m3 277.1, m4 277.1
+RESULT     mean confirmation lag per member from the gesture's start, frames: 3210.6 / 20.1 / 20.2 / 20.2
 RESULT     P95 confirmation lag per member from the gesture's start, frames: 6124 / 19 / 19 / 19
 RESULT     member 1's own hand against its target, over 146 gesture frames: mean 296.92 mm, max 861.69 mm
-RESULT     second gesture (40 s after the first): level at its start Some(7); max queue ms per member 332 / 0 / 0 / 0; stalled frames during it 3853 / 0 / 0 / 0; back to real time after it never; hand entries' latency (max / mean) m1 0.0 / -0.0, m2 19.6 / 17.1, m3 19.6 / 17.2, m4 19.5 / 17.2
-RESULT     gesture 3 (40 s after the one before): level at its start Some(8); max queue ms per member 476 / 0 / 0 / 0; stalled frames during it 1234 / 0 / 0 / 0; back to real time after it never; hand entries' latency (max / mean) m1 0.0 / -0.0, m2 14.7 / 11.9, m3 14.6 / 11.9, m4 14.6 / 11.9; member 1's own hand during it: mean -0.00 mm, max 0.00 mm over 0 frames
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2402, 100, 100, 100, 100, 1537, 10235, 42717, 52611] ms
+RESULT     second gesture (40 s after the first): level at its start Some(7); max queue ms per member 265 / 0 / 0 / 0; stalled frames during it 3853 / 0 / 0 / 0; back to real time after it never; hand entries' latency (max / mean) m1 0.0 / -0.0, m2 19.5 / 15.2, m3 19.6 / 15.2, m4 19.6 / 15.2
+RESULT     gesture 3 (40 s after the one before): level at its start Some(8); max queue ms per member 325 / 0 / 0 / 0; stalled frames during it 1234 / 0 / 0 / 0; back to real time after it never; hand entries' latency (max / mean) m1 0.0 / -0.0, m2 14.6 / 11.9, m3 14.6 / 12.0, m4 14.7 / 11.9; member 1's own hand during it: mean -0.00 mm, max 0.00 mm over 0 frames
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 30/5/0  614/32/0  614/32/0  613/32/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2402, 100, 100, 100, 100, 1028, 4089, 40775, 61208] ms

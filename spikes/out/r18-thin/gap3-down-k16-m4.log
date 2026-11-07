@@ -1,15 +1,16 @@
-PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
+PROVENANCE commit 5b607a96360e, sources fdb5567cafe0f6f0, binary ebc6168c98c8cc73
 RESULT r18 capped: 500-ball pit, 4 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 110 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 3 is on a slow link: 16 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  75.0 /  57.8 /  65.5 /  54.8 |  490 /  461 /  435 /  489 |    7 |   0 /   0 /   0 /   0 |  78 /  94 /  78 /  95 | 70 (own entries moved: 0) | 14.8/s,  10 | 0 ms | m1 9ebacb7932e5d9e2 / m2 9ebacb7932e5d9e2 / m3 9ebacb7932e5d9e2 / m4 9ebacb7932e5d9e2 replay 9ebacb7932e5d9e2 EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 78.2 / 21.5, m2 95.0 / 22.6, m3 78.5 / 23.0, m4 95.1 / 22.5
-RESULT     hand entries' confirmation latency P95, frames: m1 70.2, m2 86.0, m3 72.8, m4 86.1
-RESULT     mean confirmation lag per member from the gesture's start, frames: 15.5 / 15.5 / 15.5 / 15.5
+RESULT   batched+adaptive |  70.0 /  54.7 /  66.3 /  54.7 |  497 /  488 /  387 /  437 |    6 |   0 /   0 /   0 /   0 |  97 / 106 /  96 / 102 | 67 (own entries moved: 0) | 14.2/s,  11 | 0 ms | m1 1a9536cbfd3405c1 / m2 1a9536cbfd3405c1 / m3 1a9536cbfd3405c1 / m4 1a9536cbfd3405c1 replay 1a9536cbfd3405c1 EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 97.2 / 23.1, m2 107.0 / 24.0, m3 97.0 / 25.4, m4 103.0 / 23.7
+RESULT     hand entries' confirmation latency P95, frames: m1 86.2, m2 96.0, m3 88.0, m4 92.0
+RESULT     mean confirmation lag per member from the gesture's start, frames: 15.7 / 15.7 / 15.8 / 15.7
 RESULT     P95 confirmation lag per member from the gesture's start, frames: 19 / 18 / 19 / 19
-RESULT     member 1's own hand against its target, over 663 gesture frames: mean 101.06 mm, max 861.69 mm
-RESULT     second gesture (40 s after the first): level at its start Some(5); max queue ms per member 0 / 0 / 122 / 0; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 2 ms; hand entries' latency (max / mean) m1 23.3 / 19.6, m2 23.2 / 19.6, m3 19.6 / 19.3, m4 23.5 / 19.6
-RESULT     gesture 3 (40 s after the one before): level at its start Some(5); max queue ms per member 0 / 0 / 0 / 0; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 19.7 / 19.5, m2 19.7 / 19.4, m3 19.7 / 19.5, m4 19.7 / 19.4; member 1's own hand during it: mean 0.00 mm, max 0.00 mm over 221 frames
-RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2568, 100, 100, 100, 100, 104627, 400, 400, 1507] ms
-RESULT     controller on member 3, the slow member: time at each level: [3256, 100, 43317, 500, 500, 60999, 400, 829, 0] ms
+RESULT     member 1's own hand against its target, over 663 gesture frames: mean 122.24 mm, max 861.69 mm
+RESULT     second gesture (40 s after the first): level at its start Some(5); max queue ms per member 0 / 0 / 121 / 155; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 2 ms; hand entries' latency (max / mean) m1 22.2 / 19.5, m2 23.9 / 19.1, m3 26.1 / 19.9, m4 22.4 / 19.4
+RESULT     gesture 3 (40 s after the one before): level at its start Some(5); max queue ms per member 0 / 0 / 0 / 0; stalled frames during it 0 / 0 / 0 / 0; back to real time after it 0 ms; hand entries' latency (max / mean) m1 19.7 / 19.5, m2 19.7 / 19.4, m3 19.7 / 19.5, m4 19.7 / 19.5; member 1's own hand during it: mean 0.00 mm, max 0.00 mm over 221 frames
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 615/0/0  615/0/0  615/1/0  615/0/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [2568, 100, 100, 100, 100, 104289, 400, 400, 1845] ms
+RESULT     controller on member 3, the slow member: time at each level: [3242, 100, 43050, 500, 500, 61199, 426, 884, 0] ms

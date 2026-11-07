@@ -1,17 +1,18 @@
-PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
+PROVENANCE commit 5b607a96360e, sources fdb5567cafe0f6f0, binary ebc6168c98c8cc73
 RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
 RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
 RESULT r18 capped: member 3 is on a slow link: 24 kbit/s to and from every peer
 RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
-RESULT   batched+adaptive |  87.5 /  53.9 /  25.2 |  499 /  499 /  272 |  259 | 938 / 937 / 1029 | 1058 / 1057 / 1569 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 77fbcecc6b80415d / m2 77fbcecc6b80415d / m3 77fbcecc6b80415d replay 77fbcecc6b80415d EQUAL
-RESULT     hand entries' confirmation latency, frames (max / mean): m1 96.2 / 39.8, m2 96.3 / 39.7, m3 745.3 / 400.4 (118 of 222 unconfirmed)
-RESULT     hand entries' confirmation latency P95, frames: m1 88.2, m2 88.1, m3 740.3
+RESULT   batched+adaptive |  87.4 /  53.8 /  25.1 |  499 /  498 /  367 |  247 | 938 / 937 / 1031 | 1058 / 1057 / 1569 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 77fbcecc6b80415d / m2 77fbcecc6b80415d / m3 77fbcecc6b80415d replay 77fbcecc6b80415d EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 96.3 / 39.8, m2 96.2 / 39.8, m3 688.6 / 400.7 (118 of 222 unconfirmed)
+RESULT     hand entries' confirmation latency P95, frames: m1 88.1, m2 88.2, m3 683.6
 RESULT     mean confirmation lag per member from the gesture's start, frames: 348.3 / 348.2 / 760.6
 RESULT     P95 confirmation lag per member from the gesture's start, frames: 974 / 974 / 1486
 RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     live checkpoints per member, received / held behind a hole / asked explicit: 110/0/0  110/0/0  61/51/0
 RESULT     time on the state feed per member: 0 / 0 / 9935 ms
-RESULT     view changes at member 1: epoch 1 at frame 974 (16.23 s) removed []
+RESULT     view changes at member 1: epoch 1 at frame 971 (16.18 s) removed []
 RESULT     3 players, window modes at member 1 (300 frames each): D54 fed fed ? ? ?
 RESULT     rule 1's echo, per member: echoes matched/mismatched 19/0 19/0 0/0
 RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [29902, 0, 0, 0, 0, 0, 0, 0, 0] ms
-RESULT     controller on member 3, the slow member: time at each level: [15301, 100, 100, 3957, 5100, 5343, 0, 0, 0] ms
+RESULT     controller on member 3, the slow member: time at each level: [15235, 100, 100, 4219, 5100, 5147, 0, 0, 0] ms

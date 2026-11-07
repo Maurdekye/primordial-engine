@@ -2255,7 +2255,7 @@ is fixed once the author's chain is contiguous up to it.
 | `lagprecommit` | 3 acks every 1.5 s; 9 casts no view-change vote; 5 asks to join at 2.8 s | 5 admitted at 2.93 s (before the VCR-12 fix: 3's precommit void, no decision, confirmation stuck at frame 224). Since idle thinning, 3 acks strictly on its grid, never on leaving idle (a fixture) |
 | `aheadlink` | 3 hears only 4's acks for 5 s while the others decide an epoch | 3 kept; its votes against the members ahead remove none of them; confirmation lags up to 313 frames until the link heals (before trust survey #4: 3 removed at 5.25 s) |
 | `aheadlink-long`, `aheadlink-cut` | the same for 30 s; what 3 misses arrives 5 s late, or is lost | 3 never removed; confirmation trails 5-10 s (worst 626 frames), or stops for the whole cut (worst 1831 frames), and recovers |
-| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in two (before the VC3R-2 fix, round 3's strikes voted 1 out in four of the five; five before idle thinning) |
+| `strikeframe` | 9 runs honest code; in each of four windows its last entries reach 2 and 3 late, then it is silent about 3 s; five timings | 1 kept in all five; 9 removed in three (two before link elision moved the borderline 3.05 s / 1000 ms timing; before the VC3R-2 fix, round 3's strikes voted 1 out in four of the five; five before idle thinning) |
 | `aheadshield` | from 2 s 9's acks claim epoch 1, and 9 sends each of its entries to one honest member only, in turn; admin 1 kicks 9 at 6 s | confirmation held (lag 245 frames at the kick); 9 removed at 6.23 s (climbing alone: 6.17 s; rotating alone is harmless, conf 688 of 713); before trust survey #4: voted out at 5.42 s |
 | `fakeref` | 9 silent from 2 s; 8's acks claim 5 more of 9's entries than anyone holds | the silence vote removes 9 at 8.13 s, once VC4R-3's bound ends the spare (before trust survey #4 the withholding rule removed it at 5.25 s) |
 | `capstale` | from 2 s, 9 signs a capped precommit for no proposal in every epoch; admin 1 kicks 9 at 6 s | no reset; confirmation held (lag 210 frames at the kick); 9 removed at 6.17 s (round 4: voted out at 3.15 s; round 3: three resets, then 2.52 s) |
@@ -2850,13 +2850,48 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
         | watcher | 8 | 146 / 147 / **0** | 541 / 1,115 / **0** | 115 / 139 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
 
       * **The link's cost at 2 players.** At 8 kbit/s the other member stalls 762 frames instead of 209, and is back
-        in real time after 12.1 s instead of 3.3 s; at 12 kbit/s it stalls 5 frames instead of 0.
+        in real time after 12.1 s instead of 3.3 s; at 12 kbit/s the thin sweeper itself stalls 5 frames instead of 0, and
+        the other member none (@design-reviewer, found by @ballpit-viz).
         * Each entry grows little: hand entries 47 → 49 B and acks 70 → 71 B, the 8-byte link riding on about every
           fourth entry. But member 1's controller then sends 19-22% more hand entries and acks, which the link can't
           carry [V --by-kind].
         * [I] The controller sits on a threshold there, so a few % of bytes flips a cell between converging and a
           long stall. @item:primordial-engine/r18-controller-cliff-4-more-bytes-flips-a-thin-l will try a retune, or no
           link while a session has 2 members, chosen by measurement.
+        * **Fixed by link elision** (spike/link-elision, docs/r18-link-elision.md) [V spikes/out/r18-thin,
+          spikes/out/r18]. A checkpoint from its author's broadcast goes to full members without its link. A flag
+          says when the link is the prev; otherwise the receiver rebuilds the link from its state after prev. Fetch
+          replies, relays, proofs, view-change and admin entries, and fed members keep the link.
+          * At 2 players and 8 kbit/s the other member is back to 209 stalled frames and 3.3 s, and it stays
+            there at every one-way delay from 48 to 54 ms (342 frames at 46 ms). At 12 kbit/s the thin sweeper's 5
+            frames are back to 0.
+          * r18's slow member (3 players, member 3 at 8 kbit/s, Part A only) moves the other way at 50 ms. The others
+            stall 481 → 697 frames and are back after 7.5 → 11.1 s.
+            * In the same cell as a thin watcher (r18-thin down-k8-m3), over the five delays 46-54 ms, the mean is
+              462 with the link, 490 with only elision's bytes saved (`PE_WHATIF_LIVE=1`), and 523 with elision.
+            * So +6% comes from the bytes moving the controller. The extra 7% is one delay, 50 ms (512 against
+              696), from the holds behind holes [V]; why is [I] (@design-reviewer).
+            * Accepted (@coordinator-opus, 2026-11-07). The shipped 3-player configuration feeds the thin member.
+          * Port note: a held live checkpoint isn't in the receiver's log until it's rebuilt, so the receiver can't
+            serve it to another member's fetch or see an equivocation at its seq meanwhile. That's only behind a hole
+            spanning a block. pe-session's port keeps the explicit fallback, which also covers a sender's stale view of
+            who is fed (review L3).
+          * Since this landing, spikes/out/r18-thin, -partb and r18 hold the elided wire's runs. With
+            `PE_NO_LIVE=1` it reproduces the table's "with the link" logs byte for byte.
+      * **The 3+ player Part A cells above are single samples** [V for the rows swept, spikes/out/link-elision/
+        delay-sweep.txt]. The jitter seed moves nothing (the runs are byte-identical), but a 4 ms change of the
+        one-way delay moves these cells 2-7x.
+        * Others' stalled frames per member at 46 / 48 / 50 / 52 / 54 ms, with the link:
+          * watcher at 12 kbit/s, 8 players: 652 / 491 / 1,115 / 156 / 701;
+          * watcher at 8 kbit/s, 4 players: 596 / 742 / 827 / 453 / 821;
+          * watcher at 16 kbit/s, 8 players: 114 / 202 / 139 / 195 / 203;
+          * sweeper at 12 kbit/s, 4 players: 83 / 82 / 80 / 102 / 114.
+        * A few % of bytes moves them inside that spread, either way.
+        * Such cells are compared on 5-delay means (46-54 ms), as the Part B port's gate is (@coordinator-opus,
+          2026-11-07). @item:primordial-engine/r18-controller-retune-for-the-3-player-thin-cell holds the retune
+          for that spread.
+        * 2-player cells don't spread like this (the sweeper at 8 kbit/s: 762-769 frames with the link at every
+          delay).
       * **A known bug at 3 players (Critical): on 12-24 kbit/s downlinks confirmation stops for good, for the whole
         session.**
         * The watcher is fed for about 10 s and then leaves the feed. From the next window on, no window's mode
