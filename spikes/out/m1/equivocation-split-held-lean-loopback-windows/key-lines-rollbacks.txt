@@ -1,0 +1,20 @@
+[m1 t=8254ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 1, max depth 16) h
+[m1 t=8259ms f=495] membership decision: epoch 1, removed [3]
+[m1 t=8262ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 2, max depth 16) h
+[m1 t=8724ms f=523] TRACE at frame 523 conf 478: rollback (resimulated 27 frames; rollbacks 3, max depth 26) h
+[m1 t=8742ms f=524] TRACE at frame 524 conf 478: rollback (resimulated 8 frames; rollbacks 4, max depth 26) | 
+[m2 t=8254ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 1, max depth 16) h
+[m2 t=8260ms f=495] membership decision: epoch 1, removed [3]
+[m2 t=8263ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 2, max depth 16) h
+[m2 t=8909ms f=534] TRACE at frame 534 conf 520: rollback (resimulated 38 frames; rollbacks 3, max depth 37) h
+[m3 t=8251ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 18 frames; rollbacks 1, max depth 15) h
+[m3 t=8261ms f=495] membership decision: epoch 1, removed [3]
+[m3 t=8264ms f=495] TRACE at frame 495 conf 476: rollback (resimulated 19 frames; rollbacks 2, max depth 16) h
+[m3 t=8394ms f=503] TRACE at frame 503 conf 476: rollback (resimulated 7 frames; rollbacks 3, max depth 16) ha
+[m4 t=8248ms f=494] TRACE at frame 494 conf 476: rollback (resimulated 18 frames; rollbacks 1, max depth 15) h
+[m4 t=8416ms f=504] TRACE at frame 504 conf 476: rollback (resimulated 16 frames; rollbacks 2, max depth 16) h
+[m4 t=8484ms f=509] TRACE at frame 509 conf 476: rollback (resimulated 20 frames; rollbacks 3, max depth 17) h
+[m4 t=8560ms f=513] membership decision: epoch 1, removed [3]
+[m4 t=8573ms f=514] TRACE at frame 514 conf 480: rollback (resimulated 38 frames; rollbacks 4, max depth 35) h
+[m4 t=8592ms f=515] TRACE at frame 515 conf 484: rollback (resimulated 7 frames; rollbacks 5, max depth 35) | 
+[m4 t=8641ms f=518] TRACE at frame 518 conf 484: rollback (resimulated 10 frames; rollbacks 6, max depth 35) |
