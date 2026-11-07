@@ -1,13 +1,13 @@
 RESULT ballpit 60 Hz, 1 hand(s), input delay 0 frames, loss 0%: sweep window 3.66 s, 220 frames
-RESULT   perturbation source (hand target per frame + acks): hand entries 230 (2828 B/s payload, 6096 B/s wire est.), acks 225 (7623 B/s wire est.), all messages 14074 B/s wire est. (both directions)
+RESULT   perturbation source (hand target per frame + acks): hand entries 230 (2843 B/s payload, 6111 B/s wire est.), acks 225 (7638 B/s wire est.), all messages 14104 B/s wire est. (both directions)
 RESULT   naive state streaming measured on member 1: avg 294 balls changed per frame; exact state 1201106 B/s, quantized ~26 B/ball 459840 B/s (one direction, payload only)
 RESULT   before the sweep (settled pit, 1.0-1.9 s): avg 0.0 balls changed per frame
-RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (964 B/s wire est.), m2 7.8 acks/s (964 B/s wire est.)
-  sweep-window traffic ack: 225 messages, 16200 B payload (7623 B/s wire est.)
-  sweep-window traffic entry/hand: 230 messages, 10350 B payload (6096 B/s wire est.)
+RESULT   acks before the sweep (1.0-1.9 s, one direction): m1 7.8 acks/s (982 B/s wire est.), m2 7.8 acks/s (982 B/s wire est.)
+  sweep-window traffic ack: 225 messages, 16256 B payload (7638 B/s wire est.)
+  sweep-window traffic entry/hand: 230 messages, 10406 B payload (6111 B/s wire est.)
   sweep-window traffic fetch: 20 messages, 260 B payload (355 B/s wire est.)
-RESULT   member 2 during the sweep: 59.0 rollbacks/s, 272.7 re-simulated frames/s, re-sim 2.57 ms per rendered sim frame (565 ms over the window); step avg 0.318 ms; max depth 4
+RESULT   member 2 during the sweep: 59.0 rollbacks/s, 272.7 re-simulated frames/s, re-sim 2.52 ms per rendered sim frame (555 ms over the window); step avg 0.312 ms; max depth 4
 RESULT   end state at frame 532 (all 500 balls, both hands, all tables): m1 46e1d51eb0793e8b m2 46e1d51eb0793e8b -> IDENTICAL
   m1 world 1: rollbacks 0 max depth 0 resim frames 0 (0.0 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 17 bad 0 nonfinite 0 conf 513 frame 534
-  m2 world 1: rollbacks 222 max depth 4 resim frames 1023 (580.6 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 522 frame 533
+  m2 world 1: rollbacks 222 max depth 4 resim frames 1023 (569.1 ms) overwrites 0 paused frames 0 violations 0 equivocations 0 checks ok 18 bad 0 nonfinite 0 conf 522 frame 533
 RESULT ballpit 60Hz world 1: frames 0..510 digests m1=02c75ec22a8d8e1b m2=02c75ec22a8d8e1b | offline replay 02c75ec22a8d8e1b | ALL EQUAL

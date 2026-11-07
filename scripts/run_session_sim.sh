@@ -73,6 +73,8 @@ run d80-kickadmin kickadmin
 for v in ghostkick selfkickhead ackgap latejoin capchurn deepfork cutbackdate joinattests slowadmin kickbackdate lagprecommit aheadlink; do run p2-4-$v $v; done
 # Trust survey #4: aheadlink's cut-off lasting 30 s, its misses 5 s late (long) or lost (cut): nothing removes 3.
 for v in aheadlink-long aheadlink-cut; do run p2-4-$v $v; done
+# Thin links Part B on: the same one-way cut at 4 and 8 members (@coordinator-opus 16:36Z).
+for v in aheadlink-long-b4 aheadlink-cut-b4 aheadlink-long-b8 aheadlink-cut-b8; do run p2-4-$v $v; done
 # P2-4 review round 4 (design 10.8): the same, for the round-3 findings and round 4's own changes.
 for v in strikeframe aheadshield fakeref capstale lagchurn votechurn adminvoid joinsquat joinskip; do run p2-4-$v $v; done
 # P2-4 review round 5 (design 10.8): the join wedge and the slow/fake-reference halt.

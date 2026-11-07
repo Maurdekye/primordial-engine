@@ -1,0 +1,13 @@
+RESULT leave-race: n = 4, [3, 4] fed at 12 kbit/s each way [true, true] at 10 s; latency leaves sent by [3, 4] in the same tick
+RESULT leave-race: removals at m1 ["m4 at 10.37 s"]; decided changes' removals [[4]]; members at m1 at the end {1, 2, 3}; 3 fed at the end true
+RESULT leave-race: m3's leave pending from 10.00 s to 10.37 s (left out, void); paused frames meanwhile m1 0, m2 0; its acks meanwhile 0, after 36
+RESULT leave-race: m4's leave pending from 10.00 s to 10.37 s (removed); paused frames meanwhile m1 0, m2 0; its acks meanwhile 0, after 36
+RESULT leave-race: m3's touches stamped from frame 780 (13 s) held at m1: 14, void 0 (it acts again after its void leave)
+RESULT leave-race: commit rule: ["[w1 m1 f604 c541] plan (A): member 3's latency leave left out (fed {3, 4}, members then {1, 2, 3}): the region has ended"]
+RESULT leave-race: exactly one fed member left (4); 3's leave was void
+RESULT leave-race: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 6561 / 1313 = 5.0, heads 3909; m2 6561 / 1313 = 5.0, heads 3909
+RESULT leave-race: gap 1: 1 certificate messages, 315 B; 0 requests, 0 B; at fed replicas: none applied
+RESULT leave-race: rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0
+  m1: conf 1111 frame 1193 rollbacks 89 max depth 24 paused frames 0 checks ok 48 bad 0
+  m2: conf 1111 frame 1193 rollbacks 89 max depth 24 paused frames 0 checks ok 48 bad 0
+RESULT leave-race: frames 0..1110 (replay from m1; each replica over its own confirmed frames: m1 0..1110 0be34e134743c1e6, m2 0..1110 0be34e134743c1e6) | offline replay 0be34e134743c1e6 | ALL EQUAL, NO FALSE CHECKS
