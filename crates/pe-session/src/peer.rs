@@ -31,8 +31,21 @@ use crate::session::{perm, EntryId, Hold, MemberId, Msg, Outcome, Payload, Signe
 /// R18: frames between hand poses, and between acks, at each congestion level. Review R3-9 added
 /// levels 4 and 5 for links of about 8-16 kbit/s; both are aligned to the same frame ticks, so a
 /// tick's hand pose shares the ack's datagram.
-pub const HAND_STRIDE: [u64; 6] = [1, 2, 3, 4, 6, 8];
-pub const ACK_FRAMES: [u64; 6] = [2, 2, 3, 4, 6, 8];
+/// Thin links, Part A (design 10.9; the spike's p2/thin-link, main 11c20c1 with reviews PA-2 and PA2-1):
+/// level 6 drains a backlog at stride 8 without packs (D73 option B), and levels 7 and 8 send a single
+/// pose and an ack every 16 and 32 frames, for links the packed levels cannot carry. Above
+/// [`PACKED_LEVELS`] the author's hand is not exact: it reaches each pose over the stride, as before D73.
+pub const HAND_STRIDE: [u64; 9] = [1, 2, 3, 4, 6, 8, 8, 16, 32];
+pub const ACK_FRAMES: [u64; 9] = [2, 2, 3, 4, 6, 8, 8, 16, 32];
+/// Thin links, Part A: the coarsest level that sends packs (D73(a)); above it, single poses.
+pub const PACKED_LEVELS: usize = 5;
+/// Thin links, Part A: the level that drains a backlog without packs and returns to packed level 5
+/// after 300 ms of calm, once per D56 episode.
+pub const DRAIN_LEVEL: usize = 6;
+/// Thin links, Part A: from the coarsest packed level up, the controller climbs only while the queue is
+/// at least this deep (us), or still growing (by [`GROWING_US`] since the last level change).
+pub const DEEP_QUEUE_US: u64 = 300_000;
+pub const GROWING_US: u64 = 10_000;
 /// 7.6 reduction 2: an idle member acks every this many frames, on multiples of it, at any level.
 pub const IDLE_ACK_FRAMES: u64 = 8;
 /// R18's thresholds (design 10.9): raise above 40 ms at most every 100 ms; lower after 300 ms below
@@ -93,7 +106,8 @@ pub enum AuthorError {
     NotReady,
     /// A hand that is not this member's (8.4).
     NotOwner,
-    /// A second pose for a hand in a frame that already has one.
+    /// A second pose for a hand in a frame that already has one, or (thin links, Part A) a pose
+    /// thinned out above the packed levels: off the stride's frame ticks, dropped.
     Stride,
     /// Accepted, nothing to send yet: under R18 thinning the pose waits in this member's pending
     /// pack (D73(a)) and already moves its hand here; it goes out with the pack.
@@ -144,6 +158,13 @@ pub struct SessionCore {
     pub adapt: bool,
     pub level: usize,
     level_t: u64,
+    /// Thin links, Part A: the uplink queue delay (us) when the level last changed, to tell a queue
+    /// still growing at the coarsest packed level from one draining there.
+    level_b: u64,
+    /// Thin links, Part A: the drain level's quick return to packed level 5 was used in this D56
+    /// episode. Until then D56 remembers at most packed level 5; after it, leaving the drain level
+    /// follows D56 like any other level, so a link the packed levels cannot carry does not cycle.
+    drained: bool,
     calm_since: u64,
     queue_delay_us: Option<u64>,
     /// D56's memory (design 10.9): after congestion began at level L, lowering into L or below
@@ -169,7 +190,7 @@ pub struct SessionCore {
     /// D73(a): per hand, the poses waiting for their pack while R18 thins the stream.
     packs: BTreeMap<u32, Pack>,
     /// Ticks spent at each congestion level.
-    pub level_ms: [u64; 6],
+    pub level_ms: [u64; 9],
     tick: Option<TickState>,
     out: Vec<Out>,
     events: Vec<Event>,
@@ -260,6 +281,8 @@ impl SessionCore {
             adapt: true,
             level: 0,
             level_t: 0,
+            level_b: 0,
+            drained: false,
             calm_since: 0,
             queue_delay_us: None,
             recall_calm_us: 5_000_000,
@@ -273,7 +296,7 @@ impl SessionCore {
             last_adapt_us: None,
             hand_last: BTreeMap::new(),
             packs: BTreeMap::new(),
-            level_ms: [0; 6],
+            level_ms: [0; 9],
             tick: None,
             out: Vec::new(),
             events: Vec::new(),
@@ -530,17 +553,30 @@ impl SessionCore {
                     // memory, raise or not (review D56-1).
                     let onset = !self.over;
                     self.over = true;
-                    self.congested_at = match self.congested_at {
-                        Some(l) if onset => Some(l.max(self.level)),
-                        Some(l) => Some(l),
-                        None => Some(self.level),
+                    let l = match self.congested_at {
+                        Some(l) if onset => l.max(self.level),
+                        Some(l) => l,
+                        None => self.level,
                     };
+                    // Thin links, Part A: until the drain level's quick return has been used in this
+                    // episode, D56 remembers at most the coarsest packed level. The first climb through
+                    // the drain and floor levels clears a passing backlog; remembered, an onset reached
+                    // on the way held a 32 kbit/s sweeper at stride 16 for the rest of its run (spike).
+                    // Congestion again after the return means the link needs the floor levels, and from
+                    // then on they are remembered.
+                    self.congested_at = Some(if self.drained { l } else { l.min(PACKED_LEVELS) });
                     self.congested_t = now_us;
                     self.quiet_us = 0;
                     self.calm_since = 0;
-                    if now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
+                    // Thin links, Part A: from the coarsest packed level up, climb only while the queue
+                    // is deep (`DEEP_QUEUE_US`) or still growing since the last level change: a backlog
+                    // that level 5 drains, with the author's hand exact, stays there. Below level 5,
+                    // climbs stay at one level per 100 ms.
+                    let deep_enough = self.level < PACKED_LEVELS || b > DEEP_QUEUE_US || b > self.level_b + GROWING_US;
+                    if deep_enough && now_us >= self.level_t + RAISE_EVERY_US && self.level < HAND_STRIDE.len() - 1 {
                         self.level += 1;
                         self.level_t = now_us;
+                        self.level_b = b;
                     }
                 }
                 Some(b) => {
@@ -562,6 +598,7 @@ impl SessionCore {
             }
             if self.congested_at.is_some() && (self.quiet_us >= self.forget_us || now_us >= self.congested_t + self.ceiling_us) {
                 self.congested_at = None;
+                self.drained = false;
             }
             if idle_now {
                 self.idle_at = now_us;
@@ -570,15 +607,35 @@ impl SessionCore {
                 // Lowering into the remembered level or a finer one takes the longer calm with the
                 // member active throughout: calm while idle never lowers into L (idle calm stops at
                 // L + 1), nor counts once the member is active again. Lowering above L is unchanged.
+                // Thin links, Part A: the drain level returns to packed level 5 after 300 ms of calm,
+                // whatever D56 remembers and whether or not the member is idle, the first time in a D56
+                // episode, which drains a first congestion's backlog of packs and gives the author its
+                // exact hand back soon. Above the packed levels (reviews PA-2, PA2-1), an idle member
+                // steps down on calm at the 300 ms pace and an active one after the recall calm, idle
+                // or not, so an idle member is back at level 5 within about a second and its next
+                // gesture starts packed. At level 5 and below nothing changes.
                 let into = self.level - 1;
-                let (calm, from) = if self.congested_at.is_some_and(|c| into <= c) {
-                    (self.recall_calm_us, self.calm_since.max(self.idle_at))
+                let quick_drain = self.level == DRAIN_LEVEL && !self.drained;
+                let (calm, from) = if quick_drain {
+                    (LOWER_AFTER_US, self.calm_since)
+                } else if self.congested_at.is_some_and(|c| into <= c) {
+                    if self.level <= PACKED_LEVELS {
+                        (self.recall_calm_us, self.calm_since.max(self.idle_at))
+                    } else if idle_now {
+                        (LOWER_AFTER_US, self.calm_since)
+                    } else {
+                        (self.recall_calm_us, self.calm_since)
+                    }
                 } else {
                     (LOWER_AFTER_US, self.calm_since)
                 };
                 if now_us >= from + calm && now_us >= self.level_t + LOWER_AFTER_US {
+                    if quick_drain {
+                        self.drained = true;
+                    }
                     self.level = into;
                     self.level_t = now_us;
+                    self.level_b = self.queue_delay_us.unwrap_or(0);
                     self.calm_since = now_us;
                 }
             }
@@ -683,6 +740,18 @@ impl SessionCore {
                 } else {
                     if self.hand_last.get(&obj).is_some_and(|&l| s <= l) {
                         return Err(AuthorError::Stride);
+                    }
+                    // Thin links, Part A: above the packed levels, the pre-D73 thinning: one pose on
+                    // clock frames that are multiples of k, reached over k frames; others are dropped.
+                    let level = self.level.min(HAND_STRIDE.len() - 1);
+                    if self.adapt && k > 1 && level > PACKED_LEVELS {
+                        if self.sim.now % k != 0 {
+                            return Err(AuthorError::Stride);
+                        }
+                        self.hand_last.insert(obj, s);
+                        self.flush_pack(obj);
+                        let e = self.sim.author_ahead(Payload::Hand { obj, target_mm, active, span: k as u8, more: Vec::new() }, ahead);
+                        return Ok(self.sent(e));
                     }
                     self.hand_last.insert(obj, s);
                     if k == 1 {

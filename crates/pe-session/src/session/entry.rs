@@ -52,9 +52,30 @@ impl std::fmt::Debug for EntryId {
 /// and never take claims (review M3).
 pub const LOGIC: MemberId = 0;
 
-/// D73(a): the most targets one hand entry packs, the largest R18 hand stride (`peer::HAND_STRIDE`).
+/// D73(a): the most targets one hand entry packs, the stride of the coarsest packed R18 level
+/// (`peer::HAND_STRIDE[peer::PACKED_LEVELS]`).
 /// It also bounds how far a pack's stamp may lie behind its author's present (k - 1 frames).
 pub const PACK_MAX: u64 = 8;
+
+/// Thin links, Part A: the width a pack's extra targets travel in, as deltas from the target before:
+/// 1 (i8) if every axis of every step is within 127 mm, 2 (i16) within 32767 mm, else 0 (whole i32).
+pub fn pack_delta_mode(target_mm: &[i32; 3], more: &[[i32; 3]]) -> u8 {
+    let mut prev = *target_mm;
+    let mut maxd = 0i64;
+    for t in more {
+        for i in 0..3 {
+            maxd = maxd.max((t[i] as i64 - prev[i] as i64).abs());
+        }
+        prev = *t;
+    }
+    if maxd <= 127 {
+        1
+    } else if maxd <= 32767 {
+        2
+    } else {
+        0
+    }
+}
 
 impl Payload {
     /// View-change and admin entries (review O2-1): always signed on themselves, never only covered by
@@ -403,8 +424,24 @@ impl Wr {
                 self.u8(if more.is_empty() { 2 } else { 21 });
                 self.u32(*obj); for c in target_mm { self.i32(*c) } self.u8(*active as u8); self.u8(*span);
                 if !more.is_empty() {
+                    // Thin links, Part A (the spike's 11c20c1): a pack's extra targets as deltas from the
+                    // previous target, in the narrowest width that holds every axis of every step
+                    // ([`pack_delta_mode`]: 1 i8, 2 i16, 0 whole i32). A stride-8 pack falls by 62 bytes.
                     self.u8(more.len() as u8);
-                    for t in more { for c in t { self.i32(*c) } }
+                    let mode = pack_delta_mode(target_mm, more);
+                    self.u8(mode);
+                    let mut prev = *target_mm;
+                    for t in more {
+                        for i in 0..3 {
+                            let d = t[i].wrapping_sub(prev[i]);
+                            match mode {
+                                1 => self.u8(d as i8 as u8),
+                                2 => self.0.extend_from_slice(&(d as i16).to_le_bytes()),
+                                _ => self.i32(t[i]),
+                            }
+                        }
+                        prev = *t;
+                    }
                 }
             }
             Payload::Depart { obj, dest, deadline, hop } => {
@@ -656,8 +693,25 @@ impl<'a> Rd<'a> {
                     if n == 0 || n + 1 > PACK_MAX {
                         return None;
                     }
+                    let mode = self.u8()?;
+                    let mut prev = target_mm;
                     for _ in 0..n {
-                        more.push([self.i32()?, self.i32()?, self.i32()?]);
+                        let mut t = [0i32; 3];
+                        for (i, c) in t.iter_mut().enumerate() {
+                            *c = match mode {
+                                1 => prev[i].wrapping_add(self.u8()? as i8 as i32),
+                                2 => prev[i].wrapping_add(i16::from_le_bytes(self.take(2)?.try_into().ok()?) as i32),
+                                0 => self.i32()?,
+                                _ => return None,
+                            };
+                        }
+                        more.push(t);
+                        prev = t;
+                    }
+                    // Only the narrowest width has a canonical encoding: any other is refused, so an entry
+                    // has one encoding on the wire (the spike decodes any).
+                    if mode != pack_delta_mode(&target_mm, &more) {
+                        return None;
                     }
                 }
                 Payload::Hand { obj, target_mm, active, span, more }
