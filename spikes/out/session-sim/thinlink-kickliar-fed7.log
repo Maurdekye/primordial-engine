@@ -11,25 +11,25 @@ TRACE kickliar-fed7 t= 5 s m6: fed true level 8 ack every 32 fr | acks/s 2 | upl
 TRACE kickliar-fed7 t= 5 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.5 kbit/s per link, queue 70 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t= 6 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t= 6 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.4 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed7 t= 7 s m6: fed true level 8 ack every 32 fr | acks/s 1 | uplink 9.1 kbit/s per link, queue 130 ms | downlink queue 0 ms
-TRACE kickliar-fed7 t= 7 s m7: fed true level 8 ack every 32 fr | acks/s 1 | uplink 9.3 kbit/s per link, queue 166 ms | downlink queue 0 ms
-TRACE kickliar-fed7 t= 8 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 7.9 kbit/s per link, queue 228 ms | downlink queue 176 ms
-TRACE kickliar-fed7 t= 8 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 7.9 kbit/s per link, queue 264 ms | downlink queue 124 ms
-TRACE kickliar-fed7 t= 9 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.4 kbit/s per link, queue 187 ms | downlink queue 289 ms
-TRACE kickliar-fed7 t= 9 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.9 kbit/s per link, queue 223 ms | downlink queue 237 ms
-TRACE kickliar-fed7 t=10 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 4.8 kbit/s per link, queue 28 ms | downlink queue 153 ms
-TRACE kickliar-fed7 t=10 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.4 kbit/s per link, queue 64 ms | downlink queue 81 ms
-TRACE kickliar-fed7 t=11 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.0 kbit/s per link, queue 88 ms | downlink queue 161 ms
-TRACE kickliar-fed7 t=11 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 89 ms
-TRACE kickliar-fed7 t=12 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 39 ms
+TRACE kickliar-fed7 t= 7 s m6: fed true level 8 ack every 32 fr | acks/s 1 | uplink 9.1 kbit/s per link, queue 143 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t= 7 s m7: fed true level 8 ack every 32 fr | acks/s 1 | uplink 9.5 kbit/s per link, queue 179 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t= 8 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 7.9 kbit/s per link, queue 461 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t= 8 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 7.9 kbit/s per link, queue 497 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t= 9 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.3 kbit/s per link, queue 187 ms | downlink queue 42 ms
+TRACE kickliar-fed7 t= 9 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.6 kbit/s per link, queue 223 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t=10 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 4.8 kbit/s per link, queue 28 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t=10 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.6 kbit/s per link, queue 101 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t=11 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.0 kbit/s per link, queue 88 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t=11 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE kickliar-fed7 t=12 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=12 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=13 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=13 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=14 s m6: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed7 t=14 s m7: fed true level 8 ack every 32 fr | acks/s 2 | uplink 5.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
-RESULT kickliar-fed7: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 50.5 / 83, m3 50.2 / 83, m4 50.2 / 83
-TRACE kickliar-fed7 m6 uplink by kind, kbit/s per link from 4 s: total 6.21 | (batch framing) 46x 0.03, (datagram overhead) 221x 1.53, ack 88x 2.69, ckpts 19x 0.18, entry/touch 92x 1.38, fetch 105x 0.18, vote 32x 0.22
-TRACE kickliar-fed7 m7 uplink by kind, kbit/s per link from 4 s: total 6.16 | (batch framing) 50x 0.03, (datagram overhead) 221x 1.53, ack 88x 2.69, ckpts 19x 0.18, entry/touch 88x 1.31, fetch 111x 0.19, vote 32x 0.22
+RESULT kickliar-fed7: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 50.5 / 83, m3 50.5 / 83, m4 50.5 / 83
+TRACE kickliar-fed7 m6 uplink by kind, kbit/s per link from 4 s: total 6.21 | (batch framing) 47x 0.03, (datagram overhead) 221x 1.53, ack 88x 2.69, ckpts 19x 0.18, entry/touch 92x 1.38, fetch 106x 0.18, vote 32x 0.22
+TRACE kickliar-fed7 m7 uplink by kind, kbit/s per link from 4 s: total 6.17 | (batch framing) 49x 0.03, (datagram overhead) 222x 1.54, ack 88x 2.69, ckpts 19x 0.18, entry/touch 88x 1.31, fetch 114x 0.20, vote 32x 0.22
 RESULT kickliar-fed7: m6's touches at m1: 24 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed7: m7's touches at m1: 24 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed7: m6 latency floor at m1: no window with n - f < q
@@ -38,8 +38,11 @@ RESULT kickliar-fed7: m6 silence votes as a fed member: none
 RESULT kickliar-fed7: m7 silence votes as a fed member: none
 RESULT kickliar-fed7: member 2 removed at 7.88 s; members at m1 {1, 3, 4, 5, 6, 7}; [6, 7] fed at the kick [true, true], at the decision [true, true]
 RESULT kickliar-fed7: epoch 1 change removes 2 by kick 0xcebb1ebf195a76f4, admin 1; precommits from [1, 3, 4, 6, 7]
-  m1: conf 781 frame 833 rollbacks 133 max depth 101 paused frames 0 checks ok 102 bad 0
-  m3: conf 781 frame 833 rollbacks 136 max depth 98 paused frames 0 checks ok 103 bad 0
-  m4: conf 781 frame 833 rollbacks 136 max depth 98 paused frames 0 checks ok 103 bad 0
-  m5: conf 781 frame 833 rollbacks 135 max depth 101 paused frames 0 checks ok 102 bad 0
-RESULT kickliar-fed7: frames 0..780 (replay from m1; each replica over its own confirmed frames: m1 0..780 d400682634abdd67, m3 0..780 d400682634abdd67, m4 0..780 d400682634abdd67, m5 0..780 d400682634abdd67) | offline replay d400682634abdd67 | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed7: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 47148 / 1829 = 25.8, heads 10878; m3 47234 / 1829 = 25.8, heads 10878; m4 47169 / 1829 = 25.8, heads 10878; m5 47380 / 1830 = 25.9, heads 10884
+RESULT kickliar-fed7: gap 1: 2 certificate messages, 1116 B; 0 requests, 0 B; at fed replicas: none applied
+RESULT kickliar-fed7: rule 1's voids of members' entries (authors still members) per replica: m1 1, m3 1, m4 1, m5 1
+  m1: conf 781 frame 833 rollbacks 134 max depth 99 paused frames 0 checks ok 104 bad 0
+  m3: conf 781 frame 833 rollbacks 137 max depth 99 paused frames 0 checks ok 104 bad 0
+  m4: conf 781 frame 833 rollbacks 136 max depth 99 paused frames 0 checks ok 104 bad 0
+  m5: conf 781 frame 833 rollbacks 136 max depth 99 paused frames 0 checks ok 104 bad 0
+RESULT kickliar-fed7: frames 0..780 (replay from m1; each replica over its own confirmed frames: m1 0..780 736789e99a24b6a2, m3 0..780 736789e99a24b6a2, m4 0..780 736789e99a24b6a2, m5 0..780 736789e99a24b6a2) | offline replay 736789e99a24b6a2 | ALL EQUAL, NO FALSE CHECKS

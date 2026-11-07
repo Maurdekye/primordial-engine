@@ -2744,6 +2744,16 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
 | 256, but member 3 of 3 on 8 kbit/s | batched (20 s run) | 148 kbit/s | 500 ms, 1,106 | 167 / 172 | 290 frames | 1.75 s | member 3 removed from frame 192; members 1 and 2 equal |
 | 256, but member 3 of 3 on 8 kbit/s | batched + adaptive (20 s run) | 49 kbit/s | 490 ms, 42 | 618 / 618 / 621 | 716 frames | 10.5 s | all equal; member 3 is no longer removed since trust survey #4 (below). Before: 95 / 98, removed from frame 352, back after 0.6 s |
 
+* **Part B's checkpoint links move the adaptive rows** (spike, p2/thin-link-b) [V spikes/out/r18 at the landing;
+  a974ec3 reproduces the rows above]:
+  * 8 kbit/s, 2 players, where Part A alone with the link is what ships: 761 / 762 stalled frames, back in real time
+    after 12.1 s. At 12 kbit/s: 5 / 0. The link's cost and its item are with 10.9's Part B table.
+  * The step from 64 to 16 kbit/s is back at once (0.1 s).
+  * The slow member (3 players):
+    * Part A alone: 481 / 481 / 476 stalled frames, back after 7.5 s.
+    * Part B on, which ships at 3 players: member 3 goes on the feed and the others stall 0, with a mean
+      confirmation lag of 37 frames (P95 69) [V spikes/out/r18-thin-partb/capped-slow-member].
+
 * **Round 3 (review R3-9)** moved the collapse point. Before, every cell below about 20 kbit/s, and four
   members on a shared 64 kbit/s uplink (6,969 drops), collapsed for good. Now 16 kbit/s, a step from 64
   to 16, and the shared uplink stay real time (until D73's packs, below). 12 kbit/s recovers within 2.5 s
@@ -2803,8 +2813,9 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     effects stay with its own player (@item:primordial-engine/localize-congestion-to-the-thin-link-player-othe).
     * **The cells:** one member on its own slow link both ways, the others at 256 kbit/s; member 1 sweeps;
       batched + adaptive; each against main's D73 as built.
-    * **Evidence** [V spikes/out/r18-thin, 64 cells with reviews PA-2's and PA2-1's three-gesture ones, on main as
-      merged with trust survey #4 (p2/thin-link ff939a5), Windows and Linux identical]. Each log records its
+    * **Evidence** [V spikes/out/r18-thin as at p2/thin-link ff939a5, in its history since Part B's landing re-ran
+      it: 64 cells with reviews PA-2's and PA2-1's three-gesture ones, on main as merged with trust survey #4,
+      Windows and Linux identical]. Each log records its
       commit, its source and binary hashes, and the linked encoder's size for a fixed stride-8 pack: 68 bytes
       on the wire with deltas, 130 without.
 
@@ -2816,6 +2827,55 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
     | watcher | 3 | 207 → 618 [98] / 117 → 35 / 350 → 0 / 0 → 0 / 0 → 0 |
     | watcher | 4 | 105 → 464 [105] / 101 → 35 / 379 → 0 / 0 → 0 / 0 → 0 |
     | watcher | 8 | 92 → 146 [91] / 112 → 541 [111] / 132 → 115 / 1 → 0 / 0 → 0 |
+
+    * **With Part B and its entry format** (spike, p2/thin-link-b) [V spikes/out/r18-thin and
+      spikes/out/r18-thin-partb, on the landing binary]. The table above is Part A's at its landing, before Part B's
+      checkpoint links: a974ec3, the branch's last commit without them, reproduces those logs byte for byte, and the
+      links (043e6f4, 2c4d992) move them. spikes/out/r18-thin and spikes/out/r18 hold this landing's runs; Part A's
+      are in their history.
+      * **What ships:** the user confirmed Part B's rules at 4 or more players and its state feed at 3 (2026-11-01),
+        with no switch to turn them off; `--localize` is only the spike's switch for measuring them. So at 3 or more
+        players the shipped figure is the Part B column, and at 2 players it is Part A alone with the link.
+      * Others' stalled frames: Part A as committed (the table above) / Part A alone with the link / Part B on, at 8,
+        12, 16, 24 and 32 kbit/s. Part B starts at 3 players, so 2-player cells have no third figure. "Stops" is a
+        permanent confirmation stop (below).
+
+        | Thin member | Players | 8 | 12 | 16 | 24 | 32 |
+        |---|---|---|---|---|---|---|
+        | sweeper | 2 | 209 / **762** | 0 / **5** | 0 / **0** | 0 / **0** | 0 / **0** |
+        | sweeper | 4 | 161 / 159 / **0** | 116 / 80 / **0** | 0 / 0 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
+        | sweeper | 8 | 138 / 138 / **0** | 139 / 139 / **0** | 96 / 95 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
+        | watcher | 3 | 618 / 481 / **0** | 35 / 0 / **stops** | 0 / 0 / **stops** | 0 / 0 / **stops** | 0 / 0 / **669** |
+        | watcher | 4 | 464 / 827 / **0** | 35 / 66 / **0** | 0 / 0 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
+        | watcher | 8 | 146 / 147 / **0** | 541 / 1,115 / **0** | 115 / 139 / **0** | 0 / 0 / **0** | 0 / 0 / **0** |
+
+      * **The link's cost at 2 players.** At 8 kbit/s the other member stalls 762 frames instead of 209, and is back
+        in real time after 12.1 s instead of 3.3 s; at 12 kbit/s it stalls 5 frames instead of 0.
+        * Each entry grows little: hand entries 47 → 49 B and acks 70 → 71 B, the 8-byte link riding on about every
+          fourth entry. But member 1's controller then sends 19-22% more hand entries and acks, which the link can't
+          carry [V --by-kind].
+        * [I] The controller sits on a threshold there, so a few % of bytes flips a cell between converging and a
+          long stall. @item:primordial-engine/r18-controller-cliff-4-more-bytes-flips-a-thin-l will try a retune, or no
+          link while a session has 2 members, chosen by measurement.
+      * **A known bug at 3 players (Critical): on 12-24 kbit/s downlinks confirmation stops for good, for the whole
+        session.**
+        * The watcher is fed for about 10 s and then leaves the feed. From the next window on, no window's mode
+          becomes known (member 1 reads "D54 fed fed ? ? ?"), so nothing is confirmed again in the run.
+        * At 32 kbit/s a full member on 256 kbit/s is put on the feed too, for 7 s, and the others stall 669 / 318
+          frames.
+        * The build before carry-over (8b91fa2) does the same: it comes from the 3-player feed as built.
+        * @item:primordial-engine/3-player-feed-exit-window-mode-stays-unknown-and.
+        * It and the 2-player item gate Part B's port to pe-session.
+      * **With Part B on, the measure is the others' stalled frames and confirmation lag, not "back to real time".**
+        That column needs every member, the fed one too, within 20 frames of confirmation. A fed member trails by
+        design, so a cell with a fed member reads "never" by construction.
+        * With a thin member fed at 4 and 8 players, the others' mean lag is 29.5-35.6 frames (P95 53-61).
+        * At 3 players with an 8 kbit/s watcher it is 36.2-37.2 (P95 52-69).
+      * **Part B's standing cost with nobody thin** (base-m4, base-m8), from rule 1's echo-stability (one more ack
+        round on every entry):
+        * the full members' mean confirmation lag is 20.0-20.2 frames, against 13.7-13.9 under Part A;
+        * their max is 54, against 19;
+        * the return after a gesture takes 926-929 ms, against 0.
 
     * **Since trust survey #4 (f)** (main 1233ef4, the user's rulings of 2026-11-01), the withholding rule is gone,
       and with it what removed a thin watcher whose downlink clogs [I: its uplink is thin too, but once Part A
@@ -2840,8 +2900,9 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
           and are back after 1.40 s instead of 112 / 115 and 0.55 s, matching the spike's non-adaptive cell above.
           Member 3 is cut at the same point; the others confirm later after it [V bisected,
           docs/p2-3-r18-bytes.md; the mechanism I].
-      * **Part B's feed takes such a watcher off the full stream** at 4 or more players (rule 5 of the thin-link
-        plan). Sessions of 2-3 players keep today's rules, so there the stall stays after Part B too.
+      * **Part B's feed takes such a watcher off the full stream** at 3 or more players (rule 5 of the thin-link
+        plan, and its state feed at 3, which the user confirmed on 2026-11-01). Its figures are in the Part B table
+        above. Sessions of 2 players keep today's rules, so there the stall stays after Part B too.
       * **A session-wide pause Part B leaves: the shrink to 2 with a slow member** [V spike p2/thin-link-b,
         kickliar-fed2]. At 4 players with members 3 and 4 fed at 8 kbit/s, an admin kicks member 2, and fed member
         4 then leaves by request (S-4), leaving members 1 and 3.
@@ -2976,7 +3037,7 @@ adaptive cells then with D73(a)'s packs, p2/spike-d73, and with thin links Part 
       where the author's own link is the thin one. D73 is relaxed on the thin player's side only;
     * 288 mm (max 780) in the slow-member cell, where the author's own links are fine. Its controller backs off
       for member 3's link, as in the thin-watcher cells above: a cost to another player, which Part B's feed
-      removes at 4 or more players.
+      removes at 3 or more players (with Part B on, the slow-member cell's others stall 0).
   * **At 32 and 48 kbit/s** the controller stays at the packed levels, and the delta-encoded packs lower the
     queue's peak (196 ms instead of 213 at 32 kbit/s, 70 instead of 73 at 48), and the lag at 32 kbit/s (25
     frames instead of 27).

@@ -1,0 +1,17 @@
+PROVENANCE commit abd991316e1f, sources a72218697c85823f, binary 978be2782ae21020
+RESULT r18 capped: 500-ball pit, 3 members, member 1 sweeps, 50+-5 ms one-way, cap 256 kbit/s per directed link (4 kB burst, 500 ms queue, tail drop), 60 Hz, dead reckoning on, 30 s
+RESULT r18 capped: build: a stride-8 pack is 68 bytes on the wire
+RESULT r18 capped: member 3 is on a slow link: 32 kbit/s to and from every peer
+RESULT   transport | wire kbit/s per member | max queue ms per member | cap drops | stalled frames per member | max conf lag per member | author rollbacks | observer rollbacks/s, max depth | back to real time after the gesture | end state
+RESULT   batched+adaptive |  92.8 /  60.7 /  30.4 |  450 /  497 /  370 |    1 | 669 / 318 / 885 | 787 / 858 / 1328 | 0 (own entries moved: 0) | 59.3/s,   3 | never | m1 7d62ffe8729da53c / m2 7d62ffe8729da53c replay 7d62ffe8729da53c EQUAL
+RESULT     hand entries' confirmation latency, frames (max / mean): m1 96.2 / 38.8, m2 96.3 / 38.8, m3 1328.4 / 713.1
+RESULT     hand entries' confirmation latency P95, frames: m1 88.2, m2 88.2, m3 1317.4
+RESULT     mean confirmation lag per member from the gesture's start, frames: 206.3 / 238.4 / 668.5
+RESULT     P95 confirmation lag per member from the gesture's start, frames: 704 / 774 / 1247
+RESULT     member 1's own hand against its target, over 221 gesture frames: mean 0.00 mm, max 0.00 mm
+RESULT     time on the state feed per member: 0 / 7004 / 12214 ms
+RESULT     view changes at member 1: epoch 1 at frame 959 (15.98 s) removed []
+RESULT     3 players, window modes at member 1 (300 frames each): D54 fed fed D54 fed fed
+RESULT     rule 1's echo, per member: echoes matched/mismatched 40/0 26/0 14/0
+RESULT     controller on member 1: time at each level (hand stride [1, 2, 3, 4, 6, 8, 8, 16, 32], acks every [2, 2, 3, 4, 6, 8, 8, 16, 32] frames): [18366, 100, 100, 100, 100, 3752, 1066, 1602, 4716] ms
+RESULT     controller on member 3, the slow member: time at each level: [19535, 100, 116, 5066, 5084, 0, 0, 0, 0] ms

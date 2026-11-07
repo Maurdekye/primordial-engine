@@ -5,6 +5,8 @@ RESULT rejoin (asks after 10 s above both floors): floor votes per member [1, 1,
   m2: [w1 m2 f2216 c2096] member 103 silent for 180 frames: presumed crashed; vote to remove it
   m4: [w1 m4 f2216 c2096] member 103 silent for 180 frames: presumed crashed; vote to remove it
   103's own replica at the end: epoch 0 frame 489 conf 369 now 2993 its chain held at m1 (0, 0) member false; m1's epoch 3 frame 2993; 103's view changes: []
+RESULT rejoin (asks after 10 s above both floors): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 23787 / 2847 = 8.4, heads 8502; m2 23775 / 2847 = 8.4, heads 8502; m4 23883 / 2847 = 8.4, heads 8502
+RESULT rejoin (asks after 10 s above both floors): rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m4 0
   m1: conf 2976 frame 2993 rollbacks 168 max depth 11 paused frames 103 checks ok 193 bad 0
   m2: conf 2976 frame 2993 rollbacks 168 max depth 11 paused frames 103 checks ok 193 bad 0
   m4: conf 2976 frame 2993 rollbacks 170 max depth 54 paused frames 103 checks ok 193 bad 0
@@ -16,6 +18,8 @@ RESULT rejoin (control: asks 1 s after the removal, under the floor): floor vote
   m2: [w1 m2 f730 c610] member 103 silent for 180 frames: presumed crashed; vote to remove it
   m4: [w1 m4 f728 c608] member 103 silent for 180 frames: presumed crashed; vote to remove it
   103's own replica at the end: epoch 0 frame 120 conf 0 now 2993 its chain held at m1 (0, 0) member false; m1's epoch 3 frame 2993; 103's view changes: []
+RESULT rejoin (control: asks 1 s after the removal, under the floor): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 35071 / 2856 = 12.3, heads 8529; m2 35059 / 2856 = 12.3, heads 8529; m4 35140 / 2856 = 12.3, heads 8529
+RESULT rejoin (control: asks 1 s after the removal, under the floor): rule 1's voids of members' entries (authors still members) per replica: m1 0, m2 0, m4 0
   m1: conf 2976 frame 2993 rollbacks 170 max depth 11 paused frames 104 checks ok 195 bad 0
   m2: conf 2976 frame 2993 rollbacks 170 max depth 11 paused frames 104 checks ok 195 bad 0
   m4: conf 2976 frame 2993 rollbacks 172 max depth 54 paused frames 106 checks ok 195 bad 0
