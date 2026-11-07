@@ -8,8 +8,8 @@ RESULT joinattests: m3 epoch 2 members {1, 2, 3, 5} view changes 2 (resets 0, hi
   m3: members {1, 2, 3, 5} roles {1: 0, 2: 0, 3: 0, 5: 1} admins [1, 2, 3] closed at None
 RESULT joinattests: 5's role at m3 Some(1) -> ADMITTED AS GUEST; m1 conf 577 of frame 593, m2 conf 577 of frame 593, m3 conf 577 of frame 593
 RESULT joinattests: worst confirmation lag when admin 1 kicks 9 at 6.00 s: 177 frames (window 120); 9 removed at 6.55 s; lag at the end 16 -> HELD UNTIL THE ADMIN'S KICK, WHICH ENDS IT
-  m1: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 353)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 47 bad 0
-  m2: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 353)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 47 bad 0
-  m3: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 353)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 47 bad 0
-  m5: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 353)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 47 bad 0
+  m1: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 347)} rollbacks 0 max depth 0 violations 0 equivocations 0 checks ok 47 bad 0
+  m2: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 347)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 47 bad 0
+  m3: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 347)} rollbacks 1 max depth 1 violations 0 equivocations 0 checks ok 47 bad 0
+  m5: conf 577 frame 593 members {1, 2, 3, 5} evicted {9: (56, 347)} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 47 bad 0
 RESULT joinattests (5, a friend of admin 1, shows it to 1 and 2 only; 9 prevotes but never precommits): frames 0..592 honest m1=03f70a77b88894cf m2=03f70a77b88894cf m3=03f70a77b88894cf m5=03f70a77b88894cf | offline replay 03f70a77b88894cf | ALL EQUAL, NO FALSE CHECKS ; checks ok 188 bad 0
