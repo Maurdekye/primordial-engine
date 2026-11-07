@@ -6,10 +6,10 @@ RESULT join: m1 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest r
 RESULT join: m2 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
 RESULT join: m3 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
 RESULT join: m4 epoch 1 members {1, 2, 3, 4} view changes 1 (resets 0, highest round 0) | epoch 1 at frame 120 (t=2.10 s) round 0 removed []
-  m1: admitted {4: 176}; 4's touches: m4s66@420 eff=Some(420) void=false
-  m2: admitted {4: 176}; 4's touches: m4s66@420 eff=Some(420) void=false
-  m3: admitted {4: 176}; 4's touches: m4s66@420 eff=Some(420) void=false
-  m4: admitted {4: 176}; 4's touches: m4s66@420 eff=Some(420) void=false
+  m1: admitted {4: 176}; 4's touches: m4s65@420 eff=Some(420) void=false
+  m2: admitted {4: 176}; 4's touches: m4s65@420 eff=Some(420) void=false
+  m3: admitted {4: 176}; 4's touches: m4s65@420 eff=Some(420) void=false
+  m4: admitted {4: 176}; 4's touches: m4s65@420 eff=Some(420) void=false
   m1: conf 581 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 1 max depth 2 violations 0 equivocations 0 checks ok 60 bad 0
   m2: conf 581 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 60 bad 0
   m3: conf 581 frame 593 members {1, 2, 3, 4} evicted {} rollbacks 2 max depth 2 violations 0 equivocations 0 checks ok 60 bad 0

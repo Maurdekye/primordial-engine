@@ -1,6 +1,6 @@
-RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 156 (t=2.70 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]
-RESULT slowcapper: m2 epoch 3 members {2, 3, 5, 9} view changes 3 (resets 1, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 334 (t=5.67 s) round 1 removed []
-RESULT slowcapper: m3 epoch 3 members {2, 3, 5, 9} view changes 3 (resets 1, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 222 (t=3.80 s) round 2 removed [1]; epoch 3 at frame 334 (t=5.67 s) round 1 removed []
+RESULT slowcapper: m1 epoch 2 members {2, 3, 5, 9} view changes 2 (resets 0, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 226 (t=3.87 s) round 2 removed [1]
+RESULT slowcapper: m2 epoch 3 members {2, 3, 5, 9} view changes 3 (resets 1, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 226 (t=3.87 s) round 2 removed [1]; epoch 3 at frame 334 (t=5.67 s) round 1 removed []
+RESULT slowcapper: m3 epoch 3 members {2, 3, 5, 9} view changes 3 (resets 1, highest round 2) | epoch 1 at frame 157 (t=2.72 s) round 2 removed []; epoch 2 at frame 225 (t=3.85 s) round 2 removed [1]; epoch 3 at frame 334 (t=5.67 s) round 1 removed []
 REPRO slowcapper (3 receives the cap's polka prevote 1.5 s late): m3 votes to remove capper 2: false; 2 kept: true; live at the end (2, 3, 9, 5): true; m1 conf 48 of frame 168, m2 conf 583 of frame 593, m3 conf 583 of frame 593
 RESULT slowcapper: -> THE SLOW CAPPER IS KEPT, CONFIRMATION GOES ON
   m1: conf 48 frame 168 members {2, 3, 5, 9} evicted {1: (12, 48)} rollbacks 0 max depth 0 violations 0 equivocations 1 checks ok 8 bad 0

@@ -1,5 +1,5 @@
   5's role at m3: None
-  joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend) with VC3R-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 586 of frame 593, m2 conf 586 of frame 593, m3 conf 586 of frame 593; at m1: members {1, 2, 3, 9}, evicted []
+  joinsquat (9 asks to join in 5's name at 1.9 s; 5 asks at 2.0 s with no attestation, and at 2.5 s as admin 1's friend) with VC3R-4's fix switched off (the behaviour before the fix): every replica equals the replay; m1 conf 585 of frame 593, m2 conf 585 of frame 593, m3 conf 585 of frame 593; at m1: members {1, 2, 3, 9}, evicted []
 RESULT joinsquat: m1 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
 RESULT joinsquat: m2 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
 RESULT joinsquat: m3 epoch 1 members {1, 2, 3, 5, 9} view changes 1 (resets 0, highest round 1) | epoch 1 at frame 152 (t=2.63 s) round 1 removed []
