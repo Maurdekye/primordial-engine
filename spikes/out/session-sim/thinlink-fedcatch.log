@@ -1,0 +1,28 @@
+RESULT fedcatch: n = 4, thin [3] at 8 kbit/s each way per link, out of view changes [2]
+TRACE fedcatch t= 1 s m3: fed false level 0 ack every 2 fr | acks/s 10 | uplink 11.3 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t= 2 s m3: fed false level 0 ack every 2 fr | acks/s 8 | uplink 10.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t= 3 s m3: fed true level 8 ack every 32 fr | acks/s 27 | uplink 36.1 kbit/s per link, queue 346 ms | downlink queue 437 ms
+TRACE fedcatch t= 4 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.0 kbit/s per link, queue 56 ms | downlink queue 0 ms
+TRACE fedcatch t= 5 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.0 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t= 6 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 6.0 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t= 7 s m3: fed true level 7 ack every 16 fr | acks/s 1 | uplink 8.9 kbit/s per link, queue 0 ms | downlink queue 49 ms
+TRACE fedcatch t= 8 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.7 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t= 9 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t=10 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t=11 s m3: fed true level 5 ack every 8 fr | acks/s 3 | uplink 4.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t=12 s m3: fed true level 5 ack every 8 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t=13 s m3: fed true level 4 ack every 6 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+TRACE fedcatch t=14 s m3: fed true level 4 ack every 6 fr | acks/s 4 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
+RESULT fedcatch: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 62.7 / 88, m4 62.7 / 88
+TRACE fedcatch m3 uplink by kind, kbit/s per link from 4 s: total 5.85 | (batch framing) 10x 0.01, (datagram overhead) 129x 1.79, ack 72x 2.53, entry/touch 45x 1.34, fetch 14x 0.05, vote 9x 0.13
+RESULT fedcatch: m3's touches at m1: 24 held, 0 void (late past rule 1's deadline)
+RESULT fedcatch: m3 latency floor at m1: 1 windows with n - f < q, 0 over; smallest margin 0 frames (window 3: E_T 32, U_T 5, C_floor 32); margins [0]
+RESULT fedcatch: m3 silence votes as a fed member: none
+RESULT fedcatch: member 2 removed at 6.37 s; members at m1 {1, 3, 4}; [3] fed at the kick [true], at the decision [true]
+RESULT fedcatch: epoch 1 change removes 2 by kick 0x317d4f3dfbf32969, admin 1; precommits from [1, 3, 4]
+RESULT fedcatch: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 5991 / 1000 = 6.0, heads 2970; m4 5948 / 999 = 6.0, heads 2967
+RESULT fedcatch: gap 1: 1 certificate messages, 390 B; 0 requests, 0 B; at fed replicas: m3 1 applied, 0 refused
+RESULT fedcatch: rule 1's voids of members' entries (authors still members) per replica: m1 0, m4 0
+  m1: conf 753 frame 833 rollbacks 59 max depth 57 paused frames 0 checks ok 43 bad 0
+  m4: conf 753 frame 833 rollbacks 59 max depth 57 paused frames 0 checks ok 43 bad 0
+RESULT fedcatch: frames 0..752 (replay from m1; each replica over its own confirmed frames: m1 0..752 71820a7aa8979823, m4 0..752 71820a7aa8979823) | offline replay 71820a7aa8979823 | ALL EQUAL, NO FALSE CHECKS

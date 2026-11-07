@@ -1,0 +1,16 @@
+RESULT leave-s4-rejoin (asks after 10 s above both floors): 2 left at 11.87 s; spectator 102 at once (its conf 1440 at 25.00 s); link above both floors from 15 s; join asked at 25.00 s; admitted at 25.24 s; members at m1 {1, 3, 102}
+RESULT leave-s4-rejoin (asks after 10 s above both floors): the others' paused frames: to the leave [285, 0], leave to admission [689, 809], after admission [0, 44]
+RESULT leave-s4-rejoin (asks after 10 s above both floors): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 3873 / 1106 = 3.5, heads 2849; m3 3981 / 1082 = 3.7, heads 2849; m102 3301 / 1108 = 3.0, heads 2858
+RESULT leave-s4-rejoin (asks after 10 s above both floors): rule 1's voids of members' entries (authors still members) per replica: m1 4, m3 4, m102 4
+  m1: conf 2358 frame 2393 rollbacks 47 max depth 90 paused frames 974 checks ok 80 bad 0
+  m3: conf 2358 frame 2393 rollbacks 52 max depth 461 paused frames 853 checks ok 82 bad 0
+  m102: conf 2370 frame 2393 rollbacks 78 max depth 108 paused frames 1297 checks ok 94 bad 0
+RESULT leave-s4-rejoin (asks after 10 s above both floors): frames 0..2369 (replay from m102; each replica over its own confirmed frames: m1 0..2357 275b052505f38c79, m3 0..2357 275b052505f38c79, m102 0..2369 9f1461bec184c5c2) | offline replay 9f1461bec184c5c2 | ALL EQUAL, NO FALSE CHECKS
+RESULT leave-s4-rejoin (control: asks 1 s after the removal, under the floor): 2 left at 11.87 s; spectator 102 at once (its conf 0 at 12.87 s); link above both floors from 15 s; join asked at 12.87 s; admitted at 23.35 s; members at m1 {1, 3, 102}
+RESULT leave-s4-rejoin (control: asks 1 s after the removal, under the floor): the others' paused frames: to the leave [285, 0], leave to admission [641, 693], after admission [0, 31]
+RESULT leave-s4-rejoin (control: asks 1 s after the removal, under the floor): per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 4138 / 1206 = 3.4, heads 3145; m3 4337 / 1175 = 3.7, heads 3145; m102 3627 / 1209 = 3.0, heads 3154
+RESULT leave-s4-rejoin (control: asks 1 s after the removal, under the floor): rule 1's voids of members' entries (authors still members) per replica: m1 4, m3 4, m102 4
+  m1: conf 2360 frame 2393 rollbacks 51 max depth 90 paused frames 926 checks ok 87 bad 0
+  m3: conf 2356 frame 2393 rollbacks 57 max depth 461 paused frames 724 checks ok 89 bad 0
+  m102: conf 2372 frame 2393 rollbacks 85 max depth 94 paused frames 1243 checks ok 100 bad 0
+RESULT leave-s4-rejoin (control: asks 1 s after the removal, under the floor): frames 0..2371 (replay from m102; each replica over its own confirmed frames: m1 0..2359 3d8971be7a403d31, m3 0..2355 9c66f54d7cbb65ea, m102 0..2371 d34cf44d134aca43) | offline replay d34cf44d134aca43 | ALL EQUAL, NO FALSE CHECKS

@@ -11,34 +11,37 @@ TRACE kickliar-fed2 t= 5 s m3: fed true level 7 ack every 16 fr | acks/s 2 | upl
 TRACE kickliar-fed2 t= 5 s m4: fed true level 8 ack every 32 fr | acks/s 3 | uplink 5.5 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed2 t= 6 s m3: fed true level 7 ack every 16 fr | acks/s 4 | uplink 6.3 kbit/s per link, queue 0 ms | downlink queue 0 ms
 TRACE kickliar-fed2 t= 6 s m4: fed true level 7 ack every 16 fr | acks/s 3 | uplink 6.1 kbit/s per link, queue 0 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 7 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 9.3 kbit/s per link, queue 102 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 7 s m4: fed true level 8 ack every 32 fr | acks/s 1 | uplink 9.2 kbit/s per link, queue 216 ms | downlink queue 0 ms
-TRACE kickliar-fed2 t= 8 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 11.8 kbit/s per link, queue 111 ms | downlink queue 383 ms
-TRACE kickliar-fed2 t= 8 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 7.6 kbit/s per link, queue 190 ms | downlink queue 333 ms
-TRACE kickliar-fed2 t= 9 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 7.6 kbit/s per link, queue 97 ms | downlink queue 343 ms
-TRACE kickliar-fed2 t= 9 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.7 kbit/s per link, queue 0 ms | downlink queue 453 ms
-TRACE kickliar-fed2 t=10 s m3: fed false level 6 ack every 8 fr | acks/s 3 | uplink 2.9 kbit/s per link, queue 0 ms | downlink queue 463 ms
-TRACE kickliar-fed2 t=10 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 9.1 kbit/s per link, queue 152 ms | downlink queue 413 ms
-TRACE kickliar-fed2 t=11 s m3: fed false level 8 ack every 32 fr | acks/s 6 | uplink 5.7 kbit/s per link, queue 0 ms | downlink queue 423 ms
-TRACE kickliar-fed2 t=11 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.7 kbit/s per link, queue 173 ms | downlink queue 373 ms
-TRACE kickliar-fed2 t=12 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 1.4 kbit/s per link, queue 0 ms | downlink queue 383 ms
-TRACE kickliar-fed2 t=12 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 6.9 kbit/s per link, queue 64 ms | downlink queue 333 ms
-TRACE kickliar-fed2 t=13 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 1.9 kbit/s per link, queue 0 ms | downlink queue 343 ms
-TRACE kickliar-fed2 t=13 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 7.8 kbit/s per link, queue 0 ms | downlink queue 453 ms
-TRACE kickliar-fed2 t=14 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 1.4 kbit/s per link, queue 0 ms | downlink queue 303 ms
-TRACE kickliar-fed2 t=14 s m4: fed false level 8 ack every 32 fr | acks/s 4 | uplink 9.7 kbit/s per link, queue 280 ms | downlink queue 413 ms
-RESULT kickliar-fed2: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 245.7 / 463
-TRACE kickliar-fed2 m3 uplink by kind, kbit/s per link from 4 s: total 5.29 | (batch framing) 20x 0.03, (datagram overhead) 147x 2.04, ack 57x 1.88, ckpts 6x 0.11, entry/touch 21x 0.63, fetch 92x 0.32, vote 21x 0.29
-TRACE kickliar-fed2 m4 uplink by kind, kbit/s per link from 4 s: total 8.73 | (batch framing) 37x 0.05, (datagram overhead) 165x 2.29, ack 128x 4.07, ckpts 6x 0.11, entry/touch 38x 1.13, fetch 83x 0.29, vote 52x 0.78
-RESULT kickliar-fed2: m3's touches at m1: 11 held, 0 void (late past rule 1's deadline)
+TRACE kickliar-fed2 t= 7 s m3: fed true level 8 ack every 32 fr | acks/s 2 | uplink 9.4 kbit/s per link, queue 307 ms | downlink queue 0 ms
+TRACE kickliar-fed2 t= 7 s m4: fed false level 8 ack every 32 fr | acks/s 1 | uplink 9.1 kbit/s per link, queue 409 ms | downlink queue 0 ms
+TRACE kickliar-fed2 t= 8 s m3: fed false level 8 ack every 32 fr | acks/s 3 | uplink 15.6 kbit/s per link, queue 24 ms | downlink queue 450 ms
+TRACE kickliar-fed2 t= 8 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.4 kbit/s per link, queue 120 ms | downlink queue 353 ms
+TRACE kickliar-fed2 t= 9 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 8.1 kbit/s per link, queue 0 ms | downlink queue 410 ms
+TRACE kickliar-fed2 t= 9 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 11.7 kbit/s per link, queue 108 ms | downlink queue 313 ms
+TRACE kickliar-fed2 t=10 s m3: fed false level 6 ack every 8 fr | acks/s 3 | uplink 3.9 kbit/s per link, queue 0 ms | downlink queue 370 ms
+TRACE kickliar-fed2 t=10 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.9 kbit/s per link, queue 168 ms | downlink queue 433 ms
+TRACE kickliar-fed2 t=11 s m3: fed false level 8 ack every 32 fr | acks/s 6 | uplink 3.6 kbit/s per link, queue 0 ms | downlink queue 330 ms
+TRACE kickliar-fed2 t=11 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 6.2 kbit/s per link, queue 0 ms | downlink queue 393 ms
+TRACE kickliar-fed2 t=12 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 1.9 kbit/s per link, queue 0 ms | downlink queue 450 ms
+TRACE kickliar-fed2 t=12 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 13.6 kbit/s per link, queue 0 ms | downlink queue 375 ms
+TRACE kickliar-fed2 t=13 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 1.4 kbit/s per link, queue 0 ms | downlink queue 410 ms
+TRACE kickliar-fed2 t=13 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 3.9 kbit/s per link, queue 0 ms | downlink queue 313 ms
+TRACE kickliar-fed2 t=14 s m3: fed false level 8 ack every 32 fr | acks/s 2 | uplink 1.9 kbit/s per link, queue 0 ms | downlink queue 466 ms
+TRACE kickliar-fed2 t=14 s m4: fed false level 8 ack every 32 fr | acks/s 2 | uplink 12.7 kbit/s per link, queue 466 ms | downlink queue 433 ms
+RESULT kickliar-fed2: confirmation lag with no view change (from 4 s, 3 s after each change left out), frames (mean / P95): m1 259.6 / 520
+TRACE kickliar-fed2 m3 uplink by kind, kbit/s per link from 4 s: total 5.68 | (batch framing) 22x 0.03, (datagram overhead) 153x 2.12, ack 67x 2.17, ckpts 6x 0.11, entry/touch 20x 0.60, fetch 102x 0.35, vote 21x 0.30
+TRACE kickliar-fed2 m4 uplink by kind, kbit/s per link from 4 s: total 9.41 | (batch framing) 41x 0.05, (datagram overhead) 166x 2.30, ack 146x 4.64, ckpts 5x 0.09, entry/touch 36x 1.08, fetch 92x 0.32, vote 60x 0.92
+RESULT kickliar-fed2: m3's touches at m1: 10 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed2: m4's touches at m1: 10 held, 0 void (late past rule 1's deadline)
 RESULT kickliar-fed2: m3 latency floor at m1: no window with n - f < q
 RESULT kickliar-fed2: m4 latency floor at m1: no window with n - f < q
 RESULT kickliar-fed2: m3 silence votes as a fed member: none
 RESULT kickliar-fed2: m4 silence votes as a fed member: none
-RESULT kickliar-fed2: member 2 removed at 6.62 s; members at m1 {1, 3}; [3, 4] fed at the kick [true, true], at the decision [true, true]
+RESULT kickliar-fed2: member 2 removed at 6.63 s; members at m1 {1, 3}; [3, 4] fed at the kick [true, true], at the decision [true, true]
 RESULT kickliar-fed2: epoch 1 change removes 2 by kick 0x82fc048149f2ef3b, admin 1; precommits from [1, 3, 4]
-RESULT kickliar-fed2: S-4 ["[w1 m4 f394 c121] S-4: n = 3 with members [3] and 4 fed: member 4 leaves by request"]; members at m1 at the end {1, 3}; m1's touches 11 held, 0 void
+RESULT kickliar-fed2: S-4 ["[w1 m4 f395 c121] S-4: n = 3 with members [3] and 4 fed: member 4 leaves by request"]; members at m1 at the end {1, 3}; m1's touches 11 held, 0 void
 RESULT kickliar-fed2: S-4 transition -> one fed member left by request
-  m1: conf 352 frame 472 rollbacks 30 max depth 28 paused frames 396 checks ok 22 bad 0
-RESULT kickliar-fed2: frames 0..351 (replay from m1; each replica over its own confirmed frames: m1 0..351 cfba4ef3571f1be9) | offline replay cfba4ef3571f1be9 | ALL EQUAL, NO FALSE CHECKS
+RESULT kickliar-fed2: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 13744 / 719 = 19.1, heads 2127
+RESULT kickliar-fed2: gap 1: 2 certificate messages, 780 B; 0 requests, 0 B; at fed replicas: none applied
+RESULT kickliar-fed2: rule 1's voids of members' entries (authors still members) per replica: m1 0
+  m1: conf 301 frame 421 rollbacks 30 max depth 27 paused frames 412 checks ok 20 bad 0
+RESULT kickliar-fed2: frames 0..300 (replay from m1; each replica over its own confirmed frames: m1 0..300 b040dd7cc53fdda5) | offline replay b040dd7cc53fdda5 | ALL EQUAL, NO FALSE CHECKS

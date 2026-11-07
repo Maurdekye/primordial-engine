@@ -1,6 +1,8 @@
 RESULT join-beyond-withhold: [3, 4] fed at the request [true, true]; 5 admitted at never; members at m1 {1, 2, 3, 4}; the admitting change's precommits None
 RESULT join-beyond-withhold: blocked while a member withholds (beyond the scope)
 RESULT join-beyond-withhold: leave requests and removal votes: ["[w1 m1 f1057 c992] member 3 is fed and its echo path needs 32 + E_T 32 + U_T 32 + 4 frames, over the latency floor W - 15 - C_floor = 73 (windows 3 and 4): below the floors; vote to remove it", "[w1 m1 f1057 c992] member 4 is fed and its echo path needs 32 + E_T 32 + U_T 32 + 4 frames, over the latency floor W - 15 - C_floor = 73 (windows 3 and 4): below the floors; vote to remove it"]
+RESULT join-beyond-withhold: per-epoch work: reference lookups / verdict passes = per pass, ack heads kept: m1 795 / 1141 = 0.7, heads 3399; m2 795 / 1141 = 0.7, heads 3399
+RESULT join-beyond-withhold: rule 1's voids of members' entries (authors still members) per replica: m1 9, m2 9
   m1: conf 992 frame 1073 rollbacks 92 max depth 113 paused frames 72 checks ok 41 bad 0
   m2: conf 992 frame 1073 rollbacks 91 max depth 113 paused frames 62 checks ok 41 bad 0
 RESULT join-beyond-withhold: frames 0..991 (replay from m1; each replica over its own confirmed frames: m1 0..991 76e47e47b32d66e3, m2 0..991 76e47e47b32d66e3) | offline replay 76e47e47b32d66e3 | ALL EQUAL, NO FALSE CHECKS
