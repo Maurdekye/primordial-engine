@@ -66,6 +66,15 @@ port can be told apart from what pe-session did before (`spikes/out/r18-thin-pe/
 
 ## Measured gaps (accepted for landing, @coordinator-opus m6db6a0b411eb)
 
+**The 3+ player cells below are single samples** (added 2026-11-07, docs/r18-link-elision.md):
+- In the spike, a 4 ms change of the one-way delay (46-54 ms) moves the 3+ player Part A thin cells 2-7x [V for 8
+  rows, spikes/out/link-elision/delay-sweep.txt]. The watcher at 12 kbit/s with 8 players, for example, stalls the
+  others 156-1,115 frames, and the jitter seed moves nothing.
+- These pe-session cells were run at 50 ms only. Their spread is assumed to be similar [I].
+- The gaps' figures, and the port's comparisons with the spike and pe main, are therefore single draws. Cells are
+  compared on 5-delay means (46-54 ms), as the Part B port's gate is (@coordinator-opus, 2026-11-07).
+- The 2-player cells don't spread this way.
+
 **1. A thin watcher at 12-24 kbit/s: the others stall more than in the spike.** For example down-k16-m4: others 124
 stalled frames, back after 2.0 s, against 0 at once; down-k16-m8 1,447 against 115; down-k24-m8 262 against 0.
 - Probed in down-k16-m4 with `--by-kind`: the watcher's acks are 121 B against the spike's 103 B (the 64 B signature,

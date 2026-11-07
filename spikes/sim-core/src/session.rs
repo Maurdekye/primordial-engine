@@ -957,8 +957,9 @@ pub struct Entry {
 /// Thin links Part B: a checkpoint block is 32 frames.
 pub const CKPT_FRAMES: u64 = 32;
 
-/// Link elision: at most this many live checkpoints wait behind holes (`WorldSim::insert_live`).
+/// Link elision: at most this many live checkpoints wait behind holes, in all and per author ([`WorldSim::insert_live`]).
 pub const LIVE_WAIT_MAX: usize = 256;
+pub const LIVE_WAIT_PER_AUTHOR: usize = 32;
 
 /// Thin links Part B (rule 1's echo, rule 5): what a fed member's ack adds. `anchor`: the frame of its newest
 /// state anchor (on every fed ack). `echo`: per member it echoes, the block of the newest checkpoint of that
@@ -1939,6 +1940,8 @@ pub struct Stats {
     pub live_rx: u64,
     pub live_held: u64,
     pub live_explicit: u64,
+    /// Link elision (review L2): live entries from a sender other than their author, dropped.
+    pub live_forged: u64,
     pub rollbacks: u64,
     pub resim_frames: u64,
     pub max_depth: u64,
@@ -3172,6 +3175,11 @@ impl WorldSim {
     /// author's, and production's signature check would fail.
     pub fn insert_live(&mut self, from: MemberId, mut e: Entry) -> Vec<Entry> {
         let m = e.member;
+        // Review L2: a live entry comes only from its own author (relays keep the link), whatever the caller checks.
+        if from != m {
+            self.stats.live_forged += 1;
+            return vec![];
+        }
         if m == self.me || (!self.known.contains(&m) && m != LOGIC) {
             return vec![];
         }
@@ -3208,9 +3216,32 @@ impl WorldSim {
                         self.busy_stamp = self.busy_stamp.max(e.stamp);
                     }
                     self.want_all(m, c + 1, e.seq - 1);
-                    if self.live_wait.len() >= LIVE_WAIT_MAX {
-                        // The oldest by author and seq goes; the hole rule fetches it explicit once its chain gets there.
-                        self.live_wait.pop_first();
+                    // Review L1: at most LIVE_WAIT_PER_AUTHOR per author (its farthest goes), and at most LIVE_WAIT_MAX in
+                    // all (the author holding the most gives up its farthest), so an author sending far-ahead live
+                    // entries evicts only its own. A dropped one is fetched explicit by the hole rule once its chain
+                    // gets there.
+                    if !self.live_wait.contains_key(&(m, e.seq)) {
+                        let mine = self.live_wait.range((m, 0)..=(m, u32::MAX)).count();
+                        let victim = if mine >= LIVE_WAIT_PER_AUTHOR {
+                            Some(m)
+                        } else if self.live_wait.len() >= LIVE_WAIT_MAX {
+                            let mut per: BTreeMap<MemberId, usize> = BTreeMap::new();
+                            for (a, _) in self.live_wait.keys() {
+                                *per.entry(*a).or_default() += 1;
+                            }
+                            per.into_iter().max_by_key(|&(a, k)| (k, std::cmp::Reverse(a))).map(|(a, _)| a)
+                        } else {
+                            None
+                        };
+                        if let Some(v) = victim {
+                            if let Some(k) = self.live_wait.range((v, 0)..=(v, u32::MAX)).next_back().map(|(k, _)| *k) {
+                                if v == m && k.1 < e.seq {
+                                    // e is the farthest of its author's: it goes instead.
+                                    return vec![];
+                                }
+                                self.live_wait.remove(&k);
+                            }
+                        }
                     }
                     self.stats.live_held += 1;
                     self.live_wait.insert((m, e.seq), (e, from));
@@ -7849,6 +7880,32 @@ mod echo_tests {
     }
 
     #[test]
+    fn live_waits_are_capped_per_author_and_only_an_author_sends_live() {
+        // Review L1: far-ahead live entries of one author evict only its own held ones.
+        let mut r = WorldSim::new(1, 2, &[1, 2, 3], SceneKind::Empty, SimConfig::default());
+        let c = chain(40, 7);
+        let k = c.iter().position(|e| e.link != 0 && e.seq > 10).unwrap();
+        let j = c.iter().position(|e| e.link != 0 && e.seq > c[k].seq).unwrap();
+        // Author 1's checkpoint j waits behind a hole spanning a block (nothing of 1 held).
+        deliver(&mut r, 1, Msg::Live(Entry { link: 0, ..c[j].clone() }));
+        assert!(r.live_wait.contains_key(&(1, c[j].seq)));
+        // Author 3 floods far-ahead live entries.
+        for s in 0..100u32 {
+            let e = Entry { member: 3, seq: 1000 + s, prev: 77, stamp: 9_000 + s as u64 * 64, ..c[j].clone() };
+            deliver(&mut r, 3, Msg::Live(Entry { link: 0, ..e }));
+        }
+        assert!(r.live_wait.contains_key(&(1, c[j].seq)));
+        assert_eq!(r.live_wait.keys().filter(|(a, _)| *a == 3).count(), LIVE_WAIT_PER_AUTHOR);
+        // The nearest of 3's stay.
+        assert!(r.live_wait.contains_key(&(3, 1000)));
+        // Review L2: a live entry from anyone but its author is dropped.
+        let before = r.live_wait.len();
+        deliver(&mut r, 3, Msg::Live(Entry { link: 0, seq: c[j].seq + 4, ..c[j].clone() }));
+        assert_eq!(r.live_wait.len(), before);
+        assert_eq!(r.stats.live_forged, 1);
+    }
+
+    #[test]
     fn a_live_checkpoint_without_state_for_its_prev_is_asked_explicit_from_its_sender() {
         // Another version of prev (or a chain held from midway): no state after prev at seq = contiguous + 1.
         let c = chain(40, 7);
@@ -7859,10 +7916,10 @@ mod echo_tests {
         }
         r.wants.clear();
         let other = Entry { prev: 12345, ..c[k].clone() };
-        assert!(deliver(&mut r, 3, Msg::Live(Entry { link: 0, ..other })).is_empty());
+        assert!(deliver(&mut r, 1, Msg::Live(Entry { link: 0, ..other })).is_empty());
         assert!(r.by_author.get(&(1, c[k].seq)).is_none());
         assert!(r.live_wait.is_empty());
-        assert_eq!(r.wants, vec![(3, 1, c[k].seq, c[k].seq)]);
+        assert_eq!(r.wants, vec![(1, 1, c[k].seq, c[k].seq)]);
         // The state says it isn't a checkpoint: asked explicit too.
         r.wants.clear();
         // (stamped in the block of seq - 1, which the newest checkpoint already covers)
