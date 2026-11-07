@@ -91,6 +91,10 @@ impl WorldSim {
                 // that log), unless I echo a newer one already (a re-entry).
                 let others: Vec<MemberId> = self.members.iter().copied().filter(|&x| x != self.me).collect();
                 for x in others {
+                    // Carry-over, hole 2: not past a checkpoint a vote of mine froze.
+                    if self.frozen.contains_key(&x) {
+                        continue;
+                    }
                     if let Some(c) = self.covered_ckpt(self.me, x) {
                         if self.echo_last.get(&x).is_none_or(|&(b0, _)| c.0 > b0) {
                             self.echo_last.insert(x, c);
@@ -391,6 +395,12 @@ impl WorldSim {
             self.fed_heard.insert(member, now);
             self.fed_echo_of_me.insert(member, echo);
             self.refresh_fed_peers();
+        }
+        // Carry-over, hole 2: after my vote against `member`, my echo of its chain stays at the checkpoint the vote froze
+        // (TLP-24) until its removal. The echo is the second path my references take (`echo_refs`), capped like my acks'
+        // heads (`author_ack`).
+        if self.frozen.contains_key(&member) && self.members.contains(&member) {
+            return;
         }
         let mut cur = self.echo_last.get(&member).copied();
         let mut it = list.into_iter().peekable();
