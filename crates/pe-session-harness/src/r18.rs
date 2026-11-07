@@ -234,6 +234,31 @@ pub fn capped(o: &Opts) {
             join(live.iter().zip(&hs).map(|(m, h)| format!("m{m} {h:016x}")).collect()),
             if hs.iter().all(|h| *h == rd) { "EQUAL" } else { "DIFFER" }
         );
+        // A DIFFER at the run's end compares present frames, which an unconverged run has not settled.
+        // Then check what is confirmed: each live replica's confirmed frames against an offline replay of
+        // its own final log, and the frames every live replica has confirmed, across replicas. Any
+        // mismatch there is a desync.
+        if !hs.iter().all(|h| *h == rd) {
+            let confs: Vec<u64> = live.iter().map(|&m| sim.replica(m, 1).sim.conf.min(sim.replica(m, 1).sim.frame)).collect();
+            let own: Vec<String> = live
+                .iter()
+                .zip(&confs)
+                .map(|(&m, &c)| {
+                    let r = &sim.replica(m, 1).sim;
+                    let members: Vec<MemberId> = r.vcm.members.iter().copied().collect();
+                    let rep = replay_sim_like(r, scene, &members, &final_log(r), c);
+                    let ok = digest(&r.hashes, c) == digest(&rep.hashes, c);
+                    format!("m{m} {c} {}", if ok { "EQUAL" } else { "DESYNC" })
+                })
+                .collect();
+            let common = confs.iter().copied().min().unwrap_or(0);
+            let ch: Vec<u64> = live.iter().map(|&m| digest(&sim.replica(m, 1).sim.hashes, common)).collect();
+            println!(
+                "RESULT     confirmed prefixes (end state DIFFER): each live replica's confirmed frames against a replay of its own log: {}; the {common} frames all have confirmed, across replicas: {}",
+                own.join(", "),
+                if ch.iter().all(|h| *h == ch[0]) { "EQUAL" } else { "DESYNC" }
+            );
+        }
         // Each of member 1's hand entries, from the frame it is stamped at until each member confirms it
         // (design 7.6: unchanged by idle thinning while anything happens). In frames, max / mean.
         let dt_us = 1_000_000 / hz;

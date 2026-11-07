@@ -155,3 +155,49 @@ fn above_level_5_a_hand_sends_single_poses_on_the_stride_ticks() {
         assert!(matches!(p, Payload::Hand { span, more, .. } if *span as u64 == k && more.is_empty()), "{p:?}");
     }
 }
+
+/// The same as [`run`] with the member idle: it authors nothing, only its acks go out.
+fn run_idle(c: &mut SessionCore, from_ms: u64, to_ms: u64, q: impl Fn(u64) -> Option<u64>) -> Vec<usize> {
+    let mut v = Vec::new();
+    for ms in from_ms..to_ms {
+        let now = ms * 1000;
+        c.set_link(q(ms));
+        c.begin_tick(now, false);
+        c.end_tick(now);
+        c.outbox();
+        v.push(c.level);
+    }
+    v
+}
+
+/// A core at level 7 whose D56 memory covers levels 6 and 7: the quick return used, then congestion
+/// beginning again at level 7.
+fn at_level_7_remembered() -> SessionCore {
+    let mut c = core();
+    run(&mut c, 0, 1_000, |_| Some(50_000));
+    run(&mut c, 1_000, 1_050, |_| Some(DEEP_QUEUE_US + 1));
+    run(&mut c, 1_050, 1_600, |_| Some(0));
+    assert_eq!(c.level, PACKED_LEVELS, "the quick return");
+    run(&mut c, 1_600, 1_750, |_| Some(DEEP_QUEUE_US + 1));
+    assert_eq!(c.level, 7);
+    run(&mut c, 1_750, 1_760, |_| Some(0));
+    run(&mut c, 1_760, 1_770, |_| Some(DEEP_QUEUE_US + 1));
+    assert_eq!((c.level, c.congested_at), (7, Some(7)), "congestion beginning at level 7 is remembered");
+    c
+}
+
+#[test]
+fn above_level_5_an_idle_member_steps_down_at_300_ms_and_an_active_one_after_the_recall_calm() {
+    // Reviews PA-2 / PA2-1: idle, it is back at packed level 5 within seconds, and rests there.
+    let mut c = at_level_7_remembered();
+    let v = run_idle(&mut c, 1_770, 6_000, |_| Some(0));
+    assert_eq!(*v.last().unwrap(), PACKED_LEVELS);
+    let v = run_idle(&mut c, 6_000, 12_000, |_| Some(0));
+    assert!(v.iter().all(|&l| l == PACKED_LEVELS), "at level 5 and below idle calm does not count");
+    // Active, the same calm needs D56's recall calm (5 s) for each remembered level.
+    let mut c = at_level_7_remembered();
+    let v = run(&mut c, 1_770, 6_000, |_| Some(0));
+    assert!(v.iter().all(|&l| l == 7), "active: no step down before 5 s of calm");
+    let v = run(&mut c, 6_000, 7_500, |_| Some(0));
+    assert_eq!(*v.last().unwrap(), 6);
+}
