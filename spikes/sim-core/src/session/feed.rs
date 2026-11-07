@@ -121,6 +121,13 @@ pub struct Fed {
     pub delay_frames: u64,
 }
 
+
+/// (spike: PE_NO_STRIPE=1) the echo phase's catch-up as before the striping: one request per chain at a time
+/// (`catchup_fetches`), and the no-progress guard on the held heads.
+pub fn stripe_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*V.get_or_init(|| std::env::var("PE_NO_STRIPE").is_ok())
+}
 impl WorldSim {
     /// Whether this replica is on the feed.
     pub fn is_fed(&self) -> bool {
@@ -421,9 +428,142 @@ impl WorldSim {
     }
 
     /// The feed exit (b): whether a want of `author`'s chain from `from` is the catch-up's own range, which a fed or echoing
-    /// member asks for once at a time (`catchup_fetches`) rather than of every holder whose ack shows more.
+    /// member asks for once at a time (`catchup_fetches`) rather than of every holder whose ack shows more. In the echo
+    /// phase, striped: every seq up to my echo is the catch-up's (`echo_catchup_fetches`).
     pub(super) fn catchup_covers(&self, author: MemberId, from: u32) -> bool {
+        if self.in_echo_phase() && stripe_on() {
+            return self.echo_seq.get(&author).is_some_and(|&s| from <= s);
+        }
         self.fed_like() && self.catchup_asked.contains_key(&author) && from == self.contiguous.get(&author).copied().unwrap_or(0) + 1
+    }
+
+    /// The echo phase's remaining hole: over the other chains, the seqs past what I hold contiguously, up to my echo, that
+    /// I don't hold. The no-progress guard's measure under striping: entries that arrive past the hole (the live stream,
+    /// or a later stripe) don't fill it.
+    pub fn catchup_missing(&self) -> u64 {
+        self.members
+            .iter()
+            .filter(|&&a| a != self.me)
+            .map(|&a| {
+                let held = self.contiguous.get(&a).copied().unwrap_or(0);
+                let target = self.echo_seq.get(&a).copied().unwrap_or(0);
+                if target <= held {
+                    0
+                } else {
+                    (target - held) as u64 - self.by_author.range((a, held + 1)..=(a, target)).count() as u64
+                }
+            })
+            .sum()
+    }
+
+    /// The striped catch-up's next range of `a`'s chain: the lowest run of seqs past what I hold, up to my echo, that I
+    /// neither hold nor have out in a request (16 at most), and how many such seqs the chain has in all.
+    fn next_catchup_range(&self, a: MemberId) -> Option<(u32, u32, u32)> {
+        let held = self.contiguous.get(&a).copied().unwrap_or(0);
+        let target = self.echo_seq.get(&a).copied().unwrap_or(0);
+        if target <= held {
+            return None;
+        }
+        let out: Vec<(u32, u32)> = self.catchup_out.range((a, 0)..=(a, u32::MAX)).map(|(&(_, f), v)| (f, v.0)).collect();
+        let mut run: Option<(u32, u32)> = None;
+        let mut total = 0;
+        for s in held + 1..=target {
+            if self.by_author.contains_key(&(a, s)) || out.iter().any(|&(f, t)| f <= s && s <= t) {
+                continue;
+            }
+            total += 1;
+            match run {
+                None => run = Some((s, s)),
+                Some((f, t)) if t + 1 == s && s - f < 16 => run = Some((f, s)),
+                _ => {}
+            }
+        }
+        run.map(|(f, t)| (f, t, total))
+    }
+
+    /// The feed exit (b): an echoing member's catch-up, striped over its holders (`holders`: the other members not on the
+    /// feed, each with whether it is echoing itself, when it serves its own chain only). Each holder keeps up to two
+    /// 16-entry requests out, its own chain first, then the chain with the most seqs still unasked, each for that chain's
+    /// lowest unasked run below my echo. A holder none of whose requests gained an entry for 2 s loses them (asked again of
+    /// the others) and, if they drew nothing at all, is charged a turn; holders charged more than one turn above the least
+    /// are left out (the fetch fallback, so a withholder ends up asked last). One request per chain at a time, the earlier
+    /// pacing, left a link idle once the shorter chain was in (paced down-k16-m3: member 1's chain from member 1 alone for
+    /// its last 19 s, member 2's link to it idle). (spike: PE_NO_STRIPE=1 keeps that, `catchup_fetches`)
+    pub fn echo_catchup_fetches(&mut self, now_ms: u64, holders: &[(MemberId, bool)]) -> Vec<(MemberId, Msg)> {
+        const PIPE: usize = 2;
+        let mut out = Vec::new();
+        if !self.in_echo_phase() {
+            self.catchup_out.clear();
+            return out;
+        }
+        // What's out: a request done (I hold all it asked up to my echo) leaves; one that gained entries since the last look
+        // restarts its holder's clock.
+        let keys: Vec<(MemberId, u32)> = self.catchup_out.keys().copied().collect();
+        for k in keys {
+            let (a, f) = k;
+            let (to, _, h, got) = self.catchup_out[&k];
+            let held = self.contiguous.get(&a).copied().unwrap_or(0);
+            let end = to.min(self.echo_seq.get(&a).copied().unwrap_or(0));
+            if f.max(held + 1) > end {
+                self.catchup_out.remove(&k);
+                self.catchup_progress.insert(h, now_ms);
+                continue;
+            }
+            let n = (f..=end).filter(|&s| s <= held || self.by_author.contains_key(&(a, s))).count() as u32;
+            if n > got {
+                self.catchup_progress.insert(h, now_ms);
+            }
+            if n == end - f + 1 {
+                self.catchup_out.remove(&k);
+            } else if n > got {
+                self.catchup_out.get_mut(&k).unwrap().3 = n;
+            }
+        }
+        // A holder none of whose requests gained an entry for 2 s.
+        let busy: BTreeSet<MemberId> = self.catchup_out.values().map(|v| v.2).collect();
+        for h in busy {
+            if now_ms < self.catchup_progress.get(&h).copied().unwrap_or(0) + 2000 {
+                continue;
+            }
+            let mine: Vec<(MemberId, u32)> = self.catchup_out.iter().filter(|(_, v)| v.2 == h).map(|(k, _)| *k).collect();
+            if mine.iter().all(|k| self.catchup_out[k].3 == 0) {
+                *self.catchup_fail.entry(h).or_default() += 1;
+            }
+            for k in mine {
+                self.catchup_out.remove(&k);
+            }
+        }
+        let fail: BTreeMap<MemberId, u32> = holders.iter().map(|&(h, _)| (h, self.catchup_fail.get(&h).copied().unwrap_or(0))).collect();
+        let least = fail.values().copied().min().unwrap_or(0);
+        let mut order: Vec<(MemberId, bool)> = holders.iter().copied().filter(|&(h, _)| h != self.me && fail[&h] <= least + 1).collect();
+        order.sort_by_key(|&(h, _)| (fail[&h], h));
+        let others: Vec<MemberId> = self.members.iter().copied().filter(|&m| m != self.me).collect();
+        for (h, own_only) in order {
+            loop {
+                let n_out = self.catchup_out.values().filter(|v| v.2 == h).count();
+                if n_out >= PIPE {
+                    break;
+                }
+                let mut best: Option<((bool, u32), MemberId, u32, u32)> = None;
+                for &a in &others {
+                    if own_only && a != h {
+                        continue;
+                    }
+                    let Some((f, t, total)) = self.next_catchup_range(a) else { continue };
+                    let score = (a == h, total);
+                    if best.as_ref().is_none_or(|b| score > b.0) {
+                        best = Some((score, a, f, t));
+                    }
+                }
+                let Some((_, a, f, t)) = best else { break };
+                if n_out == 0 {
+                    self.catchup_progress.insert(h, now_ms);
+                }
+                self.catchup_out.insert((a, f), (t, now_ms, h, 0));
+                out.push((h, Msg::Fetch { author: a, from: f, to: t }));
+            }
+        }
+        out
     }
 
     /// Scoped (B) (@coordinator-opus m4c1990b4b6d5, definition m9c4af4baeb36): at 2 members, a repair of my own chain

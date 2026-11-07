@@ -56,6 +56,13 @@ fn shared_down() -> Option<(MemberId, Cap)> {
     })
 }
 
+/// The feed exit (b): an echoing member's paced catch-up datagram holds at most this much of the link (ms; PE_ECHO_DGRAM_MS,
+/// default 200), so a live datagram behind it isn't pushed past the 500 ms queue.
+fn echo_dgram_ms() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("PE_ECHO_DGRAM_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200))
+}
+
 /// Bandwidth cap for one directed link (ported unchanged from @ballpit-viz, 2996d39): a token
 /// bucket feeding a FIFO queue. Tokens refill at `rate_bps` bits/s up to `burst_bytes`; a datagram
 /// leaves the queue when the bucket holds its wire size. A datagram that would wait longer than
@@ -184,6 +191,11 @@ pub struct Net {
     /// rule 1, @coordinator-opus m360a9ee1d5bb) and test only the live stream (rule 2).
     catchup_inflight: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
     catchup_recent: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(u64, u64)>>,
+    /// The feed exit (b): an echoing member's own catch-up, paced (`post_echo_catchup`): per directed link, the entries of
+    /// its fetch answers waiting for the link's spare. Sent at once, a 16-entry answer met a bucket the live stream keeps
+    /// near empty, and its MTU datagram (over 0.8 s at 12 kbit/s) was tail-dropped past the 500 ms queue: merged
+    /// down-k12-m3 needed about three answers per 16 entries and fell behind its chains' growth (never back by 90 s).
+    echo_q: BTreeMap<(MemberId, MemberId), std::collections::VecDeque<(WorldId, Msg)>>,
     /// The feed exit: members in their echo phase this tick (set by the harness). Like fed members, they get explicit
     /// checkpoints, never live ones: behind the hole an echoing member catches up on, live checkpoints waited (capped per
     /// author, the farthest evicted), and each evicted one then held its chain until fetched again, so the catch-up walked
@@ -279,6 +291,7 @@ impl Net {
             catchup_closed: BTreeSet::new(),
             catchup_inflight: BTreeMap::new(),
             catchup_recent: BTreeMap::new(),
+            echo_q: BTreeMap::new(),
             echoing: BTreeSet::new(),
             tracing: false,
             post_log: Vec::new(),
@@ -481,6 +494,40 @@ impl Net {
                 self.send_batch(w, from, to, cur);
             }
         }
+        // The feed exit (b): an echoing member's own catch-up, paced into the link's spare, ahead of the background
+        // catch-up: a datagram of at most PE_ECHO_DGRAM_MS of the link (one entry at least) whenever the router queue and
+        // the client queues are empty, so a live datagram behind it waits that long at most and isn't dropped. A link
+        // whose receiver no longer echoes drops what waits (on the feed it asks again through the background catch-up).
+        let keys: Vec<(MemberId, MemberId)> = self.echo_q.iter().filter(|(_, q)| !q.is_empty()).map(|(k, _)| *k).collect();
+        for (from, to) in keys {
+            let q = self.echo_q.get_mut(&(from, to)).unwrap();
+            q.retain(|(w, _)| self.echoing.contains(&(*w, to)));
+            if q.is_empty() {
+                continue;
+            }
+            let busy = self.router_backlog_us(from, to) > 0 || self.client_q.get(&(from, to)).is_some_and(|(h, l)| !h.is_empty() || !l.is_empty());
+            if busy {
+                continue;
+            }
+            let cap = if shared_down().is_some_and(|(m, _)| m == to) { shared_down().map(|(_, c)| c) } else { self.caps.get(&(from, to)).copied().or(self.default_cap) };
+            let budget = match cap {
+                Some(c) => ((c.rate_bps / 8 * echo_dgram_ms() / 1000) as usize).saturating_sub(dgram_overhead() as usize).min(MTU),
+                None => MTU,
+            };
+            let q = self.echo_q.get_mut(&(from, to)).unwrap();
+            let w = q.front().unwrap().0;
+            let mut cur: Vec<Msg> = Vec::new();
+            let mut size = 0;
+            while let Some((w2, m)) = q.front() {
+                let n = encode_msg(m).len();
+                if *w2 != w || (!cur.is_empty() && size + n > budget) {
+                    break;
+                }
+                size += n;
+                cur.push(q.pop_front().unwrap().1);
+            }
+            self.send_catchup(w, from, to, cur);
+        }
         // The feed exit's background catch-up: the lowest priority, one datagram at a time while the link is idle.
         let keys: Vec<(MemberId, MemberId)> = self.catchup_q.iter().filter(|(_, q)| !q.is_empty()).map(|(k, _)| *k).collect();
         for (from, to) in keys {
@@ -518,6 +565,20 @@ impl Net {
         self.catchup_q.entry((from, to)).or_default().push_back((world, m.clone()));
     }
 
+    /// The feed exit (b): queue an echoing member's catch-up answer on the link from `from` to `to`, paced into its spare
+    /// (`release_client_queues`); an entry already waiting there isn't queued twice (a re-ask while the answer drains).
+    pub fn post_echo_catchup(&mut self, world: WorldId, from: MemberId, to: MemberId, msgs: Vec<Msg>) {
+        let q = self.echo_q.entry((from, to)).or_default();
+        for m in msgs {
+            if let Msg::Entry(e) = &m {
+                if q.iter().any(|(w2, x)| *w2 == world && matches!(x, Msg::Entry(y) if y.member == e.member && y.seq == e.seq)) {
+                    continue;
+                }
+            }
+            q.push_back((world, m));
+        }
+    }
+
     /// Whether the link from `from` to `to` still has catch-up entries waiting.
     pub fn catchup_pending(&self, from: MemberId, to: MemberId) -> bool {
         self.catchup_q.get(&(from, to)).is_some_and(|q| !q.is_empty())
@@ -553,7 +614,9 @@ impl Net {
         for v in batches {
             let m = if v.len() == 1 { v.into_iter().next().unwrap() } else { Msg::Batch(v) };
             let wire = encode_msg(&m).len() as u64 + dgram_overhead();
-            let before = self.shapers.get(&(from, to)).map(|s| s.t_ref_us);
+            let key = if shared_down().is_some_and(|(x, _)| x == to) { (0, to) } else { (from, to) };
+            let rate = if key.0 == 0 { shared_down().map(|(_, c)| c.rate_bps) } else { rate };
+            let before = self.shapers.get(&key).map(|s| s.t_ref_us);
             self.send(world, from, to, &m);
             let now = self.now_us;
             let r = self.catchup_recent.entry((from, to)).or_default();
@@ -561,7 +624,7 @@ impl Net {
             while r.front().is_some_and(|&(t, _)| t + 1_000_000 < now) {
                 r.pop_front();
             }
-            if let (Some(rate), Some(after)) = (rate, self.shapers.get(&(from, to)).map(|s| s.t_ref_us)) {
+            if let (Some(rate), Some(after)) = (rate, self.shapers.get(&key).map(|s| s.t_ref_us)) {
                 if Some(after) != before {
                     self.catchup_inflight.entry((from, to)).or_default().push_back((after, (wire as f64 * 8.0 * 1e6 / rate as f64) as u64));
                 }
@@ -1307,7 +1370,24 @@ impl Sim {
                 // The no-progress guard (@coordinator-opus mca39b9f6b726): an echoing member whose held chains don't advance
                 // for no_progress_us goes back on the feed, as under (a), whatever the rest says (a withholding holder can
                 // otherwise stretch its freeze).
-                let guard = if echoing_t {
+                // Striped (the default), progress is the echo phase's remaining hole shrinking (`catchup_missing`): entries
+                // that arrive past the hole (the live stream, a later stripe) don't count, and a hole that grows (live
+                // datagrams lost) waits for its next shrink. (spike: PE_NO_STRIPE=1, the held heads advancing)
+                let stripe = std::env::var("PE_NO_STRIPE").is_err();
+                let guard = if echoing_t && stripe {
+                    let pt = self.peer_index(t);
+                    let missing: u64 = self.peers[pt].worlds.get(&w).map_or(0, |r| r.sim.catchup_missing());
+                    match ctl.progress {
+                        Some((v, since)) if missing >= v => {
+                            ctl.progress = Some((missing, since));
+                            now >= since + knobs.no_progress_us
+                        }
+                        _ => {
+                            ctl.progress = Some((missing, now));
+                            false
+                        }
+                    }
+                } else if echoing_t {
                     let pt = self.peer_index(t);
                     let total: u64 = self.peers[pt].worlds.get(&w).map_or(0, |r| senders.iter().map(|&x| r.sim.held_head(x) as u64).sum());
                     match ctl.progress {
@@ -1324,7 +1404,17 @@ impl Sim {
                 // The feed exit (b): an echoing member's catch-up, one request per chain at a time, each chain from its
                 // author first and, unanswered, from the next holder (the fetch fallback); answered at once past R3-9's yield
                 // (`Net::send_catchup`).
-                if echoing_t && knobs.catchup {
+                if echoing_t && knobs.catchup && stripe {
+                    // Striped over the holders (`echo_catchup_fetches`), each answer paced into its link's spare.
+                    let pi = self.peer_index(t);
+                    let holders: Vec<(MemberId, bool)> = senders.iter().copied().filter(|&s| !self.net.fed.contains(&(w, s))).map(|s| (s, echoing.contains(&(w, s)))).collect();
+                    let fetches = self.peers[pi].worlds.get_mut(&w).map(|r| r.sim.echo_catchup_fetches(now / 1000, &holders)).unwrap_or_default();
+                    for (h, f) in fetches {
+                        if h != t {
+                            self.net.post(w, t, h, &f);
+                        }
+                    }
+                } else if echoing_t && knobs.catchup {
                     let pi = self.peer_index(t);
                     let fetches = self.peers[pi].worlds.get_mut(&w).map(|r| r.sim.catchup_fetches(now / 1000)).unwrap_or_default();
                     for (f, attempt) in fetches {
@@ -1707,12 +1797,18 @@ impl Sim {
                         continue;
                     }
                     if echo_catchup {
-                        // Its own pull: at once, in datagrams of its own, which the enter test leaves out (margin rule 1).
+                        // Its own pull, in datagrams of its own, which the enter test leaves out (margin rule 1): paced into
+                        // the link's spare (`Net::post_echo_catchup`). (spike: PE_ECHO_UNPACED=1 sends it at once, as before)
                         let reply = r.sim.on_fetch(author, a, b);
                         if trace {
-                            eprintln!("REPAIR t={} ms m{to} answers m{from}'s fetch of m{author} s{a}..={b} with {} entries (echo phase, own catch-up)", now / 1000, reply.len());
+                            let bytes: usize = reply.iter().map(|m| encode_msg(m).len()).sum();
+                            eprintln!("REPAIR t={} ms m{to} answers m{from}'s fetch of m{author} s{a}..={b} with {} entries, {bytes} bytes (echo phase, own catch-up)", now / 1000, reply.len());
                         }
-                        self.net.send_catchup(w, to, from, reply);
+                        if std::env::var("PE_ECHO_UNPACED").is_ok() {
+                            self.net.send_catchup(w, to, from, reply);
+                        } else {
+                            self.net.post_echo_catchup(w, to, from, reply);
+                        }
                         continue;
                     }
                     if self.net.backlog_us(to, from) > REPAIR_MAX_BACKLOG_US && !r.sim.repair_holds_conf(from, author) && !echo_catchup {
