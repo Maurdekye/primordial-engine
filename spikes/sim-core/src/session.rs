@@ -2895,11 +2895,15 @@ impl WorldSim {
         if old == new {
             return;
         }
-        // Diagnostics: the entry whose change of effect is about to break the confirmed-frame invariant.
+        // Diagnostics: the entry whose change of effect is about to break the confirmed-frame invariant. In a control run
+        // (a review fix switched off, `fixes_off`) that is the behaviour before the fix, which the run's own report and the
+        // rollback assertion show: the line says so, so it can't be read as the fixed run's (fork9's and cutbackdate's
+        // controls print one each, @coordinator-opus me38be4a2a30d).
         if old.is_some_and(|o| o < self.conf) || new.is_some_and(|n| n < self.conf) {
             let e = &self.entries[&id];
+            let control = if self.fixes_off != 0 { format!(" (control run: fixes {:#x} switched off, the behaviour before them)", self.fixes_off) } else { String::new() };
             eprintln!(
-                "DIRTY at m{} (conf {}, frame {}): m{} s{} stamp {} {:?}: eff {:?} -> {:?}; violation {} disputed {} late_void {} verdict {:?} pending {} evicted {:?}",
+                "DIRTY{control} at m{} (conf {}, frame {}): m{} s{} stamp {} {:?}: eff {:?} -> {:?}; violation {} disputed {} late_void {} verdict {:?} pending {} evicted {:?}",
                 self.me,
                 self.conf,
                 self.frame,
